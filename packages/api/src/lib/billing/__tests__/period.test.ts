@@ -125,6 +125,53 @@ describe("billing/period", () => {
       expect(period.end.toISOString()).toBe("2026-07-01T00:00:00.000Z");
     });
 
+    it("falls back to the UTC month when the active period is STALE (now past periodEnd)", async () => {
+      // Renewal webhook lag: the stored bounds still describe the previous
+      // cycle, and `now` has advanced past `periodEnd`. Anchoring here would
+      // window usage over a dead past range → 0 usage + under-counted budget.
+      const periodStart = new Date("2026-04-25T00:00:00.000Z");
+      const periodEnd = new Date("2026-05-25T00:00:00.000Z");
+      queryResults = [[{ periodStart, periodEnd }]];
+
+      const period = await resolveBillingPeriod(
+        "org-1",
+        new Date("2026-06-10T00:00:00.000Z"), // a full cycle past periodEnd
+      );
+
+      expect(period.source).toBe("utc-month");
+      expect(period.start.toISOString()).toBe("2026-06-01T00:00:00.000Z");
+      expect(period.end.toISOString()).toBe("2026-07-01T00:00:00.000Z");
+    });
+
+    it("falls back to the UTC month when now is BEFORE the active period start", async () => {
+      // Defensive symmetry: a future-dated period would otherwise window over
+      // a range that doesn't yet contain `now`.
+      queryResults = [[
+        { periodStart: "2026-07-01T00:00:00.000Z", periodEnd: "2026-08-01T00:00:00.000Z" },
+      ]];
+
+      const period = await resolveBillingPeriod(
+        "org-1",
+        new Date("2026-06-10T00:00:00.000Z"),
+      );
+
+      expect(period.source).toBe("utc-month");
+      expect(period.start.toISOString()).toBe("2026-06-01T00:00:00.000Z");
+    });
+
+    it("anchors when now is exactly at periodStart (inclusive lower bound)", async () => {
+      queryResults = [[
+        { periodStart: "2026-06-01T00:00:00.000Z", periodEnd: "2026-07-01T00:00:00.000Z" },
+      ]];
+
+      const period = await resolveBillingPeriod(
+        "org-1",
+        new Date("2026-06-01T00:00:00.000Z"),
+      );
+
+      expect(period.source).toBe("stripe");
+    });
+
     it("falls back when the active row is missing period bounds", async () => {
       queryResults = [[{ periodStart: null, periodEnd: null }]];
 

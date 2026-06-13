@@ -155,5 +155,29 @@ export async function resolveBillingPeriod(
   // the UTC month is a safe window until the next webhook fills them in.
   if (!start || !end) return fallback;
 
+  // A present-but-STALE period must not anchor the meter. At renewal there is
+  // a window where the stored bounds still describe the *previous* cycle —
+  // the `customer.subscription.updated` webhook that advances
+  // `current_period_start`/`_end` can lag (retries span hours/days). If `now`
+  // is outside `[start, end)`, windowing usage over that dead range would
+  // exclude the entire current cycle: `getCurrentPeriodUsage` returns 0, the
+  // UI shows no usage, and `enforcement.ts` under-counts the budget (unlimited
+  // spend until the webhook lands). Fall back to the UTC month, which always
+  // contains `now`, until the bounds are refreshed. (Rolling the window
+  // forward by a month would mis-handle annual subscriptions, whose period is
+  // a year — the UTC month is the safe, cadence-agnostic choice.)
+  if (now < start || now >= end) {
+    log.debug(
+      {
+        workspaceId,
+        periodStart: start.toISOString(),
+        periodEnd: end.toISOString(),
+        now: now.toISOString(),
+      },
+      "Active subscription period does not contain now (stale bounds) — falling back to UTC calendar month",
+    );
+    return fallback;
+  }
+
   return { start, end, source: "stripe" };
 }

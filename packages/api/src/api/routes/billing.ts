@@ -36,6 +36,7 @@ import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
 import { getSeatCount } from "@atlas/api/lib/billing/seat-count";
 import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-expiry";
 import { getSettingLive } from "@atlas/api/lib/settings";
+import { getConfig } from "@atlas/api/lib/config";
 import { resolveModelId } from "@atlas/api/lib/providers";
 import { BillingStatusSchema } from "@useatlas/schemas";
 import { ADMIN_ROLES, type AdminRole } from "@useatlas/types/auth";
@@ -289,11 +290,39 @@ billing.openapi(getBillingStatusRoute, async (c) => {
           LIMIT 1`,
         [orgId],
       ).catch((err) => {
-        // Subscription table may not exist if Stripe plugin hasn't run migrations yet.
-        log.debug(
-          { err: err instanceof Error ? err.message : String(err), orgId },
-          "Failed to query subscription table — may not exist yet",
-        );
+        // The Better Auth `subscription` table is created by Better Auth's OWN
+        // migrator (`@better-auth/stripe`), NOT by an Atlas `db/migrations/*.sql`
+        // — so it sits OUTSIDE Atlas's migration + schema-drift discipline
+        // (`scripts/check-schema-drift.sh` never sees it, there's no `pgTable`
+        // mirror in `db/schema.ts`). On SaaS, where billing is live, a missing
+        // table is a real failure that masquerades as `subscription: null`
+        // ("not subscribed") and hides the billing portal (#3429 precedent).
+        // So: elevate a missing-table error (Postgres undefined_table, 42P01)
+        // to `log.error` on SaaS — the only place this carve-out can surface —
+        // while keeping every other case (and all of self-hosted) at debug,
+        // since self-hosted legitimately runs without the Stripe plugin's
+        // tables. See #3435.
+        const isSaas = getConfig()?.deployMode === "saas";
+        const code =
+          typeof err === "object" && err !== null && "code" in err
+            ? String((err as { code: unknown }).code)
+            : undefined;
+        const missingTable = code === "42P01";
+        const message = err instanceof Error ? err.message : String(err);
+        if (isSaas && missingTable) {
+          log.error(
+            { err: message, code, orgId, event: "billing.subscription_table_missing" },
+            "subscription table missing on SaaS — Better Auth's Stripe migrator has not run; " +
+              "the billing endpoint is reporting subscription: null (indistinguishable from " +
+              "'not subscribed') for every workspace. Run the @better-auth/stripe migrations. " +
+              "See #3435.",
+          );
+        } else {
+          log.debug(
+            { err: message, code, orgId },
+            "Failed to query subscription table — may not exist yet",
+          );
+        }
         return [] as Array<{
           stripeSubscriptionId: string;
           plan: string;

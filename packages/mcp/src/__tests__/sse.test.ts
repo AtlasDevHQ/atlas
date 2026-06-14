@@ -167,6 +167,7 @@ describe("SSE server — MCP client integration", () => {
     expect(names).toEqual([
       "archive_datasource",
       "create_datasource",
+      "create_rest_datasource",
       "delete_datasource",
       "describeEntity",
       "executeSQL",
@@ -270,12 +271,12 @@ describe("SSE server — MCP client integration", () => {
     await client2.connect(transport2);
 
     // Both clients can list tools independently — explore + executeSQL +
-    // the four typed semantic tools (#2020) + the seven datasource lifecycle
-    // tools (#3511–#3514) = 13.
+    // the four typed semantic tools (#2020) + the eight datasource lifecycle
+    // tools (#3511–#3514, #3547) = 14.
     const result1 = await client1.listTools();
     const result2 = await client2.listTools();
-    expect(result1.tools.length).toBe(13);
-    expect(result2.tools.length).toBe(13);
+    expect(result1.tools.length).toBe(14);
+    expect(result2.tools.length).toBe(14);
 
     // Health shows 2+ sessions
     const res = await fetch(`http://localhost:${handle.server.port}/health`);

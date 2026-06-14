@@ -123,6 +123,7 @@ describe("MCP smoke — tool listing", () => {
     expect(names).toEqual([
       "archive_datasource",
       "create_datasource",
+      "create_rest_datasource",
       "delete_datasource",
       "describeEntity",
       "executeSQL",
@@ -222,10 +223,10 @@ describe("MCP smoke — server lifecycle", () => {
     await client.connect(clientTransport);
 
     // Verify the server is operational — explore + executeSQL + the four
-    // typed semantic tools (#2020) + the seven datasource lifecycle tools
-    // (#3511–#3514) = 13.
+    // typed semantic tools (#2020) + the eight datasource lifecycle tools
+    // (#3511–#3514, #3547) = 14.
     const tools = await client.listTools();
-    expect(tools.tools.length).toBe(13);
+    expect(tools.tools.length).toBe(14);
 
     // Clean shutdown — should not throw
     await client.close();

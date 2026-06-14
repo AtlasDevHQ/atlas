@@ -73,6 +73,7 @@ describe("MCP server integration", () => {
     expect(names).toEqual([
       "archive_datasource",
       "create_datasource",
+      "create_rest_datasource",
       "delete_datasource",
       "describeEntity",
       "executeSQL",

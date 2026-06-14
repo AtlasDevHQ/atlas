@@ -83,7 +83,12 @@ mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
 
 // `loadDatasourceProfileTarget` parses the catalog schema + decrypts config.
 // Plaintext passthrough is enough — the dbType/url come from the resolver mock.
+// Spread the real module so every export (restoreMaskedSecrets, …) the form-
+// install handler graph named-imports stays present; override only the few this
+// suite drives.
+const realSecrets = await import("@atlas/api/lib/plugins/secrets");
 mock.module("@atlas/api/lib/plugins/secrets", () => ({
+  ...realSecrets,
   // Echo a config_schema array verbatim as parsed fields so
   // `loadProvisionConfigFields` can be exercised; non-array → empty (matches
   // the prior `config_schema: []` profile-target cases).

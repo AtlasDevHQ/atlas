@@ -125,6 +125,10 @@ let provisionConfigFields: unknown = {
 };
 const mockLoadConfigFields = mock<(...a: unknown[]) => Promise<unknown>>(async () => provisionConfigFields);
 
+// REST/OpenAPI provisioning (#3547) — the openapi-generic form-install seam.
+let provisionRestOutcome: unknown = { kind: "ok", installId: "rest-abc123" };
+const mockProvisionRest = mock<(...a: unknown[]) => Promise<unknown>>(async () => provisionRestOutcome);
+
 let profileTarget: unknown = {
   kind: "ok",
   target: { url: "postgres://user:pass@host/db", dbType: "postgres", schema: "public" },
@@ -169,6 +173,7 @@ mock.module("@atlas/api/lib/datasources/mcp-lifecycle", () => ({
   isDatasourceRegistered: mockIsRegistered,
   runDatasourceInstaller: mockRunInstaller,
   provisionDatasource: mockProvision,
+  provisionRestDatasource: mockProvisionRest,
   resolveProvisionCapability: mockResolveCapability,
   loadProvisionConfigFields: mockLoadConfigFields,
   loadDatasourceProfileTarget: mockLoadProfileTarget,
@@ -260,6 +265,7 @@ beforeEach(() => {
   mockRunInstaller.mockClear();
   mockRunGate.mockClear();
   mockProvision.mockClear();
+  mockProvisionRest.mockClear();
   mockResolveCapability.mockClear();
   mockLoadConfigFields.mockClear();
   mockLoadProfileTarget.mockClear();
@@ -309,12 +315,13 @@ beforeEach(() => {
     ],
     secretKeys: ["url"],
   };
+  provisionRestOutcome = { kind: "ok", installId: "rest-abc123" };
 });
 
 // ── Tool registration ─────────────────────────────────────────────────
 
 describe("datasource tools — registration", () => {
-  it("registers all seven lifecycle tools", async () => {
+  it("registers all eight lifecycle tools", async () => {
     const client = await createTestClient();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
@@ -322,6 +329,7 @@ describe("datasource tools — registration", () => {
       [
         "archive_datasource",
         "create_datasource",
+        "create_rest_datasource",
         "delete_datasource",
         "list_datasources",
         "profile_datasource",
@@ -762,6 +770,65 @@ describe("create_datasource", () => {
     expect(res.isError).toBe(true);
     expect(mockElicit).not.toHaveBeenCalled();
     expect(mockProvision).not.toHaveBeenCalled();
+  });
+});
+
+// ── create_rest_datasource (#3547) — OpenAPI spec + auth via masked form ──
+
+describe("create_rest_datasource", () => {
+  // The openapi-generic config_schema: spec URL + auth_kind + secret auth_value.
+  const REST_FIELDS = {
+    kind: "ok",
+    fields: [
+      { key: "openapi_url", label: "OpenAPI spec URL", required: true, secret: false },
+      { key: "auth_kind", label: "Authentication", required: true, secret: false },
+      { key: "auth_value", label: "Credential", required: false, secret: true },
+    ],
+    secretKeys: ["auth_value"],
+  };
+
+  it("collects the spec URL + auth as a masked form, then installs via the openapi seam", async () => {
+    provisionConfigFields = REST_FIELDS;
+    elicitOutcome = {
+      action: "accept",
+      values: { openapi_url: "https://api.example.com/openapi.json", auth_kind: "bearer", auth_value: "sk-secret" },
+    };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "create_rest_datasource", arguments: {} });
+
+    // Masked form carried the schema's fields, with auth_value marked secret.
+    expect(elicitCalls).toHaveLength(1);
+    expect(elicitCalls[0].fields.map((f) => f.name)).toEqual(["openapi_url", "auth_kind", "auth_value"]);
+    expect(elicitCalls[0].fields[2].secret).toBe(true);
+    // The lib seam received the formData + secretKeys.
+    const args = mockProvisionRest.mock.calls[0];
+    expect(args?.[1]).toEqual({ openapi_url: "https://api.example.com/openapi.json", auth_kind: "bearer", auth_value: "sk-secret" });
+    expect(args?.[2]).toEqual(["auth_value"]);
+
+    const body = JSON.parse(getContentText(res.content));
+    expect(body.created).toBe(true);
+    expect(body.kind).toBe("rest");
+    expect(body.id).toBe("rest-abc123");
+    // The credential never appears in the response.
+    expect(getContentText(res.content)).not.toContain("sk-secret");
+  });
+
+  it("a spec-probe / validation failure → validation_failed, nothing installed (scrubbed by lib)", async () => {
+    provisionConfigFields = REST_FIELDS;
+    provisionRestOutcome = { kind: "validation", message: "openapi_url: spec could not be fetched" };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "create_rest_datasource", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("validation_failed");
+  });
+
+  it("a declined elicitation → validation_failed, nothing installed", async () => {
+    provisionConfigFields = REST_FIELDS;
+    elicitOutcome = { action: "decline" };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "create_rest_datasource", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(mockProvisionRest).not.toHaveBeenCalled();
   });
 });
 

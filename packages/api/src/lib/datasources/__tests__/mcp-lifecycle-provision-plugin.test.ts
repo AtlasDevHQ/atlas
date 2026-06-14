@@ -70,8 +70,12 @@ mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
   unregisterDatasourceInstall: mock(() => true),
 }));
 
-// Secrets passthrough (loadDatasourceProfileTarget imports these too).
+// Secrets passthrough (loadDatasourceProfileTarget imports these too). Spread the
+// real module so the form-install handler graph (pulled transitively via the
+// REST install seam) keeps every named export it imports.
+const realSecrets = await import("@atlas/api/lib/plugins/secrets");
 mock.module("@atlas/api/lib/plugins/secrets", () => ({
+  ...realSecrets,
   parseConfigSchema: () => ({ state: "parsed", fields: [] }),
   decryptSecretFields: (c: Record<string, unknown>) => c,
   encryptSecretFields: (c: Record<string, unknown>) => c,

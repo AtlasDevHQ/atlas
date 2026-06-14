@@ -42,6 +42,10 @@ import {
 } from "@atlas/api/lib/db/datasource-registry-bridge";
 import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
+import { getInstallHandler } from "@atlas/api/lib/integrations/install/dispatch";
+import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/persist-form-install";
+import { registerBuiltinInstallHandlers } from "@atlas/api/lib/integrations/install/register";
+import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import {
   MCP_PROVISIONABLE_CATALOG_SLUGS,
   isMcpNativeDbType,
@@ -641,6 +645,66 @@ export async function provisionDatasource(
     };
   }
   return { kind: "ok", value: outcome.value };
+}
+
+// ── REST / OpenAPI provisioning (#3547) ───────────────────────────────
+//
+// REST datasources do NOT flow through the native/plugin `createFromConfig`
+// path — they're the `openapi-generic` form-install handler, which PROBES the
+// OpenAPI spec on install and caches a normalized snapshot (no separate
+// pre-flight: a probe failure surfaces as a field validation error and persists
+// nothing). So MCP REST provisioning calls the SAME form handler the admin
+// `/install-form` route calls (ADR-0016 — the lib seam, not the route),
+// `getInstallHandler(openapi-generic).validateConfig`, rather than
+// `provisionDatasource`.
+
+export type ProvisionRestOutcome =
+  | { readonly kind: "ok"; readonly installId: string }
+  /** Spec-probe / field validation failed — nothing persisted. `message` is secret-scrubbed. */
+  | { readonly kind: "validation"; readonly message: string };
+
+/**
+ * Provision a generic OpenAPI/REST datasource over MCP. Routes the elicited
+ * `formData` (openapi_url + auth fields, the credential among them) through the
+ * `openapi-generic` form-install handler, which validates + probes the spec and
+ * persists the snapshot as a new multi-instance install. A
+ * {@link FormInstallValidationError} (bad URL, auth, or a failed probe) becomes
+ * a typed `validation` outcome with the secret values scrubbed; any other throw
+ * re-throws for the caller's `internal_error` path.
+ */
+export async function provisionRestDatasource(
+  orgId: string,
+  formData: Readonly<Record<string, unknown>>,
+  secretKeys: readonly string[],
+): Promise<ProvisionRestOutcome> {
+  // Idempotent (latch-guarded) — ensures the openapi-generic form handler is
+  // registered even in a process that didn't run the full app-boot wiring.
+  registerBuiltinInstallHandlers();
+  const handler = getInstallHandler({ slug: OPENAPI_GENERIC_SLUG, install_model: "form" });
+  if (handler.kind !== "form") {
+    // Registration drift — a non-form handler under a form slug. Re-throw so the
+    // MCP caller surfaces an internal_error (parity with the admin route's 501).
+    throw new Error(`openapi-generic install handler is misregistered (kind=${handler.kind}).`);
+  }
+
+  const secrets = secretKeys
+    .map((k) => formData[k])
+    .filter((v): v is string => typeof v === "string" && v.length > 0);
+
+  try {
+    const { installRecord } = await handler.validateConfig(orgId as WorkspaceId, formData);
+    return { kind: "ok", installId: installRecord.id };
+  } catch (err) {
+    if (err instanceof FormInstallValidationError) {
+      const parts = [
+        ...err.formErrors,
+        ...Object.entries(err.fieldErrors).map(([k, v]) => `${k}: ${v.join(", ")}`),
+      ];
+      const message = parts.length > 0 ? parts.join("; ") : "Invalid REST datasource configuration.";
+      return { kind: "validation", message: scrubSecretsFromMessage(message, secrets) };
+    }
+    throw err instanceof Error ? err : new Error(String(err));
+  }
 }
 
 // ── Profiling / semantic-gen (#3512) ──────────────────────────────────

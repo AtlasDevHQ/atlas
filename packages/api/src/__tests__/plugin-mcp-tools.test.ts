@@ -41,7 +41,7 @@ import {
   PluginMcpToolRegistry,
   wireMcpToolPlugins,
   registerPluginMcpTools,
-  pluginToolMutates,
+  mcpToolMutates,
   type AtlasMcpToolLike,
   type McpServerLike,
   type McpCallToolResult,
@@ -711,17 +711,17 @@ describe("registerPluginMcpTools (MCP server registration)", () => {
 // #3520 — mcp:write gate for mutating plugin-contributed MCP tools.
 // ---------------------------------------------------------------------------
 
-describe("pluginToolMutates (annotation → mutation signal)", () => {
+describe("mcpToolMutates (annotation → mutation signal)", () => {
   it("is read-only (false) with no annotations — opt-in gate", () => {
-    expect(pluginToolMutates(undefined)).toBe(false);
-    expect(pluginToolMutates({})).toBe(false);
+    expect(mcpToolMutates(undefined)).toBe(false);
+    expect(mcpToolMutates({})).toBe(false);
   });
   it("readOnlyHint:true wins even alongside destructiveHint:true", () => {
-    expect(pluginToolMutates({ readOnlyHint: true, destructiveHint: true })).toBe(false);
+    expect(mcpToolMutates({ readOnlyHint: true, destructiveHint: true })).toBe(false);
   });
   it("mutates when readOnlyHint:false or destructiveHint:true", () => {
-    expect(pluginToolMutates({ readOnlyHint: false })).toBe(true);
-    expect(pluginToolMutates({ destructiveHint: true })).toBe(true);
+    expect(mcpToolMutates({ readOnlyHint: false })).toBe(true);
+    expect(mcpToolMutates({ destructiveHint: true })).toBe(true);
   });
 });
 

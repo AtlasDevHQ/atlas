@@ -1,11 +1,20 @@
 /**
  * MCP dispatch gate-order pipeline (#3508 / ADR-0016).
  *
- * Every MUTATING MCP tool routes its dispatch through this composer before
- * doing any work. The gate order is fixed by ADR-0016; this module wires
- * gates 1–4 (gate 5, inline confirm via destructiveHint + elicitation, lands
- * in #3497/#3499):
+ * Every MCP tool routes its dispatch through this composer before doing any
+ * work. The gate order is fixed by ADR-0016; this module is the SINGLE
+ * authoritative implementation. It wires gates 0–4 (gate 5, inline confirm via
+ * destructiveHint + elicitation, lands in #3497/#3499). Which gates a given
+ * dispatch passes is decided ENTIRELY by its declarative requirement set
+ * ({@link McpDispatchGateRequirements}), never by which file registered the
+ * tool (#3601):
  *
+ *   0. Billing solvency   — workspace gate-0 (#3437/#3570). When a tool's
+ *      requirements declare `checksBilling`, a suspended / trial-expired /
+ *      plan-exhausted workspace short-circuits BEFORE everything else (can the
+ *      workspace transact at all?). Folded in from the former standalone
+ *      `billingGateOrNull` composer so one ordered chain covers both the read
+ *      (query) and mutation perimeters. Metadata-only tools omit it.
  *   1. MCP action policy  — the per-workspace customer-admin kill-switch
  *      (#3509). A tool that declares an `actionCategory` is short-circuited
  *      when that category is BLOCKED for the workspace — BEFORE scope / RBAC /
@@ -40,7 +49,7 @@
 import { Effect } from "effect";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { McpActionCategory } from "@useatlas/types/mcp";
-import type { AtlasUser, AtlasRole } from "@atlas/api/lib/auth/types";
+import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { meetsRoleRequirement, getUserRole } from "@atlas/api/lib/auth/permissions";
 import {
   loadMcpActionPolicy,
@@ -54,9 +63,21 @@ import { EnterpriseUnavailableError } from "@atlas/api/lib/effect/errors";
 import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  type McpDispatchGateContext,
+  type McpDispatchGateRequirements,
+} from "@atlas/api/lib/mcp/dispatch-gate-contract";
 import { writeScopeOrNull } from "./tools.js";
+import { billingGateOrNull } from "./billing-gate.js";
 import { envelope, toEnvelopeResult } from "./error-envelope.js";
 import { getLiveActor } from "./live-actor-store.js";
+
+// Re-export the gate CONTRACT shapes (#3599) so existing consumers that
+// `import { McpDispatchGate* } from "./dispatch-gate.js"` are unchanged. The
+// canonical definitions now live in the neutral, package-direction-respecting
+// `@atlas/api/lib/mcp/dispatch-gate-contract` so the plugin path (in
+// `@atlas/api`) imports the SAME types instead of a hand-maintained mirror.
+export type { McpDispatchGateContext, McpDispatchGateRequirements };
 
 const log = createLogger("mcp:dispatch-gate");
 
@@ -84,51 +105,6 @@ function loadApprovalGate(): Promise<ApprovalGateShape> {
   );
 }
 
-export interface McpDispatchGateContext {
-  /** Bound MCP actor — its live-resolved role (#3505) is gate 3's authority. */
-  readonly actor: AtlasUser;
-  /** Hosted-MCP OAuth client_id; absent for stdio (which is scope-exempt). */
-  readonly clientId?: string;
-  /** OAuth token scopes (#3504), threaded onto RequestContext at dispatch. */
-  readonly scopes?: readonly string[];
-  /** Resolved workspace id (the admitted org). */
-  readonly orgId: string | undefined;
-  /** Requester id for approval attribution (typically the bound actor's id). */
-  readonly requesterId?: string;
-  /** Requester email stamped on the approval request, when known. */
-  readonly requesterEmail?: string | null;
-  /** Per-call request id for log correlation. */
-  readonly requestId?: string;
-}
-
-export interface McpDispatchGateRequirements {
-  /** Tool name for logs / envelopes. */
-  readonly toolName: string;
-  /**
-   * Gate 1: the MCP action *category* this tool belongs to (e.g.
-   * `"datasource"`). When set AND the workspace blocks that category, the
-   * dispatch short-circuits before any other gate. Omit for tools not subject
-   * to the per-workspace kill-switch (there is no category to block, so gate 1
-   * is a no-op for them).
-   */
-  readonly actionCategory?: McpActionCategory;
-  /** Gate 2: the tool mutates data → require the `mcp:write` scope (hosted). */
-  readonly requiresWrite: boolean;
-  /** Gate 3: minimum RBAC role on the bound actor (e.g. `"admin"`). */
-  readonly minRole: AtlasRole;
-  /**
-   * Gate 4: a destructive action that must route through the approval gate.
-   * Omit for non-destructive (e.g. read-back / list) admin tools. `resource`
-   * is the approval-matchable target (e.g. `"datasource:prod-db"`) matched
-   * against `origin=mcp` approval rules; `description` is stored on the
-   * queued request so a reviewer sees what was attempted.
-   */
-  readonly destructive?: {
-    readonly resource: string;
-    readonly description: string;
-  };
-}
-
 export interface McpDispatchGateDeps {
   /**
    * Override the approval-gate loader (tests inject a mock
@@ -141,6 +117,15 @@ export interface McpDispatchGateDeps {
    * {@link loadMcpActionPolicy} (DB-backed, never loopback HTTP).
    */
   readonly loadActionPolicy?: (orgId: string) => Promise<McpActionPolicy>;
+  /**
+   * Override the gate-0 billing check (tests inject a stub). Defaults to the
+   * shared {@link billingGateOrNull} — the same composition the web chat,
+   * `/api/v1/query`, chat platforms, and scheduler run.
+   */
+  readonly billingGate?: (args: {
+    orgId: string | undefined;
+    requestId: string;
+  }) => Promise<CallToolResult | null>;
 }
 
 /**
@@ -152,6 +137,24 @@ export async function runMcpDispatchGate(
   reqs: McpDispatchGateRequirements,
   deps: McpDispatchGateDeps = {},
 ): Promise<CallToolResult | null> {
+  // ── Gate 0: workspace billing solvency (#3437/#3570) ──
+  // Conceptually FIRST — "can this workspace transact at all?" short-circuits
+  // before action-policy / scope / RBAC / approval, since a suspended /
+  // trial-expired / plan-exhausted workspace must not reach a datasource
+  // regardless of the caller's role or scope. Only tools whose requirement set
+  // declares `checksBilling` are gated (metadata-only tools touch no
+  // datasource — see billing-gate.ts). A throw from the gate is intentionally
+  // NOT caught here: the caller's dispatch wrapper fails closed with an
+  // `internal_error` envelope, matching every other dispatch path.
+  if (reqs.checksBilling) {
+    const billingGate = deps.billingGate ?? billingGateOrNull;
+    const billingBlock = await billingGate({
+      orgId: ctx.orgId,
+      requestId: ctx.requestId ?? "",
+    });
+    if (billingBlock) return billingBlock;
+  }
+
   // ── Gate 1: per-workspace MCP action policy kill-switch (#3509) ──
   // Short-circuits BEFORE scope/RBAC/approval: the customer admin's "disable
   // this whole category via MCP" decision overrides everything downstream.

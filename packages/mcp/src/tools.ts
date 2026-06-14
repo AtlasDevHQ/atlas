@@ -33,27 +33,19 @@ import {
   withErrorContract,
 } from "@atlas/api/lib/tools/descriptions";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
-import { withRequestContext } from "@atlas/api/lib/logger";
 import { getConfig } from "@atlas/api/lib/config";
+import { writeScopeDenied } from "@atlas/api/lib/mcp/dispatch-gate-contract";
 import { registerSemanticTools } from "./semantic-tools.js";
-import {
-  traceMcpToolCall,
-  type McpTransport,
-  type McpDeployMode,
-} from "./telemetry.js";
+import { type McpTransport, type McpDeployMode } from "./telemetry.js";
 import {
   classifyExecuteSqlError,
   classifyExploreError,
   envelope,
   toEnvelopeResult,
 } from "./error-envelope.js";
-import { billingGateOrNull } from "./billing-gate.js";
-import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
-import { createMcpLogger } from "./logger.js";
+import { createMcpDispatch } from "./mcp-dispatch.js";
 import { executeSqlOutputShape } from "./structured-output.js";
-import { withProgressAndCancellation, OperationCancelledError } from "./progress.js";
-
-const log = createMcpLogger("mcp:tools");
+import { withProgressAndCancellation } from "./progress.js";
 
 export interface RegisterToolsOptions {
   /**
@@ -88,53 +80,20 @@ export interface RegisterToolsOptions {
   scopes?: readonly string[];
 }
 
-function dispatchId(prefix: string): string {
-  return `${prefix}-${crypto.randomUUID()}`;
-}
-
 /**
- * Per-OAuth-client rate-limit gate (#2071). Hosted MCP runs through the
- * OAuth flow which sets `clientId`; stdio MCP leaves it undefined and is
- * intentionally exempt — the limiter exists to scope hosted-tenant
- * usage, not the operator's own bench testing.
+ * `mcp:write` enforcement gate (#3504 / ADR-0016 gate 2). Used by
+ * `runMcpDispatchGate` for every mutating tool; exported here because that's
+ * the historical home and `write-scope-gate.test.ts` pins it.
  *
- * Returns `null` when the dispatch should proceed; returns a tool result
- * envelope (with the `rate_limited` AtlasMcpToolError envelope already
- * shaped) when the bucket is empty so the caller can short-circuit.
- *
- * `userId` falls back to the actor id when no `activeOrganizationId` is
- * present so the audit row never carries an empty subject — matches the
- * `workspaceIdOf` fallback above.
- */
-async function rateLimitOrNull(args: {
-  clientId: string | undefined;
-  orgId: string;
-  userId: string;
-  toolName: string;
-}): Promise<CallToolResult | null> {
-  if (!args.clientId) return null;
-  const outcome = await enforceClientRateLimit({
-    orgId: args.orgId,
-    clientId: args.clientId,
-    userId: args.userId,
-    toolName: args.toolName,
-  });
-  if (outcome.kind === "ok") return null;
-  return toEnvelopeResult(outcome.envelope);
-}
-
-/**
- * `mcp:write` enforcement gate (#3504 / ADR-0016). Mutating MCP tools call
- * this at the top of their handler; read tools never do.
- *
- * - **stdio MCP** (`clientId` undefined) is exempt — it runs in-process in
- *   the operator's own deployment, not behind OAuth. Mirrors the
- *   `rateLimitOrNull` stdio carve-out so a single signal (`clientId`)
- *   distinguishes hosted from local.
- * - **hosted MCP** must present a bearer carrying the `mcp:write` scope.
- *   Fails CLOSED: a hosted dispatch whose `scopes` weren't threaded (or
- *   that lacks `mcp:write`) is denied with a `forbidden` envelope rather
- *   than silently allowed.
+ * The pure decision lives in the shared {@link writeScopeDenied} primitive
+ * (#3599) so the dispatch-gate composer and the plugin fallback share ONE
+ * source of truth:
+ * - **stdio MCP** (`clientId` undefined) is exempt — it runs in-process in the
+ *   operator's own deployment, not behind OAuth.
+ * - **hosted MCP** must present a bearer carrying the `mcp:write` scope. Fails
+ *   CLOSED: a hosted dispatch whose `scopes` weren't threaded (or that lacks
+ *   `mcp:write`) is denied with a `forbidden` envelope rather than silently
+ *   allowed.
  *
  * Returns `null` when the dispatch may proceed; a `forbidden` tool-result
  * envelope when it must be blocked.
@@ -143,8 +102,7 @@ export function writeScopeOrNull(args: {
   clientId: string | undefined;
   scopes: readonly string[] | undefined;
 }): CallToolResult | null {
-  if (!args.clientId) return null;
-  if (args.scopes?.includes("mcp:write")) return null;
+  if (!writeScopeDenied(args)) return null;
   return toEnvelopeResult(
     envelope(
       "forbidden",
@@ -175,13 +133,21 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
   const { actor, transport = "stdio", clientId, scopes } = opts;
   const workspaceId = workspaceIdOf(actor);
   const deployMode = deployModeOf();
-  // #2067 — every MCP tool dispatch wraps in the same `actor` shape so
-  // `audit_log.{actor_kind, client_id, tool_name}` is populated regardless
-  // of which tool the caller picks. `clientId` stays undefined for stdio.
-  const mcpActor = (toolName: string) => ({
-    kind: "mcp" as const,
+
+  // Shared dispatch wrapper (#3602): OTel span → RequestContext (actor bind,
+  // #1858/#2067) → rate-limit (#2071) → ADR-0016 gate order (0 billing → 1
+  // action-policy → 2 scope → 3 RBAC → 4 approval, #3508/#3601) → tool body →
+  // typed error envelope (#2030). The contract lives once in `mcp-dispatch.ts`;
+  // every tool routes through `dispatch(...)`. `explore` is a metadata read
+  // (no billing); `executeSQL` reaches a datasource so it declares
+  // `checksBilling`. Both are member-callable reads (`requiresWrite: false`).
+  const { dispatch } = createMcpDispatch({
+    actor,
+    transport,
+    workspaceId,
+    deployMode,
     ...(clientId ? { clientId } : {}),
-    toolName,
+    ...(scopes ? { scopes } : {}),
   });
 
   // --- explore ---
@@ -206,61 +172,32 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
       },
     },
     async ({ command }): Promise<CallToolResult> =>
-      traceMcpToolCall(
-        { toolName: "explore", workspaceId, transport, deployMode },
-        () => {
-          const requestId = dispatchId("mcp-explore");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("explore"), agentOrigin: "mcp", ...(scopes ? { scopes } : {}) }, async () => {
-            try {
-              // Rate-limit gate (#2071) lives INSIDE the try so any throw
-              // from the limiter (loader rejection, audit-emission
-              // regression) lands in the same catch as a tool throw and
-              // surfaces an `internal_error` envelope with `request_id`
-              // — preserving the #2030 contract for limiter failures.
-              const limited = await rateLimitOrNull({
-                clientId,
-                orgId: workspaceId,
-                userId: actor.id,
-                toolName: "explore",
-              });
-              if (limited) return limited;
-              const result = await explore.execute!(
-                { command },
-                { toolCallId: "mcp-explore", messages: [] },
-              );
-              const text =
-                typeof result === "string" ? result : JSON.stringify(result);
-              // explore today returns prose strings prefixed with `Error:` or
-              // `Error (exit N):` on failure rather than throwing. Lift those
-              // into the typed envelope so the agent doesn't have to scrape.
-              if (text.startsWith("Error:") || text.startsWith("Error (exit")) {
-                const code = classifyExploreError(text);
-                const message =
-                  text.replace(/^Error(\s\(exit\s\d+\))?:\s*/i, "").trim() || text;
-                return toEnvelopeResult(
-                  envelope(
-                    code,
-                    message,
-                    code === "internal_error" ? { request_id: requestId } : undefined,
-                  ),
-                );
-              }
-              return {
-                content: [{ type: "text" as const, text }],
-              };
-            } catch (err) {
-              const message = err instanceof Error ? err.message : String(err);
-              log.error(
-                { err: err instanceof Error ? err : new Error(String(err)) },
-                "explore tool threw",
-              );
-              return toEnvelopeResult(
-                envelope("internal_error", message || "explore tool failed", {
-                  request_id: requestId,
-                }),
-              );
-            }
-          });
+      dispatch(
+        "explore",
+        { requiresWrite: false, minRole: "member" },
+        async (requestId) => {
+          const result = await explore.execute!(
+            { command },
+            { toolCallId: "mcp-explore", messages: [] },
+          );
+          const text = typeof result === "string" ? result : JSON.stringify(result);
+          // explore today returns prose strings prefixed with `Error:` or
+          // `Error (exit N):` on failure rather than throwing. Lift those into
+          // the typed envelope so the agent doesn't have to scrape. (A genuine
+          // throw is caught by the shared dispatch → `internal_error`.)
+          if (text.startsWith("Error:") || text.startsWith("Error (exit")) {
+            const code = classifyExploreError(text);
+            const message =
+              text.replace(/^Error(\s\(exit\s\d+\))?:\s*/i, "").trim() || text;
+            return toEnvelopeResult(
+              envelope(
+                code,
+                message,
+                code === "internal_error" ? { request_id: requestId } : undefined,
+              ),
+            );
+          }
+          return { content: [{ type: "text" as const, text }] };
         },
       ),
   );
@@ -295,147 +232,111 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
       outputSchema: executeSqlOutputShape,
     },
     async ({ sql, explanation, connectionId }, extra): Promise<CallToolResult> =>
-      traceMcpToolCall(
-        { toolName: "executeSQL", workspaceId, transport, deployMode },
-        () => {
-          const requestId = dispatchId("mcp-executeSQL");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("executeSQL"), agentOrigin: "mcp", ...(scopes ? { scopes } : {}) }, async () => {
-            try {
-              const limited = await rateLimitOrNull({
-                clientId,
-                orgId: workspaceId,
-                userId: actor.id,
-                toolName: "executeSQL",
-              });
-              if (limited) return limited;
-              // #3437 — billing enforcement on the datasource-query
-              // perimeter: a suspended / trial-expired workspace must not
-              // query connected datasources through MCP. Lives inside the
-              // try so a gate throw fails closed as `internal_error`.
-              // Keys on the actor's workspace, NOT the OTel `workspaceId`
-              // fallback (which substitutes the actor id when no org is
-              // bound and would defeat the gate's no-org short-circuit).
-              const blocked = await billingGateOrNull({
-                orgId: actor.activeOrganizationId,
-                requestId,
-              });
-              if (blocked) return blocked;
-              // #3500 — progress + cancellation around the query work.
-              // #3575 — `executeSQL.execute` does not read `abortSignal` from
-              // the tool-call extra (sql.ts destructures only sql/explanation/
-              // connectionId/scope). Passing a signal would be dead code and
-              // imply the query is abortable at the driver level, which it is
-              // not. The statement-timeout (`ATLAS_QUERY_TIMEOUT`, default 30s)
-              // is the sole cancellation mechanism for the datasource side; a
-              // client cancel cuts the dispatch loose at the MCP boundary and
-              // the DB-side query drains within that timeout window.
-              const result = await withProgressAndCancellation(
-                extra,
-                { startMessage: "Running query", endMessage: "Query complete" },
-                async (_reporter, _signal) =>
-                  executeSQL.execute!(
-                    { sql, explanation, connectionId },
-                    { toolCallId: "mcp-executeSQL", messages: [] },
-                  ),
+      dispatch(
+        "executeSQL",
+        // Reaches a datasource → gate-0 billing (#3437/#3601). SELECT-only
+        // (the 4-layer validator rejects DML/DDL) so it is read-only — no
+        // mcp:write — and member-callable.
+        { requiresWrite: false, minRole: "member", checksBilling: true },
+        async (requestId) => {
+          // #3500 — progress + cancellation around the query work.
+          // #3575 — `executeSQL.execute` does not read `abortSignal` from the
+          // tool-call extra (sql.ts destructures only sql/explanation/
+          // connectionId/scope). Passing a signal would be dead code and imply
+          // the query is abortable at the driver level, which it is not. The
+          // statement-timeout (`ATLAS_QUERY_TIMEOUT`, default 30s) is the sole
+          // cancellation mechanism for the datasource side; a client cancel cuts
+          // the dispatch loose at the MCP boundary (the shared dispatch re-throws
+          // the cancellation) and the DB-side query drains within that window.
+          const result = await withProgressAndCancellation(
+            extra,
+            { startMessage: "Running query", endMessage: "Query complete" },
+            async (_reporter, _signal) =>
+              executeSQL.execute!(
+                { sql, explanation, connectionId },
+                { toolCallId: "mcp-executeSQL", messages: [] },
+              ),
+          );
+
+          // executeSQL collapses every PipelineError (8 tagged variants today:
+          // see sql.ts:PipelineError) into { success: false, error } in
+          // pipelineErrorToResponse. Lift the string back up into a typed
+          // envelope here.
+          const obj = result as Record<string, unknown>;
+          if (obj.success === false) {
+            // Approval-required is NOT a tool failure — it's a governance
+            // outcome that already produced an approval_request_id the user
+            // must follow up on. Surfacing it as `internal_error` would (a)
+            // lose the request id and matched rule names, and (b) prompt the
+            // agent to retry, which silently re-creates duplicate approval
+            // requests. Pass it through as a non-error JSON body so the agent
+            // + user see the full payload.
+            if (obj.approval_required === true) {
+              // Non-error governance branch — still carries structuredContent
+              // (#3498) since the declared outputSchema makes the SDK require it
+              // on every non-error result. #3584 — narrow each field against the
+              // declared outputSchema types before assigning to structuredContent
+              // so SDK output-schema validation can't throw on a malformed
+              // internal payload (e.g. non-string approval_request_id).
+              const { executeSqlOutputSchema: schema } = await import(
+                "./structured-output.js"
               );
-
-              // executeSQL collapses every PipelineError (8 tagged variants
-              // today: see sql.ts:PipelineError) into { success: false, error }
-              // in pipelineErrorToResponse. Lift the string back up into a
-              // typed envelope here.
-              const obj = result as Record<string, unknown>;
-              if (obj.success === false) {
-                // Approval-required is NOT a tool failure — it's a governance
-                // outcome that already produced an approval_request_id the
-                // user must follow up on. Surfacing it as `internal_error`
-                // would (a) lose the request id and matched rule names, and
-                // (b) prompt the agent to retry, which silently re-creates
-                // duplicate approval requests. Pass it through as a non-error
-                // JSON body so the agent + user see the full payload.
-                if (obj.approval_required === true) {
-                  // Non-error governance branch — still carries
-                  // structuredContent (#3498) since the declared outputSchema
-                  // makes the SDK require it on every non-error result.
-                  // #3584 — narrow each field against the declared outputSchema
-                  // types before assigning to structuredContent so SDK output-
-                  // schema validation can't throw on a malformed internal payload
-                  // (e.g. non-string approval_request_id from an older gateway).
-                  const { executeSqlOutputSchema: schema } = await import(
-                    "./structured-output.js"
-                  );
-                  const raw = {
-                    approval_required: true,
-                    approval_request_id: obj.approval_request_id,
-                    matched_rules: obj.matched_rules,
-                    message: obj.message,
-                  };
-                  const parsed = schema.safeParse(raw);
-                  const approval = parsed.success ? parsed.data : {
-                    approval_required: true as const,
-                    ...(typeof obj.approval_request_id === "string"
-                      ? { approval_request_id: obj.approval_request_id }
-                      : {}),
-                    ...(typeof obj.message === "string"
-                      ? { message: obj.message }
-                      : {}),
-                  };
-                  return {
-                    content: [
-                      { type: "text" as const, text: JSON.stringify(approval, null, 2) },
-                    ],
-                    structuredContent: approval,
-                  };
-                }
-
-                const rawError = String(obj.error ?? obj.message ?? "");
-                const code = classifyExecuteSqlError(rawError);
-                const extras: { request_id?: string; retry_after?: number } = {};
-                if (code === "internal_error") extras.request_id = requestId;
-                const retryAfterMs = obj.retryAfterMs;
-                if (code === "rate_limited" && typeof retryAfterMs === "number") {
-                  extras.retry_after = Math.max(1, Math.round(retryAfterMs / 1000));
-                }
-                return toEnvelopeResult(
-                  envelope(
-                    code,
-                    rawError || "Query failed",
-                    Object.keys(extras).length ? extras : undefined,
-                  ),
-                );
-              }
-
-              // #3498 — typed result + retained text block. Both are built
-              // from the same object so they can never drift.
-              const structured: Record<string, unknown> = {
-                explanation: obj.explanation,
-                row_count: obj.row_count,
-                columns: obj.columns,
-                rows: obj.rows,
-                truncated: obj.truncated,
+              const raw = {
+                approval_required: true,
+                approval_request_id: obj.approval_request_id,
+                matched_rules: obj.matched_rules,
+                message: obj.message,
+              };
+              const parsed = schema.safeParse(raw);
+              const approval = parsed.success ? parsed.data : {
+                approval_required: true as const,
+                ...(typeof obj.approval_request_id === "string"
+                  ? { approval_request_id: obj.approval_request_id }
+                  : {}),
+                ...(typeof obj.message === "string"
+                  ? { message: obj.message }
+                  : {}),
               };
               return {
                 content: [
-                  { type: "text" as const, text: JSON.stringify(structured, null, 2) },
+                  { type: "text" as const, text: JSON.stringify(approval, null, 2) },
                 ],
-                structuredContent: structured,
+                structuredContent: approval,
               };
-            } catch (err) {
-              // Client cancellation (#3500): the SDK suppresses the response,
-              // so re-throw without logging an error — it's expected, not a
-              // failure.
-              if (err instanceof OperationCancelledError) throw err;
-              const message = err instanceof Error ? err.message : String(err);
-              log.error(
-                { err: err instanceof Error ? err : new Error(String(err)) },
-                "executeSQL tool threw",
-              );
-              return toEnvelopeResult(
-                envelope("internal_error", message || "executeSQL tool failed", {
-                  request_id: requestId,
-                }),
-              );
             }
-          });
+
+            const rawError = String(obj.error ?? obj.message ?? "");
+            const code = classifyExecuteSqlError(rawError);
+            const extras: { request_id?: string; retry_after?: number } = {};
+            if (code === "internal_error") extras.request_id = requestId;
+            const retryAfterMs = obj.retryAfterMs;
+            if (code === "rate_limited" && typeof retryAfterMs === "number") {
+              extras.retry_after = Math.max(1, Math.round(retryAfterMs / 1000));
+            }
+            return toEnvelopeResult(
+              envelope(
+                code,
+                rawError || "Query failed",
+                Object.keys(extras).length ? extras : undefined,
+              ),
+            );
+          }
+
+          // #3498 — typed result + retained text block. Both are built from the
+          // same object so they can never drift.
+          const structured: Record<string, unknown> = {
+            explanation: obj.explanation,
+            row_count: obj.row_count,
+            columns: obj.columns,
+            rows: obj.rows,
+            truncated: obj.truncated,
+          };
+          return {
+            content: [
+              { type: "text" as const, text: JSON.stringify(structured, null, 2) },
+            ],
+            structuredContent: structured,
+          };
         },
       ),
   );

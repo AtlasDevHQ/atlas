@@ -39,6 +39,7 @@ import {
 import {
   findDatasourcePluginConnection,
   probePluginDatasourceConnection,
+  probeNativeDatasourceConnection,
 } from "@atlas/api/lib/db/datasource-registry-bridge";
 import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
@@ -542,54 +543,33 @@ function buildProvisionFormData(input: ProvisionDatasourceInput): Record<string,
 }
 
 /**
- * Native pg/mysql pre-flight on an EPHEMERAL probe id — never the real install
- * id. A throwaway id (a) guarantees the probe tests THIS candidate `url`, not a
- * stale bare pool that might already exist under `installId`, and (b) can't
- * leave the install-id-keyed registry split-brained if persist later fails.
- * Mirrors the admin route's `_test_*` ephemeral test-connect (ADR-0007). The
- * probe pool is ALWAYS unregistered in `finally`.
+ * Native pg/mysql pre-flight — a thin caller over the shared
+ * {@link probeNativeDatasourceConnection} seam (the native counterpart to the
+ * plugin probe, #3605), symmetric to {@link preflightPluginConnection}. The
+ * seam owns the ephemeral-probe-id register → healthCheck → unregister-in-finally
+ * mechanics (and the `degraded`-counts-as-failure rule); this caller owns only
+ * the friendly wording + secret scrub, so "which values must be redacted" stays
+ * here in one place.
  */
 async function preflightNativeConnection(input: ProvisionDatasourceInput): Promise<PreflightResult> {
   const secrets = secretValues(input.config, input.secretKeys);
   const url = typeof input.config.url === "string" ? input.config.url : "";
   const schema = typeof input.config.schema === "string" ? input.config.schema : undefined;
   const description = typeof input.config.description === "string" ? input.config.description : undefined;
-  const probeId = `__mcp_preflight_${crypto.randomUUID()}`;
-  connections.register(probeId, {
+  const outcome = await probeNativeDatasourceConnection({
     url,
     ...(description !== undefined ? { description } : {}),
     ...(schema !== undefined ? { schema } : {}),
   });
-  try {
-    const health = await connections.healthCheck(probeId);
-    // `healthCheck` only reports `unhealthy` after repeated failures over a
-    // window; a brand-new pool's FIRST failed probe is `degraded`. So treat
-    // anything that isn't `healthy` as a failed pre-flight — otherwise a
-    // broken connection slips past validate-before-persist.
-    if (health.status !== "healthy") {
-      return {
-        ok: false,
-        message: scrubSecretsFromMessage(
-          health.message ?? "Connection probe could not reach the datasource.",
-          secrets,
-        ),
-      };
-    }
-    return { ok: true };
-  } catch (err) {
-    const raw = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      message: scrubSecretsFromMessage(
-        `Connection test failed: ${raw}. Verify the host, port, database, and credentials, then retry.`,
-        secrets,
-      ),
-    };
-  } finally {
-    // Always drain the probe pool — success persists via the installer's own
-    // fresh registration, failure persists nothing.
-    connections.unregister(probeId);
-  }
+  if (outcome.ok) return { ok: true };
+  // `unhealthy` carries the registry's (already DSN-scrubbed) healthCheck
+  // message verbatim; `connect_error` carries the raw thrown driver error and
+  // gets the actionable wrapper. Both are then secret-scrubbed here.
+  const friendly =
+    outcome.reason === "connect_error"
+      ? `Connection test failed: ${outcome.message}. Verify the host, port, database, and credentials, then retry.`
+      : outcome.message;
+  return { ok: false, message: scrubSecretsFromMessage(friendly, secrets) };
 }
 
 /**

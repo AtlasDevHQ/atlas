@@ -115,18 +115,17 @@ const KNOWN_ORIGIN_STAMPERS: OriginStamperSpec[] = [
   { file: "packages/api/src/api/routes/demo.ts", originProof: /agentOrigin:\s*"chat"/ },
   // Scheduler executor stamps 'scheduler' on every scheduled run.
   { file: "packages/api/src/lib/scheduler/executor.ts", originProof: /agentOrigin:\s*"scheduler"/ },
-  // MCP — both the per-tool dispatch frames and the outer hosted-MCP
-  // session frame stamp 'mcp'.
-  { file: "packages/mcp/src/tools.ts", originProof: /agentOrigin:\s*"mcp"/ },
-  { file: "packages/mcp/src/semantic-tools.ts", originProof: /agentOrigin:\s*"mcp"/ },
+  // MCP — #3602 centralized the per-tool dispatch frame into one shared
+  // wrapper, so the 'mcp' origin stamp for explore / executeSQL / the semantic
+  // tools / the datasource lifecycle tools now lives ONCE here (they all route
+  // through `createMcpDispatch`). The outer hosted-MCP session frame stamps it
+  // separately.
+  { file: "packages/mcp/src/mcp-dispatch.ts", originProof: /agentOrigin:\s*"mcp"/ },
   { file: "packages/mcp/src/hosted.ts", originProof: /agentOrigin:\s*"mcp"/ },
-  // #3507 — plugin-contributed MCP tools dispatch through this wrapper;
-  // it must stamp 'mcp' too or origin-scoped approval rules skip them.
+  // #3507 — plugin-contributed MCP tools dispatch through this wrapper (NOT the
+  // shared mcp-dispatch — packages/api can't depend on packages/mcp); it must
+  // stamp 'mcp' too or origin-scoped approval rules skip them.
   { file: "packages/api/src/lib/plugins/mcp-tools.ts", originProof: /agentOrigin:\s*"mcp"/ },
-  // #3574 — datasource lifecycle tools (archive/restore/delete/create) dispatch
-  // through this file and stamp 'mcp'; removing the stamp would silently
-  // degrade origin-scoped approval rules for datasource MCP actions.
-  { file: "packages/mcp/src/datasource-tools.ts", originProof: /agentOrigin:\s*"mcp"/ },
 ];
 
 describe("F-54/F-55 agent-surface registry", () => {

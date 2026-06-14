@@ -1,8 +1,10 @@
 "use client";
 
-import { useQueryStates, useQueryState, parseAsInteger } from "nuqs";
+import type { z } from "zod";
+import { useQueryStates } from "nuqs";
 import { sessionsSearchParams } from "./search-params";
 import { getSessionColumns, type SessionActions } from "./columns";
+import type { SessionRow } from "@/ui/lib/admin-schemas";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
@@ -18,6 +20,7 @@ import { Monitor, Search, X, Users, Activity, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useServerDataTable } from "@/ui/hooks/use-server-data-table";
 import { SessionStatsSchema, SessionsListSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { bulkFailureSummary, failedIdsFrom } from "@/ui/components/admin/queue";
@@ -38,14 +41,6 @@ const LIMIT = 50;
 export default function SessionsPage() {
   const [params, setParams] = useQueryStates(sessionsSearchParams);
   const { search } = params;
-
-  // `useDataTable` writes pagination to `?page=` (1-indexed) and `?perPage=`.
-  // Read both here so `useAdminFetch` can key on the offset + limit without a
-  // circular dependency on the table instance, and so a page-size change in
-  // the DataTable footer refetches with the right limit.
-  const [page] = useQueryState("page", parseAsInteger.withDefault(1));
-  const [perPage] = useQueryState("perPage", parseAsInteger.withDefault(LIMIT));
-  const offset = (page - 1) * perPage;
 
   const [bulkError, setBulkError] = useState<string | null>(null);
 
@@ -87,25 +82,35 @@ export default function SessionsPage() {
     isRevoking: (id: string) => isMutating(id),
   };
   const columns = getSessionColumns(sessionActions);
+  const columnIds = new Set(
+    columns.map((c) => c.id).filter(Boolean) as string[],
+  );
 
   const { data: stats } = useAdminFetch("/api/v1/admin/sessions/stats", {
     schema: SessionStatsSchema,
   });
 
-  const qs = new URLSearchParams({
-    limit: String(perPage),
-    offset: String(offset),
-  });
-  if (search) qs.set("search", search);
-
+  // URL-state↔server-fetch binding (page/perPage → offset → fetch URL) lives
+  // in `useServerDataTable`; the sessions list doesn't sort server-side, so
+  // only pagination + the `search` filter feed the request URL.
   const {
     data: listData,
     loading,
     error,
     refetch,
-  } = useAdminFetch(`/api/v1/admin/sessions?${qs}`, {
+    perPage,
+  } = useServerDataTable<SessionRow, z.infer<typeof SessionsListSchema>>({
+    defaultPerPage: LIMIT,
+    sortColumnIds: columnIds,
     schema: SessionsListSchema,
-    deps: [search, offset, perPage],
+    buildPath: ({ offset, perPage }) => {
+      const qs = new URLSearchParams({
+        limit: String(perPage),
+        offset: String(offset),
+      });
+      if (search) qs.set("search", search);
+      return `/api/v1/admin/sessions?${qs}`;
+    },
   });
 
   const rows = listData?.sessions ?? [];

@@ -90,6 +90,17 @@ const mockHasDirectForWorkspace = mock((workspaceId: string, installId: string) 
 const mockUnregisterDirectForWorkspace = mock((workspaceId: string, installId: string) =>
   wsPluginKeys.delete(wsKey(workspaceId, installId)),
 );
+// Native ephemeral-probe seam (#3605). Controllable per test.
+let healthResult: { status: string; latencyMs: number; message?: string; checkedAt: Date } = {
+  status: "healthy",
+  latencyMs: 1,
+  checkedAt: new Date(0),
+};
+let healthThrows: Error | null = null;
+const mockHealthCheck = mock(async (_id: string) => {
+  if (healthThrows) throw healthThrows;
+  return healthResult;
+});
 
 mock.module("@atlas/api/lib/db/connection", () => ({
   connections: {
@@ -104,6 +115,7 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     registerDirectForWorkspace: mockRegisterDirectForWorkspace,
     hasDirectForWorkspace: mockHasDirectForWorkspace,
     unregisterDirectForWorkspace: mockUnregisterDirectForWorkspace,
+    healthCheck: mockHealthCheck,
   },
 }));
 
@@ -175,6 +187,9 @@ beforeEach(async () => {
   mockUnregisterDirectForWorkspace.mockClear();
   mockCreateFromConfig.mockClear();
   mockSalesforceCreateFromConfig.mockClear();
+  mockHealthCheck.mockClear();
+  healthResult = { status: "healthy", latencyMs: 1, checkedAt: new Date(0) };
+  healthThrows = null;
 });
 
 afterEach(() => {
@@ -556,5 +571,44 @@ describe("probePluginDatasourceConnection (#3547)", () => {
     // (A small grace period covers any micro-task scheduling.)
     await new Promise((r) => setTimeout(r, 20));
     expect(closeCount).toBe(1);
+  });
+});
+
+describe("probeNativeDatasourceConnection (#3605)", () => {
+  it("registers an EPHEMERAL probe id (never a real install id) and unregisters it on success", async () => {
+    healthResult = { status: "healthy", latencyMs: 2, checkedAt: new Date(0) };
+    const out = await bridge.probeNativeDatasourceConnection({
+      url: "postgresql://u@h/d",
+      schema: "public",
+    });
+    expect(out).toEqual({ ok: true });
+    const id = registerCalls[0]?.id;
+    expect(id).toStartWith("__mcp_preflight_");
+    expect(unregisterCalls).toContain(id!);
+  });
+
+  it("treats a first-attempt 'degraded' health as a failed pre-flight (status !== 'healthy')", async () => {
+    healthResult = { status: "degraded", latencyMs: 0, message: "cannot reach host", checkedAt: new Date(0) };
+    const out = await bridge.probeNativeDatasourceConnection({ url: "postgresql://u@h/d" });
+    expect(out).toEqual({ ok: false, reason: "unhealthy", message: "cannot reach host" });
+  });
+
+  it("falls back to a default message when an unhealthy result carries none", async () => {
+    healthResult = { status: "unhealthy", latencyMs: 0, checkedAt: new Date(0) };
+    const out = await bridge.probeNativeDatasourceConnection({ url: "postgresql://u@h/d" });
+    expect(out).toEqual({
+      ok: false,
+      reason: "unhealthy",
+      message: "Connection probe could not reach the datasource.",
+    });
+  });
+
+  it("returns connect_error with the RAW thrown message and STILL unregisters (finally)", async () => {
+    healthThrows = new Error("ECONNREFUSED 1.2.3.4:5432");
+    const out = await bridge.probeNativeDatasourceConnection({ url: "postgresql://u@h/d" });
+    expect(out).toEqual({ ok: false, reason: "connect_error", message: "ECONNREFUSED 1.2.3.4:5432" });
+    // The probe id is torn down even on a throw.
+    const id = registerCalls[0]?.id;
+    expect(unregisterCalls).toContain(id!);
   });
 });

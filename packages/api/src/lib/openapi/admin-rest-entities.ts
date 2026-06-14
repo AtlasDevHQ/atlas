@@ -28,7 +28,11 @@ import { resolveWorkspaceRestDatasources } from "./workspace-datasource";
 import { generateSemanticModel, renderEntityYaml } from "./semantic-generator";
 import type { GeneratedEntity } from "./semantic-generator";
 import type { RestDatasource } from "./datasource";
-import { REST_ENTITY_TYPE_TAG } from "@useatlas/schemas/semantic-entity-yaml";
+import {
+  REST_ENTITY_TYPE_TAG,
+  ENTITY_YAML_DIMENSION_KEYS,
+  ENTITY_YAML_JOIN_KEYS,
+} from "@useatlas/schemas/semantic-entity-yaml";
 
 const log = createLogger("admin-rest-entities");
 
@@ -125,14 +129,24 @@ export function toDetailEntity(entity: GeneratedEntity): RestAdminEntityDetail["
     description: entity.description,
     type: REST_ENTITY_TYPE_TAG,
     readOnly: true,
+    // Shared dimension key names come from the contract so the detail JSON path
+    // can't drift from the YAML renderers either. `to` is the web `Join` shape
+    // (the shared EntityDetail component reads it) — deliberately NOT the YAML
+    // `target_entity` — but `relationship` is the one shared join key.
     dimensions: entity.columns.map((c) => {
-      const dim: Record<string, unknown> = { name: c.name, type: c.type };
-      if (c.primaryKey) dim.primary_key = true;
-      if (c.description) dim.description = c.description;
+      const dim: Record<string, unknown> = {
+        [ENTITY_YAML_DIMENSION_KEYS.name]: c.name,
+        [ENTITY_YAML_DIMENSION_KEYS.type]: c.type,
+      };
+      if (c.primaryKey) dim[ENTITY_YAML_DIMENSION_KEYS.primaryKey] = true;
+      if (c.description) dim[ENTITY_YAML_DIMENSION_KEYS.description] = c.description;
       return dim;
     }),
     joins: entity.joins.map((j) => {
-      const join: Record<string, unknown> = { to: j.targetEntity, relationship: j.relationship };
+      const join: Record<string, unknown> = {
+        to: j.targetEntity,
+        [ENTITY_YAML_JOIN_KEYS.relationship]: j.relationship,
+      };
       if (j.description) join.description = j.description;
       return join;
     }),

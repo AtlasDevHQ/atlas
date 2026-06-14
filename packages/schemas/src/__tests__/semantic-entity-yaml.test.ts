@@ -40,15 +40,18 @@ describe("shared entity-YAML vocabulary contract", () => {
     expect(ok.success).toBe(true);
   });
 
-  test("rejects a dimensions block under the wrong key name (drift)", () => {
+  test("a renamed section key is NOT promoted to the canonical key", () => {
+    // The schema is `.loose()`, so a drifted `columns` key passes as an extra —
+    // the schema does NOT reject it. The drift GUARD is that the canonical
+    // `dimensions` key is then absent: the cross-renderer contract test
+    // (entity-yaml-vocabulary-contract.test.ts) asserts `dimensions` IS present
+    // in each renderer's output, so a renderer that emitted `columns` instead
+    // would fail there. This case documents that the schema alone won't catch a
+    // rename — the key-presence assertion is what does.
     const drifted = SharedEntityYamlSchema.safeParse({
       type: "fact_table",
-      // `columns` instead of the canonical `dimensions` — a renamed renderer
-      // would produce this, and the contract must catch it.
       columns: [{ name: "id", type: "string" }],
     });
-    // `columns` is allowed as a loose extra, but the canonical `dimensions`
-    // assertion below is what a drift test relies on.
     expect(drifted.success).toBe(true);
     expect((drifted as { data: Record<string, unknown> }).data.dimensions).toBeUndefined();
   });

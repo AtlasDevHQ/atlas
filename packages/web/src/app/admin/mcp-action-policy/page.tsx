@@ -9,24 +9,14 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { PolicyEntrySchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { ShieldHalf } from "lucide-react";
 
 // ── Schema ────────────────────────────────────────────────────────
-// Mirrors the `McpActionPolicyResponse` wire shape from @useatlas/types.
-// `category` stays `z.string()` (not the literal union) so the dashboard is
-// resilient if the API adds a category before the web bundle ships — the
-// admin-schemas convention. Every category (with its label/description) comes
-// from the server, so the UI never hardcodes the category set.
-
-const PolicyEntrySchema = z.object({
-  category: z.string(),
-  label: z.string(),
-  description: z.string(),
-  status: z.enum(["allowed", "blocked"]),
-  updatedAt: z.string().nullable(),
-  updatedBy: z.string().nullable(),
-});
+// `PolicyEntrySchema` (the per-category wire shape) lives in the
+// admin-schemas SSOT alongside the other admin wire schemas. The
+// response envelope stays local — it only wraps the shared entry schema.
 
 const PolicyResponseSchema = z.object({
   entries: z.array(PolicyEntrySchema),

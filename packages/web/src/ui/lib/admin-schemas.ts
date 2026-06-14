@@ -253,6 +253,22 @@ export const UserStatsSchema = z.object({
   byRole: z.record(z.string(), z.number()),
 });
 
+// ── MCP Action Policy ────────────────────────────────────────────
+//
+// Mirrors the `McpActionPolicyResponse` wire shape from @useatlas/types.
+// `category` stays `z.string()` (not the literal union) so the dashboard is
+// resilient if the API adds a category before the web bundle ships — the
+// admin-schemas convention. Every category (with its label/description) comes
+// from the server, so the UI never hardcodes the category set.
+export const PolicyEntrySchema = z.object({
+  category: z.string(),
+  label: z.string(),
+  description: z.string(),
+  status: z.enum(["allowed", "blocked"]),
+  updatedAt: z.string().nullable(),
+  updatedBy: z.string().nullable(),
+});
+
 // ── API Keys ─────────────────────────────────────────────────────
 
 const ApiKeyRowSchema = z.object({

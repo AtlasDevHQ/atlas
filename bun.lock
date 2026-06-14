@@ -754,7 +754,7 @@
       },
       "peerDependencies": {
         "@useatlas/plugin-sdk": ">=0.0.1",
-        "railway": ">=0.1.0",
+        "railway": ">=3.3.0",
       },
       "optionalPeers": [
         "railway",

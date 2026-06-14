@@ -20,6 +20,7 @@ import { Glob } from "bun";
 import { readFileSync } from "node:fs";
 import { cpus } from "node:os";
 import { resolve, relative, basename } from "node:path";
+import { runFileWithSignalRetry } from "./signal-retry";
 
 const ROOT = resolve(import.meta.dir, "..");
 const SRC = resolve(ROOT, "src");
@@ -212,31 +213,12 @@ console.log(
 );
 
 // --- Run tests with bounded concurrency ---
-interface Result {
-  file: string;
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  durationMs: number;
-}
+// Signal-aware retry logic is in ./signal-retry.ts (exported for unit tests).
+
+type Result = Awaited<ReturnType<typeof runFileWithSignalRetry>>;
 
 async function runFile(file: string): Promise<Result> {
-  const start = performance.now();
-  const proc = Bun.spawn(["bun", "test", file], {
-    cwd: ROOT,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, FORCE_COLOR: "1" },
-  });
-
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-
-  const exitCode = await proc.exited;
-  const durationMs = performance.now() - start;
-  return { file, exitCode, stdout, stderr, durationMs };
+  return runFileWithSignalRetry(file, ROOT, { ...process.env, FORCE_COLOR: "1" });
 }
 
 const results: Result[] = [];
@@ -283,6 +265,7 @@ while (active.size > 0) {
 // --- Summary ---
 const passed = results.filter((r) => r.exitCode === 0).length;
 const failed = results.filter((r) => r.exitCode !== 0).length;
+const totalRetries = results.reduce((s, r) => s + r.retries, 0);
 const totalMs = results.reduce((s, r) => s + r.durationMs, 0).toFixed(0);
 
 console.log("\n" + "─".repeat(60));
@@ -290,14 +273,16 @@ console.log(
   `  Files: ${results.length}  |  ` +
     `\x1b[32mPassed: ${passed}\x1b[0m  |  ` +
     (failed > 0 ? `\x1b[31mFailed: ${failed}\x1b[0m` : `Failed: 0`) +
-    `  |  Time: ${totalMs}ms`
+    (totalRetries > 0 ? `  |  \x1b[33mSignal retries: ${totalRetries}\x1b[0m` : "") +
+    `  |  Time: ${totalMs}ms`,
 );
 console.log("─".repeat(60));
 
 if (failed > 0) {
   console.log("\nFailed files:");
   for (const r of results.filter((r) => r.exitCode !== 0)) {
-    console.log(`  \x1b[31m✗\x1b[0m ${relative(ROOT, r.file)}`);
+    const sigSuffix = r.signalCode !== null ? ` (killed by ${r.signalCode})` : "";
+    console.log(`  \x1b[31m✗\x1b[0m ${relative(ROOT, r.file)}${sigSuffix}`);
   }
   process.exit(1);
 }

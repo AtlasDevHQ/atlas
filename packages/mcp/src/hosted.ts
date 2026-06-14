@@ -69,7 +69,6 @@ import { getConfig } from "@atlas/api/lib/config";
 import { withRequestContext, createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { createAtlasUser, type AtlasUser } from "@atlas/api/lib/auth/types";
-import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { isPasswordChangeRequired } from "@atlas/api/lib/auth/password-gate";
 import { ATLAS_OAUTH_WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
 import {
@@ -79,6 +78,7 @@ import {
 } from "@atlas/api/lib/auth/oauth-workspace-grants";
 import { createAtlasMcpServer } from "./server.js";
 import { withLiveActor } from "./live-actor-store.js";
+import { resolveMcpActorRole } from "./bind-actor.js";
 import {
   McpSessionStore,
   resolveMaxSessions,
@@ -1001,16 +1001,21 @@ export async function bindFactoryContext(
   // token refresh, no TTL. Mirrors the authoritative-grants pattern used
   // for workspace admission.
   //
-  // We pass `undefined` for the user-level role, NEVER a token claim
-  // (#3505 mandates a live DB lookup), and deliberately do NOT apply a
-  // cross-tenant `platform_admin` over customer-facing hosted MCP: a hosted
-  // OAuth session acts with the caller's member role for the admitted
-  // workspace, not god-mode. (stdio's `loadActorUser` resolves the
-  // user-level role too; the hosted trust boundary is intentionally
-  // narrower — decision tracked in #3522.) `resolveEffectiveRole` fails
-  // closed: a member-table read error yields no role → downstream defaults
-  // to least privilege (`member`), never escalates.
-  const role = await resolveEffectiveRole(undefined, bearer.user.id, resolvedOrgId);
+  // #3603 — the trusted-vs-hosted trust-boundary fork now lives in ONE place,
+  // `resolveMcpActorRole`. The `hosted` arm passes `undefined` for the
+  // user-level role (NEVER a token claim — #3505 mandates a live DB lookup),
+  // so a cross-tenant `platform_admin` is deliberately NOT applied over a
+  // customer-facing hosted OAuth session: it acts with the caller's member
+  // role for the admitted workspace, not god-mode. stdio resolves the
+  // user-level role too — the intentionally-narrower hosted boundary is
+  // recorded in ADR-0016 §platform_admin (decision #3522). The seam fails
+  // closed: a member-table read error yields no role → downstream defaults to
+  // least privilege (`member`), never escalates.
+  const role = await resolveMcpActorRole({
+    transport: "hosted",
+    userId: bearer.user.id,
+    activeOrganizationId: resolvedOrgId,
+  });
 
   // Re-bind the actor so RLS / audit / approval surfaces downstream see
   // the RESOLVED workspace as `activeOrganizationId`. Without this, the

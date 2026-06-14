@@ -74,6 +74,14 @@ export async function resolveMcpActor(): Promise<AtlasUser> {
   }
 
   if (userId && orgId) {
+    // #3603 — `loadActorUser` resolves the USER-LEVEL role
+    // (`resolveEffectiveRole(userRole, …)`), which is exactly the `stdio` arm
+    // of the shared trust-boundary seam `resolveMcpActorRole` in
+    // `bind-actor.ts`. The local operator is trusted, so a `platform_admin`
+    // bound over stdio keeps `platform_admin` — the deliberate divergence from
+    // the hosted edge, which withholds it (ADR-0016 §platform_admin). The fork
+    // is named once in that seam; the stdio/hosted equivalence is pinned in
+    // `bind-actor.test.ts`.
     const actor = await loadActorUser(userId, orgId);
     if (!actor) throw new Error(MCP_USER_NOT_FOUND_ERROR);
     // Unlike scheduler (orgId derived from a validated task row) and Slack

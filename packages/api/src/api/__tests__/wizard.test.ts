@@ -643,22 +643,39 @@ describe("POST /api/v1/wizard/generate", () => {
     expect(entities[0].columnCount).toBe(2);
   });
 
-  it("routes /generate entity YAML through the shared core, byte-identical (#3529)", async () => {
+  it("routes /generate entity YAML through the shared core, byte-identical and correctly paired (#3529)", async () => {
     // The wizard preview YAML must match exactly what the shared engine emits
     // for the same analyzed profiles — that byte-equality is the whole point of
     // the consolidation (one engine, no per-caller drift). Default connection →
     // NULL default group → no sourceId, matching the wizard's resolution.
+    //
+    // Two profiles (not one) so the test also pins per-table PAIRING: each
+    // preview row must carry ITS OWN table's YAML. A regression that mis-pairs
+    // YAML with the wrong metadata row would pass a single-table check but fail
+    // here (users' YAML names "users", orders' YAML names "orders").
+    mockProfilePostgres.mockImplementation(async () => ({
+      profiles: [mockUserProfile, mockOrdersProfile],
+      errors: [],
+    }));
+
     const res = await postJson("/api/v1/wizard/generate", {
       connectionId: "default",
-      tables: ["users"],
+      tables: ["users", "orders"],
     });
     expect(res.status).toBe(200);
     const data = await json(res);
     const entities = data.entities as { tableName: string; yaml: string }[];
 
-    const analyzed = _analyzeReal([mockUserProfile]);
+    const analyzed = _analyzeReal([mockUserProfile, mockOrdersProfile]);
     const expected = generateSemanticLayer(analyzed, { dbType: "postgres", schema: "public" });
-    expect(entities[0].yaml).toBe(expected.entities[0].yaml);
+
+    expect(entities).toHaveLength(2);
+    // Compare the whole tableName → YAML mapping: each preview row must carry
+    // its OWN table's byte-identical shared-core YAML. A mis-paired row (users'
+    // metadata + orders' YAML) would diverge from the expected mapping and fail.
+    const actualByTable = Object.fromEntries(entities.map((e) => [e.tableName, e.yaml]));
+    const expectedByTable = Object.fromEntries(expected.entities.map((e) => [e.table, e.yaml]));
+    expect(actualByTable).toEqual(expectedByTable);
   });
 
   it("scopes generated YAML by the connection's group (non-default connection)", async () => {

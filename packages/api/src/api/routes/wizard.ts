@@ -683,52 +683,67 @@ wizard.openapi(generateRoute, async (c) => {
         // Entity YAML goes through the shared engine (#3529) so the wizard
         // preview, the CLI, and the SemanticGenerator service emit identical
         // YAML — only the preview-metadata wrapper below stays wizard-local.
-        // `generateSemanticLayer` returns `entities` in profile order (one per
-        // input profile), so the index aligns 1:1 with `analyzedProfiles`.
+        // Pair the returned artifact to its profile by table name rather than by
+        // position: `generateSemanticLayer` emits one entity per profile today,
+        // but keying on `table` keeps the wrapper correct even if the engine
+        // ever reorders or filters artifacts (as it already does for metrics),
+        // instead of silently mis-pairing YAML with the wrong metadata.
         const generated = generateSemanticLayer(analyzedProfiles, {
           dbType,
           schema,
           sourceId,
         });
-        const entities = analyzedProfiles.map((profile, index) => ({
-          tableName: profile.table_name,
-          objectType: profile.object_type,
-          rowCount: profile.row_count,
-          columnCount: profile.columns.length,
-          yaml: generated.entities[index].yaml,
-          profile: {
-            columns: profile.columns.map((col) => ({
-              name: col.name,
-              type: col.type,
-              mappedType: col.is_enum_like ? "enum" : undefined,
-              nullable: col.nullable,
-              isPrimaryKey: col.is_primary_key,
-              isForeignKey: col.is_foreign_key,
-              isEnumLike: col.is_enum_like,
-              semanticType: col.semantic_type,
-              sampleValues: col.sample_values.slice(0, 5),
-              uniqueCount: col.unique_count,
-              nullCount: col.null_count,
-            })),
-            primaryKeys: profile.primary_key_columns,
-            foreignKeys: profile.foreign_keys.map((fk) => ({
-              fromColumn: fk.from_column,
-              toTable: fk.to_table,
-              toColumn: fk.to_column,
-              source: fk.source,
-            })),
-            inferredForeignKeys: profile.inferred_foreign_keys.map((fk) => ({
-              fromColumn: fk.from_column,
-              toTable: fk.to_table,
-              toColumn: fk.to_column,
-            })),
-            flags: {
-              possiblyAbandoned: profile.table_flags.possibly_abandoned,
-              possiblyDenormalized: profile.table_flags.possibly_denormalized,
+        const entityYamlByTable = new Map(generated.entities.map((e) => [e.table, e.yaml]));
+        const entities = analyzedProfiles.map((profile) => {
+          const entityYaml = entityYamlByTable.get(profile.table_name);
+          if (entityYaml === undefined) {
+            // The shared core guarantees an entity per profile; a miss means its
+            // contract changed under us. Fail loud (→ 500 generate_failed with a
+            // requestId) rather than emit a preview row with empty/wrong YAML.
+            throw new Error(
+              `Shared semantic engine produced no entity YAML for table "${profile.table_name}"`,
+            );
+          }
+          return {
+            tableName: profile.table_name,
+            objectType: profile.object_type,
+            rowCount: profile.row_count,
+            columnCount: profile.columns.length,
+            yaml: entityYaml,
+            profile: {
+              columns: profile.columns.map((col) => ({
+                name: col.name,
+                type: col.type,
+                mappedType: col.is_enum_like ? "enum" : undefined,
+                nullable: col.nullable,
+                isPrimaryKey: col.is_primary_key,
+                isForeignKey: col.is_foreign_key,
+                isEnumLike: col.is_enum_like,
+                semanticType: col.semantic_type,
+                sampleValues: col.sample_values.slice(0, 5),
+                uniqueCount: col.unique_count,
+                nullCount: col.null_count,
+              })),
+              primaryKeys: profile.primary_key_columns,
+              foreignKeys: profile.foreign_keys.map((fk) => ({
+                fromColumn: fk.from_column,
+                toTable: fk.to_table,
+                toColumn: fk.to_column,
+                source: fk.source,
+              })),
+              inferredForeignKeys: profile.inferred_foreign_keys.map((fk) => ({
+                fromColumn: fk.from_column,
+                toTable: fk.to_table,
+                toColumn: fk.to_column,
+              })),
+              flags: {
+                possiblyAbandoned: profile.table_flags.possibly_abandoned,
+                possiblyDenormalized: profile.table_flags.possibly_denormalized,
+              },
+              notes: profile.profiler_notes,
             },
-            notes: profile.profiler_notes,
-          },
-        }));
+          };
+        });
 
         return { ok: true as const, analyzedProfiles, entities, errors: result.errors };
       },

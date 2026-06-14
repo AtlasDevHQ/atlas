@@ -39,6 +39,11 @@ import {
 import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import {
+  MCP_PROVISIONABLE_CATALOG_SLUGS,
+  isMcpNativeDbType,
+  type McpNativeDbType,
+} from "@atlas/api/lib/datasources/provisionable-types";
+import {
   WorkspaceInstaller,
   WorkspaceInstallerLive,
   mapInstallError,
@@ -296,30 +301,15 @@ export async function runDatasourceInstaller<A>(
 
 // ── Provisioning (#3511 create) ───────────────────────────────────────
 
-/**
- * The native dbTypes the `ConnectionRegistry` can build a pool for directly
- * from a `url` — i.e. the ones whose ephemeral health-check probe genuinely
- * exercises connectivity AND whose tables the in-core profiler can
- * introspect. This single set is the source of truth for BOTH the
- * provisioning allow-list ({@link MCP_PROVISIONABLE_CATALOG_SLUGS}) and the
- * profiling support check ({@link loadDatasourceProfileTarget}) so the two
- * can't drift (a datasource the agent can create but never make queryable).
- *
- * Plugin-managed pools (clickhouse / snowflake / bigquery / salesforce / …)
- * need a different test-connect + profiler path and are intentionally out of
- * scope for the MCP flow until that lands; the admin console still handles
- * them. Mirrors the bridge's `dbType !== "postgres" && !== "mysql"` native
- * split in `datasource-registry-bridge.ts`.
- */
-export type McpNativeDbType = "postgres" | "mysql";
-const MCP_NATIVE_DB_TYPES: ReadonlySet<McpNativeDbType> = new Set(["postgres", "mysql"]);
-
-function isMcpNativeDbType(dbType: string): dbType is McpNativeDbType {
-  return (MCP_NATIVE_DB_TYPES as ReadonlySet<string>).has(dbType);
-}
-
-/** Catalog slugs provisionable via MCP — derived from {@link MCP_NATIVE_DB_TYPES}. */
-export const MCP_PROVISIONABLE_CATALOG_SLUGS: readonly string[] = [...MCP_NATIVE_DB_TYPES];
+// The native-dbType set + provisionable slugs live in the dependency-free
+// `provisionable-types` module so the MCP layer can read the `db_type` enum at
+// registration time without pulling this heavy graph. Re-exported here for
+// existing consumers.
+export {
+  MCP_PROVISIONABLE_CATALOG_SLUGS,
+  isMcpNativeDbType,
+  type McpNativeDbType,
+};
 
 /**
  * Input to {@link provisionDatasource}. `url` is the credential collected

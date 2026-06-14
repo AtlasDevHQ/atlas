@@ -586,14 +586,22 @@ describe("MCP path canonical eval (#2074)", () => {
       const names = tools.map((t) => t.name).sort();
       // Expected toolset — adding a tool here means an explicit decision
       // in the eval. A change at the `registerTools` / `registerSemanticTools`
-      // call sites should land in lockstep with this assertion.
+      // / `registerDatasourceTools` call sites should land in lockstep with
+      // this assertion.
       expect(names).toEqual([
+        "archive_datasource",
+        "create_datasource",
+        "delete_datasource",
         "describeEntity",
         "executeSQL",
         "explore",
         "listEntities",
+        "list_datasources",
+        "profile_datasource",
+        "restore_datasource",
         "runMetric",
         "searchGlossary",
+        "test_datasource",
       ]);
       // Description-quality floor — agent tool-selection accuracy is
       // gated by description quality (full audit owned by #2075). Pin

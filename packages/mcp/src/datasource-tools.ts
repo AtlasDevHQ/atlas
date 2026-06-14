@@ -41,18 +41,12 @@ import type { AtlasUser, AtlasRole } from "@atlas/api/lib/auth/types";
 import type { WorkspaceId } from "@useatlas/types";
 import { withRequestContext } from "@atlas/api/lib/logger";
 import { withErrorContract } from "@atlas/api/lib/tools/descriptions";
-import {
-  listDatasources,
-  resolveDatasourceCatalogSlug,
-  testDatasource,
-  isDatasourceRegistered,
-  runDatasourceInstaller,
-  provisionDatasource,
-  loadDatasourceProfileTarget,
-  runSemanticProfile,
-  MCP_PROVISIONABLE_CATALOG_SLUGS,
-  type DatasourceInstallerOutcome,
-} from "@atlas/api/lib/datasources/mcp-lifecycle";
+// Registration-time value: the light, dependency-free provisionable-slugs const
+// (used by the `db_type` enum). Everything else from `mcp-lifecycle` is loaded
+// LAZILY (below) so registering these tools doesn't drag the installer /
+// semantic-gen / Effect-startup graph into MCP server boot — see `lifecycle()`.
+import { MCP_PROVISIONABLE_CATALOG_SLUGS } from "@atlas/api/lib/datasources/provisionable-types";
+import type { DatasourceInstallerOutcome } from "@atlas/api/lib/datasources/mcp-lifecycle";
 import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
 import {
   traceMcpToolCall,
@@ -60,14 +54,36 @@ import {
   type McpDeployMode,
 } from "./telemetry.js";
 import { envelope, toEnvelopeResult } from "./error-envelope.js";
-import {
-  runMcpDispatchGate,
-  type McpDispatchGateContext,
-  type McpDispatchGateRequirements,
+import type {
+  McpDispatchGateContext,
+  McpDispatchGateRequirements,
 } from "./dispatch-gate.js";
 import { elicitMaskedField } from "./elicitation.js";
 import { withProgressAndCancellation, OperationCancelledError } from "./progress.js";
+import { createMcpLogger } from "./logger.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
+
+const log = createMcpLogger("mcp:datasource-tools");
+
+// ── Lazy heavy-module loaders ─────────────────────────────────────────
+//
+// The datasource lib (`mcp-lifecycle`) and the dispatch gate transitively pull
+// the WorkspaceInstaller, the #3506 SemanticGenerator, the enterprise/approval
+// services, and the Effect startup layers. Importing those at module load would
+// couple MCP server *registration* (which only needs tool metadata) to that
+// whole graph — bloating boot and breaking any host that boots the server with
+// a partial `db/internal` mock. So load them on first tool *invocation* and
+// cache the module promise (ESM caches anyway; this just avoids re-awaiting).
+
+type LifecycleModule = typeof import("@atlas/api/lib/datasources/mcp-lifecycle");
+let lifecycleModule: Promise<LifecycleModule> | null = null;
+const lifecycle = (): Promise<LifecycleModule> =>
+  (lifecycleModule ??= import("@atlas/api/lib/datasources/mcp-lifecycle"));
+
+type DispatchGateModule = typeof import("./dispatch-gate.js");
+let dispatchGateModule: Promise<DispatchGateModule> | null = null;
+const dispatchGate = (): Promise<DispatchGateModule> =>
+  (dispatchGateModule ??= import("./dispatch-gate.js"));
 
 // Every datasource tool is an admin surface — RBAC floor is `admin`.
 const DATASOURCE_MIN_ROLE: AtlasRole = "admin";
@@ -322,7 +338,7 @@ export function registerDatasourceTools(
               //   gate 3  RBAC (live role);
               //   gate 4  approval (origin=mcp) for `destructive` tools.
               // All four are enforced inside `runMcpDispatchGate`.
-              const gateBlock = await runMcpDispatchGate(gateCtx(requestId), {
+              const gateBlock = await (await dispatchGate()).runMcpDispatchGate(gateCtx(requestId), {
                 toolName,
                 ...reqs,
               });
@@ -340,9 +356,18 @@ export function registerDatasourceTools(
               // rather than coercing it into an `internal_error` envelope.
               if (err instanceof OperationCancelledError) throw err;
               const message = errorMessage(err, `${toolName} tool failed`);
-              // Log the NARROWED message (not the raw `err`) so a stack/object
-              // — which could echo a connection string — never lands in logs.
-              process.stderr.write(`[atlas-mcp] ${toolName} threw: ${message}\n`);
+              // Structured stderr via the MCP logger (#3494 — no raw stderr
+              // writes in served modules). The pino `err` serializer +
+              // `scrubErrSerializer` in `lib/logger.ts` strip any DSN userinfo
+              // a stack/message might echo.
+              log.error(
+                {
+                  err: err instanceof Error ? err : new Error(String(err)),
+                  toolName,
+                  requestId,
+                },
+                `${toolName} tool threw`,
+              );
               return toEnvelopeResult(
                 envelope("internal_error", message, { request_id: requestId }),
               );
@@ -387,7 +412,7 @@ export function registerDatasourceTools(
           // find it next. So surface drafts + published; `include_archived`
           // opts archived rows back in for restore discovery. All rows are
           // credential-free regardless of status.
-          const all = await listDatasources(workspaceId, "developer", {
+          const all = await (await lifecycle()).listDatasources(workspaceId, "developer", {
             includeArchived: Boolean(include_archived),
           });
           const needle = filter?.toLowerCase().trim();
@@ -422,7 +447,7 @@ export function registerDatasourceTools(
         "test_datasource",
         { requiresWrite: false, minRole: DATASOURCE_MIN_ROLE },
         async () => {
-          if (!isDatasourceRegistered(id)) {
+          if (!(await lifecycle()).isDatasourceRegistered(id)) {
             return toEnvelopeResult(
               envelope(
                 "unknown_entity",
@@ -431,7 +456,7 @@ export function registerDatasourceTools(
               ),
             );
           }
-          const health = await testDatasource(id);
+          const health = await (await lifecycle()).testDatasource(id);
           return toJsonContent({
             id,
             status: health.status,
@@ -529,7 +554,7 @@ export function registerDatasourceTools(
           // clean `unknown_entity` rather than an installer defect. (The
           // approval gate already ran in `dispatch`; reaching here means the
           // requester is approved or no rule matched.)
-          const catalogSlug = await resolveDatasourceCatalogSlug(org.orgId, id);
+          const catalogSlug = await (await lifecycle()).resolveDatasourceCatalogSlug(org.orgId, id);
           if (catalogSlug === null) {
             return toEnvelopeResult(
               envelope("unknown_entity", `Datasource "${id}" not found.`, {
@@ -539,7 +564,7 @@ export function registerDatasourceTools(
           }
           // Hard delete (`hard: true`) — DELETEs the workspace_plugins row and
           // drains the pool. The reversible path is archive_datasource.
-          const outcome = await runDatasourceInstaller((installer) =>
+          const outcome = await (await lifecycle()).runDatasourceInstaller((installer) =>
             installer.uninstallDatasource(
               org.orgId as WorkspaceId,
               catalogSlug,
@@ -637,7 +662,7 @@ export function registerDatasourceTools(
           // installer's encrypt-at-rest path. NEVER logged or returned.
           const url = elicited.value;
 
-          const outcome = await provisionDatasource(orgId, {
+          const outcome = await (await lifecycle()).provisionDatasource(orgId, {
             catalogSlug: db_type,
             installId: install_id,
             url,
@@ -699,7 +724,7 @@ export function registerDatasourceTools(
         async () => {
           const org = requireBoundOrg();
           if (!org.ok) return org.block;
-          const target = await loadDatasourceProfileTarget(org.orgId, id);
+          const target = await (await lifecycle()).loadDatasourceProfileTarget(org.orgId, id);
           if (target.kind === "not_found") {
             return toEnvelopeResult(
               envelope("unknown_entity", `Datasource "${id}" not found.`, {
@@ -728,7 +753,7 @@ export function registerDatasourceTools(
             { startMessage: `Profiling datasource "${id}"`, endMessage: "Semantic layer generated" },
             async (reporter, signal) => {
               const progress = makeProfileProgress(reporter, signal);
-              return runSemanticProfile({
+              return (await lifecycle()).runSemanticProfile({
                 url: target.target.url,
                 dbType: target.target.dbType,
                 ...(target.target.schema !== undefined ? { schema: target.target.schema } : {}),
@@ -771,7 +796,7 @@ export function registerDatasourceTools(
     id: string,
     action: "archive" | "restore",
   ): Promise<CallToolResult> {
-    const catalogSlug = await resolveDatasourceCatalogSlug(orgId, id);
+    const catalogSlug = await (await lifecycle()).resolveDatasourceCatalogSlug(orgId, id);
     if (catalogSlug === null) {
       return toEnvelopeResult(
         envelope("unknown_entity", `Datasource "${id}" not found.`, {
@@ -784,14 +809,14 @@ export function registerDatasourceTools(
     }
 
     if (action === "archive") {
-      const outcome = await runDatasourceInstaller((installer) =>
+      const outcome = await (await lifecycle()).runDatasourceInstaller((installer) =>
         installer.uninstallDatasource(orgId as WorkspaceId, catalogSlug, id),
       );
       if (outcome.kind === "error") return installerErrorToEnvelope(outcome, id);
       return toJsonContent({ id, status: "archived", archived: true });
     }
 
-    const outcome = await runDatasourceInstaller((installer) =>
+    const outcome = await (await lifecycle()).runDatasourceInstaller((installer) =>
       installer.updateDatasourceConfig(orgId as WorkspaceId, catalogSlug, id, {
         status: "published",
       }),

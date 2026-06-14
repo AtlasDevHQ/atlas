@@ -12,10 +12,17 @@ const mockExec = mock((_command?: string, _opts?: Record<string, unknown>) =>
   }),
 );
 const mockDestroy = mock(() => Promise.resolve());
+// Native sandbox.files API (railway >= 3.3.0) — the upload path writes each
+// semantic file binary-safe via files.write and mkdir's the semantic root.
+const mockWrite = mock((_path?: string, _content?: unknown) =>
+  Promise.resolve(),
+);
+const mockMkdir = mock((_path?: string) => Promise.resolve());
 
 const mockSandboxInstance = {
   exec: mockExec,
   destroy: mockDestroy,
+  files: { write: mockWrite, mkdir: mockMkdir },
 };
 
 const mockCreate = mock((_opts?: Record<string, unknown>) =>
@@ -31,18 +38,21 @@ import { definePlugin, isSandboxPlugin } from "@useatlas/plugin-sdk";
 import {
   railwaySandboxPlugin,
   buildRailwaySandboxPlugin,
-  buildUploadBatches,
 } from "../src/index";
 
 function resetMocks() {
   mockCreate.mockClear();
   mockExec.mockClear();
   mockDestroy.mockClear();
+  mockWrite.mockClear();
+  mockMkdir.mockClear();
   mockCreate.mockImplementation(() => Promise.resolve(mockSandboxInstance));
   mockExec.mockImplementation(() =>
     Promise.resolve({ stdout: "railway-ok\n", stderr: "", exitCode: 0 }),
   );
   mockDestroy.mockImplementation(() => Promise.resolve());
+  mockWrite.mockImplementation(() => Promise.resolve());
+  mockMkdir.mockImplementation(() => Promise.resolve());
 }
 
 async function withSemanticDir<T>(
@@ -208,21 +218,83 @@ describe("sandbox.create", () => {
     expect("environmentId" in opts).toBe(false);
   });
 
-  test("uploads the semantic tree via mkdir + base64 exec commands", async () => {
+  test("uploads the semantic tree via files.mkdir + files.write (no shell)", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
+    // Record the interleaving of mkdir/write so we can assert ordering, not
+    // just membership — the semantic root must be mkdir'd BEFORE any write so
+    // the explore cwd exists even if files.write's auto-parent behavior changes.
+    const order: string[] = [];
+    mockMkdir.mockImplementation((p?: string) => {
+      order.push(`mkdir:${p}`);
+      return Promise.resolve();
+    });
+    mockWrite.mockImplementation((p?: string) => {
+      order.push(`write:${p}`);
+      return Promise.resolve();
+    });
     await withSemanticDir(async (dir) => {
       await plugin.sandbox.create(dir);
     });
-    const commands = mockExec.mock.calls.map((c) => String(c[0]));
-    expect(commands[0]).toContain("mkdir -p");
-    expect(commands[0]).toContain("'/atlas/semantic/entities'");
-    const uploadCmd = commands.find((c) => c.includes("base64 -d"));
-    expect(uploadCmd).toBeDefined();
-    expect(uploadCmd).toContain("set -e");
-    expect(uploadCmd).toContain("> '/atlas/semantic/entities/users.yml'");
-    // payload is base64 of the file content
-    expect(uploadCmd).toContain(Buffer.from("table: users\n").toString("base64"));
+    // The semantic root is mkdir'd up front, before the first file write.
+    expect(mockMkdir).toHaveBeenCalledWith("/atlas/semantic");
+    const mkdirIdx = order.indexOf("mkdir:/atlas/semantic");
+    const firstWriteIdx = order.findIndex((o) => o.startsWith("write:"));
+    expect(mkdirIdx).toBeGreaterThanOrEqual(0);
+    expect(firstWriteIdx).toBeGreaterThan(mkdirIdx);
+    // Every collected file is written — exactly the two-file fixture, no drops.
+    const writePaths = mockWrite.mock.calls.map((c) => String(c[0]));
+    expect(writePaths.length).toBe(2);
+    expect(writePaths).toContain("/atlas/semantic/glossary.yml");
+    expect(writePaths).toContain("/atlas/semantic/entities/users.yml");
+    const usersCall = mockWrite.mock.calls.find(
+      (c) => c[0] === "/atlas/semantic/entities/users.yml",
+    );
+    expect(usersCall).toBeDefined();
+    expect(Buffer.isBuffer(usersCall![1])).toBe(true);
+    expect((usersCall![1] as Buffer).equals(Buffer.from("table: users\n"))).toBe(true);
+    // The upload no longer touches the shell — no base64-over-exec.
+    const execCmds = mockExec.mock.calls.map((c) => String(c[0]));
+    expect(execCmds.some((c) => c.includes("base64"))).toBe(false);
+  });
+
+  test("writes binary-safe content unchanged (no base64 round-trip)", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const plugin = railwaySandboxPlugin({} as any);
+    const tmpDir = `/tmp/railway-sandbox-bin-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const { mkdirSync, writeFileSync, rmSync } = await import("fs");
+    mkdirSync(`${tmpDir}/entities`, { recursive: true });
+    // Bytes that are not valid UTF-8 — a base64-over-exec path could mangle these.
+    const binary = Buffer.from([0x00, 0xff, 0xfe, 0x10, 0x80, 0x0a]);
+    writeFileSync(`${tmpDir}/entities/blob.bin`, binary);
+    writeFileSync(`${tmpDir}/glossary.yml`, "terms: []\n");
+    try {
+      await plugin.sandbox.create(tmpDir);
+      const blobCall = mockWrite.mock.calls.find((c) =>
+        String(c[0]).endsWith("blob.bin"),
+      );
+      expect(blobCall).toBeDefined();
+      expect(Buffer.isBuffer(blobCall![1])).toBe(true);
+      expect((blobCall![1] as Buffer).equals(binary)).toBe(true);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("throws a clear error (and destroys the sandbox) when the files API is missing", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const plugin = railwaySandboxPlugin({} as any);
+    // Simulate an older SDK whose Sandbox instance has no `files` surface.
+    mockCreate.mockImplementation(() =>
+      Promise.resolve({
+        exec: mockExec,
+        destroy: mockDestroy,
+      } as unknown as typeof mockSandboxInstance),
+    );
+    await withSemanticDir(async (dir) => {
+      await expect(plugin.sandbox.create(dir)).rejects.toThrow(/railway >= 3\.3\.0/);
+    });
+    expect(mockDestroy).toHaveBeenCalled();
   });
 
   test("throws when no semantic files found — without creating a sandbox", async () => {
@@ -255,10 +327,13 @@ describe("sandbox.create", () => {
     symlinkSync(`${base}/semantic_evil/secret.yml`, `${base}/semantic/leak.yml`);
     try {
       await plugin.sandbox.create(`${base}/semantic`);
-      const uploads = mockExec.mock.calls.map((c) => String(c[0])).join("\n");
-      expect(uploads).toContain("real.yml");
-      expect(uploads).not.toContain("leak.yml");
-      expect(uploads).not.toContain(Buffer.from("secret: yes\n").toString("base64"));
+      const writePaths = mockWrite.mock.calls.map((c) => String(c[0]));
+      const writeContents = mockWrite.mock.calls.map((c) =>
+        Buffer.isBuffer(c[1]) ? (c[1] as Buffer).toString() : String(c[1]),
+      );
+      expect(writePaths.some((p) => p.endsWith("real.yml"))).toBe(true);
+      expect(writePaths.some((p) => p.endsWith("leak.yml"))).toBe(false);
+      expect(writeContents.some((c) => c.includes("secret: yes"))).toBe(false);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
@@ -267,13 +342,52 @@ describe("sandbox.create", () => {
   test("destroys the sandbox when the upload fails", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
-    mockExec.mockImplementation(() =>
-      Promise.resolve({ stdout: "", stderr: "disk full", exitCode: 1 }),
+    mockWrite.mockImplementation(() =>
+      Promise.reject(new Error("disk full")),
     );
     await withSemanticDir(async (dir) => {
       await expect(plugin.sandbox.create(dir)).rejects.toThrow(
         /Failed to upload semantic files/,
       );
+    });
+    expect(mockDestroy).toHaveBeenCalled();
+  });
+
+  test("destroys the sandbox when mkdir (not write) fails", async () => {
+    // mkdir shares the upload guard with write — a mkdir rejection must take
+    // the same Failed-to-upload → destroy path, proving mkdir is inside the
+    // guarded block.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const plugin = railwaySandboxPlugin({} as any);
+    mockMkdir.mockImplementation(() =>
+      Promise.reject(new Error("permission denied")),
+    );
+    await withSemanticDir(async (dir) => {
+      await expect(plugin.sandbox.create(dir)).rejects.toThrow(
+        /Failed to upload semantic files/,
+      );
+    });
+    expect(mockDestroy).toHaveBeenCalled();
+  });
+
+  test("redacts sensitive detail from an upload-failure message", async () => {
+    // A files.write rejection whose message carries a credential must be
+    // scrubbed before it reaches the caller (CLAUDE.md: no secrets in responses).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const plugin = railwaySandboxPlugin({} as any);
+    mockWrite.mockImplementation(() =>
+      Promise.reject(new Error("upload rejected: token=rw_supersecret_abc123")),
+    );
+    await withSemanticDir(async (dir) => {
+      let err: Error | null = null;
+      try {
+        await plugin.sandbox.create(dir);
+      } catch (e) {
+        err = e instanceof Error ? e : new Error(String(e));
+      }
+      expect(err).not.toBeNull();
+      expect(err!.message).toContain("details in server logs");
+      expect(err!.message).not.toContain("rw_supersecret_abc123");
     });
     expect(mockDestroy).toHaveBeenCalled();
   });
@@ -392,61 +506,6 @@ describe("exec / close", () => {
       );
       await backend.close!(); // must not throw
     });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Upload batching
-// ---------------------------------------------------------------------------
-
-describe("buildUploadBatches", () => {
-  test("packs small files into one batch", () => {
-    const files = [
-      { path: "semantic/a.yml", content: Buffer.from("a") },
-      { path: "semantic/b.yml", content: Buffer.from("b") },
-    ];
-    const batches = buildUploadBatches(files);
-    expect(batches.length).toBe(1);
-    expect(batches[0]).toStartWith("set -e\n");
-    expect(batches[0]).toContain("'/atlas/semantic/a.yml'");
-    expect(batches[0]).toContain("'/atlas/semantic/b.yml'");
-  });
-
-  test("splits when the batch size cap is exceeded", () => {
-    // ~100KB raw → ~134KB base64 each (under the chunk cap); two files cannot
-    // share one 180KB batch, so they land in two batches
-    const big = Buffer.alloc(100_000, "x");
-    const files = [
-      { path: "semantic/a.yml", content: big },
-      { path: "semantic/b.yml", content: big },
-    ];
-    const batches = buildUploadBatches(files);
-    expect(batches.length).toBe(2);
-  });
-
-  test("chunks a single file whose base64 exceeds the cap across > and >> appends", () => {
-    // 150KB raw → 200KB base64 → must split into 160KB + 40KB chunks; no
-    // single command may exceed the batch cap
-    const big = Buffer.alloc(150_000, "x");
-    const batches = buildUploadBatches([{ path: "semantic/huge.yml", content: big }]);
-    const lines = batches.flatMap((b) => b.split("\n")).filter((l) => l.includes("base64 -d"));
-    expect(lines.length).toBe(2);
-    expect(lines[0]).toContain("base64 -d > '/atlas/semantic/huge.yml'");
-    expect(lines[1]).toContain("base64 -d >> '/atlas/semantic/huge.yml'");
-    for (const batch of batches) {
-      expect(batch.length).toBeLessThanOrEqual(180_000 + 100);
-    }
-    // The chunks reassemble to the original content
-    const b64 = lines
-      .map((l) => /printf '%s' '([A-Za-z0-9+/=]+)'/.exec(l)?.[1] ?? "")
-      .join("");
-    expect(Buffer.from(b64, "base64").equals(big)).toBe(true);
-  });
-
-  test("quotes paths containing single quotes", () => {
-    const files = [{ path: "semantic/it's.yml", content: Buffer.from("x") }];
-    const batches = buildUploadBatches(files);
-    expect(batches[0]).toContain(`'/atlas/semantic/it'\\''s.yml'`);
   });
 });
 

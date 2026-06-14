@@ -643,3 +643,44 @@ describe("SSE server — session hardening (#3492)", () => {
     await connected.close();
   });
 });
+
+// ── #3577 — `_setIdleTimeoutForTests` production guard ───────────────────
+//
+// The setter bypasses the 1-minute idle floor so test sweeps can run in
+// milliseconds. In production that bypass must be unreachable — calling the
+// setter with NODE_ENV=production is a programming error and throws so the
+// mistake surfaces at startup, not silently degenerate-sweeps every session.
+
+describe("_setIdleTimeoutForTests production guard (#3577)", () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  afterEach(() => {
+    // Restore NODE_ENV and the override so subsequent tests aren't affected.
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+    _setIdleTimeoutForTests(null); // reset (this call is safe because NODE_ENV is restored)
+  });
+
+  it("throws when called in production (NODE_ENV=production)", () => {
+    process.env.NODE_ENV = "production";
+    expect(() => _setIdleTimeoutForTests(50)).toThrow(
+      "_setIdleTimeoutForTests must not be called in production",
+    );
+  });
+
+  it("succeeds when called in test mode (NODE_ENV=test)", () => {
+    process.env.NODE_ENV = "test";
+    // Must not throw — tests call this with sub-floor values to drive fast sweeps.
+    expect(() => _setIdleTimeoutForTests(50)).not.toThrow();
+    _setIdleTimeoutForTests(null); // clean up before afterEach
+  });
+
+  it("succeeds when NODE_ENV is unset (dev / CI without explicit NODE_ENV)", () => {
+    delete process.env.NODE_ENV;
+    expect(() => _setIdleTimeoutForTests(100)).not.toThrow();
+    _setIdleTimeoutForTests(null);
+  });
+});

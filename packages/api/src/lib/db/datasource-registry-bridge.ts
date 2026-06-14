@@ -153,13 +153,19 @@ export async function probePluginDatasourceConnection(
   const createFromConfig = conn.createFromConfig;
   let built: ProbeableConnection | undefined;
   let timedOut = false;
+  // Track whether the salvage-close has already fired so we never double-close
+  // (once from the timeout branch, once from the probe's .finally() when it
+  // eventually settles). Guards against a double-close when an adapter that
+  // ignores its own timeoutMs both connects eagerly AND lets the query settle
+  // after the deadline (#3580).
+  let closedByTimeout = false;
   // The WHOLE build+probe runs under one deadline. `createFromConfig` has no
   // timeout of its own, and the `query`/`ping` timeoutMs is only honored if the
   // adapter chooses to — so an adapter that eagerly connects on build, or
   // ignores its own probe timeout, must not hang the MCP `create_datasource`
-  // call against an unreachable host. On a deadline breach we salvage-close any
-  // connection the build later yields (below) so a slow-but-eventual resolve
-  // can't leak a pool.
+  // call against an unreachable host. On a deadline breach we close any
+  // already-built connection immediately from the timeout callback (#3580) so a
+  // slow-but-eternal query that NEVER settles can't leak a pool.
   const probeRun = (async () => {
     built = (await createFromConfig(decryptedConfig)) as ProbeableConnection;
     // Prefer the connection's native liveness check (ES/OpenSearch `ping`); fall
@@ -170,12 +176,24 @@ export async function probePluginDatasourceConnection(
       await built.query(PLUGIN_PROBE_SQL, timeoutMs);
     }
   })();
+  // Secondary guard: if the probe eventually settles AFTER the timeout (and the
+  // timeout already closed `built`), skip the double-close.
   void probeRun.catch(() => {}).finally(() => {
-    if (timedOut && built) void built.close().catch(() => {});
+    if (timedOut && built && !closedByTimeout) void built.close().catch(() => {});
   });
   try {
     await withProbeTimeout(probeRun, timeoutMs, () => {
       timedOut = true;
+      // #3580 — close the already-built connection immediately on timeout, not
+      // only when the probe promise later settles. If `createFromConfig` resolved
+      // and `built` is set but the query hangs indefinitely, the `.finally()`
+      // on `probeRun` would never fire, leaking the pool. Closing here (in the
+      // timeout callback, before `withProbeTimeout`'s promise rejects) ensures
+      // the pool is always torn down on deadline breach.
+      if (built) {
+        closedByTimeout = true;
+        void built.close().catch(() => {});
+      }
     });
     return { ok: true };
   } catch (err) {

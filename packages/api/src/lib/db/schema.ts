@@ -2426,7 +2426,7 @@ export const mcpActionPolicy = pgTable(
   {
     orgId: text("org_id").notNull(),
     category: text("category").notNull(),
-    status: text("status").notNull().default("blocked"),
+    status: text("status").notNull().default("allowed"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     updatedBy: text("updated_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

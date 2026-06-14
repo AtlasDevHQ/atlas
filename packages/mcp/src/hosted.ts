@@ -81,6 +81,7 @@ import {
 } from "@atlas/api/lib/auth/oauth-workspace-grants";
 import { createAtlasMcpServer } from "./server.js";
 import { trackResponseStreamLifetime } from "./stream-liveness.js";
+import { withLiveActor } from "./live-actor-store.js";
 
 const log = createLogger("mcp-hosted");
 
@@ -105,8 +106,21 @@ interface SessionEntry {
    * A session with `activeStreams > 0` has a client actively listening and
    * is never idle, so the sweep skips it even when `lastSeenAt` has aged
    * out — see {@link sweepIdleSessions} and `trackResponseStreamLifetime`.
+   *
+   * #3576 — a client can hold the GET notification stream open indefinitely
+   * to pin a session against the cap. The sweep allows reclaiming sessions
+   * whose streams have been held past `maxHeldStreamAgeMs` even when
+   * `activeStreams > 0`; see {@link sweepIdleSessions} and `streamOpenedAt`.
    */
   activeStreams: number;
+  /**
+   * Wall-clock ms when the FIRST active GET notification stream was opened
+   * for this session. Set on the first `onOpen` callback and cleared when
+   * `activeStreams` drops back to 0. Used by the sweep (#3576) to detect
+   * streams held open past `maxHeldStreamAgeMs` and reclaim them.
+   * `undefined` when no stream is currently open.
+   */
+  streamOpenedAt: number | undefined;
 }
 
 const sessions = new Map<string, SessionEntry>();
@@ -181,6 +195,37 @@ function maxSessions(): number {
 const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const MIN_SESSION_IDLE_TIMEOUT_MS = 60 * 1000; // 1 minute floor
 
+// ── Max held-stream age (#3576) ─────────────────────────────────────
+//
+// A client can hold the GET SSE notification stream open indefinitely,
+// which causes `activeStreams > 0` and pins the session against the cap
+// forever. `maxHeldStreamAgeMs` is how long we allow a GET stream to stay
+// open before the sweep reclaims the session under cap-pressure. The default
+// is 2 hours — generous for legitimate use (long-running agent sessions) but
+// finite so resource-exhaustion by a hung client is bounded.
+//
+// The env var `ATLAS_MCP_MAX_HELD_STREAM_AGE_MS` allows operators to tune
+// this. Unlike the idle-timeout floor, there is no minimum here: a very
+// short held-stream age is unusual but not as dangerous as a sub-minute
+// idle timeout (which could degenerate the sweep into a close-everything
+// loop). The default is conservative; set to 0 to disable age-based reclaim.
+
+const DEFAULT_MAX_HELD_STREAM_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+function maxHeldStreamAgeMs(): number {
+  const raw = process.env.ATLAS_MCP_MAX_HELD_STREAM_AGE_MS;
+  if (!raw) return DEFAULT_MAX_HELD_STREAM_AGE_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    log.warn(
+      { raw },
+      "ATLAS_MCP_MAX_HELD_STREAM_AGE_MS is not a non-negative integer — falling back to default",
+    );
+    return DEFAULT_MAX_HELD_STREAM_AGE_MS;
+  }
+  return parsed;
+}
+
 /**
  * Test-only override. Bypasses the production floor so the
  * cap-pressure sweep can be driven end-to-end with sub-second
@@ -191,13 +236,31 @@ const MIN_SESSION_IDLE_TIMEOUT_MS = 60 * 1000; // 1 minute floor
  */
 let _idleTimeoutOverrideMs: number | null = null;
 
-/** @internal — test-only. Pin idle timeout below the prod floor. */
+/**
+ * @internal — test-only. Pin idle timeout below the prod floor.
+ *
+ * Guarded behind a NODE_ENV check (#3577): calling this in production is a
+ * programming error and throws immediately so the mistake surfaces at startup
+ * rather than silently degenerate-sweeping every session on every request.
+ * Tests run with NODE_ENV !== 'production' and are unaffected.
+ */
 export function _setIdleTimeoutForTests(ms: number | null): void {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "_setIdleTimeoutForTests must not be called in production — " +
+        "use ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS instead",
+    );
+  }
   _idleTimeoutOverrideMs = ms;
 }
 
 function sessionIdleTimeoutMs(): number {
-  if (_idleTimeoutOverrideMs !== null) return _idleTimeoutOverrideMs;
+  if (_idleTimeoutOverrideMs !== null) {
+    // Test-only path: return verbatim so tests can drive sub-second sweeps.
+    // The production guard in `_setIdleTimeoutForTests` ensures this branch
+    // is unreachable in production — the setter would have thrown at startup.
+    return _idleTimeoutOverrideMs;
+  }
   const raw = process.env.ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS;
   if (!raw) return DEFAULT_SESSION_IDLE_TIMEOUT_MS;
   const parsed = Number.parseInt(raw, 10);
@@ -223,15 +286,45 @@ function sessionIdleTimeoutMs(): number {
  * match the existing teardown pattern in `_resetHostedSessions` and
  * `transport.onclose` — a hanging close on a leaked session must not
  * block the new caller's init from proceeding.
+ *
+ * #3576 — `activeStreams > 0` is no longer an absolute skip. A client
+ * can hold the GET notification stream open indefinitely to pin a session
+ * against the cap. The sweep reclaims sessions whose streams have been
+ * held past `heldStreamAgeCutoff` even under cap-pressure. Active POST
+ * streams are protected differently: `lastSeenAt` is refreshed per-chunk
+ * via `onActivity` so a long-running streaming tool call keeps the session
+ * alive without leaking a GET stream pinning it.
  */
-function sweepIdleSessions(now: number, idleTimeoutMs: number): number {
+function sweepIdleSessions(
+  now: number,
+  idleTimeoutMs: number,
+  heldStreamMaxAgeMs: number = maxHeldStreamAgeMs(),
+): number {
   let evicted = 0;
-  const cutoff = now - idleTimeoutMs;
+  const idleCutoff = now - idleTimeoutMs;
+  const streamAgeCutoff = now - heldStreamMaxAgeMs;
   for (const [id, entry] of sessions) {
-    // A session with a live notification stream has a client actively
-    // listening — never idle, regardless of how stale `lastSeenAt` looks.
-    if (entry.activeStreams > 0) continue;
-    if (entry.lastSeenAt > cutoff) continue;
+    if (entry.activeStreams > 0) {
+      // The session has a live GET notification stream. Only reclaim it if
+      // the stream has been held open past the max-held-stream-age limit.
+      // A stream with no `streamOpenedAt` is a logic anomaly (activeStreams
+      // > 0 but no open timestamp) — skip it conservatively.
+      if (entry.streamOpenedAt === undefined) continue;
+      if (entry.streamOpenedAt > streamAgeCutoff) continue;
+      // Stream is too old — reclaim under cap-pressure. The client that holds
+      // it will get a transport error and should reconnect.
+      log.warn(
+        {
+          sessionId: id,
+          streamOpenedAt: entry.streamOpenedAt,
+          heldStreamMaxAgeMs,
+        },
+        "Evicting MCP session with stale held-open GET stream (cap pressure, #3576)",
+      );
+    } else {
+      // No active stream — standard idle-timeout check.
+      if (entry.lastSeenAt > idleCutoff) continue;
+    }
     sessions.delete(id);
     // intentionally ignored: best-effort teardown of an already-
     // orphaned session — the client that owned this entry is gone
@@ -269,11 +362,22 @@ export async function _resetHostedSessions(): Promise<void> {
   }
 }
 
-/** @internal — test-only. Drive the sweep deterministically with a pinned clock. */
-export function _sweepIdleSessionsForTests(now?: number, idleTimeoutMs?: number): number {
+/**
+ * @internal — test-only. Drive the sweep deterministically with a pinned
+ * clock and optional overrides for both the idle timeout and the max
+ * held-stream age. Passing `Infinity` for `heldStreamMaxAgeMs` disables
+ * stream-age reclaim (useful for tests that only want to exercise the
+ * idle-timeout path without triggering stream-age logic).
+ */
+export function _sweepIdleSessionsForTests(
+  now?: number,
+  idleTimeoutMs?: number,
+  heldStreamMaxAgeMs?: number,
+): number {
   return sweepIdleSessions(
     now ?? Date.now(),
     idleTimeoutMs ?? sessionIdleTimeoutMs(),
+    heldStreamMaxAgeMs,
   );
 }
 
@@ -1204,6 +1308,11 @@ async function dispatchExistingSession(
   req: Request,
   sessionId: string,
   requestId: string,
+  // #3569 — freshly-resolved factory context, re-resolved per request by
+  // `bindFactoryContext`. Its `user` has a LIVE member-table role so gate-3
+  // sees the current role and a demoted actor loses elevated tools on the
+  // next tool call — no token refresh, no TTL.
+  factoryCtx: InitialFactoryContext,
 ): Promise<Response> {
   const entry = sessions.get(sessionId);
   if (!entry) {
@@ -1225,23 +1334,43 @@ async function dispatchExistingSession(
   // a long-running tool call (executeSQL on a large query) doesn't
   // race with a concurrent sweep observing a stale `lastSeenAt`.
   entry.lastSeenAt = Date.now();
-  const response = await entry.transport.handleRequest(req);
+  // #3569 — set the freshly-resolved actor on the per-request live-actor
+  // ALS BEFORE handing the request to the transport. `dispatch-gate.ts`
+  // gate-3 reads from this store (not from the session-frozen `ctx.actor`
+  // in the tool closure) so a mid-session demotion is revocation-immediate.
+  // This ALS is separate from the api-layer `requestStore`, so nested
+  // `withRequestContext` calls in tool dispatch bodies do not replace it.
+  const response = await withLiveActor(factoryCtx.user, () =>
+    entry.transport.handleRequest(req),
+  );
   // A GET opens the standalone SSE notification stream, which stays open
   // for the life of the connection. Track its liveness so the idle sweep
   // never evicts a session that still has a client listening — `lastSeenAt`
-  // alone would age out a connected-but-quiet client mid-stream. A POST/DELETE
-  // is actively producing and closes when done (and `lastSeenAt` was just
-  // refreshed), so it's never the eviction target and needs no tracking.
+  // alone would age out a connected-but-quiet client mid-stream.
+  //
+  // #3576 — also record `streamOpenedAt` so the sweep can reclaim sessions
+  // whose GET stream has been held open past `maxHeldStreamAgeMs`.
   if (req.method === "GET") {
     return trackResponseStreamLifetime(response, {
       onOpen: () => {
         entry.activeStreams++;
+        // Only set `streamOpenedAt` for the FIRST active stream — if multiple
+        // GET streams were opened (uncommon), we track the oldest one so the
+        // sweep's age check is conservative (oldest stream, not newest).
+        if (entry.streamOpenedAt === undefined) {
+          entry.streamOpenedAt = Date.now();
+        }
       },
       onClose: () => {
         entry.activeStreams = Math.max(0, entry.activeStreams - 1);
         // Reset the idle clock from the moment the client actually
         // disconnected, not from when the stream opened.
         entry.lastSeenAt = Date.now();
+        // Clear the opened-at timestamp when the last stream closes so a
+        // future reconnect starts a fresh age window.
+        if (entry.activeStreams === 0) {
+          entry.streamOpenedAt = undefined;
+        }
       },
       onError: (err) => {
         const detail = err instanceof Error ? err.message : String(err);
@@ -1249,6 +1378,23 @@ async function dispatchExistingSession(
           { sessionId: entry.transport.sessionId, err: detail },
           "SSE notification stream errored",
         );
+      },
+    });
+  }
+  // #3576 — for POST event-stream responses (long-running streaming tool
+  // calls), keep `lastSeenAt` current as chunks are sent. Without this,
+  // a 2-hour streaming query would see its `lastSeenAt` age out to the
+  // dispatch-time stamp, and a sweep under cap-pressure could evict the
+  // session mid-flight. The `onActivity` hook fires on each enqueued
+  // chunk — cheap (just a timestamp write) and correct.
+  if (req.method === "POST") {
+    return trackResponseStreamLifetime(response, {
+      onOpen: () => {},
+      onClose: () => {
+        entry.lastSeenAt = Date.now();
+      },
+      onActivity: () => {
+        entry.lastSeenAt = Date.now();
       },
     });
   }
@@ -1300,6 +1446,7 @@ async function dispatchNewSession(
           server: mcpServer,
           lastSeenAt: Date.now(),
           activeStreams: 0,
+          streamOpenedAt: undefined,
         });
         registered = true;
         emitSessionStartAudit(
@@ -1517,7 +1664,7 @@ export function createHostedMcpRouter(): Hono {
         { requestId, user: factoryCtx.user, atlasMode: "published", agentOrigin: "mcp" },
         async () => {
           if (sessionId) {
-            return dispatchExistingSession(c.req.raw, sessionId, requestId);
+            return dispatchExistingSession(c.req.raw, sessionId, requestId, factoryCtx);
           }
           return dispatchNewSession(c.req.raw, factoryCtx);
         },

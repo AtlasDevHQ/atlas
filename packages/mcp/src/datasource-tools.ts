@@ -41,11 +41,16 @@ import type { AtlasUser, AtlasRole } from "@atlas/api/lib/auth/types";
 import type { WorkspaceId } from "@useatlas/types";
 import { withRequestContext } from "@atlas/api/lib/logger";
 import { withErrorContract } from "@atlas/api/lib/tools/descriptions";
-// Registration-time value: the light, dependency-free provisionable-slugs const
-// (used by the `db_type` enum). Everything else from `mcp-lifecycle` is loaded
-// LAZILY (below) so registering these tools doesn't drag the installer /
-// semantic-gen / Effect-startup graph into MCP server boot — see `lifecycle()`.
-import { MCP_PROVISIONABLE_CATALOG_SLUGS } from "@atlas/api/lib/datasources/provisionable-types";
+// Registration-time values: the light, dependency-free provisionable-slugs const
+// (used by the `db_type` enum) and the profilable-type guard (used by the
+// create_datasource success hint so it can't drift from `loadDatasourceProfileTarget`).
+// Everything else from `mcp-lifecycle` is loaded LAZILY (below) so registering
+// these tools doesn't drag the installer / semantic-gen / Effect-startup graph
+// into MCP server boot — see `lifecycle()`.
+import {
+  MCP_PROVISIONABLE_CATALOG_SLUGS,
+  isMcpNativeDbType,
+} from "@atlas/api/lib/datasources/provisionable-types";
 import type { DatasourceInstallerOutcome } from "@atlas/api/lib/datasources/mcp-lifecycle";
 import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
 import {
@@ -774,8 +779,18 @@ export function registerDatasourceTools(
           });
 
           switch (outcome.kind) {
-            case "ok":
+            case "ok": {
               // Only masked (never plaintext) credential material is surfaced.
+              // #3587 — the success hint must be CONDITIONAL on whether
+              // `profile_datasource` can actually make the type queryable.
+              // `loadDatasourceProfileTarget` returns `unsupported` for anything
+              // except postgres/mysql (= `isMcpNativeDbType`), so advertising
+              // "run profile_datasource" for clickhouse/snowflake/bigquery/
+              // elasticsearch would be misleading — those types connect but
+              // can't yet be profiled (tracked in #3552). Derive the profilable
+              // check from the same `isMcpNativeDbType` guard the profile tool
+              // itself uses so this hint can never drift from reality.
+              const profilable = isMcpNativeDbType(outcome.value.dbType);
               return toJsonContent({
                 id: outcome.value.installId,
                 db_type: outcome.value.dbType,
@@ -785,8 +800,11 @@ export function registerDatasourceTools(
                 schema: outcome.value.schema,
                 group_id: outcome.value.groupId,
                 created: true,
-                next: `Run profile_datasource with id "${outcome.value.installId}" to generate its semantic layer and make it queryable.`,
+                next: profilable
+                  ? `Run profile_datasource with id "${outcome.value.installId}" to generate its semantic layer and make it queryable.`
+                  : `Datasource "${outcome.value.installId}" is connected. Semantic-layer profiling for ${outcome.value.dbType} is not yet available via MCP (tracked in #3552); the datasource will not be queryable until profiling support lands.`,
               });
+            }
             case "unsupported":
               return toEnvelopeResult(envelope("validation_failed", outcome.message));
             case "health_error":
@@ -1015,9 +1033,14 @@ export function registerDatasourceTools(
       return toJsonContent({ id, status: "archived", archived: true });
     }
 
+    // Revive to "draft" mirroring the admin route (admin-connections.ts
+    // #944-960, #2177): the restored connection must still go through the
+    // atomic publish endpoint before it is queryable from /chat. Setting
+    // "published" here bypasses the content-mode gate (CLAUDE.md rule).
     const outcome = await (await lifecycle()).runDatasourceInstaller((installer) =>
       installer.updateDatasourceConfig(orgId as WorkspaceId, catalogSlug, id, {
-        status: "published",
+        status: "draft",
+        atlasMode: "draft",
       }),
     );
     if (outcome.kind === "error") return installerErrorToEnvelope(outcome, id);
@@ -1051,7 +1074,7 @@ const TEST_DATASOURCE_DESCRIPTION = `Run a connection health-check (a \`SELECT 1
 
 const ARCHIVE_DATASOURCE_DESCRIPTION = `Archive (soft-disable) a datasource: its pool is drained and it stops being queryable, but the configuration is retained so it can be restored. Reversible via restore_datasource. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example response: \`{ "id": "prod-us", "status": "archived", "archived": true }\`.`;
 
-const RESTORE_DATASOURCE_DESCRIPTION = `Restore (un-archive) a previously archived datasource so it becomes queryable again. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example response: \`{ "id": "prod-us", "status": "published", "restored": true }\`.`;
+const RESTORE_DATASOURCE_DESCRIPTION = `Restore (un-archive) a previously archived datasource. The connection is revived as a \`draft\` (same as a freshly-created datasource) so an admin can review it before it becomes queryable via the atomic publish endpoint (\`/api/v1/admin/publish\`). Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example response: \`{ "id": "prod-us", "status": "draft", "restored": true }\`.`;
 
 const DELETE_DATASOURCE_DESCRIPTION = `Permanently delete a datasource — removes the configuration and drains the pool. IRREVERSIBLE (use archive_datasource for a recoverable disable). Destructive: requires the \`mcp:write\` scope and the admin role, and routes through the workspace approval flow when an origin=mcp approval rule requires it (the response then carries \`approval_required: true\` with an \`approval_request_id\` to follow up on). Example call: \`{ "id": "old-staging" }\`. Example success: \`{ "id": "old-staging", "deleted": true }\`.`;
 

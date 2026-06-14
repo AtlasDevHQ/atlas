@@ -32,6 +32,7 @@ import {
   type McpDispatchGateContext,
   type McpDispatchGateRequirements,
 } from "../dispatch-gate.js";
+import { withLiveActor } from "../live-actor-store.js";
 
 const ORG = "org_test";
 
@@ -391,6 +392,63 @@ describe("stub admin tool through the pipeline (#3508 e2e)", () => {
   it("allows an admin with mcp:write", async () => {
     const client = await clientForStubAdminTool(baseCtx());
     const res = await client.callTool({ name: "stub_admin", arguments: {} });
+    expect(res.isError).toBeFalsy();
+    expect(getContentText(res.content)).toContain('"ok":true');
+  });
+});
+
+// ── #3569 — mid-session role demotion is revocation-immediate ────────────
+//
+// Gate 3 must enforce the LIVE member-table role, not the role captured at
+// session creation. `hosted.ts` sets the freshly-resolved actor on a separate
+// per-request ALS (`withLiveActor`) that is NOT overwritten by nested
+// `withRequestContext` calls in tool dispatch bodies. Gate 3 reads the live
+// actor via `getLiveActor()` and falls back to `ctx.actor` only for
+// stdio (where no live actor is set).
+
+describe("gate-3 live-role enforcement — mid-session demotion (#3569)", () => {
+  it("denies an admin tool when the live actor has been demoted to member (role is not session-frozen)", async () => {
+    // ctx.actor has 'admin' role — this is the session-frozen actor that
+    // would be used WITHOUT the live-actor fix.
+    const sessionFrozenAdminCtx = baseCtx({ actor: actor("admin") });
+    const client = await clientForStubAdminTool(sessionFrozenAdminCtx);
+
+    // Simulate demotion: the live actor (freshly resolved per request) is now
+    // 'member'. `withLiveActor` mirrors what `hosted.ts` does before calling
+    // `transport.handleRequest` for existing sessions.
+    const demotedActor = actor("member");
+    const res = await withLiveActor(demotedActor, () =>
+      client.callTool({ name: "stub_admin", arguments: {} }),
+    );
+
+    // Must be denied — proving gate-3 uses the live role, not the
+    // session-frozen admin role from ctx.actor.
+    expect(res.isError).toBe(true);
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("forbidden");
+  });
+
+  it("allows an admin tool when the live actor has been promoted to admin (live role wins)", async () => {
+    // ctx.actor has 'member' role — the session-frozen actor would block.
+    const sessionFrozenMemberCtx = baseCtx({ actor: actor("member") });
+    const client = await clientForStubAdminTool(sessionFrozenMemberCtx);
+
+    // Simulate promotion: the live actor (freshly resolved per request) is
+    // now 'admin'.
+    const promotedActor = actor("admin");
+    const res = await withLiveActor(promotedActor, () =>
+      client.callTool({ name: "stub_admin", arguments: {} }),
+    );
+
+    // Must succeed — proving the live role wins over the session-frozen one.
+    expect(res.isError).toBeFalsy();
+    expect(getContentText(res.content)).toContain('"ok":true');
+  });
+
+  it("falls back to ctx.actor when no live actor is set (stdio / test path)", async () => {
+    // No `withLiveActor` wrapper — gate-3 should fall back to ctx.actor.
+    const client = await clientForStubAdminTool(baseCtx({ actor: actor("admin") }));
+    const res = await client.callTool({ name: "stub_admin", arguments: {} });
+    // ctx.actor is admin → should pass.
     expect(res.isError).toBeFalsy();
     expect(getContentText(res.content)).toContain('"ok":true');
   });

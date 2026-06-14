@@ -425,6 +425,75 @@ describe("loadProvisionConfigFields", () => {
   });
 });
 
+// ── #3579 part(b) — catalog credential fields carry secret:true ──────────
+// Encryption-at-rest AND error-scrub both depend on the catalog config_schema
+// `secret:true` flag (mcp-lifecycle.ts:434-465 builds `secretKeys` from it).
+// This test pins the credential key names for each MCP-provisionable type so a
+// future catalog edit can't silently drop `secret:true` and expose DSNs.
+
+describe("loadProvisionConfigFields — credential fields carry secret:true (#3579)", () => {
+  it("url field is secret for a url-shaped datasource (postgres/mysql/clickhouse/snowflake)", async () => {
+    // All url-shaped types share the same config_schema shape: `url` is the
+    // only credential and must be marked secret.
+    internalRows = [
+      {
+        config_schema: [
+          { key: "url", type: "string", label: "Connection URL", required: true, secret: true },
+          { key: "schema", type: "string", label: "Schema" },
+          { key: "description", type: "string", label: "Description" },
+        ],
+      },
+    ];
+    const res = await loadProvisionConfigFields("postgres");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      const urlField = res.fields.find((f) => f.key === "url");
+      expect(urlField).toBeDefined();
+      expect(urlField?.secret).toBe(true);
+      expect(res.secretKeys).toContain("url");
+    }
+  });
+
+  it("apiKey field is secret for apiKey-shaped datasources (e.g. Elasticsearch)", async () => {
+    internalRows = [
+      {
+        config_schema: [
+          { key: "url", type: "string", label: "Connection URL", required: true, secret: false },
+          { key: "apiKey", type: "string", label: "API Key", required: false, secret: true },
+        ],
+      },
+    ];
+    const res = await loadProvisionConfigFields("elasticsearch");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      const apiKeyField = res.fields.find((f) => f.key === "apiKey");
+      expect(apiKeyField?.secret).toBe(true);
+      expect(res.secretKeys).toContain("apiKey");
+      // Non-secret url must NOT appear in secretKeys.
+      expect(res.secretKeys).not.toContain("url");
+    }
+  });
+
+  it("auth_value field is secret for auth_value-shaped datasources (e.g. OpenAPI-generic)", async () => {
+    internalRows = [
+      {
+        config_schema: [
+          { key: "openapi_url", type: "string", label: "OpenAPI spec URL", required: true },
+          { key: "auth_kind", type: "select", label: "Authentication", required: true },
+          { key: "auth_value", type: "string", label: "Credential", secret: true },
+        ],
+      },
+    ];
+    const res = await loadProvisionConfigFields("openapi-generic");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      const authValueField = res.fields.find((f) => f.key === "auth_value");
+      expect(authValueField?.secret).toBe(true);
+      expect(res.secretKeys).toContain("auth_value");
+    }
+  });
+});
+
 describe("loadDatasourceProfileTarget", () => {
   it("returns not_found for an unknown install", async () => {
     internalRows = [];

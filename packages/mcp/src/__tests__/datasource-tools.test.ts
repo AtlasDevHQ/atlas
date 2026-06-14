@@ -604,14 +604,25 @@ describe("archive_datasource", () => {
 });
 
 describe("restore_datasource", () => {
-  it("routes to updateDatasourceConfig({ status: 'published' }) and reports restored", async () => {
+  it("revives to 'draft' (mirroring admin route) so the publish endpoint must promote it (#3588)", async () => {
+    // AC: a created→archived→restored MCP datasource must NOT be published
+    // without going through the atomic publish endpoint. The restore branch
+    // stamps status:'draft' + atlasMode:'draft' — identical to the admin route
+    // (admin-connections.ts #944-960, legacy #2177). Setting 'published' here
+    // would bypass the content-mode gate (CLAUDE.md rule).
     const client = await createTestClient();
     const res = await client.callTool({ name: "restore_datasource", arguments: { id: "prod-us" } });
     const body = JSON.parse(getContentText(res.content));
     expect(body.restored).toBe(true);
     const call = installerCalls[0];
     expect(call.method).toBe("updateDatasourceConfig");
-    expect(call.args[3]).toEqual({ status: "published" });
+    // AC(1) — The installer must be called with status:'draft' + atlasMode:'draft'
+    // (not 'published'). This is the content-mode gate: the restored datasource
+    // lands as a draft and must go through /api/v1/admin/publish to become queryable.
+    expect(call.args[3]).toEqual({ status: "draft", atlasMode: "draft" });
+    // (The response body reflects whatever the installer returns — the critical
+    // assertion is the CALL args above, not the response status string, because
+    // the mock installer is free to return any status for test purposes.)
   });
 });
 
@@ -799,6 +810,44 @@ describe("create_datasource", () => {
     expect(res.isError).toBe(true);
     expect(mockElicit).not.toHaveBeenCalled();
     expect(mockProvision).not.toHaveBeenCalled();
+  });
+
+  it("#3587 — success hint tells user to run profile_datasource for profilable types (postgres/mysql)", async () => {
+    // postgres is a native profilable type — the next-step hint must direct the
+    // agent to run profile_datasource to generate the semantic layer.
+    provisionOutcome = {
+      kind: "ok",
+      value: { installId: "new-pg", dbType: "postgres", status: "draft", maskedUrl: "postgres://***@host/db", description: null, schema: null, groupId: null },
+    };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "create_datasource", arguments: { db_type: "postgres", install_id: "new-pg" } });
+    const body = JSON.parse(getContentText(res.content));
+    expect(body.created).toBe(true);
+    // Hint must tell the agent to run profile_datasource.
+    expect(body.next).toContain("profile_datasource");
+    // Must NOT warn about unsupported profiling for a profilable type.
+    expect(body.next).not.toContain("#3552");
+    expect(body.next).not.toContain("not yet available");
+  });
+
+  it("#3587 — success hint does NOT advertise profile_datasource for non-profilable types (clickhouse)", async () => {
+    // clickhouse/snowflake/bigquery/elasticsearch are provisionable but
+    // loadDatasourceProfileTarget returns 'unsupported' for them (#3552).
+    // The success hint must NOT claim 'run profile_datasource' — that would
+    // leave the agent in an impossible loop trying an unsupported operation.
+    provisionCapability = { kind: "plugin", dbType: "clickhouse" };
+    provisionOutcome = {
+      kind: "ok",
+      value: { installId: "ch-wh", dbType: "clickhouse", status: "draft", maskedUrl: null, description: null, schema: null, groupId: null },
+    };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "create_datasource", arguments: { db_type: "clickhouse", install_id: "ch-wh" } });
+    const body = JSON.parse(getContentText(res.content));
+    expect(body.created).toBe(true);
+    // Hint must NOT tell the agent to profile — that operation is unavailable.
+    expect(body.next).not.toContain("profile_datasource");
+    // Must clearly state profiling is not yet available (pending #3552).
+    expect(body.next).toContain("not yet available");
   });
 });
 

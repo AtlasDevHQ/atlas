@@ -56,6 +56,7 @@ import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import { createLogger } from "@atlas/api/lib/logger";
 import { writeScopeOrNull } from "./tools.js";
 import { envelope, toEnvelopeResult } from "./error-envelope.js";
+import { getLiveActor } from "./live-actor-store.js";
 
 const log = createLogger("mcp:dispatch-gate");
 
@@ -168,12 +169,21 @@ export async function runMcpDispatchGate(
     if (scopeBlock) return scopeBlock;
   }
 
-  // ── Gate 3: RBAC role on the bound actor (live-resolved, #3505) ──
-  if (!meetsRoleRequirement(ctx.actor, reqs.minRole)) {
+  // ── Gate 3: RBAC role on the bound actor (live-resolved, #3505/#3569) ──
+  //
+  // For EXISTING hosted sessions the `ctx.actor` was captured at session-
+  // creation time. A mid-session demotion must be revocation-immediate (ADR-
+  // 0016: "RBAC is the only source of authority"). `withLiveActor` in
+  // `hosted.ts` sets the per-request freshly-resolved actor on a separate ALS
+  // that is NOT overwritten by nested `withRequestContext` calls in tool
+  // dispatch bodies. We prefer the live actor when present; `ctx.actor` is
+  // the correct authority for stdio (no live-actor store) and unit tests.
+  const rbacActor: AtlasUser = getLiveActor() ?? ctx.actor;
+  if (!meetsRoleRequirement(rbacActor, reqs.minRole)) {
     log.warn(
       {
         toolName: reqs.toolName,
-        actorRole: getUserRole(ctx.actor),
+        actorRole: getUserRole(rbacActor),
         minRole: reqs.minRole,
         ...(ctx.requestId ? { requestId: ctx.requestId } : {}),
       },

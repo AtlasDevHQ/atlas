@@ -67,7 +67,6 @@ import { elicitMaskedForm } from "./elicitation.js";
 import { withProgressAndCancellation, OperationCancelledError } from "./progress.js";
 import { createMcpLogger } from "./logger.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
-import { billingGateOrNull } from "./billing-gate.js";
 
 const log = createMcpLogger("mcp:datasource-tools");
 
@@ -341,26 +340,20 @@ export function registerDatasourceTools(
               });
               if (limited) return limited;
 
-              // #3570 — billing gate: a suspended / trial-expired workspace must
-              // not mutate datasources through MCP. Lives INSIDE the try so a
-              // gate throw fails closed as `internal_error`. Keyed on the actor's
-              // workspace org id, NOT the OTel `workspaceId` fallback (which
-              // substitutes the actor id when no org is bound and would defeat
-              // the gate's no-org short-circuit). Mirrors tools.ts:318-322.
-              const billingBlock = await billingGateOrNull({
-                orgId: actor.activeOrganizationId,
-                requestId,
-              });
-              if (billingBlock) return billingBlock;
-
-              // ADR-0016 gate order via the merged dispatch pipeline (#3508):
+              // ADR-0016 gate order via the single dispatch pipeline (#3508):
+              //   gate 0  billing solvency (#3570) — fires when `reqs` declares
+              //           `checksBilling` (every datasource tool does). Folded
+              //           into the composer (#3601) so a suspended / trial-
+              //           expired workspace short-circuits before the rest;
+              //           keyed on `ctx.orgId` (= actor.activeOrganizationId),
+              //           NOT the OTel `workspaceId` fallback;
               //   gate 1  action-policy kill-switch (#3509) — fires when `reqs`
               //           carries an `actionCategory` (all mutating datasource
               //           tools pass `"datasource"`);
               //   gate 2  mcp:write scope;
               //   gate 3  RBAC (live role);
               //   gate 4  approval (origin=mcp) for `destructive` tools.
-              // All four are enforced inside `runMcpDispatchGate`.
+              // All five are enforced inside `runMcpDispatchGate`.
               const gateBlock = await (await dispatchGate()).runMcpDispatchGate(gateCtx(requestId), {
                 toolName,
                 ...reqs,
@@ -513,7 +506,7 @@ export function registerDatasourceTools(
     async ({ include_archived, filter }): Promise<CallToolResult> =>
       dispatch(
         "list_datasources",
-        { requiresWrite: false, minRole: DATASOURCE_MIN_ROLE },
+        { checksBilling: true, requiresWrite: false, minRole: DATASOURCE_MIN_ROLE },
         async () => {
           // Developer-mode view: these are admin tools (gate-3 requires admin),
           // and create_datasource lands a datasource as `draft` — a published
@@ -554,7 +547,7 @@ export function registerDatasourceTools(
     async ({ id }): Promise<CallToolResult> =>
       dispatch(
         "test_datasource",
-        { requiresWrite: false, minRole: DATASOURCE_MIN_ROLE },
+        { checksBilling: true, requiresWrite: false, minRole: DATASOURCE_MIN_ROLE },
         async () => {
           if (!(await lifecycle()).isDatasourceRegistered(id)) {
             return toEnvelopeResult(
@@ -594,7 +587,7 @@ export function registerDatasourceTools(
     async ({ id }): Promise<CallToolResult> =>
       dispatch(
         "archive_datasource",
-        { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
+        { checksBilling: true, requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
         async () => {
           const org = requireBoundOrg();
           return org.ok ? archiveOrRestore(org.orgId, id, "archive") : org.block;
@@ -618,7 +611,7 @@ export function registerDatasourceTools(
     async ({ id }): Promise<CallToolResult> =>
       dispatch(
         "restore_datasource",
-        { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
+        { checksBilling: true, requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
         async () => {
           const org = requireBoundOrg();
           return org.ok ? archiveOrRestore(org.orgId, id, "restore") : org.block;
@@ -643,6 +636,7 @@ export function registerDatasourceTools(
       dispatch(
         "delete_datasource",
         {
+          checksBilling: true,
           requiresWrite: true,
           minRole: DATASOURCE_MIN_ROLE,
           // Gate 1 (#3509): the datasource action-policy kill-switch blocks
@@ -726,10 +720,10 @@ export function registerDatasourceTools(
     async ({ db_type, install_id, description, schema, group_id }, extra): Promise<CallToolResult> =>
       dispatch(
         "create_datasource",
-        // Gate 1 (#3509) datasource kill-switch + mcp:write + admin. NOT
-        // approval-gated (provisioning is additive, lands draft); the
-        // human-in-the-loop is the masked credential entry below.
-        { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
+        // Gate 0 billing + gate 1 (#3509) datasource kill-switch + mcp:write +
+        // admin. NOT approval-gated (provisioning is additive, lands draft);
+        // the human-in-the-loop is the masked credential entry below.
+        { checksBilling: true, requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
         async (requestId) => {
           const org = requireBoundOrg();
           if (!org.ok) return org.block;
@@ -855,9 +849,10 @@ export function registerDatasourceTools(
     async ({ display_name }, extra): Promise<CallToolResult> =>
       dispatch(
         "create_rest_datasource",
-        // Gate 1 kill-switch + mcp:write + admin. NOT approval-gated — additive,
-        // the human-in-the-loop is the masked spec-URL/credential entry below.
-        { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
+        // Gate 0 billing + gate 1 kill-switch + mcp:write + admin. NOT
+        // approval-gated — additive, the human-in-the-loop is the masked
+        // spec-URL/credential entry below.
+        { checksBilling: true, requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
         async (requestId) => {
           const org = requireBoundOrg();
           if (!org.ok) return org.block;
@@ -933,7 +928,7 @@ export function registerDatasourceTools(
     async ({ id }, extra): Promise<CallToolResult> =>
       dispatch(
         "profile_datasource",
-        { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
+        { checksBilling: true, requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
         async () => {
           const org = requireBoundOrg();
           if (!org.ok) return org.block;

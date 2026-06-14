@@ -24,6 +24,10 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { parseAtlasMcpToolError } from "@useatlas/types/mcp";
+import {
+  mcpToolMutates,
+  type McpToolAnnotationsShape,
+} from "@atlas/api/lib/mcp/dispatch-gate-contract";
 
 const TEST_ACTOR = createAtlasUser("u_ds", "managed", "ds@test", {
   role: "admin",
@@ -210,6 +214,7 @@ interface GateCall {
   ctx: { actor: { id: string }; orgId?: string; requesterId?: string };
   reqs: {
     toolName: string;
+    checksBilling?: boolean;
     requiresWrite: boolean;
     minRole: string;
     actionCategory?: string;
@@ -227,18 +232,10 @@ mock.module("../dispatch-gate.js", () => ({
   runMcpDispatchGate: mockRunGate,
 }));
 
-// ── Billing-gate mock (#3570) ─────────────────────────────────────────
-//
-// billingGateOrNull is called inside the dispatch wrapper after the rate-limit
-// gate and before the ADR-0016 gate order. By default it returns null (allowed);
-// tests that need to exercise the suspended-workspace path flip `billingReturn`.
-
-let billingReturn: CallToolResult | null = null;
-const mockBillingGate = mock(async () => billingReturn);
-
-mock.module("../billing-gate.js", () => ({
-  billingGateOrNull: mockBillingGate,
-}));
+// Billing is no longer invoked by this module: #3601 folded it into
+// runMcpDispatchGate as gate-0, so a datasource tool only DECLARES
+// `checksBilling` in its requirement set (asserted below). The gate-0 BLOCK
+// behavior runs in dispatch-gate.test.ts where the real composer executes.
 
 // Imports AFTER mock.module registrations.
 const { registerDatasourceTools } = await import("../datasource-tools.js");
@@ -288,8 +285,6 @@ beforeEach(() => {
   installerCalls = [];
   elicitCalls = [];
   gateReturn = null;
-  billingReturn = null;
-  mockBillingGate.mockClear();
   installerOutcome = { kind: "ok", value: { id: "prod-us", status: "published" } };
   provisionOutcome = {
     kind: "ok",
@@ -509,66 +504,74 @@ describe("datasource tools — honor the gate verdict", () => {
   });
 });
 
-// ── Billing gate (#3570) ─────────────────────────────────────────────
+// ── Gate-0 billing is DECLARED, not hand-called (#3570/#3601) ──────────
 //
-// billingGateOrNull runs inside the dispatch wrapper after rate-limit but
-// before the ADR-0016 gate order. A suspended / over-limit workspace must be
-// blocked before any installer or gate call fires.
+// #3601 folded billing into runMcpDispatchGate as gate-0: every datasource
+// tool — read AND write — declares `checksBilling: true` in its requirement
+// set, and the single composer enforces it before gates 1-4. We assert the
+// declarative requirement here (so a tool can never silently drop billing);
+// the gate-0 BLOCK behavior (suspended workspace → `billing_blocked`,
+// short-circuit before action-policy/scope/RBAC/approval) is exercised against
+// the real composer in dispatch-gate.test.ts.
 
-describe("datasource MCP mutations — billing gate (#3570)", () => {
-  it("a suspended workspace is blocked and the installer never runs", async () => {
-    billingReturn = {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            code: "billing_blocked",
-            message: "Workspace is suspended. Resolve your billing status before querying.",
-            hint: "Retrying will not help. The workspace owner must resolve the workspace's billing or suspension status.",
-          }),
-        },
-      ],
-      isError: true,
-    };
-    const client = await createTestClient();
-    // Use a mutating tool (delete) to verify the billing gate fires before the installer.
-    const res = await client.callTool({ name: "delete_datasource", arguments: { id: "prod-us" } });
-    expect(res.isError).toBe(true);
-    const env = JSON.parse(getContentText(res.content));
-    expect(env.code).toBe("billing_blocked");
-    // Gate and installer must NOT have been reached.
-    expect(mockRunGate).not.toHaveBeenCalled();
-    expect(mockRunInstaller).not.toHaveBeenCalled();
-  });
+describe("datasource tools declare gate-0 billing (#3601)", () => {
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["list_datasources", {}],
+    ["test_datasource", { id: "prod-us" }],
+    ["archive_datasource", { id: "prod-us" }],
+    ["restore_datasource", { id: "prod-us" }],
+    ["delete_datasource", { id: "prod-us" }],
+    ["profile_datasource", { id: "prod-us" }],
+    ["create_datasource", { db_type: "postgres", install_id: "new-pg" }],
+    ["create_rest_datasource", {}],
+  ];
+  for (const [tool, args] of cases) {
+    it(`${tool} passes checksBilling:true so gate-0 enforces workspace solvency`, async () => {
+      const client = await createTestClient();
+      await client.callTool({ name: tool, arguments: args });
+      expect(gateCallFor(tool)?.reqs.checksBilling).toBe(true);
+    });
+  }
+});
 
-  it("billing gate is keyed on actor.activeOrganizationId (not the OTel workspaceId fallback)", async () => {
-    // The billing gate mock receives the actor's org id. We assert that
-    // billingGateOrNull was called at all on a mutating tool call (the mock
-    // captures calls regardless of billingReturn).
-    const client = await createTestClient();
-    await client.callTool({ name: "archive_datasource", arguments: { id: "prod-us" } });
-    // billingGateOrNull should have been called once for the dispatch.
-    expect(mockBillingGate.mock.calls.length).toBe(1);
-  });
+// ── Single mutates notion (#3599) ─────────────────────────────────────
+//
+// The native datasource tools declare `requiresWrite` explicitly while plugin
+// tools derive it via `mcpToolMutates(annotations)`. These must be ONE notion,
+// not two that can drift: a tool's explicit `requiresWrite` must equal the
+// shared predicate applied to its declared MCP annotations. The annotations
+// below mirror each tool's `annotations:` block in datasource-tools.ts; if a
+// tool's hand-set `requiresWrite` ever disagrees with its read/write hint this
+// fails, pointing at the divergence.
 
-  it("read-only list_datasources also routes through the billing gate (metadata via connected ds)", async () => {
-    billingReturn = {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({ code: "billing_blocked", message: "suspended" }),
-        },
-      ],
-      isError: true,
-    };
-    const client = await createTestClient();
-    const res = await client.callTool({ name: "list_datasources", arguments: {} });
-    // List is also blocked (datasource metadata reads are gated).
-    expect(res.isError).toBe(true);
-    expect(JSON.parse(getContentText(res.content)).code).toBe("billing_blocked");
-    // Lib layer (listDatasources) must not have been called.
-    expect(mockListDatasources).not.toHaveBeenCalled();
-  });
+describe("native requiresWrite agrees with the shared mcpToolMutates predicate (#3599)", () => {
+  const annotationsByTool: Record<string, McpToolAnnotationsShape> = {
+    list_datasources: { readOnlyHint: true, openWorldHint: false },
+    test_datasource: { readOnlyHint: true, openWorldHint: true },
+    archive_datasource: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    restore_datasource: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    delete_datasource: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+    create_datasource: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    create_rest_datasource: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    profile_datasource: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  };
+  const args: Record<string, Record<string, unknown>> = {
+    list_datasources: {},
+    test_datasource: { id: "prod-us" },
+    archive_datasource: { id: "prod-us" },
+    restore_datasource: { id: "prod-us" },
+    delete_datasource: { id: "prod-us" },
+    profile_datasource: { id: "prod-us" },
+    create_datasource: { db_type: "postgres", install_id: "new-pg" },
+    create_rest_datasource: {},
+  };
+  for (const [tool, annotations] of Object.entries(annotationsByTool)) {
+    it(`${tool}: requiresWrite === mcpToolMutates(annotations)`, async () => {
+      const client = await createTestClient();
+      await client.callTool({ name: tool, arguments: args[tool] });
+      expect(gateCallFor(tool)?.reqs.requiresWrite).toBe(mcpToolMutates(annotations));
+    });
+  }
 });
 
 // ── No-org session guard (mutations) ──────────────────────────────────

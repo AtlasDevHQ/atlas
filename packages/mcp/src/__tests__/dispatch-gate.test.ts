@@ -20,6 +20,7 @@ import { Effect } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import type { AtlasUser, AtlasRole } from "@atlas/api/lib/auth/types";
 import type { ApprovalGateShape } from "@atlas/api/lib/effect/services";
@@ -268,6 +269,69 @@ describe("runMcpDispatchGate — gate order + branches (#3508)", () => {
     expect(res?.isError).toBe(true);
     expect(parseAtlasMcpToolError(getContentText(res?.content))?.code).toBe("forbidden");
     expect(checked).toBe(false); // never reached the gate
+  });
+});
+
+describe("runMcpDispatchGate — gate 0: billing solvency (#3601)", () => {
+  const billingBlock: CallToolResult = {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ code: "billing_blocked", message: "Workspace suspended." }),
+      },
+    ],
+    isError: true,
+  };
+  // datasourceReqs carries an action category + admin/write; add gate-0.
+  const billingReqs: McpDispatchGateRequirements = { ...datasourceReqs, checksBilling: true };
+
+  it("blocks a suspended workspace BEFORE action-policy / scope / RBAC (gate-0 short-circuits first)", async () => {
+    let policyConsulted = false;
+    const res = await runMcpDispatchGate(baseCtx({ requestId: "req_b" }), billingReqs, {
+      billingGate: async () => billingBlock,
+      loadActionPolicy: async () => {
+        policyConsulted = true;
+        return stubActionPolicy([]);
+      },
+    });
+    expect(res?.isError).toBe(true);
+    expect(parseAtlasMcpToolError(getContentText(res?.content))?.code).toBe("billing_blocked");
+    // gate-0 ran before gate-1 ⇒ the action-policy loader was never consulted.
+    expect(policyConsulted).toBe(false);
+  });
+
+  it("proceeds to the downstream gates when billing is allowed (null)", async () => {
+    const res = await runMcpDispatchGate(baseCtx({ requestId: "req_b" }), billingReqs, {
+      billingGate: async () => null,
+      loadActionPolicy: async () => stubActionPolicy([]),
+    });
+    expect(res).toBeNull();
+  });
+
+  it("is keyed on ctx.orgId + ctx.requestId", async () => {
+    const seen: { orgId?: string; requestId?: string } = {};
+    await runMcpDispatchGate(baseCtx({ requestId: "req_key" }), billingReqs, {
+      billingGate: async (a) => {
+        seen.orgId = a.orgId;
+        seen.requestId = a.requestId;
+        return null;
+      },
+      loadActionPolicy: async () => stubActionPolicy([]),
+    });
+    expect(seen.orgId).toBe(ORG);
+    expect(seen.requestId).toBe("req_key");
+  });
+
+  it("is a no-op for tools that don't declare checksBilling (existing tools unaffected)", async () => {
+    let consulted = false;
+    const res = await runMcpDispatchGate(baseCtx(), adminReqs, {
+      billingGate: async () => {
+        consulted = true;
+        return billingBlock;
+      },
+    });
+    expect(consulted).toBe(false); // adminReqs has no checksBilling ⇒ gate 0 skipped
+    expect(res).toBeNull();
   });
 });
 

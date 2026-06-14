@@ -221,13 +221,30 @@ describe("sandbox.create", () => {
   test("uploads the semantic tree via files.mkdir + files.write (no shell)", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);
+    // Record the interleaving of mkdir/write so we can assert ordering, not
+    // just membership — the semantic root must be mkdir'd BEFORE any write so
+    // the explore cwd exists even if files.write's auto-parent behavior changes.
+    const order: string[] = [];
+    mockMkdir.mockImplementation((p?: string) => {
+      order.push(`mkdir:${p}`);
+      return Promise.resolve();
+    });
+    mockWrite.mockImplementation((p?: string) => {
+      order.push(`write:${p}`);
+      return Promise.resolve();
+    });
     await withSemanticDir(async (dir) => {
       await plugin.sandbox.create(dir);
     });
-    // The semantic root is mkdir'd up front so the explore cwd exists.
+    // The semantic root is mkdir'd up front, before the first file write.
     expect(mockMkdir).toHaveBeenCalledWith("/atlas/semantic");
-    // Each file is written to its absolute path with its raw Buffer content.
+    const mkdirIdx = order.indexOf("mkdir:/atlas/semantic");
+    const firstWriteIdx = order.findIndex((o) => o.startsWith("write:"));
+    expect(mkdirIdx).toBeGreaterThanOrEqual(0);
+    expect(firstWriteIdx).toBeGreaterThan(mkdirIdx);
+    // Every collected file is written — exactly the two-file fixture, no drops.
     const writePaths = mockWrite.mock.calls.map((c) => String(c[0]));
+    expect(writePaths.length).toBe(2);
     expect(writePaths).toContain("/atlas/semantic/glossary.yml");
     expect(writePaths).toContain("/atlas/semantic/entities/users.yml");
     const usersCall = mockWrite.mock.calls.find(
@@ -332,6 +349,45 @@ describe("sandbox.create", () => {
       await expect(plugin.sandbox.create(dir)).rejects.toThrow(
         /Failed to upload semantic files/,
       );
+    });
+    expect(mockDestroy).toHaveBeenCalled();
+  });
+
+  test("destroys the sandbox when mkdir (not write) fails", async () => {
+    // mkdir shares the upload guard with write — a mkdir rejection must take
+    // the same Failed-to-upload → destroy path, proving mkdir is inside the
+    // guarded block.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const plugin = railwaySandboxPlugin({} as any);
+    mockMkdir.mockImplementation(() =>
+      Promise.reject(new Error("permission denied")),
+    );
+    await withSemanticDir(async (dir) => {
+      await expect(plugin.sandbox.create(dir)).rejects.toThrow(
+        /Failed to upload semantic files/,
+      );
+    });
+    expect(mockDestroy).toHaveBeenCalled();
+  });
+
+  test("redacts sensitive detail from an upload-failure message", async () => {
+    // A files.write rejection whose message carries a credential must be
+    // scrubbed before it reaches the caller (CLAUDE.md: no secrets in responses).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const plugin = railwaySandboxPlugin({} as any);
+    mockWrite.mockImplementation(() =>
+      Promise.reject(new Error("upload rejected: token=rw_supersecret_abc123")),
+    );
+    await withSemanticDir(async (dir) => {
+      let err: Error | null = null;
+      try {
+        await plugin.sandbox.create(dir);
+      } catch (e) {
+        err = e instanceof Error ? e : new Error(String(e));
+      }
+      expect(err).not.toBeNull();
+      expect(err!.message).toContain("details in server logs");
+      expect(err!.message).not.toContain("rw_supersecret_abc123");
     });
     expect(mockDestroy).toHaveBeenCalled();
   });

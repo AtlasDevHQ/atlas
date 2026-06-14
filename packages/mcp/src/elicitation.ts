@@ -339,6 +339,19 @@ export interface MaskedFormField {
    * field. Recorded so a caller can know which returned values are secrets.
    */
   readonly secret?: boolean;
+  /**
+   * A closed set of allowed values (a catalog `select` field). Rendered as an
+   * enum in the requested schema so the client shows a dropdown instead of free
+   * text — restores client-side validation for fields like `auth_kind`.
+   */
+  readonly options?: readonly string[];
+  /**
+   * The catalog default for the field. Surfaced in the schema AND injected
+   * server-side when the client returns the field empty, so a defaulted field
+   * (e.g. `auth_kind: "bearer"`) stays zero-effort rather than failing the
+   * required-field check.
+   */
+  readonly default?: string;
 }
 
 export type ElicitMaskedFormOutcome =
@@ -385,13 +398,19 @@ export async function elicitMaskedForm(
     secret,
   );
 
-  const properties: Record<string, { type: "string"; title: string; description?: string }> = {};
+  const properties: Record<
+    string,
+    { type: "string"; title: string; description?: string; enum?: string[]; default?: string }
+  > = {};
   const required: string[] = [];
   for (const field of args.fields) {
     properties[field.name] = {
       type: "string",
       title: field.title,
       ...(field.description ? { description: field.description } : {}),
+      // A `select` field renders as a dropdown (enum), with its catalog default.
+      ...(field.options && field.options.length > 0 ? { enum: [...field.options] } : {}),
+      ...(field.default !== undefined ? { default: field.default } : {}),
     };
     if (field.required) required.push(field.name);
   }
@@ -428,7 +447,13 @@ export async function elicitMaskedForm(
   const values: Record<string, string> = {};
   for (const field of args.fields) {
     const raw = result.content?.[field.name];
-    if (typeof raw === "string" && raw.trim().length > 0) values[field.name] = raw;
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      values[field.name] = raw;
+    } else if (field.default !== undefined && field.default.trim().length > 0) {
+      // The client returned the field empty but the catalog declares a default
+      // (e.g. `auth_kind: "bearer"`) — apply it so the field stays zero-effort.
+      values[field.name] = field.default;
+    }
   }
   return { action: "accept", values };
 }

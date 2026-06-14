@@ -276,3 +276,75 @@ describe("elicitMaskedForm round-trip", () => {
     expect(captured.values).toBeUndefined();
   });
 });
+
+// A select field (e.g. openapi `auth_kind`) must render as an enum with its
+// default, and a defaulted field returned empty must fall back to the default.
+async function wireSelectForm(reply: {
+  action: "accept" | "decline" | "cancel";
+  content?: Record<string, string>;
+}) {
+  const server = new McpServer({ name: "test", version: "0.0.1" });
+  const captured: { values?: Record<string, string>; requestedSchema?: unknown } = {};
+
+  server.registerTool(
+    "needsSelect",
+    { description: "Elicits a form with a select field", inputSchema: {} },
+    async (): Promise<CallToolResult> => {
+      const outcome = await elicitMaskedForm(server, {
+        principal: PRINCIPAL,
+        message: "Enter the connection details",
+        fields: [
+          { name: "auth_kind", title: "Authentication", required: true, options: ["bearer", "basic", "apikey"], default: "bearer" },
+          { name: "engine", title: "Engine", required: false, options: ["elasticsearch", "opensearch"], default: "elasticsearch" },
+          { name: "auth_value", title: "Credential", required: true, secret: true },
+        ],
+        secret: SECRET,
+        nonceStore: new NonceStore(),
+      });
+      if (outcome.action === "accept") captured.values = outcome.values;
+      return { content: [{ type: "text", text: `done:${outcome.action}` }] };
+    },
+  );
+
+  const client = new Client(
+    { name: "test-client", version: "0.0.1" },
+    { capabilities: { elicitation: {} } },
+  );
+  client.setRequestHandler(ElicitRequestSchema, async (req) => {
+    captured.requestedSchema = (req.params as { requestedSchema?: unknown }).requestedSchema;
+    return reply;
+  });
+
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  return { client, captured };
+}
+
+describe("elicitMaskedForm select fields", () => {
+  it("renders a select field as an enum with its default in the requested schema", async () => {
+    const { client, captured } = await wireSelectForm({
+      action: "accept",
+      content: { auth_kind: "bearer", engine: "elasticsearch", auth_value: "tok" },
+    });
+    await client.callTool({ name: "needsSelect", arguments: {} });
+    const schema = captured.requestedSchema as {
+      properties: Record<string, { type: string; enum?: string[]; default?: string }>;
+    };
+    expect(schema.properties.auth_kind.enum).toEqual(["bearer", "basic", "apikey"]);
+    expect(schema.properties.auth_kind.default).toBe("bearer");
+    // A plain secret field carries no enum/default.
+    expect(schema.properties.auth_value.enum).toBeUndefined();
+  });
+
+  it("injects the catalog default when the client omits an optional defaulted field", async () => {
+    const { client, captured } = await wireSelectForm({
+      action: "accept",
+      // The client collected auth but left the optional `engine` unset.
+      content: { auth_kind: "bearer", auth_value: "tok" },
+    });
+    await client.callTool({ name: "needsSelect", arguments: {} });
+    // `engine` was omitted but its catalog default lands → zero-effort.
+    expect(captured.values).toEqual({ auth_kind: "bearer", engine: "elasticsearch", auth_value: "tok" });
+  });
+});

@@ -391,7 +391,15 @@ export function registerDatasourceTools(
    * context, a response, or a log. Returns the collected values or a renderable
    * block; the caller assembles the provision config from `values`.
    */
-  type ProvisionFormField = { key: string; label: string; description?: string; required: boolean; secret: boolean };
+  type ProvisionFormField = {
+    key: string;
+    label: string;
+    description?: string;
+    required: boolean;
+    secret: boolean;
+    options?: readonly string[];
+    default?: string;
+  };
   async function collectMaskedConfig(
     orgId: string,
     fields: readonly ProvisionFormField[],
@@ -409,6 +417,8 @@ export function registerDatasourceTools(
           ...(f.description ? { description: f.description } : {}),
           required: f.required,
           secret: f.secret,
+          ...(f.options ? { options: f.options } : {}),
+          ...(f.default !== undefined ? { default: f.default } : {}),
         })),
         ...(signal ? { signal } : {}),
       });

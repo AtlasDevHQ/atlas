@@ -393,6 +393,31 @@ describe("loadProvisionConfigFields", () => {
     }
   });
 
+  it("propagates a select field's options + default so the masked form renders a dropdown", async () => {
+    // Mirrors the openapi-generic auth_kind: a required select with a default —
+    // its enum + default must reach the elicitation field, not collapse to text.
+    internalRows = [
+      {
+        config_schema: [
+          { key: "openapi_url", type: "string", label: "OpenAPI spec URL", required: true },
+          { key: "auth_kind", type: "select", label: "Authentication", required: true, options: ["bearer", "basic", "apikey"], default: "bearer" },
+          { key: "auth_value", type: "string", label: "Credential", secret: true },
+        ],
+      },
+    ];
+    const res = await loadProvisionConfigFields("openapi-generic");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      const authKind = res.fields.find((f) => f.key === "auth_kind");
+      expect(authKind?.options).toEqual(["bearer", "basic", "apikey"]);
+      expect(authKind?.default).toBe("bearer");
+      // A plain string field carries neither.
+      const url = res.fields.find((f) => f.key === "openapi_url");
+      expect(url?.options).toBeUndefined();
+      expect(url?.default).toBeUndefined();
+    }
+  });
+
   it("returns not_found when the catalog row is missing", async () => {
     internalRows = [];
     const res = await loadProvisionConfigFields("nope");

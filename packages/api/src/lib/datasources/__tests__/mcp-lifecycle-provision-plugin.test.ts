@@ -49,10 +49,11 @@ mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
   catalogSlugToDbType: (slug: string) => {
     if (slug === "clickhouse") return "clickhouse";
     if (slug === "snowflake") return "snowflake";
+    if (slug === "bigquery") return "bigquery";
     throw new Error(`unknown slug ${slug}`);
   },
   resolveDatasourcePoolConfig: mock(() => ({ dbType: "clickhouse", url: "x" })),
-  BUILTIN_DATASOURCE_CATALOG_SLUGS: ["postgres", "mysql", "clickhouse", "snowflake"],
+  BUILTIN_DATASOURCE_CATALOG_SLUGS: ["postgres", "mysql", "clickhouse", "snowflake", "bigquery"],
 }));
 
 // The plugin test-connect seam — fully controllable per test.
@@ -211,5 +212,94 @@ describe("provisionDatasource — plugin path", () => {
     expect(outcome.kind).toBe("unsupported");
     expect(probeSpy).not.toHaveBeenCalled();
     expect(installDatasourceSpy).not.toHaveBeenCalled();
+  });
+});
+
+// #3547 AC4 — provision success + probe-failure rollback + credential scrub for
+// EACH added plugin type. ClickHouse is covered above; Snowflake (url-shaped)
+// and BigQuery (multi-field: service_account_json + project_id) below, so the
+// per-type matrix is literal, not just generic.
+describe("provisionDatasource — Snowflake (url-shaped)", () => {
+  const SF_SECRET_URL = "snowflake://user:topsecret@acct.snowflakecomputing.com/db";
+
+  beforeEach(() => {
+    pluginConn = { dbType: "snowflake", createFromConfig: () => ({}) };
+  });
+
+  it("probes via createFromConfig and persists a draft on success", async () => {
+    const outcome = await provisionDatasource("org_1", {
+      catalogSlug: "snowflake",
+      installId: "sf",
+      config: { url: SF_SECRET_URL },
+      secretKeys: ["url"],
+    });
+    expect(probeSpy).toHaveBeenCalledTimes(1);
+    expect(probeSpy.mock.calls[0][0]).toBe("snowflake");
+    expect(probeSpy.mock.calls[0][1]).toEqual({ url: SF_SECRET_URL });
+    expect(registerSpy).not.toHaveBeenCalled();
+    expect(installDatasourceSpy).toHaveBeenCalledTimes(1);
+    expect(outcome.kind).toBe("ok");
+  });
+
+  it("a failed probe persists NOTHING and scrubs the secret URL", async () => {
+    probeOutcome = { ok: false, reason: "connect_failed", message: `auth failed for ${SF_SECRET_URL}` };
+    const outcome = await provisionDatasource("org_1", {
+      catalogSlug: "snowflake",
+      installId: "sf",
+      config: { url: SF_SECRET_URL },
+      secretKeys: ["url"],
+    });
+    expect(outcome.kind).toBe("health_error");
+    expect(installDatasourceSpy).not.toHaveBeenCalled();
+    if (outcome.kind === "health_error") {
+      expect(outcome.message).not.toContain(SF_SECRET_URL);
+      expect(outcome.message).not.toContain("topsecret");
+      expect(outcome.message).toContain("[redacted]");
+    }
+  });
+});
+
+describe("provisionDatasource — BigQuery (multi-field credential)", () => {
+  const SA_JSON = '{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----SUPERSECRETKEYMATERIAL-----END PRIVATE KEY-----"}';
+  const BQ_CONFIG = { service_account_json: SA_JSON, project_id: "my-gcp-project" };
+
+  beforeEach(() => {
+    pluginConn = { dbType: "bigquery", createFromConfig: () => ({}) };
+  });
+
+  it("probes with the FULL multi-field config and persists a draft on success", async () => {
+    const outcome = await provisionDatasource("org_1", {
+      catalogSlug: "bigquery",
+      installId: "bq",
+      config: { ...BQ_CONFIG },
+      secretKeys: ["service_account_json"],
+    });
+    expect(probeSpy).toHaveBeenCalledTimes(1);
+    expect(probeSpy.mock.calls[0][0]).toBe("bigquery");
+    // Both the secret JSON and the non-secret project_id reach the probe.
+    expect(probeSpy.mock.calls[0][1]).toEqual(BQ_CONFIG);
+    expect(installDatasourceSpy).toHaveBeenCalledTimes(1);
+    expect(outcome.kind).toBe("ok");
+  });
+
+  it("a failed probe persists NOTHING and scrubs the service_account_json key material", async () => {
+    probeOutcome = {
+      ok: false,
+      reason: "connect_failed",
+      message: `invalid credentials: ${SA_JSON}`,
+    };
+    const outcome = await provisionDatasource("org_1", {
+      catalogSlug: "bigquery",
+      installId: "bq",
+      config: { ...BQ_CONFIG },
+      secretKeys: ["service_account_json"],
+    });
+    expect(outcome.kind).toBe("health_error");
+    expect(installDatasourceSpy).not.toHaveBeenCalled();
+    if (outcome.kind === "health_error") {
+      expect(outcome.message).not.toContain(SA_JSON);
+      expect(outcome.message).not.toContain("SUPERSECRETKEYMATERIAL");
+      expect(outcome.message).toContain("[redacted]");
+    }
   });
 });

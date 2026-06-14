@@ -392,6 +392,10 @@ export interface ProvisionConfigField {
   readonly description?: string;
   readonly required: boolean;
   readonly secret: boolean;
+  /** A closed value set (catalog `select`) — drives an enum/dropdown in the form. */
+  readonly options?: readonly string[];
+  /** The catalog default, surfaced + injected when the client returns empty. */
+  readonly default?: string;
 }
 
 /**
@@ -451,6 +455,10 @@ export async function loadProvisionConfigFields(
       ...(f.description !== undefined ? { description: f.description } : {}),
       required: f.required === true,
       secret,
+      // Carry select options + default so the masked form renders a dropdown
+      // (with its default) rather than collapsing every field to free text.
+      ...(Array.isArray(f.options) && f.options.length > 0 ? { options: f.options } : {}),
+      ...(typeof f.default === "string" ? { default: f.default } : {}),
     });
   }
   return { kind: "ok", fields, secretKeys };

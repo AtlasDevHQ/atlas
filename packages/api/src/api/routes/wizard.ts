@@ -55,7 +55,7 @@ import {
   generateEntityYAML,
   generateSemanticLayer,
 } from "@atlas/api/lib/semantic/generate";
-import { SAFE_TABLE_NAME } from "@atlas/api/lib/semantic/shapes";
+import { SAFE_TABLE_NAME, safeSemanticRowName } from "@atlas/api/lib/semantic/shapes";
 // Phase-2 enrichment is the same shared engine (issue #3236, § D); the in-memory
 // variant lets the wizard enrich a YAML string per table without touching disk.
 import { enrichEntityYaml } from "@atlas/api/lib/semantic/enrich";
@@ -1082,9 +1082,7 @@ wizard.openapi(saveRoute, async (c) => {
         // Assemble through the shared engine (#3506) so the wizard, the CLI,
         // and the SemanticGenerator service can't drift. Entities are supplied
         // by the frontend, so only the catalog/glossary/metric artifacts are
-        // consumed here. The metric write keeps the wizard's path-traversal
-        // guard for untrusted HTTP profiles: unsafe table names are skipped and
-        // the filename is re-sanitized with `path.basename`.
+        // consumed here.
         const generated = generateSemanticLayer(profiles, {
           dbType: resolvedDbType,
           schema: resolvedSchema,
@@ -1098,12 +1096,105 @@ wizard.openapi(saveRoute, async (c) => {
         fs.writeFileSync(glossaryPath, generated.glossary, "utf-8");
         savedFiles.push("glossary.yml");
 
-        for (const metric of generated.metrics) {
-          if (!metric.table || !SAFE_TABLE_NAME.test(metric.table)) continue;
-          const safeMetricName = path.basename(metric.table);
-          const filePath = path.join(metricsDir, `${safeMetricName}.yml`);
-          fs.writeFileSync(filePath, metric.yaml, "utf-8");
-          savedFiles.push(`metrics/${safeMetricName}.yml`);
+        // DECISION (#3550): metrics land in `semantic_entities` (DB), which is
+        // the source of truth for queryability — converging with
+        // `SemanticGenerator.persist` (the MCP path), which already persists
+        // entities AND metrics to the DB. Pre-#3550 the wizard wrote metrics to
+        // disk only, so wizard- vs MCP-onboarded workspaces had different metric
+        // durability guarantees. Both paths now persist metrics as drafts
+        // (promoted via the atomic `/api/v1/admin/publish` endpoint) and key
+        // rows through the shared `safeSemanticRowName`, so the two can't drift
+        // again. The disk write below is RETAINED as a derived legibility
+        // artifact (it is also re-read by boot reconciliation / disk sync), but
+        // the DB is the source of truth for queryability — so a disk-write
+        // failure is surfaced as a non-fatal warning rather than 500ing an
+        // already-committed persist, mirroring the entity disk-sync path.
+        //
+        // Untrusted HTTP profiles still pass the path-traversal guard:
+        // `safeSemanticRowName` strips path segments and rejects unsafe names
+        // (skipped + logged, never silently swallowed), and the same name keys
+        // both the DB row and the disk filename so the two can't disagree on
+        // which metrics landed.
+        const metricArtifacts = generated.metrics
+          .map((metric) => {
+            const name = safeSemanticRowName(metric.table);
+            if (name === null) {
+              log.warn(
+                { requestId, orgId, table: metric.table },
+                "Wizard save: skipping generated metric — table name is not path-safe",
+              );
+              return null;
+            }
+            return { name, yaml: metric.yaml };
+          })
+          .filter((m): m is { name: string; yaml: string } => m !== null);
+
+        // DB-first (mirrors the entity write above): persist metrics, fail loud
+        // on a short count, THEN write to disk so a partial DB persist never
+        // 201s a half-queryable state (#2142 class, now for metrics too). Same
+        // `db_persist_failed` / `db_partial_persist` contract as entities.
+        if (hasInternalDB() && metricArtifacts.length > 0) {
+          const metricRows = metricArtifacts.map((m) => ({
+            entityType: "metric" as const,
+            name: m.name,
+            yamlContent: m.yaml,
+            connectionGroupId,
+          }));
+          const upsertedMetrics = yield* Effect.tryPromise({
+            try: () => bulkUpsertEntities(orgId, metricRows),
+            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+          }).pipe(Effect.catchAll((err) => {
+            log.error(
+              { err: err.message, requestId, orgId, connectionId },
+              "Wizard save: bulkUpsertEntities threw persisting metrics — no metric rows persisted",
+            );
+            return Effect.succeed(null as number | null);
+          }));
+          if (upsertedMetrics === null) {
+            return c.json({
+              error: "db_persist_failed",
+              message:
+                "Failed to register metrics for queries. SQL execution will reject these metrics until this is resolved. Retry the wizard.",
+              requestId,
+            }, 500);
+          }
+          if (upsertedMetrics < metricRows.length) {
+            // bulkUpsertEntities swallows per-row errors and returns the count
+            // that succeeded — returning 201 would silently drop the rows that
+            // didn't land, exactly the #2142 failure mode for metrics.
+            log.error(
+              { requestId, orgId, attempted: metricRows.length, upserted: upsertedMetrics },
+              "Wizard save: partial metric upsert — failing loud rather than 201ing a half-persisted state",
+            );
+            invalidateOrgWhitelist(orgId);
+            return c.json({
+              error: "db_partial_persist",
+              message: `Registered ${upsertedMetrics} of ${metricRows.length} metrics. Retry the wizard.`,
+              requestId,
+              attempted: metricRows.length,
+              succeeded: upsertedMetrics,
+            }, 500);
+          }
+          invalidateOrgWhitelist(orgId);
+        }
+
+        for (const metric of metricArtifacts) {
+          const filePath = path.join(metricsDir, `${metric.name}.yml`);
+          try {
+            fs.writeFileSync(filePath, metric.yaml, "utf-8");
+            savedFiles.push(`metrics/${metric.name}.yml`);
+          } catch (err) {
+            // DB persist above is authoritative and already committed; the disk
+            // copy is derived. Don't escalate a disk failure to a 500 that would
+            // misreport a successful persist as a save failure — surface it as a
+            // warning, the same contract `syncEntityToDisk` uses for entities.
+            const reason = err instanceof Error ? err.message : String(err);
+            log.warn(
+              { requestId, orgId, table: metric.name, reason },
+              "Wizard save: metric disk write failed (DB persist already succeeded)",
+            );
+            warnings.push({ kind: "disk_sync_failed", tableName: metric.name, reason });
+          }
         }
       }
 

@@ -8,6 +8,7 @@
  * surface to the agent" — exactly the #2142 class.
  */
 
+import * as path from "path";
 import { z } from "zod";
 
 /**
@@ -23,6 +24,32 @@ import { z } from "zod";
  * and avoids independent regex drift.
  */
 export const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
+
+/**
+ * Derive the `semantic_entities.name` upsert key for a generated artifact's
+ * logical table name, or `null` when the name can't be made safe.
+ *
+ * `path.basename` strips any path-traversal segment (a `/`-bearing name),
+ * leaving a path-safe identifier; a schema-qualified dotted name like
+ * `public.orders` is preserved verbatim (no slash to strip), which keeps two
+ * same-named tables in different schemas distinct. Two inputs that share a
+ * basename across differing path prefixes (`a/orders`, `b/orders`) are
+ * intentionally coalesced to the same row key — generated table names are flat
+ * identifiers, not paths, so this only bites pathological inputs that the
+ * generator does not produce. The result must then pass {@link SAFE_TABLE_NAME}
+ * — defense-in-depth against characters that would never survive DB validation
+ * anyway. Returns `null` for names that fail the check; callers MUST filter
+ * those artifacts out and log the skip (never silently swallow).
+ *
+ * This is the single source of truth for how a generated table name becomes a
+ * semantic-store row key, shared by BOTH durable write paths —
+ * `SemanticGenerator.persist` (MCP, via `artifactRowName`) and the wizard
+ * `/save` handler — so the two can't drift on the upsert key (#3550).
+ */
+export function safeSemanticRowName(table: string): string | null {
+  const name = path.basename(table);
+  return SAFE_TABLE_NAME.test(name) ? name : null;
+}
 
 /**
  * Core entity shape — validates the table name and the Connection-group

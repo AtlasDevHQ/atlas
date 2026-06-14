@@ -35,6 +35,7 @@ import {
   type McpDeployMode,
   type McpTransport,
 } from "./telemetry.js";
+import { runMcpDispatchGate } from "./dispatch-gate.js";
 
 export interface RegisterPluginToolsOptions {
   /** Bound MCP actor — same shape `tools.ts` consumes. */
@@ -77,6 +78,10 @@ export function registerPluginTools(
           spanCtx,
           fn as () => Promise<CallToolResult>,
         )) as NonNullable<Parameters<typeof registerPluginMcpToolsCore>[1]["traceWrap"]>,
+      // #3571 — inject the real gate runner so plugin tools clear all
+      // ADR-0016 gates (1: action-policy, 2: mcp:write, 3: RBAC, 4: approval)
+      // parity with the built-in MCP tools in datasource-tools.ts.
+      runDispatchGate: runMcpDispatchGate,
     },
   );
 

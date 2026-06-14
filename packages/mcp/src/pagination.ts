@@ -179,6 +179,13 @@ export function installListPagination(
         const cached = cache.get(cursor);
         if (cached && cached.expiresAt > now) {
           const { page, nextCursor } = paginate(cached.items, cursor, pageSize);
+          // Propagate the cached entry to the NEXT cursor so page 3, 4, …
+          // also hit the cache (not just page 2). Without this, page 3 would
+          // miss — it echoes the cursor emitted by page 2, but that cursor
+          // was computed during a cache-hit path that didn't populate the map.
+          if (nextCursor !== undefined) {
+            cache.set(nextCursor, { ...cached, expiresAt: cached.expiresAt });
+          }
           return { ...cached.rest, [itemsKey]: page, ...(nextCursor ? { nextCursor } : {}) };
         }
         // Cache miss (TTL expired or unknown cursor) — fall through to inner.

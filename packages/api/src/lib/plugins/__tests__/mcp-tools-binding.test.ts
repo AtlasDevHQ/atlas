@@ -85,4 +85,29 @@ describe("plugin MCP dispatch binding registry (#2078)", () => {
     expect(safeParseIdx).toBeGreaterThan(-1);
     expect(safeParseIdx).toBeGreaterThan(limiterIdx);
   });
+
+  // #3571 — mutating plugin MCP tools must clear gates 1 (action-policy),
+  // 3 (RBAC minRole) and 4 (approval), not just gate 2 (mcp:write). The
+  // dispatch wrapper invokes the injected `runDispatchGate` (production wires
+  // `runMcpDispatchGate`) BEFORE `tool.handler`, passing the tool's declared
+  // governance (with safe defaults) so the full ADR-0016 gate order fires.
+  it("dispatch invokes runDispatchGate (gates 1/3/4) before tool.handler (#3571)", async () => {
+    const source = await readFile(DISPATCH_FILE, "utf8");
+    const gateIdx = source.indexOf("runDispatchGate(");
+    const handlerCallIdx = source.indexOf("tool.handler(");
+    expect(gateIdx, "dispatch must call the injected gate runner").toBeGreaterThan(-1);
+    expect(handlerCallIdx).toBeGreaterThan(-1);
+    expect(gateIdx).toBeLessThan(handlerCallIdx);
+  });
+
+  it("gate requirements carry actionCategory/minRole/destructive with safe defaults (#3571)", async () => {
+    const source = await readFile(DISPATCH_FILE, "utf8");
+    // Unmarked tools default to integration category + member role +
+    // non-destructive, so a declared `integration` kill-switch (gate 1) and
+    // RBAC (gate 3) still enforce. A regression dropping these defaults — or
+    // the declarations entirely — would land here.
+    expect(source).toMatch(/actionCategory:\s*tool\.actionCategory\s*\?\?\s*"integration"/);
+    expect(source).toMatch(/minRole:\s*tool\.minRole\s*\?\?\s*"member"/);
+    expect(source).toMatch(/tool\.destructive\s*===\s*true/);
+  });
 });

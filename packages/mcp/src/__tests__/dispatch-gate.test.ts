@@ -397,6 +397,123 @@ describe("stub admin tool through the pipeline (#3508 e2e)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #3582 — approval dedup uses stable resource+action key, not free-text description
+// ---------------------------------------------------------------------------
+
+describe("runMcpDispatchGate — approval dedup keyed on toolName:resource (#3582)", () => {
+  /**
+   * Build a gate stub that captures the `querySql` argument passed to
+   * hasApprovedRequest so we can assert the dedup key shape.
+   */
+  function dedupeCapturingGate(opts: {
+    required: boolean;
+    alreadyApproved?: boolean;
+    /** Captures the querySql passed to hasApprovedRequest. */
+    capturedDedupKey?: { value: string | null };
+  }): ApprovalGateShape {
+    const unused = () => Effect.die(new Error("approval gate method not used in this test"));
+    return {
+      available: true,
+      checkApprovalRequired: () =>
+        Effect.succeed({
+          required: opts.required,
+          matchedRules: [{ id: "rule_1", name: "MCP destructive" }] as never,
+        }),
+      hasApprovedRequest: (_, __, querySql) => {
+        if (opts.capturedDedupKey) opts.capturedDedupKey.value = querySql;
+        return Effect.succeed(opts.alreadyApproved ?? false);
+      },
+      createApprovalRequest: (args) =>
+        Effect.succeed(pendingRequest("req_dedup")),
+      listApprovalRules: unused,
+      createApprovalRule: unused,
+      updateApprovalRule: unused,
+      deleteApprovalRule: unused,
+      listApprovalRequests: unused,
+      getApprovalRequest: unused,
+      reviewApprovalRequest: unused,
+      expireStaleRequests: unused,
+      getPendingCount: unused,
+    };
+  }
+
+  it("dedup key is toolName:resource, not the free-text description", async () => {
+    const captured: { value: string | null } = { value: null };
+    await runMcpDispatchGate(
+      baseCtx(),
+      {
+        ...adminReqs,
+        toolName: "delete_datasource",
+        destructive: {
+          resource: "datasource:prod-us",
+          description: "Delete datasource prod-us (human readable)",
+        },
+      },
+      { loadApprovalGate: async () => dedupeCapturingGate({ required: true, capturedDedupKey: captured }) },
+    );
+    // The dedup key must be the stable "toolName:resource" form, NOT the description.
+    expect(captured.value).toBe("delete_datasource:datasource:prod-us");
+    expect(captured.value).not.toContain("human readable");
+  });
+
+  it("two actions with the same description but different resource ids are NOT deduped", async () => {
+    // Same description, different resource → different dedup keys → both would
+    // be treated as separate pending requests. We verify by checking that the
+    // querySql stored via createApprovalRequest differs between the two calls.
+    const capturedA: { value: string | null } = { value: null };
+    const capturedB: { value: string | null } = { value: null };
+
+    const sharedDesc = "Delete a datasource (hard delete via MCP)";
+
+    await runMcpDispatchGate(
+      baseCtx(),
+      {
+        ...adminReqs,
+        toolName: "delete_datasource",
+        destructive: { resource: "datasource:prod-us", description: sharedDesc },
+      },
+      { loadApprovalGate: async () => dedupeCapturingGate({ required: true, capturedDedupKey: capturedA }) },
+    );
+
+    await runMcpDispatchGate(
+      baseCtx(),
+      {
+        ...adminReqs,
+        toolName: "delete_datasource",
+        destructive: { resource: "datasource:eu-staging", description: sharedDesc },
+      },
+      { loadApprovalGate: async () => dedupeCapturingGate({ required: true, capturedDedupKey: capturedB }) },
+    );
+
+    // Different resource ids → different dedup keys even though descriptions match.
+    expect(capturedA.value).toBe("delete_datasource:datasource:prod-us");
+    expect(capturedB.value).toBe("delete_datasource:datasource:eu-staging");
+    expect(capturedA.value).not.toBe(capturedB.value);
+  });
+
+  it("same resource+toolName IS deduped (already-approved proceeds)", async () => {
+    let created = false;
+    const res = await runMcpDispatchGate(
+      baseCtx(),
+      {
+        ...adminReqs,
+        toolName: "delete_datasource",
+        destructive: {
+          resource: "datasource:prod-us",
+          description: "Any description here",
+        },
+      },
+      {
+        loadApprovalGate: async () =>
+          dedupeCapturingGate({ required: true, alreadyApproved: true }),
+      },
+    );
+    // alreadyApproved → gate 4 proceeds (null).
+    expect(res).toBeNull();
+  });
+});
+
 // ── #3569 — mid-session role demotion is revocation-immediate ────────────
 //
 // Gate 3 must enforce the LIVE member-table role, not the role captured at

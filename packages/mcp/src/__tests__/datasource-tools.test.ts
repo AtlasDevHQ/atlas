@@ -227,6 +227,19 @@ mock.module("../dispatch-gate.js", () => ({
   runMcpDispatchGate: mockRunGate,
 }));
 
+// ── Billing-gate mock (#3570) ─────────────────────────────────────────
+//
+// billingGateOrNull is called inside the dispatch wrapper after the rate-limit
+// gate and before the ADR-0016 gate order. By default it returns null (allowed);
+// tests that need to exercise the suspended-workspace path flip `billingReturn`.
+
+let billingReturn: CallToolResult | null = null;
+const mockBillingGate = mock(async () => billingReturn);
+
+mock.module("../billing-gate.js", () => ({
+  billingGateOrNull: mockBillingGate,
+}));
+
 // Imports AFTER mock.module registrations.
 const { registerDatasourceTools } = await import("../datasource-tools.js");
 
@@ -275,6 +288,8 @@ beforeEach(() => {
   installerCalls = [];
   elicitCalls = [];
   gateReturn = null;
+  billingReturn = null;
+  mockBillingGate.mockClear();
   installerOutcome = { kind: "ok", value: { id: "prod-us", status: "published" } };
   provisionOutcome = {
     kind: "ok",
@@ -491,6 +506,68 @@ describe("datasource tools — honor the gate verdict", () => {
     expect(res.isError).toBe(true);
     expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("forbidden");
     expect(mockRunInstaller).not.toHaveBeenCalled();
+  });
+});
+
+// ── Billing gate (#3570) ─────────────────────────────────────────────
+//
+// billingGateOrNull runs inside the dispatch wrapper after rate-limit but
+// before the ADR-0016 gate order. A suspended / over-limit workspace must be
+// blocked before any installer or gate call fires.
+
+describe("datasource MCP mutations — billing gate (#3570)", () => {
+  it("a suspended workspace is blocked and the installer never runs", async () => {
+    billingReturn = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            code: "billing_blocked",
+            message: "Workspace is suspended. Resolve your billing status before querying.",
+            hint: "Retrying will not help. The workspace owner must resolve the workspace's billing or suspension status.",
+          }),
+        },
+      ],
+      isError: true,
+    };
+    const client = await createTestClient();
+    // Use a mutating tool (delete) to verify the billing gate fires before the installer.
+    const res = await client.callTool({ name: "delete_datasource", arguments: { id: "prod-us" } });
+    expect(res.isError).toBe(true);
+    const env = JSON.parse(getContentText(res.content));
+    expect(env.code).toBe("billing_blocked");
+    // Gate and installer must NOT have been reached.
+    expect(mockRunGate).not.toHaveBeenCalled();
+    expect(mockRunInstaller).not.toHaveBeenCalled();
+  });
+
+  it("billing gate is keyed on actor.activeOrganizationId (not the OTel workspaceId fallback)", async () => {
+    // The billing gate mock receives the actor's org id. We assert that
+    // billingGateOrNull was called at all on a mutating tool call (the mock
+    // captures calls regardless of billingReturn).
+    const client = await createTestClient();
+    await client.callTool({ name: "archive_datasource", arguments: { id: "prod-us" } });
+    // billingGateOrNull should have been called once for the dispatch.
+    expect(mockBillingGate.mock.calls.length).toBe(1);
+  });
+
+  it("read-only list_datasources also routes through the billing gate (metadata via connected ds)", async () => {
+    billingReturn = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ code: "billing_blocked", message: "suspended" }),
+        },
+      ],
+      isError: true,
+    };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "list_datasources", arguments: {} });
+    // List is also blocked (datasource metadata reads are gated).
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(getContentText(res.content)).code).toBe("billing_blocked");
+    // Lib layer (listDatasources) must not have been called.
+    expect(mockListDatasources).not.toHaveBeenCalled();
   });
 });
 

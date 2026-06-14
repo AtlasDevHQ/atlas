@@ -160,6 +160,37 @@ The audit is only useful if it surfaces the failure modes that caused #2628, #26
 
 In each case, the audit table contains a single row whose contents are inconsistent with the broken migration — i.e. the auditor would have had to either update the row (and reviewers would push back on the contract change) or refuse the migration. The CLAUDE.md checklist enforces the first.
 
+## Plugin MCP tool governance fields (#3571, ADR-0016)
+
+Plugins that contribute MCP tools via `AtlasMcpTool.mcpTools()` can now declare
+ADR-0016 governance fields that let Atlas's full gate pipeline (gates 1–4) enforce
+per-workspace policies, RBAC, and approval workflows — parity with built-in tools.
+
+### `AtlasMcpTool` — governance declaration fields
+
+These optional fields live on the `AtlasMcpTool<TInput, TOutput>` type in
+`@useatlas/plugin-sdk`. Absent fields receive safe defaults so existing plugins
+remain fully backward-compatible.
+
+| Field | Type | Default | Gate | Description |
+|---|---|---|---|---|
+| `actionCategory` | `"datasource" \| "integration" \| "policy"` | `"integration"` | Gate 1 | Per-workspace MCP action-policy kill-switch category. A workspace admin can disable a category; every tool in that category is blocked. |
+| `minRole` | `"member" \| "admin" \| "owner"` | `"member"` | Gate 3 | Minimum RBAC role required on the bound actor at dispatch time (live-resolved, not session-cached). |
+| `destructive` | `boolean` | `false` | Gate 4 | If `true`, the tool is routed through the approval gate (`origin=mcp`) before execution. A matching approval rule queues the action for review. |
+
+### Gate wire-up
+
+The MCP-side bridge (`packages/mcp/src/plugin-tools.ts`) injects the real
+`runMcpDispatchGate` from `dispatch-gate.ts` into `registerPluginMcpTools` via
+the `runDispatchGate` option. The gate clears all four ADR-0016 gates in order:
+gate 1 (action policy) → gate 2 (mcp:write scope) → gate 3 (RBAC) → gate 4
+(approval). Gate 2 (mcp:write) is keyed on `annotations.readOnlyHint` /
+`annotations.destructiveHint` as before. For callers that do not inject a gate
+runner (backward-compat), the inline gate-2 check fires instead (no change to
+prior behavior for tools that do not inject `runDispatchGate`).
+
+Status: **✓ verified** — gates 1/3/4 tested in `packages/api/src/__tests__/plugin-mcp-tools.test.ts` (`describe("registerPluginMcpTools — ADR-0016 gates 1/3/4 (#3571)")`).
+
 ## References
 
 - ADR-0003 (two-store install metadata + credentials): `docs/adr/0003-two-store-chat-install-metadata-credentials.md`

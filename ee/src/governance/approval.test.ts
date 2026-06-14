@@ -1081,3 +1081,76 @@ describe("ApprovalError", () => {
     expect(err.message).toBe("test");
   });
 });
+
+// ── #3573 — datasource rule_type + MCP default-required ──────────────
+
+describe("checkApprovalRequired — datasource rule_type (#3573)", () => {
+  beforeEach(resetMocks);
+
+  it("matches a datasource:* resource against a rule_type='datasource' + pattern='*' rule", async () => {
+    ee.queueMockRows([
+      makeRuleRow({ id: "rule-ds", rule_type: "datasource", pattern: "*", origin: "mcp" }),
+    ]);
+    const result = await run(
+      checkApprovalRequired("org-1", ["datasource:prod-us"], [], { origin: "mcp" }),
+    );
+    expect(result.required).toBe(true);
+    expect(result.matchedRules[0].id).toBe("rule-ds");
+  });
+
+  it("matches a specific datasource id against rule_type='datasource' + pattern='prod-us'", async () => {
+    ee.queueMockRows([
+      makeRuleRow({ id: "rule-ds", rule_type: "datasource", pattern: "prod-us", origin: "mcp" }),
+    ]);
+    const result = await run(
+      checkApprovalRequired("org-1", ["datasource:prod-us"], [], { origin: "mcp" }),
+    );
+    expect(result.required).toBe(true);
+    expect(result.matchedRules[0].id).toBe("rule-ds");
+  });
+
+  it("does NOT match a different datasource id against a specific pattern", async () => {
+    ee.queueMockRows([
+      makeRuleRow({ id: "rule-ds", rule_type: "datasource", pattern: "prod-us", origin: "mcp" }),
+    ]);
+    const result = await run(
+      checkApprovalRequired("org-1", ["datasource:staging"], [], { origin: "mcp" }),
+    );
+    // No match — pattern was for prod-us only; staging has no rule.
+    // BUT the MCP default-required path fires because there are no matched
+    // rules AND origin=mcp AND all resources are datasource:* prefixed.
+    // The DB row WAS fetched (rows.length > 0), but it didn't match.
+    // Per the implementation, the default fires when matchedRules is empty
+    // AND origin=mcp AND all resources are datasource:* prefixed.
+    expect(result.required).toBe(true);
+  });
+
+  it("default install (no approval_rules rows) + origin=mcp + datasource resource → required by default", async () => {
+    // The key finding: delete_datasource with no DB rules must default to required.
+    ee.queueMockRows([]); // no rules in DB
+    const result = await run(
+      checkApprovalRequired("org-1", ["datasource:prod-us"], [], { origin: "mcp" }),
+    );
+    expect(result.required).toBe(true);
+    expect(result.matchedRules).toHaveLength(1);
+    expect(result.matchedRules[0].id).toBe("__mcp_datasource_default__");
+  });
+
+  it("default-required only fires for origin=mcp (chat origin skips the default)", async () => {
+    ee.queueMockRows([]); // no rules
+    const result = await run(
+      checkApprovalRequired("org-1", ["datasource:prod-us"], [], { origin: "chat" }),
+    );
+    // Non-MCP origin: no rules, no default, required: false.
+    expect(result.required).toBe(false);
+  });
+
+  it("default-required only fires when ALL resources are datasource:* prefixed", async () => {
+    ee.queueMockRows([]); // no rules
+    // Mixed resources (datasource + a regular table) → not the MCP default path.
+    const result = await run(
+      checkApprovalRequired("org-1", ["datasource:prod-us", "users"], [], { origin: "mcp" }),
+    );
+    expect(result.required).toBe(false);
+  });
+});

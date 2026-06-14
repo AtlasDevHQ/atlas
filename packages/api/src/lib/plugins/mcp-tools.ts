@@ -473,6 +473,15 @@ export interface RegisterPluginMcpToolsOptions {
     pluginId: string,
     qualifiedName: string,
   ) => McpToolContextShape["logger"];
+  /**
+   * #3571 — ADR-0016 gate runner (gates 1, 3, 4). Injected by
+   * `packages/mcp/src/plugin-tools.ts` which imports `runMcpDispatchGate`
+   * from `dispatch-gate.ts`. Tests inject a stub. When undefined (no injector
+   * provided), gates 1/3/4 are skipped and the tool proceeds — this preserves
+   * backward-compat for callers that only wire gate 2 (mcp:write check above).
+   * Production callers (plugin-tools.ts) MUST inject this.
+   */
+  runDispatchGate?: PluginDispatchGateRunner;
 }
 
 /** Append the standard error contract to a plugin tool description. */
@@ -562,6 +571,7 @@ export function registerPluginMcpTools(
     scopes,
     traceWrap,
     loggerFor = defaultLogger,
+    runDispatchGate,
   } = opts;
 
   for (const tool of registry.getAll()) {
@@ -588,27 +598,66 @@ export function registerPluginMcpTools(
         // `destructiveHint` annotation (see {@link pluginToolMutates}).
         { requestId, user: actor, agentOrigin: "mcp", actor: mcpActor, ...(scopes ? { scopes } : {}) },
         async () => {
-          // ── mcp:write gate (#3520, ADR-0016 gate 2) ──
-          // A mutating plugin tool requires the `mcp:write` scope on a HOSTED
-          // dispatch (clientId set). stdio MCP carries no third-party client,
-          // so no scope term applies (exempt) — parity with the built-in
-          // `writeScopeOrNull` gate, which `dispatch-gate.ts` can't be reused
-          // here because packages/mcp depends on packages/api, not the
-          // reverse. Read-only / un-annotated tools are unaffected. Runs
-          // BEFORE the rate-limit gate so a forbidden call doesn't consume
-          // the client's rate budget.
-          if (clientId && pluginToolMutates(tool.annotations) && !scopes?.includes("mcp:write")) {
-            log.warn(
-              { qualifiedName: tool.qualifiedName, clientId, requestId },
-              "Mutating plugin MCP tool denied — token lacks mcp:write",
-            );
-            return envelopeResult(
-              "forbidden",
-              "This tool mutates data and requires the 'mcp:write' OAuth scope, which this token does not carry.",
+          // ── ADR-0016 gates 1–4 (#3571) ──
+          // When a gate runner is injected (production: plugin-tools.ts injects
+          // `runMcpDispatchGate`), ALL four gates fire in order:
+          //   gate 1 — action-policy kill-switch (actionCategory, defaults 'integration')
+          //   gate 2 — mcp:write scope (requiresWrite, derived from annotations)
+          //   gate 3 — RBAC minRole (defaults 'member')
+          //   gate 4 — approval for destructive actions (defaults false)
+          // Runs BEFORE the rate-limit gate so denied calls don't consume quota.
+          // When no runner is injected (backward-compat callers / unit tests that
+          // don't wire the gate), we fall back to the inline gate-2 check below.
+          if (runDispatchGate) {
+            const gateBlock = await runDispatchGate(
               {
-                hint: "Re-authorize the MCP client with the mcp:write scope (the workspace admin controls which scopes a client may request).",
+                actor,
+                ...(clientId ? { clientId } : {}),
+                ...(scopes ? { scopes } : {}),
+                orgId: actor.activeOrganizationId,
+                requesterId: actor.id,
+                requesterEmail: actor.label,
+                requestId,
+              },
+              {
+                toolName: tool.qualifiedName,
+                // Safe defaults for unmarked tools: integration category, member
+                // role, non-destructive. A tool that doesn't declare stays
+                // member-callable + non-destructive but now honors a workspace
+                // `integration`-category kill-switch (gate 1) and RBAC (gate 3).
+                actionCategory: tool.actionCategory ?? "integration",
+                requiresWrite: pluginToolMutates(tool.annotations),
+                minRole: tool.minRole ?? "member",
+                ...(tool.destructive === true
+                  ? {
+                      destructive: {
+                        resource: `plugin:${tool.qualifiedName}`,
+                        description: `Plugin tool ${tool.qualifiedName} (destructive action via MCP)`,
+                      },
+                    }
+                  : {}),
               },
             );
+            if (gateBlock) return gateBlock;
+          } else {
+            // ── fallback: inline gate 2 only (#3520, backward-compat) ──
+            // A mutating plugin tool requires the `mcp:write` scope on a HOSTED
+            // dispatch (clientId set). stdio MCP carries no third-party client,
+            // so no scope term applies (exempt). Runs BEFORE the rate-limit gate
+            // so a forbidden call doesn't consume the client's rate budget.
+            if (clientId && pluginToolMutates(tool.annotations) && !scopes?.includes("mcp:write")) {
+              log.warn(
+                { qualifiedName: tool.qualifiedName, clientId, requestId },
+                "Mutating plugin MCP tool denied — token lacks mcp:write",
+              );
+              return envelopeResult(
+                "forbidden",
+                "This tool mutates data and requires the 'mcp:write' OAuth scope, which this token does not carry.",
+                {
+                  hint: "Re-authorize the MCP client with the mcp:write scope (the workspace admin controls which scopes a client may request).",
+                },
+              );
+            }
           }
 
           // Per-OAuth-client rate-limit gate (#2071). Hosted MCP threads

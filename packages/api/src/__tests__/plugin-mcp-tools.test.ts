@@ -833,3 +833,184 @@ describe("registerPluginMcpTools — mcp:write gate for mutating plugin tools (#
     expect(called).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3571 — ADR-0016 gates 1/3/4 for plugin MCP tools
+// ---------------------------------------------------------------------------
+
+describe("registerPluginMcpTools — ADR-0016 gates 1/3/4 (#3571)", () => {
+  let registry: PluginMcpToolRegistry;
+  let server: FakeMcpServer;
+
+  // Gate-call capture. Each test injects this as `runDispatchGate`.
+  interface GateCall {
+    ctx: { orgId?: string; requesterId?: string };
+    reqs: {
+      toolName: string;
+      actionCategory?: string;
+      minRole?: string;
+      destructive?: { resource: string; description: string };
+    };
+  }
+  let gateCalls: GateCall[] = [];
+  let gateReturn: McpCallToolResult | null = null;
+
+  function makeGateRunner() {
+    return async (ctx: GateCall["ctx"], reqs: GateCall["reqs"]): Promise<McpCallToolResult | null> => {
+      gateCalls.push({ ctx, reqs });
+      return gateReturn;
+    };
+  }
+
+  function testActor() {
+    return { id: "user-1", label: "user@example.com", mode: "simple-key" as const, activeOrganizationId: "org-1" };
+  }
+
+  function baseOpts() {
+    return {
+      registry,
+      actor: testActor(),
+      transport: "stdio" as const,
+      workspaceId: "org-1",
+      deployMode: "self-hosted" as const,
+      runDispatchGate: makeGateRunner(),
+    };
+  }
+
+  beforeEach(() => {
+    registry = new PluginMcpToolRegistry();
+    server = new FakeMcpServer();
+    gateCalls = [];
+    gateReturn = null;
+    rateLimitState.outcome = { kind: "ok" };
+    rateLimitState.calls = [];
+  });
+
+  it("gate 1 (action-policy): blocking the 'integration' category blocks an integration plugin tool", async () => {
+    // The gate runner returns a forbidden block; assert the handler short-circuits.
+    gateReturn = {
+      content: [{ type: "text", text: JSON.stringify({ code: "forbidden", message: "integration category disabled" }) }],
+      isError: true,
+    };
+    let handlerCalled = false;
+    registry.register("myPlugin", makeTool({
+      name: "syncContacts",
+      annotations: { readOnlyHint: false },
+      handler: async () => { handlerCalled = true; return { ok: true }; },
+    }));
+    registerPluginMcpTools(server, baseOpts());
+    const handler = server.registered.get("myPlugin.syncContacts")!.handler;
+    const res = await handler({});
+    // The gate blocked — handler body must NOT run.
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).code).toBe("forbidden");
+    expect(handlerCalled).toBe(false);
+    // Gate was called with actionCategory defaulting to 'integration'.
+    expect(gateCalls[0]?.reqs.actionCategory).toBe("integration");
+  });
+
+  it("gate 1: a tool declaring actionCategory 'datasource' passes that category to the gate runner", async () => {
+    registry.register("myPlugin", makeTool({
+      name: "createConn",
+      actionCategory: "datasource",
+      annotations: { readOnlyHint: false },
+    }));
+    registerPluginMcpTools(server, baseOpts());
+    const handler = server.registered.get("myPlugin.createConn")!.handler;
+    await handler({});
+    expect(gateCalls[0]?.reqs.actionCategory).toBe("datasource");
+  });
+
+  it("gate 3 (RBAC): a minRole:'admin' plugin tool passes minRole to the gate runner", async () => {
+    // Gate returns forbidden (simulating a member actor failing gate 3).
+    gateReturn = {
+      content: [{ type: "text", text: JSON.stringify({ code: "forbidden", message: "requires admin role" }) }],
+      isError: true,
+    };
+    let handlerCalled = false;
+    registry.register("myPlugin", makeTool({
+      name: "adminAction",
+      minRole: "admin",
+      annotations: { readOnlyHint: false },
+      handler: async () => { handlerCalled = true; return { ok: true }; },
+    }));
+    registerPluginMcpTools(server, baseOpts());
+    const handler = server.registered.get("myPlugin.adminAction")!.handler;
+    const res = await handler({});
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).code).toBe("forbidden");
+    expect(handlerCalled).toBe(false);
+    expect(gateCalls[0]?.reqs.minRole).toBe("admin");
+  });
+
+  it("gate 3: un-marked tools default to minRole 'member' in the gate call", async () => {
+    registry.register("myPlugin", makeTool({ name: "lookup" }));
+    registerPluginMcpTools(server, baseOpts());
+    const handler = server.registered.get("myPlugin.lookup")!.handler;
+    await handler({});
+    expect(gateCalls[0]?.reqs.minRole).toBe("member");
+  });
+
+  it("gate 4 (approval): a destructive:true plugin tool passes a destructive descriptor to the gate runner", async () => {
+    // Gate returns an approval-required body.
+    gateReturn = {
+      content: [{ type: "text", text: JSON.stringify({
+        approval_required: true,
+        approval_request_id: "req_plugin_1",
+        matched_rules: ["MCP destructive"],
+        message: "needs approval",
+      }) }],
+    };
+    let handlerCalled = false;
+    registry.register("myPlugin", makeTool({
+      name: "wipeData",
+      destructive: true,
+      annotations: { readOnlyHint: false },
+      handler: async () => { handlerCalled = true; return { ok: true }; },
+    }));
+    registerPluginMcpTools(server, baseOpts());
+    const handler = server.registered.get("myPlugin.wipeData")!.handler;
+    const res = await handler({});
+    // approval_required is NOT an error response.
+    expect(res.isError).toBeFalsy();
+    const body = JSON.parse(res.content[0].text);
+    expect(body.approval_required).toBe(true);
+    expect(body.approval_request_id).toBe("req_plugin_1");
+    expect(handlerCalled).toBe(false);
+    // The gate was called with destructive set.
+    expect(gateCalls[0]?.reqs.destructive).toBeDefined();
+    expect(gateCalls[0]?.reqs.destructive?.resource).toContain("myPlugin.wipeData");
+  });
+
+  it("non-destructive tools have no 'destructive' field in the gate call", async () => {
+    registry.register("myPlugin", makeTool({ name: "readData" }));
+    registerPluginMcpTools(server, baseOpts());
+    const handler = server.registered.get("myPlugin.readData")!.handler;
+    await handler({});
+    expect(gateCalls[0]?.reqs.destructive).toBeUndefined();
+  });
+
+  it("when no runDispatchGate is injected, falls back to inline gate-2 check (backward-compat)", async () => {
+    // Without runDispatchGate, the inline mcp:write check still fires.
+    registry.register("infra", makeTool({
+      name: "createThing",
+      annotations: { readOnlyHint: false },
+    }));
+    registerPluginMcpTools(server, {
+      registry,
+      actor: testActor(),
+      transport: "sse",
+      workspaceId: "org-1",
+      deployMode: "saas",
+      clientId: "claude-desktop",
+      scopes: ["mcp:read"], // no mcp:write
+      // no runDispatchGate
+    });
+    const handler = server.registered.get("infra.createThing")!.handler;
+    const res = await handler({});
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text).code).toBe("forbidden");
+    // No gate calls (we didn't inject a gate runner).
+    expect(gateCalls).toHaveLength(0);
+  });
+});

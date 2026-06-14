@@ -419,13 +419,16 @@ export async function elicitMaskedForm(
     throw new ElicitationError(verified.reason);
   }
 
-  // Collect every non-empty string value. Empty/omitted optionals are dropped so
-  // a blank field never persists as an empty credential; the caller enforces
-  // required-field presence against the catalog schema.
+  // Collect every non-blank string value. Empty/omitted/whitespace-only optionals
+  // are dropped so a blank field never persists as an empty credential (and the
+  // caller's required-field check, which tests key presence, then catches a
+  // blank required field instead of probing it as a present-but-empty value).
+  // The original (untrimmed) value is preserved when non-blank — a credential may
+  // legitimately carry internal whitespace; only the emptiness test trims.
   const values: Record<string, string> = {};
   for (const field of args.fields) {
     const raw = result.content?.[field.name];
-    if (typeof raw === "string" && raw.length > 0) values[field.name] = raw;
+    if (typeof raw === "string" && raw.trim().length > 0) values[field.name] = raw;
   }
   return { action: "accept", values };
 }

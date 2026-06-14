@@ -247,6 +247,28 @@ describe("elicitMaskedForm round-trip", () => {
     expect(captured.values).not.toHaveProperty("apiKey");
   });
 
+  it("drops a whitespace-only field rather than persisting it as a present-but-blank value", async () => {
+    // A non-compliant client could `accept` with a required field set to only
+    // whitespace; that must be dropped (so the caller's presence check rejects
+    // it) instead of flowing into the config as a blank credential.
+    const { captured, client } = await wireFormElicitation({
+      action: "accept",
+      content: { url: "   ", apiKey: "BASE64KEY==" },
+    });
+    await client.callTool({ name: "needsForm", arguments: {} });
+    expect(captured.values).toEqual({ apiKey: "BASE64KEY==" });
+    expect(captured.values).not.toHaveProperty("url");
+  });
+
+  it("preserves a value with significant internal whitespace (only the emptiness test trims)", async () => {
+    const { captured, client } = await wireFormElicitation({
+      action: "accept",
+      content: { url: "elasticsearch://h:9200", apiKey: "key with spaces" },
+    });
+    await client.callTool({ name: "needsForm", arguments: {} });
+    expect(captured.values).toEqual({ url: "elasticsearch://h:9200", apiKey: "key with spaces" });
+  });
+
   it("surfaces a decline with no values", async () => {
     const { captured, client } = await wireFormElicitation({ action: "decline" });
     await client.callTool({ name: "needsForm", arguments: {} });

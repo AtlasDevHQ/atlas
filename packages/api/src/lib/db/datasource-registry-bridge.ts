@@ -135,6 +135,7 @@ type ProbeableConnection = {
 export async function probePluginDatasourceConnection(
   dbType: string,
   decryptedConfig: Readonly<Record<string, unknown>>,
+  timeoutMs: number = PLUGIN_PROBE_TIMEOUT_MS,
 ): Promise<PluginProbeOutcome> {
   const conn = await findDatasourcePluginConnection(dbType);
   if (!conn || typeof conn.createFromConfig !== "function") {
@@ -147,25 +148,50 @@ export async function probePluginDatasourceConnection(
     };
   }
 
+  // Capture the narrowed factory before the nested closure below — TS resets the
+  // `typeof conn.createFromConfig === "function"` narrowing inside the async IIFE.
+  const createFromConfig = conn.createFromConfig;
   let built: ProbeableConnection | undefined;
-  try {
-    built = (await conn.createFromConfig(decryptedConfig)) as ProbeableConnection;
+  let timedOut = false;
+  // The WHOLE build+probe runs under one deadline. `createFromConfig` has no
+  // timeout of its own, and the `query`/`ping` timeoutMs is only honored if the
+  // adapter chooses to — so an adapter that eagerly connects on build, or
+  // ignores its own probe timeout, must not hang the MCP `create_datasource`
+  // call against an unreachable host. On a deadline breach we salvage-close any
+  // connection the build later yields (below) so a slow-but-eventual resolve
+  // can't leak a pool.
+  const probeRun = (async () => {
+    built = (await createFromConfig(decryptedConfig)) as ProbeableConnection;
     // Prefer the connection's native liveness check (ES/OpenSearch `ping`); fall
     // back to `SELECT 1` for SQL-only adapters that expose no `ping`.
     if (typeof built.ping === "function") {
-      await built.ping(PLUGIN_PROBE_TIMEOUT_MS);
+      await built.ping(timeoutMs);
     } else {
-      await built.query(PLUGIN_PROBE_SQL, PLUGIN_PROBE_TIMEOUT_MS);
+      await built.query(PLUGIN_PROBE_SQL, timeoutMs);
     }
+  })();
+  void probeRun.catch(() => {}).finally(() => {
+    if (timedOut && built) void built.close().catch(() => {});
+  });
+  try {
+    await withProbeTimeout(probeRun, timeoutMs, () => {
+      timedOut = true;
+    });
     return { ok: true };
   } catch (err) {
     return {
       ok: false,
       reason: "connect_failed",
-      message: err instanceof Error ? err.message : String(err),
+      message: timedOut
+        ? `Connection probe exceeded ${timeoutMs}ms — the datasource may be unreachable.`
+        : err instanceof Error
+          ? err.message
+          : String(err),
     };
   } finally {
-    if (built) {
+    // The timed-out path's salvage-close (above) owns teardown of a late build;
+    // here we close only the connection we actually awaited in-deadline.
+    if (!timedOut && built) {
       try {
         await built.close();
       } catch {
@@ -175,6 +201,30 @@ export async function probePluginDatasourceConnection(
       }
     }
   }
+}
+
+/**
+ * Reject `p` if it has not settled within `ms`, invoking `onTimeout` so the
+ * caller can flag the breach + salvage-close a late-resolving connection. Clears
+ * its timer on settle so a resolved probe never keeps the event loop alive.
+ */
+function withProbeTimeout(p: Promise<void>, ms: number, onTimeout: () => void): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      onTimeout();
+      reject(new Error(`probe timed out after ${ms}ms`));
+    }, ms);
+    p.then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
 }
 
 /**

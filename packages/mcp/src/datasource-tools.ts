@@ -681,6 +681,13 @@ export function registerDatasourceTools(
           .max(MAX_FILTER_LEN)
           .optional()
           .describe("Optional human-readable description (shown in the agent system prompt)."),
+        schema: z
+          .string()
+          .max(MAX_ID_LEN)
+          .optional()
+          .describe(
+            "Optional schema / search_path for SQL datasources (postgres/mysql/clickhouse). Non-secret routing hint — set here, not in the secure prompt.",
+          ),
         group_id: z
           .string()
           .max(MAX_ID_LEN)
@@ -688,7 +695,7 @@ export function registerDatasourceTools(
           .describe("Optional environment-group binding."),
       },
     },
-    async ({ db_type, install_id, description, group_id }, extra): Promise<CallToolResult> =>
+    async ({ db_type, install_id, description, schema, group_id }, extra): Promise<CallToolResult> =>
       dispatch(
         "create_datasource",
         // Gate 1 (#3509) datasource kill-switch + mcp:write + admin. NOT
@@ -738,11 +745,14 @@ export function registerDatasourceTools(
 
           // `config` holds the secret + non-secret connection fields — used only
           // for the pre-flight probe + the installer's encrypt-at-rest path,
-          // NEVER logged or returned. `description` is an agent-set label, merged
-          // in here. `secretKeys` drives the lib's error-scrub.
+          // NEVER logged or returned. `description` (label) and `schema`
+          // (search_path) are non-secret agent-set fields — they're tool args,
+          // NOT elicited in the secure prompt — merged in here. `secretKeys`
+          // drives the lib's error-scrub.
           const config: Record<string, unknown> = {
             ...collected.values,
             ...(description !== undefined ? { description } : {}),
+            ...(schema !== undefined ? { schema } : {}),
           };
 
           const outcome = await lib.provisionDatasource(orgId, {

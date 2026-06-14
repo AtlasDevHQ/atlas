@@ -698,6 +698,19 @@ describe("create_datasource", () => {
     expect(input.secretKeys).toEqual(["apiKey"]);
   });
 
+  it("merges the optional non-secret schema (search_path) tool arg into config — not into the masked prompt", async () => {
+    const client = await createTestClient();
+    await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "postgres", install_id: "new-pg", schema: "analytics" },
+    });
+    // `schema` is an agent-set arg, NOT an elicited credential field.
+    expect(elicitCalls[0].fields.map((f) => f.name)).toEqual(["url"]);
+    const input = mockProvision.mock.calls[0]?.[1] as { config: Record<string, string> };
+    expect(input.config.schema).toBe("analytics");
+    expect(input.config.url).toBe(ELICITED_SECRET);
+  });
+
   it("an unsupported (no-plugin) type is rejected BEFORE elicitation", async () => {
     provisionCapability = { kind: "unsupported", dbType: "clickhouse", message: "no clickhouse plugin installed" };
     const client = await createTestClient();

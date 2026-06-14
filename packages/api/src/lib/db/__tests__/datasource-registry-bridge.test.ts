@@ -473,4 +473,53 @@ describe("probePluginDatasourceConnection (#3547)", () => {
     }
     expect(closed).toBe(true);
   });
+
+  it("bounds a hung createFromConfig under the deadline (createFromConfig has no timeout of its own)", async () => {
+    // An adapter whose createFromConfig eagerly opens a TCP connection to an
+    // unreachable host (no RST) would otherwise hang the MCP create call; the
+    // overall deadline must reject it as connect_failed, not stall.
+    fakeDatasourcePlugins = [
+      {
+        types: ["datasource"],
+        connection: {
+          dbType: "clickhouse",
+          // Never resolves — simulates a build that blocks on a dead host.
+          createFromConfig: () => new Promise(() => {}),
+        },
+      },
+    ];
+    const start = Date.now();
+    const out = await bridge.probePluginDatasourceConnection("clickhouse", { url: "clickhouse://dead/db" }, 50);
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.reason).toBe("connect_failed");
+      expect(out.message).toContain("exceeded");
+    }
+    // Returned promptly on the deadline rather than hanging.
+    expect(Date.now() - start).toBeLessThan(1000);
+  });
+
+  it("salvage-closes a connection whose build resolves AFTER the deadline (no pool leak)", async () => {
+    let closed = false;
+    // Build resolves late (after the deadline) — the probe must still close the
+    // orphaned connection rather than leaking it.
+    const conn = {
+      query: async () => ({ columns: [], rows: [] }),
+      close: async () => { closed = true; },
+    };
+    fakeDatasourcePlugins = [
+      {
+        types: ["datasource"],
+        connection: {
+          dbType: "clickhouse",
+          createFromConfig: () => new Promise((resolve) => setTimeout(() => resolve(conn), 60)),
+        },
+      },
+    ];
+    const out = await bridge.probePluginDatasourceConnection("clickhouse", { url: "clickhouse://slow/db" }, 20);
+    expect(out.ok).toBe(false);
+    // Give the late build time to resolve + the salvage-close to run.
+    await new Promise((r) => setTimeout(r, 80));
+    expect(closed).toBe(true);
+  });
 });

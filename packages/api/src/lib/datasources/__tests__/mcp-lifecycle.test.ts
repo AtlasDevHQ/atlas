@@ -337,14 +337,16 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
 });
 
 describe("loadProvisionConfigFields", () => {
-  it("maps the catalog config_schema to elicitation fields + secretKeys, excluding description", async () => {
-    // Mirrors the elasticsearch catalog row: non-secret url + secret apiKey,
-    // plus a description field that must NOT be elicited (it's a tool arg).
+  it("maps the catalog config_schema to elicitation fields + secretKeys, excluding description + schema", async () => {
+    // Mirrors a SQL catalog row: non-secret url + secret apiKey, plus a
+    // description (tool-arg label) and a schema (search_path) field that must
+    // NOT be elicited into the secure prompt — both are non-secret agent args.
     internalRows = [
       {
         config_schema: [
           { key: "url", type: "string", label: "Connection URL", required: true, description: "es://…" },
           { key: "apiKey", type: "string", label: "API Key", secret: true },
+          { key: "schema", type: "string", label: "Schema" },
           { key: "description", type: "string", label: "Description" },
         ],
       },
@@ -352,7 +354,7 @@ describe("loadProvisionConfigFields", () => {
     const res = await loadProvisionConfigFields("elasticsearch");
     expect(res.kind).toBe("ok");
     if (res.kind === "ok") {
-      expect(res.fields.map((f) => f.key)).toEqual(["url", "apiKey"]); // description excluded
+      expect(res.fields.map((f) => f.key)).toEqual(["url", "apiKey"]); // description + schema excluded
       expect(res.fields[0]).toEqual({ key: "url", label: "Connection URL", description: "es://…", required: true, secret: false });
       expect(res.fields[1].secret).toBe(true);
       expect(res.secretKeys).toEqual(["apiKey"]);

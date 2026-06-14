@@ -398,6 +398,9 @@ export interface ProvisionConfigField {
  * Catalog `config_schema` keys that must NEVER appear in the masked credential
  * elicitation form, because they are not connection credentials:
  *   - `description` / `display_name` — a human label (collected as a tool arg);
+ *   - `schema` — the optional Postgres/MySQL/ClickHouse search_path; a
+ *     non-secret routing hint, set by the agent as a tool arg, not typed into a
+ *     "secure credential" box;
  *   - `write_allowlist` / `side_effecting_operations` — REST write-governance
  *     (JSON allowlists); provisioning lands read-only by default and these are
  *     configured via the admin console, not typed into a "secure credential" box.
@@ -406,6 +409,7 @@ export interface ProvisionConfigField {
 const NON_CREDENTIAL_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "description",
   "display_name",
+  "schema",
   "write_allowlist",
   "side_effecting_operations",
 ]);

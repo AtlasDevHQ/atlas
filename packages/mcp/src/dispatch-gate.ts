@@ -202,7 +202,7 @@ export async function runMcpDispatchGate(
 
   // ── Gate 4: approval flow for destructive actions (origin=mcp) ──
   if (reqs.destructive) {
-    return runApprovalGate(ctx, reqs.destructive, deps);
+    return runApprovalGate(ctx, reqs, deps);
   }
 
   return null;
@@ -267,9 +267,10 @@ async function runActionPolicyGate(
 
 async function runApprovalGate(
   ctx: McpDispatchGateContext,
-  destructive: NonNullable<McpDispatchGateRequirements["destructive"]>,
+  reqs: McpDispatchGateRequirements,
   deps: McpDispatchGateDeps,
 ): Promise<CallToolResult | null> {
+  const destructive = reqs.destructive!;
   // Identity guard FIRST (before consulting the gate): a destructive action
   // with no bound requester/workspace must deny, not fall through. Gate 3
   // already requires a bound admin, but checking here keeps the guard
@@ -308,8 +309,15 @@ async function runApprovalGate(
 
     // Don't re-queue a request the requester has already had approved for the
     // same action (parity with executeSQL — avoids duplicate approvals on retry).
+    // #3582 — key on a STABLE identity (resource + action verb via toolName),
+    // NOT free-text description. Two distinct actions sharing a description
+    // string (e.g. both named "Delete datasource X") would be treated as
+    // already-approved for each other, which is over-permissive. The same
+    // resource + same tool always identifies the same real-world mutation,
+    // so this key is both stable and precise.
+    const dedupKey = `${reqs.toolName}:${destructive.resource}`;
     const alreadyApproved = await Effect.runPromise(
-      gate.hasApprovedRequest(orgId, requesterId, destructive.description),
+      gate.hasApprovedRequest(orgId, requesterId, dedupKey),
     );
     if (alreadyApproved) return null;
 
@@ -321,7 +329,11 @@ async function runApprovalGate(
         ruleName: firstRule.name,
         requesterId,
         requesterEmail: ctx.requesterEmail ?? null,
-        querySql: destructive.description,
+        // #3582 — store the stable dedup key as querySql so the
+        // hasApprovedRequest lookup (which compares on query_sql) finds
+        // previously-approved requests by the same stable identity.
+        // The human-readable description is stored separately as explanation.
+        querySql: dedupKey,
         explanation: destructive.description,
         connectionId: null,
         tablesAccessed,

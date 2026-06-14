@@ -151,6 +151,55 @@ describe("semanticFileToResourceUri (#3502)", () => {
   });
 });
 
+describe("watcher teardown on session close (#3572)", () => {
+  it("handle.close() clears subscriptions and stops notifications (mirrors server.server.onclose wiring)", async () => {
+    // #3572 AC: `server.server.onclose` calls `resourceHandle.close()` so the
+    // watcher and subscriptions are torn down when the session ends. This test
+    // drives `handle.close()` directly (which is exactly what the onclose
+    // callback invokes) and asserts the two observable effects:
+    //   1. subscriptionCount() drops to 0.
+    //   2. notifications after close() are silently dropped (no throw, no send).
+    const { client, handle } = await createTestClient();
+    const uri = "atlas://semantic/entities/orders";
+    await client.subscribeResource({ uri });
+    expect(handle.subscriptionCount()).toBe(1);
+
+    // Simulate session disconnect — onclose fires, which calls handle.close().
+    handle.close();
+    expect(handle.subscriptionCount()).toBe(0);
+
+    // A notify after close must not throw and must not emit (the subscription
+    // set is cleared, so notifyResourceUpdated is a no-op).
+    let received = false;
+    client.setNotificationHandler(ResourceUpdatedNotificationSchema, () => {
+      received = true;
+    });
+    await expect(handle.notifyResourceUpdated(uri)).resolves.toBeUndefined();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(received).toBe(false);
+  });
+
+  it("notifyResourceUpdated is the seam for semantic-layer regeneration (#3572 AC2)", async () => {
+    // AC2: the regeneration path reaches notifyResourceUpdated. This test
+    // confirms the exported seam: calling notifyResourceUpdated on a subscribed
+    // URI emits the SDK notification without requiring a real fs.watch event.
+    // The datasource-profiling / atlas-init regeneration call will use this
+    // same seam (returned from registerResources) rather than the fs watcher.
+    const { client, handle } = await createTestClient();
+    const uri = "atlas://semantic/catalog";
+    await client.subscribeResource({ uri });
+
+    let notified = false;
+    client.setNotificationHandler(ResourceUpdatedNotificationSchema, (n) => {
+      if (n.params.uri === uri) notified = true;
+    });
+
+    await handle.notifyResourceUpdated(uri);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(notified).toBe(true);
+  });
+});
+
 describe("resource subscriptions (#3502)", () => {
   /** Resolve once the client receives an `updated` for `uri` (or reject on timeout). */
   function waitForUpdate(client: Client, uri: string, timeoutMs = 1000): Promise<void> {

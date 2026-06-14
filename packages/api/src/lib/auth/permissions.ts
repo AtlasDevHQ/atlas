@@ -211,10 +211,21 @@ export function canApprove(
  * decision keyed on an approval *mode*; this is a plain "is this actor at
  * least <role>" check for gating admin/config tools.
  *
- * Fail-closed: an absent user (no bound identity — e.g. the stdio
+ * Fail-closed on an ABSENT user: no bound identity (e.g. the stdio
  * `system:mcp` trusted actor) returns `false`, so admin tools always
  * register but only a real bound identity at/above `minRole` clears the
  * gate (ADR-0016: "RBAC is the only source of authority").
+ *
+ * NOTE — a PRESENT user is NOT fail-closed on role: `getUserRole` falls back
+ * to the auth-mode default (ultimately `member`, level 0) when `user.role` is
+ * undefined, so a bound user with an unresolved role still CLEARS a
+ * `minRole: "member"` gate (it is denied only for `admin`/`owner`/
+ * `platform_admin` thresholds). Concretely: a hosted user whose DB role-
+ * lookup returns `undefined` (e.g. transient error, new member not yet
+ * propagated) is treated as `member`, not denied — they keep read access but
+ * are blocked from admin/owner/platform_admin tools. "No resolved role"
+ * therefore means "treated as member, not fully denied" — do NOT assume
+ * undefined-role ⇒ blocked across the board.
  */
 export function meetsRoleRequirement(
   user: AtlasUser | undefined,

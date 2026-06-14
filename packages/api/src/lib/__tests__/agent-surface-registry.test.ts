@@ -123,6 +123,10 @@ const KNOWN_ORIGIN_STAMPERS: OriginStamperSpec[] = [
   // #3507 — plugin-contributed MCP tools dispatch through this wrapper;
   // it must stamp 'mcp' too or origin-scoped approval rules skip them.
   { file: "packages/api/src/lib/plugins/mcp-tools.ts", originProof: /agentOrigin:\s*"mcp"/ },
+  // #3574 — datasource lifecycle tools (archive/restore/delete/create) dispatch
+  // through this file and stamp 'mcp'; removing the stamp would silently
+  // degrade origin-scoped approval rules for datasource MCP actions.
+  { file: "packages/mcp/src/datasource-tools.ts", originProof: /agentOrigin:\s*"mcp"/ },
 ];
 
 describe("F-54/F-55 agent-surface registry", () => {

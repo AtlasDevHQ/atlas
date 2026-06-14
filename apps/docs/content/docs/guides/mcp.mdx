@@ -790,6 +790,10 @@ Authorization: Bearer eyJhbGciOiJSUzI1NiIs…
 
 Tokens are bound to a per-region resource audience (`https://mcp.useatlas.dev/mcp`, or `https://mcp-eu.useatlas.dev/mcp`, etc.). A token issued at `mcp.useatlas.dev` won't verify at `mcp-eu.useatlas.dev` — audience mismatch is the first line of residency defense. The protected-resource metadata advertises the correct audience for each workspace. The issuer additionally accepts the underlying regional `api.*.useatlas.dev/mcp` audience for backward compatibility with tokens minted before the brand-hostname cutover; new clients always bind to the brand audience.
 
+<Callout type="warn" title="Self-hosted / proxied: align the public URL with the audience">
+The resource audience is derived from the server's `ATLAS_PUBLIC_API_URL`, and the SDK/client requests a token whose audience is computed from the `apiUrl` it was configured with (`packages/sdk/src/mcp.ts`). If you run Atlas behind a reverse proxy or on an alternate hostname so the client's `apiUrl` differs from the server's `ATLAS_PUBLIC_API_URL`, the RFC 8707 audience check **fails closed** — bearer verification returns `401 invalid_bearer` and the call is rejected, by design, rather than accepting a token minted for a different audience. Set `ATLAS_PUBLIC_API_URL` to the exact public origin clients connect to (the same value the client passes as `apiUrl`), so the issued token's audience matches what the resource server expects.
+</Callout>
+
 #### Workspace claim
 
 Every issued JWT carries a custom claim `https://atlas.useatlas.dev/workspace_id` set to the workspace the user authenticated against. The hosted MCP route verifies this claim matches the `{workspace_id}` path segment — mismatch is `403 cross_workspace_denied`. The server never reveals whether a given workspace exists.

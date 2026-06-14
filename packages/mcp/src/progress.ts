@@ -98,10 +98,18 @@ export async function withProgressAndCancellation<T>(
   await emit(0, opts.startMessage);
 
   let onAbort: (() => void) | undefined;
+  // #3584 — attach a no-op .catch to the cancellation promise so that if
+  // work wins the race and abort fires AFTER the listener is removed in
+  // `finally`, the resulting rejection has a handler and does not surface
+  // as an unhandled promise rejection in the process. The rejection is
+  // swallowed deliberately: by the time abort fires post-work, the caller
+  // has already received the successful result.
   const cancellation = new Promise<never>((_, reject) => {
     onAbort = () => reject(new OperationCancelledError());
     extra.signal.addEventListener("abort", onAbort, { once: true });
   });
+  // intentionally ignored: defuse the post-work abort race described above
+  cancellation.catch(() => {});
 
   try {
     const result = await Promise.race([work(reporter, extra.signal), cancellation]);

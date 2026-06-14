@@ -15,7 +15,7 @@
 
 // ── Rule types ──────────────────────────────────────────────────────
 
-export const APPROVAL_RULE_TYPES = ["table", "column", "cost"] as const;
+export const APPROVAL_RULE_TYPES = ["table", "column", "cost", "datasource"] as const;
 export type ApprovalRuleType = (typeof APPROVAL_RULE_TYPES)[number];
 
 export const APPROVAL_STATUSES = ["pending", "approved", "denied", "expired"] as const;

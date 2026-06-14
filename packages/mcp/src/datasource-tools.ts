@@ -67,6 +67,7 @@ import { elicitMaskedForm } from "./elicitation.js";
 import { withProgressAndCancellation, OperationCancelledError } from "./progress.js";
 import { createMcpLogger } from "./logger.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
+import { billingGateOrNull } from "./billing-gate.js";
 
 const log = createMcpLogger("mcp:datasource-tools");
 
@@ -339,6 +340,18 @@ export function registerDatasourceTools(
                 toolName,
               });
               if (limited) return limited;
+
+              // #3570 — billing gate: a suspended / trial-expired workspace must
+              // not mutate datasources through MCP. Lives INSIDE the try so a
+              // gate throw fails closed as `internal_error`. Keyed on the actor's
+              // workspace org id, NOT the OTel `workspaceId` fallback (which
+              // substitutes the actor id when no org is bound and would defeat
+              // the gate's no-org short-circuit). Mirrors tools.ts:318-322.
+              const billingBlock = await billingGateOrNull({
+                orgId: actor.activeOrganizationId,
+                requestId,
+              });
+              if (billingBlock) return billingBlock;
 
               // ADR-0016 gate order via the merged dispatch pipeline (#3508):
               //   gate 1  action-policy kill-switch (#3509) — fires when `reqs`

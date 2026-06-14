@@ -636,11 +636,77 @@ describe("SSE server — session hardening (#3492)", () => {
     // one with `activeStreams > 0` — proving the live-stream guard holds within a
     // mixed population, not just for a lone session.
     const farFuture = Date.now() + 24 * 60 * 60 * 1000; // +1 day
-    const evicted = handle._sweepIdleSessionsForTests(farFuture, 60_000);
+    const evicted = handle._sweepIdleSessionsForTests(farFuture, 60_000, Infinity);
     expect(evicted).toBe(2);
     expect(handle._sessionCount()).toBe(1);
 
     await connected.close();
+  });
+
+  // ── #3576 — held-open GET stream cannot indefinitely pin a session ────────
+  //
+  // A client can hold the GET notification stream open forever, setting
+  // `activeStreams > 0` and preventing the idle sweep from reclaiming the
+  // slot. The fix: the sweep reclaims sessions whose streams have been held
+  // open past `heldStreamMaxAgeMs` (passed as 3rd arg to
+  // `_sweepIdleSessionsForTests`).
+
+  it("reclaims a session whose held-open GET stream exceeds the max stream age (#3576)", async () => {
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), {
+      port: 0,
+      maxSessions: 2,
+    });
+    const port = handle.server.port;
+
+    // Connect a client that holds a GET notification stream open.
+    const liveClient = new Client({ name: "client-held", version: "0.0.1" });
+    const liveTransport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${port}/mcp`),
+    );
+    await liveClient.connect(liveTransport);
+
+    // Give the GET notification stream time to open so `activeStreams > 0`
+    // and `streamOpenedAt` is stamped.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(handle._sessionCount()).toBe(1);
+
+    // A far-future sweep with a very short heldStreamMaxAgeMs (0ms — any
+    // open stream is immediately too old). The session MUST be reclaimed
+    // even though `activeStreams > 0`.
+    const farFuture = Date.now() + 24 * 60 * 60 * 1000;
+    const evicted = handle._sweepIdleSessionsForTests(farFuture, 60_000, 0);
+    expect(evicted).toBe(1);
+    expect(handle._sessionCount()).toBe(0);
+
+    // Suppress the inevitable transport error on the closed stream.
+    await liveClient.close().catch(() => {});
+  });
+
+  it("does NOT reclaim a live stream that is younger than the max stream age (#3576)", async () => {
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), {
+      port: 0,
+      maxSessions: 2,
+    });
+    const port = handle.server.port;
+
+    const liveClient = new Client({ name: "client-young", version: "0.0.1" });
+    const liveTransport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${port}/mcp`),
+    );
+    await liveClient.connect(liveTransport);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(handle._sessionCount()).toBe(1);
+
+    // Sweep with a generous heldStreamMaxAgeMs (Infinity — never reclaim by
+    // stream age). The session must survive even with a far-future clock.
+    const farFuture = Date.now() + 24 * 60 * 60 * 1000;
+    const evicted = handle._sweepIdleSessionsForTests(farFuture, 60_000, Infinity);
+    expect(evicted).toBe(0);
+    expect(handle._sessionCount()).toBe(1);
+
+    await liveClient.close();
   });
 });
 

@@ -1870,7 +1870,7 @@ describe("hosted MCP — capacity", () => {
       // abandoned sessions must be evicted in the SAME pass while the
       // live-stream one is skipped.
       const farFuture = Date.now() + 24 * 60 * 60 * 1000; // +1 day
-      const evicted = _sweepIdleSessionsForTests(farFuture, 60_000);
+      const evicted = _sweepIdleSessionsForTests(farFuture, 60_000, Infinity);
       expect(evicted).toBe(2);
       expect(_hostedSessionCount()).toBe(1);
 

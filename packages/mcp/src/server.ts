@@ -135,6 +135,13 @@ export async function createAtlasMcpServer(
         tools: {},
         resources: {},
         prompts: {},
+        // #3584 — declare completions explicitly to be the single SSOT for
+        // this server's supported surface (mirrors the SSOT rationale for
+        // tools/resources/prompts above). The SDK auto-merges it when
+        // ResourceTemplates with `complete` callbacks are registered, but
+        // relying on auto-merge makes this file's capability block
+        // inconsistent and fragile against SDK internals.
+        completions: {},
       },
     },
   );
@@ -194,7 +201,17 @@ export async function createAtlasMcpServer(
     );
   }
 
-  registerResources(server);
+  // #3572 — capture the handle so the watcher is torn down on session
+  // close. Discarding the return value left a recursive fs.watch open for
+  // the lifetime of the process (inotify ENOSPC under hosted multi-tenant).
+  // Wire close() to the underlying Server's onclose so both the hosted
+  // (onsessionclosed) and stdio (process exit via ManagedRuntime) paths
+  // release the watcher automatically.
+  const resourceHandle = registerResources(server);
+  server.server.onclose = () => {
+    resourceHandle.close();
+  };
+
   await registerPrompts(server, {
     // `actor.activeOrganizationId` may be undefined for trusted-transport
     // (system:mcp) — gating falls back to the platform-level demo signal

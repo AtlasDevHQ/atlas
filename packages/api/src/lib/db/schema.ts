@@ -990,7 +990,7 @@ export const approvalRules = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    check("chk_approval_rule_type", sql`rule_type IN ('table', 'column', 'cost')`),
+    check("chk_approval_rule_type", sql`rule_type IN ('table', 'column', 'cost', 'datasource')`),
     check(
       "chk_approval_rule_origin",
       sql`origin IN ('any', 'chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'discord', 'whatsapp', 'gchat', 'webhook')`,

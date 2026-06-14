@@ -138,6 +138,14 @@ export interface AtlasMcpToolLike<TInput = unknown, TOutput = unknown> {
    * the `mcp:write` gate). Optional — absence means "read-only" for gating.
    */
   readonly annotations?: McpToolAnnotationsShape;
+  /**
+   * ADR-0016 governance declarations (#3571). Optional and backward-compatible.
+   * See `AtlasMcpTool` in `@useatlas/plugin-sdk` for full documentation.
+   * Safe defaults: actionCategory 'integration', minRole 'member', destructive false.
+   */
+  readonly actionCategory?: "datasource" | "integration" | "policy";
+  readonly minRole?: "member" | "admin" | "owner";
+  readonly destructive?: boolean;
   handler(args: TInput, ctx: McpToolContextShape): Promise<TOutput>;
 }
 
@@ -162,6 +170,10 @@ export interface RegisteredPluginMcpTool {
   readonly outputSchema?: ZodSchemaLike;
   /** MCP annotations carried from the authored tool — see {@link pluginToolMutates}. */
   readonly annotations?: McpToolAnnotationsShape;
+  /** ADR-0016 governance declarations (#3571) carried from the authored tool. */
+  readonly actionCategory?: "datasource" | "integration" | "policy";
+  readonly minRole?: "member" | "admin" | "owner";
+  readonly destructive?: boolean;
   handler(args: unknown, ctx: McpToolContextShape): Promise<unknown>;
 }
 
@@ -240,6 +252,12 @@ export class PluginMcpToolRegistry {
       // #3520 — carry the read/write annotation through so the dispatch
       // wrapper can decide whether a hosted call needs `mcp:write`.
       ...(tool.annotations && { annotations: tool.annotations }),
+      // #3571 — carry governance declarations (actionCategory, minRole,
+      // destructive) through to the dispatch wrapper. These are optional;
+      // the wrapper applies safe defaults for unmarked tools.
+      ...(tool.actionCategory !== undefined && { actionCategory: tool.actionCategory }),
+      ...(tool.minRole !== undefined && { minRole: tool.minRole }),
+      ...(tool.destructive !== undefined && { destructive: tool.destructive }),
       handler: tool.handler as RegisteredPluginMcpTool["handler"],
     };
     this.tools.set(qualifiedName, entry);
@@ -387,6 +405,36 @@ export interface McpCallToolResult {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
 }
+
+/**
+ * Structural mirror of the gate context + requirements that `runMcpDispatchGate`
+ * in `packages/mcp/src/dispatch-gate.ts` accepts. Defined here as a local
+ * interface so `packages/api` does not take a runtime dependency on
+ * `packages/mcp`. The MCP-side bridge (`plugin-tools.ts`) injects the real
+ * `runMcpDispatchGate` implementation; tests inject a stub.
+ */
+export interface PluginDispatchGateContext {
+  readonly actor: AtlasUser;
+  readonly clientId?: string;
+  readonly scopes?: readonly string[];
+  readonly orgId: string | undefined;
+  readonly requesterId?: string;
+  readonly requesterEmail?: string | null;
+  readonly requestId?: string;
+}
+
+export interface PluginDispatchGateRequirements {
+  readonly toolName: string;
+  readonly actionCategory?: "datasource" | "integration" | "policy";
+  readonly requiresWrite: boolean;
+  readonly minRole: "member" | "admin" | "owner";
+  readonly destructive?: { readonly resource: string; readonly description: string };
+}
+
+export type PluginDispatchGateRunner = (
+  ctx: PluginDispatchGateContext,
+  reqs: PluginDispatchGateRequirements,
+) => Promise<McpCallToolResult | null>;
 
 /**
  * Dispatch options for `registerPluginMcpTools`. The host wires `actor`,

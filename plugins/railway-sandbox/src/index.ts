@@ -5,7 +5,8 @@
  * Wraps the Railway Sandboxes SDK (`railway` package) to run explore
  * commands in an ephemeral Linux microVM on the same vendor Atlas's SaaS
  * deploys on. Semantic layer files are uploaded into the sandbox at
- * creation time (base64 over `exec` — the SDK has no bulk file API).
+ * creation time via the native, binary-safe `sandbox.files` API (write +
+ * mkdir; streamed, no shell — requires railway >= 3.3.0).
  *
  * **⚠ Security (read before adopting):** Railway Sandboxes offer only
  * `ISOLATED` (outbound internet via NAT) and `PRIVATE` (private network +
@@ -99,11 +100,22 @@ interface RailwayExecResult {
   timedOut?: boolean;
 }
 
+// Native binary-safe file surface (railway >= 3.3.0). We declare only the two
+// operations the upload path needs; `write` accepts a Buffer (a Uint8Array) and
+// auto-creates parent directories, `mkdir` is `mkdir -p`. Optional defensively:
+// an older SDK exposes no `files` getter, which the backend turns into a clear
+// install-hint error rather than a crash.
+interface RailwaySandboxFiles {
+  write(path: string, content: Buffer): Promise<void>;
+  mkdir(path: string): Promise<void>;
+}
+
 interface RailwaySandboxInstance {
   exec(
     command: string,
     opts?: { timeoutSec?: number },
   ): Promise<RailwayExecResult>;
+  files?: RailwaySandboxFiles;
   destroy(): Promise<void>;
 }
 
@@ -229,90 +241,43 @@ export function collectSemanticFiles(
 const SANDBOX_ROOT_DIR = "/atlas";
 const SANDBOX_SEMANTIC_DIR = "/atlas/semantic";
 
-// The SDK has no bulk file API ("use exec or SSH" per Railway docs), so files
-// travel as base64 inside exec commands. Keep each command comfortably under
-// API payload limits; base64 inflates content 4/3.
-const UPLOAD_BATCH_MAX_CHARS = 180_000;
-// Files whose base64 exceeds this are split across append (`>>`) chunks so no
-// single command can blow past the batch cap. Multiple of 4 so every chunk is
-// independently base64-decodable (only the final chunk may carry padding).
-const UPLOAD_CHUNK_MAX_CHARS = 160_000;
-// Uploads can carry the whole semantic tree — give them more headroom than
-// a single explore command gets.
-const UPLOAD_TIMEOUT_SEC = 120;
-
 /** POSIX single-quote a string for safe embedding in a shell command. */
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
-}
-
-/** Build the per-file upload lines, batched to stay under the command-size cap. */
-export function buildUploadBatches(
-  files: { path: string; content: Buffer }[],
-): string[] {
-  const batches: string[] = [];
-  let lines: string[] = [];
-  let size = 0;
-
-  const flush = () => {
-    if (lines.length > 0) {
-      batches.push(`set -e\n${lines.join("\n")}`);
-      lines = [];
-      size = 0;
-    }
-  };
-  const push = (line: string) => {
-    if (size + line.length > UPLOAD_BATCH_MAX_CHARS && lines.length > 0) flush();
-    lines.push(line);
-    size += line.length;
-  };
-
-  for (const f of files) {
-    const b64 = f.content.toString("base64");
-    const target = shellQuote(`${SANDBOX_ROOT_DIR}/${f.path}`);
-    if (b64.length <= UPLOAD_CHUNK_MAX_CHARS) {
-      push(`printf '%s' '${b64}' | base64 -d > ${target}`);
-      continue;
-    }
-    // Oversized file: first chunk truncates (`>`), the rest append (`>>`).
-    // Chunk order is preserved — lines within a batch and batches themselves
-    // both execute sequentially.
-    for (let i = 0; i < b64.length; i += UPLOAD_CHUNK_MAX_CHARS) {
-      const part = b64.slice(i, i + UPLOAD_CHUNK_MAX_CHARS);
-      const redirect = i === 0 ? ">" : ">>";
-      push(`printf '%s' '${part}' | base64 -d ${redirect} ${target}`);
-    }
-  }
-  flush();
-  return batches;
 }
 
 async function uploadSemanticFiles(
   sandbox: RailwaySandboxInstance,
   files: { path: string; content: Buffer }[],
 ): Promise<void> {
-  // mkdir -p every leaf directory first (creates parents).
-  const dirs = [
-    ...new Set(
-      files.map((f) => path.posix.dirname(`${SANDBOX_ROOT_DIR}/${f.path}`)),
-    ),
-  ].sort();
-  const commands = [
-    `mkdir -p ${dirs.map(shellQuote).join(" ")}`,
-    ...buildUploadBatches(files),
-  ];
+  // The native files API (railway >= 3.3.0) is binary-safe, streamed, and
+  // creates parent dirs on write — none of the old base64-over-exec machinery
+  // is needed. An older SDK exposes no `files` getter; surface a clear install
+  // hint rather than crashing on a missing property.
+  const sandboxFiles = sandbox.files;
+  if (!sandboxFiles) {
+    throw new Error(
+      "Railway sandbox file API unavailable: sandbox.files requires " +
+        "railway >= 3.3.0. Upgrade with: bun add railway@latest",
+    );
+  }
 
-  for (const command of commands) {
-    const res = await sandbox.exec(command, { timeoutSec: UPLOAD_TIMEOUT_SEC });
-    if (res.exitCode !== 0) {
-      const detail = res.stderr || res.stdout || `exit ${res.exitCode}`;
-      const safeDetail = SENSITIVE_PATTERNS.test(detail)
-        ? "sandbox error (details in server logs)"
-        : detail.slice(0, 500);
-      throw new Error(
-        `Failed to upload semantic files to Railway sandbox: ${safeDetail}`,
-      );
+  try {
+    // mkdir the semantic root up front so the explore cwd exists even before
+    // the first file lands; files.write auto-creates the per-file parent dirs.
+    await sandboxFiles.mkdir(SANDBOX_SEMANTIC_DIR);
+    for (const f of files) {
+      await sandboxFiles.write(`${SANDBOX_ROOT_DIR}/${f.path}`, f.content);
     }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    const safeDetail = SENSITIVE_PATTERNS.test(detail)
+      ? "sandbox error (details in server logs)"
+      : detail.slice(0, 500);
+    throw new Error(
+      `Failed to upload semantic files to Railway sandbox: ${safeDetail}`,
+      { cause: err },
+    );
   }
 }
 

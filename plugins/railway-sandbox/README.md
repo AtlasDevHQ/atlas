@@ -58,10 +58,10 @@ export default defineConfig({
   evicted (`close()` → `destroy()`); `idleTimeoutMinutes` is the billing
   backstop for leaked sandboxes. Health checks create + destroy a sandbox with
   a 1-minute backstop.
-- **File upload.** The Railway SDK has no bulk file API ("use exec or SSH"),
-  so the semantic tree is uploaded as base64 inside batched `exec` commands.
-  Symlinks escaping the semantic root are skipped, matching the other sandbox
-  backends.
+- **File upload.** The semantic tree is uploaded via the native, binary-safe
+  `sandbox.files` API (`write` + `mkdir`; streamed, no shell) — this requires
+  `railway >= 3.3.0`. Symlinks escaping the semantic root are skipped, matching
+  the other sandbox backends.
 - **Per-environment sandbox cap.** Railway caps sandboxes per environment —
   10 (Trial/Free), 50 (Hobby), 100 (Pro/Enterprise); only `CREATING`/`RUNNING`
   count. Atlas caches one explore backend per semantic root (per org), so more

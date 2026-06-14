@@ -284,57 +284,40 @@ export async function elicitMaskedField(
   server: McpServer,
   args: ElicitMaskedArgs,
 ): Promise<ElicitMaskedOutcome> {
-  const secret = args.secret ?? resolveElicitationSecret();
-  const nonceStore = args.nonceStore ?? defaultNonceStore;
+  // Thin wrapper over the multi-field {@link elicitMaskedForm} (a single
+  // required field) — the mint → elicit → verify → single-use-consume sequence
+  // lives in ONE place, so the MRTR-migration hardening this seam exists for
+  // can't drift between a single- and multi-field copy.
   const fieldName = args.field.name ?? DEFAULT_FIELD_NAME;
-
-  const requestState = signRequestState(
-    {
-      principal: args.principal,
-      purpose: `elicit:${fieldName}`,
-      ...(args.ttlMs != null ? { ttlMs: args.ttlMs } : {}),
-    },
-    secret,
-  );
-
-  const result = await server.server.elicitInput(
-    {
-      mode: "form",
-      message: args.message,
-      requestedSchema: {
-        type: "object",
-        properties: {
-          [fieldName]: {
-            type: "string",
-            title: args.field.title,
-            ...(args.field.description ? { description: args.field.description } : {}),
-          },
-        },
-        required: [fieldName],
-      },
-    },
-    args.signal ? { signal: args.signal } : undefined,
-  );
-
-  if (result.action !== "accept") {
-    return { action: result.action };
-  }
-
-  // Bind value-consumption to the issued state: principal + TTL + single use.
-  const verified = verifyRequestState(requestState, {
+  const outcome = await elicitMaskedForm(server, {
     principal: args.principal,
-    secret,
-    nonceStore,
+    message: args.message,
+    fields: [
+      {
+        name: fieldName,
+        title: args.field.title,
+        ...(args.field.description ? { description: args.field.description } : {}),
+        required: true,
+        secret: true,
+      },
+    ],
+    ...(args.ttlMs != null ? { ttlMs: args.ttlMs } : {}),
+    ...(args.secret ? { secret: args.secret } : {}),
+    ...(args.nonceStore ? { nonceStore: args.nonceStore } : {}),
+    ...(args.signal ? { signal: args.signal } : {}),
   });
-  if (!verified.ok) {
-    throw new ElicitationError(verified.reason);
-  }
 
-  const raw = result.content?.[fieldName];
-  if (typeof raw !== "string" || raw.length === 0) {
+  if (outcome.action !== "accept") {
+    return { action: outcome.action };
+  }
+  // elicitMaskedForm drops empty values, so a missing key means the client
+  // returned an empty value for this required field — preserve the original
+  // single-field contract of failing closed on empty.
+  const value = outcome.values[fieldName];
+  if (typeof value !== "string" || value.length === 0) {
     throw new ElicitationError("empty_value");
   }
-  return { action: "accept", value: raw };
+  return { action: "accept", value };
 }
 
 // --- Multi-field masked form elicitation ------------------------------------

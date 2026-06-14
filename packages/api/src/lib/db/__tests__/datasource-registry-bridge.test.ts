@@ -418,3 +418,59 @@ describe("unregisterDatasourceInstall", () => {
     expect(unregisterCalls).toHaveLength(0);
   });
 });
+
+describe("probePluginDatasourceConnection (#3547)", () => {
+  it("returns no_plugin when no datasource plugin is registered for the dbType", async () => {
+    fakeDatasourcePlugins = [];
+    const out = await bridge.probePluginDatasourceConnection("clickhouse", { url: "clickhouse://h/db" });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toBe("no_plugin");
+  });
+
+  it("probes a SQL-only adapter (no ping) via SELECT 1, then closes it", async () => {
+    const sqlCalls: string[] = [];
+    let closed = false;
+    const conn = {
+      query: async (sql: string) => { sqlCalls.push(sql); return { columns: [], rows: [] }; },
+      close: async () => { closed = true; },
+    };
+    fakeDatasourcePlugins = [{ types: ["datasource"], connection: { dbType: "clickhouse", createFromConfig: () => conn } }];
+    const out = await bridge.probePluginDatasourceConnection("clickhouse", { url: "clickhouse://h/db" });
+    expect(out.ok).toBe(true);
+    expect(sqlCalls).toEqual(["SELECT 1"]);
+    expect(closed).toBe(true);
+  });
+
+  it("prefers the connection's ping() over SELECT 1 (ES/OpenSearch) and never runs SQL", async () => {
+    let pinged = false;
+    let queried = false;
+    let closed = false;
+    const conn = {
+      query: async () => { queried = true; return { columns: [], rows: [] }; },
+      ping: async () => { pinged = true; return { cluster_name: "es" }; },
+      close: async () => { closed = true; },
+    };
+    fakeDatasourcePlugins = [{ types: ["datasource"], connection: { dbType: "elasticsearch", createFromConfig: () => conn } }];
+    const out = await bridge.probePluginDatasourceConnection("elasticsearch", { url: "elasticsearch://h:9200", apiKey: "k" });
+    expect(out.ok).toBe(true);
+    expect(pinged).toBe(true);
+    expect(queried).toBe(false); // SQL surface (optional on OpenSearch) is NOT probed
+    expect(closed).toBe(true);
+  });
+
+  it("surfaces a failed probe as connect_failed (raw message; caller scrubs) and still closes", async () => {
+    let closed = false;
+    const conn = {
+      query: async () => { throw new Error("getaddrinfo ENOTFOUND warehouse"); },
+      close: async () => { closed = true; },
+    };
+    fakeDatasourcePlugins = [{ types: ["datasource"], connection: { dbType: "clickhouse", createFromConfig: () => conn } }];
+    const out = await bridge.probePluginDatasourceConnection("clickhouse", { url: "clickhouse://h/db" });
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.reason).toBe("connect_failed");
+      expect(out.message).toContain("ENOTFOUND");
+    }
+    expect(closed).toBe(true);
+  });
+});

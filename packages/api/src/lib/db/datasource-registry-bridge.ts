@@ -102,19 +102,34 @@ export type PluginProbeOutcome =
 const PLUGIN_PROBE_SQL = "SELECT 1";
 const PLUGIN_PROBE_TIMEOUT_MS = 10_000;
 
+/** A built plugin connection, plus the OPTIONAL liveness surface some adapters expose. */
+type ProbeableConnection = {
+  query(sql: string, timeoutMs?: number): Promise<unknown>;
+  close(): Promise<void>;
+  /**
+   * A non-SQL liveness round-trip (e.g. Elasticsearch/OpenSearch `ping()` → cluster
+   * info). Preferred over `SELECT 1` when present: the ES connection's `query()`
+   * routes to the cluster SQL API (`/_sql`, optional on OpenSearch), so probing it
+   * with `SELECT 1` would test the wrong surface — `ping()` is what the plugin's own
+   * health check uses.
+   */
+  ping?(timeoutMs?: number): Promise<unknown>;
+};
+
 /**
  * Plugin-aware ephemeral test-connect for a CANDIDATE plugin-managed datasource
  * (#3547). Builds a throwaway connection via the registered plugin's
- * `createFromConfig(decryptedConfig)`, runs a `SELECT 1` probe under a short
- * timeout, and ALWAYS closes it — registering nothing in the
- * `ConnectionRegistry` and persisting nothing. This is the plugin counterpart
- * to the native `connections.register(probeId) → healthCheck` pre-flight, so
- * the MCP `create_datasource` validate-before-persist path is uniform across
- * native and plugin dbTypes.
+ * `createFromConfig(decryptedConfig)`, runs a liveness probe under a short
+ * timeout — the connection's own `ping()` when it exposes one (ES/OpenSearch),
+ * else a `SELECT 1` (ClickHouse/Snowflake/BigQuery) — and ALWAYS closes it,
+ * registering nothing in the `ConnectionRegistry` and persisting nothing. The
+ * plugin counterpart to the native `connections.register(probeId) → healthCheck`
+ * pre-flight, so the MCP `create_datasource` validate-before-persist path is
+ * uniform across native and plugin dbTypes.
  *
  * `message` carries the RAW driver error (which may echo the credential) — the
  * caller (`mcp-lifecycle.provisionDatasource`) runs it through
- * `scrubSecretFromMessage` before it ever reaches a client/agent/log. Returning
+ * `scrubSecretsFromMessage` before it ever reaches a client/agent/log. Returning
  * the raw string keeps the secret-scrub seam in one place.
  */
 export async function probePluginDatasourceConnection(
@@ -132,10 +147,16 @@ export async function probePluginDatasourceConnection(
     };
   }
 
-  let built: { query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> } | undefined;
+  let built: ProbeableConnection | undefined;
   try {
-    built = await conn.createFromConfig(decryptedConfig);
-    await built.query(PLUGIN_PROBE_SQL, PLUGIN_PROBE_TIMEOUT_MS);
+    built = (await conn.createFromConfig(decryptedConfig)) as ProbeableConnection;
+    // Prefer the connection's native liveness check (ES/OpenSearch `ping`); fall
+    // back to `SELECT 1` for SQL-only adapters that expose no `ping`.
+    if (typeof built.ping === "function") {
+      await built.ping(PLUGIN_PROBE_TIMEOUT_MS);
+    } else {
+      await built.query(PLUGIN_PROBE_SQL, PLUGIN_PROBE_TIMEOUT_MS);
+    }
     return { ok: true };
   } catch (err) {
     return {

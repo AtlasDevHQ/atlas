@@ -383,6 +383,82 @@ export function registerDatasourceTools(
     );
   }
 
+  /**
+   * Shared masked-credential collection for the two create tools (#3547): run a
+   * schema-driven masked form, map a client failure / decline to a typed block,
+   * and defensively enforce required-field presence. The entered values travel
+   * client→server only — they never enter a tool argument, the agent/LLM
+   * context, a response, or a log. Returns the collected values or a renderable
+   * block; the caller assembles the provision config from `values`.
+   */
+  type ProvisionFormField = { key: string; label: string; description?: string; required: boolean; secret: boolean };
+  async function collectMaskedConfig(
+    orgId: string,
+    fields: readonly ProvisionFormField[],
+    message: string,
+    signal: AbortSignal | undefined,
+  ): Promise<{ ok: true; values: Record<string, string> } | { ok: false; block: CallToolResult }> {
+    let elicited;
+    try {
+      elicited = await elicitMaskedForm(server, {
+        principal: orgId,
+        message,
+        fields: fields.map((f) => ({
+          name: f.key,
+          title: f.label,
+          ...(f.description ? { description: f.description } : {}),
+          required: f.required,
+          secret: f.secret,
+        })),
+        ...(signal ? { signal } : {}),
+      });
+    } catch (err) {
+      // Elicitation unsupported by the client, or a state/secret error. Never
+      // include any (never-yet-received) credential; surface a capability-shaped
+      // message.
+      return {
+        ok: false,
+        block: toEnvelopeResult(
+          envelope(
+            "validation_failed",
+            `Could not securely collect the connection credentials: ${errorMessage(err, "elicitation failed")}.`,
+            { hint: "Use an MCP client that supports masked form elicitation, or provision via the admin console." },
+          ),
+        ),
+      };
+    }
+    if (elicited.action !== "accept") {
+      return {
+        ok: false,
+        block: toEnvelopeResult(
+          envelope(
+            "validation_failed",
+            `Datasource creation was ${elicited.action === "decline" ? "declined" : "cancelled"} — no configuration was provided.`,
+          ),
+        ),
+      };
+    }
+    // Defense-in-depth: a non-spec-compliant client could `accept` with a
+    // required field left blank (elicitMaskedForm drops empty values), which
+    // would otherwise surface as a confusing pre-flight "could not reach"
+    // error. Reject with an actionable, field-named message instead.
+    const values = elicited.values;
+    const missing = fields.filter((f) => f.required && !(f.key in values)).map((f) => f.label);
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        block: toEnvelopeResult(
+          envelope(
+            "validation_failed",
+            `Missing required field${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}.`,
+            { hint: "Provide every required field in the secure prompt, then retry." },
+          ),
+        ),
+      };
+    }
+    return { ok: true, values };
+  }
+
   // --- list_datasources (read) ---
   server.registerTool(
     "list_datasources",
@@ -650,50 +726,22 @@ export function registerDatasourceTools(
             );
           }
 
-          // Collect every config field via MASKED form-mode elicitation (#3499).
-          // The entered values travel client→server only; they never enter a
-          // tool argument, the agent/LLM context, this response, or a log.
-          let elicited;
-          try {
-            elicited = await elicitMaskedForm(server, {
-              principal: orgId,
-              message: `Enter the connection details for the ${db_type} datasource "${install_id}". They are sent securely and never shared with the agent.`,
-              fields: fieldsResult.fields.map((f) => ({
-                name: f.key,
-                title: f.label,
-                ...(f.description ? { description: f.description } : {}),
-                required: f.required,
-                secret: f.secret,
-              })),
-              ...(extra.signal ? { signal: extra.signal } : {}),
-            });
-          } catch (err) {
-            // Elicitation unsupported by the client, or a state/secret error.
-            // Never include any (never-yet-received) credential; surface a
-            // capability-shaped message.
-            return toEnvelopeResult(
-              envelope(
-                "validation_failed",
-                `Could not securely collect the connection credentials: ${errorMessage(err, "elicitation failed")}.`,
-                { hint: "Use an MCP client that supports masked form elicitation, or provision via the admin console." },
-              ),
-            );
-          }
-          if (elicited.action !== "accept") {
-            return toEnvelopeResult(
-              envelope(
-                "validation_failed",
-                `Datasource creation was ${elicited.action === "decline" ? "declined" : "cancelled"} — no credentials were provided.`,
-              ),
-            );
-          }
+          // Collect every config field via MASKED form-mode elicitation (#3499),
+          // schema-driven + required-field-checked by the shared helper.
+          const collected = await collectMaskedConfig(
+            orgId,
+            fieldsResult.fields,
+            `Enter the connection details for the ${db_type} datasource "${install_id}". They are sent securely and never shared with the agent.`,
+            extra.signal,
+          );
+          if (!collected.ok) return collected.block;
 
           // `config` holds the secret + non-secret connection fields — used only
           // for the pre-flight probe + the installer's encrypt-at-rest path,
           // NEVER logged or returned. `description` is an agent-set label, merged
           // in here. `secretKeys` drives the lib's error-scrub.
           const config: Record<string, unknown> = {
-            ...elicited.values,
+            ...collected.values,
             ...(description !== undefined ? { description } : {}),
           };
 
@@ -775,44 +823,20 @@ export function registerDatasourceTools(
 
           // Collect spec URL + auth (the credential among them) via the masked
           // form — values travel client→server only, never into agent context.
-          let elicited;
-          try {
-            elicited = await elicitMaskedForm(server, {
-              principal: orgId,
-              message: `Enter the OpenAPI spec URL and authentication for the new REST datasource. Sent securely and never shared with the agent.`,
-              fields: fieldsResult.fields.map((f) => ({
-                name: f.key,
-                title: f.label,
-                ...(f.description ? { description: f.description } : {}),
-                required: f.required,
-                secret: f.secret,
-              })),
-              ...(extra.signal ? { signal: extra.signal } : {}),
-            });
-          } catch (err) {
-            return toEnvelopeResult(
-              envelope(
-                "validation_failed",
-                `Could not securely collect the REST datasource configuration: ${errorMessage(err, "elicitation failed")}.`,
-                { hint: "Use an MCP client that supports masked form elicitation, or provision via the admin console." },
-              ),
-            );
-          }
-          if (elicited.action !== "accept") {
-            return toEnvelopeResult(
-              envelope(
-                "validation_failed",
-                `REST datasource creation was ${elicited.action === "decline" ? "declined" : "cancelled"} — no configuration was provided.`,
-              ),
-            );
-          }
+          const collected = await collectMaskedConfig(
+            orgId,
+            fieldsResult.fields,
+            `Enter the OpenAPI spec URL and authentication for the new REST datasource. Sent securely and never shared with the agent.`,
+            extra.signal,
+          );
+          if (!collected.ok) return collected.block;
 
           // The handler probes the spec on install (no separate pre-flight): a
           // bad URL / auth / unreachable spec comes back as `validation`,
           // secret-scrubbed, with nothing persisted.
           const outcome = await lib.provisionRestDatasource(
             orgId,
-            { ...elicited.values },
+            { ...collected.values },
             fieldsResult.secretKeys,
           );
           if (outcome.kind === "validation") {

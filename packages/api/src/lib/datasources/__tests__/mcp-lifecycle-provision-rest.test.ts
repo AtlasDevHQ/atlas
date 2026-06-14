@@ -92,4 +92,23 @@ describe("provisionRestDatasource", () => {
       provisionRestDatasource("org_1", { openapi_url: SPEC_URL }, []),
     ).rejects.toThrow(/DB pool exhausted/);
   });
+
+  it("scrubs the credential from a re-thrown non-validation error", async () => {
+    validateConfigImpl = async () => {
+      throw new Error(`probe blew up with Authorization: Bearer ${AUTH_SECRET}`);
+    };
+    await expect(
+      provisionRestDatasource(
+        "org_1",
+        { openapi_url: SPEC_URL, auth_value: AUTH_SECRET },
+        ["auth_value"],
+      ),
+    ).rejects.toThrow(/\[redacted\]/);
+    // And the secret itself never rides the thrown message.
+    await provisionRestDatasource("org_1", { openapi_url: SPEC_URL, auth_value: AUTH_SECRET }, ["auth_value"]).catch(
+      (e: unknown) => {
+        expect(e instanceof Error ? e.message : String(e)).not.toContain(AUTH_SECRET);
+      },
+    );
+  });
 });

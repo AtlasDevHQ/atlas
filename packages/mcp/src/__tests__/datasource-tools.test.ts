@@ -735,6 +735,22 @@ describe("create_datasource", () => {
     expect(mockProvision).not.toHaveBeenCalled();
   });
 
+  it("a non-compliant client that accepts with a required field blank → validation_failed, nothing provisioned", async () => {
+    // elicitMaskedForm drops empty values, so a blank required `url` arrives as
+    // an accept with no `url` key — the tool must reject before pre-flight.
+    elicitOutcome = { action: "accept", values: {} };
+    const client = await createTestClient();
+    const res = await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "postgres", install_id: "new-pg" },
+    });
+    expect(res.isError).toBe(true);
+    const err = parseAtlasMcpToolError(getContentText(res.content));
+    expect(err?.code).toBe("validation_failed");
+    expect(err?.message).toContain("Connection URL"); // the required field's label
+    expect(mockProvision).not.toHaveBeenCalled();
+  });
+
   it("an elicitation failure (unsupported client) → validation_failed, no leak", async () => {
     elicitThrows = true;
     const client = await createTestClient();

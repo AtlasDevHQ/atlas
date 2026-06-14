@@ -483,10 +483,18 @@ function scrubSecretsFromMessage(message: string, secrets: readonly string[]): s
   return errorMessage(scrubbed);
 }
 
-/** The plaintext secret values in `input.config` (the `secretKeys` subset), for scrubbing. */
-function secretValues(input: ProvisionDatasourceInput): string[] {
-  return input.secretKeys
-    .map((k) => input.config[k])
+/**
+ * The plaintext secret values in a config (the `secretKeys` subset), for
+ * scrubbing. Takes `(config, secretKeys)` so both the SQL provision path
+ * ({@link ProvisionDatasourceInput}) and the REST path (a bare `formData`) reuse
+ * it — there is exactly one definition of "which values must be redacted".
+ */
+function secretValues(
+  config: Readonly<Record<string, unknown>>,
+  secretKeys: readonly string[],
+): string[] {
+  return secretKeys
+    .map((k) => config[k])
     .filter((v): v is string => typeof v === "string" && v.length > 0);
 }
 
@@ -510,7 +518,7 @@ function buildProvisionFormData(input: ProvisionDatasourceInput): Record<string,
  * probe pool is ALWAYS unregistered in `finally`.
  */
 async function preflightNativeConnection(input: ProvisionDatasourceInput): Promise<PreflightResult> {
-  const secrets = secretValues(input);
+  const secrets = secretValues(input.config, input.secretKeys);
   const url = typeof input.config.url === "string" ? input.config.url : "";
   const schema = typeof input.config.schema === "string" ? input.config.schema : undefined;
   const description = typeof input.config.description === "string" ? input.config.description : undefined;
@@ -572,7 +580,7 @@ async function preflightPluginConnection(
     outcome.reason === "no_plugin"
       ? outcome.message
       : `Connection test failed: ${outcome.message}. Verify the connection details and credentials, then retry.`;
-  return { ok: false, message: scrubSecretsFromMessage(friendly, secretValues(input)) };
+  return { ok: false, message: scrubSecretsFromMessage(friendly, secretValues(input.config, input.secretKeys)) };
 }
 
 /**
@@ -641,7 +649,7 @@ export async function provisionDatasource(
       kind: "error",
       status: outcome.status,
       code: outcome.code,
-      message: scrubSecretsFromMessage(outcome.message, secretValues(input)),
+      message: scrubSecretsFromMessage(outcome.message, secretValues(input.config, input.secretKeys)),
     };
   }
   return { kind: "ok", value: outcome.value };
@@ -687,9 +695,7 @@ export async function provisionRestDatasource(
     throw new Error(`openapi-generic install handler is misregistered (kind=${handler.kind}).`);
   }
 
-  const secrets = secretKeys
-    .map((k) => formData[k])
-    .filter((v): v is string => typeof v === "string" && v.length > 0);
+  const secrets = secretValues(formData, secretKeys);
 
   try {
     const { installRecord } = await handler.validateConfig(orgId as WorkspaceId, formData);
@@ -703,7 +709,15 @@ export async function provisionRestDatasource(
       const message = parts.length > 0 ? parts.join("; ") : "Invalid REST datasource configuration.";
       return { kind: "validation", message: scrubSecretsFromMessage(message, secrets) };
     }
-    throw err instanceof Error ? err : new Error(String(err));
+    // Re-throw for the caller's internal_error path, but SCRUB the secret values
+    // (auth_value, etc.) first — an unexpected handler error can echo the elicited
+    // credential in its message, which the MCP dispatch logs + surfaces verbatim.
+    // Deliberately do NOT attach `{ cause: err }`: the original error carries the
+    // UNSCRUBBED message, and a cause chain is serialized by loggers — re-attaching
+    // it would re-introduce the exact credential this scrub removes.
+    const raw = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line preserve-caught-error -- attaching the raw cause would leak the scrubbed credential (see above)
+    throw new Error(scrubSecretsFromMessage(raw, secrets));
   }
 }
 

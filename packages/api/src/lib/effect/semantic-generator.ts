@@ -55,6 +55,7 @@ import {
   bulkUpsertEntities,
   type SemanticEntityType,
 } from "@atlas/api/lib/semantic/entities";
+import { SAFE_TABLE_NAME } from "@atlas/api/lib/semantic/shapes";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ProfilingFailedError } from "./errors";
 
@@ -373,9 +374,24 @@ function registerWhitelistImpl(
  * the generator), not this name. Entity + metric rows for the same table share
  * the name but differ by `entity_type`, so the 0063 partial unique index keeps
  * them distinct.
+ *
+ * Defense-in-depth: after basename-stripping, the name must pass `SAFE_TABLE_NAME`
+ * (same guard the wizard `/save` applies) — rejects names with characters outside
+ * `[a-zA-Z0-9_.-]` that would never survive DB validation anyway. Returns `null`
+ * for names that fail the check; callers must filter those artifacts out (logged,
+ * never silently swallowed).
  */
-function artifactRowName(artifact: GeneratedArtifact): string {
-  return path.basename(artifact.table);
+function artifactRowName(artifact: GeneratedArtifact): string | null {
+  const name = path.basename(artifact.table);
+  if (!SAFE_TABLE_NAME.test(name)) {
+    log.warn(
+      { table: artifact.table, basename: name },
+      "artifactRowName: skipping artifact — basename does not match SAFE_TABLE_NAME; " +
+        "the generated name contains characters not permitted in a semantic-store row key",
+    );
+    return null;
+  }
+  return name;
 }
 
 function persistImpl(
@@ -384,18 +400,28 @@ function persistImpl(
   return Effect.gen(function* () {
     const upsert = opts.upsert ?? bulkUpsertEntities;
 
-    const entityRows = opts.entities.map((e) => ({
-      entityType: "entity" as const,
-      name: artifactRowName(e),
-      yamlContent: e.yaml,
-      connectionGroupId: opts.connectionGroupId,
-    }));
-    const metricRows = (opts.metrics ?? []).map((m) => ({
-      entityType: "metric" as const,
-      name: artifactRowName(m),
-      yamlContent: m.yaml,
-      connectionGroupId: opts.connectionGroupId,
-    }));
+    const entityRows = opts.entities
+      .map((e) => {
+        const name = artifactRowName(e);
+        if (name === null) return null;
+        return { entityType: "entity" as const, name, yamlContent: e.yaml, connectionGroupId: opts.connectionGroupId };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null);
+
+    // NOTE: intentional divergence from the wizard `/save` write path.
+    // The wizard persists entities to `semantic_entities` (DB) but writes metrics
+    // to disk only (`semantic/metrics/*.yml`). This MCP path persists BOTH entities
+    // AND metrics to `semantic_entities` so that a durable MCP-profiled connection
+    // is fully queryable across process restarts and visible to the web `/chat`
+    // process (which can't read disk artifacts written by a stdio MCP server).
+    // Tracked for reconciliation in #3551.
+    const metricRows = (opts.metrics ?? [])
+      .map((m) => {
+        const name = artifactRowName(m);
+        if (name === null) return null;
+        return { entityType: "metric" as const, name, yamlContent: m.yaml, connectionGroupId: opts.connectionGroupId };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null);
 
     const entitiesPersisted = yield* Effect.tryPromise({
       try: () => upsert(opts.orgId, entityRows),

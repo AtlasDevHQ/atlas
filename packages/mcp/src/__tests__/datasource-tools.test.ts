@@ -97,12 +97,88 @@ const mockRunInstaller = mock<(body: (i: unknown) => unknown) => Promise<unknown
   },
 );
 
+// Phase-2 lib mocks (#3511 provision, #3512 profile).
+let provisionOutcome: unknown = {
+  kind: "ok",
+  value: {
+    installId: "new-pg",
+    dbType: "postgres",
+    status: "draft",
+    maskedUrl: "postgres://***@host/db",
+    description: null,
+    schema: null,
+    groupId: null,
+  },
+};
+const mockProvision = mock<(...a: unknown[]) => Promise<unknown>>(async () => provisionOutcome);
+
+let profileTarget: unknown = {
+  kind: "ok",
+  target: { url: "postgres://user:pass@host/db", dbType: "postgres", schema: "public" },
+};
+const mockLoadProfileTarget = mock<(...a: unknown[]) => Promise<unknown>>(async () => profileTarget);
+
+let profileResult: unknown = {
+  kind: "ok",
+  result: {
+    entities: [{ table: "orders", fileName: "orders.yml", yaml: "" }, { table: "users", fileName: "users.yml", yaml: "" }],
+    metrics: [{ table: "orders", fileName: "orders.metric.yml", yaml: "" }],
+    catalog: "",
+    glossary: "",
+    profiles: [],
+    errors: [],
+    elapsedMs: 1234,
+  },
+};
+interface ProfileProgressLike {
+  onStart?: (n: number) => void;
+  onTableStart?: (name: string, i: number, t: number) => void;
+  onTableDone?: (name: string, i: number, t: number) => void;
+  onTableError?: (name: string, e: string, i: number, t: number) => void;
+  onComplete?: () => void;
+}
+const mockRunProfile = mock<(...a: unknown[]) => Promise<unknown>>(async (...a: unknown[]) => {
+  const opts = a[0] as { progress?: ProfileProgressLike };
+  // Exercise the progress bridge so a regression in the callback shape is caught.
+  opts.progress?.onStart?.(2);
+  opts.progress?.onTableDone?.("orders", 0, 2);
+  opts.progress?.onTableDone?.("users", 1, 2);
+  opts.progress?.onComplete?.();
+  return profileResult;
+});
+
 mock.module("@atlas/api/lib/datasources/mcp-lifecycle", () => ({
   listDatasources: mockListDatasources,
   resolveDatasourceCatalogSlug: mockResolveCatalogSlug,
   testDatasource: mockTestDatasource,
   isDatasourceRegistered: mockIsRegistered,
   runDatasourceInstaller: mockRunInstaller,
+  provisionDatasource: mockProvision,
+  loadDatasourceProfileTarget: mockLoadProfileTarget,
+  runSemanticProfile: mockRunProfile,
+  MCP_PROVISIONABLE_CATALOG_SLUGS: ["postgres", "mysql"],
+}));
+
+// Masked elicitation (#3499) — capture the call + return a configurable
+// outcome. The default accepts with a sentinel secret we assert NEVER leaks.
+const ELICITED_SECRET = "postgres://super:secret@db.internal:5432/prod";
+let elicitOutcome: { action: "accept"; value: string } | { action: "decline" | "cancel" } = {
+  action: "accept",
+  value: ELICITED_SECRET,
+};
+let elicitThrows = false;
+interface ElicitCall {
+  principal: string;
+  field: { name?: string; title: string };
+}
+let elicitCalls: ElicitCall[] = [];
+const mockElicit = mock(async (_server: unknown, args: ElicitCall & { message: string }) => {
+  elicitCalls.push({ principal: args.principal, field: args.field });
+  if (elicitThrows) throw new Error("client does not support elicitation");
+  return elicitOutcome;
+});
+mock.module("../elicitation.js", () => ({
+  elicitMaskedField: mockElicit,
 }));
 
 // ── Dispatch-gate mock ────────────────────────────────────────────────
@@ -113,6 +189,7 @@ interface GateCall {
     toolName: string;
     requiresWrite: boolean;
     minRole: string;
+    actionCategory?: string;
     destructive?: { resource: string; description: string };
   };
 }
@@ -164,28 +241,75 @@ beforeEach(() => {
   mockIsRegistered.mockClear();
   mockRunInstaller.mockClear();
   mockRunGate.mockClear();
+  mockProvision.mockClear();
+  mockLoadProfileTarget.mockClear();
+  mockRunProfile.mockClear();
+  mockElicit.mockClear();
   gateCalls = [];
   installerCalls = [];
+  elicitCalls = [];
   gateReturn = null;
   installerOutcome = { kind: "ok", value: { id: "prod-us", status: "published" } };
+  provisionOutcome = {
+    kind: "ok",
+    value: {
+      installId: "new-pg",
+      dbType: "postgres",
+      status: "draft",
+      maskedUrl: "postgres://***@host/db",
+      description: null,
+      schema: null,
+      groupId: null,
+    },
+  };
+  profileTarget = {
+    kind: "ok",
+    target: { url: "postgres://user:pass@host/db", dbType: "postgres", schema: "public" },
+  };
+  profileResult = {
+    kind: "ok",
+    result: {
+      entities: [{ table: "orders", fileName: "orders.yml", yaml: "" }, { table: "users", fileName: "users.yml", yaml: "" }],
+      metrics: [{ table: "orders", fileName: "orders.metric.yml", yaml: "" }],
+      catalog: "",
+      glossary: "",
+      profiles: [],
+      errors: [],
+      elapsedMs: 1234,
+    },
+  };
+  elicitOutcome = { action: "accept", value: ELICITED_SECRET };
+  elicitThrows = false;
 });
 
 // ── Tool registration ─────────────────────────────────────────────────
 
 describe("datasource tools — registration", () => {
-  it("registers all five lifecycle tools", async () => {
+  it("registers all seven lifecycle tools", async () => {
     const client = await createTestClient();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual(
       [
         "archive_datasource",
+        "create_datasource",
         "delete_datasource",
         "list_datasources",
+        "profile_datasource",
         "restore_datasource",
         "test_datasource",
       ].sort(),
     );
+  });
+
+  it("read tools declare readOnlyHint; mutating tools do not", async () => {
+    const client = await createTestClient();
+    const { tools } = await client.listTools();
+    const byName = new Map(tools.map((t) => [t.name, t]));
+    expect(byName.get("list_datasources")?.annotations?.readOnlyHint).toBe(true);
+    expect(byName.get("test_datasource")?.annotations?.readOnlyHint).toBe(true);
+    expect(byName.get("delete_datasource")?.annotations?.readOnlyHint).toBe(false);
+    expect(byName.get("delete_datasource")?.annotations?.destructiveHint).toBe(true);
   });
 });
 
@@ -211,6 +335,39 @@ describe("datasource tools — gate requirements", () => {
     await client.callTool({ name: "restore_datasource", arguments: { id: "prod-us" } });
 
     for (const tool of ["archive_datasource", "restore_datasource"]) {
+      const g = gateCallFor(tool);
+      expect(g?.reqs.requiresWrite).toBe(true);
+      expect(g?.reqs.minRole).toBe("admin");
+      expect(g?.reqs.destructive).toBeUndefined();
+    }
+  });
+
+  it("every mutating tool declares actionCategory 'datasource' for the gate-1 kill-switch (#3509)", async () => {
+    const client = await createTestClient();
+    await client.callTool({ name: "archive_datasource", arguments: { id: "prod-us" } });
+    await client.callTool({ name: "restore_datasource", arguments: { id: "prod-us" } });
+    await client.callTool({ name: "delete_datasource", arguments: { id: "prod-us" } });
+    await client.callTool({ name: "create_datasource", arguments: { db_type: "postgres", install_id: "new-pg" } });
+    await client.callTool({ name: "profile_datasource", arguments: { id: "prod-us" } });
+    for (const tool of [
+      "archive_datasource",
+      "restore_datasource",
+      "delete_datasource",
+      "create_datasource",
+      "profile_datasource",
+    ]) {
+      expect(gateCallFor(tool)?.reqs.actionCategory).toBe("datasource");
+    }
+    // Read tools must NOT be category-gated (the kill-switch is for mutations).
+    await client.callTool({ name: "list_datasources", arguments: {} });
+    expect(gateCallFor("list_datasources")?.reqs.actionCategory).toBeUndefined();
+  });
+
+  it("create/profile declare requiresWrite=true, admin, and are NOT destructive", async () => {
+    const client = await createTestClient();
+    await client.callTool({ name: "create_datasource", arguments: { db_type: "postgres", install_id: "new-pg" } });
+    await client.callTool({ name: "profile_datasource", arguments: { id: "prod-us" } });
+    for (const tool of ["create_datasource", "profile_datasource"]) {
       const g = gateCallFor(tool);
       expect(g?.reqs.requiresWrite).toBe(true);
       expect(g?.reqs.minRole).toBe("admin");
@@ -393,6 +550,129 @@ describe("delete_datasource", () => {
     const client = await createTestClient();
     const res = await client.callTool({ name: "delete_datasource", arguments: { id: "prod-us" } });
     expect(res.isError).toBe(true);
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("validation_failed");
+  });
+});
+
+// ── create_datasource (#3511) — masked-elicitation credential ─────────
+
+describe("create_datasource", () => {
+  it("collects the URL via masked elicitation bound to the workspace, then provisions", async () => {
+    const client = await createTestClient();
+    const res = await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "postgres", install_id: "new-pg" },
+    });
+    // Elicitation was called, bound to the org, for a field named `url`.
+    expect(elicitCalls).toHaveLength(1);
+    expect(elicitCalls[0].principal).toBe("org_ds");
+    expect(elicitCalls[0].field.name).toBe("url");
+    // The secret reached provisionDatasource (the lib), in `url`.
+    const provisionArgs = mockProvision.mock.calls[0];
+    expect((provisionArgs?.[1] as { url: string }).url).toBe(ELICITED_SECRET);
+
+    const body = JSON.parse(getContentText(res.content));
+    expect(body.created).toBe(true);
+    expect(body.status).toBe("draft");
+  });
+
+  it("NEVER leaks the elicited credential into the tool response", async () => {
+    const client = await createTestClient();
+    const res = await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "postgres", install_id: "new-pg" },
+    });
+    const text = getContentText(res.content);
+    expect(text).not.toContain(ELICITED_SECRET);
+    expect(text).not.toContain("super:secret");
+    // Only the masked URL is surfaced.
+    expect(text).toContain("***");
+  });
+
+  it("a declined/cancelled elicitation → validation_failed, nothing provisioned", async () => {
+    elicitOutcome = { action: "decline" };
+    const client = await createTestClient();
+    const res = await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "postgres", install_id: "new-pg" },
+    });
+    expect(res.isError).toBe(true);
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("validation_failed");
+    expect(mockProvision).not.toHaveBeenCalled();
+  });
+
+  it("an elicitation failure (unsupported client) → validation_failed, no leak", async () => {
+    elicitThrows = true;
+    const client = await createTestClient();
+    const res = await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "postgres", install_id: "new-pg" },
+    });
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("validation_failed");
+    expect(mockProvision).not.toHaveBeenCalled();
+  });
+
+  it("a pre-flight health failure surfaces validation_failed (credential-scrubbed by lib)", async () => {
+    provisionOutcome = { kind: "health_error", message: "Connection test failed: timeout. Verify the host…" };
+    const client = await createTestClient();
+    const res = await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "postgres", install_id: "new-pg" },
+    });
+    expect(res.isError).toBe(true);
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("validation_failed");
+  });
+
+  it("an unsupported db_type is rejected at the inputSchema boundary", async () => {
+    // `db_type` is a Zod enum of provisionable slugs — an out-of-enum value
+    // is rejected by the SDK's input validation (error result), so it never
+    // reaches the handler / elicitation.
+    const client = await createTestClient();
+    const res = await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "snowflake", install_id: "x" },
+    });
+    expect(res.isError).toBe(true);
+    expect(mockElicit).not.toHaveBeenCalled();
+    expect(mockProvision).not.toHaveBeenCalled();
+  });
+});
+
+// ── profile_datasource (#3512) — long-running, progress + cancellable ──
+
+describe("profile_datasource", () => {
+  it("profiles + generates and reports the datasource as queryable", async () => {
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "profile_datasource", arguments: { id: "prod-us" } });
+    const body = JSON.parse(getContentText(res.content));
+    expect(body.queryable).toBe(true);
+    expect(body.entities_generated).toBe(2);
+    expect(body.tables).toEqual(["orders", "users"]);
+    expect(body.elapsed_ms).toBe(1234);
+    // The decrypted URL the profiler used must not surface.
+    expect(getContentText(res.content)).not.toContain("user:pass");
+  });
+
+  it("a not-found datasource → unknown_entity", async () => {
+    profileTarget = { kind: "not_found" };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "profile_datasource", arguments: { id: "missing" } });
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("unknown_entity");
+    expect(mockRunProfile).not.toHaveBeenCalled();
+  });
+
+  it("an unsupported dbType → validation_failed", async () => {
+    profileTarget = { kind: "unsupported", dbType: "clickhouse" };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "profile_datasource", arguments: { id: "ch" } });
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("validation_failed");
+    expect(mockRunProfile).not.toHaveBeenCalled();
+  });
+
+  it("a ProfilingFailedError outcome → validation_failed (not a 500)", async () => {
+    profileResult = { kind: "error", reason: "no_tables", message: "No tables found to profile." };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "profile_datasource", arguments: { id: "prod-us" } });
     expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("validation_failed");
   });
 });

@@ -27,18 +27,31 @@
 
 import { Cause, Effect } from "effect";
 import type { AtlasMode } from "@useatlas/types/auth";
+import type { WorkspaceId } from "@useatlas/types";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
 import { connections } from "@atlas/api/lib/db/connection";
 import type { HealthCheckResult } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { catalogSlugToDbType } from "@atlas/api/lib/db/datasource-pool-resolver";
+import {
+  catalogSlugToDbType,
+  resolveDatasourcePoolConfig,
+} from "@atlas/api/lib/db/datasource-pool-resolver";
+import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import {
   WorkspaceInstaller,
   WorkspaceInstallerLive,
   mapInstallError,
   type WorkspaceInstallerShape,
   type InstallError,
+  type DatasourceInstallRow,
 } from "@atlas/api/lib/effect/workspace-installer";
+import {
+  SemanticGenerator,
+  SemanticGeneratorLive,
+  type ProfileAndGenerateResult,
+} from "@atlas/api/lib/effect/semantic-generator";
+import { ProfilingFailedError } from "@atlas/api/lib/effect/errors";
+import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
 
 // Module-level synchronous content-mode registry — mirrors the one in
 // `api/routes/admin-connections.ts`. `readFilter` is a pure function of the
@@ -278,4 +291,266 @@ export async function runDatasourceInstaller<A>(
   // it and returns an `internal_error` envelope (parity with the route's
   // `runInstaller`, which lets `runHandler` surface the 500).
   throw new Error(`WorkspaceInstaller program died: ${Cause.pretty(exit.cause)}`);
+}
+
+// ── Provisioning (#3511 create) ───────────────────────────────────────
+
+/**
+ * Datasource types provisionable via MCP today. Scoped to the native
+ * dbTypes whose pool the `ConnectionRegistry` can build directly from a
+ * `url` — so the validate-before-persist health-check (register → SELECT 1
+ * → unregister) genuinely exercises connectivity. Plugin-managed pools
+ * (clickhouse / snowflake / bigquery / salesforce) need a different
+ * test-connect path and are intentionally out of scope for the MCP
+ * provisioning flow until that lands; the admin console still handles them.
+ */
+export const MCP_PROVISIONABLE_CATALOG_SLUGS: readonly string[] = ["postgres", "mysql"];
+
+/**
+ * Input to {@link provisionDatasource}. `url` is the credential collected
+ * via masked elicitation at the MCP edge — it is encrypted at the installer
+ * boundary and NEVER round-trips back out (the returned row carries only a
+ * `maskedUrl`).
+ */
+export interface ProvisionDatasourceInput {
+  readonly catalogSlug: string;
+  readonly installId: string;
+  /** The connection URL (secret). Encrypted by the installer per config_schema. */
+  readonly url: string;
+  readonly schema?: string;
+  readonly description?: string;
+  readonly groupId?: string | null;
+}
+
+export type ProvisionDatasourceOutcome =
+  | { readonly kind: "ok"; readonly value: DatasourceInstallRow }
+  /** Unsupported dbType — actionable, no secret. */
+  | { readonly kind: "unsupported"; readonly message: string }
+  /** Pre-flight connectivity failed — message is credential-scrubbed. */
+  | { readonly kind: "health_error"; readonly message: string }
+  /** Tagged installer error (validation / conflict / not-found). */
+  | { readonly kind: "error"; readonly status: 400 | 404 | 409; readonly code: string; readonly message: string };
+
+/**
+ * Strip any occurrence of a secret URL (and embedded `//user:pass@` userinfo)
+ * out of an error message so a connection-failure surfaced to the agent/client
+ * can never leak the credential. Defense-in-depth on top of the registry's own
+ * DSN scrubbing.
+ */
+function scrubSecretFromMessage(message: string, url: string): string {
+  let out = message;
+  if (url) out = out.split(url).join("[redacted]");
+  // Strip `scheme://user:pass@host` userinfo even if the URL was reshaped.
+  out = out.replace(/\/\/[^/@\s]*@/g, "//[redacted]@");
+  return out;
+}
+
+/**
+ * Provision a new datasource over MCP: validate the dbType is provisionable
+ * → pre-flight health-check the candidate connection WITHOUT persisting →
+ * on success install it as a `draft` (credential encrypted by the installer)
+ * → return the masked row. On any failure nothing is persisted and the
+ * ephemeral pool is rolled back.
+ *
+ * The credential (`input.url`) only flows in here and into the installer's
+ * encrypt-at-rest path; it is never returned, logged, or placed in an error.
+ */
+export async function provisionDatasource(
+  orgId: string,
+  input: ProvisionDatasourceInput,
+): Promise<ProvisionDatasourceOutcome> {
+  if (!MCP_PROVISIONABLE_CATALOG_SLUGS.includes(input.catalogSlug)) {
+    return {
+      kind: "unsupported",
+      message:
+        `Provisioning "${input.catalogSlug}" datasources via MCP is not supported yet. ` +
+        `Supported types: ${MCP_PROVISIONABLE_CATALOG_SLUGS.join(", ")}. ` +
+        `Use the Atlas admin console for other datasource types.`,
+    };
+  }
+
+  // Reject a duplicate id before touching the registry — a clean message
+  // beats an installer `AlreadyInstalledError` deep in the Effect.
+  if (await resolveDatasourceCatalogSlug(orgId, input.installId)) {
+    return {
+      kind: "error",
+      status: 409,
+      code: "conflict",
+      message: `A datasource with id "${input.installId}" already exists in this workspace.`,
+    };
+  }
+
+  // Pre-flight: register an ephemeral native pool, probe it, then roll back.
+  // Mirrors the admin route's route-owned test-connect dance (ADR-0007).
+  const registryConfig = {
+    url: input.url,
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.schema !== undefined ? { schema: input.schema } : {}),
+  };
+  const weRegistered = !connections.has(input.installId);
+  if (weRegistered) connections.register(input.installId, registryConfig);
+  try {
+    const health = await connections.healthCheck(input.installId);
+    if (health.status === "unhealthy") {
+      if (weRegistered) connections.unregister(input.installId);
+      return {
+        kind: "health_error",
+        message: scrubSecretFromMessage(
+          health.message ?? "Connection probe reported the datasource as unreachable.",
+          input.url,
+        ),
+      };
+    }
+  } catch (err) {
+    if (weRegistered) connections.unregister(input.installId);
+    const raw = err instanceof Error ? err.message : String(err);
+    return {
+      kind: "health_error",
+      message: scrubSecretFromMessage(
+        `Connection test failed: ${raw}. Verify the host, port, database, and credentials, then retry.`,
+        input.url,
+      ),
+    };
+  }
+
+  // Health OK → persist as draft. The installer re-registers idempotently and
+  // encrypts the `url` per the catalog config_schema.
+  const formData: Record<string, unknown> = {
+    url: input.url,
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.schema !== undefined && input.schema.length > 0 ? { schema: input.schema } : {}),
+  };
+  const outcome = await runDatasourceInstaller((installer) =>
+    installer.installDatasource(orgId as WorkspaceId, input.catalogSlug, {
+      installId: input.installId,
+      formData,
+      groupId: input.groupId ?? null,
+      atlasMode: "draft",
+    }),
+  );
+  if (outcome.kind === "error") {
+    if (weRegistered) connections.unregister(input.installId);
+    return {
+      kind: "error",
+      status: outcome.status,
+      code: outcome.code,
+      message: scrubSecretFromMessage(outcome.message, input.url),
+    };
+  }
+  return { kind: "ok", value: outcome.value };
+}
+
+// ── Profiling / semantic-gen (#3512) ──────────────────────────────────
+
+/** Resolved profiling target — internal use only; `url` is the decrypted secret. */
+export interface DatasourceProfileTarget {
+  readonly url: string;
+  readonly dbType: "postgres" | "mysql";
+  readonly schema?: string;
+}
+
+export type LoadProfileTargetResult =
+  | { readonly kind: "ok"; readonly target: DatasourceProfileTarget }
+  | { readonly kind: "not_found" }
+  | { readonly kind: "unsupported"; readonly dbType: string };
+
+/**
+ * Load + decrypt a datasource install's connection config and shape the
+ * profiling target the semantic generator needs. Returns `not_found` for an
+ * unknown install and `unsupported` for a dbType without a built-in profiler
+ * (only postgres/mysql profile in-core; other types need an injected
+ * `profileFn`, out of scope for the MCP flow). The decrypted `url` never
+ * leaves the lib layer — the caller passes it straight to the profiler.
+ */
+export async function loadDatasourceProfileTarget(
+  orgId: string,
+  installId: string,
+): Promise<LoadProfileTargetResult> {
+  if (!hasInternalDB()) return { kind: "not_found" };
+  const rows = await internalQuery<{
+    catalog_id: string;
+    catalog_slug: string;
+    config: Record<string, unknown> | null;
+    config_schema: unknown;
+  }>(
+    `SELECT wp.catalog_id, pc.slug AS catalog_slug, wp.config, pc.config_schema
+       FROM workspace_plugins wp
+       JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+      WHERE wp.workspace_id = $1
+        AND wp.install_id = $2
+        AND wp.pillar = 'datasource'
+      LIMIT 1`,
+    [orgId, installId],
+  );
+  if (rows.length === 0) return { kind: "not_found" };
+  const row = rows[0];
+  const schema = parseConfigSchema(row.config_schema);
+  const decrypted = decryptSecretFields(row.config ?? {}, schema);
+  const poolConfig = resolveDatasourcePoolConfig(
+    {
+      workspaceId: orgId,
+      catalogId: row.catalog_id,
+      installId,
+      pillar: "datasource",
+      catalogSlug: row.catalog_slug,
+    },
+    decrypted,
+  );
+  if (poolConfig.dbType !== "postgres" && poolConfig.dbType !== "mysql") {
+    return { kind: "unsupported", dbType: poolConfig.dbType };
+  }
+  return {
+    kind: "ok",
+    target: {
+      url: poolConfig.url,
+      dbType: poolConfig.dbType,
+      schema: "schema" in poolConfig ? poolConfig.schema : undefined,
+    },
+  };
+}
+
+export type RunSemanticProfileOutcome =
+  | { readonly kind: "ok"; readonly result: ProfileAndGenerateResult }
+  | { readonly kind: "error"; readonly reason: ProfilingFailedError["reason"]; readonly message: string };
+
+/**
+ * Profile a connection and generate its semantic layer via the #3506
+ * `SemanticGenerator` service, registering the generated entities into the
+ * in-process table whitelist so a subsequent `executeSQL` against this
+ * connection is permitted. `progress` bridges the profiler's per-table
+ * callbacks to the MCP progress seam.
+ *
+ * A tagged `ProfilingFailedError` (no tables, threshold exceeded, …) is
+ * returned as a typed `error` outcome; an unexpected defect re-throws for the
+ * caller's `internal_error` path.
+ */
+export async function runSemanticProfile(opts: {
+  url: string;
+  dbType: "postgres" | "mysql";
+  schema?: string;
+  connectionId: string;
+  progress?: ProfileProgressCallbacks;
+}): Promise<RunSemanticProfileOutcome> {
+  const program = Effect.gen(function* () {
+    const gen = yield* SemanticGenerator;
+    return yield* gen.profileAndGenerate({
+      url: opts.url,
+      dbType: opts.dbType,
+      ...(opts.schema !== undefined ? { schema: opts.schema } : {}),
+      connectionId: opts.connectionId,
+      registerWhitelist: true,
+      ...(opts.progress !== undefined ? { progress: opts.progress } : {}),
+    });
+  });
+
+  const exit = await Effect.runPromiseExit(
+    program.pipe(Effect.provide(SemanticGeneratorLive)),
+  );
+  if (exit._tag === "Success") return { kind: "ok", result: exit.value };
+
+  const failure = Cause.failureOption(exit.cause);
+  if (failure._tag === "Some" && failure.value instanceof ProfilingFailedError) {
+    return { kind: "error", reason: failure.value.reason, message: failure.value.message };
+  }
+  throw new Error(`SemanticGenerator profile died: ${Cause.pretty(exit.cause)}`);
 }

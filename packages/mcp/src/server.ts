@@ -16,6 +16,7 @@ import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { loadSettings } from "@atlas/api/lib/settings";
 import { registerTools } from "./tools.js";
+import { registerDatasourceTools } from "./datasource-tools.js";
 import { registerPluginTools } from "./plugin-tools.js";
 import { bootPluginsForMcp } from "@atlas/api/lib/plugins";
 import { registerResources } from "./resources.js";
@@ -139,6 +140,18 @@ export async function createAtlasMcpServer(
   );
 
   registerTools(server, { actor, transport, clientId, ...(scopes && { scopes }) });
+
+  // Datasource lifecycle admin tools (Tier 2 — list/test/archive/restore/
+  // delete/create/profile). Self-contained in `datasource-tools.ts`; this is
+  // the single wiring line (#3511–#3514).
+  registerDatasourceTools(server, {
+    actor,
+    transport,
+    ...(clientId && { clientId }),
+    ...(scopes && { scopes }),
+    workspaceId: actor.activeOrganizationId ?? actor.id,
+    deployMode: getConfig()?.deployMode ?? "self-hosted",
+  });
 
   // #2078 — plugins contribute additional MCP tools via `mcpTools()`.
   // Boot the plugin lifecycle so factory functions can run, then walk

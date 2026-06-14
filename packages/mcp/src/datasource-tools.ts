@@ -47,8 +47,13 @@ import {
   testDatasource,
   isDatasourceRegistered,
   runDatasourceInstaller,
+  provisionDatasource,
+  loadDatasourceProfileTarget,
+  runSemanticProfile,
+  MCP_PROVISIONABLE_CATALOG_SLUGS,
   type DatasourceInstallerOutcome,
 } from "@atlas/api/lib/datasources/mcp-lifecycle";
+import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
 import {
   traceMcpToolCall,
   type McpTransport,
@@ -60,6 +65,8 @@ import {
   type McpDispatchGateContext,
   type McpDispatchGateRequirements,
 } from "./dispatch-gate.js";
+import { elicitMaskedField } from "./elicitation.js";
+import { withProgressAndCancellation, OperationCancelledError } from "./progress.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
 
 // Every datasource tool is an admin surface — RBAC floor is `admin`.
@@ -106,6 +113,31 @@ function errorMessage(err: unknown, fallback: string): string {
 function toJsonContent(value: unknown): CallToolResult {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+  };
+}
+
+/**
+ * Bridge the profiler's per-table callbacks (#3506) to the MCP progress
+ * reporter (#3500). `reporter.report` is async but progress notifications are
+ * best-effort, so we fire-and-forget — a dropped notification must never
+ * fail (or stall) the profiling work. No table data is sensitive; names are
+ * already part of the generated whitelist the agent will query.
+ */
+function makeProfileProgress(reporter: {
+  report(progress: number, opts?: { total?: number; message?: string }): Promise<void>;
+}): ProfileProgressCallbacks {
+  const fire = (progress: number, total: number, message: string) => {
+    void reporter.report(progress, { total, message }).catch(() => {
+      // intentionally ignored: progress is best-effort, never load-bearing.
+    });
+  };
+  return {
+    onStart: (total) => fire(0, total, `Profiling ${total} table${total === 1 ? "" : "s"}…`),
+    onTableStart: () => {},
+    onTableDone: (name, index, total) => fire(index + 1, total, `Profiled ${name}`),
+    onTableError: (name, _error, index, total) =>
+      fire(index + 1, total, `Skipped ${name} (profiling error)`),
+    onComplete: () => {},
   };
 }
 
@@ -258,6 +290,10 @@ export function registerDatasourceTools(
 
               return await body(requestId);
             } catch (err) {
+              // Client-initiated cancellation (#3500) is not a tool failure —
+              // the SDK already suppressed the response, so propagate it
+              // rather than coercing it into an `internal_error` envelope.
+              if (err instanceof OperationCancelledError) throw err;
               const message = errorMessage(err, `${toolName} tool failed`);
               process.stderr.write(`[atlas-mcp] ${toolName} threw: ${err}\n`);
               return toEnvelopeResult(
@@ -276,6 +312,7 @@ export function registerDatasourceTools(
     {
       title: "List Datasources",
       description: withErrorContract(LIST_DATASOURCES_DESCRIPTION, DATASOURCE_READ_ERROR_CODES),
+      annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {
         include_archived: z
           .boolean()
@@ -323,6 +360,7 @@ export function registerDatasourceTools(
     {
       title: "Test Datasource Connection",
       description: withErrorContract(TEST_DATASOURCE_DESCRIPTION, DATASOURCE_READ_ERROR_CODES),
+      annotations: { readOnlyHint: true, openWorldHint: true },
       inputSchema: {
         id: datasourceIdSchema(
           "Datasource id (connection id) to health-check. Call list_datasources to discover ids.",
@@ -362,6 +400,7 @@ export function registerDatasourceTools(
     {
       title: "Archive Datasource",
       description: withErrorContract(ARCHIVE_DATASOURCE_DESCRIPTION, DATASOURCE_WRITE_ERROR_CODES),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         id: datasourceIdSchema(
           "Datasource id to archive. Reversible — restore with restore_datasource.",
@@ -371,7 +410,7 @@ export function registerDatasourceTools(
     async ({ id }): Promise<CallToolResult> =>
       dispatch(
         "archive_datasource",
-        { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE },
+        { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
         async () => archiveOrRestore(id, "archive"),
       ),
   );
@@ -382,6 +421,7 @@ export function registerDatasourceTools(
     {
       title: "Restore Datasource",
       description: withErrorContract(RESTORE_DATASOURCE_DESCRIPTION, DATASOURCE_WRITE_ERROR_CODES),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {
         id: datasourceIdSchema(
           "Archived datasource id to restore (un-archive). Call list_datasources with include_archived to discover ids.",
@@ -391,7 +431,7 @@ export function registerDatasourceTools(
     async ({ id }): Promise<CallToolResult> =>
       dispatch(
         "restore_datasource",
-        { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE },
+        { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
         async () => archiveOrRestore(id, "restore"),
       ),
   );
@@ -402,6 +442,7 @@ export function registerDatasourceTools(
     {
       title: "Delete Datasource",
       description: withErrorContract(DELETE_DATASOURCE_DESCRIPTION, DATASOURCE_WRITE_ERROR_CODES),
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
       inputSchema: {
         id: datasourceIdSchema(
           "Datasource id to permanently delete. IRREVERSIBLE — prefer archive_datasource unless you intend a hard delete.",
@@ -414,6 +455,9 @@ export function registerDatasourceTools(
         {
           requiresWrite: true,
           minRole: DATASOURCE_MIN_ROLE,
+          // Gate 1 (#3509): the datasource action-policy kill-switch blocks
+          // this outright when the workspace disables datasource actions.
+          actionCategory: "datasource",
           // Destructive → routes through the origin=mcp approval gate (#3508).
           // `resource` is the approval-matchable target; `description` is
           // stored on the queued request so a reviewer sees what was attempted.
@@ -447,6 +491,213 @@ export function registerDatasourceTools(
           );
           if (outcome.kind === "error") return installerErrorToEnvelope(outcome, id);
           return toJsonContent({ id, deleted: true });
+        },
+      ),
+  );
+
+  // --- create_datasource (mutate; credential via masked elicitation) ---
+  server.registerTool(
+    "create_datasource",
+    {
+      title: "Create Datasource",
+      description: withErrorContract(CREATE_DATASOURCE_DESCRIPTION, DATASOURCE_WRITE_ERROR_CODES),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+      inputSchema: {
+        db_type: z
+          .enum(MCP_PROVISIONABLE_CATALOG_SLUGS as [string, ...string[]])
+          .describe(
+            `Datasource type. Provisionable via MCP today: ${MCP_PROVISIONABLE_CATALOG_SLUGS.join(", ")}.`,
+          ),
+        install_id: datasourceIdSchema(
+          "New datasource id (lowercase-led slug, e.g. 'prod-us'). Must be unique in the workspace.",
+        ),
+        schema: z
+          .string()
+          .max(MAX_ID_LEN)
+          .optional()
+          .describe("Optional schema/search_path (Postgres). Defaults to the server default."),
+        description: z
+          .string()
+          .max(MAX_FILTER_LEN)
+          .optional()
+          .describe("Optional human-readable description."),
+        group_id: z
+          .string()
+          .max(MAX_ID_LEN)
+          .optional()
+          .describe("Optional environment-group binding."),
+      },
+    },
+    async ({ db_type, install_id, schema, description, group_id }, extra): Promise<CallToolResult> =>
+      dispatch(
+        "create_datasource",
+        // Gate 1 (#3509) datasource kill-switch + mcp:write + admin. NOT
+        // approval-gated (provisioning is additive, lands draft); the
+        // human-in-the-loop is the masked credential entry below.
+        { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
+        async (requestId) => {
+          const orgId = actor.activeOrganizationId;
+          if (!orgId) {
+            return toEnvelopeResult(
+              envelope(
+                "validation_failed",
+                "This MCP session is not bound to a workspace; provisioning requires a bound workspace.",
+                { hint: "Set ATLAS_MCP_ORG_ID (and ATLAS_MCP_USER_ID) for the MCP server." },
+              ),
+            );
+          }
+
+          // Collect the connection URL via MASKED form-mode elicitation
+          // (#3499). The secret travels client→server only; it never enters
+          // a tool argument, the agent/LLM context, this response, or a log.
+          let elicited;
+          try {
+            elicited = await elicitMaskedField(server, {
+              principal: orgId,
+              message: `Enter the ${db_type} connection URL for "${install_id}". It is sent securely and never shared with the agent.`,
+              field: {
+                name: "url",
+                title: `${db_type} connection URL`,
+                description: "Entered securely; never shared with the agent or stored in plaintext.",
+              },
+              ...(extra.signal ? { signal: extra.signal } : {}),
+            });
+          } catch (err) {
+            // Elicitation unsupported by the client, or a state/secret error.
+            // Never include the (never-yet-received) credential; surface a
+            // capability-shaped message.
+            return toEnvelopeResult(
+              envelope(
+                "validation_failed",
+                `Could not securely collect the connection credential: ${errorMessage(err, "elicitation failed")}.`,
+                { hint: "Use an MCP client that supports masked form elicitation, or provision via the admin console." },
+              ),
+            );
+          }
+          if (elicited.action !== "accept") {
+            return toEnvelopeResult(
+              envelope(
+                "validation_failed",
+                `Datasource creation was ${elicited.action === "decline" ? "declined" : "cancelled"} — no credential was provided.`,
+              ),
+            );
+          }
+          // `url` is the secret — used only for the pre-flight probe + the
+          // installer's encrypt-at-rest path. NEVER logged or returned.
+          const url = elicited.value;
+
+          const outcome = await provisionDatasource(orgId, {
+            catalogSlug: db_type,
+            installId: install_id,
+            url,
+            ...(schema !== undefined ? { schema } : {}),
+            ...(description !== undefined ? { description } : {}),
+            groupId: group_id ?? null,
+          });
+
+          switch (outcome.kind) {
+            case "ok":
+              // Only the masked URL is ever surfaced.
+              return toJsonContent({
+                id: outcome.value.installId,
+                db_type: outcome.value.dbType,
+                status: outcome.value.status,
+                masked_url: outcome.value.maskedUrl,
+                description: outcome.value.description,
+                schema: outcome.value.schema,
+                group_id: outcome.value.groupId,
+                created: true,
+                next: `Run profile_datasource with id "${outcome.value.installId}" to generate its semantic layer and make it queryable.`,
+              });
+            case "unsupported":
+              return toEnvelopeResult(envelope("validation_failed", outcome.message));
+            case "health_error":
+              // Pre-flight failed — message is credential-scrubbed by the lib.
+              return toEnvelopeResult(
+                envelope("validation_failed", outcome.message, {
+                  hint: "Verify the connection details and that the database is reachable, then retry.",
+                }),
+              );
+            case "error":
+              // Installer rejection (conflict / bad config) — agent-actionable.
+              return toEnvelopeResult(
+                envelope("validation_failed", outcome.message, { request_id: requestId }),
+              );
+          }
+        },
+      ),
+  );
+
+  // --- profile_datasource (mutate, long-running → progress + cancellable) ---
+  server.registerTool(
+    "profile_datasource",
+    {
+      title: "Profile Datasource & Generate Semantic Layer",
+      description: withErrorContract(PROFILE_DATASOURCE_DESCRIPTION, DATASOURCE_WRITE_ERROR_CODES),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      inputSchema: {
+        id: datasourceIdSchema(
+          "Datasource id to profile. Typically one just created with create_datasource.",
+        ),
+      },
+    },
+    async ({ id }, extra): Promise<CallToolResult> =>
+      dispatch(
+        "profile_datasource",
+        { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
+        async () => {
+          const target = await loadDatasourceProfileTarget(workspaceId, id);
+          if (target.kind === "not_found") {
+            return toEnvelopeResult(
+              envelope("unknown_entity", `Datasource "${id}" not found.`, {
+                hint: "Call list_datasources to see configured datasources.",
+              }),
+            );
+          }
+          if (target.kind === "unsupported") {
+            return toEnvelopeResult(
+              envelope(
+                "validation_failed",
+                `Profiling "${target.dbType}" datasources via MCP is not supported yet (only postgres and mysql).`,
+              ),
+            );
+          }
+
+          // Long-running: report per-table progress and honor client
+          // cancellation (#3500). The decrypted URL stays inside the lib —
+          // only the connectionId + progress counts surface here.
+          const result = await withProgressAndCancellation(
+            extra,
+            { startMessage: `Profiling datasource "${id}"`, endMessage: "Semantic layer generated" },
+            async (reporter) => {
+              const progress = makeProfileProgress(reporter);
+              return runSemanticProfile({
+                url: target.target.url,
+                dbType: target.target.dbType,
+                ...(target.target.schema !== undefined ? { schema: target.target.schema } : {}),
+                connectionId: id,
+                progress,
+              });
+            },
+          );
+
+          if (result.kind === "error") {
+            // Tagged ProfilingFailedError — an agent-actionable validation
+            // outcome (no tables, too many failures), not a 500.
+            return toEnvelopeResult(envelope("validation_failed", result.message));
+          }
+
+          const r = result.result;
+          const tables = r.entities.map((e) => e.table);
+          return toJsonContent({
+            id,
+            queryable: true,
+            entities_generated: r.entities.length,
+            metrics_generated: r.metrics.length,
+            tables,
+            profiling_errors: r.errors.length,
+            elapsed_ms: r.elapsedMs,
+          });
         },
       ),
   );
@@ -521,6 +772,10 @@ const ARCHIVE_DATASOURCE_DESCRIPTION = `Archive (soft-disable) a datasource: its
 const RESTORE_DATASOURCE_DESCRIPTION = `Restore (un-archive) a previously archived datasource so it becomes queryable again. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example response: \`{ "id": "prod-us", "status": "published", "restored": true }\`.`;
 
 const DELETE_DATASOURCE_DESCRIPTION = `Permanently delete a datasource — removes the configuration and drains the pool. IRREVERSIBLE (use archive_datasource for a recoverable disable). Destructive: requires the \`mcp:write\` scope and the admin role, and routes through the workspace approval flow when an origin=mcp approval rule requires it (the response then carries \`approval_required: true\` with an \`approval_request_id\` to follow up on). Example call: \`{ "id": "old-staging" }\`. Example success: \`{ "id": "old-staging", "deleted": true }\`.`;
+
+const CREATE_DATASOURCE_DESCRIPTION = `Provision a NEW datasource (postgres or mysql) for this workspace. You supply only non-secret fields — \`db_type\`, \`install_id\`, optional \`schema\`/\`description\`/\`group_id\`. The connection URL (the credential) is collected SEPARATELY via a secure masked prompt to the user; it is never passed as a tool argument and never shared with you. The connection is health-checked BEFORE it is persisted (a failed probe persists nothing), and lands as a \`draft\` — run profile_datasource next to make it queryable. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "db_type": "postgres", "install_id": "prod-us" }\`. Example success: \`{ "id": "prod-us", "db_type": "postgres", "status": "draft", "masked_url": "postgres://***@…", "created": true }\`.`;
+
+const PROFILE_DATASOURCE_DESCRIPTION = `Profile a datasource (introspect its tables) and generate its semantic layer — entities + the table whitelist — so the agent can query it with executeSQL. Long-running: emits progress per table and is cancellable. Typically run right after create_datasource. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example success: \`{ "id": "prod-us", "queryable": true, "entities_generated": 12, "tables": ["orders", "users"], "elapsed_ms": 1840 }\`.`;
 
 // Read tools: not-found surfaces as `unknown_entity`; everything else as
 // `internal_error`. RBAC denial (gate 3) surfaces as `forbidden`.

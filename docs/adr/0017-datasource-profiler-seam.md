@@ -1,6 +1,6 @@
 # ADR-0017: Plugin datasource profiler seam (registry-resolved, capability-derived)
 
-**Status:** Proposed — pending maintainer sign-off (#3620 HITL gate before the seam API freezes); flip to Accepted on merge
+**Status:** Accepted (maintainer sign-off via PR #3638 merge — #3620 HITL gate)
 **Date:** 2026-06-14
 **Context milestone:** v0.0.16 — In-Product Datasource Onboarding (Profiler Seam) (#66)
 **Depends on:** [ADR-0013](./0013-db-stored-plugin-datasource-connections.md) (`createFromConfig` adapter seam), [ADR-0012](./0012-group-scoped-semantic-layer-directories.md) (group-scoped semantic layer)

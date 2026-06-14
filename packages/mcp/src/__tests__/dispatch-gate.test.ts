@@ -424,7 +424,7 @@ describe("runMcpDispatchGate — approval dedup keyed on toolName:resource (#358
         if (opts.capturedDedupKey) opts.capturedDedupKey.value = querySql;
         return Effect.succeed(opts.alreadyApproved ?? false);
       },
-      createApprovalRequest: (args) =>
+      createApprovalRequest: (_args) =>
         Effect.succeed(pendingRequest("req_dedup")),
       listApprovalRules: unused,
       createApprovalRule: unused,
@@ -493,7 +493,6 @@ describe("runMcpDispatchGate — approval dedup keyed on toolName:resource (#358
   });
 
   it("same resource+toolName IS deduped (already-approved proceeds)", async () => {
-    let created = false;
     const res = await runMcpDispatchGate(
       baseCtx(),
       {

@@ -645,13 +645,39 @@ export const checkApprovalRequired = (
       [orgId, requestOrigin],
     ));
 
-    if (rows.length === 0) {
-      return { required: false, matchedRules: [] };
-    }
-
     const matchedRules: ApprovalRule[] = [];
     const tablesLower = tablesAccessed.map((t) => t.toLowerCase());
     const columnsLower = columnsAccessed.map((c) => c.toLowerCase());
+
+    if (rows.length === 0) {
+      // #3573 — when no DB rules exist at all AND the request is an MCP
+      // datasource action, default to required. This covers the default-install
+      // case (no approval_rules rows) for destructive datasource MCP actions
+      // (delete_datasource stamps `tablesAccessed: ['datasource:<id>']`).
+      // The default fires ONLY when: origin=mcp AND all resources are
+      // datasource:* prefixed. Non-MCP origins or mixed-resource requests
+      // fall through to the normal `required: false` path.
+      if (
+        options?.origin === "mcp" &&
+        tablesLower.length > 0 &&
+        tablesLower.every((t) => t.startsWith("datasource:"))
+      ) {
+        const defaultRule: ApprovalRule = {
+          id: "__mcp_datasource_default__",
+          orgId,
+          name: "mcp-datasource-default",
+          ruleType: "datasource",
+          pattern: "*",
+          threshold: null,
+          enabled: true,
+          origin: "mcp",
+          createdAt: new Date(0).toISOString(),
+          updatedAt: new Date(0).toISOString(),
+        };
+        return { required: true, matchedRules: [defaultRule] };
+      }
+      return { required: false, matchedRules: [] };
+    }
 
     for (const row of rows) {
       const rule = rowToRule(row);

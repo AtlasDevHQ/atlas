@@ -73,10 +73,21 @@ const ColumnRuleSchema = z.object({
   threshold: z.null(),
 });
 
+// #3573 — first-class datasource rule type. Matches `datasource:<id>` resources
+// (or `*` / `datasource:*`) for destructive MCP datasource actions; pattern-based
+// like table/column, threshold unused.
+const DatasourceRuleSchema = z.object({
+  ...ApprovalRuleBaseShape,
+  ruleType: z.literal("datasource"),
+  pattern: z.string(),
+  threshold: z.null(),
+});
+
 export const ApprovalRuleSchema = z.discriminatedUnion("ruleType", [
   CostRuleSchema,
   TableRuleSchema,
   ColumnRuleSchema,
+  DatasourceRuleSchema,
 ]) satisfies z.ZodType<ApprovalRule>;
 
 // `RuleTypeEnum` is exported so existing callers that narrowed against the

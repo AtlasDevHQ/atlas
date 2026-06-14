@@ -92,6 +92,11 @@ interface ApprovalRuleBase {
  *   is unused and stored as the empty string.
  * - `table` / `column` rules match when a query accesses a name matching
  *   `pattern`; threshold is unused and stored as null.
+ * - `datasource` rules (#3573) match when a destructive MCP datasource action
+ *   targets a `datasource:<id>` resource matching `pattern` (or `*` /
+ *   `datasource:*` for all); threshold is unused and stored as null. This is
+ *   the first-class rule type behind ADR-0016 gate 4's approval-by-default for
+ *   destructive datasource mutations over MCP.
  *
  * The union encodes the "threshold XOR pattern" invariant at the type level
  * so handlers that construct a rule must name the variant explicitly.
@@ -100,6 +105,7 @@ export type ApprovalRule = ApprovalRuleBase & (
   | { ruleType: "cost"; threshold: number; pattern: "" }
   | { ruleType: "table"; pattern: string; threshold: null }
   | { ruleType: "column"; pattern: string; threshold: null }
+  | { ruleType: "datasource"; pattern: string; threshold: null }
 );
 
 // ── Approval request (queue item) ───────────────────────────────────
@@ -187,7 +193,8 @@ export type ApprovalRequest = ApprovalRequestBase & (
 export type CreateApprovalRuleRequest =
   | { ruleType: "cost"; threshold: number; name: string; pattern?: ""; enabled?: boolean; origin?: ApprovalRuleOrigin }
   | { ruleType: "table"; pattern: string; name: string; threshold?: null; enabled?: boolean; origin?: ApprovalRuleOrigin }
-  | { ruleType: "column"; pattern: string; name: string; threshold?: null; enabled?: boolean; origin?: ApprovalRuleOrigin };
+  | { ruleType: "column"; pattern: string; name: string; threshold?: null; enabled?: boolean; origin?: ApprovalRuleOrigin }
+  | { ruleType: "datasource"; pattern: string; name: string; threshold?: null; enabled?: boolean; origin?: ApprovalRuleOrigin };
 
 export interface UpdateApprovalRuleRequest {
   name?: string;

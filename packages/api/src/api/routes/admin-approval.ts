@@ -79,8 +79,8 @@ const NamedRuleBodySchema = z.object({
     description: "Human-readable rule name.",
     example: "Require approval for PII tables",
   }),
-  ruleType: z.enum(["table", "column"]).openapi({
-    description: "Type of rule: table name match or column name match.",
+  ruleType: z.enum(["table", "column", "datasource"]).openapi({
+    description: "Type of rule: table name match, column name match, or datasource id match (#3573 — gates MCP datasource mutations).",
     example: "table",
   }),
   pattern: z.string().min(1).openapi({

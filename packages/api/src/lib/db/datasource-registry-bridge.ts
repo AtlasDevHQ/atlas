@@ -70,6 +70,93 @@ function getDatasourceConnection(plugin: unknown): DatasourceConnectionShape | u
 }
 
 /**
+ * Find the registered datasource plugin `connection` for a `dbType`, or
+ * `undefined` when none is registered. The single home for the
+ * `PluginRegistry.getAll()` → structural-shape → `dbType` match that both the
+ * boot/install registration ({@link registerPluginDatasourceInstall}) and the
+ * pre-flight probe ({@link probePluginDatasourceConnection}) consult — so
+ * "which plugin builds this type" lives in exactly one place (#3547).
+ *
+ * Uses `getAll()` (not `getByType`, which filters to `status==="healthy"`): the
+ * plugin is consulted purely as an ADAPTER via `createFromConfig`, independent
+ * of whether a static config-defined connection of its dbType is healthy. Lazy-
+ * imports the registry to keep it out of this module's static graph (several
+ * tests partial-mock this bridge's imports).
+ */
+export async function findDatasourcePluginConnection(
+  dbType: string,
+): Promise<DatasourceConnectionShape | undefined> {
+  const { plugins } = await import("@atlas/api/lib/plugins/registry");
+  return plugins
+    .getAll()
+    .map(getDatasourceConnection)
+    .find((c): c is DatasourceConnectionShape => c != null && c.dbType === dbType);
+}
+
+/** Outcome of {@link probePluginDatasourceConnection} — `message` is NOT scrubbed; the caller scrubs. */
+export type PluginProbeOutcome =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: "no_plugin" | "connect_failed"; readonly message: string };
+
+/** Probe query + timeout — a trivial connectivity check that every SQL-shaped plugin pool answers. */
+const PLUGIN_PROBE_SQL = "SELECT 1";
+const PLUGIN_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Plugin-aware ephemeral test-connect for a CANDIDATE plugin-managed datasource
+ * (#3547). Builds a throwaway connection via the registered plugin's
+ * `createFromConfig(decryptedConfig)`, runs a `SELECT 1` probe under a short
+ * timeout, and ALWAYS closes it — registering nothing in the
+ * `ConnectionRegistry` and persisting nothing. This is the plugin counterpart
+ * to the native `connections.register(probeId) → healthCheck` pre-flight, so
+ * the MCP `create_datasource` validate-before-persist path is uniform across
+ * native and plugin dbTypes.
+ *
+ * `message` carries the RAW driver error (which may echo the credential) — the
+ * caller (`mcp-lifecycle.provisionDatasource`) runs it through
+ * `scrubSecretFromMessage` before it ever reaches a client/agent/log. Returning
+ * the raw string keeps the secret-scrub seam in one place.
+ */
+export async function probePluginDatasourceConnection(
+  dbType: string,
+  decryptedConfig: Readonly<Record<string, unknown>>,
+): Promise<PluginProbeOutcome> {
+  const conn = await findDatasourcePluginConnection(dbType);
+  if (!conn || typeof conn.createFromConfig !== "function") {
+    return {
+      ok: false,
+      reason: "no_plugin",
+      message:
+        `No datasource plugin registered for type "${dbType}". Add the corresponding ` +
+        `plugin (e.g. clickhousePlugin()) to the plugins array in atlas.config.ts.`,
+    };
+  }
+
+  let built: { query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> } | undefined;
+  try {
+    built = await conn.createFromConfig(decryptedConfig);
+    await built.query(PLUGIN_PROBE_SQL, PLUGIN_PROBE_TIMEOUT_MS);
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: "connect_failed",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    if (built) {
+      try {
+        await built.close();
+      } catch {
+        // intentionally ignored: best-effort teardown of a throwaway probe
+        // connection — a close failure must not mask the probe result, and this
+        // module stays logger-free (callers own breadcrumbs).
+      }
+    }
+  }
+}
+
+/**
  * Datasource dbTypes whose per-workspace connections are NOT built by this
  * bridge from `workspace_plugins.config`. Salesforce is the sole member:
  *
@@ -129,16 +216,9 @@ async function registerPluginDatasourceInstall(
   poolConfig: DatasourcePoolConfig,
   decryptedConfig: Readonly<Record<string, unknown>>,
 ): Promise<boolean> {
-  // Lazy import keeps the plugin registry out of this module's static import
-  // graph — several tests partial-mock this bridge's imports.
-  const { plugins } = await import("@atlas/api/lib/plugins/registry");
-  // Use getAll() (not getByType, which filters to status==="healthy"): the
-  // plugin is consulted purely as an ADAPTER via createFromConfig, independent
-  // of whether a static config-defined connection of its dbType is healthy.
-  const conn = plugins
-    .getAll()
-    .map(getDatasourceConnection)
-    .find((c): c is DatasourceConnectionShape => c != null && c.dbType === poolConfig.dbType);
+  // Shared registry lookup — the same seam the pre-flight probe consults so
+  // "which plugin builds this type" lives in one place (#3547).
+  const conn = await findDatasourcePluginConnection(poolConfig.dbType);
 
   if (!conn || typeof conn.createFromConfig !== "function") {
     throw new Error(

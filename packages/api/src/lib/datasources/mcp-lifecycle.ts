@@ -36,6 +36,10 @@ import {
   catalogSlugToDbType,
   resolveDatasourcePoolConfig,
 } from "@atlas/api/lib/db/datasource-pool-resolver";
+import {
+  findDatasourcePluginConnection,
+  probePluginDatasourceConnection,
+} from "@atlas/api/lib/db/datasource-registry-bridge";
 import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import {
@@ -312,6 +316,61 @@ export {
 };
 
 /**
+ * Capability resolution for a candidate provisioning target — the single
+ * predicate that decides whether (and how) a catalog slug can be provisioned
+ * over MCP (#3547 AC #1). Replaces the hardcoded `MCP_NATIVE_DB_TYPES` gate so
+ * provisioning and (future #3552) profiling stay in lockstep as types are
+ * added: a type is provisionable iff it is native pg/mysql OR a datasource
+ * plugin implementing `createFromConfig` is registered for its dbType.
+ *
+ *   - `native`      — pg/mysql: pre-flight via the `connections.register` →
+ *                     `healthCheck` ephemeral probe.
+ *   - `plugin`      — clickhouse/snowflake/…: pre-flight via the plugin-aware
+ *                     `createFromConfig` → `SELECT 1` → close probe.
+ *   - `unsupported` — no native handler and no registered plugin (or an unknown
+ *                     slug). `message` is actionable, carries no secret.
+ */
+export type ProvisionCapability =
+  | { readonly kind: "native"; readonly dbType: McpNativeDbType }
+  | { readonly kind: "plugin"; readonly dbType: string }
+  | { readonly kind: "unsupported"; readonly dbType: string; readonly message: string };
+
+function unsupportedProvisionMessage(catalogSlug: string): string {
+  return (
+    `Provisioning "${catalogSlug}" datasources via MCP is not supported in this deployment. ` +
+    `Supported types: ${MCP_PROVISIONABLE_CATALOG_SLUGS.join(", ")} (plugin types require the ` +
+    `corresponding datasource plugin to be installed). Use the Atlas admin console for other types.`
+  );
+}
+
+export async function resolveProvisionCapability(
+  catalogSlug: string,
+): Promise<ProvisionCapability> {
+  // Native fast path — the catalog slug IS the dbType for pg/mysql (the
+  // `demo-postgres` slug maps to postgres but is NOT MCP-provisionable, and
+  // falls through to the plugin lookup below, which finds no plugin → unsupported).
+  if (isMcpNativeDbType(catalogSlug)) {
+    return { kind: "native", dbType: catalogSlug };
+  }
+  // Map slug → dbType; an unknown slug is `unsupported`, never a throw.
+  let dbType: string;
+  try {
+    dbType = catalogSlugToDbType(catalogSlug);
+  } catch {
+    // intentionally ignored: an unrecognised slug is a normal "unsupported"
+    // provisioning outcome, surfaced as an actionable envelope — not a 500.
+    return { kind: "unsupported", dbType: catalogSlug, message: unsupportedProvisionMessage(catalogSlug) };
+  }
+  // Plugin-managed: provisionable iff a plugin implementing `createFromConfig`
+  // is registered for this dbType (the same lookup the install/probe paths use).
+  const conn = await findDatasourcePluginConnection(dbType);
+  if (conn && typeof conn.createFromConfig === "function") {
+    return { kind: "plugin", dbType };
+  }
+  return { kind: "unsupported", dbType, message: unsupportedProvisionMessage(catalogSlug) };
+}
+
+/**
  * Input to {@link provisionDatasource}. `url` is the credential collected
  * via masked elicitation at the MCP edge — it is encrypted at the installer
  * boundary and NEVER round-trips back out (the returned row carries only a
@@ -350,49 +409,32 @@ function scrubSecretFromMessage(message: string, url: string): string {
   return errorMessage(exact);
 }
 
+/** Result of a validate-before-persist pre-flight; `message` is already scrubbed. */
+type PreflightResult = { readonly ok: true } | { readonly ok: false; readonly message: string };
+
 /**
- * Provision a new datasource over MCP: validate the dbType is provisionable
- * → pre-flight health-check the candidate connection WITHOUT persisting →
- * on success install it as a `draft` (credential encrypted by the installer)
- * → return the masked row. On any failure nothing is persisted and the
- * ephemeral pool is rolled back.
- *
- * The credential (`input.url`) only flows in here and into the installer's
- * encrypt-at-rest path; it is never returned, logged, or placed in an error.
+ * The credential-bearing config the probe + installer both consume. For the
+ * url-shaped provisionable types (native pg/mysql, plugin clickhouse/snowflake)
+ * the secret is `url`; `schema`/`description` are non-secret metadata. Built in
+ * one place so the pre-flight probe tests EXACTLY what the installer persists.
  */
-export async function provisionDatasource(
-  orgId: string,
-  input: ProvisionDatasourceInput,
-): Promise<ProvisionDatasourceOutcome> {
-  if (!isMcpNativeDbType(input.catalogSlug)) {
-    return {
-      kind: "unsupported",
-      message:
-        `Provisioning "${input.catalogSlug}" datasources via MCP is not supported yet. ` +
-        `Supported types: ${MCP_PROVISIONABLE_CATALOG_SLUGS.join(", ")}. ` +
-        `Use the Atlas admin console for other datasource types.`,
-    };
-  }
+function buildProvisionFormData(input: ProvisionDatasourceInput): Record<string, unknown> {
+  return {
+    url: input.url,
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.schema !== undefined && input.schema.length > 0 ? { schema: input.schema } : {}),
+  };
+}
 
-  // Reject a duplicate id before touching the registry — a clean message
-  // beats an installer `AlreadyInstalledError` deep in the Effect.
-  if (await resolveDatasourceCatalogSlug(orgId, input.installId)) {
-    return {
-      kind: "error",
-      status: 409,
-      code: "conflict",
-      message: `A datasource with id "${input.installId}" already exists in this workspace.`,
-    };
-  }
-
-  // Pre-flight on an EPHEMERAL probe id — never the real install id. Using a
-  // throwaway id (a) guarantees the probe tests THIS candidate `url`, not a
-  // stale bare pool that might already exist under `installId` (e.g. a
-  // sibling workspace's pool, the runtime `default`, or an un-drained
-  // archived install), and (b) can't leave the install-id-keyed registry in a
-  // split-brain state if persist later fails. Mirrors the admin route's
-  // `_test_*` ephemeral test-connect (ADR-0007). The probe pool is ALWAYS
-  // unregistered in `finally`.
+/**
+ * Native pg/mysql pre-flight on an EPHEMERAL probe id — never the real install
+ * id. A throwaway id (a) guarantees the probe tests THIS candidate `url`, not a
+ * stale bare pool that might already exist under `installId`, and (b) can't
+ * leave the install-id-keyed registry split-brained if persist later fails.
+ * Mirrors the admin route's `_test_*` ephemeral test-connect (ADR-0007). The
+ * probe pool is ALWAYS unregistered in `finally`.
+ */
+async function preflightNativeConnection(input: ProvisionDatasourceInput): Promise<PreflightResult> {
   const probeId = `__mcp_preflight_${crypto.randomUUID()}`;
   connections.register(probeId, {
     url: input.url,
@@ -407,17 +449,18 @@ export async function provisionDatasource(
     // broken connection slips past validate-before-persist.
     if (health.status !== "healthy") {
       return {
-        kind: "health_error",
+        ok: false,
         message: scrubSecretFromMessage(
           health.message ?? "Connection probe could not reach the datasource.",
           input.url,
         ),
       };
     }
+    return { ok: true };
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);
     return {
-      kind: "health_error",
+      ok: false,
       message: scrubSecretFromMessage(
         `Connection test failed: ${raw}. Verify the host, port, database, and credentials, then retry.`,
         input.url,
@@ -428,14 +471,80 @@ export async function provisionDatasource(
     // fresh registration, failure persists nothing.
     connections.unregister(probeId);
   }
+}
 
-  // Health OK → persist as draft. The installer re-registers idempotently and
-  // encrypts the `url` per the catalog config_schema.
-  const formData: Record<string, unknown> = {
-    url: input.url,
-    ...(input.description !== undefined ? { description: input.description } : {}),
-    ...(input.schema !== undefined && input.schema.length > 0 ? { schema: input.schema } : {}),
-  };
+/**
+ * Plugin-managed pre-flight (#3547) — builds a throwaway connection via the
+ * registered plugin's `createFromConfig` and runs a `SELECT 1` probe through
+ * the shared {@link probePluginDatasourceConnection} seam, which closes the
+ * probe connection regardless of outcome. Tests exactly the config the
+ * installer will persist (`buildProvisionFormData`). A missing plugin
+ * (`no_plugin`) shouldn't normally reach here — `resolveProvisionCapability`
+ * already gated it — but is handled defensively. The raw driver error is
+ * scrubbed of the credential before it returns.
+ */
+async function preflightPluginConnection(
+  dbType: string,
+  input: ProvisionDatasourceInput,
+): Promise<PreflightResult> {
+  const outcome = await probePluginDatasourceConnection(dbType, buildProvisionFormData(input));
+  if (outcome.ok) return { ok: true };
+  const friendly =
+    outcome.reason === "no_plugin"
+      ? outcome.message
+      : `Connection test failed: ${outcome.message}. Verify the connection details and credentials, then retry.`;
+  return { ok: false, message: scrubSecretFromMessage(friendly, input.url) };
+}
+
+/**
+ * Provision a new datasource over MCP: validate the dbType is provisionable
+ * → pre-flight health-check the candidate connection WITHOUT persisting →
+ * on success install it as a `draft` (credential encrypted by the installer)
+ * → return the masked row. On any failure nothing is persisted and the
+ * ephemeral pool is rolled back.
+ *
+ * The credential (`input.url`) only flows in here and into the installer's
+ * encrypt-at-rest path; it is never returned, logged, or placed in an error.
+ */
+export async function provisionDatasource(
+  orgId: string,
+  input: ProvisionDatasourceInput,
+): Promise<ProvisionDatasourceOutcome> {
+  // Capability-derived gate (#3547 AC #1) — native pg/mysql OR a plugin-managed
+  // type with a registered `createFromConfig`. Anything else is an actionable
+  // `unsupported` envelope (no secret).
+  const capability = await resolveProvisionCapability(input.catalogSlug);
+  if (capability.kind === "unsupported") {
+    return { kind: "unsupported", message: capability.message };
+  }
+
+  // Reject a duplicate id before touching the registry — a clean message
+  // beats an installer `AlreadyInstalledError` deep in the Effect.
+  if (await resolveDatasourceCatalogSlug(orgId, input.installId)) {
+    return {
+      kind: "error",
+      status: 409,
+      code: "conflict",
+      message: `A datasource with id "${input.installId}" already exists in this workspace.`,
+    };
+  }
+
+  // Validate-before-persist pre-flight: native via the ephemeral
+  // ConnectionRegistry probe, plugin via the plugin-aware
+  // `createFromConfig → SELECT 1 → close` probe. Either way nothing is
+  // persisted and no pool survives a failure (the credential never leaks — the
+  // message is scrubbed before it returns).
+  const preflight =
+    capability.kind === "native"
+      ? await preflightNativeConnection(input)
+      : await preflightPluginConnection(capability.dbType, input);
+  if (!preflight.ok) {
+    return { kind: "health_error", message: preflight.message };
+  }
+
+  // Pre-flight OK → persist as draft. The installer re-registers idempotently
+  // and encrypts the secret fields per the catalog config_schema.
+  const formData = buildProvisionFormData(input);
   const outcome = await runDatasourceInstaller((installer) =>
     installer.installDatasource(orgId as WorkspaceId, input.catalogSlug, {
       installId: input.installId,

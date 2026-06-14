@@ -57,7 +57,9 @@ mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
 }));
 
 // The plugin test-connect seam — fully controllable per test.
-let pluginConn: { dbType: string; createFromConfig?: unknown } | undefined;
+let pluginConn:
+  | { dbType: string; createFromConfig?: unknown; profile?: unknown; listObjects?: unknown }
+  | undefined;
 let probeOutcome:
   | { ok: true }
   | { ok: false; reason: "no_plugin" | "connect_failed"; message: string } = { ok: true };
@@ -113,7 +115,9 @@ mock.module("@atlas/api/lib/effect/workspace-installer", () => ({
   }),
 }));
 
-const { resolveProvisionCapability, provisionDatasource } = await import("../mcp-lifecycle.js");
+const { resolveProvisionCapability, resolveProfileCapability, provisionDatasource } = await import(
+  "../mcp-lifecycle.js"
+);
 
 const CH_SECRET_URL = "clickhouse://admin:topsecret@warehouse.internal:8443/analytics";
 
@@ -146,6 +150,49 @@ describe("resolveProvisionCapability", () => {
 
   it("an unknown catalog slug → unsupported (the resolver throw is swallowed)", async () => {
     const cap = await resolveProvisionCapability("mystery-db");
+    expect(cap.kind).toBe("unsupported");
+  });
+});
+
+describe("resolveProfileCapability (#3620 — ADR-0017)", () => {
+  it("native pg/mysql → kind:native (no profileFn — SemanticGenerator profiles in-core)", async () => {
+    expect(await resolveProfileCapability("postgres")).toEqual({ kind: "native", dbType: "postgres" });
+    expect(await resolveProfileCapability("mysql")).toEqual({ kind: "native", dbType: "mysql" });
+  });
+
+  it("a plugin implementing BOTH createFromConfig and profile → kind:plugin with the profileFn", async () => {
+    const profile = mock(async () => ({ profiles: [], errors: [] }));
+    pluginConn = { dbType: "clickhouse", createFromConfig: () => ({}), profile };
+    const cap = await resolveProfileCapability("clickhouse");
+    expect(cap.kind).toBe("plugin");
+    if (cap.kind === "plugin") {
+      expect(cap.dbType).toBe("clickhouse");
+      // The resolved profileFn IS the plugin's profile — fed straight to SemanticGenerator.
+      expect(cap.profileFn).toBe(profile as unknown as typeof cap.profileFn);
+    }
+  });
+
+  it("stays in lockstep with provisioning: provisionable but NO profile → unsupported (not a crash)", async () => {
+    // createFromConfig present (→ provision:plugin) but no introspection contract.
+    pluginConn = { dbType: "clickhouse", createFromConfig: () => ({}) };
+    const provision = await resolveProvisionCapability("clickhouse");
+    expect(provision.kind).toBe("plugin");
+    const profileCap = await resolveProfileCapability("clickhouse");
+    expect(profileCap.kind).toBe("unsupported");
+    if (profileCap.kind === "unsupported") {
+      expect(profileCap.dbType).toBe("clickhouse");
+      expect(profileCap.message).toContain("connection.profile");
+    }
+  });
+
+  it("no registered plugin → unsupported (never a silent empty result)", async () => {
+    pluginConn = undefined;
+    const cap = await resolveProfileCapability("clickhouse");
+    expect(cap.kind).toBe("unsupported");
+  });
+
+  it("an unknown catalog slug → unsupported (mirrors provisioning)", async () => {
+    const cap = await resolveProfileCapability("mystery-db");
     expect(cap.kind).toBe("unsupported");
   });
 });

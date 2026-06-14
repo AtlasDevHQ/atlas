@@ -35,6 +35,7 @@ import {
   createClickHouseConnection,
   extractHost,
 } from "./connection";
+import { listClickHouseObjects, profileClickHouse } from "./profiler";
 import { CLICKHOUSE_FORBIDDEN_PATTERNS } from "./validation";
 
 /**
@@ -97,6 +98,12 @@ export function buildClickHousePlugin(
     dbType: "clickhouse",
     parserDialect: "PostgresQL", // closest match in node-sql-parser
     forbiddenPatterns: CLICKHOUSE_FORBIDDEN_PATTERNS,
+    // Introspection half of the datasource contract (ADR-0017). The host resolves
+    // `profile` off the registry (same predicate as `createFromConfig`) and feeds
+    // it into SemanticGenerator's profiler seam; the CLI consumes these exports
+    // directly. Both run read-only via the connection's `readonly: 1` query path.
+    listObjects: listClickHouseObjects,
+    profile: profileClickHouse,
   };
 
   if (staticUrl) {
@@ -189,4 +196,5 @@ export const clickhousePlugin = createPlugin({
 });
 
 export { createClickHouseConnection, rewriteClickHouseUrl, extractHost } from "./connection";
+export { listClickHouseObjects, profileClickHouse } from "./profiler";
 export { CLICKHOUSE_FORBIDDEN_PATTERNS } from "./validation";

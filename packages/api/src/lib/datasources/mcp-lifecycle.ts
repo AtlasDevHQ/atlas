@@ -41,6 +41,7 @@ import {
   probePluginDatasourceConnection,
   probeNativeDatasourceConnection,
 } from "@atlas/api/lib/db/datasource-registry-bridge";
+import type { DatasourceProfiler } from "@atlas/api/lib/effect/semantic-generator";
 import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { getInstallHandler } from "@atlas/api/lib/integrations/install/dispatch";
@@ -373,6 +374,68 @@ export async function resolveProvisionCapability(
     return { kind: "plugin", dbType };
   }
   return { kind: "unsupported", dbType, message: unsupportedProvisionMessage(catalogSlug) };
+}
+
+// ── Profiling capability (#3620 — ADR-0017) ──────────────────────────
+
+/**
+ * Profiling-capability resolution — the SOURCE side of the profiler seam
+ * (ADR-0017) that feeds `SemanticGenerator`'s `profileFn` injection point
+ * (`effect/semantic-generator.ts:108`). Deliberately DERIVED from
+ * {@link resolveProvisionCapability}: native/plugin/unsupported classification
+ * comes from the EXACT same predicate provisioning uses (the one shared lookup,
+ * {@link findDatasourcePluginConnection}), so the plugin that provisions a
+ * datasource is the plugin that profiles it — provisioning and profiling stay in
+ * lockstep, never a divergent second structural matcher.
+ *
+ *   - `native`      — pg/mysql: `SemanticGenerator` profiles these in-core
+ *                     (`resolveProfiler`), so no `profileFn` is supplied.
+ *   - `plugin`      — a registered datasource plugin that ALSO implements the
+ *                     introspection contract (`connection.profile`). Carries the
+ *                     `profileFn` the caller passes straight into
+ *                     `SemanticGenerator.profile({ profileFn })`. `profile` is
+ *                     structurally the host `DatasourceProfiler`, so no adapter.
+ *   - `unsupported` — no plugin / unknown slug, OR a plugin that is provisionable
+ *                     (`createFromConfig`) but does not implement `profile` yet.
+ *                     Explicit + actionable — mirrors `SemanticGenerator`'s
+ *                     fail-closed `unsupported_db_type`, never a silent skip.
+ */
+export type ProfileCapability =
+  | { readonly kind: "native"; readonly dbType: McpNativeDbType }
+  | { readonly kind: "plugin"; readonly dbType: string; readonly profileFn: DatasourceProfiler }
+  | { readonly kind: "unsupported"; readonly dbType: string; readonly message: string };
+
+function notProfilableMessage(dbType: string): string {
+  return (
+    `Datasource type "${dbType}" cannot be profiled in this deployment. No registered plugin ` +
+    `implements the profiling contract (connection.profile) for it. Install or upgrade the ` +
+    `corresponding datasource plugin, or profile it with the Atlas CLI (atlas init).`
+  );
+}
+
+export async function resolveProfileCapability(
+  catalogSlug: string,
+): Promise<ProfileCapability> {
+  // Classify by the SAME predicate provisioning uses — never a second matcher.
+  const provision = await resolveProvisionCapability(catalogSlug);
+  if (provision.kind === "native") {
+    return { kind: "native", dbType: provision.dbType };
+  }
+  if (provision.kind === "unsupported") {
+    return { kind: "unsupported", dbType: provision.dbType, message: provision.message };
+  }
+  // provision.kind === "plugin" — re-resolve the SAME plugin via the shared
+  // lookup and check for the introspection half of the contract.
+  const conn = await findDatasourcePluginConnection(provision.dbType);
+  if (conn && typeof conn.profile === "function") {
+    return { kind: "plugin", dbType: provision.dbType, profileFn: conn.profile };
+  }
+  // Provisionable but not (yet) profilable — fail-closed and explicit.
+  return {
+    kind: "unsupported",
+    dbType: provision.dbType,
+    message: notProfilableMessage(provision.dbType),
+  };
 }
 
 /**

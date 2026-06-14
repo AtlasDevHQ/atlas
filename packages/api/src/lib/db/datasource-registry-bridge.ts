@@ -34,6 +34,8 @@
 
 import { connections } from "@atlas/api/lib/db/connection";
 import type { ConnectionPluginMeta, DBConnection } from "@atlas/api/lib/db/connection";
+import type { DatabaseObject } from "@useatlas/types";
+import type { DatasourceProfiler } from "@atlas/api/lib/effect/semantic-generator";
 import {
   type BuiltinDatasourceDbType,
   type DatasourcePoolConfig,
@@ -58,6 +60,15 @@ interface DatasourceConnectionShape {
   validate?: (query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>;
   parserDialect?: string;
   forbiddenPatterns?: RegExp[];
+  /**
+   * Introspection contract (ADR-0017, SDK `AtlasDatasourcePlugin.connection`).
+   * Optional — query-only datasources omit it. `profile` is structurally the
+   * host's {@link DatasourceProfiler}, so `resolveProfileCapability` can feed it
+   * straight into `SemanticGenerator`'s injection point with no adapter. Matched
+   * structurally off the registry — core never imports the plugin package.
+   */
+  listObjects?(options: { url: string; schema?: string }): Promise<DatabaseObject[]> | DatabaseObject[];
+  profile?: DatasourceProfiler;
 }
 
 /** Narrow a registry plugin to its datasource `connection` shape, or undefined if it isn't one. */

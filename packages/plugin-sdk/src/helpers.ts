@@ -92,6 +92,16 @@ function validatePluginShape(plugin: AtlasPlugin): void {
         }
       }
     }
+    // Introspection capabilities (ADR-0017) — optional and additive. When
+    // present each must be a function; the host resolves `profile` off the
+    // registry to feed the profiler seam, so a non-function would silently break
+    // onboarding rather than fail loud at wiring time.
+    if (ds.connection.listObjects !== undefined && typeof ds.connection.listObjects !== "function") {
+      throw new Error('Datasource plugin connection "listObjects" must be a function when provided');
+    }
+    if (ds.connection.profile !== undefined && typeof ds.connection.profile !== "function") {
+      throw new Error('Datasource plugin connection "profile" must be a function when provided');
+    }
     if (ds.dialect !== undefined && (typeof ds.dialect !== "string" || !ds.dialect.trim())) {
       throw new Error('Datasource plugin "dialect" must be a non-empty string');
     }

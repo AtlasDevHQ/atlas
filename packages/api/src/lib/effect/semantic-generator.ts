@@ -18,13 +18,16 @@
  *
  * `profileAndGenerate` ties all three together for a programmatic caller.
  *
- * **Profiler resolution (registry seam — ADR-0013 sibling).** Core profiles
- * Postgres and MySQL directly (the two engines `@atlas/api` owns). Other
- * dbTypes live in plugin packages that core must not import (ADR-0013), so the
- * caller injects a {@link DatasourceProfiler} via `opts.profileFn`. This keeps
- * THIS extraction scoped while pointing at the eventual registry-resolved
- * profiler seam (PRD #3303) — when that lands, the registry supplies `profileFn`
- * instead of the caller.
+ * **Profiler resolution (registry seam — ADR-0017).** Core profiles Postgres
+ * and MySQL directly (the two engines `@atlas/api` owns). Other dbTypes live in
+ * plugin packages that core must not import (ADR-0013), so the caller injects a
+ * {@link DatasourceProfiler} via `opts.profileFn`. The SOURCE that produces that
+ * `profileFn` from the plugin registry is `resolveProfileCapability` in
+ * `lib/datasources/mcp-lifecycle.ts` (#3620): it resolves the plugin's
+ * `connection.profile` off the registry by the SAME predicate provisioning uses,
+ * so provisioning and profiling stay in lockstep (ADR-0017). This injection
+ * point is unchanged — the seam fills it from the registry instead of the caller
+ * hard-coding it.
  */
 
 import { Context, Effect, Layer } from "effect";

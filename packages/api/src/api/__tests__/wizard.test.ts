@@ -233,6 +233,11 @@ import {
   FATAL_ERROR_PATTERN as _fatalPatternReal,
 } from "@atlas/api/lib/profiler";
 
+// The shared assembly engine (#3506) — imported unmocked so the wire-shape
+// tests can assert the wizard's `/generate` YAML is byte-identical to what the
+// shared core emits (the consolidation contract, #3529).
+import { generateSemanticLayer } from "@atlas/api/lib/semantic/generate";
+
 const mockUserProfile = {
   table_name: "users",
   object_type: "table" as const,
@@ -606,6 +611,54 @@ describe("POST /api/v1/wizard/generate", () => {
     // (neither the canonical `group:` nor the deprecated `connection:` alias).
     expect(entities[0].yaml).not.toContain("group:");
     expect(entities[0].yaml).not.toContain("connection:");
+  });
+
+  it("pins the /generate wire response shape (consolidation must not reshape it, #3529)", async () => {
+    // The entity YAML is now produced by the shared `generateSemanticLayer`
+    // (#3529), but the wizard's preview-metadata wrapper stays wizard-local.
+    // Pin the exact response shape so the delegation can't silently drop or
+    // rename a field the frontend reads.
+    const res = await postJson("/api/v1/wizard/generate", {
+      connectionId: "default",
+      tables: ["users"],
+    });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(Object.keys(data).toSorted()).toEqual(
+      ["connectionId", "dbType", "entities", "errors", "schema"].toSorted(),
+    );
+    const entities = data.entities as Array<Record<string, unknown>>;
+    expect(entities).toHaveLength(1);
+    expect(Object.keys(entities[0]).toSorted()).toEqual(
+      ["columnCount", "objectType", "profile", "rowCount", "tableName", "yaml"].toSorted(),
+    );
+    const profile = entities[0].profile as Record<string, unknown>;
+    expect(Object.keys(profile).toSorted()).toEqual(
+      ["columns", "flags", "foreignKeys", "inferredForeignKeys", "notes", "primaryKeys"].toSorted(),
+    );
+    expect(typeof entities[0].yaml).toBe("string");
+    expect(entities[0].tableName).toBe("users");
+    expect(entities[0].objectType).toBe("table");
+    expect(entities[0].rowCount).toBe(1000);
+    expect(entities[0].columnCount).toBe(2);
+  });
+
+  it("routes /generate entity YAML through the shared core, byte-identical (#3529)", async () => {
+    // The wizard preview YAML must match exactly what the shared engine emits
+    // for the same analyzed profiles — that byte-equality is the whole point of
+    // the consolidation (one engine, no per-caller drift). Default connection →
+    // NULL default group → no sourceId, matching the wizard's resolution.
+    const res = await postJson("/api/v1/wizard/generate", {
+      connectionId: "default",
+      tables: ["users"],
+    });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    const entities = data.entities as { tableName: string; yaml: string }[];
+
+    const analyzed = _analyzeReal([mockUserProfile]);
+    const expected = generateSemanticLayer(analyzed, { dbType: "postgres", schema: "public" });
+    expect(entities[0].yaml).toBe(expected.entities[0].yaml);
   });
 
   it("scopes generated YAML by the connection's group (non-default connection)", async () => {
@@ -1305,6 +1358,43 @@ describe("POST /api/v1/wizard/save", () => {
     expect(files).toContain("entities/users.yml");
     expect(files).toContain("catalog.yml");
     expect(files).toContain("glossary.yml");
+  });
+
+  it("sanitizes path-bearing metric table names via path.basename before writing (#3529 filename safety)", async () => {
+    // The wizard delegates catalog/glossary/metric assembly to the shared core
+    // but PRESERVES its own filename-safety guard: a path-bearing profile table
+    // name (which the SAFE_TABLE_NAME entity guard never sees, since profiles
+    // arrive separately) must be reduced to its basename via
+    // `safeSemanticRowName` so the metric file can never escape metricsDir.
+    mockWriteFileSync.mockClear();
+    const unsafeMetricProfile = { ...mockOrdersProfile, table_name: "../../../etc/passwd" };
+
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      // Entities carry a safe name (they pass the SAFE_TABLE_NAME guard); the
+      // path-bearing name lives only in the raw profile.
+      entities: [{ tableName: "passwd", yaml: "table: passwd\n" }],
+      schema: "public",
+      profiles: [unsafeMetricProfile],
+    });
+
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    const files = data.files as string[];
+    // basename("../../../etc/passwd") === "passwd": the metric lands under the
+    // sanitized name, never the traversing path.
+    expect(files).toContain("metrics/passwd.yml");
+
+    // Defense-in-depth: no write path escapes via the raw traversing name.
+    const writePaths = mockWriteFileSync.mock.calls.map(([p]) => String(p));
+    expect(writePaths.every((p) => !p.includes("etc/passwd"))).toBe(true);
+    expect(writePaths.every((p) => !p.includes(".."))).toBe(true);
+
+    // The persisted metric row is keyed by the same sanitized basename.
+    const allRows = mockBulkUpsertEntities.mock.calls.flatMap(([, rows]) => rows);
+    const metricRows = allRows.filter((r) => r.entityType === "metric");
+    expect(metricRows.length).toBeGreaterThan(0);
+    expect(metricRows[0].name).toBe("passwd");
   });
 
   it("returns 422 when profiles contain invalid objects", async () => {

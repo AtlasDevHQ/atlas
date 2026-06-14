@@ -47,12 +47,12 @@ import {
   outputDirForGroup,
 } from "@atlas/api/lib/profiler";
 // Mechanical generation runs through the shared semantic engine (issue #3233)
-// so the wizard and the CLI emit identical YAML. The catalog/glossary/metric
-// assembly delegates to `generateSemanticLayer` — the same shared core the CLI
-// and the `SemanticGenerator` service use (#3506) — so the three can't drift.
+// so the wizard and the CLI emit identical YAML. Both the `/generate` entity
+// YAML and the `/save` catalog/glossary/metric assembly delegate to
+// `generateSemanticLayer` (#3529) — the same shared core the CLI and the
+// `SemanticGenerator` service use (#3506) — so the three can't drift.
 import {
   analyzeTableProfiles,
-  generateEntityYAML,
   generateSemanticLayer,
 } from "@atlas/api/lib/semantic/generate";
 import { SAFE_TABLE_NAME, safeSemanticRowName } from "@atlas/api/lib/semantic/shapes";
@@ -679,12 +679,23 @@ wizard.openapi(generateRoute, async (c) => {
           }
         }
         const sourceId = connectionGroupId ?? undefined;
-        const entities = analyzedProfiles.map((profile) => ({
+
+        // Entity YAML goes through the shared engine (#3529) so the wizard
+        // preview, the CLI, and the SemanticGenerator service emit identical
+        // YAML — only the preview-metadata wrapper below stays wizard-local.
+        // `generateSemanticLayer` returns `entities` in profile order (one per
+        // input profile), so the index aligns 1:1 with `analyzedProfiles`.
+        const generated = generateSemanticLayer(analyzedProfiles, {
+          dbType,
+          schema,
+          sourceId,
+        });
+        const entities = analyzedProfiles.map((profile, index) => ({
           tableName: profile.table_name,
           objectType: profile.object_type,
           rowCount: profile.row_count,
           columnCount: profile.columns.length,
-          yaml: generateEntityYAML(profile, analyzedProfiles, dbType, schema, sourceId),
+          yaml: generated.entities[index].yaml,
           profile: {
             columns: profile.columns.map((col) => ({
               name: col.name,

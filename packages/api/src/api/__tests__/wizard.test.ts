@@ -475,6 +475,11 @@ beforeEach(() => {
 
   mockMkdirSync.mockReset();
   mockWriteFileSync.mockReset();
+  // Reset the bulk-upsert impl every test so a failure-injection impl
+  // (mockImplementation, e.g. the partial-metric-persist test) can't leak into
+  // a later test. Default mirrors the module-level stub: every row "lands".
+  mockBulkUpsertEntities.mockReset();
+  mockBulkUpsertEntities.mockImplementation(async (_orgId, entities) => entities.length);
   mockResetWhitelists.mockReset();
   mockSyncEntityToDisk.mockReset();
   mockSyncEntityToDisk.mockImplementation(async () => {});
@@ -1385,9 +1390,80 @@ describe("POST /api/v1/wizard/save", () => {
     expect(res.status).toBe(500);
     const data = await json(res);
     expect(data.error).toBe("db_partial_persist");
+    expect(data.requestId).toBeDefined();
+    // beforeEach resets the impl, so no manual restore is needed here.
+  });
 
-    // Restore the default impl so later tests aren't affected by the leaked mock.
-    mockBulkUpsertEntities.mockImplementation(async (_orgId, rows) => rows.length);
+  it("returns 500 db_persist_failed when the metric upsert throws (#3550)", async () => {
+    // Distinct from the partial-count branch: a *thrown* metric upsert (DB
+    // unreachable) must fail loud, not 201 a workspace whose metrics never
+    // landed. Mirrors the entity `db_persist_failed` test.
+    mockBulkUpsertEntities.mockReset();
+    // First call (entities) succeeds; second call (metrics) rejects.
+    mockBulkUpsertEntities.mockImplementationOnce(async (_orgId, rows) => rows.length);
+    mockBulkUpsertEntities.mockImplementationOnce(() =>
+      Promise.reject(new Error("internal DB unreachable")),
+    );
+
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "orders", yaml: "table: orders\n" }],
+      schema: "public",
+      profiles: [mockOrdersProfile],
+    });
+
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("db_persist_failed");
+    expect(data.requestId).toBeDefined();
+  });
+
+  it("falls through to disk-only metrics when there is no internal DB (#3550)", async () => {
+    // Self-hosted without an internal DB: the DB persist is gated on
+    // hasInternalDB(), so metrics must still be written to disk and the save
+    // must 201 without ever calling bulkUpsertEntities for a metric row.
+    mockHasInternalDB.mockReset();
+    mockHasInternalDB.mockImplementation(() => false);
+    mockBulkUpsertEntities.mockClear();
+
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "orders", yaml: "table: orders\n" }],
+      schema: "public",
+      profiles: [mockOrdersProfile],
+    });
+
+    expect(res.status).toBe(201);
+    // No DB → no upsert at all (entities or metrics).
+    expect(mockBulkUpsertEntities).not.toHaveBeenCalled();
+    // Metric YAML still lands on disk (the only durable copy in this mode).
+    const data = await json(res);
+    expect(data.files as string[]).toContain("metrics/orders.yml");
+  });
+
+  it("scopes persisted metric rows by the resolved connection group, not the raw connectionId (#3550)", async () => {
+    // The metric row carries connectionGroupId — the same group-keying the
+    // entity rows use (#3234). A non-default connection resolves to its group
+    // (group-of-one here), so the metric must NOT be scoped to the NULL default
+    // group. Pins the field the convergence comment calls shared-keying-critical.
+    mockBulkUpsertEntities.mockClear();
+
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "warehouse",
+      entities: [{ tableName: "orders", yaml: "table: orders\n" }],
+      schema: "public",
+      profiles: [mockOrdersProfile],
+    });
+
+    expect(res.status).toBe(201);
+    const allRows = mockBulkUpsertEntities.mock.calls.flatMap(([, rows]) => rows);
+    const metricRows = allRows.filter((r) => r.entityType === "metric");
+    expect(metricRows.length).toBeGreaterThan(0);
+    expect(metricRows[0]).toMatchObject({
+      entityType: "metric",
+      name: "orders",
+      connectionGroupId: "warehouse",
+    });
   });
 });
 

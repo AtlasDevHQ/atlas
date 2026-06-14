@@ -32,11 +32,14 @@ export const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
  * `path.basename` strips any path-traversal segment (a `/`-bearing name),
  * leaving a path-safe identifier; a schema-qualified dotted name like
  * `public.orders` is preserved verbatim (no slash to strip), which keeps two
- * same-named tables in different schemas distinct. The result must then pass
- * {@link SAFE_TABLE_NAME} — defense-in-depth against characters that would
- * never survive DB validation anyway. Returns `null` for names that fail the
- * check; callers MUST filter those artifacts out and log the skip (never
- * silently swallow).
+ * same-named tables in different schemas distinct. Two inputs that share a
+ * basename across differing path prefixes (`a/orders`, `b/orders`) are
+ * intentionally coalesced to the same row key — generated table names are flat
+ * identifiers, not paths, so this only bites pathological inputs that the
+ * generator does not produce. The result must then pass {@link SAFE_TABLE_NAME}
+ * — defense-in-depth against characters that would never survive DB validation
+ * anyway. Returns `null` for names that fail the check; callers MUST filter
+ * those artifacts out and log the skip (never silently swallow).
  *
  * This is the single source of truth for how a generated table name becomes a
  * semantic-store row key, shared by BOTH durable write paths —

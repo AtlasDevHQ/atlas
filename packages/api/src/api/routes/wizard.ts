@@ -1104,8 +1104,11 @@ wizard.openapi(saveRoute, async (c) => {
         // durability guarantees. Both paths now persist metrics as drafts
         // (promoted via the atomic `/api/v1/admin/publish` endpoint) and key
         // rows through the shared `safeSemanticRowName`, so the two can't drift
-        // again. The disk write below is RETAINED but purely additive (YAML
-        // legibility on disk) — do not treat it as the source of truth.
+        // again. The disk write below is RETAINED as a derived legibility
+        // artifact (it is also re-read by boot reconciliation / disk sync), but
+        // the DB is the source of truth for queryability — so a disk-write
+        // failure is surfaced as a non-fatal warning rather than 500ing an
+        // already-committed persist, mirroring the entity disk-sync path.
         //
         // Untrusted HTTP profiles still pass the path-traversal guard:
         // `safeSemanticRowName` strips path segments and rejects unsafe names
@@ -1177,8 +1180,21 @@ wizard.openapi(saveRoute, async (c) => {
 
         for (const metric of metricArtifacts) {
           const filePath = path.join(metricsDir, `${metric.name}.yml`);
-          fs.writeFileSync(filePath, metric.yaml, "utf-8");
-          savedFiles.push(`metrics/${metric.name}.yml`);
+          try {
+            fs.writeFileSync(filePath, metric.yaml, "utf-8");
+            savedFiles.push(`metrics/${metric.name}.yml`);
+          } catch (err) {
+            // DB persist above is authoritative and already committed; the disk
+            // copy is derived. Don't escalate a disk failure to a 500 that would
+            // misreport a successful persist as a save failure — surface it as a
+            // warning, the same contract `syncEntityToDisk` uses for entities.
+            const reason = err instanceof Error ? err.message : String(err);
+            log.warn(
+              { requestId, orgId, table: metric.name, reason },
+              "Wizard save: metric disk write failed (DB persist already succeeded)",
+            );
+            warnings.push({ kind: "disk_sync_failed", tableName: metric.name, reason });
+          }
         }
       }
 

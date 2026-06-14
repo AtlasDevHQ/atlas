@@ -395,26 +395,17 @@ function registerWhitelistImpl(
 }
 
 /**
- * Map a generated artifact to its semantic-store row `name`. Mirrors the wizard
- * `/save` path (`path.basename(e.tableName)`) so the two write paths key rows
- * identically. `path.basename` strips any path-traversal segment (a `/`-bearing
- * name), leaving a path-safe identifier; a schema-qualified dotted name like
- * `public.orders` is preserved verbatim (no slash to strip), which keeps two
- * same-named tables in different schemas distinct. The row `name` is only the
- * upsert key — queryability keys on the entity YAML's `table:` field (set by
- * the generator), not this name. Entity + metric rows for the same table share
- * the name but differ by `entity_type`, so the 0063 partial unique index keeps
- * them distinct.
+ * Map a generated artifact to its semantic-store row `name`, or `null` when the
+ * name can't be made safe. The derivation (basename + `SAFE_TABLE_NAME`) lives
+ * in the shared {@link safeSemanticRowName} — the SAME function the wizard
+ * `/save` path uses — so the two durable write paths key rows identically and
+ * can't drift (#3550). This wrapper only adds the persist-path's skip logging.
  *
- * Defense-in-depth: after basename-stripping, the name must pass `SAFE_TABLE_NAME`
- * (same guard the wizard `/save` applies) — rejects names with characters outside
- * `[a-zA-Z0-9_.-]` that would never survive DB validation anyway. Returns `null`
- * for names that fail the check; callers must filter those artifacts out (logged,
- * never silently swallowed).
- *
- * The basename + `SAFE_TABLE_NAME` derivation itself lives in the shared
- * {@link safeSemanticRowName} so the wizard `/save` path keys metric/entity rows
- * identically (#3550); this wrapper adds the persist-path's skip logging.
+ * The row `name` is only the upsert key — queryability keys on the entity YAML's
+ * `table:` field (set by the generator), not this name. Entity + metric rows for
+ * the same table share the name but differ by `entity_type`, so the 0063 partial
+ * unique index keeps them distinct. Callers must filter out the `null` results
+ * (logged here, never silently swallowed).
  */
 function artifactRowName(artifact: GeneratedArtifact): string | null {
   const name = safeSemanticRowName(artifact.table);

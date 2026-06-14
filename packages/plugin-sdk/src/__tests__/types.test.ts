@@ -920,6 +920,64 @@ describe("datasource plugin entities and dialect", () => {
     expect(plugin.connection.forbiddenPatterns).toBeUndefined();
   });
 
+  test("accepts listObjects + profile introspection capabilities (ADR-0017)", () => {
+    const plugin = definePlugin({
+      id: "introspectable-ds",
+      types: ["datasource"],
+      version: "1.0.0",
+      connection: {
+        createFromConfig: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "clickhouse",
+        listObjects: () => [{ name: "events", type: "table" as const }],
+        profile: async () => ({ profiles: [], errors: [] }),
+      },
+    } satisfies AtlasDatasourcePlugin);
+
+    expect(typeof plugin.connection.listObjects).toBe("function");
+    expect(typeof plugin.connection.profile).toBe("function");
+  });
+
+  test("listObjects + profile are optional (query-only datasource compiles)", () => {
+    const plugin: AtlasDatasourcePlugin = definePlugin({
+      id: "query-only-ds",
+      types: ["datasource"],
+      version: "1.0.0",
+      connection: {
+        create: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "postgres",
+      },
+    });
+
+    expect(plugin.connection.listObjects).toBeUndefined();
+    expect(plugin.connection.profile).toBeUndefined();
+  });
+
+  test("throws when listObjects is not a function", () => {
+    expect(() => definePlugin({
+      id: "bad-introspect",
+      types: ["datasource"],
+      version: "1.0.0",
+      connection: {
+        createFromConfig: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "clickhouse",
+        listObjects: "nope",
+      },
+    } as any)).toThrow('"listObjects" must be a function when provided');
+  });
+
+  test("throws when profile is not a function", () => {
+    expect(() => definePlugin({
+      id: "bad-introspect",
+      types: ["datasource"],
+      version: "1.0.0",
+      connection: {
+        createFromConfig: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "clickhouse",
+        profile: 42,
+      },
+    } as any)).toThrow('"profile" must be a function when provided');
+  });
+
   test("throws when parserDialect is empty string", () => {
     expect(() => definePlugin({
       id: "bad-dialect",

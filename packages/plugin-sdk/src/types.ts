@@ -678,6 +678,156 @@ export interface AtlasMcpTool<
 }
 
 // ---------------------------------------------------------------------------
+// Datasource introspection (profiling)
+// ---------------------------------------------------------------------------
+
+/**
+ * Structural mirrors of the profiler contracts in `@useatlas/types`
+ * (`DatabaseObject`, `TableProfile`, `ProfilingResult`, …). Inlined here — like
+ * {@link PluginDBConnection} mirrors the core `DBConnection` — so the plugin SDK
+ * stays free of a runtime dependency on `@useatlas/types`/`@atlas/api`. The
+ * shapes are field-for-field identical to the canonical types, so a plugin's
+ * `profile`/`listObjects` output flows into the host's registry-resolved profiler
+ * seam (`SemanticGenerator`'s `DatasourceProfiler`) by structural typing, with no
+ * import crossing the core↔plugin boundary (ADR-0013, ADR-0017).
+ */
+
+/** Database object kind returned by {@link AtlasDatasourcePlugin.connection.listObjects}. */
+export type PluginObjectType = "table" | "view" | "materialized_view";
+
+/** Semantic type inferred for a column (mirror of `@useatlas/types` `SemanticType`). */
+export type PluginSemanticType =
+  | "currency"
+  | "percentage"
+  | "email"
+  | "url"
+  | "phone"
+  | "timestamp";
+
+/** Source of a foreign-key relationship (mirror of `@useatlas/types` `ForeignKeySource`). */
+export type PluginForeignKeySource = "constraint" | "inferred";
+
+/** A foreign-key relationship discovered (or inferred) during profiling. */
+export interface PluginForeignKey {
+  from_column: string;
+  to_table: string;
+  to_column: string;
+  source: PluginForeignKeySource;
+}
+
+/** Heuristic table-level flags set by the host's analysis pass. */
+export interface PluginTableFlags {
+  possibly_abandoned: boolean;
+  possibly_denormalized: boolean;
+}
+
+/** Partition strategy for a partitioned table (mirror of `@useatlas/types`). */
+export type PluginPartitionStrategy = "range" | "list" | "hash";
+
+/** Partition metadata for a partitioned table. */
+export interface PluginPartitionInfo {
+  strategy: PluginPartitionStrategy;
+  key: string;
+  children: string[];
+}
+
+/**
+ * A single column profile (mirror of `@useatlas/types` `ColumnProfile`).
+ *
+ * Invariant: when `is_foreign_key` is true, `fk_target_table`/`fk_target_column`
+ * are non-null; when false, both are null.
+ */
+export interface PluginColumnProfile {
+  name: string;
+  type: string;
+  nullable: boolean;
+  unique_count: number | null;
+  null_count: number | null;
+  sample_values: string[];
+  is_primary_key: boolean;
+  is_foreign_key: boolean;
+  fk_target_table: string | null;
+  fk_target_column: string | null;
+  is_enum_like: boolean;
+  semantic_type?: PluginSemanticType;
+  profiler_notes: string[];
+}
+
+/** A single table/view profile (mirror of `@useatlas/types` `TableProfile`). */
+export interface PluginTableProfile {
+  table_name: string;
+  object_type: PluginObjectType;
+  row_count: number;
+  columns: PluginColumnProfile[];
+  primary_key_columns: string[];
+  foreign_keys: PluginForeignKey[];
+  inferred_foreign_keys: PluginForeignKey[];
+  profiler_notes: string[];
+  table_flags: PluginTableFlags;
+  matview_populated?: boolean;
+  partition_info?: PluginPartitionInfo;
+}
+
+/** A discovered database object (mirror of `@useatlas/types` `DatabaseObject`). */
+export interface PluginDatabaseObject {
+  name: string;
+  type: PluginObjectType;
+}
+
+/** A per-table profiling failure below the host's abort threshold. */
+export interface PluginProfileError {
+  table: string;
+  error: string;
+}
+
+/** Outcome of {@link AtlasDatasourcePlugin.connection.profile} (mirror of `ProfilingResult`). */
+export interface PluginProfilingResult {
+  profiles: PluginTableProfile[];
+  errors: PluginProfileError[];
+}
+
+/** Minimal structured logger a profiler may use (pino's `(obj, msg)` shape). */
+export interface PluginProfileLogger {
+  info(obj: Record<string, unknown>, msg: string): void;
+  warn(obj: Record<string, unknown>, msg: string): void;
+  error(obj: Record<string, unknown>, msg: string): void;
+}
+
+/** Progress callbacks the host passes so a long profile can report incrementally. */
+export interface PluginProfileProgress {
+  onStart(total: number): void;
+  onTableStart(name: string, index: number, total: number): void;
+  onTableDone(name: string, index: number, total: number): void;
+  onTableError(name: string, error: string, index: number, total: number): void;
+  onComplete(count: number, elapsedMs: number): void;
+}
+
+/** Inputs for {@link AtlasDatasourcePlugin.connection.listObjects}. */
+export interface PluginListObjectsOptions {
+  /** Connection string / URL for the datasource (same value `createFromConfig` resolves). */
+  url: string;
+  /** Schema / database to enumerate. Dialect-specific (Postgres schema, ClickHouse database). */
+  schema?: string;
+}
+
+/**
+ * Inputs for {@link AtlasDatasourcePlugin.connection.profile}. Field-for-field
+ * aligned with the host's `DatasourceProfiler` injection point so the
+ * registry-resolved seam can adapt a plugin's `profile` with no impedance
+ * mismatch (ADR-0017).
+ */
+export interface PluginProfileOptions extends PluginListObjectsOptions {
+  /** Restrict profiling to these tables/views. Omit to profile every object. */
+  selectedTables?: string[];
+  /** Pre-listed objects (from a prior {@link listObjects}) — avoids a second catalog round-trip. */
+  prefetchedObjects?: PluginDatabaseObject[];
+  /** Progress callbacks (e.g. a CLI progress bar or the MCP progress bridge). */
+  progress?: PluginProfileProgress;
+  /** Structured logger for profiler diagnostics. */
+  logger?: PluginProfileLogger;
+}
+
+// ---------------------------------------------------------------------------
 // Datasource plugin
 // ---------------------------------------------------------------------------
 
@@ -777,6 +927,40 @@ export interface AtlasDatasourcePlugin<TConfig = undefined> extends AtlasPluginB
      * the entire SQL validation pipeline).
      */
     forbiddenPatterns?: RegExp[];
+    /**
+     * Introspect: enumerate the datasource's queryable objects (tables, views,
+     * materialized views). The discovery half of the profiler seam (ADR-0017):
+     * the host calls this to populate a "which tables to onboard" picker and to
+     * feed `prefetchedObjects` into {@link profile}, avoiding a second catalog
+     * round-trip.
+     *
+     * Optional and additive — a query-only datasource (one that cannot, or does
+     * not wish to, be auto-onboarded) omits both `listObjects` and `profile` and
+     * the host degrades to its explicit `unsupported_db_type` outcome rather than
+     * a silent empty result. Must run **read-only**.
+     */
+    listObjects?(
+      options: PluginListObjectsOptions,
+    ): Promise<PluginDatabaseObject[]> | PluginDatabaseObject[];
+    /**
+     * Introspect: profile the datasource's objects into a {@link PluginProfilingResult}
+     * — column types, sample values, key metadata, and per-table errors — the raw
+     * material the host's shared generate/enrich engine turns into a semantic
+     * layer. The profiling half of the profiler seam (ADR-0017).
+     *
+     * The host resolves this off the plugin registry by the SAME predicate that
+     * resolves {@link createFromConfig} (provisioning and profiling stay in
+     * lockstep — see `resolveProfileCapability`) and feeds it into
+     * `SemanticGenerator`'s `DatasourceProfiler` injection point. Core never
+     * imports the plugin package; resolution is structural.
+     *
+     * Optional and additive (see {@link listObjects}). Must run **read-only** and
+     * MUST NOT surface credentials in thrown errors — the host scrubs DSN
+     * userinfo from messages, but the profiler should not echo secrets either.
+     */
+    profile?(
+      options: PluginProfileOptions,
+    ): Promise<PluginProfilingResult>;
   };
   /**
    * Optional entity definitions — plugin-provided semantic layer fragments.

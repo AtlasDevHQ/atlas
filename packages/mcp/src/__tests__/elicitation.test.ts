@@ -19,6 +19,7 @@ import {
   signRequestState,
   verifyRequestState,
   elicitMaskedField,
+  elicitMaskedForm,
   NonceStore,
   ElicitationError,
   DEFAULT_REQUEST_STATE_TTL_MS,
@@ -180,5 +181,76 @@ describe("elicitMaskedField round-trip", () => {
     });
     await client.callTool({ name: "needsSecret", arguments: {} });
     expect(captured.error).toBe("empty_value");
+  });
+});
+
+async function wireFormElicitation(reply: {
+  action: "accept" | "decline" | "cancel";
+  content?: Record<string, string>;
+}) {
+  const server = new McpServer({ name: "test", version: "0.0.1" });
+  const captured: { values?: Record<string, string>; outcome?: string } = {};
+
+  server.registerTool(
+    "needsForm",
+    { description: "Elicits a multi-field credential form", inputSchema: {} },
+    async (): Promise<CallToolResult> => {
+      const outcome = await elicitMaskedForm(server, {
+        principal: PRINCIPAL,
+        message: "Enter the connection details",
+        fields: [
+          { name: "url", title: "URL", required: true },
+          { name: "apiKey", title: "API key", required: false, secret: true },
+        ],
+        secret: SECRET,
+        nonceStore: new NonceStore(),
+      });
+      captured.outcome = outcome.action;
+      if (outcome.action === "accept") captured.values = outcome.values;
+      // The values must NEVER re-enter the agent/LLM context.
+      return { content: [{ type: "text", text: `done:${outcome.action}` }] };
+    },
+  );
+
+  const client = new Client(
+    { name: "test-client", version: "0.0.1" },
+    { capabilities: { elicitation: {} } },
+  );
+  client.setRequestHandler(ElicitRequestSchema, async () => reply);
+
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  return { client, captured };
+}
+
+describe("elicitMaskedForm round-trip", () => {
+  it("delivers every entered field to the server without any entering the tool result", async () => {
+    const { client, captured } = await wireFormElicitation({
+      action: "accept",
+      content: { url: "elasticsearch://h:9200", apiKey: "BASE64KEY==" },
+    });
+    const result = await client.callTool({ name: "needsForm", arguments: {} });
+    expect(captured.outcome).toBe("accept");
+    expect(captured.values).toEqual({ url: "elasticsearch://h:9200", apiKey: "BASE64KEY==" });
+    // No secret in the agent-visible result.
+    expect(JSON.stringify(result.content)).not.toContain("BASE64KEY");
+  });
+
+  it("omits empty/unprovided optional fields rather than persisting an empty value", async () => {
+    const { captured, client } = await wireFormElicitation({
+      action: "accept",
+      content: { url: "elasticsearch://h:9200", apiKey: "" },
+    });
+    await client.callTool({ name: "needsForm", arguments: {} });
+    expect(captured.values).toEqual({ url: "elasticsearch://h:9200" });
+    expect(captured.values).not.toHaveProperty("apiKey");
+  });
+
+  it("surfaces a decline with no values", async () => {
+    const { captured, client } = await wireFormElicitation({ action: "decline" });
+    await client.callTool({ name: "needsForm", arguments: {} });
+    expect(captured.outcome).toBe("decline");
+    expect(captured.values).toBeUndefined();
   });
 });

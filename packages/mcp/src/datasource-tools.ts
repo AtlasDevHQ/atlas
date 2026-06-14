@@ -58,7 +58,7 @@ import type {
   McpDispatchGateContext,
   McpDispatchGateRequirements,
 } from "./dispatch-gate.js";
-import { elicitMaskedField } from "./elicitation.js";
+import { elicitMaskedForm } from "./elicitation.js";
 import { withProgressAndCancellation, OperationCancelledError } from "./progress.js";
 import { createMcpLogger } from "./logger.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
@@ -589,21 +589,17 @@ export function registerDatasourceTools(
         db_type: z
           .enum(MCP_PROVISIONABLE_CATALOG_SLUGS as [string, ...string[]])
           .describe(
-            `Datasource type. Provisionable via MCP today: ${MCP_PROVISIONABLE_CATALOG_SLUGS.join(", ")}.`,
+            `Datasource type. Provisionable via MCP: ${MCP_PROVISIONABLE_CATALOG_SLUGS.join(", ")}. ` +
+              `Connection details (URL / API key / service-account JSON, etc.) are collected separately via a secure masked prompt — never as tool arguments.`,
           ),
         install_id: datasourceIdSchema(
           "New datasource id (lowercase-led slug, e.g. 'prod-us'). Must be unique in the workspace.",
         ),
-        schema: z
-          .string()
-          .max(MAX_ID_LEN)
-          .optional()
-          .describe("Optional schema/search_path (Postgres). Defaults to the server default."),
         description: z
           .string()
           .max(MAX_FILTER_LEN)
           .optional()
-          .describe("Optional human-readable description."),
+          .describe("Optional human-readable description (shown in the agent system prompt)."),
         group_id: z
           .string()
           .max(MAX_ID_LEN)
@@ -611,7 +607,7 @@ export function registerDatasourceTools(
           .describe("Optional environment-group binding."),
       },
     },
-    async ({ db_type, install_id, schema, description, group_id }, extra): Promise<CallToolResult> =>
+    async ({ db_type, install_id, description, group_id }, extra): Promise<CallToolResult> =>
       dispatch(
         "create_datasource",
         // Gate 1 (#3509) datasource kill-switch + mcp:write + admin. NOT
@@ -622,30 +618,58 @@ export function registerDatasourceTools(
           const org = requireBoundOrg();
           if (!org.ok) return org.block;
           const orgId = org.orgId;
+          const lib = await lifecycle();
 
-          // Collect the connection URL via MASKED form-mode elicitation
-          // (#3499). The secret travels client→server only; it never enters
-          // a tool argument, the agent/LLM context, this response, or a log.
+          // Capability check BEFORE prompting for credentials — don't ask the
+          // user for a connection we can't provision (unknown type, or a plugin
+          // type with no plugin installed).
+          const capability = await lib.resolveProvisionCapability(db_type);
+          if (capability.kind === "unsupported") {
+            return toEnvelopeResult(envelope("validation_failed", capability.message));
+          }
+
+          // Resolve the per-type credential field set from the catalog
+          // config_schema (#3547 AC #4) so the masked form is schema-driven —
+          // url-shaped (pg/mysql/clickhouse/snowflake), apiKey-shaped (ES), and
+          // multi-field (BigQuery) all collect the right fields with zero
+          // per-type code here.
+          const fieldsResult = await lib.loadProvisionConfigFields(db_type);
+          if (fieldsResult.kind !== "ok") {
+            return toEnvelopeResult(
+              envelope(
+                "validation_failed",
+                fieldsResult.kind === "not_found"
+                  ? `Datasource type "${db_type}" is not configured in this workspace's catalog.`
+                  : `The "${db_type}" datasource catalog is misconfigured; provisioning is unavailable. Use the admin console.`,
+              ),
+            );
+          }
+
+          // Collect every config field via MASKED form-mode elicitation (#3499).
+          // The entered values travel client→server only; they never enter a
+          // tool argument, the agent/LLM context, this response, or a log.
           let elicited;
           try {
-            elicited = await elicitMaskedField(server, {
+            elicited = await elicitMaskedForm(server, {
               principal: orgId,
-              message: `Enter the ${db_type} connection URL for "${install_id}". It is sent securely and never shared with the agent.`,
-              field: {
-                name: "url",
-                title: `${db_type} connection URL`,
-                description: "Entered securely; never shared with the agent or stored in plaintext.",
-              },
+              message: `Enter the connection details for the ${db_type} datasource "${install_id}". They are sent securely and never shared with the agent.`,
+              fields: fieldsResult.fields.map((f) => ({
+                name: f.key,
+                title: f.label,
+                ...(f.description ? { description: f.description } : {}),
+                required: f.required,
+                secret: f.secret,
+              })),
               ...(extra.signal ? { signal: extra.signal } : {}),
             });
           } catch (err) {
             // Elicitation unsupported by the client, or a state/secret error.
-            // Never include the (never-yet-received) credential; surface a
+            // Never include any (never-yet-received) credential; surface a
             // capability-shaped message.
             return toEnvelopeResult(
               envelope(
                 "validation_failed",
-                `Could not securely collect the connection credential: ${errorMessage(err, "elicitation failed")}.`,
+                `Could not securely collect the connection credentials: ${errorMessage(err, "elicitation failed")}.`,
                 { hint: "Use an MCP client that supports masked form elicitation, or provision via the admin console." },
               ),
             );
@@ -654,31 +678,36 @@ export function registerDatasourceTools(
             return toEnvelopeResult(
               envelope(
                 "validation_failed",
-                `Datasource creation was ${elicited.action === "decline" ? "declined" : "cancelled"} — no credential was provided.`,
+                `Datasource creation was ${elicited.action === "decline" ? "declined" : "cancelled"} — no credentials were provided.`,
               ),
             );
           }
-          // `url` is the secret — used only for the pre-flight probe + the
-          // installer's encrypt-at-rest path. NEVER logged or returned.
-          const url = elicited.value;
 
-          const outcome = await (await lifecycle()).provisionDatasource(orgId, {
+          // `config` holds the secret + non-secret connection fields — used only
+          // for the pre-flight probe + the installer's encrypt-at-rest path,
+          // NEVER logged or returned. `description` is an agent-set label, merged
+          // in here. `secretKeys` drives the lib's error-scrub.
+          const config: Record<string, unknown> = {
+            ...elicited.values,
+            ...(description !== undefined ? { description } : {}),
+          };
+
+          const outcome = await lib.provisionDatasource(orgId, {
             catalogSlug: db_type,
             installId: install_id,
-            url,
-            ...(schema !== undefined ? { schema } : {}),
-            ...(description !== undefined ? { description } : {}),
+            config,
+            secretKeys: fieldsResult.secretKeys,
             groupId: group_id ?? null,
           });
 
           switch (outcome.kind) {
             case "ok":
-              // Only the masked URL is ever surfaced.
+              // Only masked (never plaintext) credential material is surfaced.
               return toJsonContent({
                 id: outcome.value.installId,
                 db_type: outcome.value.dbType,
                 status: outcome.value.status,
-                masked_url: outcome.value.maskedUrl,
+                ...(outcome.value.maskedUrl ? { masked_url: outcome.value.maskedUrl } : {}),
                 description: outcome.value.description,
                 schema: outcome.value.schema,
                 group_id: outcome.value.groupId,
@@ -691,7 +720,7 @@ export function registerDatasourceTools(
               // Pre-flight failed — message is credential-scrubbed by the lib.
               return toEnvelopeResult(
                 envelope("validation_failed", outcome.message, {
-                  hint: "Verify the connection details and that the database is reachable, then retry.",
+                  hint: "Verify the connection details and that the datasource is reachable, then retry.",
                 }),
               );
             case "error":
@@ -873,7 +902,7 @@ const RESTORE_DATASOURCE_DESCRIPTION = `Restore (un-archive) a previously archiv
 
 const DELETE_DATASOURCE_DESCRIPTION = `Permanently delete a datasource — removes the configuration and drains the pool. IRREVERSIBLE (use archive_datasource for a recoverable disable). Destructive: requires the \`mcp:write\` scope and the admin role, and routes through the workspace approval flow when an origin=mcp approval rule requires it (the response then carries \`approval_required: true\` with an \`approval_request_id\` to follow up on). Example call: \`{ "id": "old-staging" }\`. Example success: \`{ "id": "old-staging", "deleted": true }\`.`;
 
-const CREATE_DATASOURCE_DESCRIPTION = `Provision a NEW datasource (postgres or mysql) for this workspace. You supply only non-secret fields — \`db_type\`, \`install_id\`, optional \`schema\`/\`description\`/\`group_id\`. The connection URL (the credential) is collected SEPARATELY via a secure masked prompt to the user; it is never passed as a tool argument and never shared with you. The connection is health-checked BEFORE it is persisted (a failed probe persists nothing), and lands as a \`draft\` — run profile_datasource next to make it queryable. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "db_type": "postgres", "install_id": "prod-us" }\`. Example success: \`{ "id": "prod-us", "db_type": "postgres", "status": "draft", "masked_url": "postgres://***@…", "created": true }\`.`;
+const CREATE_DATASOURCE_DESCRIPTION = `Provision a NEW datasource for this workspace. Supported types: postgres, mysql, clickhouse, snowflake, bigquery, elasticsearch/opensearch (plugin types require the corresponding datasource plugin to be installed). You supply only non-secret fields — \`db_type\`, \`install_id\`, optional \`description\`/\`group_id\`. ALL connection details (URL, API key, service-account JSON, etc.) are collected SEPARATELY via a secure masked prompt to the user; they are never passed as tool arguments and never shared with you. The connection is tested BEFORE it is persisted (a failed probe persists nothing), and lands as a \`draft\` — run profile_datasource next to make it queryable. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "db_type": "clickhouse", "install_id": "prod-us" }\`. Example success: \`{ "id": "prod-us", "db_type": "clickhouse", "status": "draft", "masked_url": "clickhouse://***@…", "created": true }\`.`;
 
 const PROFILE_DATASOURCE_DESCRIPTION = `Profile a datasource (introspect its tables) and generate its semantic layer — entities + the table whitelist — so the agent can query it with executeSQL. Long-running: emits progress per table and is cancellable. Typically run right after create_datasource. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example success: \`{ "id": "prod-us", "queryable": true, "entities_generated": 12, "tables": ["orders", "users"], "elapsed_ms": 1840 }\`.`;
 

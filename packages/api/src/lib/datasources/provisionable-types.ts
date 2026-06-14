@@ -32,11 +32,14 @@ export function isMcpNativeDbType(dbType: string): dbType is McpNativeDbType {
  * that and returns an actionable `unsupported` envelope when the plugin is
  * absent. Kept dependency-free (no registry / installer import) so the enum
  * builds at tool-REGISTRATION time without dragging the heavy graph into MCP
- * server boot. ES/OpenSearch + BigQuery (non-`url` credential shapes) join once
- * their per-type masked elicitation lands; REST is tracked separately.
+ * server boot. `elasticsearch` covers both Elasticsearch and OpenSearch (one
+ * catalog slug, engine selected via a config field). REST/OpenAPI provisioning
+ * is a separate install path (not `createFromConfig`) handled by its own tool.
  */
 export const MCP_PROVISIONABLE_CATALOG_SLUGS: readonly string[] = [
   ...MCP_NATIVE_DB_TYPES,
   "clickhouse",
   "snowflake",
+  "bigquery",
+  "elasticsearch",
 ];

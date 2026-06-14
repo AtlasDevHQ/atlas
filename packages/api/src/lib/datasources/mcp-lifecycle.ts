@@ -371,18 +371,85 @@ export async function resolveProvisionCapability(
 }
 
 /**
- * Input to {@link provisionDatasource}. `url` is the credential collected
- * via masked elicitation at the MCP edge — it is encrypted at the installer
- * boundary and NEVER round-trips back out (the returned row carries only a
- * `maskedUrl`).
+ * A `config_schema` field surfaced to the MCP edge so `create_datasource` can
+ * drive its masked elicitation form (#3547 AC #4). Carries only the metadata the
+ * form needs — never a value. `description` (a UI label, not a connection
+ * credential) is excluded: the tool collects it as a plain tool argument so the
+ * agent can set it. The remaining connection fields — secret AND non-secret
+ * (e.g. ES `url`) — are elicited so the agent never sees connection details.
+ */
+export interface ProvisionConfigField {
+  readonly key: string;
+  readonly label: string;
+  readonly description?: string;
+  readonly required: boolean;
+  readonly secret: boolean;
+}
+
+export type LoadProvisionConfigFieldsResult =
+  | { readonly kind: "ok"; readonly fields: ProvisionConfigField[]; readonly secretKeys: string[] }
+  /** No catalog row for the slug (shouldn't happen after a capability check passes). */
+  | { readonly kind: "not_found" }
+  /** The catalog `config_schema` is absent/corrupt — an operator misconfig, fail closed. */
+  | { readonly kind: "schema_error" };
+
+/**
+ * Load the `config_schema` for a provisionable datasource and shape its fields
+ * for the MCP masked-elicitation form. Reads the SAME catalog row the installer
+ * validates + encrypts against, so the elicited field set and the secret-field
+ * set stay schema-driven (a new auth field propagates with zero MCP changes).
+ */
+export async function loadProvisionConfigFields(
+  catalogSlug: string,
+): Promise<LoadProvisionConfigFieldsResult> {
+  if (!hasInternalDB()) return { kind: "not_found" };
+  const rows = await internalQuery<{ config_schema: unknown }>(
+    `SELECT config_schema FROM plugin_catalog WHERE slug = $1 AND enabled = true LIMIT 1`,
+    [catalogSlug],
+  );
+  if (rows.length === 0) return { kind: "not_found" };
+  const schema = parseConfigSchema(rows[0].config_schema);
+  if (schema.state !== "parsed") return { kind: "schema_error" };
+
+  const fields: ProvisionConfigField[] = [];
+  const secretKeys: string[] = [];
+  for (const f of schema.fields) {
+    if (f.key === "description") continue; // collected as a tool arg, not elicited
+    const secret = f.secret === true;
+    if (secret) secretKeys.push(f.key);
+    fields.push({
+      key: f.key,
+      label: f.label ?? f.key,
+      ...(f.description !== undefined ? { description: f.description } : {}),
+      required: f.required === true,
+      secret,
+    });
+  }
+  return { kind: "ok", fields, secretKeys };
+}
+
+/**
+ * Input to {@link provisionDatasource}. `config` carries the full set of
+ * `config_schema` field values collected via masked elicitation at the MCP edge
+ * (the secret fields among them are listed in `secretKeys`). Secret fields are
+ * encrypted at the installer boundary and NEVER round-trip back out (the
+ * returned row carries only a `maskedUrl` / masked fields). The shape is
+ * credential-agnostic so url-shaped (pg/mysql/clickhouse/snowflake), apiKey-
+ * shaped (Elasticsearch), and multi-field (BigQuery) datasources all flow
+ * through one path (#3547).
  */
 export interface ProvisionDatasourceInput {
   readonly catalogSlug: string;
   readonly installId: string;
-  /** The connection URL (secret). Encrypted by the installer per config_schema. */
-  readonly url: string;
-  readonly schema?: string;
-  readonly description?: string;
+  /**
+   * All `config_schema` field values (secret + non-secret) keyed by field key —
+   * e.g. `{ url }`, `{ url, apiKey }`, `{ service_account_json, project_id }`.
+   * Passed verbatim to the installer (which encrypts the `secret: true` fields)
+   * and to the pre-flight probe.
+   */
+  readonly config: Readonly<Record<string, unknown>>;
+  /** Keys of `config` that are `secret: true` — scrubbed from any surfaced error. */
+  readonly secretKeys: readonly string[];
   readonly groupId?: string | null;
 }
 
@@ -404,26 +471,30 @@ export type ProvisionDatasourceOutcome =
  * reusing the blessed seam (`lib/audit/error-scrub.ts`) rather than a
  * hand-rolled regex so a future hardening there covers this path too.
  */
-function scrubSecretFromMessage(message: string, url: string): string {
-  const exact = url ? message.split(url).join("[redacted]") : message;
-  return errorMessage(exact);
+function scrubSecretsFromMessage(message: string, secrets: readonly string[]): string {
+  let scrubbed = message;
+  for (const secret of secrets) {
+    if (secret) scrubbed = scrubbed.split(secret).join("[redacted]");
+  }
+  return errorMessage(scrubbed);
+}
+
+/** The plaintext secret values in `input.config` (the `secretKeys` subset), for scrubbing. */
+function secretValues(input: ProvisionDatasourceInput): string[] {
+  return input.secretKeys
+    .map((k) => input.config[k])
+    .filter((v): v is string => typeof v === "string" && v.length > 0);
 }
 
 /** Result of a validate-before-persist pre-flight; `message` is already scrubbed. */
 type PreflightResult = { readonly ok: true } | { readonly ok: false; readonly message: string };
 
 /**
- * The credential-bearing config the probe + installer both consume. For the
- * url-shaped provisionable types (native pg/mysql, plugin clickhouse/snowflake)
- * the secret is `url`; `schema`/`description` are non-secret metadata. Built in
- * one place so the pre-flight probe tests EXACTLY what the installer persists.
+ * The config the probe + installer both consume — `input.config` verbatim. Built
+ * in one place so the pre-flight probe tests EXACTLY what the installer persists.
  */
 function buildProvisionFormData(input: ProvisionDatasourceInput): Record<string, unknown> {
-  return {
-    url: input.url,
-    ...(input.description !== undefined ? { description: input.description } : {}),
-    ...(input.schema !== undefined && input.schema.length > 0 ? { schema: input.schema } : {}),
-  };
+  return { ...input.config };
 }
 
 /**
@@ -435,11 +506,15 @@ function buildProvisionFormData(input: ProvisionDatasourceInput): Record<string,
  * probe pool is ALWAYS unregistered in `finally`.
  */
 async function preflightNativeConnection(input: ProvisionDatasourceInput): Promise<PreflightResult> {
+  const secrets = secretValues(input);
+  const url = typeof input.config.url === "string" ? input.config.url : "";
+  const schema = typeof input.config.schema === "string" ? input.config.schema : undefined;
+  const description = typeof input.config.description === "string" ? input.config.description : undefined;
   const probeId = `__mcp_preflight_${crypto.randomUUID()}`;
   connections.register(probeId, {
-    url: input.url,
-    ...(input.description !== undefined ? { description: input.description } : {}),
-    ...(input.schema !== undefined ? { schema: input.schema } : {}),
+    url,
+    ...(description !== undefined ? { description } : {}),
+    ...(schema !== undefined ? { schema } : {}),
   });
   try {
     const health = await connections.healthCheck(probeId);
@@ -450,9 +525,9 @@ async function preflightNativeConnection(input: ProvisionDatasourceInput): Promi
     if (health.status !== "healthy") {
       return {
         ok: false,
-        message: scrubSecretFromMessage(
+        message: scrubSecretsFromMessage(
           health.message ?? "Connection probe could not reach the datasource.",
-          input.url,
+          secrets,
         ),
       };
     }
@@ -461,9 +536,9 @@ async function preflightNativeConnection(input: ProvisionDatasourceInput): Promi
     const raw = err instanceof Error ? err.message : String(err);
     return {
       ok: false,
-      message: scrubSecretFromMessage(
+      message: scrubSecretsFromMessage(
         `Connection test failed: ${raw}. Verify the host, port, database, and credentials, then retry.`,
-        input.url,
+        secrets,
       ),
     };
   } finally {
@@ -481,7 +556,7 @@ async function preflightNativeConnection(input: ProvisionDatasourceInput): Promi
  * installer will persist (`buildProvisionFormData`). A missing plugin
  * (`no_plugin`) shouldn't normally reach here — `resolveProvisionCapability`
  * already gated it — but is handled defensively. The raw driver error is
- * scrubbed of the credential before it returns.
+ * scrubbed of every secret field value before it returns.
  */
 async function preflightPluginConnection(
   dbType: string,
@@ -493,7 +568,7 @@ async function preflightPluginConnection(
     outcome.reason === "no_plugin"
       ? outcome.message
       : `Connection test failed: ${outcome.message}. Verify the connection details and credentials, then retry.`;
-  return { ok: false, message: scrubSecretFromMessage(friendly, input.url) };
+  return { ok: false, message: scrubSecretsFromMessage(friendly, secretValues(input)) };
 }
 
 /**
@@ -503,8 +578,9 @@ async function preflightPluginConnection(
  * → return the masked row. On any failure nothing is persisted and the
  * ephemeral pool is rolled back.
  *
- * The credential (`input.url`) only flows in here and into the installer's
- * encrypt-at-rest path; it is never returned, logged, or placed in an error.
+ * The secret fields in `input.config` only flow in here and into the
+ * installer's encrypt-at-rest path; they are never returned, logged, or placed
+ * in an error (every secret value is scrubbed from any surfaced message).
  */
 export async function provisionDatasource(
   orgId: string,
@@ -561,7 +637,7 @@ export async function provisionDatasource(
       kind: "error",
       status: outcome.status,
       code: outcome.code,
-      message: scrubSecretFromMessage(outcome.message, input.url),
+      message: scrubSecretsFromMessage(outcome.message, secretValues(input)),
     };
   }
   return { kind: "ok", value: outcome.value };

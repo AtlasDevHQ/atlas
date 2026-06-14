@@ -336,3 +336,113 @@ export async function elicitMaskedField(
   }
   return { action: "accept", value: raw };
 }
+
+// --- Multi-field masked form elicitation ------------------------------------
+
+/** One field in a masked elicitation form. */
+export interface MaskedFormField {
+  /** Property key on the returned form object + in the built schema. */
+  readonly name: string;
+  /** Human-facing label shown by the client. */
+  readonly title: string;
+  /** Optional help text. */
+  readonly description?: string;
+  /** Whether the client must collect this field (drives the schema `required` list). */
+  readonly required?: boolean;
+  /**
+   * Marks the field as a credential. The 2025-11-25 form schema has no
+   * "password" primitive, so this is a hint the client SHOULD render masked;
+   * the structural guarantee is the out-of-band delivery, identical for every
+   * field. Recorded so a caller can know which returned values are secrets.
+   */
+  readonly secret?: boolean;
+}
+
+export type ElicitMaskedFormOutcome =
+  | { readonly action: "accept"; readonly values: Record<string, string> }
+  | { readonly action: "decline" | "cancel" };
+
+export interface ElicitMaskedFormArgs {
+  readonly principal: string;
+  readonly message: string;
+  /** The fields to collect in one form. At least one required field is expected. */
+  readonly fields: readonly MaskedFormField[];
+  readonly ttlMs?: number;
+  readonly secret?: string;
+  readonly nonceStore?: NonceStore;
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Ask the client for SEVERAL fields in one masked form mid-call — the
+ * multi-field sibling of {@link elicitMaskedField}, for credentials whose shape
+ * isn't a single `url` (e.g. Elasticsearch `apiKey` + `url`, BigQuery
+ * `service_account_json` + `project_id`).
+ *
+ * Same security contract as the single-field call: the entered values travel
+ * client→server out of band and NEVER enter the agent/LLM context, and a single
+ * principal-bound, TTL'd, single-use requestState authorizes consuming the whole
+ * form. The returned values are the caller's to use for connect/persist only —
+ * never to echo into a tool result. Empty optional fields are omitted; the
+ * caller validates required-field presence against its own schema.
+ */
+export async function elicitMaskedForm(
+  server: McpServer,
+  args: ElicitMaskedFormArgs,
+): Promise<ElicitMaskedFormOutcome> {
+  const secret = args.secret ?? resolveElicitationSecret();
+  const nonceStore = args.nonceStore ?? defaultNonceStore;
+
+  const requestState = signRequestState(
+    {
+      principal: args.principal,
+      purpose: "elicit:form",
+      ...(args.ttlMs != null ? { ttlMs: args.ttlMs } : {}),
+    },
+    secret,
+  );
+
+  const properties: Record<string, { type: "string"; title: string; description?: string }> = {};
+  const required: string[] = [];
+  for (const field of args.fields) {
+    properties[field.name] = {
+      type: "string",
+      title: field.title,
+      ...(field.description ? { description: field.description } : {}),
+    };
+    if (field.required) required.push(field.name);
+  }
+
+  const result = await server.server.elicitInput(
+    {
+      mode: "form",
+      message: args.message,
+      requestedSchema: { type: "object", properties, required },
+    },
+    args.signal ? { signal: args.signal } : undefined,
+  );
+
+  if (result.action !== "accept") {
+    return { action: result.action };
+  }
+
+  // Bind value-consumption to the issued state: principal + TTL + single use.
+  const verified = verifyRequestState(requestState, {
+    principal: args.principal,
+    secret,
+    nonceStore,
+  });
+  if (!verified.ok) {
+    throw new ElicitationError(verified.reason);
+  }
+
+  // Collect every non-empty string value. Empty/omitted optionals are dropped so
+  // a blank field never persists as an empty credential; the caller enforces
+  // required-field presence against the catalog schema.
+  const values: Record<string, string> = {};
+  for (const field of args.fields) {
+    const raw = result.content?.[field.name];
+    if (typeof raw === "string" && raw.length > 0) values[field.name] = raw;
+  }
+  return { action: "accept", values };
+}

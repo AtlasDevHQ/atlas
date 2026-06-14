@@ -147,7 +147,8 @@ describe("provisionDatasource — plugin path", () => {
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "clickhouse",
       installId: "wh",
-      url: CH_SECRET_URL,
+      config: { url: CH_SECRET_URL },
+      secretKeys: ["url"],
     });
     // Plugin probe ran with the exact config the installer will persist.
     expect(probeSpy).toHaveBeenCalledTimes(1);
@@ -170,7 +171,8 @@ describe("provisionDatasource — plugin path", () => {
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "clickhouse",
       installId: "wh",
-      url: CH_SECRET_URL,
+      config: { url: CH_SECRET_URL },
+      secretKeys: ["url"],
     });
     expect(outcome.kind).toBe("health_error");
     expect(installDatasourceSpy).not.toHaveBeenCalled();
@@ -186,7 +188,8 @@ describe("provisionDatasource — plugin path", () => {
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "clickhouse",
       installId: "wh",
-      url: CH_SECRET_URL,
+      config: { url: CH_SECRET_URL },
+      secretKeys: ["url"],
     });
     expect(outcome.kind).toBe("error");
     if (outcome.kind === "error") expect(outcome.status).toBe(409);
@@ -198,7 +201,8 @@ describe("provisionDatasource — plugin path", () => {
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "clickhouse",
       installId: "wh",
-      url: CH_SECRET_URL,
+      config: { url: CH_SECRET_URL },
+      secretKeys: ["url"],
     });
     expect(outcome.kind).toBe("unsupported");
     expect(probeSpy).not.toHaveBeenCalled();

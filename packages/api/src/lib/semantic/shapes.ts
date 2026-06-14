@@ -11,6 +11,20 @@
 import { z } from "zod";
 
 /**
+ * Allowlist regex for a semantic-layer row name (the upsert key stored in
+ * `semantic_entities.name`). Permits letters, digits, underscores, hyphens,
+ * and dots — the characters that appear in schema-qualified SQL identifiers
+ * (`public.orders`) and filesystem-safe table names. Reused by:
+ *
+ * - The wizard `/save` path-traversal guard (wizard.ts)
+ * - The `artifactRowName` guard in SemanticGenerator (semantic-generator.ts)
+ *
+ * Exporting from the shared shapes module keeps both write paths consistent
+ * and avoids independent regex drift.
+ */
+export const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
+
+/**
  * Core entity shape — validates the table name and the Connection-group
  * scope. `group` is the canonical scope field (ADR-0012); `connection` is
  * its deprecated alias, still parsed for back-compat.

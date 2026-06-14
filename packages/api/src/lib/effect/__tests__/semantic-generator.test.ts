@@ -307,6 +307,130 @@ describe("SemanticGenerator.profileAndGenerate", () => {
   });
 });
 
+// ── persist (#3546 — durable, content-mode-aware draft upsert) ───────
+
+describe("SemanticGenerator.persist", () => {
+  type UpsertRow = {
+    entityType: string;
+    name: string;
+    yamlContent: string;
+    connectionGroupId?: string | null;
+  };
+
+  /** A `bulkUpsertEntities`-shaped fake that records its rows. */
+  function fakeUpsert(
+    behavior?: (orgId: string, rows: readonly UpsertRow[]) => number,
+  ): ((orgId: string, rows: readonly UpsertRow[]) => Promise<number>) & {
+    calls: Array<{ orgId: string; rows: UpsertRow[] }>;
+  } {
+    const fn = Object.assign(
+      (orgId: string, rows: readonly UpsertRow[]) => {
+        fn.calls.push({ orgId, rows: [...rows] });
+        return Promise.resolve(behavior ? behavior(orgId, rows) : rows.length);
+      },
+      { calls: [] as Array<{ orgId: string; rows: UpsertRow[] }> },
+    );
+    return fn;
+  }
+
+  it("persists entities AND metrics as drafts under the install's group scope", async () => {
+    const upsert = fakeUpsert();
+    const result = await run(
+      Effect.gen(function* () {
+        const svc = yield* SemanticGenerator;
+        return yield* svc.persist({
+          orgId: "org_persist",
+          connectionGroupId: "g_prod",
+          entities: [
+            { table: "public.orders", fileName: "orders.yml", yaml: "table: orders" },
+            { table: "users", fileName: "users.yml", yaml: "table: users" },
+          ],
+          metrics: [{ table: "orders", fileName: "orders.metric.yml", yaml: "name: revenue" }],
+          upsert,
+        });
+      }),
+    );
+    expect(result).toEqual({ entitiesPersisted: 2, metricsPersisted: 1 });
+    // Two upsert calls: one for entities, one for metrics — both scoped to the
+    // group and typed correctly.
+    expect(upsert.calls).toHaveLength(2);
+    const entityCall = upsert.calls[0];
+    expect(entityCall.orgId).toBe("org_persist");
+    expect(entityCall.rows.every((r) => r.entityType === "entity")).toBe(true);
+    expect(entityCall.rows.every((r) => r.connectionGroupId === "g_prod")).toBe(true);
+    // Row name mirrors the wizard /save path (`path.basename`): a path-traversal
+    // segment is stripped, a schema-qualified dotted name is kept verbatim so
+    // two same-named tables in different schemas stay distinct.
+    expect(entityCall.rows.map((r) => r.name)).toEqual(["public.orders", "users"]);
+    expect(upsert.calls[1].rows[0].entityType).toBe("metric");
+  });
+
+  it("skips the metric upsert entirely when there are no metrics", async () => {
+    const upsert = fakeUpsert();
+    const result = await run(
+      Effect.gen(function* () {
+        const svc = yield* SemanticGenerator;
+        return yield* svc.persist({
+          orgId: "org_persist",
+          connectionGroupId: null,
+          entities: [{ table: "orders", fileName: "orders.yml", yaml: "table: orders" }],
+          upsert,
+        });
+      }),
+    );
+    expect(result).toEqual({ entitiesPersisted: 1, metricsPersisted: 0 });
+    expect(upsert.calls).toHaveLength(1); // entities only
+    expect(upsert.calls[0].rows[0].connectionGroupId).toBeNull();
+  });
+
+  it("FAILS LOUD with persist_error when not every entity row lands (no silent partial)", async () => {
+    // The upsert reports a short count — a partially-queryable connection.
+    const upsert = fakeUpsert(() => 1);
+    const exit = await runExit(
+      Effect.gen(function* () {
+        const svc = yield* SemanticGenerator;
+        return yield* svc.persist({
+          orgId: "org_persist",
+          connectionGroupId: null,
+          entities: [
+            { table: "orders", fileName: "orders.yml", yaml: "table: orders" },
+            { table: "users", fileName: "users.yml", yaml: "table: users" },
+          ],
+          upsert,
+        });
+      }),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      expect(JSON.stringify(exit.cause)).toContain("persist_error");
+    }
+  });
+
+  it("wraps a thrown upsert into ProfilingFailedError(persist_error)", async () => {
+    const upsert = Object.assign(
+      () => Promise.reject(new Error("DB pool exhausted")),
+      { calls: [] },
+    );
+    const exit = await runExit(
+      Effect.gen(function* () {
+        const svc = yield* SemanticGenerator;
+        return yield* svc.persist({
+          orgId: "org_persist",
+          connectionGroupId: null,
+          entities: [{ table: "orders", fileName: "orders.yml", yaml: "table: orders" }],
+          upsert,
+        });
+      }),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const json = JSON.stringify(exit.cause);
+      expect(json).toContain("persist_error");
+      expect(json).toContain("DB pool exhausted");
+    }
+  });
+});
+
 // ── registerWhitelist (direct) ───────────────────────────────────────
 
 describe("SemanticGenerator.registerWhitelist", () => {

@@ -351,7 +351,7 @@ If you connect a client not listed here and it works (or it doesn't), [open an i
 
 ## Available tools
 
-The MCP server exposes six tools — two general-purpose and four typed accessors over the semantic layer. Prefer the typed tools when you only need catalog/glossary/metric data; reach for `explore` only when you need raw file access.
+The MCP server exposes six core semantic tools — two general-purpose and four typed accessors over the semantic layer — plus a set of admin [datasource lifecycle tools](#datasource-lifecycle-tools) covered below. Prefer the typed tools when you only need catalog/glossary/metric data; reach for `explore` only when you need raw file access.
 
 ### explore
 
@@ -465,6 +465,46 @@ When the result has multiple columns or multiple rows, `value` falls back to the
 `runMetric` returns an `isError: true` envelope when the metric id is unknown (`unknown_metric`), when the underlying SQL fails validation (`validation_failed`), when an RLS rule rejects the query (`rls_denied`), when the statement timeout fires (`query_timeout`), when the request is rate-limited (`rate_limited`), when the workspace is blocked by billing enforcement (`billing_blocked` — runMetric queries the datasource through the same pipeline as `executeSQL`, so it sits behind the same gate), or on any other failure (`internal_error`). See [Error contract](#error-contract) for the exact envelope shape.
 
 The `filters` parameter is reserved for future pre-aggregation filter pass-through. Passing a non-empty `filters` object is rejected today; use `executeSQL` with the metric's raw SQL if you need to filter results before aggregation.
+
+---
+
+## Datasource lifecycle tools
+
+Beyond the read-only semantic tools above, the server exposes a set of **admin, write-scoped** tools for managing datasources from an agent: `list_datasources`, `test_datasource`, `create_datasource`, `profile_datasource`, `archive_datasource`, `restore_datasource`, and `delete_datasource`. They require the `admin` role and (for the mutating tools) the `mcp:write` scope, and route through the same RBAC + approval gates as the rest of the admin surface. None of them ever return a connection URL or any secret — `create_datasource` collects the credential via a separate masked prompt that is never shared with the agent.
+
+The two-step path to make a new datasource queryable is **create → profile**:
+
+### create_datasource
+
+Provision a new Postgres or MySQL datasource. You pass only non-secret fields (`db_type`, `install_id`, optional `schema` / `description` / `group_id`); the connection URL is collected via a masked prompt, health-checked **before** anything is persisted, and the datasource lands as a `draft`. It is not yet queryable — run `profile_datasource` next.
+
+### profile_datasource
+
+Introspect the datasource's tables and generate its semantic layer (entities + metrics), then make it queryable. Long-running: emits per-table progress and is cancellable.
+
+Profiling does two things with the generated layer:
+
+1. **Registers it in the in-process table whitelist** so an `executeSQL` call in the *same* server process is permitted immediately.
+2. **Persists it durably** to the workspace semantic store as **`draft`** entities and metrics, scoped to the datasource's connection group. This is what makes the generated layer survive an MCP-server restart **and** visible to the Atlas API process that serves the web `/chat` `executeSQL` — a stdio MCP server runs in a different process, so the in-memory whitelist alone is not cross-surface.
+
+```jsonc
+// Example profile_datasource success
+{
+  "id": "prod-us",
+  "queryable": true,
+  "persisted": true,
+  "persisted_status": "draft",
+  "publish_hint": "Generated entities are saved as drafts. Run the admin publish flow to make them queryable from the published /chat surface; they are queryable now in developer mode.",
+  "entities_generated": 12,
+  "metrics_generated": 4,
+  "tables": ["orders", "users"],
+  "elapsed_ms": 1840
+}
+```
+
+Because the persisted rows land as **drafts**, they follow the standard [content-mode](/security/sql-validation) status discipline: queryable immediately in **developer mode** (the draft overlay), but **not** on the published `/chat` surface until an admin promotes them through the atomic publish endpoint (`/api/v1/admin/publish`). This keeps machine-generated, unreviewed entities out of the published whitelist until a human signs off. Profiling fails loud (a `validation_failed` envelope) rather than report success if any generated table cannot be persisted — a partially-persisted layer would silently leave some tables unqueryable.
+
+If profiling persists fewer rows than it generated, or the workspace has no internal database configured (a self-hosted stdio server with no `DATABASE_URL`), `persisted` is `false` and only the in-process whitelist is populated for the current session.
 
 ---
 

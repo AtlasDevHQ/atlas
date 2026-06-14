@@ -379,6 +379,7 @@ describe("migrateAuthTables", () => {
             { name: "0129_stripe_purged_subscriptions.sql" },
             { name: "0133_approval_origin_rename.sql" },
             { name: "0134_mcp_action_policy.sql" },
+            { name: "0135_approval_rule_type_datasource.sql" },
           ],
         };
       }

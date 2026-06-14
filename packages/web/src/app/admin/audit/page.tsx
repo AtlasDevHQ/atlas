@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useQueryStates, useQueryState, parseAsInteger } from "nuqs";
-import { getSortingStateParser } from "@/lib/parsers";
+import type { z } from "zod";
+import { useQueryStates } from "nuqs";
 import { auditSearchParams } from "./search-params";
 import { AnalyticsPanel } from "./analytics-panel";
 import { getAuditColumns, type AuditRow } from "./columns";
@@ -31,6 +31,7 @@ import { RetentionPanel } from "./retention-panel";
 import { AdminActionRetentionPanel } from "./admin-action-retention-panel";
 import { Separator } from "@/components/ui/separator";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import { useServerDataTable } from "@/ui/hooks/use-server-data-table";
 import { extractFetchError } from "@/ui/lib/fetch-error";
 import {
   AuditStatsSchema,
@@ -165,39 +166,50 @@ export default function AuditPage() {
   const columns = AUDIT_COLUMNS;
   const columnIds = AUDIT_COLUMN_IDS;
 
-  // `useDataTable` writes pagination to `?page=` (1-indexed) + `?perPage=` and
-  // sorting to `?sort=`. Read them here so `useAdminFetch` can key the rows
-  // path off the same URL state WITHOUT a circular dependency on the table
-  // instance (mirrors the sessions/users admin pages). The sort parser is the
-  // exact one `useDataTable` uses, so page and table share one source of truth.
-  const [page] = useQueryState("page", parseAsInteger.withDefault(1));
-  const [perPage] = useQueryState("perPage", parseAsInteger.withDefault(LIMIT));
-  const [sorting] = useQueryState(
-    "sort",
-    getSortingStateParser<AuditRow>(columnIds).withDefault([{ id: "timestamp", desc: true }]),
-  );
-  const offset = (page - 1) * perPage;
-  const sortId = sorting[0]?.id;
-  const sortDesc = sorting[0]?.desc;
-
-  const queryParams: AuditQueryParams = {
-    pageSize: perPage, offset, search, connection, tableFilter, columnFilter, status, from, to, actorKind, clientId, tool, sortId, sortDesc,
+  // Non-pagination/sort filters this page owns. Combined with the
+  // pagination + sort the URL-state↔fetch binding owns to form the full
+  // `AuditQueryParams` for both the rows fetch and the export.
+  const filterParams = {
+    search, connection, tableFilter, columnFilter, status, from, to, actorKind, clientId, tool,
   };
 
-  // Rows — paginated, Zod-validated, off `useAdminFetch` so wire drift is a TS
-  // error (#3496). Disabled on the analytics tab (no rows needed there).
-  const rowsPath = `/api/v1/admin/audit?${buildQueryString(queryParams).toString()}`;
+  // URL-state↔server-fetch binding (page/perPage/sort → offset → rows path)
+  // lives in `useServerDataTable`, which reads the exact nuqs keys + parsers
+  // `useDataTable` writes so page and table share one source of truth without
+  // a circular dependency on the table instance. Rows are Zod-validated so
+  // wire drift is a TS error (#3496); disabled on the analytics tab.
   const {
     data: rowsData,
     loading,
     error,
     refetch: refetchRows,
-  } = useAdminFetch(rowsPath, {
+    perPage,
+    offset,
+    sortId,
+    sortDesc,
+  } = useServerDataTable<AuditRow, z.infer<typeof AuditRowsResponseSchema>>({
+    defaultPerPage: LIMIT,
+    defaultSorting: [{ id: "timestamp", desc: true }],
+    sortColumnIds: columnIds,
     schema: AuditRowsResponseSchema,
     enabled: tab !== "analytics",
+    buildPath: (binding) =>
+      `/api/v1/admin/audit?${buildQueryString({
+        pageSize: binding.perPage,
+        offset: binding.offset,
+        sortId: binding.sortId,
+        sortDesc: binding.sortDesc,
+        ...filterParams,
+      }).toString()}`,
   });
   const rows = (rowsData?.rows ?? []) as AuditRow[];
   const total = rowsData?.total ?? 0;
+
+  // Rebuilt from the binding the hook exposes — reused by the CSV export
+  // (which strips pagination via `{ noPagination: true }`).
+  const queryParams: AuditQueryParams = {
+    pageSize: perPage, offset, sortId, sortDesc, ...filterParams,
+  };
 
   // Data table with nuqs-managed pagination, sorting, column visibility
   const pageCount = Math.max(1, Math.ceil(total / perPage));

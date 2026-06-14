@@ -20,6 +20,22 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.15",
+    title: "MCP V2: Prime-Time MCP Server",
+    date: "2026-06-14",
+    summary:
+      "Atlas's MCP server graduates from a read-only data analyst into a complete, production-grade surface that AI assistants can safely act through. The protocol layer is brought up to the latest MCP spec — tool annotations, structured results, in-progress and cancellation signals, pagination, live resource subscriptions, and argument completions — so MCP clients get a richer, more responsive experience. A real security spine now sits underneath every call: roles are resolved against the live database, writes require an explicit mcp:write scope, sensitive actions route through an approval gate, and each workspace gets its own MCP action policy with an admin dashboard and audit attribution. Governance can only be tightened through MCP, never loosened. The headline capability is datasource management over MCP: an assistant can now provision, profile, test, list, archive, and delete datasources end-to-end, with credentials collected only through masked elicitation forms so secrets never pass through the model.",
+    highlights: [
+      "Protocol uplift to MCP spec 2025-11-25 — tool annotations, structured output, elicitation, progress/cancellation, cursor pagination, resource subscriptions, and argument completions (#3497–#3503)",
+      "Security spine — live-DB role resolution, an explicit mcp:write scope for mutations, and an origin=mcp approval gate on sensitive actions (#3504, #3505, #3508)",
+      "Per-workspace MCP action policy — a customer-admin kill-switch dashboard governing which MCP actions are allowed, with audit-trail attribution (#3509, #3510)",
+      "Datasource management over MCP — provision, profile, test, list, archive, and delete datasources directly from an MCP client (#3545, #3553)",
+      "Masked-credential elicitation — datasource secrets are gathered through masked forms and never flow through the model (#3499)",
+      "Raise-only governance — MCP can tighten permissions but never lower them below the workspace's configured floor (ADR-0016)",
+      "Hardened foundation — a 21-finding correctness & security audit plus an architecture pass unifying the gate composer, session store, and dispatch seam (#3606, #3607)",
+    ],
+  },
+  {
     version: "v0.0.14",
     title: "Billing Hardening & Enforcement Perimeter",
     date: "2026-06-13",

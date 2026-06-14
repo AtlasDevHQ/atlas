@@ -55,7 +55,6 @@
 
 import { Hono } from "hono";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 // `better-auth/oauth2` exposes the `verifyAccessToken` helper that this
 // route's bearer middleware relies on. Static import (rather than the
 // dynamic import other Better-Auth-touching modules use) is fine here —
@@ -67,7 +66,6 @@ import { verifyAccessToken } from "better-auth/oauth2";
 import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
 import { getWorkspaceRegion } from "@atlas/api/lib/db/internal";
 import { getConfig } from "@atlas/api/lib/config";
-import { resolveMcpMaxSessions } from "@atlas/api/lib/env-profile";
 import { withRequestContext, createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { createAtlasUser, type AtlasUser } from "@atlas/api/lib/auth/types";
@@ -80,286 +78,39 @@ import {
   userIsWorkspaceMember,
 } from "@atlas/api/lib/auth/oauth-workspace-grants";
 import { createAtlasMcpServer } from "./server.js";
-import { trackResponseStreamLifetime } from "./stream-liveness.js";
 import { withLiveActor } from "./live-actor-store.js";
+import {
+  McpSessionStore,
+  resolveMaxSessions,
+  sessionIdleTimeoutMs,
+  _setIdleTimeoutForTests,
+} from "./session-store.js";
+
+// Re-exported unchanged so the production guard's test seam keeps its import
+// path (`@atlas/mcp/hosted`). The override is module-scoped in
+// `session-store.ts` (it tunes env-driven timeout resolution, not the store).
+export { _setIdleTimeoutForTests };
 
 const log = createLogger("mcp-hosted");
 
-// ── Module-scoped session store ────────────────────────────────────
-
-interface SessionEntry {
-  readonly transport: WebStandardStreamableHTTPServerTransport;
-  readonly server: McpServer;
-  /**
-   * Wall-clock ms of the most recent successful frame against this
-   * session. Updated on every dispatch (init AND every subsequent
-   * request). The lazy-sweep at session-creation reads this to evict
-   * idle entries when the cap-check trips — see {@link sweepIdleSessions}.
-   *
-   * Mutable by design: a `Map<string, SessionEntry>` of frozen objects
-   * would force a re-set on every dispatch, defeating the cheap-read
-   * property of the on-hot-path activity refresh.
-   */
-  lastSeenAt: number;
-  /**
-   * Count of live GET SSE notification streams held open by this session.
-   * A session with `activeStreams > 0` has a client actively listening and
-   * is never idle, so the sweep skips it even when `lastSeenAt` has aged
-   * out — see {@link sweepIdleSessions} and `trackResponseStreamLifetime`.
-   *
-   * #3576 — a client can hold the GET notification stream open indefinitely
-   * to pin a session against the cap. The sweep allows reclaiming sessions
-   * whose streams have been held past `maxHeldStreamAgeMs` even when
-   * `activeStreams > 0`; see {@link sweepIdleSessions} and `streamOpenedAt`.
-   */
-  activeStreams: number;
-  /**
-   * Wall-clock ms when the FIRST active GET notification stream was opened
-   * for this session. Set on the first `onOpen` callback and cleared when
-   * `activeStreams` drops back to 0. Used by the sweep (#3576) to detect
-   * streams held open past `maxHeldStreamAgeMs` and reclaim them.
-   * `undefined` when no stream is currently open.
-   */
-  streamOpenedAt: number | undefined;
-}
-
-const sessions = new Map<string, SessionEntry>();
-
-// Reservation counter prevents the TOCTOU between the cap check and
-// the async `createAtlasMcpServer` call. `sessions.size` only reflects
-// post-`onsessioninitialized` state; with N concurrent inits, all N
-// would pass a naïve `sessions.size >= max` check before any registers.
-// We bump this counter at the gate and decrement on failure or after
-// the session is registered.
-let pendingReservations = 0;
-
-// The concurrent-session cap resolves through the env-profile
-// (`resolveMcpMaxSessions`): the `ATLAS_MCP_MAX_SESSIONS` override wins when a
-// positive integer, otherwise the deploy-env profile default (100) applies.
-// The resolver is pure and cannot log, so the malformed-override warn lives
-// here at the call site where a logger is available.
-function maxSessions(): number {
-  // Mirror resolveMcpMaxSessions's `.trim()` so a whitespace-only value is
-  // treated as unset (no spurious warn) — the warn fires only for a genuinely
-  // malformed non-empty override, matching what the resolver actually rejects.
-  const raw = process.env.ATLAS_MCP_MAX_SESSIONS?.trim();
-  if (raw) {
-    const parsed = Number.parseInt(raw, 10);
-    if (!Number.isFinite(parsed) || parsed < 1) {
-      log.warn(
-        { raw },
-        "ATLAS_MCP_MAX_SESSIONS is not a positive integer — falling back to the deploy-env profile default",
-      );
-    }
-  }
-  return resolveMcpMaxSessions();
-}
-
-// ── Idle-session sweep ─────────────────────────────────────────────
+// ── Module-scoped session store (#3600) ────────────────────────────
 //
-// Streamable HTTP is request-response, not a long-lived socket — there
-// is no transport-level disconnect event for a client that closes
-// without sending the explicit `DELETE`. Real-world MCP clients
-// (Claude Desktop, Cursor) routinely vanish (laptop lid closed, app
-// killed, OS update) without a clean handshake. The pre-sweep
-// implementation kept those orphaned sessions in the in-memory map
-// forever — eventually saturating `maxSessions()` and 503-ing every
-// new connection until container restart.
-//
-// The sweep evicts any session whose `lastSeenAt` is older than the
-// idle timeout. Eviction calls `transport.close()` + `server.close()`
-// so resources actually free, not just the map entry.
-//
-// Where the sweep runs:
-//
-//   - **Lazily, only on cap-pressure** (inside `dispatchNewSession`
-//     when `sessions.size + pendingReservations >= cap`). A quiet
-//     region with no traffic doesn't burn CPU on a periodic sweep —
-//     leaked sessions linger but cost only memory until the next
-//     connection attempts to create a new one. The newly-arriving
-//     caller pays the O(n) sweep cost, which is the right shape: the
-//     work is amortized against the request that benefits from it.
-//
-// Not used:
-//
-//   - A `setInterval` background sweep would be slightly more
-//     responsive in extreme idle scenarios, but it adds a fiber to
-//     reason about (unref, shutdown ordering, test-time reset) and
-//     spends CPU on regions that have no traffic. Skipped — the lazy
-//     sweep covers every scenario where the cap actually matters.
-//   - SDK-level idle close hooks. The
-//     `WebStandardStreamableHTTPServerTransport` does not expose one;
-//     `transport.onclose` only fires on internal SDK close events
-//     (which Streamable HTTP rarely produces).
+// The hosted transport owns a SINGLE module-scoped store: every per-region
+// request shares one cap / session map. (sse.ts, by contrast, constructs one
+// store PER `startSseServer` call — its intentional shape difference.) The
+// store owns the session lifecycle — register, dispatch, sweep, cap-check,
+// reservation, GET/POST stream liveness — and is shared verbatim with sse.ts;
+// see `session-store.ts`. The cap resolver passed here is env-only (hosted has
+// no caller-pinned cap analogous to sse's `opts.maxSessions`).
 
-const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-const MIN_SESSION_IDLE_TIMEOUT_MS = 60 * 1000; // 1 minute floor
-
-// ── Max held-stream age (#3576) ─────────────────────────────────────
-//
-// A client can hold the GET SSE notification stream open indefinitely,
-// which causes `activeStreams > 0` and pins the session against the cap
-// forever. `maxHeldStreamAgeMs` is how long we allow a GET stream to stay
-// open before the sweep reclaims the session under cap-pressure. The default
-// is 2 hours — generous for legitimate use (long-running agent sessions) but
-// finite so resource-exhaustion by a hung client is bounded.
-//
-// The env var `ATLAS_MCP_MAX_HELD_STREAM_AGE_MS` allows operators to tune
-// this. Unlike the idle-timeout floor, there is no minimum here: a very
-// short held-stream age is unusual but not as dangerous as a sub-minute
-// idle timeout (which could degenerate the sweep into a close-everything
-// loop). The default is conservative; set to 0 to disable age-based reclaim.
-
-const DEFAULT_MAX_HELD_STREAM_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
-
-function maxHeldStreamAgeMs(): number {
-  const raw = process.env.ATLAS_MCP_MAX_HELD_STREAM_AGE_MS;
-  if (!raw) return DEFAULT_MAX_HELD_STREAM_AGE_MS;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    log.warn(
-      { raw },
-      "ATLAS_MCP_MAX_HELD_STREAM_AGE_MS is not a non-negative integer — falling back to default",
-    );
-    return DEFAULT_MAX_HELD_STREAM_AGE_MS;
-  }
-  return parsed;
-}
-
-/**
- * Test-only override. Bypasses the production floor so the
- * cap-pressure sweep can be driven end-to-end with sub-second
- * timeouts. Production must keep the 1-minute floor so a
- * misconfigured env var can't degenerate the sweep into a
- * close-everything-on-every-request loop. Production code paths
- * never set this.
- */
-let _idleTimeoutOverrideMs: number | null = null;
-
-/**
- * @internal — test-only. Pin idle timeout below the prod floor.
- *
- * Guarded behind a NODE_ENV check (#3577): calling this in production is a
- * programming error and throws immediately so the mistake surfaces at startup
- * rather than silently degenerate-sweeping every session on every request.
- * Tests run with NODE_ENV !== 'production' and are unaffected.
- */
-export function _setIdleTimeoutForTests(ms: number | null): void {
-  if (process.env.NODE_ENV === "production") {
-    throw new Error(
-      "_setIdleTimeoutForTests must not be called in production — " +
-        "use ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS instead",
-    );
-  }
-  _idleTimeoutOverrideMs = ms;
-}
-
-function sessionIdleTimeoutMs(): number {
-  if (_idleTimeoutOverrideMs !== null) {
-    // Test-only path: return verbatim so tests can drive sub-second sweeps.
-    // The production guard in `_setIdleTimeoutForTests` ensures this branch
-    // is unreachable in production — the setter would have thrown at startup.
-    return _idleTimeoutOverrideMs;
-  }
-  const raw = process.env.ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS;
-  if (!raw) return DEFAULT_SESSION_IDLE_TIMEOUT_MS;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < MIN_SESSION_IDLE_TIMEOUT_MS) {
-    log.warn(
-      { raw, floor: MIN_SESSION_IDLE_TIMEOUT_MS },
-      "ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS missing/below floor — falling back to default",
-    );
-    return DEFAULT_SESSION_IDLE_TIMEOUT_MS;
-  }
-  return parsed;
-}
-
-/**
- * Evict sessions whose `lastSeenAt` is older than the configured
- * idle timeout. Returns the count of sessions evicted so the caller
- * can decide whether the cap-check should be retried (a successful
- * sweep means a slot opened up).
- *
- * Eviction calls `transport.close()` + `server.close()` so the
- * underlying resources are released, not just the map entry. Both
- * close paths swallow their own errors via `.catch(() => {})` to
- * match the existing teardown pattern in `_resetHostedSessions` and
- * `transport.onclose` — a hanging close on a leaked session must not
- * block the new caller's init from proceeding.
- *
- * #3576 — `activeStreams > 0` is no longer an absolute skip. A client
- * can hold the GET notification stream open indefinitely to pin a session
- * against the cap. The sweep reclaims sessions whose streams have been
- * held past `heldStreamAgeCutoff` even under cap-pressure. Active POST
- * streams are protected differently: `lastSeenAt` is refreshed per-chunk
- * via `onActivity` so a long-running streaming tool call keeps the session
- * alive without leaking a GET stream pinning it.
- */
-function sweepIdleSessions(
-  now: number,
-  idleTimeoutMs: number,
-  heldStreamMaxAgeMs: number = maxHeldStreamAgeMs(),
-): number {
-  let evicted = 0;
-  const idleCutoff = now - idleTimeoutMs;
-  const streamAgeCutoff = now - heldStreamMaxAgeMs;
-  for (const [id, entry] of sessions) {
-    if (entry.activeStreams > 0) {
-      // The session has a live GET notification stream. Only reclaim it if
-      // the stream has been held open past the max-held-stream-age limit.
-      // A stream with no `streamOpenedAt` is a logic anomaly (activeStreams
-      // > 0 but no open timestamp) — skip it conservatively.
-      if (entry.streamOpenedAt === undefined) continue;
-      if (entry.streamOpenedAt > streamAgeCutoff) continue;
-      // Stream is too old — reclaim under cap-pressure. The client that holds
-      // it will get a transport error and should reconnect.
-      log.warn(
-        {
-          sessionId: id,
-          streamOpenedAt: entry.streamOpenedAt,
-          heldStreamMaxAgeMs,
-        },
-        "Evicting MCP session with stale held-open GET stream (cap pressure, #3576)",
-      );
-    } else {
-      // No active stream — standard idle-timeout check.
-      if (entry.lastSeenAt > idleCutoff) continue;
-    }
-    sessions.delete(id);
-    // intentionally ignored: best-effort teardown of an already-
-    // orphaned session — the client that owned this entry is gone
-    // by definition (no frames in `idleTimeoutMs`), so a close
-    // failure has nowhere to surface. The sweep counter is the
-    // signal that matters; missing one out of N closes does not
-    // affect cap accounting.
-    void entry.transport.close().catch(() => {});
-    void entry.server.close().catch(() => {});
-    evicted++;
-  }
-  if (evicted > 0) {
-    log.info(
-      { evicted, remaining: sessions.size, idleTimeoutMs },
-      "Swept idle MCP sessions",
-    );
-  }
-  return evicted;
-}
+const sessions = new McpSessionStore(() => resolveMaxSessions());
 
 export function _hostedSessionCount(): number {
   return sessions.size;
 }
 
 export async function _resetHostedSessions(): Promise<void> {
-  const entries = [...sessions.entries()];
-  sessions.clear();
-  pendingReservations = 0;
-  for (const [, entry] of entries) {
-    // intentionally ignored: best-effort teardown — the test reset
-    // path runs in afterEach, so a hanging close should not fail the
-    // suite. Real shutdown emits warnings via onsessionclosed.
-    await entry.transport.close().catch(() => {});
-    await entry.server.close().catch(() => {});
-  }
+  await sessions.reset();
 }
 
 /**
@@ -374,7 +125,7 @@ export function _sweepIdleSessionsForTests(
   idleTimeoutMs?: number,
   heldStreamMaxAgeMs?: number,
 ): number {
-  return sweepIdleSessions(
+  return sessions.sweep(
     now ?? Date.now(),
     idleTimeoutMs ?? sessionIdleTimeoutMs(),
     heldStreamMaxAgeMs,
@@ -1329,210 +1080,59 @@ async function dispatchExistingSession(
       },
     );
   }
-  // Refresh the activity timestamp so the lazy sweep at the cap-check
-  // doesn't evict an actively-used session. Updated PRE-dispatch so
-  // a long-running tool call (executeSQL on a large query) doesn't
-  // race with a concurrent sweep observing a stale `lastSeenAt`.
-  entry.lastSeenAt = Date.now();
+  // The store owns the liveness wiring (lastSeenAt refresh, GET/POST stream
+  // tracking — #3576). The hosted-only bit is the `withLiveActor` wrap:
+  //
   // #3569 — set the freshly-resolved actor on the per-request live-actor
   // ALS BEFORE handing the request to the transport. `dispatch-gate.ts`
   // gate-3 reads from this store (not from the session-frozen `ctx.actor`
   // in the tool closure) so a mid-session demotion is revocation-immediate.
   // This ALS is separate from the api-layer `requestStore`, so nested
   // `withRequestContext` calls in tool dispatch bodies do not replace it.
-  const response = await withLiveActor(factoryCtx.user, () =>
-    entry.transport.handleRequest(req),
+  return sessions.dispatchExisting(req, entry, (run) =>
+    withLiveActor(factoryCtx.user, run),
   );
-  // A GET opens the standalone SSE notification stream, which stays open
-  // for the life of the connection. Track its liveness so the idle sweep
-  // never evicts a session that still has a client listening — `lastSeenAt`
-  // alone would age out a connected-but-quiet client mid-stream.
-  //
-  // #3576 — also record `streamOpenedAt` so the sweep can reclaim sessions
-  // whose GET stream has been held open past `maxHeldStreamAgeMs`.
-  if (req.method === "GET") {
-    return trackResponseStreamLifetime(response, {
-      onOpen: () => {
-        entry.activeStreams++;
-        // Only set `streamOpenedAt` for the FIRST active stream — if multiple
-        // GET streams were opened (uncommon), we track the oldest one so the
-        // sweep's age check is conservative (oldest stream, not newest).
-        if (entry.streamOpenedAt === undefined) {
-          entry.streamOpenedAt = Date.now();
-        }
-      },
-      onClose: () => {
-        entry.activeStreams = Math.max(0, entry.activeStreams - 1);
-        // Reset the idle clock from the moment the client actually
-        // disconnected, not from when the stream opened.
-        entry.lastSeenAt = Date.now();
-        // Clear the opened-at timestamp when the last stream closes so a
-        // future reconnect starts a fresh age window.
-        if (entry.activeStreams === 0) {
-          entry.streamOpenedAt = undefined;
-        }
-      },
-      onError: (err) => {
-        const detail = err instanceof Error ? err.message : String(err);
-        log.debug(
-          { sessionId: entry.transport.sessionId, err: detail },
-          "SSE notification stream errored",
-        );
-      },
-    });
-  }
-  // #3576 — for POST event-stream responses (long-running streaming tool
-  // calls), keep `lastSeenAt` current as chunks are sent. Without this,
-  // a 2-hour streaming query would see its `lastSeenAt` age out to the
-  // dispatch-time stamp, and a sweep under cap-pressure could evict the
-  // session mid-flight. The `onActivity` hook fires on each enqueued
-  // chunk — cheap (just a timestamp write) and correct.
-  if (req.method === "POST") {
-    return trackResponseStreamLifetime(response, {
-      onOpen: () => {},
-      onClose: () => {
-        entry.lastSeenAt = Date.now();
-      },
-      onActivity: () => {
-        entry.lastSeenAt = Date.now();
-      },
-    });
-  }
-  return response;
 }
 
 async function dispatchNewSession(
   req: Request,
   ctx: InitialFactoryContext,
 ): Promise<Response> {
-  const cap = maxSessions();
-
-  // Lazy sweep: when the cap appears full, evict idle sessions FIRST
-  // and re-check. Without this, a region that has accumulated leaked
-  // sessions (Streamable HTTP has no transport disconnect event for
-  // a client that vanishes without sending DELETE — laptop closed,
-  // app killed, OS update) will permanently 503 every new connection
-  // until container restart. The sweep cost is paid only on
-  // cap-pressure, so quiet regions don't burn CPU evicting nothing.
-  if (sessions.size + pendingReservations >= cap) {
-    sweepIdleSessions(Date.now(), sessionIdleTimeoutMs());
-    if (sessions.size + pendingReservations >= cap) {
-      return new Response(
-        JSON.stringify({
-          error: "too_many_sessions",
-          message:
-            "Too many active MCP sessions on this region. Try again later.",
-        }),
-        { status: 503, headers: { "Content-Type": "application/json" } },
+  // The store owns the cap-pressure sweep, the `pendingReservations` TOCTOU
+  // guard, transport construction + lifecycle callbacks, and the
+  // connect-failure / unregistered-leak teardown. The hosted-only bits — the
+  // bearer-bound `McpServer` and the `mcp_session.start` audit row — are
+  // supplied via the `NewSessionSpec`.
+  const region = getApiRegion();
+  return sessions.dispatchNew(req, {
+    createServer: () => createBoundMcpServer(ctx),
+    onRegistered: (id) => {
+      emitSessionStartAudit(
+        {
+          kind: "ok",
+          user: ctx.user,
+          orgId: ctx.workspace.fromBearerClaim,
+          clientId: ctx.clientId,
+          tokenJti: ctx.tokenJti,
+          scopes: ctx.scopes,
+        },
+        id,
+        region,
+        ctx.workspace.resolved,
       );
-    }
-  }
-
-  pendingReservations++;
-  let registered = false;
-
-  try {
-    const mcpServer = await createBoundMcpServer(ctx);
-    const region = getApiRegion();
-
-    const transport = new WebStandardStreamableHTTPServerTransport({
-      sessionIdGenerator: () => crypto.randomUUID(),
-      onsessioninitialized: (id) => {
-        // Stamp `lastSeenAt: Date.now()` at registration so the sweep
-        // doesn't immediately evict a freshly-created session that
-        // hasn't yet received a follow-up frame.
-        sessions.set(id, {
-          transport,
-          server: mcpServer,
-          lastSeenAt: Date.now(),
-          activeStreams: 0,
-          streamOpenedAt: undefined,
-        });
-        registered = true;
-        emitSessionStartAudit(
-          {
-            kind: "ok",
-            user: ctx.user,
-            orgId: ctx.workspace.fromBearerClaim,
-            clientId: ctx.clientId,
-            tokenJti: ctx.tokenJti,
-            scopes: ctx.scopes,
-          },
-          id,
+      log.info(
+        {
+          sessionId: id,
+          orgId: ctx.workspace.resolved,
+          clientId: ctx.clientId,
           region,
-          ctx.workspace.resolved,
-        );
-        log.info(
-          {
-            sessionId: id,
-            orgId: ctx.workspace.resolved,
-            clientId: ctx.clientId,
-            region,
-          },
-          "MCP session created",
-        );
-      },
-      onsessionclosed: (id) => {
-        const entry = sessions.get(id);
-        if (entry) {
-          sessions.delete(id);
-          entry.server.close().catch((err) => {
-            log.warn(
-              {
-                sessionId: id,
-                err: err instanceof Error ? err.message : String(err),
-              },
-              "Failed to close per-session MCP server",
-            );
-          });
-        }
-      },
-    });
-
-    transport.onclose = () => {
-      const sid = transport.sessionId;
-      if (sid && sessions.has(sid)) {
-        const entry = sessions.get(sid)!;
-        sessions.delete(sid);
-        // intentionally ignored: transport.onclose fires from the
-        // SDK's own cleanup path; surfacing a server-close error
-        // here would have nowhere to go.
-        entry.server.close().catch(() => {});
-      }
-    };
-
-    try {
-      await mcpServer.connect(transport);
-    } catch (err) {
-      // intentionally ignored: cleanup-and-rethrow — the connect
-      // error is the signal; we just want to release the resources
-      // before propagating.
-      await transport.close().catch(() => {});
-      await mcpServer.close().catch(() => {});
-      throw err;
-    }
-
-    const response = await transport.handleRequest(req);
-
-    // The leak path: a non-initialize first frame (no `mcp-session-id`
-    // header) is rejected by the SDK without firing
-    // `onsessioninitialized`. The server + transport stay live but
-    // unregistered, so nothing ever cleans them up. Detect via the
-    // `registered` flag set inside the init callback and tear down
-    // here. Without this, every malformed first frame leaks one
-    // McpServer per request.
-    if (!registered) {
-      // intentionally ignored: best-effort teardown of an
-      // unregistered session — we already lost the request, no point
-      // surfacing close errors that nothing can act on.
-      await transport.close().catch(() => {});
-      await mcpServer.close().catch(() => {});
-    }
-
-    return response;
-  } finally {
-    pendingReservations--;
-  }
+        },
+        "MCP session created",
+      );
+    },
+    tooManyMessage:
+      "Too many active MCP sessions on this region. Try again later.",
+  });
 }
 
 // ── Router ──────────────────────────────────────────────────────────

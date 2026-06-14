@@ -55,6 +55,7 @@ import {
   generateEntityYAML,
   generateSemanticLayer,
 } from "@atlas/api/lib/semantic/generate";
+import { SAFE_TABLE_NAME } from "@atlas/api/lib/semantic/shapes";
 // Phase-2 enrichment is the same shared engine (issue #3236, § D); the in-memory
 // variant lets the wizard enrich a YAML string per table without touching disk.
 import { enrichEntityYaml } from "@atlas/api/lib/semantic/enrich";
@@ -940,7 +941,6 @@ wizard.openapi(saveRoute, async (c) => {
     const { connectionId, entities } = body;
   
     // Path traversal protection: validate all table names before writing any files
-    const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
     for (const entity of entities) {
       if (!SAFE_TABLE_NAME.test(entity.tableName) || entity.tableName.includes("..")) {
         return c.json({

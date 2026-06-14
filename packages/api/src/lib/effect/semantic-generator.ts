@@ -27,6 +27,7 @@
  * instead of the caller.
  */
 
+import * as path from "path";
 import { Context, Effect, Layer } from "effect";
 import type {
   DatabaseObject,
@@ -45,10 +46,16 @@ import {
 import {
   analyzeTableProfiles,
   generateSemanticLayer,
+  type GeneratedArtifact,
   type GeneratedSemanticLayer,
   type GenerateSemanticLayerOptions,
 } from "@atlas/api/lib/semantic/generate";
-import { registerPluginEntities } from "@atlas/api/lib/semantic/whitelist";
+import { registerPluginEntities, invalidateOrgWhitelist } from "@atlas/api/lib/semantic/whitelist";
+import {
+  bulkUpsertEntities,
+  type SemanticEntityType,
+} from "@atlas/api/lib/semantic/entities";
+import { SAFE_TABLE_NAME } from "@atlas/api/lib/semantic/shapes";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ProfilingFailedError } from "./errors";
 
@@ -124,6 +131,52 @@ export interface ProfileAndGenerateOptions extends ProfileConnectionOptions {
   registerWhitelist?: boolean;
 }
 
+/**
+ * The org-scoped semantic-store upsert seam {@link SemanticGeneratorShape.persist}
+ * delegates to. Matches the signature of {@link bulkUpsertEntities} so the live
+ * path uses it verbatim; tests inject a fake to exercise persistence without an
+ * internal DB. Returns the number of rows successfully upserted.
+ */
+export type EntityUpsertFn = (
+  orgId: string,
+  rows: ReadonlyArray<{
+    entityType: SemanticEntityType;
+    name: string;
+    yamlContent: string;
+    connectionGroupId?: string | null;
+  }>,
+) => Promise<number>;
+
+/** Inputs for {@link SemanticGeneratorShape.persist}. */
+export interface PersistSemanticLayerOptions {
+  /** Workspace the generated rows belong to. */
+  orgId: string;
+  /**
+   * Connection-group scope for every persisted row (the group the profiled
+   * datasource belongs to — group-of-one for a standalone connection, `null`
+   * for the flat default group). Set DIRECTLY (not resolved from an install id)
+   * so the rows land in the same scope the whitelist loader reads.
+   */
+  connectionGroupId: string | null;
+  /** Generated entity artifacts (one per profiled table). */
+  entities: ReadonlyArray<GeneratedArtifact>;
+  /** Generated metric artifacts (omitted profiles produce none). */
+  metrics?: ReadonlyArray<GeneratedArtifact>;
+  /**
+   * Upsert override for tests. Defaults to {@link bulkUpsertEntities} — the
+   * content-mode-aware draft upsert the wizard `/save` + import endpoint use.
+   */
+  upsert?: EntityUpsertFn;
+}
+
+/** Outcome of {@link SemanticGeneratorShape.persist}. */
+export interface PersistSemanticLayerResult {
+  /** Entity rows successfully persisted (as drafts). */
+  entitiesPersisted: number;
+  /** Metric rows successfully persisted (as drafts). */
+  metricsPersisted: number;
+}
+
 /** Outcome of {@link SemanticGeneratorShape.profileAndGenerate}. */
 export interface ProfileAndGenerateResult extends GeneratedSemanticLayer {
   /** Analyzed profiles that produced the artifacts. */
@@ -163,6 +216,28 @@ export interface SemanticGeneratorShape {
     connectionId: string,
     entities: ReadonlyArray<{ table: string; yaml: string }>,
   ) => void;
+
+  /**
+   * DURABLY persist a generated semantic layer to the org semantic store
+   * (`semantic_entities`) so the table whitelist survives an MCP-server
+   * restart AND is visible to the API process (hosted web `/chat` runs in a
+   * different process than a stdio MCP server, so the in-memory whitelist
+   * alone is not cross-surface).
+   *
+   * Rows land as **`draft`** (via the content-mode-aware {@link bulkUpsertEntities}
+   * seam the wizard `/save` + import endpoint share): profiled output is
+   * machine-generated and unreviewed, so it stays out of the published
+   * `/chat` whitelist until an admin promotes it through the atomic publish
+   * endpoint (`/api/v1/admin/publish`). Developer mode already overlays drafts,
+   * so the profiling agent can query immediately in-session.
+   *
+   * Fails with {@link ProfilingFailedError} (`reason: "persist_error"`) when
+   * NOT every row lands — a partial upsert would silently recreate the
+   * connected-but-unqueryable gap for the dropped tables, so it fails loud.
+   */
+  readonly persist: (
+    opts: PersistSemanticLayerOptions,
+  ) => Effect.Effect<PersistSemanticLayerResult, ProfilingFailedError>;
 
   /**
    * Profile a connection, generate its semantic layer, and (by default)
@@ -288,6 +363,123 @@ function registerWhitelistImpl(
   );
 }
 
+/**
+ * Map a generated artifact to its semantic-store row `name`. Mirrors the wizard
+ * `/save` path (`path.basename(e.tableName)`) so the two write paths key rows
+ * identically. `path.basename` strips any path-traversal segment (a `/`-bearing
+ * name), leaving a path-safe identifier; a schema-qualified dotted name like
+ * `public.orders` is preserved verbatim (no slash to strip), which keeps two
+ * same-named tables in different schemas distinct. The row `name` is only the
+ * upsert key — queryability keys on the entity YAML's `table:` field (set by
+ * the generator), not this name. Entity + metric rows for the same table share
+ * the name but differ by `entity_type`, so the 0063 partial unique index keeps
+ * them distinct.
+ *
+ * Defense-in-depth: after basename-stripping, the name must pass `SAFE_TABLE_NAME`
+ * (same guard the wizard `/save` applies) — rejects names with characters outside
+ * `[a-zA-Z0-9_.-]` that would never survive DB validation anyway. Returns `null`
+ * for names that fail the check; callers must filter those artifacts out (logged,
+ * never silently swallowed).
+ */
+function artifactRowName(artifact: GeneratedArtifact): string | null {
+  const name = path.basename(artifact.table);
+  if (!SAFE_TABLE_NAME.test(name)) {
+    log.warn(
+      { table: artifact.table, basename: name },
+      "artifactRowName: skipping artifact — basename does not match SAFE_TABLE_NAME; " +
+        "the generated name contains characters not permitted in a semantic-store row key",
+    );
+    return null;
+  }
+  return name;
+}
+
+function persistImpl(
+  opts: PersistSemanticLayerOptions,
+): Effect.Effect<PersistSemanticLayerResult, ProfilingFailedError> {
+  return Effect.gen(function* () {
+    const upsert = opts.upsert ?? bulkUpsertEntities;
+
+    const entityRows = opts.entities
+      .map((e) => {
+        const name = artifactRowName(e);
+        if (name === null) return null;
+        return { entityType: "entity" as const, name, yamlContent: e.yaml, connectionGroupId: opts.connectionGroupId };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null);
+
+    // NOTE: intentional divergence from the wizard `/save` write path.
+    // The wizard persists entities to `semantic_entities` (DB) but writes metrics
+    // to disk only (`semantic/metrics/*.yml`). This MCP path persists BOTH entities
+    // AND metrics to `semantic_entities` so that a durable MCP-profiled connection
+    // is fully queryable across process restarts and visible to the web `/chat`
+    // process (which can't read disk artifacts written by a stdio MCP server).
+    // Tracked for reconciliation in #3551.
+    const metricRows = (opts.metrics ?? [])
+      .map((m) => {
+        const name = artifactRowName(m);
+        if (name === null) return null;
+        return { entityType: "metric" as const, name, yamlContent: m.yaml, connectionGroupId: opts.connectionGroupId };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null);
+
+    const entitiesPersisted = yield* Effect.tryPromise({
+      try: () => upsert(opts.orgId, entityRows),
+      catch: (err) =>
+        new ProfilingFailedError({
+          message: `Failed to persist generated entities: ${err instanceof Error ? err.message : String(err)}`,
+          reason: "persist_error",
+        }),
+    });
+
+    const metricsPersisted = metricRows.length === 0
+      ? 0
+      : yield* Effect.tryPromise({
+          try: () => upsert(opts.orgId, metricRows),
+          catch: (err) =>
+            new ProfilingFailedError({
+              message: `Failed to persist generated metrics: ${err instanceof Error ? err.message : String(err)}`,
+              reason: "persist_error",
+            }),
+        });
+
+    // bulkUpsertEntities swallows per-row failures and returns a success count.
+    // A short count means the YAML parsed but the DB rejected the row — landing
+    // some tables as queryable and silently dropping others. Fail loud rather
+    // than report success on a partially-queryable connection (#3546 / #2142).
+    if (entitiesPersisted < entityRows.length || metricsPersisted < metricRows.length) {
+      return yield* Effect.fail(
+        new ProfilingFailedError({
+          message:
+            `Persisted ${entitiesPersisted}/${entityRows.length} entities and ` +
+            `${metricsPersisted}/${metricRows.length} metrics. Some generated tables ` +
+            `did not land in the semantic store and will not be queryable — retry profiling.`,
+          reason: "persist_error",
+        }),
+      );
+    }
+
+    // Drop this process's cached org whitelist so the freshly-persisted drafts
+    // are read on the next `loadOrgWhitelist` (developer mode overlays drafts).
+    // Cross-process surfaces (the API process behind web `/chat`) pick the rows
+    // up on their own cache TTL expiry / invalidation — the durable rows are the
+    // cross-surface contract; this just makes the SAME process see them now.
+    invalidateOrgWhitelist(opts.orgId);
+
+    log.info(
+      {
+        orgId: opts.orgId,
+        connectionGroupId: opts.connectionGroupId,
+        entitiesPersisted,
+        metricsPersisted,
+      },
+      "Persisted generated semantic layer to the org store as drafts",
+    );
+
+    return { entitiesPersisted, metricsPersisted } satisfies PersistSemanticLayerResult;
+  });
+}
+
 function profileAndGenerateImpl(
   opts: ProfileAndGenerateOptions,
 ): Effect.Effect<ProfileAndGenerateResult, ProfilingFailedError> {
@@ -318,6 +510,7 @@ const service: SemanticGeneratorShape = {
   profile: profileImpl,
   generate: generateImpl,
   registerWhitelist: registerWhitelistImpl,
+  persist: persistImpl,
   profileAndGenerate: profileAndGenerateImpl,
 } satisfies SemanticGeneratorShape;
 

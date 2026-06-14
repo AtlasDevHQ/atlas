@@ -465,6 +465,14 @@ export interface DatasourceProfileTarget {
   readonly url: string;
   readonly dbType: McpNativeDbType;
   readonly schema?: string;
+  /**
+   * The install's connection-group scope (`workspace_plugins.config.group_id`),
+   * or `null` for an ungrouped install. Carried so the persistence step
+   * (#3546) lands the generated entities under the SAME `connection_group_id`
+   * the whitelist loader reads — a group-of-one for a standalone MCP-created
+   * datasource. This is metadata (a group name), never a secret.
+   */
+  readonly connectionGroupId: string | null;
 }
 
 export type LoadProfileTargetResult =
@@ -490,8 +498,10 @@ export async function loadDatasourceProfileTarget(
     catalog_slug: string;
     config: Record<string, unknown> | null;
     config_schema: unknown;
+    group_id: string | null;
   }>(
-    `SELECT wp.catalog_id, pc.slug AS catalog_slug, wp.config, pc.config_schema
+    `SELECT wp.catalog_id, pc.slug AS catalog_slug, wp.config, pc.config_schema,
+            wp.config->>'group_id' AS group_id
        FROM workspace_plugins wp
        JOIN plugin_catalog pc ON pc.id = wp.catalog_id
       WHERE wp.workspace_id = $1
@@ -504,6 +514,10 @@ export async function loadDatasourceProfileTarget(
   const row = rows[0];
   const schema = parseConfigSchema(row.config_schema);
   const decrypted = decryptSecretFields(row.config ?? {}, schema);
+  // Group scope for the persistence step — `null` when the install carries no
+  // group binding (the flat default scope), matching the whitelist loader's
+  // NULL-scope bucket.
+  const connectionGroupId = row.group_id && row.group_id.length > 0 ? row.group_id : null;
   const poolConfig = resolveDatasourcePoolConfig(
     {
       workspaceId: orgId,
@@ -526,35 +540,67 @@ export async function loadDatasourceProfileTarget(
       url: poolConfig.url,
       dbType: poolConfig.dbType,
       schema: "schema" in poolConfig ? poolConfig.schema : undefined,
+      connectionGroupId,
     },
   };
 }
 
 export type RunSemanticProfileOutcome =
-  | { readonly kind: "ok"; readonly result: ProfileAndGenerateResult }
+  | {
+      readonly kind: "ok";
+      readonly result: ProfileAndGenerateResult;
+      /**
+       * Durable-persistence counts (#3546). Present when an `orgId` was
+       * supplied AND an internal DB is configured (the generated entities were
+       * upserted as drafts to `semantic_entities`); `null` when persistence was
+       * skipped (no `orgId` / no internal DB — the in-memory whitelist is the
+       * only registration, e.g. a self-hosted stdio server with no internal DB).
+       */
+      readonly persisted: { readonly entities: number; readonly metrics: number } | null;
+    }
   | { readonly kind: "error"; readonly reason: ProfilingFailedError["reason"]; readonly message: string };
 
 /**
  * Profile a connection and generate its semantic layer via the #3506
  * `SemanticGenerator` service, registering the generated entities into the
- * in-process table whitelist so a subsequent `executeSQL` against this
- * connection is permitted. `progress` bridges the profiler's per-table
- * callbacks to the MCP progress seam.
+ * in-process table whitelist so a subsequent in-process `executeSQL` is
+ * permitted, AND — when an `orgId` is supplied and an internal DB is
+ * configured — DURABLY persisting the generated entities + metrics to the org
+ * semantic store as drafts (#3546). Persistence is what makes the connection
+ * queryable (a) after an MCP-server restart and (b) from the API process the
+ * web `/chat` `executeSQL` runs in (a stdio MCP server is a different process,
+ * so its in-memory whitelist alone is not cross-surface). `progress` bridges
+ * the profiler's per-table callbacks to the MCP progress seam.
  *
- * A tagged `ProfilingFailedError` (no tables, threshold exceeded, …) is
- * returned as a typed `error` outcome; an unexpected defect re-throws for the
- * caller's `internal_error` path.
+ * A tagged `ProfilingFailedError` (no tables, threshold exceeded, persist
+ * failure, …) is returned as a typed `error` outcome; an unexpected defect
+ * re-throws for the caller's `internal_error` path.
  */
 export async function runSemanticProfile(opts: {
   url: string;
   dbType: McpNativeDbType;
   schema?: string;
   connectionId: string;
+  /**
+   * Workspace the generated rows belong to. When provided (and an internal DB
+   * is configured) the generated layer is persisted as drafts; when omitted,
+   * only the in-memory whitelist is populated. The MCP `profile_datasource`
+   * tool always passes the bound workspace.
+   */
+  orgId?: string;
+  /**
+   * Connection-group scope for the persisted rows — pass the value from
+   * {@link DatasourceProfileTarget.connectionGroupId} so the rows land in the
+   * same scope the whitelist loader reads. Ignored when `orgId` is omitted.
+   */
+  connectionGroupId?: string | null;
   progress?: ProfileProgressCallbacks;
 }): Promise<RunSemanticProfileOutcome> {
+  const shouldPersist = opts.orgId !== undefined && hasInternalDB();
+
   const program = Effect.gen(function* () {
     const gen = yield* SemanticGenerator;
-    return yield* gen.profileAndGenerate({
+    const result = yield* gen.profileAndGenerate({
       url: opts.url,
       dbType: opts.dbType,
       ...(opts.schema !== undefined ? { schema: opts.schema } : {}),
@@ -562,12 +608,35 @@ export async function runSemanticProfile(opts: {
       registerWhitelist: true,
       ...(opts.progress !== undefined ? { progress: opts.progress } : {}),
     });
+
+    // Durably persist as drafts so the whitelist survives a restart and is
+    // visible cross-process (#3546). A persist failure is a tagged
+    // ProfilingFailedError (reason: "persist_error") — surfaced as a typed
+    // `error` outcome below, not a silent success on a non-durable layer.
+    if (shouldPersist && opts.orgId !== undefined) {
+      const persisted = yield* gen.persist({
+        orgId: opts.orgId,
+        connectionGroupId: opts.connectionGroupId ?? null,
+        entities: result.entities,
+        metrics: result.metrics,
+      });
+      return { result, persisted };
+    }
+    return { result, persisted: null };
   });
 
   const exit = await Effect.runPromiseExit(
     program.pipe(Effect.provide(SemanticGeneratorLive)),
   );
-  if (exit._tag === "Success") return { kind: "ok", result: exit.value };
+  if (exit._tag === "Success") {
+    return {
+      kind: "ok",
+      result: exit.value.result,
+      persisted: exit.value.persisted
+        ? { entities: exit.value.persisted.entitiesPersisted, metrics: exit.value.persisted.metricsPersisted }
+        : null,
+    };
+  }
 
   const failure = Cause.failureOption(exit.cause);
   if (failure._tag === "Some" && failure.value instanceof ProfilingFailedError) {

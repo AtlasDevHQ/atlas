@@ -27,7 +27,6 @@
  * instead of the caller.
  */
 
-import * as path from "path";
 import { Context, Effect, Layer } from "effect";
 import type {
   DatabaseObject,
@@ -55,7 +54,7 @@ import {
   bulkUpsertEntities,
   type SemanticEntityType,
 } from "@atlas/api/lib/semantic/entities";
-import { SAFE_TABLE_NAME } from "@atlas/api/lib/semantic/shapes";
+import { safeSemanticRowName } from "@atlas/api/lib/semantic/shapes";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ProfilingFailedError } from "./errors";
@@ -412,16 +411,19 @@ function registerWhitelistImpl(
  * `[a-zA-Z0-9_.-]` that would never survive DB validation anyway. Returns `null`
  * for names that fail the check; callers must filter those artifacts out (logged,
  * never silently swallowed).
+ *
+ * The basename + `SAFE_TABLE_NAME` derivation itself lives in the shared
+ * {@link safeSemanticRowName} so the wizard `/save` path keys metric/entity rows
+ * identically (#3550); this wrapper adds the persist-path's skip logging.
  */
 function artifactRowName(artifact: GeneratedArtifact): string | null {
-  const name = path.basename(artifact.table);
-  if (!SAFE_TABLE_NAME.test(name)) {
+  const name = safeSemanticRowName(artifact.table);
+  if (name === null) {
     log.warn(
-      { table: artifact.table, basename: name },
-      "artifactRowName: skipping artifact — basename does not match SAFE_TABLE_NAME; " +
+      { table: artifact.table },
+      "artifactRowName: skipping artifact — name does not match SAFE_TABLE_NAME; " +
         "the generated name contains characters not permitted in a semantic-store row key",
     );
-    return null;
   }
   return name;
 }
@@ -440,13 +442,16 @@ function persistImpl(
       })
       .filter((r): r is NonNullable<typeof r> => r !== null);
 
-    // NOTE: intentional divergence from the wizard `/save` write path.
-    // The wizard persists entities to `semantic_entities` (DB) but writes metrics
-    // to disk only (`semantic/metrics/*.yml`). This MCP path persists BOTH entities
-    // AND metrics to `semantic_entities` so that a durable MCP-profiled connection
-    // is fully queryable across process restarts and visible to the web `/chat`
-    // process (which can't read disk artifacts written by a stdio MCP server).
-    // Tracked for reconciliation in #3551.
+    // CONTRACT (#3550): both durable write paths persist metrics to
+    // `semantic_entities` (DB) as the source of truth for queryability. This
+    // MCP path persists entities AND metrics to the DB; the wizard `/save`
+    // handler (`api/routes/wizard.ts`) does the same, keying its metric rows
+    // through the shared `safeSemanticRowName` used by `artifactRowName` here.
+    // Both then promote via the atomic `/api/v1/admin/publish` endpoint. The DB
+    // is what makes a profiled connection queryable across process restarts and
+    // visible to the web `/chat` process (which can't read disk artifacts
+    // written by a stdio MCP server). Don't reintroduce a disk-only metric path
+    // for either caller without updating the other.
     const metricRows = (opts.metrics ?? [])
       .map((m) => {
         const name = artifactRowName(m);

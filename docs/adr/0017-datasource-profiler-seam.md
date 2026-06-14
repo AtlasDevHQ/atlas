@@ -1,6 +1,6 @@
 # ADR-0017: Plugin datasource profiler seam (registry-resolved, capability-derived)
 
-**Status:** Accepted
+**Status:** Proposed — pending maintainer sign-off (#3620 HITL gate before the seam API freezes); flip to Accepted on merge
 **Date:** 2026-06-14
 **Context milestone:** v0.0.16 — In-Product Datasource Onboarding (Profiler Seam) (#66)
 **Depends on:** [ADR-0013](./0013-db-stored-plugin-datasource-connections.md) (`createFromConfig` adapter seam), [ADR-0012](./0012-group-scoped-semantic-layer-directories.md) (group-scoped semantic layer)
@@ -66,3 +66,4 @@ Same reasoning as ADR-0013's rejected core→plugin `require()` switch: it reint
 - The published `@useatlas/plugin-sdk` contract grows (optional surface, version-bumped). Plugin authors now have one `connection` object describing a datasource's full capability surface: build + guard + introspect.
 - Consuming the seam (wizard dispatch refactor, MCP profiling surface #3552, CLI profiler consolidation, web UI gate removal) is **out of scope here** — this ADR records the spine (SDK contract + registry-resolved source + ClickHouse tracer). Those land on top of it.
 - `datasource-registry-bridge.ts` and `mcp-lifecycle.ts` take a type-only import of `DatasourceProfiler` from `effect/semantic-generator` (erased at runtime — no new runtime coupling or cycle).
+- **The SDK profiler mirrors are hand-maintained, by design.** Because the SDK takes no dependency on `@useatlas/types` (or `@atlas/api`), there is deliberately no compile-time tie between `PluginProfilingResult` & co. and their canonical sources — a cross-package type assertion would reintroduce the very dependency the mirror exists to avoid. Parity is the cost of the decoupling: when a profiler type changes in `@useatlas/types` (e.g. a new `SemanticType` member), the SDK mirror must be updated in the same change. The seam tolerates this because the consuming boundary is structural — drift surfaces as a type error at the plugin that uses the new field, not as silent data loss.

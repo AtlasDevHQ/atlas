@@ -11,8 +11,7 @@ import { describe, test, expect, mock, beforeEach } from "bun:test";
 // Route each profiler query to a canned response by matching the SQL text. The
 // connection layer maps `json.meta` → columns and `json.data` → rows; the
 // profiler reads rows by property name, so only `data` keys matter here.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function respond(data: any[], meta: { name: string }[] = []) {
+function respond(data: Record<string, unknown>[], meta: { name: string }[] = []) {
   return Promise.resolve({ json: () => Promise.resolve({ meta, data }) });
 }
 

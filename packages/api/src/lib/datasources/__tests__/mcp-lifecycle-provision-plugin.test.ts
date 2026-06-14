@@ -118,6 +118,9 @@ mock.module("@atlas/api/lib/effect/workspace-installer", () => ({
 const { resolveProvisionCapability, resolveProfileCapability, provisionDatasource } = await import(
   "../mcp-lifecycle.js"
 );
+const { SemanticGenerator, SemanticGeneratorLive } = await import(
+  "@atlas/api/lib/effect/semantic-generator"
+);
 
 const CH_SECRET_URL = "clickhouse://admin:topsecret@warehouse.internal:8443/analytics";
 
@@ -194,6 +197,64 @@ describe("resolveProfileCapability (#3620 — ADR-0017)", () => {
   it("an unknown catalog slug → unsupported (mirrors provisioning)", async () => {
     const cap = await resolveProfileCapability("mystery-db");
     expect(cap.kind).toBe("unsupported");
+  });
+
+  it("the resolved profileFn flows through SemanticGenerator.profile (seam end-to-end)", async () => {
+    // The whole point of the spine: a profiler resolved off the registry feeds
+    // SemanticGenerator's injection point and produces analyzed profiles —
+    // without the engine knowing anything about ClickHouse.
+    const chResult = {
+      profiles: [
+        {
+          table_name: "events",
+          object_type: "table" as const,
+          row_count: 10,
+          columns: [
+            {
+              name: "id",
+              type: "UInt64",
+              nullable: false,
+              unique_count: 10,
+              null_count: 0,
+              sample_values: [],
+              is_primary_key: true,
+              is_foreign_key: false,
+              fk_target_table: null,
+              fk_target_column: null,
+              is_enum_like: false,
+              profiler_notes: [],
+            },
+          ],
+          primary_key_columns: ["id"],
+          foreign_keys: [],
+          inferred_foreign_keys: [],
+          profiler_notes: [],
+          table_flags: { possibly_abandoned: false, possibly_denormalized: false },
+        },
+      ],
+      errors: [],
+    };
+    const profile = mock(async () => chResult);
+    pluginConn = { dbType: "clickhouse", createFromConfig: () => ({}), profile };
+
+    const cap = await resolveProfileCapability("clickhouse");
+    expect(cap.kind).toBe("plugin");
+    if (cap.kind !== "plugin") return;
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* SemanticGenerator;
+        return yield* svc.profile({
+          dbType: "clickhouse",
+          url: "clickhouse://h:8123/db",
+          profileFn: cap.profileFn,
+        });
+      }).pipe(Effect.provide(SemanticGeneratorLive)),
+    );
+
+    expect(profile).toHaveBeenCalledTimes(1);
+    expect(result.profiles.map((p) => p.table_name)).toEqual(["events"]);
+    expect(result.errors).toEqual([]);
   });
 });
 

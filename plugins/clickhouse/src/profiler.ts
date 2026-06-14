@@ -5,11 +5,15 @@
  * mirror, which the host's registry-resolved profiler seam feeds into
  * `SemanticGenerator` without importing this package.
  *
- * Logic moved from the CLI's `packages/cli/lib/profilers/clickhouse.ts` so the
- * plugin package is the single home for ClickHouse introspection. It runs every
- * query through {@link createClickHouseConnection}, whose `query()` enforces
- * `readonly: 1` and a per-statement timeout — so profiling honors the same
- * read-only posture as the query path and never mutates the cluster.
+ * Logic adapted from the CLI's `packages/cli/lib/profilers/clickhouse.ts` —
+ * this plugin package becomes the home the registry resolves and the CLI will
+ * consume directly. The CLI profiler lib is intentionally NOT deleted in this
+ * slice; that consolidation (and thinning the CLI lib to a re-export) is a
+ * deferred follow-up per ADR-0017, so the two coexist for now.
+ *
+ * It runs every query through {@link createClickHouseConnection}, whose `query()`
+ * enforces `readonly: 1` and a per-statement timeout — so profiling honors the
+ * same read-only posture as the query path and never mutates the cluster.
  */
 
 import type {

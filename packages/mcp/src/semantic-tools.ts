@@ -27,7 +27,6 @@ import { z } from "zod/v4";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
-import { withRequestContext } from "@atlas/api/lib/logger";
 import { listEntities } from "@atlas/api/lib/semantic/entities";
 import {
   getEntityByName,
@@ -48,23 +47,15 @@ import {
   withErrorContract,
   type SemanticToolName,
 } from "@atlas/api/lib/tools/descriptions";
-import {
-  traceMcpToolCall,
-  type McpTransport,
-  type McpDeployMode,
-} from "./telemetry.js";
+import { type McpTransport, type McpDeployMode } from "./telemetry.js";
 import {
   classifyExecuteSqlError,
   envelope,
   toEnvelopeResult,
 } from "./error-envelope.js";
-import { billingGateOrNull } from "./billing-gate.js";
-import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
-import { createMcpLogger } from "./logger.js";
+import { createMcpDispatch } from "./mcp-dispatch.js";
 import { runMetricOutputShape } from "./structured-output.js";
-import { withProgressAndCancellation, OperationCancelledError } from "./progress.js";
-
-const log = createMcpLogger("mcp:semantic-tools");
+import { withProgressAndCancellation } from "./progress.js";
 
 // Modest input bounds — MCP clients (including hostile ones in BYOC
 // SaaS) shouldn't be able to drive megabyte strings into the catalog
@@ -101,34 +92,6 @@ export interface RegisterSemanticToolsOptions {
   scopes?: readonly string[];
 }
 
-function dispatchId(prefix: string): string {
-  return `${prefix}-${crypto.randomUUID()}`;
-}
-
-/**
- * Per-OAuth-client rate-limit gate (#2071). Hosted MCP threads `clientId`
- * through `registerSemanticTools`; stdio MCP leaves it undefined and
- * skips the limiter — the limiter scopes hosted-tenant abuse, not local
- * operator usage. Returns a tool result envelope (`code: rate_limited`)
- * when the bucket is empty, or `null` when the dispatch should proceed.
- */
-async function rateLimitOrNull(args: {
-  clientId: string | undefined;
-  orgId: string;
-  userId: string;
-  toolName: string;
-}): Promise<CallToolResult | null> {
-  if (!args.clientId) return null;
-  const outcome = await enforceClientRateLimit({
-    orgId: args.orgId,
-    clientId: args.clientId,
-    userId: args.userId,
-    toolName: args.toolName,
-  });
-  if (outcome.kind === "ok") return null;
-  return toEnvelopeResult(outcome.envelope);
-}
-
 function toJsonContent(value: unknown): CallToolResult {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -150,28 +113,25 @@ function toStructuredContent(value: Record<string, unknown>): CallToolResult {
   };
 }
 
-function errorMessage(err: unknown, fallback: string): string {
-  if (err instanceof Error) return err.message;
-  // CLAUDE.md: `err instanceof Error ? err.message : String(err)`. The
-  // fallback only kicks in for the truly opaque case (`String(err)` →
-  // `""` or `"[object Object]"`) where preserving the original would
-  // give the caller no signal anyway.
-  const s = String(err);
-  return s && s !== "[object Object]" ? s : fallback;
-}
-
 export function registerSemanticTools(
   server: McpServer,
   opts: RegisterSemanticToolsOptions,
 ): void {
   const { actor, transport, workspaceId, deployMode, clientId, scopes } = opts;
-  // #2067 — wrap each dispatch with the same actor shape as tools.ts. The
-  // `mcp` actor_kind / clientId / toolName trail through `logQueryAudit`
-  // so admins can scope `audit_log` rows to a specific MCP tool/client.
-  const mcpActor = (toolName: string) => ({
-    kind: "mcp" as const,
+
+  // Shared dispatch wrapper (#3602) — identical contract to tools.ts /
+  // datasource-tools.ts (OTel → actor bind → rate-limit → ADR-0016 gate order
+  // → body → typed error envelope), defined once in `mcp-dispatch.ts`. The
+  // three metadata tools (listEntities / describeEntity / searchGlossary) read
+  // semantic YAML — no billing; `runMetric` executes datasource SQL so it
+  // declares `checksBilling`. All are member-callable reads.
+  const { dispatch } = createMcpDispatch({
+    actor,
+    transport,
+    workspaceId,
+    deployMode,
     ...(clientId ? { clientId } : {}),
-    toolName,
+    ...(scopes ? { scopes } : {}),
   });
 
   // --- listEntities ---
@@ -196,44 +156,20 @@ export function registerSemanticTools(
       },
     },
     async ({ filter }): Promise<CallToolResult> =>
-      traceMcpToolCall(
-        { toolName: "listEntities", workspaceId, transport, deployMode },
-        () => {
-          const requestId = dispatchId("mcp-listEntities");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("listEntities"), agentOrigin: "mcp", ...(scopes ? { scopes } : {}) }, async () => {
-            try {
-              // Rate-limit gate (#2071) lives INSIDE the try so any
-              // limiter throw lands in the same catch as a tool throw
-              // and produces an `internal_error` envelope with
-              // `request_id` — preserving the #2030 contract.
-              const limited = await rateLimitOrNull({
-                clientId,
-                orgId: workspaceId,
-                userId: actor.id,
-                toolName: "listEntities",
-              });
-              if (limited) return limited;
-              // Bind orgId + published mode so MCP discovery reads the same
-              // universe `executeSQL`'s published-mode whitelist sees.
-              // External MCP clients never run as developer-mode admins,
-              // so a draft entity surfacing here would be uncallable.
-              const entities = await listEntities({
-                orgId: workspaceId,
-                mode: "published",
-                filter,
-              });
-              return toJsonContent({ count: entities.length, entities });
-            } catch (err) {
-              const message = errorMessage(err, "listEntities tool failed");
-              log.error(
-                { err: err instanceof Error ? err : new Error(String(err)) },
-                "listEntities tool threw",
-              );
-              return toEnvelopeResult(
-                envelope("internal_error", message, { request_id: requestId }),
-              );
-            }
+      dispatch(
+        "listEntities",
+        { requiresWrite: false, minRole: "member" },
+        async () => {
+          // Bind orgId + published mode so MCP discovery reads the same
+          // universe `executeSQL`'s published-mode whitelist sees. External MCP
+          // clients never run as developer-mode admins, so a draft entity
+          // surfacing here would be uncallable.
+          const entities = await listEntities({
+            orgId: workspaceId,
+            mode: "published",
+            filter,
           });
+          return toJsonContent({ count: entities.length, entities });
         },
       ),
   );
@@ -261,46 +197,26 @@ export function registerSemanticTools(
       },
     },
     async ({ name }): Promise<CallToolResult> =>
-      traceMcpToolCall(
-        { toolName: "describeEntity", workspaceId, transport, deployMode },
-        () => {
-          const requestId = dispatchId("mcp-describeEntity");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("describeEntity"), agentOrigin: "mcp", ...(scopes ? { scopes } : {}) }, async () => {
-            try {
-              const limited = await rateLimitOrNull({
-                clientId,
-                orgId: workspaceId,
-                userId: actor.id,
-                toolName: "describeEntity",
-              });
-              if (limited) return limited;
-              const entity = getEntityByName(name);
-              if (!entity) {
-                // Unknown-entity isn't really a "tool failed" condition for
-                // the agent — the agent's recovery is "call listEntities and
-                // pick a known one." Emit it as a typed envelope so the
-                // recovery is machine-readable, with a hint pointing the
-                // agent at the right next call.
-                return toEnvelopeResult(
-                  envelope(
-                    "unknown_entity",
-                    `Entity "${name}" not found in the semantic layer.`,
-                    { hint: "Call listEntities to discover available entities." },
-                  ),
-                );
-              }
-              return toJsonContent({ found: true, entity });
-            } catch (err) {
-              const message = errorMessage(err, "describeEntity tool failed");
-              log.error(
-                { err: err instanceof Error ? err : new Error(String(err)) },
-                "describeEntity tool threw",
-              );
-              return toEnvelopeResult(
-                envelope("internal_error", message, { request_id: requestId }),
-              );
-            }
-          });
+      dispatch(
+        "describeEntity",
+        { requiresWrite: false, minRole: "member" },
+        async () => {
+          const entity = getEntityByName(name);
+          if (!entity) {
+            // Unknown-entity isn't really a "tool failed" condition for the
+            // agent — the agent's recovery is "call listEntities and pick a
+            // known one." Emit it as a typed envelope so the recovery is
+            // machine-readable, with a hint pointing the agent at the right
+            // next call.
+            return toEnvelopeResult(
+              envelope(
+                "unknown_entity",
+                `Entity "${name}" not found in the semantic layer.`,
+                { hint: "Call listEntities to discover available entities." },
+              ),
+            );
+          }
+          return toJsonContent({ found: true, entity });
         },
       ),
   );
@@ -327,71 +243,45 @@ export function registerSemanticTools(
       },
     },
     async ({ term }): Promise<CallToolResult> =>
-      traceMcpToolCall(
-        { toolName: "searchGlossary", workspaceId, transport, deployMode },
-        () => {
-          const requestId = dispatchId("mcp-searchGlossary");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("searchGlossary"), agentOrigin: "mcp", ...(scopes ? { scopes } : {}) }, async () => {
-            try {
-              const limited = await rateLimitOrNull({
-                clientId,
-                orgId: workspaceId,
-                userId: actor.id,
-                toolName: "searchGlossary",
-              });
-              if (limited) return limited;
-              const matches = searchGlossary(term);
+      dispatch(
+        "searchGlossary",
+        { requiresWrite: false, minRole: "member" },
+        async () => {
+          const matches = searchGlossary(term);
 
-              // The disambiguation contract (#2020 + forthcoming #2025): when
-              // ANY matched glossary entry has `status: ambiguous`, surface
-              // it as a hard `ambiguous_term` envelope with the possible
-              // mappings in the hint. The agent's correct recovery is to ask
-              // the user which mapping they meant — never silently pick. The
-              // forthcoming eval harness is expected to assert on
-              // `code === "ambiguous_term"`.
-              const ambiguous = matches.find((m) => m.status === "ambiguous");
-              if (ambiguous) {
-                const mappings =
-                  ambiguous.possible_mappings.length > 0
-                    ? ` Possible mappings: ${ambiguous.possible_mappings.join(", ")}.`
-                    : "";
-                // Note when other matches were dropped — the envelope contract
-                // is "one ambiguous term blocks the call" so callers don't see
-                // sibling defined terms that were in the same result set. Tell
-                // the agent it can re-query for a more specific term to
-                // recover the others.
-                const otherCount = matches.length - 1;
-                const otherSuffix =
-                  otherCount > 0
-                    ? ` ${otherCount} additional match${otherCount === 1 ? "" : "es"} omitted — re-call searchGlossary with a more specific term to retrieve them.`
-                    : "";
-                return toEnvelopeResult(
-                  envelope(
-                    "ambiguous_term",
-                    `Glossary term "${ambiguous.term}" is ambiguous — ask the user which mapping they meant.${mappings}${otherSuffix}`,
-                    {
-                      hint: "Surface possible_mappings to the user and ask which they meant; do not silently pick a mapping.",
-                    },
-                  ),
-                );
-              }
+          // The disambiguation contract (#2020 + forthcoming #2025): when ANY
+          // matched glossary entry has `status: ambiguous`, surface it as a hard
+          // `ambiguous_term` envelope with the possible mappings in the hint.
+          // The agent's correct recovery is to ask the user which mapping they
+          // meant — never silently pick. The forthcoming eval harness is
+          // expected to assert on `code === "ambiguous_term"`.
+          const ambiguous = matches.find((m) => m.status === "ambiguous");
+          if (ambiguous) {
+            const mappings =
+              ambiguous.possible_mappings.length > 0
+                ? ` Possible mappings: ${ambiguous.possible_mappings.join(", ")}.`
+                : "";
+            // Note when other matches were dropped — the envelope contract is
+            // "one ambiguous term blocks the call" so callers don't see sibling
+            // defined terms that were in the same result set. Tell the agent it
+            // can re-query for a more specific term to recover the others.
+            const otherCount = matches.length - 1;
+            const otherSuffix =
+              otherCount > 0
+                ? ` ${otherCount} additional match${otherCount === 1 ? "" : "es"} omitted — re-call searchGlossary with a more specific term to retrieve them.`
+                : "";
+            return toEnvelopeResult(
+              envelope(
+                "ambiguous_term",
+                `Glossary term "${ambiguous.term}" is ambiguous — ask the user which mapping they meant.${mappings}${otherSuffix}`,
+                {
+                  hint: "Surface possible_mappings to the user and ask which they meant; do not silently pick a mapping.",
+                },
+              ),
+            );
+          }
 
-              return toJsonContent({
-                query: term,
-                count: matches.length,
-                matches,
-              });
-            } catch (err) {
-              const message = errorMessage(err, "searchGlossary tool failed");
-              log.error(
-                { err: err instanceof Error ? err : new Error(String(err)) },
-                "searchGlossary tool threw",
-              );
-              return toEnvelopeResult(
-                envelope("internal_error", message, { request_id: requestId }),
-              );
-            }
-          });
+          return toJsonContent({ query: term, count: matches.length, matches });
         },
       ),
   );
@@ -448,212 +338,172 @@ export function registerSemanticTools(
       outputSchema: runMetricOutputShape,
     },
     async ({ id, filters, connectionId }, extra): Promise<CallToolResult> =>
-      traceMcpToolCall(
-        {
-          toolName: "runMetric",
-          workspaceId,
-          transport,
-          deployMode,
-          attributes: { "metric.id": id },
-        },
-        () => {
-          const requestId = dispatchId("mcp-runMetric");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("runMetric"), agentOrigin: "mcp", ...(scopes ? { scopes } : {}) }, async () => {
-            try {
-              const limited = await rateLimitOrNull({
-                clientId,
-                orgId: workspaceId,
-                userId: actor.id,
-                toolName: "runMetric",
-              });
-              if (limited) return limited;
-              // #3437 — runMetric executes datasource SQL through
-              // executeSQL.execute, so it sits behind the same billing
-              // gate as the executeSQL MCP tool. Metadata-only tools
-              // (listEntities / describeEntity / searchGlossary) are
-              // deliberately not gated — see billing-gate.ts.
-              const blocked = await billingGateOrNull({
-                orgId: actor.activeOrganizationId,
-                requestId,
-              });
-              if (blocked) return blocked;
-              if (filters && Object.keys(filters).length > 0) {
-                return toEnvelopeResult(
-                  envelope(
-                    "validation_failed",
-                    "runMetric `filters` pass-through is not yet supported. Use `executeSQL` with the metric's raw SQL to apply filters.",
-                    {
-                      hint: "Omit `filters` and re-run, or call executeSQL with a custom WHERE clause.",
-                    },
-                  ),
-                );
-              }
+      dispatch(
+        "runMetric",
+        // runMetric executes datasource SQL via executeSQL.execute → gate-0
+        // billing (#3437/#3601), like executeSQL. Metadata-only tools above are
+        // deliberately not billing-gated. Member-callable read.
+        { requiresWrite: false, minRole: "member", checksBilling: true },
+        async (requestId) => {
+          if (filters && Object.keys(filters).length > 0) {
+            return toEnvelopeResult(
+              envelope(
+                "validation_failed",
+                "runMetric `filters` pass-through is not yet supported. Use `executeSQL` with the metric's raw SQL to apply filters.",
+                {
+                  hint: "Omit `filters` and re-run, or call executeSQL with a custom WHERE clause.",
+                },
+              ),
+            );
+          }
 
-              const metric = findMetricById(id);
-              if (!metric) {
-                return toEnvelopeResult(
-                  envelope("unknown_metric", `Metric "${id}" not found.`, {
-                    hint: "Call listEntities or grep semantic/metrics/ to discover available metric ids.",
-                  }),
-                );
-              }
+          const metric = findMetricById(id);
+          if (!metric) {
+            return toEnvelopeResult(
+              envelope("unknown_metric", `Metric "${id}" not found.`, {
+                hint: "Call listEntities or grep semantic/metrics/ to discover available metric ids.",
+              }),
+            );
+          }
 
-              // #3274 — route a group-scoped metric to its own connection.
-              // `metric.source` is the metric's resolved semantic group
-              // (#3240); search.ts surfaces a grouped entity's `connection`
-              // field as that same group, so the group IS the connection id
-              // executeSQL routes on. The default group (`"default"`) maps to
-              // the default connection — passed through as an unset
-              // connectionId so executeSQL keeps its existing default-routing
-              // behavior. A `groups/<group>/metrics/` metric resolves to its
-              // group, so omitting connectionId runs it against `<group>`
-              // instead of the default datasource (which would return
-              // silently-wrong rows for overlapping table names, or an
-              // avoidable whitelist miss for non-overlapping ones).
-              const groupConnectionId =
-                metric.source === DEFAULT_SEMANTIC_GROUP ? undefined : metric.source;
-              // Canonical connection token for the metric's group — `"default"`
-              // (not unset) for the default group — so an explicit connectionId
-              // can be matched against it directly.
-              const metricConnectionId = metric.source === DEFAULT_SEMANTIC_GROUP
-                ? "default"
-                : metric.source;
-              // Reject an explicit connectionId that targets a different group:
-              // running the metric's authoritative SQL against the wrong
-              // datasource is the silently-wrong-results failure mode #3274
-              // exists to prevent. An explicit match against the group id itself
-              // (including the literal `"default"` for a default-group metric)
-              // is honored as-is.
-              if (connectionId !== undefined && connectionId !== metricConnectionId) {
-                // #3281 — the connectionId isn't the group id itself, but for a
-                // multi-member group it may be a legitimate MEMBER: a group
-                // `prod` with members `us-prod`/`eu-prod` registers each member
-                // under its own install id, none equal to the group id. Resolve
-                // the passed connection's group and accept iff it matches the
-                // metric's group, then route to that specific member.
-                //
-                // A default-source (ungrouped) metric has no members: its
-                // canonical SQL is defined only against the default connection,
-                // so any explicit non-default connectionId is rejected. Running
-                // a canonical metric against an arbitrary sibling connection is
-                // intentionally out of scope — model it as a grouped metric and
-                // pass a member id instead (decision recorded for #3281).
-                const isGroupMember =
-                  metric.source !== DEFAULT_SEMANTIC_GROUP &&
-                  (await loadGroupRoutingContext(workspaceId, connectionId)).groupId === metric.source;
-                if (!isGroupMember) {
-                  return toEnvelopeResult(
-                    envelope(
-                      "validation_failed",
-                      `Metric "${metric.id}" belongs to the "${metric.source}" group, but connectionId "${connectionId}" targets a different datasource. Running it there would query the wrong data.`,
-                      {
-                        hint: `Omit connectionId to run "${metric.id}" against its own group, or pass the group id "${metricConnectionId}" or one of its member connections.`,
-                      },
-                    ),
-                  );
-                }
-              }
-              const targetConnectionId = connectionId ?? groupConnectionId;
-
-              const explanation = metric.description
-                ? `MCP runMetric ${metric.id}: ${metric.description}`
-                : `MCP runMetric ${metric.id}`;
-
-              // #3500 — progress + cancellation around the metric query.
-              // #3575 — `executeSQL.execute` does not read `abortSignal` from
-              // the tool-call extra (sql.ts destructures only sql/explanation/
-              // connectionId/scope). Passing a signal would be dead code and
-              // imply the query is abortable at the driver level, which it is
-              // not. The statement-timeout (`ATLAS_QUERY_TIMEOUT`, default 30s)
-              // is the sole cancellation mechanism for the datasource side; a
-              // client cancel cuts the dispatch loose at the MCP boundary and
-              // the DB-side query drains within that timeout window.
-              const result = (await withProgressAndCancellation(
-                extra,
-                { startMessage: "Running metric", endMessage: "Metric complete" },
-                async (_reporter, _signal) =>
-                  executeSQL.execute!(
-                    { sql: metric.sql, explanation, connectionId: targetConnectionId },
-                    { toolCallId: "mcp-runMetric", messages: [] },
-                  ),
-              )) as Record<string, unknown>;
-
-              if (result.success === false) {
-                // Approval-required is a governance outcome, not a failure —
-                // surface the approval_request_id + message intact so the
-                // agent doesn't retry and silently duplicate the request.
-                // Mirrors the same branch in tools.ts:executeSQL.
-                if (result.approval_required === true) {
-                  return toStructuredContent({
-                    id: metric.id,
-                    approval_required: true,
-                    approval_request_id: result.approval_request_id,
-                    matched_rules: result.matched_rules,
-                    message: result.message,
-                  });
-                }
-
-                const rawError = String(
-                  result.error ?? result.message ?? "Metric execution failed.",
-                );
-                const code = classifyExecuteSqlError(rawError);
-                const extras: { request_id?: string; retry_after?: number } = {};
-                if (code === "internal_error") extras.request_id = requestId;
-                const retryAfterMs = result.retryAfterMs;
-                if (code === "rate_limited" && typeof retryAfterMs === "number") {
-                  extras.retry_after = Math.max(1, Math.round(retryAfterMs / 1000));
-                }
-                return toEnvelopeResult(
-                  envelope(
-                    code,
-                    rawError,
-                    Object.keys(extras).length ? extras : undefined,
-                  ),
-                );
-              }
-
-              const columns = Array.isArray(result.columns)
-                ? (result.columns as string[])
-                : [];
-              const rows = Array.isArray(result.rows)
-                ? (result.rows as Array<Record<string, unknown>>)
-                : [];
-
-              // Single column / single row → scalar value. Otherwise hand back
-              // the rows so the caller can inspect — keeps the typed shape
-              // honest for breakdown metrics without forcing a shape they don't
-              // have.
-              const value =
-                columns.length === 1 && rows.length === 1
-                  ? rows[0][columns[0]]
-                  : rows;
-
-              return toStructuredContent({
-                id: metric.id,
-                label: metric.label,
-                value,
-                columns,
-                rows,
-                row_count: result.row_count ?? rows.length,
-                truncated: Boolean(result.truncated),
-                sql: metric.sql,
-                executed_at: new Date().toISOString(),
-              });
-            } catch (err) {
-              // Client cancellation (#3500): re-throw so the SDK suppresses
-              // the response; not an error worth logging.
-              if (err instanceof OperationCancelledError) throw err;
-              const message = errorMessage(err, "runMetric tool failed");
-              log.error(
-                { err: err instanceof Error ? err : new Error(String(err)) },
-                "runMetric tool threw",
-              );
+          // #3274 — route a group-scoped metric to its own connection.
+          // `metric.source` is the metric's resolved semantic group (#3240);
+          // search.ts surfaces a grouped entity's `connection` field as that
+          // same group, so the group IS the connection id executeSQL routes on.
+          // The default group (`"default"`) maps to the default connection —
+          // passed through as an unset connectionId so executeSQL keeps its
+          // existing default-routing behavior. A `groups/<group>/metrics/`
+          // metric resolves to its group, so omitting connectionId runs it
+          // against `<group>` instead of the default datasource (which would
+          // return silently-wrong rows for overlapping table names, or an
+          // avoidable whitelist miss for non-overlapping ones).
+          const groupConnectionId =
+            metric.source === DEFAULT_SEMANTIC_GROUP ? undefined : metric.source;
+          // Canonical connection token for the metric's group — `"default"`
+          // (not unset) for the default group — so an explicit connectionId can
+          // be matched against it directly.
+          const metricConnectionId =
+            metric.source === DEFAULT_SEMANTIC_GROUP ? "default" : metric.source;
+          // Reject an explicit connectionId that targets a different group:
+          // running the metric's authoritative SQL against the wrong datasource
+          // is the silently-wrong-results failure mode #3274 exists to prevent.
+          // An explicit match against the group id itself (including the literal
+          // `"default"` for a default-group metric) is honored as-is.
+          if (connectionId !== undefined && connectionId !== metricConnectionId) {
+            // #3281 — the connectionId isn't the group id itself, but for a
+            // multi-member group it may be a legitimate MEMBER: a group `prod`
+            // with members `us-prod`/`eu-prod` registers each member under its
+            // own install id, none equal to the group id. Resolve the passed
+            // connection's group and accept iff it matches the metric's group,
+            // then route to that specific member.
+            //
+            // A default-source (ungrouped) metric has no members: its canonical
+            // SQL is defined only against the default connection, so any
+            // explicit non-default connectionId is rejected. Running a canonical
+            // metric against an arbitrary sibling connection is intentionally
+            // out of scope — model it as a grouped metric and pass a member id
+            // instead (decision recorded for #3281).
+            const isGroupMember =
+              metric.source !== DEFAULT_SEMANTIC_GROUP &&
+              (await loadGroupRoutingContext(workspaceId, connectionId)).groupId === metric.source;
+            if (!isGroupMember) {
               return toEnvelopeResult(
-                envelope("internal_error", message, { request_id: requestId }),
+                envelope(
+                  "validation_failed",
+                  `Metric "${metric.id}" belongs to the "${metric.source}" group, but connectionId "${connectionId}" targets a different datasource. Running it there would query the wrong data.`,
+                  {
+                    hint: `Omit connectionId to run "${metric.id}" against its own group, or pass the group id "${metricConnectionId}" or one of its member connections.`,
+                  },
+                ),
               );
             }
+          }
+          const targetConnectionId = connectionId ?? groupConnectionId;
+
+          const explanation = metric.description
+            ? `MCP runMetric ${metric.id}: ${metric.description}`
+            : `MCP runMetric ${metric.id}`;
+
+          // #3500 — progress + cancellation around the metric query.
+          // #3575 — `executeSQL.execute` does not read `abortSignal` from the
+          // tool-call extra (sql.ts destructures only sql/explanation/
+          // connectionId/scope). Passing a signal would be dead code and imply
+          // the query is abortable at the driver level, which it is not. The
+          // statement-timeout (`ATLAS_QUERY_TIMEOUT`, default 30s) is the sole
+          // cancellation mechanism for the datasource side; a client cancel cuts
+          // the dispatch loose at the MCP boundary (the shared dispatch
+          // re-throws the cancellation) and the DB-side query drains within that
+          // window.
+          const result = (await withProgressAndCancellation(
+            extra,
+            { startMessage: "Running metric", endMessage: "Metric complete" },
+            async (_reporter, _signal) =>
+              executeSQL.execute!(
+                { sql: metric.sql, explanation, connectionId: targetConnectionId },
+                { toolCallId: "mcp-runMetric", messages: [] },
+              ),
+          )) as Record<string, unknown>;
+
+          if (result.success === false) {
+            // Approval-required is a governance outcome, not a failure —
+            // surface the approval_request_id + message intact so the agent
+            // doesn't retry and silently duplicate the request. Mirrors the
+            // same branch in tools.ts:executeSQL.
+            if (result.approval_required === true) {
+              return toStructuredContent({
+                id: metric.id,
+                approval_required: true,
+                approval_request_id: result.approval_request_id,
+                matched_rules: result.matched_rules,
+                message: result.message,
+              });
+            }
+
+            const rawError = String(
+              result.error ?? result.message ?? "Metric execution failed.",
+            );
+            const code = classifyExecuteSqlError(rawError);
+            const extras: { request_id?: string; retry_after?: number } = {};
+            if (code === "internal_error") extras.request_id = requestId;
+            const retryAfterMs = result.retryAfterMs;
+            if (code === "rate_limited" && typeof retryAfterMs === "number") {
+              extras.retry_after = Math.max(1, Math.round(retryAfterMs / 1000));
+            }
+            return toEnvelopeResult(
+              envelope(
+                code,
+                rawError,
+                Object.keys(extras).length ? extras : undefined,
+              ),
+            );
+          }
+
+          const columns = Array.isArray(result.columns)
+            ? (result.columns as string[])
+            : [];
+          const rows = Array.isArray(result.rows)
+            ? (result.rows as Array<Record<string, unknown>>)
+            : [];
+
+          // Single column / single row → scalar value. Otherwise hand back the
+          // rows so the caller can inspect — keeps the typed shape honest for
+          // breakdown metrics without forcing a shape they don't have.
+          const value =
+            columns.length === 1 && rows.length === 1 ? rows[0][columns[0]] : rows;
+
+          return toStructuredContent({
+            id: metric.id,
+            label: metric.label,
+            value,
+            columns,
+            rows,
+            row_count: result.row_count ?? rows.length,
+            truncated: Boolean(result.truncated),
+            sql: metric.sql,
+            executed_at: new Date().toISOString(),
           });
         },
+        { "metric.id": id },
       ),
   );
 }

@@ -18,8 +18,14 @@ import {
   InvalidInstallIdError,
   InstallNotFoundError,
 } from "@atlas/api/lib/effect/errors";
+import { createConnectionMock } from "../../../__mocks__/connection";
 
 // ── Mocks for the DB / registry primitives `listDatasources` calls ────
+//
+// `@atlas/api/lib/content-mode` is NOT mocked — its `makeService` / `readFilter`
+// are pure (no I/O) so the real module runs hermetically and exercises the real
+// status-clause logic. `internalQuery` is mocked, so the resolved clause's exact
+// text is irrelevant to these tests.
 
 let internalRows: Array<Record<string, unknown>> = [];
 const mockInternalQuery = mock<(...a: unknown[]) => Promise<unknown>>(
@@ -47,24 +53,20 @@ const healthCheckSpy = mock<(id: string) => Promise<unknown>>(async () => {
   if (healthThrows) throw healthThrows;
   return healthResult;
 });
-mock.module("@atlas/api/lib/db/connection", () => ({
-  connections: {
-    describe: () => describeRows,
-    healthCheck: healthCheckSpy,
-    has: (id: string) => registryHas.has(id),
-    register: registerSpy,
-    unregister: unregisterSpy,
-  },
-}));
-
-// `readFilter` is the pure status clause; the literal value is irrelevant to
-// these tests (internalQuery is mocked) — just return a stable fragment.
-mock.module("@atlas/api/lib/content-mode", () => ({
-  makeService: () => ({
-    readFilter: () => Effect.succeed("wp.status = 'published'"),
+// Full-module connection mock (every export shaped) with only the registry
+// methods this suite drives overridden — the blessed `createConnectionMock`
+// pattern, not a hand-rolled partial mock.
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({
+    connections: {
+      describe: () => describeRows,
+      healthCheck: healthCheckSpy,
+      has: (id: string) => registryHas.has(id),
+      register: registerSpy,
+      unregister: unregisterSpy,
+    },
   }),
-  CONTENT_MODE_TABLES: [],
-}));
+);
 
 // Mock every value export — `workspace-installer` (transitively imported by
 // `runDatasourceInstaller`) also pulls `resolveDatasourcePoolConfig` +
@@ -252,8 +254,36 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
     expect(registerSpy).not.toHaveBeenCalled();
   });
 
+  it("probes an EPHEMERAL id (never the install id) and always rolls it back", async () => {
+    internalRows = [];
+    healthResult = { status: "healthy", latencyMs: 5, checkedAt: new Date(0) };
+    // Health OK → reaches the installer; installDatasource isn't mocked here,
+    // so the program will fail — but we only assert the pre-flight behaviour.
+    await provisionDatasource("org_1", { catalogSlug: "postgres", installId: "new-pg", url: SECRET_URL })
+      .catch(() => undefined);
+    // Registered + unregistered exactly the same throwaway id, never "new-pg".
+    const registeredId = registerSpy.mock.calls[0]?.[0] as string;
+    expect(registeredId).toStartWith("__mcp_preflight_");
+    expect(registeredId).not.toBe("new-pg");
+    expect(unregisterSpy).toHaveBeenCalledWith(registeredId);
+  });
+
+  it("treats a first-attempt 'degraded' probe as a failure (not just 'unhealthy')", async () => {
+    // healthCheck returns 'degraded' on the FIRST failed probe; the old
+    // `=== 'unhealthy'` check let it through. Now any non-'healthy' fails.
+    internalRows = [];
+    healthResult = { status: "degraded", latencyMs: 0, message: "could not connect to host", checkedAt: new Date(0) };
+    const outcome = await provisionDatasource("org_1", {
+      catalogSlug: "postgres",
+      installId: "new-pg",
+      url: SECRET_URL,
+    });
+    expect(outcome.kind).toBe("health_error");
+    expect(unregisterSpy).toHaveBeenCalledTimes(1); // probe rolled back
+  });
+
   it("rolls back the ephemeral pool and scrubs the secret when the probe is unhealthy", async () => {
-    internalRows = []; // no duplicate
+    internalRows = [];
     healthResult = { status: "unhealthy", latencyMs: 0, message: "could not connect to host", checkedAt: new Date(0) };
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "postgres",
@@ -261,10 +291,8 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
       url: SECRET_URL,
     });
     expect(outcome.kind).toBe("health_error");
-    // Ephemeral pool was registered then rolled back.
     expect(registerSpy).toHaveBeenCalledTimes(1);
-    expect(unregisterSpy).toHaveBeenCalledWith("new-pg");
-    // The credential never appears in the surfaced message.
+    expect(unregisterSpy).toHaveBeenCalledTimes(1);
     if (outcome.kind === "health_error") {
       expect(outcome.message).not.toContain("secret");
       expect(outcome.message).not.toContain(SECRET_URL);
@@ -280,10 +308,11 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
       url: SECRET_URL,
     });
     expect(outcome.kind).toBe("health_error");
-    expect(unregisterSpy).toHaveBeenCalledWith("new-pg");
+    expect(unregisterSpy).toHaveBeenCalledTimes(1);
     if (outcome.kind === "health_error") {
       expect(outcome.message).not.toContain(SECRET_URL);
       expect(outcome.message).not.toContain("super:secret");
+      // Exact-url scrub replaces the whole DSN, '@'-password and all.
       expect(outcome.message).toContain("[redacted]");
     }
   });

@@ -37,6 +37,7 @@ import {
   resolveDatasourcePoolConfig,
 } from "@atlas/api/lib/db/datasource-pool-resolver";
 import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
+import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import {
   WorkspaceInstaller,
   WorkspaceInstallerLive,
@@ -296,15 +297,29 @@ export async function runDatasourceInstaller<A>(
 // ── Provisioning (#3511 create) ───────────────────────────────────────
 
 /**
- * Datasource types provisionable via MCP today. Scoped to the native
- * dbTypes whose pool the `ConnectionRegistry` can build directly from a
- * `url` — so the validate-before-persist health-check (register → SELECT 1
- * → unregister) genuinely exercises connectivity. Plugin-managed pools
- * (clickhouse / snowflake / bigquery / salesforce) need a different
- * test-connect path and are intentionally out of scope for the MCP
- * provisioning flow until that lands; the admin console still handles them.
+ * The native dbTypes the `ConnectionRegistry` can build a pool for directly
+ * from a `url` — i.e. the ones whose ephemeral health-check probe genuinely
+ * exercises connectivity AND whose tables the in-core profiler can
+ * introspect. This single set is the source of truth for BOTH the
+ * provisioning allow-list ({@link MCP_PROVISIONABLE_CATALOG_SLUGS}) and the
+ * profiling support check ({@link loadDatasourceProfileTarget}) so the two
+ * can't drift (a datasource the agent can create but never make queryable).
+ *
+ * Plugin-managed pools (clickhouse / snowflake / bigquery / salesforce / …)
+ * need a different test-connect + profiler path and are intentionally out of
+ * scope for the MCP flow until that lands; the admin console still handles
+ * them. Mirrors the bridge's `dbType !== "postgres" && !== "mysql"` native
+ * split in `datasource-registry-bridge.ts`.
  */
-export const MCP_PROVISIONABLE_CATALOG_SLUGS: readonly string[] = ["postgres", "mysql"];
+export type McpNativeDbType = "postgres" | "mysql";
+const MCP_NATIVE_DB_TYPES: ReadonlySet<McpNativeDbType> = new Set(["postgres", "mysql"]);
+
+function isMcpNativeDbType(dbType: string): dbType is McpNativeDbType {
+  return (MCP_NATIVE_DB_TYPES as ReadonlySet<string>).has(dbType);
+}
+
+/** Catalog slugs provisionable via MCP — derived from {@link MCP_NATIVE_DB_TYPES}. */
+export const MCP_PROVISIONABLE_CATALOG_SLUGS: readonly string[] = [...MCP_NATIVE_DB_TYPES];
 
 /**
  * Input to {@link provisionDatasource}. `url` is the credential collected
@@ -332,17 +347,17 @@ export type ProvisionDatasourceOutcome =
   | { readonly kind: "error"; readonly status: 400 | 404 | 409; readonly code: string; readonly message: string };
 
 /**
- * Strip any occurrence of a secret URL (and embedded `//user:pass@` userinfo)
- * out of an error message so a connection-failure surfaced to the agent/client
- * can never leak the credential. Defense-in-depth on top of the registry's own
- * DSN scrubbing.
+ * Strip the secret URL out of an error message so a connection-failure
+ * surfaced to the agent/client can never leak the credential. First removes
+ * the exact `url` (handles a `@`-bearing password the userinfo regex below
+ * can't), then defers to the canonical {@link errorMessage} scrubber for the
+ * generic `scheme://user:pass@host` userinfo case + the 512-char truncation —
+ * reusing the blessed seam (`lib/audit/error-scrub.ts`) rather than a
+ * hand-rolled regex so a future hardening there covers this path too.
  */
 function scrubSecretFromMessage(message: string, url: string): string {
-  let out = message;
-  if (url) out = out.split(url).join("[redacted]");
-  // Strip `scheme://user:pass@host` userinfo even if the URL was reshaped.
-  out = out.replace(/\/\/[^/@\s]*@/g, "//[redacted]@");
-  return out;
+  const exact = url ? message.split(url).join("[redacted]") : message;
+  return errorMessage(exact);
 }
 
 /**
@@ -359,7 +374,7 @@ export async function provisionDatasource(
   orgId: string,
   input: ProvisionDatasourceInput,
 ): Promise<ProvisionDatasourceOutcome> {
-  if (!MCP_PROVISIONABLE_CATALOG_SLUGS.includes(input.catalogSlug)) {
+  if (!isMcpNativeDbType(input.catalogSlug)) {
     return {
       kind: "unsupported",
       message:
@@ -380,29 +395,36 @@ export async function provisionDatasource(
     };
   }
 
-  // Pre-flight: register an ephemeral native pool, probe it, then roll back.
-  // Mirrors the admin route's route-owned test-connect dance (ADR-0007).
-  const registryConfig = {
+  // Pre-flight on an EPHEMERAL probe id — never the real install id. Using a
+  // throwaway id (a) guarantees the probe tests THIS candidate `url`, not a
+  // stale bare pool that might already exist under `installId` (e.g. a
+  // sibling workspace's pool, the runtime `default`, or an un-drained
+  // archived install), and (b) can't leave the install-id-keyed registry in a
+  // split-brain state if persist later fails. Mirrors the admin route's
+  // `_test_*` ephemeral test-connect (ADR-0007). The probe pool is ALWAYS
+  // unregistered in `finally`.
+  const probeId = `__mcp_preflight_${crypto.randomUUID()}`;
+  connections.register(probeId, {
     url: input.url,
     ...(input.description !== undefined ? { description: input.description } : {}),
     ...(input.schema !== undefined ? { schema: input.schema } : {}),
-  };
-  const weRegistered = !connections.has(input.installId);
-  if (weRegistered) connections.register(input.installId, registryConfig);
+  });
   try {
-    const health = await connections.healthCheck(input.installId);
-    if (health.status === "unhealthy") {
-      if (weRegistered) connections.unregister(input.installId);
+    const health = await connections.healthCheck(probeId);
+    // `healthCheck` only reports `unhealthy` after repeated failures over a
+    // window; a brand-new pool's FIRST failed probe is `degraded`. So treat
+    // anything that isn't `healthy` as a failed pre-flight — otherwise a
+    // broken connection slips past validate-before-persist.
+    if (health.status !== "healthy") {
       return {
         kind: "health_error",
         message: scrubSecretFromMessage(
-          health.message ?? "Connection probe reported the datasource as unreachable.",
+          health.message ?? "Connection probe could not reach the datasource.",
           input.url,
         ),
       };
     }
   } catch (err) {
-    if (weRegistered) connections.unregister(input.installId);
     const raw = err instanceof Error ? err.message : String(err);
     return {
       kind: "health_error",
@@ -411,6 +433,10 @@ export async function provisionDatasource(
         input.url,
       ),
     };
+  } finally {
+    // Always drain the probe pool — success persists via the installer's own
+    // fresh registration, failure persists nothing.
+    connections.unregister(probeId);
   }
 
   // Health OK → persist as draft. The installer re-registers idempotently and
@@ -429,7 +455,9 @@ export async function provisionDatasource(
     }),
   );
   if (outcome.kind === "error") {
-    if (weRegistered) connections.unregister(input.installId);
+    // Nothing to roll back: the probe pool was already drained in `finally`,
+    // and `installDatasource` registers the real pool only as its final step
+    // (after a successful persist), so a failed install left no pool behind.
     return {
       kind: "error",
       status: outcome.status,
@@ -445,7 +473,7 @@ export async function provisionDatasource(
 /** Resolved profiling target — internal use only; `url` is the decrypted secret. */
 export interface DatasourceProfileTarget {
   readonly url: string;
-  readonly dbType: "postgres" | "mysql";
+  readonly dbType: McpNativeDbType;
   readonly schema?: string;
 }
 
@@ -496,6 +524,9 @@ export async function loadDatasourceProfileTarget(
     },
     decrypted,
   );
+  // Discriminant check (not the `isMcpNativeDbType` string guard) so TS
+  // narrows the `DatasourcePoolConfig` union to the postgres/mysql members
+  // that carry `.url`. Same native set as `MCP_NATIVE_DB_TYPES`.
   if (poolConfig.dbType !== "postgres" && poolConfig.dbType !== "mysql") {
     return { kind: "unsupported", dbType: poolConfig.dbType };
   }
@@ -526,7 +557,7 @@ export type RunSemanticProfileOutcome =
  */
 export async function runSemanticProfile(opts: {
   url: string;
-  dbType: "postgres" | "mysql";
+  dbType: McpNativeDbType;
   schema?: string;
   connectionId: string;
   progress?: ProfileProgressCallbacks;
@@ -552,5 +583,12 @@ export async function runSemanticProfile(opts: {
   if (failure._tag === "Some" && failure.value instanceof ProfilingFailedError) {
     return { kind: "error", reason: failure.value.reason, message: failure.value.message };
   }
-  throw new Error(`SemanticGenerator profile died: ${Cause.pretty(exit.cause)}`);
+  // Re-throw the ORIGINAL underlying error (not a wrapped one) so the MCP
+  // layer can recognise an `OperationCancelledError` raised cooperatively from
+  // the progress callback when the client cancels — wrapping it in a fresh
+  // `Error` would erase that identity and surface a spurious internal_error.
+  const original = causeToError(exit.cause);
+  throw original instanceof Error
+    ? original
+    : new Error(`SemanticGenerator profile failed: ${Cause.pretty(exit.cause)}`);
 }

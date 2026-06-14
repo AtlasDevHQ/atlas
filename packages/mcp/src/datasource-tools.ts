@@ -122,10 +122,19 @@ function toJsonContent(value: unknown): CallToolResult {
  * best-effort, so we fire-and-forget — a dropped notification must never
  * fail (or stall) the profiling work. No table data is sensitive; names are
  * already part of the generated whitelist the agent will query.
+ *
+ * The profiler has no native `AbortSignal`, so cancellation is COOPERATIVE:
+ * `onTableStart` runs before each table (outside the profiler's per-table
+ * try/catch), so throwing there when `signal` is aborted unwinds the profiling
+ * loop and stops further work + the open connection — rather than letting it
+ * run to completion in the background after the client cancelled.
  */
-function makeProfileProgress(reporter: {
-  report(progress: number, opts?: { total?: number; message?: string }): Promise<void>;
-}): ProfileProgressCallbacks {
+function makeProfileProgress(
+  reporter: {
+    report(progress: number, opts?: { total?: number; message?: string }): Promise<void>;
+  },
+  signal?: AbortSignal,
+): ProfileProgressCallbacks {
   const fire = (progress: number, total: number, message: string) => {
     void reporter.report(progress, { total, message }).catch(() => {
       // intentionally ignored: progress is best-effort, never load-bearing.
@@ -133,7 +142,9 @@ function makeProfileProgress(reporter: {
   };
   return {
     onStart: (total) => fire(0, total, `Profiling ${total} table${total === 1 ? "" : "s"}…`),
-    onTableStart: () => {},
+    onTableStart: () => {
+      if (signal?.aborted) throw new OperationCancelledError();
+    },
     onTableDone: (name, index, total) => fire(index + 1, total, `Profiled ${name}`),
     onTableError: (name, _error, index, total) =>
       fire(index + 1, total, `Skipped ${name} (profiling error)`),
@@ -214,6 +225,14 @@ export function registerDatasourceTools(
 ): void {
   const { actor, transport, workspaceId, deployMode, clientId, scopes } = opts;
 
+  // The bound workspace for governance + mutations. Unlike `workspaceId`
+  // (which falls back to `actor.id` purely for OTel attribution when no org is
+  // bound), this is the REAL workspace the dispatch gate keys on — so every
+  // mutation operates on the same id the gate (and gate-1 kill-switch /
+  // approval) evaluated. A mutating tool with no bound org is refused via
+  // {@link requireBoundOrg} rather than silently keyed on `actor.id`.
+  const boundOrgId = actor.activeOrganizationId;
+
   // #2067 — same actor shape as tools.ts / semantic-tools.ts so the
   // `mcp` actor_kind / clientId / toolName trail through the audit log.
   const mcpActor = (toolName: string) => ({
@@ -221,6 +240,31 @@ export function registerDatasourceTools(
     ...(clientId ? { clientId } : {}),
     toolName,
   });
+
+  /**
+   * Resolve the bound workspace for a MUTATING tool, or a `forbidden` block.
+   * Keeps mutations and the dispatch gate on ONE workspace identity
+   * (`actor.activeOrganizationId`) — a no-org session (trusted-transport
+   * `system:mcp`) can't mutate, and can't slip past the gate-1 kill-switch /
+   * approval gate that key on the same id.
+   */
+  function requireBoundOrg():
+    | { readonly ok: true; readonly orgId: string }
+    | { readonly ok: false; readonly block: CallToolResult } {
+    if (!boundOrgId) {
+      return {
+        ok: false,
+        block: toEnvelopeResult(
+          envelope(
+            "forbidden",
+            "This MCP session is not bound to a workspace; datasource changes require a bound workspace.",
+            { hint: "Set ATLAS_MCP_ORG_ID (and ATLAS_MCP_USER_ID) on the MCP server." },
+          ),
+        ),
+      };
+    }
+    return { ok: true, orgId: boundOrgId };
+  }
 
   // Build the dispatch-gate context for a given dispatch. The bound actor's
   // live-resolved role (#3505) is gate 3's authority; orgId/requesterId drive
@@ -270,23 +314,24 @@ export function registerDatasourceTools(
               });
               if (limited) return limited;
 
-              // GATE 1 (action-policy kill-switch, #3509) — prepends here
-              // once the per-workspace action policy merges: a workspace that
-              // disables this action class blocks the tool outright before
-              // any scope/RBAC work. Until then the merged pipeline (gates
-              // 2–4) is the full enforced order.
-
-              // GATES 2–4 (mcp:write → RBAC → approval) via the merged
-              // dispatch pipeline (#3508 / ADR-0016).
+              // ADR-0016 gate order via the merged dispatch pipeline (#3508):
+              //   gate 1  action-policy kill-switch (#3509) — fires when `reqs`
+              //           carries an `actionCategory` (all mutating datasource
+              //           tools pass `"datasource"`);
+              //   gate 2  mcp:write scope;
+              //   gate 3  RBAC (live role);
+              //   gate 4  approval (origin=mcp) for `destructive` tools.
+              // All four are enforced inside `runMcpDispatchGate`.
               const gateBlock = await runMcpDispatchGate(gateCtx(requestId), {
                 toolName,
                 ...reqs,
               });
               if (gateBlock) return gateBlock;
 
-              // GATE 5 (inline confirm via masked elicitation, #3497/#3499)
-              // appends here for credential-bearing provisioning (Phase 2);
-              // the lifecycle tools below have no inline-confirm step.
+              // Gate 5 (inline confirm) for credential-bearing provisioning is
+              // implemented as the masked-elicitation step inside
+              // `create_datasource`'s body (#3499) — it needs the resolved
+              // workspace + tool args, so it lives in the tool, not here.
 
               return await body(requestId);
             } catch (err) {
@@ -295,7 +340,9 @@ export function registerDatasourceTools(
               // rather than coercing it into an `internal_error` envelope.
               if (err instanceof OperationCancelledError) throw err;
               const message = errorMessage(err, `${toolName} tool failed`);
-              process.stderr.write(`[atlas-mcp] ${toolName} threw: ${err}\n`);
+              // Log the NARROWED message (not the raw `err`) so a stack/object
+              // — which could echo a connection string — never lands in logs.
+              process.stderr.write(`[atlas-mcp] ${toolName} threw: ${message}\n`);
               return toEnvelopeResult(
                 envelope("internal_error", message, { request_id: requestId }),
               );
@@ -334,10 +381,13 @@ export function registerDatasourceTools(
         "list_datasources",
         { requiresWrite: false, minRole: DATASOURCE_MIN_ROLE },
         async () => {
-          // Published-mode view (external MCP clients are never developer-mode
-          // admins). `include_archived` opts archived rows back in for restore
-          // discovery — they're always credential-free.
-          const all = await listDatasources(workspaceId, "published", {
+          // Developer-mode view: these are admin tools (gate-3 requires admin),
+          // and create_datasource lands a datasource as `draft` — a published
+          // filter would hide it from the very tool the agent is told to use to
+          // find it next. So surface drafts + published; `include_archived`
+          // opts archived rows back in for restore discovery. All rows are
+          // credential-free regardless of status.
+          const all = await listDatasources(workspaceId, "developer", {
             includeArchived: Boolean(include_archived),
           });
           const needle = filter?.toLowerCase().trim();
@@ -411,7 +461,10 @@ export function registerDatasourceTools(
       dispatch(
         "archive_datasource",
         { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
-        async () => archiveOrRestore(id, "archive"),
+        async () => {
+          const org = requireBoundOrg();
+          return org.ok ? archiveOrRestore(org.orgId, id, "archive") : org.block;
+        },
       ),
   );
 
@@ -432,7 +485,10 @@ export function registerDatasourceTools(
       dispatch(
         "restore_datasource",
         { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
-        async () => archiveOrRestore(id, "restore"),
+        async () => {
+          const org = requireBoundOrg();
+          return org.ok ? archiveOrRestore(org.orgId, id, "restore") : org.block;
+        },
       ),
   );
 
@@ -467,11 +523,13 @@ export function registerDatasourceTools(
           },
         },
         async () => {
+          const org = requireBoundOrg();
+          if (!org.ok) return org.block;
           // Resolve the catalog slug first so a non-existent id returns a
           // clean `unknown_entity` rather than an installer defect. (The
           // approval gate already ran in `dispatch`; reaching here means the
           // requester is approved or no rule matched.)
-          const catalogSlug = await resolveDatasourceCatalogSlug(workspaceId, id);
+          const catalogSlug = await resolveDatasourceCatalogSlug(org.orgId, id);
           if (catalogSlug === null) {
             return toEnvelopeResult(
               envelope("unknown_entity", `Datasource "${id}" not found.`, {
@@ -483,7 +541,7 @@ export function registerDatasourceTools(
           // drains the pool. The reversible path is archive_datasource.
           const outcome = await runDatasourceInstaller((installer) =>
             installer.uninstallDatasource(
-              workspaceId as WorkspaceId,
+              org.orgId as WorkspaceId,
               catalogSlug,
               id,
               { hard: true },
@@ -536,16 +594,9 @@ export function registerDatasourceTools(
         // human-in-the-loop is the masked credential entry below.
         { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
         async (requestId) => {
-          const orgId = actor.activeOrganizationId;
-          if (!orgId) {
-            return toEnvelopeResult(
-              envelope(
-                "validation_failed",
-                "This MCP session is not bound to a workspace; provisioning requires a bound workspace.",
-                { hint: "Set ATLAS_MCP_ORG_ID (and ATLAS_MCP_USER_ID) for the MCP server." },
-              ),
-            );
-          }
+          const org = requireBoundOrg();
+          if (!org.ok) return org.block;
+          const orgId = org.orgId;
 
           // Collect the connection URL via MASKED form-mode elicitation
           // (#3499). The secret travels client→server only; it never enters
@@ -646,7 +697,9 @@ export function registerDatasourceTools(
         "profile_datasource",
         { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
         async () => {
-          const target = await loadDatasourceProfileTarget(workspaceId, id);
+          const org = requireBoundOrg();
+          if (!org.ok) return org.block;
+          const target = await loadDatasourceProfileTarget(org.orgId, id);
           if (target.kind === "not_found") {
             return toEnvelopeResult(
               envelope("unknown_entity", `Datasource "${id}" not found.`, {
@@ -665,12 +718,16 @@ export function registerDatasourceTools(
 
           // Long-running: report per-table progress and honor client
           // cancellation (#3500). The decrypted URL stays inside the lib —
-          // only the connectionId + progress counts surface here.
+          // only the connectionId + progress counts surface here. The profiler
+          // has no native AbortSignal, so cancellation is cooperative: the
+          // progress bridge checks `signal` between tables and aborts the loop,
+          // while `withProgressAndCancellation` also severs the await
+          // immediately on the client's cancel.
           const result = await withProgressAndCancellation(
             extra,
             { startMessage: `Profiling datasource "${id}"`, endMessage: "Semantic layer generated" },
-            async (reporter) => {
-              const progress = makeProfileProgress(reporter);
+            async (reporter, signal) => {
+              const progress = makeProfileProgress(reporter, signal);
               return runSemanticProfile({
                 url: target.target.url,
                 dbType: target.target.dbType,
@@ -710,10 +767,11 @@ export function registerDatasourceTools(
    * Resolves the catalog slug first for a clean not-found.
    */
   async function archiveOrRestore(
+    orgId: string,
     id: string,
     action: "archive" | "restore",
   ): Promise<CallToolResult> {
-    const catalogSlug = await resolveDatasourceCatalogSlug(workspaceId, id);
+    const catalogSlug = await resolveDatasourceCatalogSlug(orgId, id);
     if (catalogSlug === null) {
       return toEnvelopeResult(
         envelope("unknown_entity", `Datasource "${id}" not found.`, {
@@ -727,14 +785,14 @@ export function registerDatasourceTools(
 
     if (action === "archive") {
       const outcome = await runDatasourceInstaller((installer) =>
-        installer.uninstallDatasource(workspaceId as WorkspaceId, catalogSlug, id),
+        installer.uninstallDatasource(orgId as WorkspaceId, catalogSlug, id),
       );
       if (outcome.kind === "error") return installerErrorToEnvelope(outcome, id);
       return toJsonContent({ id, status: "archived", archived: true });
     }
 
     const outcome = await runDatasourceInstaller((installer) =>
-      installer.updateDatasourceConfig(workspaceId as WorkspaceId, catalogSlug, id, {
+      installer.updateDatasourceConfig(orgId as WorkspaceId, catalogSlug, id, {
         status: "published",
       }),
     );
@@ -786,13 +844,13 @@ const DATASOURCE_READ_ERROR_CODES = [
   "internal_error",
 ] as const;
 
-// Write/destructive tools add `validation_failed` (bad id / installer
-// rejection). The approval-required outcome is NOT an error code — it's a
-// non-error JSON body the agent must surface, per the dispatch-gate contract.
+// Write/destructive tools advertise the read codes PLUS `validation_failed`
+// (bad id / installer rejection / pre-flight health failure / declined
+// elicitation) — derived from the read set so a new baseline code can't be
+// added to one and forgotten on the other. The approval-required outcome is
+// NOT an error code — it's a non-error JSON body the agent must surface, per
+// the dispatch-gate contract.
 const DATASOURCE_WRITE_ERROR_CODES = [
-  "unknown_entity",
+  ...DATASOURCE_READ_ERROR_CODES,
   "validation_failed",
-  "forbidden",
-  "rate_limited",
-  "internal_error",
 ] as const;

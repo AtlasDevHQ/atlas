@@ -433,6 +433,56 @@ describe("datasource tools — honor the gate verdict", () => {
     expect(body.approval_request_id).toBe("req_42");
     expect(mockRunInstaller).not.toHaveBeenCalled();
   });
+
+  it("the action-policy kill-switch block (gate-1, #3509/#3514) short-circuits delete", async () => {
+    // gate-1 denial is shaped as a `forbidden` envelope by runMcpDispatchGate;
+    // the tool must surface it and never reach the installer.
+    gateReturn = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            code: "forbidden",
+            message: "Datasource actions are disabled for this workspace by policy.",
+          }),
+        },
+      ],
+      isError: true,
+    };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "delete_datasource", arguments: { id: "prod-us" } });
+    expect(res.isError).toBe(true);
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("forbidden");
+    expect(mockRunInstaller).not.toHaveBeenCalled();
+  });
+});
+
+// ── No-org session guard (mutations) ──────────────────────────────────
+
+describe("no bound workspace → mutations refused (consistency with gate orgId)", () => {
+  const NO_ORG_ACTOR = createAtlasUser("u_noorg", "managed", "noorg@test", { role: "admin" });
+
+  for (const tool of ["archive_datasource", "restore_datasource", "delete_datasource", "profile_datasource"]) {
+    it(`${tool} → forbidden, no lib mutation`, async () => {
+      const client = await createTestClient(NO_ORG_ACTOR);
+      const res = await client.callTool({ name: tool, arguments: { id: "prod-us" } });
+      expect(res.isError).toBe(true);
+      expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("forbidden");
+      expect(mockRunInstaller).not.toHaveBeenCalled();
+      expect(mockRunProfile).not.toHaveBeenCalled();
+    });
+  }
+
+  it("create_datasource → forbidden before elicitation", async () => {
+    const client = await createTestClient(NO_ORG_ACTOR);
+    const res = await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "postgres", install_id: "x" },
+    });
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("forbidden");
+    expect(mockElicit).not.toHaveBeenCalled();
+    expect(mockProvision).not.toHaveBeenCalled();
+  });
 });
 
 // ── Happy paths + envelope mapping (gate returns null) ────────────────
@@ -449,6 +499,13 @@ describe("list_datasources", () => {
     expect(text).not.toContain("url");
     expect(text).not.toContain("password");
     expect(text.toLowerCase()).not.toContain("secret");
+  });
+
+  it("lists in developer mode so freshly-created drafts are discoverable", async () => {
+    const client = await createTestClient();
+    await client.callTool({ name: "list_datasources", arguments: {} });
+    // (orgId, mode, options) — mode must include drafts.
+    expect(mockListDatasources.mock.calls[0]?.[1]).toBe("developer");
   });
 
   it("passes include_archived through to the lib layer", async () => {

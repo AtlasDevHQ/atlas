@@ -320,18 +320,22 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
                 requestId,
               });
               if (blocked) return blocked;
-              // #3500 — progress + cancellation around the query work. The
-              // signal is threaded into the execute ctx so a future
-              // signal-honoring path aborts end to end; today a cancel cuts
-              // the dispatch loose at the MCP boundary (statement timeout
-              // caps the datasource side).
+              // #3500 — progress + cancellation around the query work.
+              // #3575 — `executeSQL.execute` does not read `abortSignal` from
+              // the tool-call extra (sql.ts destructures only sql/explanation/
+              // connectionId/scope). Passing a signal would be dead code and
+              // imply the query is abortable at the driver level, which it is
+              // not. The statement-timeout (`ATLAS_QUERY_TIMEOUT`, default 30s)
+              // is the sole cancellation mechanism for the datasource side; a
+              // client cancel cuts the dispatch loose at the MCP boundary and
+              // the DB-side query drains within that timeout window.
               const result = await withProgressAndCancellation(
                 extra,
                 { startMessage: "Running query", endMessage: "Query complete" },
-                async (_reporter, signal) =>
+                async (_reporter, _signal) =>
                   executeSQL.execute!(
                     { sql, explanation, connectionId },
-                    { toolCallId: "mcp-executeSQL", messages: [], abortSignal: signal },
+                    { toolCallId: "mcp-executeSQL", messages: [] },
                   ),
               );
 
@@ -352,11 +356,28 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
                   // Non-error governance branch — still carries
                   // structuredContent (#3498) since the declared outputSchema
                   // makes the SDK require it on every non-error result.
-                  const approval: Record<string, unknown> = {
+                  // #3584 — narrow each field against the declared outputSchema
+                  // types before assigning to structuredContent so SDK output-
+                  // schema validation can't throw on a malformed internal payload
+                  // (e.g. non-string approval_request_id from an older gateway).
+                  const { executeSqlOutputSchema: schema } = await import(
+                    "./structured-output.js"
+                  );
+                  const raw = {
                     approval_required: true,
                     approval_request_id: obj.approval_request_id,
                     matched_rules: obj.matched_rules,
                     message: obj.message,
+                  };
+                  const parsed = schema.safeParse(raw);
+                  const approval = parsed.success ? parsed.data : {
+                    approval_required: true as const,
+                    ...(typeof obj.approval_request_id === "string"
+                      ? { approval_request_id: obj.approval_request_id }
+                      : {}),
+                    ...(typeof obj.message === "string"
+                      ? { message: obj.message }
+                      : {}),
                   };
                   return {
                     content: [

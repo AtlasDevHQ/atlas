@@ -636,10 +636,117 @@ describe("SSE server — session hardening (#3492)", () => {
     // one with `activeStreams > 0` — proving the live-stream guard holds within a
     // mixed population, not just for a lone session.
     const farFuture = Date.now() + 24 * 60 * 60 * 1000; // +1 day
-    const evicted = handle._sweepIdleSessionsForTests(farFuture, 60_000);
+    const evicted = handle._sweepIdleSessionsForTests(farFuture, 60_000, Infinity);
     expect(evicted).toBe(2);
     expect(handle._sessionCount()).toBe(1);
 
     await connected.close();
+  });
+
+  // ── #3576 — held-open GET stream cannot indefinitely pin a session ────────
+  //
+  // A client can hold the GET notification stream open forever, setting
+  // `activeStreams > 0` and preventing the idle sweep from reclaiming the
+  // slot. The fix: the sweep reclaims sessions whose streams have been held
+  // open past `heldStreamMaxAgeMs` (passed as 3rd arg to
+  // `_sweepIdleSessionsForTests`).
+
+  it("reclaims a session whose held-open GET stream exceeds the max stream age (#3576)", async () => {
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), {
+      port: 0,
+      maxSessions: 2,
+    });
+    const port = handle.server.port;
+
+    // Connect a client that holds a GET notification stream open.
+    const liveClient = new Client({ name: "client-held", version: "0.0.1" });
+    const liveTransport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${port}/mcp`),
+    );
+    await liveClient.connect(liveTransport);
+
+    // Give the GET notification stream time to open so `activeStreams > 0`
+    // and `streamOpenedAt` is stamped.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(handle._sessionCount()).toBe(1);
+
+    // A far-future sweep with a very short heldStreamMaxAgeMs (0ms — any
+    // open stream is immediately too old). The session MUST be reclaimed
+    // even though `activeStreams > 0`.
+    const farFuture = Date.now() + 24 * 60 * 60 * 1000;
+    const evicted = handle._sweepIdleSessionsForTests(farFuture, 60_000, 0);
+    expect(evicted).toBe(1);
+    expect(handle._sessionCount()).toBe(0);
+
+    // Suppress the inevitable transport error on the closed stream.
+    await liveClient.close().catch(() => {});
+  });
+
+  it("does NOT reclaim a live stream that is younger than the max stream age (#3576)", async () => {
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), {
+      port: 0,
+      maxSessions: 2,
+    });
+    const port = handle.server.port;
+
+    const liveClient = new Client({ name: "client-young", version: "0.0.1" });
+    const liveTransport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${port}/mcp`),
+    );
+    await liveClient.connect(liveTransport);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(handle._sessionCount()).toBe(1);
+
+    // Sweep with a generous heldStreamMaxAgeMs (Infinity — never reclaim by
+    // stream age). The session must survive even with a far-future clock.
+    const farFuture = Date.now() + 24 * 60 * 60 * 1000;
+    const evicted = handle._sweepIdleSessionsForTests(farFuture, 60_000, Infinity);
+    expect(evicted).toBe(0);
+    expect(handle._sessionCount()).toBe(1);
+
+    await liveClient.close();
+  });
+});
+
+// ── #3577 — `_setIdleTimeoutForTests` production guard ───────────────────
+//
+// The setter bypasses the 1-minute idle floor so test sweeps can run in
+// milliseconds. In production that bypass must be unreachable — calling the
+// setter with NODE_ENV=production is a programming error and throws so the
+// mistake surfaces at startup, not silently degenerate-sweeps every session.
+
+describe("_setIdleTimeoutForTests production guard (#3577)", () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  afterEach(() => {
+    // Restore NODE_ENV and the override so subsequent tests aren't affected.
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+    _setIdleTimeoutForTests(null); // reset (this call is safe because NODE_ENV is restored)
+  });
+
+  it("throws when called in production (NODE_ENV=production)", () => {
+    process.env.NODE_ENV = "production";
+    expect(() => _setIdleTimeoutForTests(50)).toThrow(
+      "_setIdleTimeoutForTests must not be called in production",
+    );
+  });
+
+  it("succeeds when called in test mode (NODE_ENV=test)", () => {
+    process.env.NODE_ENV = "test";
+    // Must not throw — tests call this with sub-floor values to drive fast sweeps.
+    expect(() => _setIdleTimeoutForTests(50)).not.toThrow();
+    _setIdleTimeoutForTests(null); // clean up before afterEach
+  });
+
+  it("succeeds when NODE_ENV is unset (dev / CI without explicit NODE_ENV)", () => {
+    delete process.env.NODE_ENV;
+    expect(() => _setIdleTimeoutForTests(100)).not.toThrow();
+    _setIdleTimeoutForTests(null);
   });
 });

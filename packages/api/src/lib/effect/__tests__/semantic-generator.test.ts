@@ -463,3 +463,104 @@ describe("createSemanticGeneratorTestLayer", () => {
     expect(result.entities.map((e) => e.table)).toEqual(["orders"]);
   });
 });
+
+// ── #3579 — profiler-error messages are DSN-scrubbed ────────────────
+// A verbose profiler throw (e.g. a driver that echoes the DSN in its
+// error text) must never surface the plaintext connection string.
+
+describe("SemanticGenerator.profile — DSN scrub (#3579)", () => {
+  it("strips scheme://user:pass@host from a profiler error message", async () => {
+    const DSN = "postgres://admin:hunter2@db.internal:5432/prod";
+    const throwing: DatasourceProfiler = () =>
+      Promise.reject(new Error(`connect failed: ECONNREFUSED for ${DSN}`));
+    const exit = await runExit(
+      Effect.gen(function* () {
+        const svc = yield* SemanticGenerator;
+        return yield* svc.profile({
+          url: DSN,
+          dbType: "postgres",
+          profileFn: throwing,
+        });
+      }),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const json = JSON.stringify(exit.cause);
+      expect(json).toContain("profiler_error");
+      // The DSN password and full connection string must be scrubbed.
+      expect(json).not.toContain("hunter2");
+      expect(json).not.toContain("admin:hunter2");
+      // The scrubbed form replaces the userinfo with ***.
+      expect(json).toContain("postgres://***@");
+    }
+  });
+});
+
+// ── #3581 — OperationCancelledError propagates as a defect ──────────
+// A cooperative profiling cancellation (MCP client aborts mid-table)
+// must not be erased to `validation_failed`. The Error's `name` is the
+// discriminant (avoiding a cross-package import from @atlas/mcp).
+
+describe("SemanticGenerator.profile — cooperative cancellation (#3581)", () => {
+  it("re-throws OperationCancelledError as a defect (not a ProfilingFailedError)", async () => {
+    // Simulate the MCP progress bridge raising OperationCancelledError by name.
+    class OperationCancelledError extends Error {
+      override readonly name = "OperationCancelledError";
+      constructor() { super("operation cancelled by client"); }
+    }
+    const cancelling: DatasourceProfiler = () =>
+      Promise.reject(new OperationCancelledError());
+    const exit = await runExit(
+      Effect.gen(function* () {
+        const svc = yield* SemanticGenerator;
+        return yield* svc.profile({
+          url: "postgres://x",
+          dbType: "postgres",
+          profileFn: cancelling,
+        });
+      }),
+    );
+    // A defect (die) surfaces as a Failure with a Die cause — NOT a typed
+    // ProfilingFailedError(reason:"profiler_error"). The original error must
+    // be recoverable from the cause for the MCP layer to re-throw it.
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const json = JSON.stringify(exit.cause);
+      // Must NOT be wrapped as a validation_failed profiler_error.
+      expect(json).not.toContain("profiler_error");
+      // Must be a defect (die) carrying the original OperationCancelledError.
+      expect(json).toContain("OperationCancelledError");
+    }
+  });
+});
+
+// ── #3589 — registerWhitelist:false leaves no queryable residue ──────
+// This is the building-block for the deferred-register fix in
+// runSemanticProfile: when persist will run, profileAndGenerate is
+// called with registerWhitelist:false so a subsequent persist failure
+// can't leave the whitelist in an inconsistent state.
+
+describe("SemanticGenerator.profileAndGenerate — registerWhitelist:false (#3589)", () => {
+  it("leaves the whitelist empty when registerWhitelist is explicitly false", async () => {
+    const connectionId = "conn_3589_noregister";
+    await run(
+      Effect.gen(function* () {
+        const svc = yield* SemanticGenerator;
+        return yield* svc.profileAndGenerate({
+          url: "postgres://x",
+          dbType: "postgres",
+          connectionId,
+          registerWhitelist: false,
+          profileFn: fakeProfiler({
+            profiles: [profile({ table_name: "secret_table" })],
+            errors: [],
+          }),
+        });
+      }),
+    );
+    // The table is generated but MUST NOT be in the whitelist yet —
+    // the caller (runSemanticProfile in mcp-lifecycle) registers it
+    // only after a successful persist.
+    expect(getWhitelistedTables(connectionId).has("secret_table")).toBe(false);
+  });
+});

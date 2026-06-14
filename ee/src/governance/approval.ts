@@ -533,6 +533,29 @@ const IDENTITY_MISSING_RULE: ApprovalRule = {
 };
 
 /**
+ * #3573 — the synthetic "approval required by default" rule returned for
+ * destructive datasource MCP actions in a default install (no matching
+ * `approval_rules` row). ADR-0016 gate 4 default is "approval required" for
+ * destructive actions; this materialises that default so the gate has a
+ * `matchedRules` entry to surface. Factored out of the two call sites (the
+ * no-rows early branch and the post-scan fallback) so the literal can't drift.
+ */
+function makeMcpDatasourceDefaultRule(orgId: string): ApprovalRule {
+  return {
+    id: "__mcp_datasource_default__",
+    orgId,
+    name: "mcp-datasource-default",
+    ruleType: "datasource",
+    pattern: "*",
+    threshold: null,
+    enabled: true,
+    origin: "mcp",
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  };
+}
+
+/**
  * Returns true when at least one enabled approval rule exists in the
  * database, regardless of org. Used as a defensive check when an agent
  * invocation arrives without an `orgId` — the previous behaviour
@@ -645,13 +668,27 @@ export const checkApprovalRequired = (
       [orgId, requestOrigin],
     ));
 
-    if (rows.length === 0) {
-      return { required: false, matchedRules: [] };
-    }
-
     const matchedRules: ApprovalRule[] = [];
     const tablesLower = tablesAccessed.map((t) => t.toLowerCase());
     const columnsLower = columnsAccessed.map((c) => c.toLowerCase());
+
+    if (rows.length === 0) {
+      // #3573 — when no DB rules exist at all AND the request is an MCP
+      // datasource action, default to required. This covers the default-install
+      // case (no approval_rules rows) for destructive datasource MCP actions
+      // (delete_datasource stamps `tablesAccessed: ['datasource:<id>']`).
+      // The default fires ONLY when: origin=mcp AND all resources are
+      // datasource:* prefixed. Non-MCP origins or mixed-resource requests
+      // fall through to the normal `required: false` path.
+      if (
+        options?.origin === "mcp" &&
+        tablesLower.length > 0 &&
+        tablesLower.every((t) => t.startsWith("datasource:"))
+      ) {
+        return { required: true, matchedRules: [makeMcpDatasourceDefaultRule(orgId)] };
+      }
+      return { required: false, matchedRules: [] };
+    }
 
     for (const row of rows) {
       const rule = rowToRule(row);
@@ -666,8 +703,41 @@ export const checkApprovalRequired = (
         if (columnsLower.includes(patternLower)) {
           matchedRules.push(rule);
         }
+      } else if (rule.ruleType === "datasource") {
+        // #3573 — first-class 'datasource' rule_type for MCP datasource actions.
+        // Pattern can be a specific datasource id (e.g. "prod-us") or the
+        // wildcard "*" to match all. The resource stamped by the MCP tool is
+        // `datasource:<id>`, so we strip the prefix for the id comparison.
+        // A pattern of "datasource:*" or "*" matches all datasource resources;
+        // a specific id pattern (without prefix) matches by exact id.
+        if (tablesLower.some((t) => {
+          if (!t.startsWith("datasource:")) return false;
+          if (patternLower === "*" || patternLower === "datasource:*") return true;
+          const dsId = t.slice("datasource:".length);
+          return dsId === patternLower || t === patternLower;
+        })) {
+          matchedRules.push(rule);
+        }
       }
       // Cost rules are matched externally by caller (requires row estimate)
+    }
+
+    // #3573 — ADR-0016 default: when origin=mcp AND the only resources
+    // accessed are datasource:* targets AND no explicit rule matched
+    // (i.e. a default install with no approval_rules rows), require approval
+    // by default. Explicit rules that return matchedRules.length > 0 already
+    // short-circuit above; this path fires ONLY when the rule-scan found
+    // nothing. An explicit `origin=mcp` rule with required:false (PERMIT
+    // pattern) is not representable in the current schema — operators that
+    // want to allow destructive datasource MCP actions without approval must
+    // use a `datasource` rule with a wildcard or specific id pattern.
+    if (
+      matchedRules.length === 0 &&
+      options?.origin === "mcp" &&
+      tablesLower.length > 0 &&
+      tablesLower.every((t) => t.startsWith("datasource:"))
+    ) {
+      return { required: true, matchedRules: [makeMcpDatasourceDefaultRule(orgId)] };
     }
 
     return {

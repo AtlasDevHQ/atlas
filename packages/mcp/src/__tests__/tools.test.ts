@@ -545,6 +545,58 @@ describe("MCP tools", () => {
     expect((firstCallArgs[0] as Record<string, unknown>).connectionId).toBe("warehouse");
   });
 
+  it("executeSQL does NOT pass abortSignal to the execute call (#3575 — dead arg removed)", async () => {
+    // #3575 AC (chosen: remove dead arg). `executeSQL.execute` only
+    // destructures { sql, explanation, connectionId, scope } — `abortSignal`
+    // was a dead arg that implied driver-level cancellation without delivering
+    // it. The fix removes it from the call site; statement-timeout
+    // (`ATLAS_QUERY_TIMEOUT`) is the sole documented cancellation mechanism.
+    // This test pins that the first positional argument (the params object)
+    // does NOT carry `abortSignal`, so the code doesn't mislead future readers
+    // into thinking the signal is threaded through.
+    const { client } = await createTestClient();
+    await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT 1", explanation: "probe" },
+    });
+
+    const calls = mockExecuteSQLExecute.mock.calls;
+    const params = calls[calls.length - 1]![0] as Record<string, unknown>;
+    expect("abortSignal" in params).toBe(false);
+  });
+
+  it("executeSQL approval-required branch survives a malformed internal payload without throwing (#3584c)", async () => {
+    // #3584c AC: the approval-branch structuredContent is validated/narrowed
+    // via executeSqlOutputSchema.safeParse before assignment so an unexpected
+    // internal field type (e.g. non-string approval_request_id from an older
+    // gateway version) doesn't cause an SDK output-schema validation throw that
+    // would break the dispatch and lose the approval_request_id entirely.
+    mockExecuteSQLExecute.mockResolvedValueOnce({
+      success: false,
+      approval_required: true,
+      // Non-string approval_request_id — a malformed internal payload.
+      approval_request_id: 12345 as unknown as string,
+      matched_rules: [{ id: "pii" }], // objects instead of strings
+      message: "approval needed",
+    });
+
+    const { client } = await createTestClient();
+    // Must not throw — the safeParse fallback strips the non-string field.
+    const result = await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT * FROM customers", explanation: "PII check" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(getContentText(result.content));
+    // The approval_required flag must always be present (it's valid as bool).
+    expect(parsed.approval_required).toBe(true);
+    // approval_request_id was a non-string — the safeParse fallback strips it
+    // from structuredContent (the string validation fails on a number), so it
+    // should be absent or the message field carries the relevant context.
+    // The key contract: the dispatch did NOT throw, it returned a result.
+  });
+
   it("explore catches thrown exception and returns an internal_error envelope", async () => {
     mockExploreExecute.mockRejectedValueOnce(new Error("sandbox crashed"));
 

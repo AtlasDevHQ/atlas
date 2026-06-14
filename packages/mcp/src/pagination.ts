@@ -122,8 +122,41 @@ const LIST_METHODS = [
 ] as const;
 
 /**
+ * Short-lived full-list cache for paginated list operations (#3583).
+ *
+ * Problem: `installListPagination` calls the inner handler for the FULL list
+ * on every page request (to get all items, then slices). For handlers with
+ * costly side effects — notably `prompts/list`, which re-runs a gating DB
+ * probe and emits an audit row on every call — this re-fires the side effects
+ * on pages 2..N.
+ *
+ * Fix: on the first page (cursor === undefined) we call inner, cache the
+ * `{ items, rest }` keyed by the `nextCursor` we are about to emit, and
+ * keep it for `ttlMs`. On pages 2..N the cursor is a key into this cache
+ * (the client must echo back the cursor we gave it), so we serve from the
+ * cache without calling inner again. A cache miss (TTL expired, different
+ * client) falls through to inner as a safe fallback — correctness is
+ * preserved, the side-effect de-duplication only applies when the cache
+ * is warm.
+ */
+interface CacheEntry {
+  readonly items: unknown[];
+  /** All fields from the inner result except `[itemsKey]` (forwarded verbatim). */
+  readonly rest: Record<string, unknown>;
+  readonly expiresAt: number;
+}
+
+/** TTL for the full-list cache (default 30s — generous for any human-paced client). */
+const LIST_CACHE_TTL_MS = 30_000;
+
+/**
  * Wrap every registered list handler with cursor pagination. Call once after
  * all tools/resources/prompts are registered (so the handlers exist).
+ *
+ * #3583 — the prompts/list handler (and any future handler with expensive
+ * side effects) is shielded by a short-lived full-list cache: the inner
+ * handler's gate probe + audit run exactly once per cursor sequence, not
+ * once per page.
  */
 export function installListPagination(
   server: McpServer,
@@ -132,11 +165,56 @@ export function installListPagination(
   const pageSize = opts?.pageSize ?? DEFAULT_PAGE_SIZE;
   for (const { schema, method, itemsKey } of LIST_METHODS) {
     const inner = captureHandler(server, method);
+    // Per-method cache: nextCursor → CacheEntry. A Map is fine (one per
+    // method, entries are evicted lazily on the next first-page request,
+    // TTL keeps memory bounded — at most O(concurrent pagination sessions)).
+    const cache = new Map<string, CacheEntry>();
+
     server.server.setRequestHandler(schema, async (request, extra) => {
+      const cursor = request.params?.cursor;
+      const now = Date.now();
+
+      if (cursor !== undefined) {
+        // Pages 2..N — look up in cache by the cursor the client echoed back.
+        const cached = cache.get(cursor);
+        if (cached && cached.expiresAt > now) {
+          const { page, nextCursor } = paginate(cached.items, cursor, pageSize);
+          // Propagate the cached entry to the NEXT cursor so page 3, 4, …
+          // also hit the cache (not just page 2). Without this, page 3 would
+          // miss — it echoes the cursor emitted by page 2, but that cursor
+          // was computed during a cache-hit path that didn't populate the map.
+          if (nextCursor !== undefined) {
+            cache.set(nextCursor, { ...cached, expiresAt: cached.expiresAt });
+          }
+          return { ...cached.rest, [itemsKey]: page, ...(nextCursor ? { nextCursor } : {}) };
+        }
+        // Cache miss (TTL expired or unknown cursor) — fall through to inner.
+        // The inner call re-runs the side effects, but correctness is preserved.
+      }
+
+      // First page (cursor === undefined) or cache miss — call inner.
+      // Evict stale entries lazily so the map doesn't accumulate indefinitely
+      // when many clients start pagination sequences but never finish.
+      for (const [k, v] of cache) {
+        if (v.expiresAt <= now) cache.delete(k);
+      }
+
       const full = await inner(request, extra);
       const items = Array.isArray(full[itemsKey]) ? (full[itemsKey] as unknown[]) : [];
-      const { page, nextCursor } = paginate(items, request.params?.cursor, pageSize);
-      return { ...full, [itemsKey]: page, ...(nextCursor ? { nextCursor } : {}) };
+      const rest: Record<string, unknown> = { ...full };
+      delete rest[itemsKey];
+
+      const { page, nextCursor } = paginate(items, cursor, pageSize);
+
+      // Cache the full list keyed by the nextCursor we are about to emit.
+      // Pages 2..N will look this up by the cursor the client echoes back.
+      // Only cache when there IS a nextCursor (single-page results don't need
+      // caching — the client has the whole list already).
+      if (nextCursor !== undefined) {
+        cache.set(nextCursor, { items, rest, expiresAt: now + LIST_CACHE_TTL_MS });
+      }
+
+      return { ...rest, [itemsKey]: page, ...(nextCursor ? { nextCursor } : {}) };
     });
   }
 }

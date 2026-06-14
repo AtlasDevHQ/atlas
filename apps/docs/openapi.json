@@ -37593,6 +37593,69 @@
                               "pattern",
                               "threshold"
                             ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "orgId": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "origin": {
+                                "type": "string",
+                                "enum": [
+                                  "any",
+                                  "chat",
+                                  "mcp",
+                                  "scheduler",
+                                  "slack",
+                                  "teams",
+                                  "telegram",
+                                  "discord",
+                                  "whatsapp",
+                                  "gchat",
+                                  "webhook"
+                                ]
+                              },
+                              "createdAt": {
+                                "type": "string"
+                              },
+                              "updatedAt": {
+                                "type": "string"
+                              },
+                              "ruleType": {
+                                "type": "string",
+                                "enum": [
+                                  "datasource"
+                                ]
+                              },
+                              "pattern": {
+                                "type": "string"
+                              },
+                              "threshold": {
+                                "type": "null"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "orgId",
+                              "name",
+                              "enabled",
+                              "origin",
+                              "createdAt",
+                              "updatedAt",
+                              "ruleType",
+                              "pattern",
+                              "threshold"
+                            ]
                           }
                         ]
                       }
@@ -37790,9 +37853,10 @@
                         "type": "string",
                         "enum": [
                           "table",
-                          "column"
+                          "column",
+                          "datasource"
                         ],
-                        "description": "Type of rule: table name match or column name match.",
+                        "description": "Type of rule: table name match, column name match, or datasource id match (#3573 — gates MCP datasource mutations).",
                         "example": "table"
                       },
                       "pattern": {
@@ -38021,6 +38085,69 @@
                               "type": "string",
                               "enum": [
                                 "column"
+                              ]
+                            },
+                            "pattern": {
+                              "type": "string"
+                            },
+                            "threshold": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "name",
+                            "enabled",
+                            "origin",
+                            "createdAt",
+                            "updatedAt",
+                            "ruleType",
+                            "pattern",
+                            "threshold"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "origin": {
+                              "type": "string",
+                              "enum": [
+                                "any",
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "telegram",
+                                "discord",
+                                "whatsapp",
+                                "gchat",
+                                "webhook"
+                              ]
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "updatedAt": {
+                              "type": "string"
+                            },
+                            "ruleType": {
+                              "type": "string",
+                              "enum": [
+                                "datasource"
                               ]
                             },
                             "pattern": {
@@ -38387,6 +38514,69 @@
                               "type": "string",
                               "enum": [
                                 "column"
+                              ]
+                            },
+                            "pattern": {
+                              "type": "string"
+                            },
+                            "threshold": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "orgId",
+                            "name",
+                            "enabled",
+                            "origin",
+                            "createdAt",
+                            "updatedAt",
+                            "ruleType",
+                            "pattern",
+                            "threshold"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "orgId": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "enabled": {
+                              "type": "boolean"
+                            },
+                            "origin": {
+                              "type": "string",
+                              "enum": [
+                                "any",
+                                "chat",
+                                "mcp",
+                                "scheduler",
+                                "slack",
+                                "teams",
+                                "telegram",
+                                "discord",
+                                "whatsapp",
+                                "gchat",
+                                "webhook"
+                              ]
+                            },
+                            "createdAt": {
+                              "type": "string"
+                            },
+                            "updatedAt": {
+                              "type": "string"
+                            },
+                            "ruleType": {
+                              "type": "string",
+                              "enum": [
+                                "datasource"
                               ]
                             },
                             "pattern": {

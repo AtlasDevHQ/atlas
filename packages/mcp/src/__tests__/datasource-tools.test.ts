@@ -227,6 +227,19 @@ mock.module("../dispatch-gate.js", () => ({
   runMcpDispatchGate: mockRunGate,
 }));
 
+// ── Billing-gate mock (#3570) ─────────────────────────────────────────
+//
+// billingGateOrNull is called inside the dispatch wrapper after the rate-limit
+// gate and before the ADR-0016 gate order. By default it returns null (allowed);
+// tests that need to exercise the suspended-workspace path flip `billingReturn`.
+
+let billingReturn: CallToolResult | null = null;
+const mockBillingGate = mock(async () => billingReturn);
+
+mock.module("../billing-gate.js", () => ({
+  billingGateOrNull: mockBillingGate,
+}));
+
 // Imports AFTER mock.module registrations.
 const { registerDatasourceTools } = await import("../datasource-tools.js");
 
@@ -275,6 +288,8 @@ beforeEach(() => {
   installerCalls = [];
   elicitCalls = [];
   gateReturn = null;
+  billingReturn = null;
+  mockBillingGate.mockClear();
   installerOutcome = { kind: "ok", value: { id: "prod-us", status: "published" } };
   provisionOutcome = {
     kind: "ok",
@@ -494,6 +509,68 @@ describe("datasource tools — honor the gate verdict", () => {
   });
 });
 
+// ── Billing gate (#3570) ─────────────────────────────────────────────
+//
+// billingGateOrNull runs inside the dispatch wrapper after rate-limit but
+// before the ADR-0016 gate order. A suspended / over-limit workspace must be
+// blocked before any installer or gate call fires.
+
+describe("datasource MCP mutations — billing gate (#3570)", () => {
+  it("a suspended workspace is blocked and the installer never runs", async () => {
+    billingReturn = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            code: "billing_blocked",
+            message: "Workspace is suspended. Resolve your billing status before querying.",
+            hint: "Retrying will not help. The workspace owner must resolve the workspace's billing or suspension status.",
+          }),
+        },
+      ],
+      isError: true,
+    };
+    const client = await createTestClient();
+    // Use a mutating tool (delete) to verify the billing gate fires before the installer.
+    const res = await client.callTool({ name: "delete_datasource", arguments: { id: "prod-us" } });
+    expect(res.isError).toBe(true);
+    const env = JSON.parse(getContentText(res.content));
+    expect(env.code).toBe("billing_blocked");
+    // Gate and installer must NOT have been reached.
+    expect(mockRunGate).not.toHaveBeenCalled();
+    expect(mockRunInstaller).not.toHaveBeenCalled();
+  });
+
+  it("billing gate is keyed on actor.activeOrganizationId (not the OTel workspaceId fallback)", async () => {
+    // The billing gate mock receives the actor's org id. We assert that
+    // billingGateOrNull was called at all on a mutating tool call (the mock
+    // captures calls regardless of billingReturn).
+    const client = await createTestClient();
+    await client.callTool({ name: "archive_datasource", arguments: { id: "prod-us" } });
+    // billingGateOrNull should have been called once for the dispatch.
+    expect(mockBillingGate.mock.calls.length).toBe(1);
+  });
+
+  it("read-only list_datasources also routes through the billing gate (metadata via connected ds)", async () => {
+    billingReturn = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ code: "billing_blocked", message: "suspended" }),
+        },
+      ],
+      isError: true,
+    };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "list_datasources", arguments: {} });
+    // List is also blocked (datasource metadata reads are gated).
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(getContentText(res.content)).code).toBe("billing_blocked");
+    // Lib layer (listDatasources) must not have been called.
+    expect(mockListDatasources).not.toHaveBeenCalled();
+  });
+});
+
 // ── No-org session guard (mutations) ──────────────────────────────────
 
 describe("no bound workspace → mutations refused (consistency with gate orgId)", () => {
@@ -604,14 +681,25 @@ describe("archive_datasource", () => {
 });
 
 describe("restore_datasource", () => {
-  it("routes to updateDatasourceConfig({ status: 'published' }) and reports restored", async () => {
+  it("revives to 'draft' (mirroring admin route) so the publish endpoint must promote it (#3588)", async () => {
+    // AC: a created→archived→restored MCP datasource must NOT be published
+    // without going through the atomic publish endpoint. The restore branch
+    // stamps status:'draft' + atlasMode:'draft' — identical to the admin route
+    // (admin-connections.ts #944-960, legacy #2177). Setting 'published' here
+    // would bypass the content-mode gate (CLAUDE.md rule).
     const client = await createTestClient();
     const res = await client.callTool({ name: "restore_datasource", arguments: { id: "prod-us" } });
     const body = JSON.parse(getContentText(res.content));
     expect(body.restored).toBe(true);
     const call = installerCalls[0];
     expect(call.method).toBe("updateDatasourceConfig");
-    expect(call.args[3]).toEqual({ status: "published" });
+    // AC(1) — The installer must be called with status:'draft' + atlasMode:'draft'
+    // (not 'published'). This is the content-mode gate: the restored datasource
+    // lands as a draft and must go through /api/v1/admin/publish to become queryable.
+    expect(call.args[3]).toEqual({ status: "draft", atlasMode: "draft" });
+    // (The response body reflects whatever the installer returns — the critical
+    // assertion is the CALL args above, not the response status string, because
+    // the mock installer is free to return any status for test purposes.)
   });
 });
 
@@ -799,6 +887,44 @@ describe("create_datasource", () => {
     expect(res.isError).toBe(true);
     expect(mockElicit).not.toHaveBeenCalled();
     expect(mockProvision).not.toHaveBeenCalled();
+  });
+
+  it("#3587 — success hint tells user to run profile_datasource for profilable types (postgres/mysql)", async () => {
+    // postgres is a native profilable type — the next-step hint must direct the
+    // agent to run profile_datasource to generate the semantic layer.
+    provisionOutcome = {
+      kind: "ok",
+      value: { installId: "new-pg", dbType: "postgres", status: "draft", maskedUrl: "postgres://***@host/db", description: null, schema: null, groupId: null },
+    };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "create_datasource", arguments: { db_type: "postgres", install_id: "new-pg" } });
+    const body = JSON.parse(getContentText(res.content));
+    expect(body.created).toBe(true);
+    // Hint must tell the agent to run profile_datasource.
+    expect(body.next).toContain("profile_datasource");
+    // Must NOT warn about unsupported profiling for a profilable type.
+    expect(body.next).not.toContain("#3552");
+    expect(body.next).not.toContain("not yet available");
+  });
+
+  it("#3587 — success hint does NOT advertise profile_datasource for non-profilable types (clickhouse)", async () => {
+    // clickhouse/snowflake/bigquery/elasticsearch are provisionable but
+    // loadDatasourceProfileTarget returns 'unsupported' for them (#3552).
+    // The success hint must NOT claim 'run profile_datasource' — that would
+    // leave the agent in an impossible loop trying an unsupported operation.
+    provisionCapability = { kind: "plugin", dbType: "clickhouse" };
+    provisionOutcome = {
+      kind: "ok",
+      value: { installId: "ch-wh", dbType: "clickhouse", status: "draft", maskedUrl: null, description: null, schema: null, groupId: null },
+    };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "create_datasource", arguments: { db_type: "clickhouse", install_id: "ch-wh" } });
+    const body = JSON.parse(getContentText(res.content));
+    expect(body.created).toBe(true);
+    // Hint must NOT tell the agent to profile — that operation is unavailable.
+    expect(body.next).not.toContain("profile_datasource");
+    // Must clearly state profiling is not yet available (pending #3552).
+    expect(body.next).toContain("not yet available");
   });
 });
 

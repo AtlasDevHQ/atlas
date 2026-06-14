@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryStates, useQueryState, parseAsInteger } from "nuqs";
 import { getSortingStateParser } from "@/lib/parsers";
 import { auditSearchParams } from "./search-params";
@@ -43,6 +43,15 @@ import { AuditFilterBar, type ActorKindFilter } from "@/ui/components/admin/audi
 import { formatISODate, parseISODate } from "@/lib/format";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { TooltipProvider } from "@/components/ui/tooltip";
+
+// Hoisted to module scope: `getAuditColumns` is pure and arg-free, so the
+// column definitions and the derived Set of IDs are stable across renders.
+// A `useMemo([columns])` here re-ran every render because `getAuditColumns()`
+// always returns a fresh array reference (#3585).
+const AUDIT_COLUMNS = getAuditColumns();
+const AUDIT_COLUMN_IDS = new Set(
+  AUDIT_COLUMNS.map((c) => c.id).filter(Boolean) as string[],
+);
 
 const LIMIT = 50;
 
@@ -152,12 +161,9 @@ export default function AuditPage() {
   const tableFacets = facetsData?.tables ?? [];
   const columnFacets = facetsData?.columns ?? [];
 
-  // Column definitions
-  const columns = getAuditColumns();
-  const columnIds = useMemo(
-    () => new Set(columns.map((c) => c.id).filter(Boolean) as string[]),
-    [columns],
-  );
+  // Column definitions — stable references hoisted to module scope (#3585).
+  const columns = AUDIT_COLUMNS;
+  const columnIds = AUDIT_COLUMN_IDS;
 
   // `useDataTable` writes pagination to `?page=` (1-indexed) + `?perPage=` and
   // sorting to `?sort=`. Read them here so `useAdminFetch` can key the rows

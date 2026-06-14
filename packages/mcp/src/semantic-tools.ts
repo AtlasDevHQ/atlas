@@ -560,13 +560,21 @@ export function registerSemanticTools(
                 : `MCP runMetric ${metric.id}`;
 
               // #3500 — progress + cancellation around the metric query.
+              // #3575 — `executeSQL.execute` does not read `abortSignal` from
+              // the tool-call extra (sql.ts destructures only sql/explanation/
+              // connectionId/scope). Passing a signal would be dead code and
+              // imply the query is abortable at the driver level, which it is
+              // not. The statement-timeout (`ATLAS_QUERY_TIMEOUT`, default 30s)
+              // is the sole cancellation mechanism for the datasource side; a
+              // client cancel cuts the dispatch loose at the MCP boundary and
+              // the DB-side query drains within that timeout window.
               const result = (await withProgressAndCancellation(
                 extra,
                 { startMessage: "Running metric", endMessage: "Metric complete" },
-                async (_reporter, signal) =>
+                async (_reporter, _signal) =>
                   executeSQL.execute!(
                     { sql: metric.sql, explanation, connectionId: targetConnectionId },
-                    { toolCallId: "mcp-runMetric", messages: [], abortSignal: signal },
+                    { toolCallId: "mcp-runMetric", messages: [] },
                   ),
               )) as Record<string, unknown>;
 

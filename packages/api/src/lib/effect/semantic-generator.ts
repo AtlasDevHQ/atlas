@@ -56,6 +56,7 @@ import {
   type SemanticEntityType,
 } from "@atlas/api/lib/semantic/entities";
 import { SAFE_TABLE_NAME } from "@atlas/api/lib/semantic/shapes";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ProfilingFailedError } from "./errors";
 
@@ -289,6 +290,22 @@ function profileImpl(
     }
 
     const start = Date.now();
+    // #3581 — preserve cooperative cancellation. `OperationCancelledError` is
+    // raised by the MCP progress bridge when the client aborts mid-profile.
+    // Wrapping it in `ProfilingFailedError` erases its identity and surfaces a
+    // spurious `validation_failed`. We map the raw rejection into the error
+    // channel (`catch: (err) => err`) and then, in `catchAll`, route a
+    // cancellation to `Effect.die` (a DEFECT) while every other failure becomes
+    // a typed `ProfilingFailedError`. NOTE: a `catch` that returns
+    // `Effect.die(...)`, or `throw`s, does NOT reliably escalate to a defect —
+    // `tryPromise`'s `catch` is a value mapper, so the return value is wrapped
+    // as a Fail. `catchAll` is the correct seam to choose die-vs-fail.
+    // `runSemanticProfile`'s `causeToError` path then extracts the defect and
+    // re-throws it; the MCP layer recognises `instanceof OperationCancelledError`.
+    //
+    // Detected by name (not `instanceof`) because `OperationCancelledError`
+    // lives in `@atlas/mcp` which `@atlas/api` must not import (ADR-0013 /
+    // core→plugin decoupling).
     const result: ProfilingResult = yield* Effect.tryPromise({
       try: () =>
         profiler({
@@ -299,12 +316,27 @@ function profileImpl(
           progress: opts.progress,
           logger: opts.logger,
         }),
-      catch: (err) =>
-        new ProfilingFailedError({
-          message: `Profiling failed: ${err instanceof Error ? err.message : String(err)}`,
-          reason: "profiler_error",
-        }),
-    });
+      catch: (err) => err,
+    }).pipe(
+      Effect.catchAll((err) => {
+        if (err instanceof Error && err.name === "OperationCancelledError") {
+          // Cooperative cancellation → surface as a defect so its identity
+          // survives to the MCP layer instead of becoming `validation_failed`.
+          return Effect.die(err);
+        }
+        // #3579 — scrub DSN userinfo from profiler error messages. A verbose
+        // driver error can echo the connection string (scheme://user:pass@host).
+        // `errorMessage` strips `scheme://***@host` patterns and truncates to
+        // 512 chars — the same scrub the create/pre-flight path applies via
+        // `scrubSecretsFromMessage`'s `errorMessage` fallback.
+        return Effect.fail(
+          new ProfilingFailedError({
+            message: `Profiling failed: ${errorMessage(err)}`,
+            reason: "profiler_error",
+          }),
+        );
+      }),
+    );
     const elapsedMs = Date.now() - start;
 
     if (result.profiles.length === 0) {

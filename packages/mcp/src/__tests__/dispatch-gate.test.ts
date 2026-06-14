@@ -32,6 +32,7 @@ import {
   type McpDispatchGateContext,
   type McpDispatchGateRequirements,
 } from "../dispatch-gate.js";
+import { withLiveActor } from "../live-actor-store.js";
 
 const ORG = "org_test";
 
@@ -391,6 +392,179 @@ describe("stub admin tool through the pipeline (#3508 e2e)", () => {
   it("allows an admin with mcp:write", async () => {
     const client = await clientForStubAdminTool(baseCtx());
     const res = await client.callTool({ name: "stub_admin", arguments: {} });
+    expect(res.isError).toBeFalsy();
+    expect(getContentText(res.content)).toContain('"ok":true');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3582 — approval dedup uses stable resource+action key, not free-text description
+// ---------------------------------------------------------------------------
+
+describe("runMcpDispatchGate — approval dedup keyed on toolName:resource (#3582)", () => {
+  /**
+   * Build a gate stub that captures the `querySql` argument passed to
+   * hasApprovedRequest so we can assert the dedup key shape.
+   */
+  function dedupeCapturingGate(opts: {
+    required: boolean;
+    alreadyApproved?: boolean;
+    /** Captures the querySql passed to hasApprovedRequest. */
+    capturedDedupKey?: { value: string | null };
+  }): ApprovalGateShape {
+    const unused = () => Effect.die(new Error("approval gate method not used in this test"));
+    return {
+      available: true,
+      checkApprovalRequired: () =>
+        Effect.succeed({
+          required: opts.required,
+          matchedRules: [{ id: "rule_1", name: "MCP destructive" }] as never,
+        }),
+      hasApprovedRequest: (_, __, querySql) => {
+        if (opts.capturedDedupKey) opts.capturedDedupKey.value = querySql;
+        return Effect.succeed(opts.alreadyApproved ?? false);
+      },
+      createApprovalRequest: (_args) =>
+        Effect.succeed(pendingRequest("req_dedup")),
+      listApprovalRules: unused,
+      createApprovalRule: unused,
+      updateApprovalRule: unused,
+      deleteApprovalRule: unused,
+      listApprovalRequests: unused,
+      getApprovalRequest: unused,
+      reviewApprovalRequest: unused,
+      expireStaleRequests: unused,
+      getPendingCount: unused,
+    };
+  }
+
+  it("dedup key is toolName:resource, not the free-text description", async () => {
+    const captured: { value: string | null } = { value: null };
+    await runMcpDispatchGate(
+      baseCtx(),
+      {
+        ...adminReqs,
+        toolName: "delete_datasource",
+        destructive: {
+          resource: "datasource:prod-us",
+          description: "Delete datasource prod-us (human readable)",
+        },
+      },
+      { loadApprovalGate: async () => dedupeCapturingGate({ required: true, capturedDedupKey: captured }) },
+    );
+    // The dedup key must be the stable "toolName:resource" form, NOT the description.
+    expect(captured.value).toBe("delete_datasource:datasource:prod-us");
+    expect(captured.value).not.toContain("human readable");
+  });
+
+  it("two actions with the same description but different resource ids are NOT deduped", async () => {
+    // Same description, different resource → different dedup keys → both would
+    // be treated as separate pending requests. We verify by checking that the
+    // querySql stored via createApprovalRequest differs between the two calls.
+    const capturedA: { value: string | null } = { value: null };
+    const capturedB: { value: string | null } = { value: null };
+
+    const sharedDesc = "Delete a datasource (hard delete via MCP)";
+
+    await runMcpDispatchGate(
+      baseCtx(),
+      {
+        ...adminReqs,
+        toolName: "delete_datasource",
+        destructive: { resource: "datasource:prod-us", description: sharedDesc },
+      },
+      { loadApprovalGate: async () => dedupeCapturingGate({ required: true, capturedDedupKey: capturedA }) },
+    );
+
+    await runMcpDispatchGate(
+      baseCtx(),
+      {
+        ...adminReqs,
+        toolName: "delete_datasource",
+        destructive: { resource: "datasource:eu-staging", description: sharedDesc },
+      },
+      { loadApprovalGate: async () => dedupeCapturingGate({ required: true, capturedDedupKey: capturedB }) },
+    );
+
+    // Different resource ids → different dedup keys even though descriptions match.
+    expect(capturedA.value).toBe("delete_datasource:datasource:prod-us");
+    expect(capturedB.value).toBe("delete_datasource:datasource:eu-staging");
+    expect(capturedA.value).not.toBe(capturedB.value);
+  });
+
+  it("same resource+toolName IS deduped (already-approved proceeds)", async () => {
+    const res = await runMcpDispatchGate(
+      baseCtx(),
+      {
+        ...adminReqs,
+        toolName: "delete_datasource",
+        destructive: {
+          resource: "datasource:prod-us",
+          description: "Any description here",
+        },
+      },
+      {
+        loadApprovalGate: async () =>
+          dedupeCapturingGate({ required: true, alreadyApproved: true }),
+      },
+    );
+    // alreadyApproved → gate 4 proceeds (null).
+    expect(res).toBeNull();
+  });
+});
+
+// ── #3569 — mid-session role demotion is revocation-immediate ────────────
+//
+// Gate 3 must enforce the LIVE member-table role, not the role captured at
+// session creation. `hosted.ts` sets the freshly-resolved actor on a separate
+// per-request ALS (`withLiveActor`) that is NOT overwritten by nested
+// `withRequestContext` calls in tool dispatch bodies. Gate 3 reads the live
+// actor via `getLiveActor()` and falls back to `ctx.actor` only for
+// stdio (where no live actor is set).
+
+describe("gate-3 live-role enforcement — mid-session demotion (#3569)", () => {
+  it("denies an admin tool when the live actor has been demoted to member (role is not session-frozen)", async () => {
+    // ctx.actor has 'admin' role — this is the session-frozen actor that
+    // would be used WITHOUT the live-actor fix.
+    const sessionFrozenAdminCtx = baseCtx({ actor: actor("admin") });
+    const client = await clientForStubAdminTool(sessionFrozenAdminCtx);
+
+    // Simulate demotion: the live actor (freshly resolved per request) is now
+    // 'member'. `withLiveActor` mirrors what `hosted.ts` does before calling
+    // `transport.handleRequest` for existing sessions.
+    const demotedActor = actor("member");
+    const res = await withLiveActor(demotedActor, () =>
+      client.callTool({ name: "stub_admin", arguments: {} }),
+    );
+
+    // Must be denied — proving gate-3 uses the live role, not the
+    // session-frozen admin role from ctx.actor.
+    expect(res.isError).toBe(true);
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("forbidden");
+  });
+
+  it("allows an admin tool when the live actor has been promoted to admin (live role wins)", async () => {
+    // ctx.actor has 'member' role — the session-frozen actor would block.
+    const sessionFrozenMemberCtx = baseCtx({ actor: actor("member") });
+    const client = await clientForStubAdminTool(sessionFrozenMemberCtx);
+
+    // Simulate promotion: the live actor (freshly resolved per request) is
+    // now 'admin'.
+    const promotedActor = actor("admin");
+    const res = await withLiveActor(promotedActor, () =>
+      client.callTool({ name: "stub_admin", arguments: {} }),
+    );
+
+    // Must succeed — proving the live role wins over the session-frozen one.
+    expect(res.isError).toBeFalsy();
+    expect(getContentText(res.content)).toContain('"ok":true');
+  });
+
+  it("falls back to ctx.actor when no live actor is set (stdio / test path)", async () => {
+    // No `withLiveActor` wrapper — gate-3 should fall back to ctx.actor.
+    const client = await clientForStubAdminTool(baseCtx({ actor: actor("admin") }));
+    const res = await client.callTool({ name: "stub_admin", arguments: {} });
+    // ctx.actor is admin → should pass.
     expect(res.isError).toBeFalsy();
     expect(getContentText(res.content)).toContain('"ok":true');
   });

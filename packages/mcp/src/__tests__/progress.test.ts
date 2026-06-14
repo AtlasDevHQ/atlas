@@ -85,4 +85,41 @@ describe("withProgressAndCancellation", () => {
     setTimeout(() => ac.abort(), 10);
     await expect(pending).rejects.toBeInstanceOf(OperationCancelledError);
   });
+
+  it("does not produce an unhandled rejection when work wins the race and abort fires after (#3584a)", async () => {
+    // Regression for #3584: the cancellation promise rejected after `finally`
+    // removed the abort listener (work won the race) and had no handler,
+    // producing an unhandled rejection. The fix: `.catch(() => {})` on the
+    // cancellation promise so the rejection is always consumed.
+    const ac = new AbortController();
+    const { extra } = fakeExtra({ signal: ac.signal });
+
+    // Collect any unhandled rejections that fire during this test.
+    const unhandled: unknown[] = [];
+    const handler = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", handler);
+
+    try {
+      // Work completes synchronously via Promise.resolve so it always wins.
+      // Abort fires AFTER `withProgressAndCancellation` has returned, simulating
+      // the "work wins then abort fires" race.
+      const result = await withProgressAndCancellation(
+        extra,
+        {},
+        async () => "done",
+      );
+      expect(result).toBe("done");
+
+      // Abort after the work is done — this fires the cancellation promise
+      // rejection, which must be silently swallowed by the `.catch`.
+      ac.abort();
+
+      // Give any microtask / unhandled-rejection detection a tick to fire.
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.removeListener("unhandledRejection", handler);
+    }
+  });
 });

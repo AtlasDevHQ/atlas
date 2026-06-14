@@ -895,12 +895,18 @@ export async function runSemanticProfile(opts: {
 
   const program = Effect.gen(function* () {
     const gen = yield* SemanticGenerator;
+    // When persist will run, defer in-memory whitelist registration until AFTER
+    // persist succeeds (#3589). A persist failure otherwise leaves the connection
+    // queryable in-process (split-brain: executeSQL accepts it, but the entities
+    // aren't durable and won't survive a restart). When there's nothing to persist
+    // (no orgId / no internal DB) the in-memory whitelist IS the only durability
+    // mechanism, so register immediately as before.
     const result = yield* gen.profileAndGenerate({
       url: opts.url,
       dbType: opts.dbType,
       ...(opts.schema !== undefined ? { schema: opts.schema } : {}),
       connectionId: opts.connectionId,
-      registerWhitelist: true,
+      registerWhitelist: !shouldPersist,
       ...(opts.progress !== undefined ? { progress: opts.progress } : {}),
     });
 
@@ -915,6 +921,10 @@ export async function runSemanticProfile(opts: {
         entities: result.entities,
         metrics: result.metrics,
       });
+      // Persist succeeded: now safe to register the in-memory whitelist so
+      // subsequent in-process executeSQL calls are permitted (#3589).
+      const connectionId = opts.connectionId ?? "default";
+      gen.registerWhitelist(connectionId, result.entities);
       return { result, persisted };
     }
     return { result, persisted: null };

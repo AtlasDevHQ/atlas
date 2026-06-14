@@ -146,4 +146,52 @@ describe("trackResponseStreamLifetime", () => {
     expect(out).toBe(res);
     expect(opens).toBe(0);
   });
+
+  // ── #3576 — POST event-stream liveness via onActivity ────────────────
+  //
+  // For long-running POST event-streams (streaming tool calls), `onActivity`
+  // fires on each successfully enqueued chunk so `lastSeenAt` can be kept
+  // current. Without this, a 2-hour streaming query would see its session's
+  // `lastSeenAt` age out to dispatch-time and the idle sweep could evict it.
+
+  it("fires onActivity on every enqueued chunk (POST liveness, #3576)", async () => {
+    let activityCount = 0;
+    const src = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(enc.encode("data: a\n\n"));
+        controller.enqueue(enc.encode("data: b\n\n"));
+        controller.enqueue(enc.encode("data: c\n\n"));
+        controller.close();
+      },
+    });
+
+    const tracked = trackResponseStreamLifetime(sseResponse(src), {
+      onOpen: () => {},
+      onClose: () => {},
+      onActivity: () => { activityCount++; },
+    });
+
+    await new Response(tracked.body).text();
+    // One fire per enqueued chunk (3 chunks); NOT fired on the close frame.
+    expect(activityCount).toBe(3);
+  });
+
+  it("does not fire onActivity on error (only on successful enqueues)", async () => {
+    let activityCount = 0;
+    const src = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("boom"));
+      },
+    });
+
+    const tracked = trackResponseStreamLifetime(sseResponse(src), {
+      onOpen: () => {},
+      onClose: () => {},
+      onActivity: () => { activityCount++; },
+    });
+
+    const reader = tracked.body!.getReader();
+    await expect(reader.read()).rejects.toThrow("boom");
+    expect(activityCount).toBe(0); // no chunks were enqueued before the error
+  });
 });

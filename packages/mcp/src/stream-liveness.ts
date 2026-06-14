@@ -43,6 +43,17 @@ export interface StreamLifetimeHooks {
    * gone, so without this the fault would be operator-invisible.
    */
   readonly onError?: (err: unknown) => void;
+  /**
+   * Fires on each successfully-enqueued chunk (after `controller.enqueue`).
+   * Used by POST event-stream tracking (#3576) to keep `lastSeenAt` current
+   * during long-running streaming tool calls so the idle sweep never sweeps a
+   * session mid-flight.
+   *
+   * Not fired on the final "done" frame (use `onClose` for that). Optional —
+   * GET notification streams don't need per-chunk activity updates since their
+   * liveness is tracked via `activeStreams`.
+   */
+  readonly onActivity?: () => void;
 }
 
 /**
@@ -84,6 +95,11 @@ export function trackResponseStreamLifetime(
           return;
         }
         controller.enqueue(value);
+        // Notify the caller that a chunk was successfully delivered. Used by
+        // POST event-stream tracking (#3576) to keep `lastSeenAt` current
+        // during long streaming tool calls so the idle sweep never evicts a
+        // session that is actively producing output.
+        hooks.onActivity?.();
       } catch (err) {
         // The source stream errored. Surface it to the caller for server-side
         // logging (controller.error only reaches the client), release the

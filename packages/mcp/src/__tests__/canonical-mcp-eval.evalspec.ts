@@ -591,6 +591,7 @@ describe("MCP path canonical eval (#2074)", () => {
       expect(names).toEqual([
         "archive_datasource",
         "create_datasource",
+        "create_rest_datasource",
         "delete_datasource",
         "describeEntity",
         "executeSQL",

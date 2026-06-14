@@ -522,4 +522,39 @@ describe("probePluginDatasourceConnection (#3547)", () => {
     await new Promise((r) => setTimeout(r, 80));
     expect(closed).toBe(true);
   });
+
+  it("#3580 — closes an eagerly-built connection whose probe query NEVER settles (infinite hang = pool leak)", async () => {
+    // Adapter pattern that triggers the bug: createFromConfig resolves
+    // immediately (eager-connect on build), but the probe query returns a
+    // promise that never resolves/rejects — the probe's .finally() would never
+    // fire, so the salvage-close in the .finally() would never run either.
+    // The fix: close `built` synchronously inside the onTimeout callback so the
+    // close fires on the deadline, not only when the promise eventually settles.
+    let closeCount = 0;
+    const eagerConn = {
+      // Query never settles — hangs indefinitely.
+      query: () => new Promise<unknown>(() => {}),
+      close: async () => { closeCount++; },
+    };
+    fakeDatasourcePlugins = [
+      {
+        types: ["datasource"],
+        connection: {
+          dbType: "clickhouse",
+          // Resolves synchronously with a connection whose query hangs.
+          createFromConfig: () => Promise.resolve(eagerConn),
+        },
+      },
+    ];
+    const out = await bridge.probePluginDatasourceConnection("clickhouse", { url: "clickhouse://eager/db" }, 30);
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.reason).toBe("connect_failed");
+      expect(out.message).toContain("exceeded");
+    }
+    // close() must have been called exactly once from the timeout path.
+    // (A small grace period covers any micro-task scheduling.)
+    await new Promise((r) => setTimeout(r, 20));
+    expect(closeCount).toBe(1);
+  });
 });

@@ -647,6 +647,32 @@ export interface AtlasMcpTool<
    * dispatches (#3520). Omit (or set `readOnlyHint: true`) for read-only tools.
    */
   readonly annotations?: McpToolAnnotations;
+  /**
+   * ADR-0016 governance declarations (#3571). Optional and backward-compatible —
+   * unmarked tools receive safe defaults (actionCategory: 'integration',
+   * minRole: 'member', destructive: false).
+   *
+   * - `actionCategory` — the per-workspace MCP action-policy kill-switch category
+   *   (gate 1). A workspace admin can disable an entire category via the action
+   *   policy dashboard, blocking all tools in that category. Defaults to
+   *   `'integration'` if omitted (most plugin tools interact with third-party APIs).
+   *   Use `'datasource'` for tools that provision or manage data connections,
+   *   `'policy'` for tools that change governance settings.
+   *
+   * - `minRole` — minimum RBAC role required on the actor (gate 3). Defaults to
+   *   `'member'` so existing plugin tools remain accessible. Set to `'admin'` for
+   *   tools that mutate shared workspace resources.
+   *
+   * - `destructive` — if `true`, the tool is routed through the approval gate
+   *   (gate 4) with `origin=mcp` so a matching approval rule queues the action
+   *   for review before execution. Defaults to `false`. A tool with
+   *   `destructiveHint: true` in annotations but `destructive: false` here will
+   *   enforce `mcp:write` (gate 2) but NOT queue for approval — set `destructive:
+   *   true` explicitly for irreversible mutations.
+   */
+  readonly actionCategory?: "datasource" | "integration" | "policy";
+  readonly minRole?: "member" | "admin" | "owner";
+  readonly destructive?: boolean;
   /** Tool handler. Receives the parsed args and a per-dispatch context. */
   handler(args: TInput, context: McpToolContext): Promise<TOutput>;
 }

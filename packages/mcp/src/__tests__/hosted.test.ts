@@ -1870,7 +1870,7 @@ describe("hosted MCP — capacity", () => {
       // abandoned sessions must be evicted in the SAME pass while the
       // live-stream one is skipped.
       const farFuture = Date.now() + 24 * 60 * 60 * 1000; // +1 day
-      const evicted = _sweepIdleSessionsForTests(farFuture, 60_000);
+      const evicted = _sweepIdleSessionsForTests(farFuture, 60_000, Infinity);
       expect(evicted).toBe(2);
       expect(_hostedSessionCount()).toBe(1);
 
@@ -1975,5 +1975,45 @@ describe("bindFactoryContext live role resolution (#3505)", () => {
     mockResolveEffectiveRole.mockResolvedValueOnce(undefined);
     const ctx = await bindFactoryContext(makeBearer(), ORG_A);
     expect(ctx.user.role).toBeUndefined();
+  });
+});
+
+// ── #3577 — `_setIdleTimeoutForTests` production guard ───────────────────
+//
+// The setter bypasses the 1-minute idle floor so test sweeps can run in
+// milliseconds. In production that bypass must be unreachable — calling the
+// setter with NODE_ENV=production is a programming error and throws so the
+// mistake surfaces at startup, not silently degenerate-sweeps every session.
+
+describe("_setIdleTimeoutForTests production guard (#3577)", () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  afterEach(() => {
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+    // Reset the override (safe because NODE_ENV is restored above).
+    _setIdleTimeoutForTests(null);
+  });
+
+  it("throws when called in production (NODE_ENV=production)", () => {
+    process.env.NODE_ENV = "production";
+    expect(() => _setIdleTimeoutForTests(50)).toThrow(
+      "_setIdleTimeoutForTests must not be called in production",
+    );
+  });
+
+  it("succeeds in test mode (NODE_ENV=test) — existing tests set sub-floor values", () => {
+    process.env.NODE_ENV = "test";
+    expect(() => _setIdleTimeoutForTests(50)).not.toThrow();
+    _setIdleTimeoutForTests(null);
+  });
+
+  it("succeeds when NODE_ENV is unset (dev / CI without explicit NODE_ENV)", () => {
+    delete process.env.NODE_ENV;
+    expect(() => _setIdleTimeoutForTests(100)).not.toThrow();
+    _setIdleTimeoutForTests(null);
   });
 });

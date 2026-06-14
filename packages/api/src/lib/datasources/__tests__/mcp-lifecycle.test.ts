@@ -84,14 +84,22 @@ mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
 // `loadDatasourceProfileTarget` parses the catalog schema + decrypts config.
 // Plaintext passthrough is enough — the dbType/url come from the resolver mock.
 mock.module("@atlas/api/lib/plugins/secrets", () => ({
-  parseConfigSchema: () => ({ state: "parsed", fields: [] }),
+  // Echo a config_schema array verbatim as parsed fields so
+  // `loadProvisionConfigFields` can be exercised; non-array → empty (matches
+  // the prior `config_schema: []` profile-target cases).
+  parseConfigSchema: (s: unknown) => ({ state: "parsed", fields: Array.isArray(s) ? s : [] }),
   decryptSecretFields: (config: Record<string, unknown>) => config,
   encryptSecretFields: (config: Record<string, unknown>) => config,
   maskSecretFields: (config: Record<string, unknown>) => config,
 }));
 
-const { listDatasources, runDatasourceInstaller, provisionDatasource, loadDatasourceProfileTarget } =
-  await import("../mcp-lifecycle.js");
+const {
+  listDatasources,
+  runDatasourceInstaller,
+  provisionDatasource,
+  loadDatasourceProfileTarget,
+  loadProvisionConfigFields,
+} = await import("../mcp-lifecycle.js");
 
 beforeEach(() => {
   mockInternalQuery.mockClear();
@@ -235,7 +243,8 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "snowflake",
       installId: "wh",
-      url: SECRET_URL,
+      config: { url: SECRET_URL },
+      secretKeys: ["url"],
     });
     expect(outcome.kind).toBe("unsupported");
     expect(registerSpy).not.toHaveBeenCalled();
@@ -247,7 +256,8 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "postgres",
       installId: "dupe",
-      url: SECRET_URL,
+      config: { url: SECRET_URL },
+      secretKeys: ["url"],
     });
     expect(outcome.kind).toBe("error");
     if (outcome.kind === "error") expect(outcome.status).toBe(409);
@@ -259,7 +269,7 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
     healthResult = { status: "healthy", latencyMs: 5, checkedAt: new Date(0) };
     // Health OK → reaches the installer; installDatasource isn't mocked here,
     // so the program will fail — but we only assert the pre-flight behaviour.
-    await provisionDatasource("org_1", { catalogSlug: "postgres", installId: "new-pg", url: SECRET_URL })
+    await provisionDatasource("org_1", { catalogSlug: "postgres", installId: "new-pg", config: { url: SECRET_URL }, secretKeys: ["url"] })
       .catch(() => undefined);
     // Registered + unregistered exactly the same throwaway id, never "new-pg".
     const registeredId = registerSpy.mock.calls[0]?.[0] as string;
@@ -276,7 +286,8 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "postgres",
       installId: "new-pg",
-      url: SECRET_URL,
+      config: { url: SECRET_URL },
+      secretKeys: ["url"],
     });
     expect(outcome.kind).toBe("health_error");
     expect(unregisterSpy).toHaveBeenCalledTimes(1); // probe rolled back
@@ -288,7 +299,8 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "postgres",
       installId: "new-pg",
-      url: SECRET_URL,
+      config: { url: SECRET_URL },
+      secretKeys: ["url"],
     });
     expect(outcome.kind).toBe("health_error");
     expect(registerSpy).toHaveBeenCalledTimes(1);
@@ -305,7 +317,8 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "postgres",
       installId: "new-pg",
-      url: SECRET_URL,
+      config: { url: SECRET_URL },
+      secretKeys: ["url"],
     });
     expect(outcome.kind).toBe("health_error");
     expect(unregisterSpy).toHaveBeenCalledTimes(1);
@@ -315,6 +328,36 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
       // Exact-url scrub replaces the whole DSN, '@'-password and all.
       expect(outcome.message).toContain("[redacted]");
     }
+  });
+});
+
+describe("loadProvisionConfigFields", () => {
+  it("maps the catalog config_schema to elicitation fields + secretKeys, excluding description", async () => {
+    // Mirrors the elasticsearch catalog row: non-secret url + secret apiKey,
+    // plus a description field that must NOT be elicited (it's a tool arg).
+    internalRows = [
+      {
+        config_schema: [
+          { key: "url", type: "string", label: "Connection URL", required: true, description: "es://…" },
+          { key: "apiKey", type: "string", label: "API Key", secret: true },
+          { key: "description", type: "string", label: "Description" },
+        ],
+      },
+    ];
+    const res = await loadProvisionConfigFields("elasticsearch");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      expect(res.fields.map((f) => f.key)).toEqual(["url", "apiKey"]); // description excluded
+      expect(res.fields[0]).toEqual({ key: "url", label: "Connection URL", description: "es://…", required: true, secret: false });
+      expect(res.fields[1].secret).toBe(true);
+      expect(res.secretKeys).toEqual(["apiKey"]);
+    }
+  });
+
+  it("returns not_found when the catalog row is missing", async () => {
+    internalRows = [];
+    const res = await loadProvisionConfigFields("nope");
+    expect(res.kind).toBe("not_found");
   });
 });
 

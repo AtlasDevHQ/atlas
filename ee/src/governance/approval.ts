@@ -533,6 +533,29 @@ const IDENTITY_MISSING_RULE: ApprovalRule = {
 };
 
 /**
+ * #3573 — the synthetic "approval required by default" rule returned for
+ * destructive datasource MCP actions in a default install (no matching
+ * `approval_rules` row). ADR-0016 gate 4 default is "approval required" for
+ * destructive actions; this materialises that default so the gate has a
+ * `matchedRules` entry to surface. Factored out of the two call sites (the
+ * no-rows early branch and the post-scan fallback) so the literal can't drift.
+ */
+function makeMcpDatasourceDefaultRule(orgId: string): ApprovalRule {
+  return {
+    id: "__mcp_datasource_default__",
+    orgId,
+    name: "mcp-datasource-default",
+    ruleType: "datasource",
+    pattern: "*",
+    threshold: null,
+    enabled: true,
+    origin: "mcp",
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  };
+}
+
+/**
  * Returns true when at least one enabled approval rule exists in the
  * database, regardless of org. Used as a defensive check when an agent
  * invocation arrives without an `orgId` — the previous behaviour
@@ -662,19 +685,7 @@ export const checkApprovalRequired = (
         tablesLower.length > 0 &&
         tablesLower.every((t) => t.startsWith("datasource:"))
       ) {
-        const defaultRule: ApprovalRule = {
-          id: "__mcp_datasource_default__",
-          orgId,
-          name: "mcp-datasource-default",
-          ruleType: "datasource",
-          pattern: "*",
-          threshold: null,
-          enabled: true,
-          origin: "mcp",
-          createdAt: new Date(0).toISOString(),
-          updatedAt: new Date(0).toISOString(),
-        };
-        return { required: true, matchedRules: [defaultRule] };
+        return { required: true, matchedRules: [makeMcpDatasourceDefaultRule(orgId)] };
       }
       return { required: false, matchedRules: [] };
     }
@@ -726,19 +737,7 @@ export const checkApprovalRequired = (
       tablesLower.length > 0 &&
       tablesLower.every((t) => t.startsWith("datasource:"))
     ) {
-      const defaultRule: ApprovalRule = {
-        id: "__mcp_datasource_default__",
-        orgId,
-        name: "mcp-datasource-default",
-        ruleType: "datasource",
-        pattern: "*",
-        threshold: null,
-        enabled: true,
-        origin: "mcp",
-        createdAt: new Date(0).toISOString(),
-        updatedAt: new Date(0).toISOString(),
-      };
-      return { required: true, matchedRules: [defaultRule] };
+      return { required: true, matchedRules: [makeMcpDatasourceDefaultRule(orgId)] };
     }
 
     return {

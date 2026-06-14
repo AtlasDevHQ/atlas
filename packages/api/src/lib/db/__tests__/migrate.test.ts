@@ -155,7 +155,8 @@ describe("runMigrations", () => {
     //   Plus 0133 (approval surface→origin rename, #3491) = 134.
     //   Plus 0134 (mcp_action_policy per-workspace kill-switch, #3509) = 135.
     //   Plus 0135 (approval_rules chk_approval_rule_type + 'datasource', #3573) = 136.
-    expect(count).toBe(136);
+    //   Plus 0136 (mcp_action_policy.status DEFAULT 'blocked'→'allowed', #3578) = 137.
+    expect(count).toBe(137);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -320,6 +321,7 @@ describe("runMigrations", () => {
         "0133_approval_origin_rename.sql",
         "0134_mcp_action_policy.sql",
         "0135_approval_rule_type_datasource.sql",
+        "0136_mcp_action_policy_default_allowed.sql",
       ],
     });
 

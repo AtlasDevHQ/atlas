@@ -208,8 +208,16 @@ export async function createAtlasMcpServer(
   // (onsessionclosed) and stdio (process exit via ManagedRuntime) paths
   // release the watcher automatically.
   const resourceHandle = registerResources(server);
+  // Chain rather than overwrite: preserve any onclose the SDK (or a prior
+  // registration) already installed, then release the watcher. Assigning
+  // directly would silently drop a pre-existing handler.
+  const priorOnClose = server.server.onclose;
   server.server.onclose = () => {
-    resourceHandle.close();
+    try {
+      priorOnClose?.();
+    } finally {
+      resourceHandle.close();
+    }
   };
 
   await registerPrompts(server, {

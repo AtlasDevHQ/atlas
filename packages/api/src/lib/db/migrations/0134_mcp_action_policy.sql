@@ -11,9 +11,7 @@
 -- `allowed` and is represented by the ABSENCE of a row — a category is blocked
 -- iff a row exists with status = 'blocked'. The dashboard (#3510) upserts an
 -- explicit `allowed`/`blocked` row so a re-enable keeps an audit trail
--- (updated_by/updated_at) rather than silently deleting state. The column
--- DEFAULT is also `allowed` so a status-omitting INSERT never silently creates
--- a blocked row (#3578).
+-- (updated_by/updated_at) rather than silently deleting state.
 --
 -- Drizzle-managed (mirrored in db/schema.ts as `mcpActionPolicy`, same PR).
 -- `org_id` is the Better-Auth organization id (TEXT, no FK — `organization` is
@@ -25,7 +23,7 @@
 CREATE TABLE IF NOT EXISTS mcp_action_policy (
   org_id TEXT NOT NULL,
   category TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'allowed',
+  status TEXT NOT NULL DEFAULT 'blocked',
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_by TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

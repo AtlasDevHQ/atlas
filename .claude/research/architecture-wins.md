@@ -2629,3 +2629,20 @@ The implementation survey narrowed the candidate's "16 pages" to the surfaces th
 - Fail-closed is the invariant, and the review cycle is itself the documentation of why: the first cut left `checkApprovalRequired`/`hasApprovedRequest` outside the try/catch, where the EE layer's `Effect.promise` turns a DB rejection into a defect that escapes uncaught — two independent reviewers caught it, and the fix put all four gate calls behind one boundary that denies on any throw, mirroring executeSQL's single-tryPromise shape.
 
 **Category:** New cross-cutting infrastructure collapsed to a single reusable seam — the gate order has one home and one RBAC primitive, so the datasource flagship tools inherit governance for free instead of each re-deriving (and risking drift on) the security model.
+
+## 94. REST datasources converge onto the `/admin/semantic` surface + a shared entity-YAML vocabulary contract — two renderers stay separate, can't drift (#3628)
+
+**Date:** 2026-06-14
+**Issue:** #3628
+**PR:** #3639
+
+**Problem:** REST/OpenAPI datasources were queryable-but-invisible. The agent rendered their entities live from the cached `openapi_snapshot` at prompt-build time, but `/admin/semantic` knew nothing about them — a REST-only workspace saw a misleading "no semantic layer / run `atlas init`" empty state. Separately, the two entity-YAML renderers (REST's `renderEntityYaml` and the DB profiler's `generateEntityYAML`) shared a field vocabulary (`dimensions` / `joins`+`target_entity` / `query_patterns` / type tags) only by coincidence of duplicated string literals — free to drift silently, which would break the human-facing surface for one source only.
+
+**Solution:** Convergence, not consolidation. (1) A new read-only `lib/openapi/admin-rest-entities.ts` derives entities on read from the cached snapshot via the **same pure `generateSemanticModel`** the agent uses — never persisted to `semantic_entities`, never publish-gated — wired into the admin list/detail/raw routes + overview count behind a namespaced storage key. (2) The shared key vocabulary is lifted into one contract in `@useatlas/schemas/semantic-entity-yaml.ts` (`ENTITY_YAML_KEYS` etc. + `SharedEntityYamlSchema`); both renderers consume the constants as computed keys, and a drift test validates both outputs — a field-name drift is now a compile/test failure, not a silent break. (3) ADR-0017 records why the spec-derived (ephemeral, pure) and profiled (persisted, I/O + publish-gated) generators intentionally do NOT share a generator seam — a unifying super-seam would be accidental complexity.
+
+**Impact:**
+- A REST-only workspace finally sees its semantic layer in `/admin/semantic` (read-only), and Overview/Semantic agree on the entity count.
+- The two YAML dialects can no longer drift: shared key names have one home, asserted by a cross-renderer contract test.
+- Zero agent-token cost and zero prompt-representation change — the bake-off's `operation-graph` (Path A) default is untouched (the `twenty-acceptance` test passes unchanged); renderer golden output is byte-identical.
+
+**Category:** A visibility gap closed with one read-only derive-on-read module reusing the existing pure generator, plus a duplicated-vocabulary smell collapsed into a single shared contract — convergence on surface + vocabulary while the two generators stay deliberately, documentedly separate (ADR-0017).

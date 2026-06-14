@@ -100,6 +100,12 @@ interface EntitySummary {
   /** True when the API row carries `status: "draft"`. */
   draft: boolean;
   /**
+   * True for REST/OpenAPI-derived entities (#3628). These converge onto this
+   * surface read-only — they're generated live from the cached spec snapshot,
+   * never persisted — so the page hides edit/delete/version controls for them.
+   */
+  readOnly: boolean;
+  /**
    * Optional DB↔YAML drift signal (#2459). `null` when the API didn't
    * compute drift (e.g. caller omitted `?connection`); a defined value
    * is what slice 1 surfaces as the blue file-tree accent.
@@ -550,6 +556,7 @@ export default function SemanticPage() {
             columnCount: typeof e.columnCount === "number" ? e.columnCount : 0,
             connectionGroupId,
             draft: e.status === "draft",
+            readOnly: e.readOnly === true,
             drift: normalizeDrift(e.drift),
           };
         }).filter((e) => e.name.length > 0);
@@ -812,6 +819,20 @@ export default function SemanticPage() {
   // no matching connection falls back to an id-derived label.
   const connectionGroups: SemanticGroupMeta[] = connectionGroupsFrom(connections);
 
+  // #3628: REST/OpenAPI-derived entities are read-only (generated live from the
+  // cached spec snapshot, never persisted). Resolve the selected entity's
+  // summary — matching on (name, group) since the same name can exist per group
+  // — to hide edit/delete controls for them.
+  const selectedSummary =
+    selection?.type === "entity"
+      ? entities.find(
+          (e) =>
+            e.name === selection.name &&
+            (e.connectionGroupId ?? null) === (selection.connectionGroupId ?? null),
+        )
+      : undefined;
+  const selectionReadOnly = selectedSummary?.readOnly ?? false;
+
   return (
     <div className="flex h-full flex-col">
       <div className="px-6 pt-6 pb-4">
@@ -1001,7 +1022,7 @@ export default function SemanticPage() {
             <div className="flex h-[41px] items-center justify-between border-b px-4">
               {/* Edit/delete actions (SaaS mode, entity selected) */}
               <div className="flex items-center gap-1.5">
-                {isSaas && selection.type === "entity" && selectedEntity && (() => {
+                {isSaas && selection.type === "entity" && selectedEntity && !selectionReadOnly && (() => {
                   const editBtn = (
                     <Button variant="outline" size="sm" onClick={handleEditEntity} className="gap-1 text-xs" disabled={demoReadOnly}>
                       <Pencil className="size-3" />
@@ -1043,7 +1064,7 @@ export default function SemanticPage() {
                   );
                 })()}
               </div>
-              <ViewToggle mode={viewMode} onChange={(m) => { startTransition(() => { setParams({ view: m }); }); }} showHistory={isSaas && selection?.type === "entity"} />
+              <ViewToggle mode={viewMode} onChange={(m) => { startTransition(() => { setParams({ view: m }); }); }} showHistory={isSaas && selection?.type === "entity" && !selectionReadOnly} />
             </div>
           )}
 

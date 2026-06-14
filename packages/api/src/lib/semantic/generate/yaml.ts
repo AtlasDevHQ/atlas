@@ -12,6 +12,11 @@
 import * as yaml from "js-yaml";
 import type { DBType } from "@atlas/api/lib/db/connection";
 import type { TableProfile } from "@useatlas/types";
+import {
+  ENTITY_YAML_KEYS,
+  ENTITY_YAML_JOIN_KEYS,
+  ENTITY_YAML_DIMENSION_KEYS,
+} from "@useatlas/schemas/semantic-entity-yaml";
 import { mapSQLType, isViewLike, singularize, entityName } from "../../profiler-utils";
 import { suggestMeasureType, describeMeasure } from "../../profiler-patterns";
 import { isView, isMatView, mapSalesforceFieldType } from "./analyze";
@@ -51,17 +56,20 @@ export function generateEntityYAML(
 
   // Build dimensions
   const dimensions: Record<string, unknown>[] = profile.columns.map((col) => {
+    // Shared key names (`name` / `type` / `primary_key` / `description`) come
+    // from the @useatlas/schemas vocabulary contract (#3628) so this renderer
+    // and the REST renderer can't drift on the entity-YAML field vocabulary.
     const dim: Record<string, unknown> = {
-      name: col.name,
+      [ENTITY_YAML_DIMENSION_KEYS.name]: col.name,
       sql: col.name,
-      type: dbType === "salesforce" ? mapSalesforceFieldType(col.type) : mapSQLType(col.type),
+      [ENTITY_YAML_DIMENSION_KEYS.type]: dbType === "salesforce" ? mapSalesforceFieldType(col.type) : mapSQLType(col.type),
     };
 
     if (col.is_primary_key) {
-      dim.description = `Primary key`;
-      dim.primary_key = true;
+      dim[ENTITY_YAML_DIMENSION_KEYS.description] = `Primary key`;
+      dim[ENTITY_YAML_DIMENSION_KEYS.primaryKey] = true;
     } else if (col.is_foreign_key) {
-      dim.description = `Foreign key to ${col.fk_target_table}`;
+      dim[ENTITY_YAML_DIMENSION_KEYS.description] = `Foreign key to ${col.fk_target_table}`;
     }
 
     if (col.semantic_type) dim.semantic_type = col.semantic_type;
@@ -190,27 +198,27 @@ export function generateEntityYAML(
 
   // Build joins from constraint FKs
   const joins: Record<string, unknown>[] = profile.foreign_keys.map((fk) => ({
-    target_entity: entityName(fk.to_table),
-    relationship: "many_to_one",
+    [ENTITY_YAML_JOIN_KEYS.targetEntity]: entityName(fk.to_table),
+    [ENTITY_YAML_JOIN_KEYS.relationship]: "many_to_one",
     join_columns: {
       from: fk.from_column,
       to: fk.to_column,
     },
-    description: `Each ${singularize(profile.table_name)} belongs to one ${singularize(fk.to_table)}`,
+    [ENTITY_YAML_KEYS.description]: `Each ${singularize(profile.table_name)} belongs to one ${singularize(fk.to_table)}`,
   }));
 
   // Add inferred joins
   for (const fk of profile.inferred_foreign_keys) {
     joins.push({
-      target_entity: entityName(fk.to_table),
-      relationship: "many_to_one",
+      [ENTITY_YAML_JOIN_KEYS.targetEntity]: entityName(fk.to_table),
+      [ENTITY_YAML_JOIN_KEYS.relationship]: "many_to_one",
       join_columns: {
         from: fk.from_column,
         to: fk.to_column,
       },
       inferred: true,
       note: `No FK constraint exists — inferred from column name ${fk.from_column}`,
-      description: `Each ${singularize(profile.table_name)} likely belongs to one ${singularize(fk.to_table)}`,
+      [ENTITY_YAML_KEYS.description]: `Each ${singularize(profile.table_name)} likely belongs to one ${singularize(fk.to_table)}`,
     });
   }
 
@@ -400,9 +408,13 @@ export function generateEntityYAML(
   }
 
   // Assemble entity
+  // Shared entity-YAML key names (`type` / `description` / `dimensions` /
+  // `measures` / `joins` / `query_patterns`) come from the @useatlas/schemas
+  // vocabulary contract (#3628). `name` / `table` / `group` / `grain` are
+  // DB-renderer-specific and stay as literals.
   const entity: Record<string, unknown> = {
     name,
-    type: entityType,
+    [ENTITY_YAML_KEYS.type]: entityType,
     table: qualifiedTable,
     ...(source ? { group: source } : {}),
     grain: isMatView(profile)
@@ -410,8 +422,8 @@ export function generateEntityYAML(
       : isViewLike(profile)
         ? `one row per result from ${profile.table_name} view`
         : `one row per ${singularize(profile.table_name).replace(/_/g, " ")} record`,
-    description,
-    dimensions: [...dimensions, ...virtualDims],
+    [ENTITY_YAML_KEYS.description]: description,
+    [ENTITY_YAML_KEYS.dimensions]: [...dimensions, ...virtualDims],
   };
 
   if (profile.partition_info) {
@@ -420,10 +432,10 @@ export function generateEntityYAML(
     entity.partition_key = profile.partition_info.key;
   }
 
-  if (measures.length > 0) entity.measures = measures;
-  if (joins.length > 0) entity.joins = joins;
+  if (measures.length > 0) entity[ENTITY_YAML_KEYS.measures] = measures;
+  if (joins.length > 0) entity[ENTITY_YAML_KEYS.joins] = joins;
   entity.use_cases = useCases;
-  if (queryPatterns.length > 0) entity.query_patterns = queryPatterns;
+  if (queryPatterns.length > 0) entity[ENTITY_YAML_KEYS.queryPatterns] = queryPatterns;
 
   if (profile.profiler_notes.length > 0) {
     entity.profiler_notes = profile.profiler_notes;

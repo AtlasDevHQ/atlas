@@ -138,6 +138,12 @@ The alert is **dismissible**: click **Acknowledge** on the card to clear it. It 
 Breaking-vs-additive is a heuristic over the structured diff, bounded by the same field-walk depth the diff uses — treat the alert as "worth a look", not a proof. Always confirm against the upstream API's own changelog.
 </Callout>
 
+## Seeing the entities (Admin → Semantic)
+
+A REST datasource's entities show up in **Admin → Semantic** alongside any SQL entities — one entity per REST resource, with its dimensions (columns), joins, and operations. This is the same entity-relational model the agent can reason over, derived live from the cached spec snapshot, so a REST-only workspace no longer sees an empty "run `atlas init`" state.
+
+These entries are **read-only**. Unlike SQL entities (which are profiled into editable, publish-gated YAML), REST entities are deterministic from the spec — there's nothing to author or promote. To change what's surfaced, change the upstream spec and **Rediscover schema**; there is no edit, delete, or version history for them. (The agent prompt itself stays on the compact operation-graph representation by default — this admin view is for humans and adds no agent-token cost.)
+
 ## Configuration fields
 
 Install-form fields (Admin → Connections):

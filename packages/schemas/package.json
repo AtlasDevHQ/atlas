@@ -26,6 +26,7 @@
     "./platform": "./src/platform.ts",
     "./residency": "./src/residency.ts",
     "./sandbox": "./src/sandbox.ts",
+    "./semantic-entity-yaml": "./src/semantic-entity-yaml.ts",
     "./sla": "./src/sla.ts"
   },
   "main": "./src/index.ts",

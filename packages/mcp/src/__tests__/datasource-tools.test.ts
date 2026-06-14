@@ -829,6 +829,22 @@ describe("create_rest_datasource", () => {
     expect(getContentText(res.content)).not.toContain("sk-secret");
   });
 
+  it("merges the optional display_name tool arg (non-secret) into the install config", async () => {
+    provisionConfigFields = REST_FIELDS;
+    elicitOutcome = {
+      action: "accept",
+      values: { openapi_url: "https://api.example.com/openapi.json", auth_kind: "none" },
+    };
+    const client = await createTestClient();
+    await client.callTool({
+      name: "create_rest_datasource",
+      arguments: { display_name: "My CRM API" },
+    });
+    const formData = mockProvisionRest.mock.calls[0]?.[1] as Record<string, string>;
+    expect(formData.display_name).toBe("My CRM API");
+    expect(formData.openapi_url).toBe("https://api.example.com/openapi.json");
+  });
+
   it("a spec-probe / validation failure → validation_failed, nothing installed (scrubbed by lib)", async () => {
     provisionConfigFields = REST_FIELDS;
     provisionRestOutcome = { kind: "validation", message: "openapi_url: spec could not be fetched" };

@@ -793,9 +793,15 @@ export function registerDatasourceTools(
       title: "Create REST (OpenAPI) Datasource",
       description: withErrorContract(CREATE_REST_DATASOURCE_DESCRIPTION, DATASOURCE_WRITE_ERROR_CODES),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-      inputSchema: {},
+      inputSchema: {
+        display_name: z
+          .string()
+          .max(MAX_FILTER_LEN)
+          .optional()
+          .describe("Optional friendly name shown in the connections UI (non-secret; set by you, not collected in the secure prompt)."),
+      },
     },
-    async (_args, extra): Promise<CallToolResult> =>
+    async ({ display_name }, extra): Promise<CallToolResult> =>
       dispatch(
         "create_rest_datasource",
         // Gate 1 kill-switch + mcp:write + admin. NOT approval-gated — additive,
@@ -808,7 +814,9 @@ export function registerDatasourceTools(
           const lib = await lifecycle();
 
           // The openapi-generic config_schema (spec URL + auth_kind + auth_value
-          // + …) drives the masked form, exactly like the SQL types.
+          // + …) drives the masked form, exactly like the SQL types. Non-credential
+          // fields (display_name, write_allowlist, …) are excluded from the secure
+          // prompt by loadProvisionConfigFields; display_name comes from the arg.
           const fieldsResult = await lib.loadProvisionConfigFields(REST_CATALOG_SLUG);
           if (fieldsResult.kind !== "ok") {
             return toEnvelopeResult(
@@ -833,10 +841,11 @@ export function registerDatasourceTools(
 
           // The handler probes the spec on install (no separate pre-flight): a
           // bad URL / auth / unreachable spec comes back as `validation`,
-          // secret-scrubbed, with nothing persisted.
+          // secret-scrubbed, with nothing persisted. `display_name` is the
+          // agent-set label (non-secret), merged in alongside the elicited config.
           const outcome = await lib.provisionRestDatasource(
             orgId,
-            { ...collected.values },
+            { ...collected.values, ...(display_name !== undefined ? { display_name } : {}) },
             fieldsResult.secretKeys,
           );
           if (outcome.kind === "validation") {
@@ -1028,7 +1037,7 @@ const DELETE_DATASOURCE_DESCRIPTION = `Permanently delete a datasource — remov
 
 const CREATE_DATASOURCE_DESCRIPTION = `Provision a NEW datasource for this workspace. Supported types: postgres, mysql, clickhouse, snowflake, bigquery, elasticsearch/opensearch (plugin types require the corresponding datasource plugin to be installed). You supply only non-secret fields — \`db_type\`, \`install_id\`, optional \`description\`/\`group_id\`. ALL connection details (URL, API key, service-account JSON, etc.) are collected SEPARATELY via a secure masked prompt to the user; they are never passed as tool arguments and never shared with you. The connection is tested BEFORE it is persisted (a failed probe persists nothing), and lands as a \`draft\` — run profile_datasource next to make it queryable. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "db_type": "clickhouse", "install_id": "prod-us" }\`. Example success: \`{ "id": "prod-us", "db_type": "clickhouse", "status": "draft", "masked_url": "clickhouse://***@…", "created": true }\`.`;
 
-const CREATE_REST_DATASOURCE_DESCRIPTION = `Provision a NEW generic REST datasource from an OpenAPI 3.x spec for this workspace. Takes NO tool arguments — the spec URL, authentication type, and credential are ALL collected via a secure masked prompt to the user; they are never passed as tool arguments and never shared with you. The spec is fetched + validated BEFORE anything is persisted (a failed probe persists nothing). On success the API's operations become available to the agent; it is read-only by default (any write allowlist is configured via the admin console). Use this instead of create_datasource for HTTP/REST APIs (Stripe, GitHub, an internal service); use create_datasource for SQL databases. Requires the \`mcp:write\` scope and the admin role. Example success: \`{ "id": "<install-id>", "created": true, "kind": "rest" }\`.`;
+const CREATE_REST_DATASOURCE_DESCRIPTION = `Provision a NEW generic REST datasource from an OpenAPI 3.x spec for this workspace. You may pass an optional non-secret \`display_name\`; the spec URL, authentication type, and credential are ALL collected via a secure masked prompt to the user — they are never passed as tool arguments and never shared with you. The spec is fetched + validated BEFORE anything is persisted (a failed probe persists nothing). On success the API's operations become available to the agent; it is read-only by default (any write allowlist is configured via the admin console). Use this instead of create_datasource for HTTP/REST APIs (Stripe, GitHub, an internal service); use create_datasource for SQL databases. Requires the \`mcp:write\` scope and the admin role. Example success: \`{ "id": "<install-id>", "created": true, "kind": "rest" }\`.`;
 
 const PROFILE_DATASOURCE_DESCRIPTION = `Profile a datasource (introspect its tables) and generate its semantic layer — entities + the table whitelist — so the agent can query it with executeSQL. Long-running: emits progress per table and is cancellable. Typically run right after create_datasource. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example success: \`{ "id": "prod-us", "queryable": true, "entities_generated": 12, "tables": ["orders", "users"], "elapsed_ms": 1840 }\`.`;
 

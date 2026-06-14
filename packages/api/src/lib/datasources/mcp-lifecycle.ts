@@ -377,10 +377,14 @@ export async function resolveProvisionCapability(
 /**
  * A `config_schema` field surfaced to the MCP edge so `create_datasource` can
  * drive its masked elicitation form (#3547 AC #4). Carries only the metadata the
- * form needs — never a value. `description` (a UI label, not a connection
- * credential) is excluded: the tool collects it as a plain tool argument so the
- * agent can set it. The remaining connection fields — secret AND non-secret
- * (e.g. ES `url`) — are elicited so the agent never sees connection details.
+ * form needs — never a value. {@link NON_CREDENTIAL_CONFIG_KEYS} (UI label +
+ * write-governance fields) are excluded: they are NOT connection credentials, so
+ * a secure "enter your credentials" prompt is the wrong place for them. A label
+ * (`description`/`display_name`) is collected as a plain tool argument instead so
+ * the agent can set it; write-governance fields default to read-only and are
+ * configured via the admin console. The remaining connection/auth fields —
+ * secret AND non-secret (e.g. ES `url`, the apikey-header name) — are elicited so
+ * the agent never sees connection details.
  */
 export interface ProvisionConfigField {
   readonly key: string;
@@ -389,6 +393,22 @@ export interface ProvisionConfigField {
   readonly required: boolean;
   readonly secret: boolean;
 }
+
+/**
+ * Catalog `config_schema` keys that must NEVER appear in the masked credential
+ * elicitation form, because they are not connection credentials:
+ *   - `description` / `display_name` — a human label (collected as a tool arg);
+ *   - `write_allowlist` / `side_effecting_operations` — REST write-governance
+ *     (JSON allowlists); provisioning lands read-only by default and these are
+ *     configured via the admin console, not typed into a "secure credential" box.
+ * Everything else in a schema is treated as connection/auth and elicited.
+ */
+const NON_CREDENTIAL_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  "description",
+  "display_name",
+  "write_allowlist",
+  "side_effecting_operations",
+]);
 
 export type LoadProvisionConfigFieldsResult =
   | { readonly kind: "ok"; readonly fields: ProvisionConfigField[]; readonly secretKeys: string[] }
@@ -418,7 +438,7 @@ export async function loadProvisionConfigFields(
   const fields: ProvisionConfigField[] = [];
   const secretKeys: string[] = [];
   for (const f of schema.fields) {
-    if (f.key === "description") continue; // collected as a tool arg, not elicited
+    if (NON_CREDENTIAL_CONFIG_KEYS.has(f.key)) continue; // label / governance, not a credential
     const secret = f.secret === true;
     if (secret) secretKeys.push(f.key);
     fields.push({

@@ -359,6 +359,38 @@ describe("loadProvisionConfigFields", () => {
     }
   });
 
+  it("excludes non-credential fields (display_name + write-governance) from the masked form", async () => {
+    // Mirrors the openapi-generic catalog row: connection/auth fields are
+    // elicited; display_name + write_allowlist + side_effecting_operations are
+    // NOT (label / write-governance, not credentials).
+    internalRows = [
+      {
+        config_schema: [
+          { key: "openapi_url", type: "string", label: "OpenAPI spec URL", required: true },
+          { key: "auth_kind", type: "select", label: "Authentication", required: true },
+          { key: "auth_value", type: "string", label: "Credential", secret: true },
+          { key: "auth_header_name", type: "string", label: "API key header name" },
+          { key: "write_allowlist", type: "string", label: "Write allowlist (JSON)" },
+          { key: "side_effecting_operations", type: "string", label: "Side-effecting GET operations (JSON)" },
+          { key: "display_name", type: "string", label: "Display name" },
+        ],
+      },
+    ];
+    const res = await loadProvisionConfigFields("openapi-generic");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      // auth_header_name (a connection/auth field) is kept; the label + the two
+      // write-governance JSON fields are dropped.
+      expect(res.fields.map((f) => f.key)).toEqual([
+        "openapi_url",
+        "auth_kind",
+        "auth_value",
+        "auth_header_name",
+      ]);
+      expect(res.secretKeys).toEqual(["auth_value"]);
+    }
+  });
+
   it("returns not_found when the catalog row is missing", async () => {
     internalRows = [];
     const res = await loadProvisionConfigFields("nope");

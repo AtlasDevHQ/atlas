@@ -758,6 +758,11 @@ export function registerDatasourceTools(
                 dbType: target.target.dbType,
                 ...(target.target.schema !== undefined ? { schema: target.target.schema } : {}),
                 connectionId: id,
+                // #3546 — persist the generated layer to the org store as
+                // drafts so the whitelist survives a restart and is visible to
+                // the API process (web `/chat`), not just this MCP process.
+                orgId: org.orgId,
+                connectionGroupId: target.target.connectionGroupId,
                 progress,
               });
             },
@@ -765,15 +770,27 @@ export function registerDatasourceTools(
 
           if (result.kind === "error") {
             // Tagged ProfilingFailedError — an agent-actionable validation
-            // outcome (no tables, too many failures), not a 500.
+            // outcome (no tables, too many failures, persist failure), not a 500.
             return toEnvelopeResult(envelope("validation_failed", result.message));
           }
 
           const r = result.result;
           const tables = r.entities.map((e) => e.table);
+          // `persisted` is non-null when the layer was durably written (org
+          // bound + internal DB). Drafts are queryable in developer mode now and
+          // go live to published `/chat` when an admin runs the publish flow.
+          const persisted = result.persisted !== null;
           return toJsonContent({
             id,
             queryable: true,
+            persisted,
+            ...(persisted
+              ? {
+                  persisted_status: "draft",
+                  publish_hint:
+                    "Generated entities are saved as drafts. Run the admin publish flow to make them queryable from the published /chat surface; they are queryable now in developer mode.",
+                }
+              : {}),
             entities_generated: r.entities.length,
             metrics_generated: r.metrics.length,
             tables,

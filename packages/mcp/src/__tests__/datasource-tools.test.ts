@@ -129,6 +129,8 @@ let profileResult: unknown = {
     errors: [],
     elapsedMs: 1234,
   },
+  // #3546 — non-null when the layer was durably persisted as drafts.
+  persisted: { entities: 2, metrics: 1 },
 };
 interface ProfileProgressLike {
   onStart?: (n: number) => void;
@@ -264,7 +266,7 @@ beforeEach(() => {
   };
   profileTarget = {
     kind: "ok",
-    target: { url: "postgres://user:pass@host/db", dbType: "postgres", schema: "public" },
+    target: { url: "postgres://user:pass@host/db", dbType: "postgres", schema: "public", connectionGroupId: null },
   };
   profileResult = {
     kind: "ok",
@@ -277,6 +279,7 @@ beforeEach(() => {
       errors: [],
       elapsedMs: 1234,
     },
+    persisted: { entities: 2, metrics: 1 },
   };
   elicitOutcome = { action: "accept", value: ELICITED_SECRET };
   elicitThrows = false;
@@ -698,7 +701,7 @@ describe("create_datasource", () => {
 // ── profile_datasource (#3512) — long-running, progress + cancellable ──
 
 describe("profile_datasource", () => {
-  it("profiles + generates and reports the datasource as queryable", async () => {
+  it("profiles + generates and reports the datasource as queryable + durably persisted", async () => {
     const client = await createTestClient();
     const res = await client.callTool({ name: "profile_datasource", arguments: { id: "prod-us" } });
     const body = JSON.parse(getContentText(res.content));
@@ -706,6 +709,18 @@ describe("profile_datasource", () => {
     expect(body.entities_generated).toBe(2);
     expect(body.tables).toEqual(["orders", "users"]);
     expect(body.elapsed_ms).toBe(1234);
+    // #3546 — a durably-persisted layer is surfaced as drafts with a publish hint.
+    expect(body.persisted).toBe(true);
+    expect(body.persisted_status).toBe("draft");
+    expect(body.publish_hint).toBeDefined();
+    // The bound workspace + the install's group scope are threaded to the lib
+    // so the persisted drafts land in the scope the whitelist loader reads.
+    const profileArgs = mockRunProfile.mock.calls[0]?.[0] as {
+      orgId?: string;
+      connectionGroupId?: string | null;
+    };
+    expect(profileArgs.orgId).toBe("org_ds");
+    expect(profileArgs.connectionGroupId).toBeNull();
     // The decrypted URL the profiler used must not surface.
     expect(getContentText(res.content)).not.toContain("user:pass");
   });

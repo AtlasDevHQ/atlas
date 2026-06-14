@@ -899,7 +899,12 @@ export class DeliveryError extends Data.TaggedError("DeliveryError")<{
  */
 export class ProfilingFailedError extends Data.TaggedError("ProfilingFailedError")<{
   readonly message: string;
-  readonly reason: "no_tables" | "threshold_exceeded" | "unsupported_db_type" | "profiler_error";
+  readonly reason:
+    | "no_tables"
+    | "threshold_exceeded"
+    | "unsupported_db_type"
+    | "profiler_error"
+    | "persist_error";
   readonly failedCount?: number;
   readonly totalCount?: number;
 }> {}

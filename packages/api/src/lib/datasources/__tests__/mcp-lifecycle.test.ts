@@ -325,9 +325,9 @@ describe("loadDatasourceProfileTarget", () => {
     expect(res.kind).toBe("not_found");
   });
 
-  it("returns the decrypted target for a postgres install", async () => {
+  it("returns the decrypted target (with the install's group scope) for a postgres install", async () => {
     internalRows = [
-      { catalog_id: "cat_pg", catalog_slug: "postgres", config: { url: "enc:v1:…" }, config_schema: [] },
+      { catalog_id: "cat_pg", catalog_slug: "postgres", config: { url: "enc:v1:…" }, config_schema: [], group_id: "prod" },
     ];
     poolConfigResult = { dbType: "postgres", url: "postgres://u:p@h/db", schema: "analytics" };
     const res = await loadDatasourceProfileTarget("org_1", "pg");
@@ -336,7 +336,19 @@ describe("loadDatasourceProfileTarget", () => {
       expect(res.target.dbType).toBe("postgres");
       expect(res.target.url).toBe("postgres://u:p@h/db");
       expect(res.target.schema).toBe("analytics");
+      // #3546 — the group scope drives where persisted drafts land.
+      expect(res.target.connectionGroupId).toBe("prod");
     }
+  });
+
+  it("normalizes a missing/empty group_id to null connectionGroupId (flat default scope)", async () => {
+    internalRows = [
+      { catalog_id: "cat_pg", catalog_slug: "postgres", config: { url: "enc:v1:…" }, config_schema: [], group_id: null },
+    ];
+    poolConfigResult = { dbType: "postgres", url: "postgres://u:p@h/db", schema: "public" };
+    const res = await loadDatasourceProfileTarget("org_1", "pg");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") expect(res.target.connectionGroupId).toBeNull();
   });
 
   it("returns unsupported for a non-profilable dbType", async () => {

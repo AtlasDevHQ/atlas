@@ -16,4 +16,5 @@ export * from "./platform";
 export * from "./residency";
 export * from "./sandbox";
 export * from "./security";
+export * from "./semantic-entity-yaml";
 export * from "./sla";

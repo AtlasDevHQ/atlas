@@ -41,6 +41,12 @@ import type {
   OperationGraph,
 } from "./types";
 import * as yaml from "js-yaml";
+import {
+  ENTITY_YAML_KEYS,
+  ENTITY_YAML_JOIN_KEYS,
+  ENTITY_YAML_DIMENSION_KEYS,
+  REST_ENTITY_TYPE_TAG,
+} from "@useatlas/schemas/semantic-entity-yaml";
 
 // ─────────────────────────────────────────────────────────────────────
 //  Model shape (the cacheable `openapi_snapshot`)
@@ -835,13 +841,16 @@ const YAML_OPTIONS: yaml.DumpOptions = {
 export function renderEntityYaml(entity: GeneratedEntity): string {
   // Build an ordered plain object; js-yaml preserves insertion order with
   // sortKeys:false. Omit empty sections so the golden stays lean.
+  // Shared entity-YAML key names come from the @useatlas/schemas vocabulary
+  // contract (#3628) so this renderer and the DB renderer can't drift on
+  // `dimensions` / `joins` / `query_parameters` / `target_entity` etc.
   const doc: Record<string, unknown> = {
-    name: entity.name,
-    type: "rest_resource",
+    [ENTITY_YAML_KEYS.name]: entity.name,
+    [ENTITY_YAML_KEYS.type]: REST_ENTITY_TYPE_TAG,
     resource: entity.resource,
   };
   if (entity.recordSchema) doc.record_schema = entity.recordSchema;
-  doc.description = entity.description;
+  doc[ENTITY_YAML_KEYS.description] = entity.description;
 
   doc.operations = entity.operations.map((op) => {
     const o: Record<string, unknown> = {
@@ -863,28 +872,31 @@ export function renderEntityYaml(entity: GeneratedEntity): string {
   });
 
   if (entity.columns.length > 0) {
-    doc.dimensions = entity.columns.map((col) => {
-      const c: Record<string, unknown> = { name: col.name, type: col.type };
-      if (col.primaryKey) c.primary_key = true;
-      if (col.description) c.description = col.description;
+    doc[ENTITY_YAML_KEYS.dimensions] = entity.columns.map((col) => {
+      const c: Record<string, unknown> = {
+        [ENTITY_YAML_DIMENSION_KEYS.name]: col.name,
+        [ENTITY_YAML_DIMENSION_KEYS.type]: col.type,
+      };
+      if (col.primaryKey) c[ENTITY_YAML_DIMENSION_KEYS.primaryKey] = true;
+      if (col.description) c[ENTITY_YAML_DIMENSION_KEYS.description] = col.description;
       return c;
     });
   }
 
   if (entity.joins.length > 0) {
-    doc.joins = entity.joins.map((join) => {
+    doc[ENTITY_YAML_KEYS.joins] = entity.joins.map((join) => {
       const j: Record<string, unknown> = {
-        target_entity: join.targetEntity,
-        relationship: join.relationship,
+        [ENTITY_YAML_JOIN_KEYS.targetEntity]: join.targetEntity,
+        [ENTITY_YAML_JOIN_KEYS.relationship]: join.relationship,
         via: join.via,
       };
-      if (join.description) j.description = join.description;
+      if (join.description) j[ENTITY_YAML_KEYS.description] = join.description;
       return j;
     });
   }
 
   if (entity.queryPatterns.length > 0) {
-    doc.query_patterns = entity.queryPatterns.map((qp) => ({
+    doc[ENTITY_YAML_KEYS.queryPatterns] = entity.queryPatterns.map((qp) => ({
       name: qp.name,
       description: qp.description,
     }));

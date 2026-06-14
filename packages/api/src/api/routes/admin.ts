@@ -68,6 +68,13 @@ import {
   AdminEntityYamlShapeError,
   type AdminEntityYamlError,
 } from "@atlas/api/lib/semantic/admin-source";
+// REST/OpenAPI datasources converge onto the `/admin/semantic` surface
+// read-only (#3628) — derived live from the cached snapshot, never persisted.
+import {
+  listRestAdminEntities,
+  getRestAdminEntityDetail,
+  parseRestEntityKey,
+} from "@atlas/api/lib/openapi/admin-rest-entities";
 // Shared, layout-aware traversal (ADR-0012): the single source of truth so
 // metric/glossary discovery recognizes the canonical groups/<group>/ namespace
 // alongside flat-root + legacy <source>/ layouts (#3240).
@@ -1609,8 +1616,11 @@ admin.openapi(overviewRoute, async (c) => {
       orgId: orgId ?? undefined,
       mode,
     });
-    entityCount = entityList.entities.length;
-    entityWarnings = [...entityList.warnings];
+    // Include REST-derived entities (#3628) so Overview and the Semantic page
+    // agree on the count — the page lists both SQL and REST entities.
+    const restList = orgId ? await listRestAdminEntities(orgId) : { entities: [], warnings: [] };
+    entityCount = entityList.entities.length + restList.entities.length;
+    entityWarnings = [...entityList.warnings, ...restList.warnings];
   } catch (err) {
     const requestId = reqId(c);
     log.error(
@@ -1700,14 +1710,24 @@ admin.openapi(listEntitiesRoute, async (c) => {
   try {
     const result = await listAdminEntities({ orgId, mode });
 
+    // REST/OpenAPI datasources converge onto this surface read-only (#3628):
+    // derived live from the cached snapshot, never persisted to
+    // `semantic_entities`. They carry no DB↔YAML drift (they're spec-derived,
+    // not profiled), so they always get `drift: null` in the drift branches.
+    const restList = orgId
+      ? await listRestAdminEntities(orgId)
+      : { entities: [], warnings: [] };
+    const restWarnings = restList.warnings;
+
     // Backwards-compat path: no `?connection=` → return the existing shape.
     // Drift attachment is opt-in so legacy callers (the entity tab on the
     // /admin/semantic page before slice 1, the SDK, integration tests) keep
     // working unchanged.
     if (!connectionId) {
+      const warnings = [...result.warnings, ...restWarnings];
       return c.json({
-        entities: result.entities,
-        ...(result.warnings.length > 0 && { warnings: result.warnings }),
+        entities: [...result.entities, ...restList.entities],
+        ...(warnings.length > 0 && { warnings }),
       }, 200);
     }
 
@@ -1718,11 +1738,15 @@ admin.openapi(listEntitiesRoute, async (c) => {
     // break the existing list rendering, which is worse than a quiet drift
     // signal.
     if (!connections.has(connectionId)) {
+      const warnings = [...result.warnings, ...restWarnings];
       return c.json({
-        entities: result.entities.map((e) => ({ ...e, drift: null })),
+        entities: [
+          ...result.entities.map((e) => ({ ...e, drift: null })),
+          ...restList.entities.map((e) => ({ ...e, drift: null })),
+        ],
         noIntrospectedTables: true,
         requestId,
-        ...(result.warnings.length > 0 && { warnings: result.warnings }),
+        ...(warnings.length > 0 && { warnings }),
       }, 200);
     }
 
@@ -1730,9 +1754,12 @@ admin.openapi(listEntitiesRoute, async (c) => {
       const driftDiff = await runDriftDiff(connectionId, { orgId, atlasMode });
       const noIntrospectedTables = driftDiff.introspectedTableCount === 0;
       const envelope = attachDrift(result.entities, driftDiff.diff, { noIntrospectedTables });
-      const mergedWarnings = [...result.warnings, ...driftDiff.warnings];
+      const mergedWarnings = [...result.warnings, ...driftDiff.warnings, ...restWarnings];
       return c.json({
-        entities: envelope.entities,
+        entities: [
+          ...envelope.entities,
+          ...restList.entities.map((e) => ({ ...e, drift: null })),
+        ],
         noIntrospectedTables: envelope.noIntrospectedTables,
         requestId,
         ...(mergedWarnings.length > 0 && { warnings: mergedWarnings }),
@@ -1757,10 +1784,14 @@ admin.openapi(listEntitiesRoute, async (c) => {
         "Drift diff failed — returning entities without drift attachment",
       );
       return c.json({
-        entities: result.entities.map((e) => ({ ...e, drift: null })),
+        entities: [
+          ...result.entities.map((e) => ({ ...e, drift: null })),
+          ...restList.entities.map((e) => ({ ...e, drift: null })),
+        ],
         requestId,
         warnings: [
           ...result.warnings,
+          ...restWarnings,
           `Drift check failed (requestId: ${requestId}). See server logs.`,
         ],
       }, 200);
@@ -1823,6 +1854,23 @@ admin.openapi(getEntityRoute, async (c) => {
   }
 
   if (!result) {
+    // #3628: a REST-derived entity has a namespaced storage key and lives only
+    // in the cached snapshot — not in DB/disk — so it falls through to here.
+    // Resolve it read-only from the snapshot before declaring 404.
+    if (orgId && parseRestEntityKey(name)) {
+      try {
+        const restDetail = await getRestAdminEntityDetail(orgId, name);
+        if (restDetail) {
+          return c.json({ entity: restDetail.entity }, 200);
+        }
+      } catch (err) {
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)), entityName: name, orgId, requestId },
+          "Failed to resolve REST admin entity",
+        );
+        return c.json({ error: "internal_error", message: `Failed to load entity "${name}".`, requestId }, 500);
+      }
+    }
     return c.json({ error: "not_found", message: `Entity "${name}" not found.`, requestId }, 404);
   }
   return c.json({ entity: result.entity }, 200);
@@ -1893,6 +1941,36 @@ admin.openapi(getRawYamlDirFileRoute, async (c) => {
   const { dir, file } = c.req.valid("param");
   const { authResult, requestId } = await adminAuthAndContext(c, "admin:semantic");
   const orgId = authResult.user?.activeOrganizationId;
+
+  // #3628: a REST-derived entity's YAML is rendered live from the cached
+  // snapshot — there's no DB row or disk file, and its namespaced key (`::`)
+  // would trip `serveRawYaml`'s allowlist regex. Intercept and render it here.
+  if (orgId && dir === "entities" && file.endsWith(".yml")) {
+    const stem = file.slice(0, -".yml".length);
+    if (parseRestEntityKey(stem)) {
+      try {
+        const restDetail = await getRestAdminEntityDetail(orgId, stem);
+        if (restDetail) {
+          throw new HTTPException(200, {
+            res: new Response(restDetail.yaml, {
+              status: 200,
+              headers: { "Content-Type": "text/plain; charset=utf-8" },
+            }),
+          });
+        }
+      } catch (err) {
+        if (err instanceof HTTPException) throw err;
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)), file: stem, orgId, requestId },
+          "Failed to render REST entity YAML",
+        );
+        throw new HTTPException(500, {
+          res: Response.json({ error: "internal_error", message: "Failed to load YAML.", requestId }, { status: 500 }),
+        });
+      }
+    }
+  }
+
   // Empty `?connectionGroupId=` maps to null (legacy / `__global__` row).
   // Missing param falls through to getEntity's unique-or-409 default (#2412).
   const rawGroup = c.req.query("connectionGroupId");

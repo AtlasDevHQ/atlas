@@ -245,6 +245,67 @@ function withProbeTimeout(p: Promise<void>, ms: number, onTimeout: () => void): 
   });
 }
 
+/** Outcome of {@link probeNativeDatasourceConnection} — `message` is NOT scrubbed; the caller scrubs. */
+export type NativeProbeOutcome =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: "unhealthy" | "connect_error"; readonly message: string };
+
+/**
+ * Native pg/mysql ephemeral test-connect — the native counterpart to
+ * {@link probePluginDatasourceConnection}, so the validate-before-persist probe
+ * is ONE seam across native + plugin dbTypes (#3605). Registers a THROWAWAY
+ * probe id (never the real install id — a throwaway id can't leave the
+ * install-id-keyed registry split-brained if persist later fails), health-checks
+ * it, and ALWAYS unregisters in `finally`. Registers nothing durable and
+ * persists nothing.
+ *
+ * Returns the RAW `message`; the caller (`mcp-lifecycle.preflightNativeConnection`)
+ * runs it through `scrubSecretsFromMessage` before it reaches a client/agent/log,
+ * keeping the secret-scrub seam in one place (parity with the plugin probe).
+ *
+ * Distinguishes `unhealthy` (the registry's `healthCheck` reported non-healthy —
+ * its `message` is already DSN-scrubbed by the registry) from `connect_error`
+ * (`register`/`healthCheck` threw) so the caller can reproduce the right
+ * user-facing wording. NOTE the `status !== "healthy"` (NOT `=== "unhealthy"`)
+ * check: a fresh pool's FIRST failed probe is `degraded`, so anything that isn't
+ * `healthy` is a failed pre-flight — otherwise a broken connection slips past
+ * validate-before-persist. The `__mcp_preflight_` id prefix is retained for
+ * continuity (the id is ephemeral and never surfaced).
+ */
+export async function probeNativeDatasourceConnection(config: {
+  readonly url: string;
+  readonly schema?: string;
+  readonly description?: string;
+}): Promise<NativeProbeOutcome> {
+  const probeId = `__mcp_preflight_${crypto.randomUUID()}`;
+  connections.register(probeId, {
+    url: config.url,
+    ...(config.description !== undefined ? { description: config.description } : {}),
+    ...(config.schema !== undefined ? { schema: config.schema } : {}),
+  });
+  try {
+    const health = await connections.healthCheck(probeId);
+    if (health.status !== "healthy") {
+      return {
+        ok: false,
+        reason: "unhealthy",
+        message: health.message ?? "Connection probe could not reach the datasource.",
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: "connect_error",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    // Always drain the probe pool — success persists via the installer's own
+    // fresh registration, failure persists nothing.
+    connections.unregister(probeId);
+  }
+}
+
 /**
  * Datasource dbTypes whose per-workspace connections are NOT built by this
  * bridge from `workspace_plugins.config`. Salesforce is the sole member:

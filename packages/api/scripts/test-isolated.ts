@@ -20,7 +20,7 @@ import { Glob } from "bun";
 import { readFileSync } from "node:fs";
 import { cpus } from "node:os";
 import { resolve, relative, basename } from "node:path";
-import { runFileWithSignalRetry, MAX_SIGNAL_RETRIES } from "./signal-retry";
+import { runFileWithSignalRetry } from "./signal-retry";
 
 const ROOT = resolve(import.meta.dir, "..");
 const SRC = resolve(ROOT, "src");
@@ -214,8 +214,6 @@ console.log(
 
 // --- Run tests with bounded concurrency ---
 // Signal-aware retry logic is in ./signal-retry.ts (exported for unit tests).
-// Re-export MAX_SIGNAL_RETRIES so external tooling / tests can read the cap.
-export { MAX_SIGNAL_RETRIES };
 
 type Result = Awaited<ReturnType<typeof runFileWithSignalRetry>>;
 

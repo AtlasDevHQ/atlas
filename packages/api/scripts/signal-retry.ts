@@ -13,10 +13,25 @@ import { relative } from "node:path";
 
 /**
  * Maximum number of times to retry a test file whose subprocess exits via a
- * signal (native crash). A clean non-zero exit (real assertion failure) is
+ * crash signal (SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGTRAP). A clean non-zero
+ * exit (real assertion failure) and non-crash signals (SIGKILL, SIGTERM) are
  * never retried.
  */
 export const MAX_SIGNAL_RETRIES = 2;
+
+/**
+ * Signals that indicate a genuine native crash (e.g. Bun segfault). Only
+ * these are eligible for retry. SIGKILL (OOM killer) and SIGTERM (CI cancel /
+ * timeout) fall through to the normal failure path — retrying them masks OOM
+ * and wastes the budget on cancelled jobs.
+ */
+export const CRASH_SIGNALS = new Set([
+  "SIGSEGV",
+  "SIGABRT",
+  "SIGBUS",
+  "SIGILL",
+  "SIGTRAP",
+]);
 
 export interface RunResult {
   file: string;
@@ -30,37 +45,85 @@ export interface RunResult {
   retries: number;
 }
 
+/** Minimal interface for a spawned process — matches Bun.spawn's return type. */
+export interface SpawnedProc {
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+  exited: Promise<number>;
+  exitCode: number | null;
+  signalCode: string | null;
+}
+
 /**
  * Spawn `bun test <file>` in an isolated subprocess and return the result.
- * If the subprocess exits via a signal (native crash), it is retried up to
- * MAX_SIGNAL_RETRIES times. A real assertion failure (clean non-zero exit)
- * is never retried.
+ * If the subprocess exits via a crash signal (SIGSEGV, SIGABRT, SIGBUS,
+ * SIGILL, SIGTRAP), it is retried up to MAX_SIGNAL_RETRIES times. Non-crash
+ * signals (SIGKILL, SIGTERM) and real assertion failures (clean non-zero exit)
+ * are never retried.
  *
- * @param file  Absolute path to the test file to run.
- * @param cwd   Working directory for the subprocess.
- * @param env   Environment variables for the subprocess.
+ * @param file   Absolute path to the test file to run.
+ * @param cwd    Working directory for the subprocess.
+ * @param env    Environment variables for the subprocess.
+ * @param _spawn Spawn implementation — defaults to Bun.spawn. Pass a stub in
+ *               tests to simulate signal-killed or assertion-failed subprocesses
+ *               without spawning real processes.
  */
 export async function runFileWithSignalRetry(
   file: string,
   cwd: string,
   env: Record<string, string | undefined>,
+  _spawn: (
+    args: string[],
+    opts: {
+      cwd: string;
+      stdout: "pipe";
+      stderr: "pipe";
+      env: Record<string, string | undefined>;
+    },
+  ) => SpawnedProc = (args, opts) => Bun.spawn(args, opts),
 ): Promise<RunResult> {
-  return runAttempt(file, cwd, env, 0);
+  return runAttempt(file, cwd, env, _spawn, 0, 0);
 }
 
 async function runAttempt(
   file: string,
   cwd: string,
   env: Record<string, string | undefined>,
+  _spawn: (
+    args: string[],
+    opts: {
+      cwd: string;
+      stdout: "pipe";
+      stderr: "pipe";
+      env: Record<string, string | undefined>;
+    },
+  ) => SpawnedProc,
   attempt: number,
+  accumulatedMs: number,
 ): Promise<RunResult> {
   const start = performance.now();
-  const proc = Bun.spawn(["bun", "test", file], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env,
-  });
+
+  let proc: SpawnedProc;
+  try {
+    proc = _spawn(["bun", "test", file], {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+      env,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`  \x1b[33mWARN\x1b[0m  spawn failed for ${relative(cwd, file)}: ${msg}`);
+    return {
+      file,
+      exitCode: 1,
+      signalCode: null,
+      stdout: "",
+      stderr: msg,
+      durationMs: accumulatedMs + (performance.now() - start),
+      retries: attempt,
+    };
+  }
 
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -72,20 +135,17 @@ async function runAttempt(
   const signalCode = proc.signalCode ?? null;
   const durationMs = performance.now() - start;
 
-  // A subprocess killed by a signal (native crash, e.g. Bun SIGSEGV) is
-  // distinguishable from a real assertion failure: the former has a non-null
-  // signalCode while the latter exits cleanly with a non-zero exit code.
-  // Retry signal-killed runs up to MAX_SIGNAL_RETRIES times so that a
-  // transient Bun crash doesn't permanently fail the shard.
-  if (signalCode !== null && attempt < MAX_SIGNAL_RETRIES) {
+  // Only retry on genuine crash signals — SIGKILL (OOM) and SIGTERM (CI
+  // cancel/timeout) must not be retried.
+  if (signalCode !== null && CRASH_SIGNALS.has(signalCode) && attempt < MAX_SIGNAL_RETRIES) {
     const rel = relative(cwd, file);
     console.warn(
       `  \x1b[33mRETRY\x1b[0m  ${rel}  killed by signal ${signalCode} ` +
-        `(attempt ${attempt + 1}/${MAX_SIGNAL_RETRIES}) — retrying…`,
+        `(retry ${attempt + 1} of ${MAX_SIGNAL_RETRIES}) — retrying…`,
     );
-    const retried = await runAttempt(file, cwd, env, attempt + 1);
-    return { ...retried, retries: retried.retries + 1 };
+    const retried = await runAttempt(file, cwd, env, _spawn, attempt + 1, accumulatedMs + durationMs);
+    return { ...retried, retries: retried.retries + 1, durationMs: retried.durationMs + durationMs };
   }
 
-  return { file, exitCode, signalCode, stdout, stderr, durationMs, retries: 0 };
+  return { file, exitCode, signalCode, stdout, stderr, durationMs: accumulatedMs + durationMs, retries: 0 };
 }

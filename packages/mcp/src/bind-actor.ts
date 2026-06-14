@@ -26,8 +26,17 @@
  *     surface. This is the *hosted* MCP actor.
  *
  * CRITICAL INVARIANT (ADR-0016, holds byte-for-byte): hosted withholds
- * `platform_admin` (org role only); stdio resolves the user-level role. The
- * `resolveMcpActorRole` switch below is the one place that distinction lives.
+ * `platform_admin` (org role only); stdio resolves the user-level role.
+ *
+ * Wiring (so the claim is precise, not aspirational): the **hosted** edge
+ * (`hosted.ts:bindFactoryContext`) calls `resolveMcpActorRole` directly, so its
+ * trust rule lives here and nowhere else. The **stdio** production path
+ * (`actor.ts:resolveMcpActor` → `loadActorUser`, shared with the scheduler)
+ * resolves the user-level role via the SAME `resolveEffectiveRole(userRole, …)`
+ * the stdio arm below encodes — so this switch is the canonical *declaration*
+ * of both arms' rules even though stdio reaches `resolveEffectiveRole` through
+ * `loadActorUser` rather than calling this function at runtime. `bind-actor.test.ts`
+ * pins both arms so the stdio path can't silently diverge from this declaration.
  *
  * `resolveEffectiveRole` fails closed on both branches: a member-table read
  * error yields no resolved role → downstream defaults to least privilege

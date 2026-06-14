@@ -95,7 +95,14 @@ function dispatchId(toolName: string): string {
   return `mcp-${toolName}-${crypto.randomUUID()}`;
 }
 
-function errorMessage(err: unknown, fallback: string): string {
+/**
+ * Normalize a caught value to a message string (CLAUDE.md: `err instanceof
+ * Error ? err.message : String(err)`), falling back only for the truly opaque
+ * case (`String(err)` → `""` / `"[object Object]"`). Exported so the tool files
+ * that compose with this dispatcher share ONE normalizer rather than each
+ * keeping a private copy (#3602/#3607-review).
+ */
+export function errorMessage(err: unknown, fallback: string): string {
   if (err instanceof Error) return err.message;
   const s = String(err);
   return s && s !== "[object Object]" ? s : fallback;

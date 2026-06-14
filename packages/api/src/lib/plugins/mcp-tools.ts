@@ -154,7 +154,7 @@ export interface RegisteredPluginMcpTool {
   readonly errorCodes?: ReadonlyArray<string>;
   readonly inputSchema: ZodSchemaLike;
   readonly outputSchema?: ZodSchemaLike;
-  /** MCP annotations carried from the authored tool — see {@link pluginToolMutates}. */
+  /** MCP annotations carried from the authored tool — see {@link mcpToolMutates}. */
   readonly annotations?: McpToolAnnotationsShape;
   /** ADR-0016 governance declarations (#3571) carried from the authored tool. */
   readonly actionCategory?: "datasource" | "integration" | "policy";
@@ -566,7 +566,7 @@ export function registerPluginMcpTools(
         // #3504 — `scopes` is threaded onto the context here; #3520 enforces
         // the `mcp:write` gate (gate 2 of the ADR-0016 order) on it for
         // *mutating* plugin tools, keyed on the MCP `readOnlyHint` /
-        // `destructiveHint` annotation (see {@link pluginToolMutates}).
+        // `destructiveHint` annotation (see {@link mcpToolMutates}).
         { requestId, user: actor, agentOrigin: "mcp", actor: mcpActor, ...(scopes ? { scopes } : {}) },
         async () => {
           // ── ADR-0016 gates 1–4 (#3571) ──

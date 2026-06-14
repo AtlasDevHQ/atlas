@@ -54,7 +54,7 @@ import type { DatasourceInstallerOutcome } from "@atlas/api/lib/datasources/mcp-
 import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
 import type { McpTransport, McpDeployMode } from "./telemetry.js";
 import { envelope, toEnvelopeResult } from "./error-envelope.js";
-import { createMcpDispatch } from "./mcp-dispatch.js";
+import { createMcpDispatch, errorMessage } from "./mcp-dispatch.js";
 import { elicitMaskedForm } from "./elicitation.js";
 import { withProgressAndCancellation, OperationCancelledError } from "./progress.js";
 
@@ -107,12 +107,6 @@ export interface RegisterDatasourceToolsOptions {
   clientId?: string;
   /** #3504 — OAuth token scopes, threaded onto each dispatch's RequestContext. */
   scopes?: readonly string[];
-}
-
-function errorMessage(err: unknown, fallback: string): string {
-  if (err instanceof Error) return err.message;
-  const s = String(err);
-  return s && s !== "[object Object]" ? s : fallback;
 }
 
 function toJsonContent(value: unknown): CallToolResult {

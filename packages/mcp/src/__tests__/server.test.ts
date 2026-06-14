@@ -71,12 +71,19 @@ describe("MCP server integration", () => {
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      "archive_datasource",
+      "create_datasource",
+      "delete_datasource",
       "describeEntity",
       "executeSQL",
       "explore",
       "listEntities",
+      "list_datasources",
+      "profile_datasource",
+      "restore_datasource",
       "runMetric",
       "searchGlossary",
+      "test_datasource",
     ]);
   });
 

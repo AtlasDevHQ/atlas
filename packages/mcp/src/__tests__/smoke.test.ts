@@ -116,17 +116,24 @@ async function createTestPair() {
 // ---------------------------------------------------------------------------
 
 describe("MCP smoke — tool listing", () => {
-  it("registers explore + executeSQL + the four typed semantic tools (#2020)", async () => {
+  it("registers explore + executeSQL + the typed semantic tools + datasource lifecycle tools (#2020, #3511–#3514)", async () => {
     const { client, cleanup } = await createTestPair();
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      "archive_datasource",
+      "create_datasource",
+      "delete_datasource",
       "describeEntity",
       "executeSQL",
       "explore",
       "listEntities",
+      "list_datasources",
+      "profile_datasource",
+      "restore_datasource",
       "runMetric",
       "searchGlossary",
+      "test_datasource",
     ]);
     await cleanup();
   });
@@ -215,9 +222,10 @@ describe("MCP smoke — server lifecycle", () => {
     await client.connect(clientTransport);
 
     // Verify the server is operational — explore + executeSQL + the four
-    // typed semantic tools (#2020).
+    // typed semantic tools (#2020) + the seven datasource lifecycle tools
+    // (#3511–#3514) = 13.
     const tools = await client.listTools();
-    expect(tools.tools.length).toBe(6);
+    expect(tools.tools.length).toBe(13);
 
     // Clean shutdown — should not throw
     await client.close();

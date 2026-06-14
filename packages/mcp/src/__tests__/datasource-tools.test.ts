@@ -112,6 +112,23 @@ let provisionOutcome: unknown = {
 };
 const mockProvision = mock<(...a: unknown[]) => Promise<unknown>>(async () => provisionOutcome);
 
+// Capability + config-field resolution (#3547). Defaults: provisionable native
+// postgres with a single secret `url` field — the existing happy path.
+let provisionCapability: unknown = { kind: "native", dbType: "postgres" };
+const mockResolveCapability = mock<(...a: unknown[]) => Promise<unknown>>(async () => provisionCapability);
+let provisionConfigFields: unknown = {
+  kind: "ok",
+  fields: [
+    { key: "url", label: "Connection URL", description: "postgres://…", required: true, secret: true },
+  ],
+  secretKeys: ["url"],
+};
+const mockLoadConfigFields = mock<(...a: unknown[]) => Promise<unknown>>(async () => provisionConfigFields);
+
+// REST/OpenAPI provisioning (#3547) — the openapi-generic form-install seam.
+let provisionRestOutcome: unknown = { kind: "ok", installId: "rest-abc123" };
+const mockProvisionRest = mock<(...a: unknown[]) => Promise<unknown>>(async () => provisionRestOutcome);
+
 let profileTarget: unknown = {
   kind: "ok",
   target: { url: "postgres://user:pass@host/db", dbType: "postgres", schema: "public" },
@@ -156,31 +173,35 @@ mock.module("@atlas/api/lib/datasources/mcp-lifecycle", () => ({
   isDatasourceRegistered: mockIsRegistered,
   runDatasourceInstaller: mockRunInstaller,
   provisionDatasource: mockProvision,
+  provisionRestDatasource: mockProvisionRest,
+  resolveProvisionCapability: mockResolveCapability,
+  loadProvisionConfigFields: mockLoadConfigFields,
   loadDatasourceProfileTarget: mockLoadProfileTarget,
   runSemanticProfile: mockRunProfile,
   MCP_PROVISIONABLE_CATALOG_SLUGS: ["postgres", "mysql"],
 }));
 
-// Masked elicitation (#3499) — capture the call + return a configurable
-// outcome. The default accepts with a sentinel secret we assert NEVER leaks.
+// Masked multi-field elicitation (#3499 / #3547) — capture the call + return a
+// configurable outcome. The default accepts with a sentinel secret we assert
+// NEVER leaks, keyed by the `url` field the default config-field set declares.
 const ELICITED_SECRET = "postgres://super:secret@db.internal:5432/prod";
-let elicitOutcome: { action: "accept"; value: string } | { action: "decline" | "cancel" } = {
+let elicitOutcome: { action: "accept"; values: Record<string, string> } | { action: "decline" | "cancel" } = {
   action: "accept",
-  value: ELICITED_SECRET,
+  values: { url: ELICITED_SECRET },
 };
 let elicitThrows = false;
-interface ElicitCall {
+interface ElicitFormCall {
   principal: string;
-  field: { name?: string; title: string };
+  fields: Array<{ name: string; title: string; required?: boolean; secret?: boolean }>;
 }
-let elicitCalls: ElicitCall[] = [];
-const mockElicit = mock(async (_server: unknown, args: ElicitCall & { message: string }) => {
-  elicitCalls.push({ principal: args.principal, field: args.field });
+let elicitCalls: ElicitFormCall[] = [];
+const mockElicit = mock(async (_server: unknown, args: ElicitFormCall & { message: string }) => {
+  elicitCalls.push({ principal: args.principal, fields: args.fields });
   if (elicitThrows) throw new Error("client does not support elicitation");
   return elicitOutcome;
 });
 mock.module("../elicitation.js", () => ({
-  elicitMaskedField: mockElicit,
+  elicitMaskedForm: mockElicit,
 }));
 
 // ── Dispatch-gate mock ────────────────────────────────────────────────
@@ -244,6 +265,9 @@ beforeEach(() => {
   mockRunInstaller.mockClear();
   mockRunGate.mockClear();
   mockProvision.mockClear();
+  mockProvisionRest.mockClear();
+  mockResolveCapability.mockClear();
+  mockLoadConfigFields.mockClear();
   mockLoadProfileTarget.mockClear();
   mockRunProfile.mockClear();
   mockElicit.mockClear();
@@ -281,14 +305,23 @@ beforeEach(() => {
     },
     persisted: { entities: 2, metrics: 1 },
   };
-  elicitOutcome = { action: "accept", value: ELICITED_SECRET };
+  elicitOutcome = { action: "accept", values: { url: ELICITED_SECRET } };
   elicitThrows = false;
+  provisionCapability = { kind: "native", dbType: "postgres" };
+  provisionConfigFields = {
+    kind: "ok",
+    fields: [
+      { key: "url", label: "Connection URL", description: "postgres://…", required: true, secret: true },
+    ],
+    secretKeys: ["url"],
+  };
+  provisionRestOutcome = { kind: "ok", installId: "rest-abc123" };
 });
 
 // ── Tool registration ─────────────────────────────────────────────────
 
 describe("datasource tools — registration", () => {
-  it("registers all seven lifecycle tools", async () => {
+  it("registers all eight lifecycle tools", async () => {
     const client = await createTestClient();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
@@ -296,6 +329,7 @@ describe("datasource tools — registration", () => {
       [
         "archive_datasource",
         "create_datasource",
+        "create_rest_datasource",
         "delete_datasource",
         "list_datasources",
         "profile_datasource",
@@ -617,23 +651,76 @@ describe("delete_datasource", () => {
 // ── create_datasource (#3511) — masked-elicitation credential ─────────
 
 describe("create_datasource", () => {
-  it("collects the URL via masked elicitation bound to the workspace, then provisions", async () => {
+  it("collects config via the schema-driven masked form, then provisions", async () => {
     const client = await createTestClient();
     const res = await client.callTool({
       name: "create_datasource",
       arguments: { db_type: "postgres", install_id: "new-pg" },
     });
-    // Elicitation was called, bound to the org, for a field named `url`.
+    // Elicitation was a masked FORM bound to the org, carrying the catalog's
+    // `url` field (marked required + secret).
     expect(elicitCalls).toHaveLength(1);
     expect(elicitCalls[0].principal).toBe("org_ds");
-    expect(elicitCalls[0].field.name).toBe("url");
-    // The secret reached provisionDatasource (the lib), in `url`.
+    expect(elicitCalls[0].fields.map((f) => f.name)).toEqual(["url"]);
+    expect(elicitCalls[0].fields[0].secret).toBe(true);
+    // The secret reached provisionDatasource (the lib) inside `config`, with
+    // `secretKeys` driving the scrub.
     const provisionArgs = mockProvision.mock.calls[0];
-    expect((provisionArgs?.[1] as { url: string }).url).toBe(ELICITED_SECRET);
+    const input = provisionArgs?.[1] as { config: Record<string, string>; secretKeys: string[] };
+    expect(input.config.url).toBe(ELICITED_SECRET);
+    expect(input.secretKeys).toEqual(["url"]);
 
     const body = JSON.parse(getContentText(res.content));
     expect(body.created).toBe(true);
     expect(body.status).toBe("draft");
+  });
+
+  it("collects multi-field credentials (e.g. Elasticsearch apiKey) as one masked form", async () => {
+    // ES: non-secret url + secret apiKey — the config_schema drives the form.
+    provisionConfigFields = {
+      kind: "ok",
+      fields: [
+        { key: "url", label: "Connection URL", required: true, secret: false },
+        { key: "apiKey", label: "API Key", required: false, secret: true },
+      ],
+      secretKeys: ["apiKey"],
+    };
+    provisionCapability = { kind: "plugin", dbType: "elasticsearch" };
+    elicitOutcome = { action: "accept", values: { url: "elasticsearch://h:9200", apiKey: "BASE64KEY==" } };
+    const client = await createTestClient();
+    await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "elasticsearch", install_id: "logs" },
+    });
+    expect(elicitCalls[0].fields.map((f) => f.name)).toEqual(["url", "apiKey"]);
+    const input = mockProvision.mock.calls[0]?.[1] as { config: Record<string, string>; secretKeys: string[] };
+    expect(input.config).toEqual({ url: "elasticsearch://h:9200", apiKey: "BASE64KEY==" });
+    expect(input.secretKeys).toEqual(["apiKey"]);
+  });
+
+  it("merges the optional non-secret schema (search_path) tool arg into config — not into the masked prompt", async () => {
+    const client = await createTestClient();
+    await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "postgres", install_id: "new-pg", schema: "analytics" },
+    });
+    // `schema` is an agent-set arg, NOT an elicited credential field.
+    expect(elicitCalls[0].fields.map((f) => f.name)).toEqual(["url"]);
+    const input = mockProvision.mock.calls[0]?.[1] as { config: Record<string, string> };
+    expect(input.config.schema).toBe("analytics");
+    expect(input.config.url).toBe(ELICITED_SECRET);
+  });
+
+  it("an unsupported (no-plugin) type is rejected BEFORE elicitation", async () => {
+    provisionCapability = { kind: "unsupported", dbType: "clickhouse", message: "no clickhouse plugin installed" };
+    const client = await createTestClient();
+    const res = await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "postgres", install_id: "x" },
+    });
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("validation_failed");
+    expect(mockElicit).not.toHaveBeenCalled();
+    expect(mockProvision).not.toHaveBeenCalled();
   });
 
   it("NEVER leaks the elicited credential into the tool response", async () => {
@@ -661,6 +748,22 @@ describe("create_datasource", () => {
     expect(mockProvision).not.toHaveBeenCalled();
   });
 
+  it("a non-compliant client that accepts with a required field blank → validation_failed, nothing provisioned", async () => {
+    // elicitMaskedForm drops empty values, so a blank required `url` arrives as
+    // an accept with no `url` key — the tool must reject before pre-flight.
+    elicitOutcome = { action: "accept", values: {} };
+    const client = await createTestClient();
+    const res = await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "postgres", install_id: "new-pg" },
+    });
+    expect(res.isError).toBe(true);
+    const err = parseAtlasMcpToolError(getContentText(res.content));
+    expect(err?.code).toBe("validation_failed");
+    expect(err?.message).toContain("Connection URL"); // the required field's label
+    expect(mockProvision).not.toHaveBeenCalled();
+  });
+
   it("an elicitation failure (unsupported client) → validation_failed, no leak", async () => {
     elicitThrows = true;
     const client = await createTestClient();
@@ -683,18 +786,94 @@ describe("create_datasource", () => {
     expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("validation_failed");
   });
 
-  it("an unsupported db_type is rejected at the inputSchema boundary", async () => {
-    // `db_type` is a Zod enum of provisionable slugs — an out-of-enum value
-    // is rejected by the SDK's input validation (error result), so it never
-    // reaches the handler / elicitation.
+  it("a non-provisionable db_type is rejected at the inputSchema boundary", async () => {
+    // `db_type` is a Zod enum of provisionable slugs (the real
+    // MCP_PROVISIONABLE_CATALOG_SLUGS the tool imports directly). `duckdb` is a
+    // real datasource slug but NOT MCP-provisionable, so it's an out-of-enum
+    // value rejected by the SDK's input validation — never reaching the handler.
     const client = await createTestClient();
     const res = await client.callTool({
       name: "create_datasource",
-      arguments: { db_type: "snowflake", install_id: "x" },
+      arguments: { db_type: "duckdb", install_id: "x" },
     });
     expect(res.isError).toBe(true);
     expect(mockElicit).not.toHaveBeenCalled();
     expect(mockProvision).not.toHaveBeenCalled();
+  });
+});
+
+// ── create_rest_datasource (#3547) — OpenAPI spec + auth via masked form ──
+
+describe("create_rest_datasource", () => {
+  // The openapi-generic config_schema: spec URL + auth_kind + secret auth_value.
+  const REST_FIELDS = {
+    kind: "ok",
+    fields: [
+      { key: "openapi_url", label: "OpenAPI spec URL", required: true, secret: false },
+      { key: "auth_kind", label: "Authentication", required: true, secret: false },
+      { key: "auth_value", label: "Credential", required: false, secret: true },
+    ],
+    secretKeys: ["auth_value"],
+  };
+
+  it("collects the spec URL + auth as a masked form, then installs via the openapi seam", async () => {
+    provisionConfigFields = REST_FIELDS;
+    elicitOutcome = {
+      action: "accept",
+      values: { openapi_url: "https://api.example.com/openapi.json", auth_kind: "bearer", auth_value: "sk-secret" },
+    };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "create_rest_datasource", arguments: {} });
+
+    // Masked form carried the schema's fields, with auth_value marked secret.
+    expect(elicitCalls).toHaveLength(1);
+    expect(elicitCalls[0].fields.map((f) => f.name)).toEqual(["openapi_url", "auth_kind", "auth_value"]);
+    expect(elicitCalls[0].fields[2].secret).toBe(true);
+    // The lib seam received the formData + secretKeys.
+    const args = mockProvisionRest.mock.calls[0];
+    expect(args?.[1]).toEqual({ openapi_url: "https://api.example.com/openapi.json", auth_kind: "bearer", auth_value: "sk-secret" });
+    expect(args?.[2]).toEqual(["auth_value"]);
+
+    const body = JSON.parse(getContentText(res.content));
+    expect(body.created).toBe(true);
+    expect(body.kind).toBe("rest");
+    expect(body.id).toBe("rest-abc123");
+    // The credential never appears in the response.
+    expect(getContentText(res.content)).not.toContain("sk-secret");
+  });
+
+  it("merges the optional display_name tool arg (non-secret) into the install config", async () => {
+    provisionConfigFields = REST_FIELDS;
+    elicitOutcome = {
+      action: "accept",
+      values: { openapi_url: "https://api.example.com/openapi.json", auth_kind: "none" },
+    };
+    const client = await createTestClient();
+    await client.callTool({
+      name: "create_rest_datasource",
+      arguments: { display_name: "My CRM API" },
+    });
+    const formData = mockProvisionRest.mock.calls[0]?.[1] as Record<string, string>;
+    expect(formData.display_name).toBe("My CRM API");
+    expect(formData.openapi_url).toBe("https://api.example.com/openapi.json");
+  });
+
+  it("a spec-probe / validation failure → validation_failed, nothing installed (scrubbed by lib)", async () => {
+    provisionConfigFields = REST_FIELDS;
+    provisionRestOutcome = { kind: "validation", message: "openapi_url: spec could not be fetched" };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "create_rest_datasource", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("validation_failed");
+  });
+
+  it("a declined elicitation → validation_failed, nothing installed", async () => {
+    provisionConfigFields = REST_FIELDS;
+    elicitOutcome = { action: "decline" };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "create_rest_datasource", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(mockProvisionRest).not.toHaveBeenCalled();
   });
 });
 

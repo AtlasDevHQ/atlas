@@ -36,8 +36,16 @@ import {
   catalogSlugToDbType,
   resolveDatasourcePoolConfig,
 } from "@atlas/api/lib/db/datasource-pool-resolver";
+import {
+  findDatasourcePluginConnection,
+  probePluginDatasourceConnection,
+} from "@atlas/api/lib/db/datasource-registry-bridge";
 import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
+import { getInstallHandler } from "@atlas/api/lib/integrations/install/dispatch";
+import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/persist-form-install";
+import { registerBuiltinInstallHandlers } from "@atlas/api/lib/integrations/install/register";
+import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import {
   MCP_PROVISIONABLE_CATALOG_SLUGS,
   isMcpNativeDbType,
@@ -312,18 +320,172 @@ export {
 };
 
 /**
- * Input to {@link provisionDatasource}. `url` is the credential collected
- * via masked elicitation at the MCP edge — it is encrypted at the installer
- * boundary and NEVER round-trips back out (the returned row carries only a
- * `maskedUrl`).
+ * Capability resolution for a candidate provisioning target — the single
+ * predicate that decides whether (and how) a catalog slug can be provisioned
+ * over MCP (#3547 AC #1). Replaces the hardcoded `MCP_NATIVE_DB_TYPES` gate so
+ * provisioning and (future #3552) profiling stay in lockstep as types are
+ * added: a type is provisionable iff it is native pg/mysql OR a datasource
+ * plugin implementing `createFromConfig` is registered for its dbType.
+ *
+ *   - `native`      — pg/mysql: pre-flight via the `connections.register` →
+ *                     `healthCheck` ephemeral probe.
+ *   - `plugin`      — clickhouse/snowflake/…: pre-flight via the plugin-aware
+ *                     `createFromConfig` → `SELECT 1` → close probe.
+ *   - `unsupported` — no native handler and no registered plugin (or an unknown
+ *                     slug). `message` is actionable, carries no secret.
+ */
+export type ProvisionCapability =
+  | { readonly kind: "native"; readonly dbType: McpNativeDbType }
+  | { readonly kind: "plugin"; readonly dbType: string }
+  | { readonly kind: "unsupported"; readonly dbType: string; readonly message: string };
+
+function unsupportedProvisionMessage(catalogSlug: string): string {
+  return (
+    `Provisioning "${catalogSlug}" datasources via MCP is not supported in this deployment. ` +
+    `Supported types: ${MCP_PROVISIONABLE_CATALOG_SLUGS.join(", ")} (plugin types require the ` +
+    `corresponding datasource plugin to be installed). Use the Atlas admin console for other types.`
+  );
+}
+
+export async function resolveProvisionCapability(
+  catalogSlug: string,
+): Promise<ProvisionCapability> {
+  // Native fast path — the catalog slug IS the dbType for pg/mysql (the
+  // `demo-postgres` slug maps to postgres but is NOT MCP-provisionable, and
+  // falls through to the plugin lookup below, which finds no plugin → unsupported).
+  if (isMcpNativeDbType(catalogSlug)) {
+    return { kind: "native", dbType: catalogSlug };
+  }
+  // Map slug → dbType; an unknown slug is `unsupported`, never a throw.
+  let dbType: string;
+  try {
+    dbType = catalogSlugToDbType(catalogSlug);
+  } catch {
+    // intentionally ignored: an unrecognised slug is a normal "unsupported"
+    // provisioning outcome, surfaced as an actionable envelope — not a 500.
+    return { kind: "unsupported", dbType: catalogSlug, message: unsupportedProvisionMessage(catalogSlug) };
+  }
+  // Plugin-managed: provisionable iff a plugin implementing `createFromConfig`
+  // is registered for this dbType (the same lookup the install/probe paths use).
+  const conn = await findDatasourcePluginConnection(dbType);
+  if (conn && typeof conn.createFromConfig === "function") {
+    return { kind: "plugin", dbType };
+  }
+  return { kind: "unsupported", dbType, message: unsupportedProvisionMessage(catalogSlug) };
+}
+
+/**
+ * A `config_schema` field surfaced to the MCP edge so `create_datasource` can
+ * drive its masked elicitation form (#3547 AC #4). Carries only the metadata the
+ * form needs — never a value. {@link NON_CREDENTIAL_CONFIG_KEYS} (UI label +
+ * write-governance fields) are excluded: they are NOT connection credentials, so
+ * a secure "enter your credentials" prompt is the wrong place for them. A label
+ * (`description`/`display_name`) is collected as a plain tool argument instead so
+ * the agent can set it; write-governance fields default to read-only and are
+ * configured via the admin console. The remaining connection/auth fields —
+ * secret AND non-secret (e.g. ES `url`, the apikey-header name) — are elicited so
+ * the agent never sees connection details.
+ */
+export interface ProvisionConfigField {
+  readonly key: string;
+  readonly label: string;
+  readonly description?: string;
+  readonly required: boolean;
+  readonly secret: boolean;
+  /** A closed value set (catalog `select`) — drives an enum/dropdown in the form. */
+  readonly options?: readonly string[];
+  /** The catalog default, surfaced + injected when the client returns empty. */
+  readonly default?: string;
+}
+
+/**
+ * Catalog `config_schema` keys that must NEVER appear in the masked credential
+ * elicitation form, because they are not connection credentials:
+ *   - `description` / `display_name` — a human label (collected as a tool arg);
+ *   - `schema` — the optional Postgres/MySQL/ClickHouse search_path; a
+ *     non-secret routing hint, set by the agent as a tool arg, not typed into a
+ *     "secure credential" box;
+ *   - `write_allowlist` / `side_effecting_operations` — REST write-governance
+ *     (JSON allowlists); provisioning lands read-only by default and these are
+ *     configured via the admin console, not typed into a "secure credential" box.
+ * Everything else in a schema is treated as connection/auth and elicited.
+ */
+const NON_CREDENTIAL_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  "description",
+  "display_name",
+  "schema",
+  "write_allowlist",
+  "side_effecting_operations",
+]);
+
+export type LoadProvisionConfigFieldsResult =
+  | { readonly kind: "ok"; readonly fields: ProvisionConfigField[]; readonly secretKeys: string[] }
+  /** No catalog row for the slug (shouldn't happen after a capability check passes). */
+  | { readonly kind: "not_found" }
+  /** The catalog `config_schema` is absent/corrupt — an operator misconfig, fail closed. */
+  | { readonly kind: "schema_error" };
+
+/**
+ * Load the `config_schema` for a provisionable datasource and shape its fields
+ * for the MCP masked-elicitation form. Reads the SAME catalog row the installer
+ * validates + encrypts against, so the elicited field set and the secret-field
+ * set stay schema-driven (a new auth field propagates with zero MCP changes).
+ */
+export async function loadProvisionConfigFields(
+  catalogSlug: string,
+): Promise<LoadProvisionConfigFieldsResult> {
+  if (!hasInternalDB()) return { kind: "not_found" };
+  const rows = await internalQuery<{ config_schema: unknown }>(
+    `SELECT config_schema FROM plugin_catalog WHERE slug = $1 AND enabled = true LIMIT 1`,
+    [catalogSlug],
+  );
+  if (rows.length === 0) return { kind: "not_found" };
+  const schema = parseConfigSchema(rows[0].config_schema);
+  if (schema.state !== "parsed") return { kind: "schema_error" };
+
+  const fields: ProvisionConfigField[] = [];
+  const secretKeys: string[] = [];
+  for (const f of schema.fields) {
+    if (NON_CREDENTIAL_CONFIG_KEYS.has(f.key)) continue; // label / governance, not a credential
+    const secret = f.secret === true;
+    if (secret) secretKeys.push(f.key);
+    fields.push({
+      key: f.key,
+      label: f.label ?? f.key,
+      ...(f.description !== undefined ? { description: f.description } : {}),
+      required: f.required === true,
+      secret,
+      // Carry select options + default so the masked form renders a dropdown
+      // (with its default) rather than collapsing every field to free text.
+      ...(Array.isArray(f.options) && f.options.length > 0 ? { options: f.options } : {}),
+      ...(typeof f.default === "string" ? { default: f.default } : {}),
+    });
+  }
+  return { kind: "ok", fields, secretKeys };
+}
+
+/**
+ * Input to {@link provisionDatasource}. `config` carries the full set of
+ * `config_schema` field values collected via masked elicitation at the MCP edge
+ * (the secret fields among them are listed in `secretKeys`). Secret fields are
+ * encrypted at the installer boundary and NEVER round-trip back out (the
+ * returned row carries only a `maskedUrl` / masked fields). The shape is
+ * credential-agnostic so url-shaped (pg/mysql/clickhouse/snowflake), apiKey-
+ * shaped (Elasticsearch), and multi-field (BigQuery) datasources all flow
+ * through one path (#3547).
  */
 export interface ProvisionDatasourceInput {
   readonly catalogSlug: string;
   readonly installId: string;
-  /** The connection URL (secret). Encrypted by the installer per config_schema. */
-  readonly url: string;
-  readonly schema?: string;
-  readonly description?: string;
+  /**
+   * All `config_schema` field values (secret + non-secret) keyed by field key —
+   * e.g. `{ url }`, `{ url, apiKey }`, `{ service_account_json, project_id }`.
+   * Passed verbatim to the installer (which encrypts the `secret: true` fields)
+   * and to the pre-flight probe.
+   */
+  readonly config: Readonly<Record<string, unknown>>;
+  /** Keys of `config` that are `secret: true` — scrubbed from any surfaced error. */
+  readonly secretKeys: readonly string[];
   readonly groupId?: string | null;
 }
 
@@ -345,9 +507,112 @@ export type ProvisionDatasourceOutcome =
  * reusing the blessed seam (`lib/audit/error-scrub.ts`) rather than a
  * hand-rolled regex so a future hardening there covers this path too.
  */
-function scrubSecretFromMessage(message: string, url: string): string {
-  const exact = url ? message.split(url).join("[redacted]") : message;
-  return errorMessage(exact);
+function scrubSecretsFromMessage(message: string, secrets: readonly string[]): string {
+  let scrubbed = message;
+  for (const secret of secrets) {
+    if (secret) scrubbed = scrubbed.split(secret).join("[redacted]");
+  }
+  return errorMessage(scrubbed);
+}
+
+/**
+ * The plaintext secret values in a config (the `secretKeys` subset), for
+ * scrubbing. Takes `(config, secretKeys)` so both the SQL provision path
+ * ({@link ProvisionDatasourceInput}) and the REST path (a bare `formData`) reuse
+ * it — there is exactly one definition of "which values must be redacted".
+ */
+function secretValues(
+  config: Readonly<Record<string, unknown>>,
+  secretKeys: readonly string[],
+): string[] {
+  return secretKeys
+    .map((k) => config[k])
+    .filter((v): v is string => typeof v === "string" && v.length > 0);
+}
+
+/** Result of a validate-before-persist pre-flight; `message` is already scrubbed. */
+type PreflightResult = { readonly ok: true } | { readonly ok: false; readonly message: string };
+
+/**
+ * The config the probe + installer both consume — `input.config` verbatim. Built
+ * in one place so the pre-flight probe tests EXACTLY what the installer persists.
+ */
+function buildProvisionFormData(input: ProvisionDatasourceInput): Record<string, unknown> {
+  return { ...input.config };
+}
+
+/**
+ * Native pg/mysql pre-flight on an EPHEMERAL probe id — never the real install
+ * id. A throwaway id (a) guarantees the probe tests THIS candidate `url`, not a
+ * stale bare pool that might already exist under `installId`, and (b) can't
+ * leave the install-id-keyed registry split-brained if persist later fails.
+ * Mirrors the admin route's `_test_*` ephemeral test-connect (ADR-0007). The
+ * probe pool is ALWAYS unregistered in `finally`.
+ */
+async function preflightNativeConnection(input: ProvisionDatasourceInput): Promise<PreflightResult> {
+  const secrets = secretValues(input.config, input.secretKeys);
+  const url = typeof input.config.url === "string" ? input.config.url : "";
+  const schema = typeof input.config.schema === "string" ? input.config.schema : undefined;
+  const description = typeof input.config.description === "string" ? input.config.description : undefined;
+  const probeId = `__mcp_preflight_${crypto.randomUUID()}`;
+  connections.register(probeId, {
+    url,
+    ...(description !== undefined ? { description } : {}),
+    ...(schema !== undefined ? { schema } : {}),
+  });
+  try {
+    const health = await connections.healthCheck(probeId);
+    // `healthCheck` only reports `unhealthy` after repeated failures over a
+    // window; a brand-new pool's FIRST failed probe is `degraded`. So treat
+    // anything that isn't `healthy` as a failed pre-flight — otherwise a
+    // broken connection slips past validate-before-persist.
+    if (health.status !== "healthy") {
+      return {
+        ok: false,
+        message: scrubSecretsFromMessage(
+          health.message ?? "Connection probe could not reach the datasource.",
+          secrets,
+        ),
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      message: scrubSecretsFromMessage(
+        `Connection test failed: ${raw}. Verify the host, port, database, and credentials, then retry.`,
+        secrets,
+      ),
+    };
+  } finally {
+    // Always drain the probe pool — success persists via the installer's own
+    // fresh registration, failure persists nothing.
+    connections.unregister(probeId);
+  }
+}
+
+/**
+ * Plugin-managed pre-flight (#3547) — builds a throwaway connection via the
+ * registered plugin's `createFromConfig` and runs a `SELECT 1` probe through
+ * the shared {@link probePluginDatasourceConnection} seam, which closes the
+ * probe connection regardless of outcome. Tests exactly the config the
+ * installer will persist (`buildProvisionFormData`). A missing plugin
+ * (`no_plugin`) shouldn't normally reach here — `resolveProvisionCapability`
+ * already gated it — but is handled defensively. The raw driver error is
+ * scrubbed of every secret field value before it returns.
+ */
+async function preflightPluginConnection(
+  dbType: string,
+  input: ProvisionDatasourceInput,
+): Promise<PreflightResult> {
+  const outcome = await probePluginDatasourceConnection(dbType, buildProvisionFormData(input));
+  if (outcome.ok) return { ok: true };
+  const friendly =
+    outcome.reason === "no_plugin"
+      ? outcome.message
+      : `Connection test failed: ${outcome.message}. Verify the connection details and credentials, then retry.`;
+  return { ok: false, message: scrubSecretsFromMessage(friendly, secretValues(input.config, input.secretKeys)) };
 }
 
 /**
@@ -357,21 +622,20 @@ function scrubSecretFromMessage(message: string, url: string): string {
  * → return the masked row. On any failure nothing is persisted and the
  * ephemeral pool is rolled back.
  *
- * The credential (`input.url`) only flows in here and into the installer's
- * encrypt-at-rest path; it is never returned, logged, or placed in an error.
+ * The secret fields in `input.config` only flow in here and into the
+ * installer's encrypt-at-rest path; they are never returned, logged, or placed
+ * in an error (every secret value is scrubbed from any surfaced message).
  */
 export async function provisionDatasource(
   orgId: string,
   input: ProvisionDatasourceInput,
 ): Promise<ProvisionDatasourceOutcome> {
-  if (!isMcpNativeDbType(input.catalogSlug)) {
-    return {
-      kind: "unsupported",
-      message:
-        `Provisioning "${input.catalogSlug}" datasources via MCP is not supported yet. ` +
-        `Supported types: ${MCP_PROVISIONABLE_CATALOG_SLUGS.join(", ")}. ` +
-        `Use the Atlas admin console for other datasource types.`,
-    };
+  // Capability-derived gate (#3547 AC #1) — native pg/mysql OR a plugin-managed
+  // type with a registered `createFromConfig`. Anything else is an actionable
+  // `unsupported` envelope (no secret).
+  const capability = await resolveProvisionCapability(input.catalogSlug);
+  if (capability.kind === "unsupported") {
+    return { kind: "unsupported", message: capability.message };
   }
 
   // Reject a duplicate id before touching the registry — a clean message
@@ -385,57 +649,22 @@ export async function provisionDatasource(
     };
   }
 
-  // Pre-flight on an EPHEMERAL probe id — never the real install id. Using a
-  // throwaway id (a) guarantees the probe tests THIS candidate `url`, not a
-  // stale bare pool that might already exist under `installId` (e.g. a
-  // sibling workspace's pool, the runtime `default`, or an un-drained
-  // archived install), and (b) can't leave the install-id-keyed registry in a
-  // split-brain state if persist later fails. Mirrors the admin route's
-  // `_test_*` ephemeral test-connect (ADR-0007). The probe pool is ALWAYS
-  // unregistered in `finally`.
-  const probeId = `__mcp_preflight_${crypto.randomUUID()}`;
-  connections.register(probeId, {
-    url: input.url,
-    ...(input.description !== undefined ? { description: input.description } : {}),
-    ...(input.schema !== undefined ? { schema: input.schema } : {}),
-  });
-  try {
-    const health = await connections.healthCheck(probeId);
-    // `healthCheck` only reports `unhealthy` after repeated failures over a
-    // window; a brand-new pool's FIRST failed probe is `degraded`. So treat
-    // anything that isn't `healthy` as a failed pre-flight — otherwise a
-    // broken connection slips past validate-before-persist.
-    if (health.status !== "healthy") {
-      return {
-        kind: "health_error",
-        message: scrubSecretFromMessage(
-          health.message ?? "Connection probe could not reach the datasource.",
-          input.url,
-        ),
-      };
-    }
-  } catch (err) {
-    const raw = err instanceof Error ? err.message : String(err);
-    return {
-      kind: "health_error",
-      message: scrubSecretFromMessage(
-        `Connection test failed: ${raw}. Verify the host, port, database, and credentials, then retry.`,
-        input.url,
-      ),
-    };
-  } finally {
-    // Always drain the probe pool — success persists via the installer's own
-    // fresh registration, failure persists nothing.
-    connections.unregister(probeId);
+  // Validate-before-persist pre-flight: native via the ephemeral
+  // ConnectionRegistry probe, plugin via the plugin-aware
+  // `createFromConfig → SELECT 1 → close` probe. Either way nothing is
+  // persisted and no pool survives a failure (the credential never leaks — the
+  // message is scrubbed before it returns).
+  const preflight =
+    capability.kind === "native"
+      ? await preflightNativeConnection(input)
+      : await preflightPluginConnection(capability.dbType, input);
+  if (!preflight.ok) {
+    return { kind: "health_error", message: preflight.message };
   }
 
-  // Health OK → persist as draft. The installer re-registers idempotently and
-  // encrypts the `url` per the catalog config_schema.
-  const formData: Record<string, unknown> = {
-    url: input.url,
-    ...(input.description !== undefined ? { description: input.description } : {}),
-    ...(input.schema !== undefined && input.schema.length > 0 ? { schema: input.schema } : {}),
-  };
+  // Pre-flight OK → persist as draft. The installer re-registers idempotently
+  // and encrypts the secret fields per the catalog config_schema.
+  const formData = buildProvisionFormData(input);
   const outcome = await runDatasourceInstaller((installer) =>
     installer.installDatasource(orgId as WorkspaceId, input.catalogSlug, {
       installId: input.installId,
@@ -452,10 +681,76 @@ export async function provisionDatasource(
       kind: "error",
       status: outcome.status,
       code: outcome.code,
-      message: scrubSecretFromMessage(outcome.message, input.url),
+      message: scrubSecretsFromMessage(outcome.message, secretValues(input.config, input.secretKeys)),
     };
   }
   return { kind: "ok", value: outcome.value };
+}
+
+// ── REST / OpenAPI provisioning (#3547) ───────────────────────────────
+//
+// REST datasources do NOT flow through the native/plugin `createFromConfig`
+// path — they're the `openapi-generic` form-install handler, which PROBES the
+// OpenAPI spec on install and caches a normalized snapshot (no separate
+// pre-flight: a probe failure surfaces as a field validation error and persists
+// nothing). So MCP REST provisioning calls the SAME form handler the admin
+// `/install-form` route calls (ADR-0016 — the lib seam, not the route),
+// `getInstallHandler(openapi-generic).validateConfig`, rather than
+// `provisionDatasource`.
+
+export type ProvisionRestOutcome =
+  | { readonly kind: "ok"; readonly installId: string }
+  /** Spec-probe / field validation failed — nothing persisted. `message` is secret-scrubbed. */
+  | { readonly kind: "validation"; readonly message: string };
+
+/**
+ * Provision a generic OpenAPI/REST datasource over MCP. Routes the elicited
+ * `formData` (openapi_url + auth fields, the credential among them) through the
+ * `openapi-generic` form-install handler, which validates + probes the spec and
+ * persists the snapshot as a new multi-instance install. A
+ * {@link FormInstallValidationError} (bad URL, auth, or a failed probe) becomes
+ * a typed `validation` outcome with the secret values scrubbed; any other throw
+ * re-throws for the caller's `internal_error` path.
+ */
+export async function provisionRestDatasource(
+  orgId: string,
+  formData: Readonly<Record<string, unknown>>,
+  secretKeys: readonly string[],
+): Promise<ProvisionRestOutcome> {
+  // Idempotent (latch-guarded) — ensures the openapi-generic form handler is
+  // registered even in a process that didn't run the full app-boot wiring.
+  registerBuiltinInstallHandlers();
+  const handler = getInstallHandler({ slug: OPENAPI_GENERIC_SLUG, install_model: "form" });
+  if (handler.kind !== "form") {
+    // Registration drift — a non-form handler under a form slug. Re-throw so the
+    // MCP caller surfaces an internal_error (parity with the admin route's 501).
+    throw new Error(`openapi-generic install handler is misregistered (kind=${handler.kind}).`);
+  }
+
+  const secrets = secretValues(formData, secretKeys);
+
+  try {
+    const { installRecord } = await handler.validateConfig(orgId as WorkspaceId, formData);
+    return { kind: "ok", installId: installRecord.id };
+  } catch (err) {
+    if (err instanceof FormInstallValidationError) {
+      const parts = [
+        ...err.formErrors,
+        ...Object.entries(err.fieldErrors).map(([k, v]) => `${k}: ${v.join(", ")}`),
+      ];
+      const message = parts.length > 0 ? parts.join("; ") : "Invalid REST datasource configuration.";
+      return { kind: "validation", message: scrubSecretsFromMessage(message, secrets) };
+    }
+    // Re-throw for the caller's internal_error path, but SCRUB the secret values
+    // (auth_value, etc.) first — an unexpected handler error can echo the elicited
+    // credential in its message, which the MCP dispatch logs + surfaces verbatim.
+    // Deliberately do NOT attach `{ cause: err }`: the original error carries the
+    // UNSCRUBBED message, and a cause chain is serialized by loggers — re-attaching
+    // it would re-introduce the exact credential this scrub removes.
+    const raw = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line preserve-caught-error -- attaching the raw cause would leak the scrubbed credential (see above)
+    throw new Error(scrubSecretsFromMessage(raw, secrets));
+  }
 }
 
 // ── Profiling / semantic-gen (#3512) ──────────────────────────────────

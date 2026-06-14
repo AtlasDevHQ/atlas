@@ -70,6 +70,164 @@ function getDatasourceConnection(plugin: unknown): DatasourceConnectionShape | u
 }
 
 /**
+ * Find the registered datasource plugin `connection` for a `dbType`, or
+ * `undefined` when none is registered. The single home for the
+ * `PluginRegistry.getAll()` → structural-shape → `dbType` match that both the
+ * boot/install registration ({@link registerPluginDatasourceInstall}) and the
+ * pre-flight probe ({@link probePluginDatasourceConnection}) consult — so
+ * "which plugin builds this type" lives in exactly one place (#3547).
+ *
+ * Uses `getAll()` (not `getByType`, which filters to `status==="healthy"`): the
+ * plugin is consulted purely as an ADAPTER via `createFromConfig`, independent
+ * of whether a static config-defined connection of its dbType is healthy. Lazy-
+ * imports the registry to keep it out of this module's static graph (several
+ * tests partial-mock this bridge's imports).
+ */
+export async function findDatasourcePluginConnection(
+  dbType: string,
+): Promise<DatasourceConnectionShape | undefined> {
+  const { plugins } = await import("@atlas/api/lib/plugins/registry");
+  return plugins
+    .getAll()
+    .map(getDatasourceConnection)
+    .find((c): c is DatasourceConnectionShape => c != null && c.dbType === dbType);
+}
+
+/** Outcome of {@link probePluginDatasourceConnection} — `message` is NOT scrubbed; the caller scrubs. */
+export type PluginProbeOutcome =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: "no_plugin" | "connect_failed"; readonly message: string };
+
+/** Probe query + timeout — a trivial connectivity check that every SQL-shaped plugin pool answers. */
+const PLUGIN_PROBE_SQL = "SELECT 1";
+const PLUGIN_PROBE_TIMEOUT_MS = 10_000;
+
+/** A built plugin connection, plus the OPTIONAL liveness surface some adapters expose. */
+type ProbeableConnection = {
+  query(sql: string, timeoutMs?: number): Promise<unknown>;
+  close(): Promise<void>;
+  /**
+   * A non-SQL liveness round-trip (e.g. Elasticsearch/OpenSearch `ping()` → cluster
+   * info). Preferred over `SELECT 1` when present: the ES connection's `query()`
+   * routes to the cluster SQL API (`/_sql`, optional on OpenSearch), so probing it
+   * with `SELECT 1` would test the wrong surface — `ping()` is what the plugin's own
+   * health check uses.
+   */
+  ping?(timeoutMs?: number): Promise<unknown>;
+};
+
+/**
+ * Plugin-aware ephemeral test-connect for a CANDIDATE plugin-managed datasource
+ * (#3547). Builds a throwaway connection via the registered plugin's
+ * `createFromConfig(decryptedConfig)`, runs a liveness probe under a short
+ * timeout — the connection's own `ping()` when it exposes one (ES/OpenSearch),
+ * else a `SELECT 1` (ClickHouse/Snowflake/BigQuery) — and ALWAYS closes it,
+ * registering nothing in the `ConnectionRegistry` and persisting nothing. The
+ * plugin counterpart to the native `connections.register(probeId) → healthCheck`
+ * pre-flight, so the MCP `create_datasource` validate-before-persist path is
+ * uniform across native and plugin dbTypes.
+ *
+ * `message` carries the RAW driver error (which may echo the credential) — the
+ * caller (`mcp-lifecycle.provisionDatasource`) runs it through
+ * `scrubSecretsFromMessage` before it ever reaches a client/agent/log. Returning
+ * the raw string keeps the secret-scrub seam in one place.
+ */
+export async function probePluginDatasourceConnection(
+  dbType: string,
+  decryptedConfig: Readonly<Record<string, unknown>>,
+  timeoutMs: number = PLUGIN_PROBE_TIMEOUT_MS,
+): Promise<PluginProbeOutcome> {
+  const conn = await findDatasourcePluginConnection(dbType);
+  if (!conn || typeof conn.createFromConfig !== "function") {
+    return {
+      ok: false,
+      reason: "no_plugin",
+      message:
+        `No datasource plugin registered for type "${dbType}". Add the corresponding ` +
+        `plugin (e.g. clickhousePlugin()) to the plugins array in atlas.config.ts.`,
+    };
+  }
+
+  // Capture the narrowed factory before the nested closure below — TS resets the
+  // `typeof conn.createFromConfig === "function"` narrowing inside the async IIFE.
+  const createFromConfig = conn.createFromConfig;
+  let built: ProbeableConnection | undefined;
+  let timedOut = false;
+  // The WHOLE build+probe runs under one deadline. `createFromConfig` has no
+  // timeout of its own, and the `query`/`ping` timeoutMs is only honored if the
+  // adapter chooses to — so an adapter that eagerly connects on build, or
+  // ignores its own probe timeout, must not hang the MCP `create_datasource`
+  // call against an unreachable host. On a deadline breach we salvage-close any
+  // connection the build later yields (below) so a slow-but-eventual resolve
+  // can't leak a pool.
+  const probeRun = (async () => {
+    built = (await createFromConfig(decryptedConfig)) as ProbeableConnection;
+    // Prefer the connection's native liveness check (ES/OpenSearch `ping`); fall
+    // back to `SELECT 1` for SQL-only adapters that expose no `ping`.
+    if (typeof built.ping === "function") {
+      await built.ping(timeoutMs);
+    } else {
+      await built.query(PLUGIN_PROBE_SQL, timeoutMs);
+    }
+  })();
+  void probeRun.catch(() => {}).finally(() => {
+    if (timedOut && built) void built.close().catch(() => {});
+  });
+  try {
+    await withProbeTimeout(probeRun, timeoutMs, () => {
+      timedOut = true;
+    });
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: "connect_failed",
+      message: timedOut
+        ? `Connection probe exceeded ${timeoutMs}ms — the datasource may be unreachable.`
+        : err instanceof Error
+          ? err.message
+          : String(err),
+    };
+  } finally {
+    // The timed-out path's salvage-close (above) owns teardown of a late build;
+    // here we close only the connection we actually awaited in-deadline.
+    if (!timedOut && built) {
+      try {
+        await built.close();
+      } catch {
+        // intentionally ignored: best-effort teardown of a throwaway probe
+        // connection — a close failure must not mask the probe result, and this
+        // module stays logger-free (callers own breadcrumbs).
+      }
+    }
+  }
+}
+
+/**
+ * Reject `p` if it has not settled within `ms`, invoking `onTimeout` so the
+ * caller can flag the breach + salvage-close a late-resolving connection. Clears
+ * its timer on settle so a resolved probe never keeps the event loop alive.
+ */
+function withProbeTimeout(p: Promise<void>, ms: number, onTimeout: () => void): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      onTimeout();
+      reject(new Error(`probe timed out after ${ms}ms`));
+    }, ms);
+    p.then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
+}
+
+/**
  * Datasource dbTypes whose per-workspace connections are NOT built by this
  * bridge from `workspace_plugins.config`. Salesforce is the sole member:
  *
@@ -129,16 +287,9 @@ async function registerPluginDatasourceInstall(
   poolConfig: DatasourcePoolConfig,
   decryptedConfig: Readonly<Record<string, unknown>>,
 ): Promise<boolean> {
-  // Lazy import keeps the plugin registry out of this module's static import
-  // graph — several tests partial-mock this bridge's imports.
-  const { plugins } = await import("@atlas/api/lib/plugins/registry");
-  // Use getAll() (not getByType, which filters to status==="healthy"): the
-  // plugin is consulted purely as an ADAPTER via createFromConfig, independent
-  // of whether a static config-defined connection of its dbType is healthy.
-  const conn = plugins
-    .getAll()
-    .map(getDatasourceConnection)
-    .find((c): c is DatasourceConnectionShape => c != null && c.dbType === poolConfig.dbType);
+  // Shared registry lookup — the same seam the pre-flight probe consults so
+  // "which plugin builds this type" lives in one place (#3547).
+  const conn = await findDatasourcePluginConnection(poolConfig.dbType);
 
   if (!conn || typeof conn.createFromConfig !== "function") {
     throw new Error(

@@ -83,15 +83,28 @@ mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
 
 // `loadDatasourceProfileTarget` parses the catalog schema + decrypts config.
 // Plaintext passthrough is enough — the dbType/url come from the resolver mock.
+// Spread the real module so every export (restoreMaskedSecrets, …) the form-
+// install handler graph named-imports stays present; override only the few this
+// suite drives.
+const realSecrets = await import("@atlas/api/lib/plugins/secrets");
 mock.module("@atlas/api/lib/plugins/secrets", () => ({
-  parseConfigSchema: () => ({ state: "parsed", fields: [] }),
+  ...realSecrets,
+  // Echo a config_schema array verbatim as parsed fields so
+  // `loadProvisionConfigFields` can be exercised; non-array → empty (matches
+  // the prior `config_schema: []` profile-target cases).
+  parseConfigSchema: (s: unknown) => ({ state: "parsed", fields: Array.isArray(s) ? s : [] }),
   decryptSecretFields: (config: Record<string, unknown>) => config,
   encryptSecretFields: (config: Record<string, unknown>) => config,
   maskSecretFields: (config: Record<string, unknown>) => config,
 }));
 
-const { listDatasources, runDatasourceInstaller, provisionDatasource, loadDatasourceProfileTarget } =
-  await import("../mcp-lifecycle.js");
+const {
+  listDatasources,
+  runDatasourceInstaller,
+  provisionDatasource,
+  loadDatasourceProfileTarget,
+  loadProvisionConfigFields,
+} = await import("../mcp-lifecycle.js");
 
 beforeEach(() => {
   mockInternalQuery.mockClear();
@@ -235,7 +248,8 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "snowflake",
       installId: "wh",
-      url: SECRET_URL,
+      config: { url: SECRET_URL },
+      secretKeys: ["url"],
     });
     expect(outcome.kind).toBe("unsupported");
     expect(registerSpy).not.toHaveBeenCalled();
@@ -247,7 +261,8 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "postgres",
       installId: "dupe",
-      url: SECRET_URL,
+      config: { url: SECRET_URL },
+      secretKeys: ["url"],
     });
     expect(outcome.kind).toBe("error");
     if (outcome.kind === "error") expect(outcome.status).toBe(409);
@@ -259,7 +274,7 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
     healthResult = { status: "healthy", latencyMs: 5, checkedAt: new Date(0) };
     // Health OK → reaches the installer; installDatasource isn't mocked here,
     // so the program will fail — but we only assert the pre-flight behaviour.
-    await provisionDatasource("org_1", { catalogSlug: "postgres", installId: "new-pg", url: SECRET_URL })
+    await provisionDatasource("org_1", { catalogSlug: "postgres", installId: "new-pg", config: { url: SECRET_URL }, secretKeys: ["url"] })
       .catch(() => undefined);
     // Registered + unregistered exactly the same throwaway id, never "new-pg".
     const registeredId = registerSpy.mock.calls[0]?.[0] as string;
@@ -276,7 +291,8 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "postgres",
       installId: "new-pg",
-      url: SECRET_URL,
+      config: { url: SECRET_URL },
+      secretKeys: ["url"],
     });
     expect(outcome.kind).toBe("health_error");
     expect(unregisterSpy).toHaveBeenCalledTimes(1); // probe rolled back
@@ -288,7 +304,8 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "postgres",
       installId: "new-pg",
-      url: SECRET_URL,
+      config: { url: SECRET_URL },
+      secretKeys: ["url"],
     });
     expect(outcome.kind).toBe("health_error");
     expect(registerSpy).toHaveBeenCalledTimes(1);
@@ -305,7 +322,8 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
     const outcome = await provisionDatasource("org_1", {
       catalogSlug: "postgres",
       installId: "new-pg",
-      url: SECRET_URL,
+      config: { url: SECRET_URL },
+      secretKeys: ["url"],
     });
     expect(outcome.kind).toBe("health_error");
     expect(unregisterSpy).toHaveBeenCalledTimes(1);
@@ -315,6 +333,95 @@ describe("provisionDatasource — validate-before-persist + secret discipline", 
       // Exact-url scrub replaces the whole DSN, '@'-password and all.
       expect(outcome.message).toContain("[redacted]");
     }
+  });
+});
+
+describe("loadProvisionConfigFields", () => {
+  it("maps the catalog config_schema to elicitation fields + secretKeys, excluding description + schema", async () => {
+    // Mirrors a SQL catalog row: non-secret url + secret apiKey, plus a
+    // description (tool-arg label) and a schema (search_path) field that must
+    // NOT be elicited into the secure prompt — both are non-secret agent args.
+    internalRows = [
+      {
+        config_schema: [
+          { key: "url", type: "string", label: "Connection URL", required: true, description: "es://…" },
+          { key: "apiKey", type: "string", label: "API Key", secret: true },
+          { key: "schema", type: "string", label: "Schema" },
+          { key: "description", type: "string", label: "Description" },
+        ],
+      },
+    ];
+    const res = await loadProvisionConfigFields("elasticsearch");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      expect(res.fields.map((f) => f.key)).toEqual(["url", "apiKey"]); // description + schema excluded
+      expect(res.fields[0]).toEqual({ key: "url", label: "Connection URL", description: "es://…", required: true, secret: false });
+      expect(res.fields[1].secret).toBe(true);
+      expect(res.secretKeys).toEqual(["apiKey"]);
+    }
+  });
+
+  it("excludes non-credential fields (display_name + write-governance) from the masked form", async () => {
+    // Mirrors the openapi-generic catalog row: connection/auth fields are
+    // elicited; display_name + write_allowlist + side_effecting_operations are
+    // NOT (label / write-governance, not credentials).
+    internalRows = [
+      {
+        config_schema: [
+          { key: "openapi_url", type: "string", label: "OpenAPI spec URL", required: true },
+          { key: "auth_kind", type: "select", label: "Authentication", required: true },
+          { key: "auth_value", type: "string", label: "Credential", secret: true },
+          { key: "auth_header_name", type: "string", label: "API key header name" },
+          { key: "write_allowlist", type: "string", label: "Write allowlist (JSON)" },
+          { key: "side_effecting_operations", type: "string", label: "Side-effecting GET operations (JSON)" },
+          { key: "display_name", type: "string", label: "Display name" },
+        ],
+      },
+    ];
+    const res = await loadProvisionConfigFields("openapi-generic");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      // auth_header_name (a connection/auth field) is kept; the label + the two
+      // write-governance JSON fields are dropped.
+      expect(res.fields.map((f) => f.key)).toEqual([
+        "openapi_url",
+        "auth_kind",
+        "auth_value",
+        "auth_header_name",
+      ]);
+      expect(res.secretKeys).toEqual(["auth_value"]);
+    }
+  });
+
+  it("propagates a select field's options + default so the masked form renders a dropdown", async () => {
+    // Mirrors the openapi-generic auth_kind: a required select with a default —
+    // its enum + default must reach the elicitation field, not collapse to text.
+    internalRows = [
+      {
+        config_schema: [
+          { key: "openapi_url", type: "string", label: "OpenAPI spec URL", required: true },
+          { key: "auth_kind", type: "select", label: "Authentication", required: true, options: ["bearer", "basic", "apikey"], default: "bearer" },
+          { key: "auth_value", type: "string", label: "Credential", secret: true },
+        ],
+      },
+    ];
+    const res = await loadProvisionConfigFields("openapi-generic");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      const authKind = res.fields.find((f) => f.key === "auth_kind");
+      expect(authKind?.options).toEqual(["bearer", "basic", "apikey"]);
+      expect(authKind?.default).toBe("bearer");
+      // A plain string field carries neither.
+      const url = res.fields.find((f) => f.key === "openapi_url");
+      expect(url?.options).toBeUndefined();
+      expect(url?.default).toBeUndefined();
+    }
+  });
+
+  it("returns not_found when the catalog row is missing", async () => {
+    internalRows = [];
+    const res = await loadProvisionConfigFields("nope");
+    expect(res.kind).toBe("not_found");
   });
 });
 

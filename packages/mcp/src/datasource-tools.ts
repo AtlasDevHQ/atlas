@@ -58,7 +58,7 @@ import type {
   McpDispatchGateContext,
   McpDispatchGateRequirements,
 } from "./dispatch-gate.js";
-import { elicitMaskedField } from "./elicitation.js";
+import { elicitMaskedForm } from "./elicitation.js";
 import { withProgressAndCancellation, OperationCancelledError } from "./progress.js";
 import { createMcpLogger } from "./logger.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
@@ -87,6 +87,11 @@ const dispatchGate = (): Promise<DispatchGateModule> =>
 
 // Every datasource tool is an admin surface — RBAC floor is `admin`.
 const DATASOURCE_MIN_ROLE: AtlasRole = "admin";
+
+// Catalog slug for the generic OpenAPI/REST datasource. A string literal (not an
+// import from `@atlas/api/lib/openapi/catalog`) so registering these tools stays
+// off the heavy openapi graph — the lib seam resolves it at invocation time.
+const REST_CATALOG_SLUG = "openapi-generic";
 
 // Bounds on free-text / identifier input — MCP clients (incl. hostile ones
 // in BYOC SaaS) shouldn't drive megabyte strings into the lookups.
@@ -378,6 +383,92 @@ export function registerDatasourceTools(
     );
   }
 
+  /**
+   * Shared masked-credential collection for the two create tools (#3547): run a
+   * schema-driven masked form, map a client failure / decline to a typed block,
+   * and defensively enforce required-field presence. The entered values travel
+   * client→server only — they never enter a tool argument, the agent/LLM
+   * context, a response, or a log. Returns the collected values or a renderable
+   * block; the caller assembles the provision config from `values`.
+   */
+  type ProvisionFormField = {
+    key: string;
+    label: string;
+    description?: string;
+    required: boolean;
+    secret: boolean;
+    options?: readonly string[];
+    default?: string;
+  };
+  async function collectMaskedConfig(
+    orgId: string,
+    fields: readonly ProvisionFormField[],
+    message: string,
+    signal: AbortSignal | undefined,
+  ): Promise<{ ok: true; values: Record<string, string> } | { ok: false; block: CallToolResult }> {
+    let elicited;
+    try {
+      elicited = await elicitMaskedForm(server, {
+        principal: orgId,
+        message,
+        fields: fields.map((f) => ({
+          name: f.key,
+          title: f.label,
+          ...(f.description ? { description: f.description } : {}),
+          required: f.required,
+          secret: f.secret,
+          ...(f.options ? { options: f.options } : {}),
+          ...(f.default !== undefined ? { default: f.default } : {}),
+        })),
+        ...(signal ? { signal } : {}),
+      });
+    } catch (err) {
+      // Elicitation unsupported by the client, or a state/secret error. Never
+      // include any (never-yet-received) credential; surface a capability-shaped
+      // message.
+      return {
+        ok: false,
+        block: toEnvelopeResult(
+          envelope(
+            "validation_failed",
+            `Could not securely collect the connection credentials: ${errorMessage(err, "elicitation failed")}.`,
+            { hint: "Use an MCP client that supports masked form elicitation, or provision via the admin console." },
+          ),
+        ),
+      };
+    }
+    if (elicited.action !== "accept") {
+      return {
+        ok: false,
+        block: toEnvelopeResult(
+          envelope(
+            "validation_failed",
+            `Datasource creation was ${elicited.action === "decline" ? "declined" : "cancelled"} — no configuration was provided.`,
+          ),
+        ),
+      };
+    }
+    // Defense-in-depth: a non-spec-compliant client could `accept` with a
+    // required field left blank (elicitMaskedForm drops empty values), which
+    // would otherwise surface as a confusing pre-flight "could not reach"
+    // error. Reject with an actionable, field-named message instead.
+    const values = elicited.values;
+    const missing = fields.filter((f) => f.required && !(f.key in values)).map((f) => f.label);
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        block: toEnvelopeResult(
+          envelope(
+            "validation_failed",
+            `Missing required field${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}.`,
+            { hint: "Provide every required field in the secure prompt, then retry." },
+          ),
+        ),
+      };
+    }
+    return { ok: true, values };
+  }
+
   // --- list_datasources (read) ---
   server.registerTool(
     "list_datasources",
@@ -589,21 +680,24 @@ export function registerDatasourceTools(
         db_type: z
           .enum(MCP_PROVISIONABLE_CATALOG_SLUGS as [string, ...string[]])
           .describe(
-            `Datasource type. Provisionable via MCP today: ${MCP_PROVISIONABLE_CATALOG_SLUGS.join(", ")}.`,
+            `Datasource type. Provisionable via MCP: ${MCP_PROVISIONABLE_CATALOG_SLUGS.join(", ")}. ` +
+              `Connection details (URL / API key / service-account JSON, etc.) are collected separately via a secure masked prompt — never as tool arguments.`,
           ),
         install_id: datasourceIdSchema(
           "New datasource id (lowercase-led slug, e.g. 'prod-us'). Must be unique in the workspace.",
         ),
-        schema: z
-          .string()
-          .max(MAX_ID_LEN)
-          .optional()
-          .describe("Optional schema/search_path (Postgres). Defaults to the server default."),
         description: z
           .string()
           .max(MAX_FILTER_LEN)
           .optional()
-          .describe("Optional human-readable description."),
+          .describe("Optional human-readable description (shown in the agent system prompt)."),
+        schema: z
+          .string()
+          .max(MAX_ID_LEN)
+          .optional()
+          .describe(
+            "Optional schema / search_path for SQL datasources (postgres/mysql/clickhouse). Non-secret routing hint — set here, not in the secure prompt.",
+          ),
         group_id: z
           .string()
           .max(MAX_ID_LEN)
@@ -611,7 +705,7 @@ export function registerDatasourceTools(
           .describe("Optional environment-group binding."),
       },
     },
-    async ({ db_type, install_id, schema, description, group_id }, extra): Promise<CallToolResult> =>
+    async ({ db_type, install_id, description, schema, group_id }, extra): Promise<CallToolResult> =>
       dispatch(
         "create_datasource",
         // Gate 1 (#3509) datasource kill-switch + mcp:write + admin. NOT
@@ -622,63 +716,71 @@ export function registerDatasourceTools(
           const org = requireBoundOrg();
           if (!org.ok) return org.block;
           const orgId = org.orgId;
+          const lib = await lifecycle();
 
-          // Collect the connection URL via MASKED form-mode elicitation
-          // (#3499). The secret travels client→server only; it never enters
-          // a tool argument, the agent/LLM context, this response, or a log.
-          let elicited;
-          try {
-            elicited = await elicitMaskedField(server, {
-              principal: orgId,
-              message: `Enter the ${db_type} connection URL for "${install_id}". It is sent securely and never shared with the agent.`,
-              field: {
-                name: "url",
-                title: `${db_type} connection URL`,
-                description: "Entered securely; never shared with the agent or stored in plaintext.",
-              },
-              ...(extra.signal ? { signal: extra.signal } : {}),
-            });
-          } catch (err) {
-            // Elicitation unsupported by the client, or a state/secret error.
-            // Never include the (never-yet-received) credential; surface a
-            // capability-shaped message.
+          // Capability check BEFORE prompting for credentials — don't ask the
+          // user for a connection we can't provision (unknown type, or a plugin
+          // type with no plugin installed).
+          const capability = await lib.resolveProvisionCapability(db_type);
+          if (capability.kind === "unsupported") {
+            return toEnvelopeResult(envelope("validation_failed", capability.message));
+          }
+
+          // Resolve the per-type credential field set from the catalog
+          // config_schema (#3547 AC #4) so the masked form is schema-driven —
+          // url-shaped (pg/mysql/clickhouse/snowflake), apiKey-shaped (ES), and
+          // multi-field (BigQuery) all collect the right fields with zero
+          // per-type code here.
+          const fieldsResult = await lib.loadProvisionConfigFields(db_type);
+          if (fieldsResult.kind !== "ok") {
             return toEnvelopeResult(
               envelope(
                 "validation_failed",
-                `Could not securely collect the connection credential: ${errorMessage(err, "elicitation failed")}.`,
-                { hint: "Use an MCP client that supports masked form elicitation, or provision via the admin console." },
+                fieldsResult.kind === "not_found"
+                  ? `Datasource type "${db_type}" is not configured in this workspace's catalog.`
+                  : `The "${db_type}" datasource catalog is misconfigured; provisioning is unavailable. Use the admin console.`,
               ),
             );
           }
-          if (elicited.action !== "accept") {
-            return toEnvelopeResult(
-              envelope(
-                "validation_failed",
-                `Datasource creation was ${elicited.action === "decline" ? "declined" : "cancelled"} — no credential was provided.`,
-              ),
-            );
-          }
-          // `url` is the secret — used only for the pre-flight probe + the
-          // installer's encrypt-at-rest path. NEVER logged or returned.
-          const url = elicited.value;
 
-          const outcome = await (await lifecycle()).provisionDatasource(orgId, {
+          // Collect every config field via MASKED form-mode elicitation (#3499),
+          // schema-driven + required-field-checked by the shared helper.
+          const collected = await collectMaskedConfig(
+            orgId,
+            fieldsResult.fields,
+            `Enter the connection details for the ${db_type} datasource "${install_id}". They are sent securely and never shared with the agent.`,
+            extra.signal,
+          );
+          if (!collected.ok) return collected.block;
+
+          // `config` holds the secret + non-secret connection fields — used only
+          // for the pre-flight probe + the installer's encrypt-at-rest path,
+          // NEVER logged or returned. `description` (label) and `schema`
+          // (search_path) are non-secret agent-set fields — they're tool args,
+          // NOT elicited in the secure prompt — merged in here. `secretKeys`
+          // drives the lib's error-scrub.
+          const config: Record<string, unknown> = {
+            ...collected.values,
+            ...(description !== undefined ? { description } : {}),
+            ...(schema !== undefined ? { schema } : {}),
+          };
+
+          const outcome = await lib.provisionDatasource(orgId, {
             catalogSlug: db_type,
             installId: install_id,
-            url,
-            ...(schema !== undefined ? { schema } : {}),
-            ...(description !== undefined ? { description } : {}),
+            config,
+            secretKeys: fieldsResult.secretKeys,
             groupId: group_id ?? null,
           });
 
           switch (outcome.kind) {
             case "ok":
-              // Only the masked URL is ever surfaced.
+              // Only masked (never plaintext) credential material is surfaced.
               return toJsonContent({
                 id: outcome.value.installId,
                 db_type: outcome.value.dbType,
                 status: outcome.value.status,
-                masked_url: outcome.value.maskedUrl,
+                ...(outcome.value.maskedUrl ? { masked_url: outcome.value.maskedUrl } : {}),
                 description: outcome.value.description,
                 schema: outcome.value.schema,
                 group_id: outcome.value.groupId,
@@ -691,7 +793,7 @@ export function registerDatasourceTools(
               // Pre-flight failed — message is credential-scrubbed by the lib.
               return toEnvelopeResult(
                 envelope("validation_failed", outcome.message, {
-                  hint: "Verify the connection details and that the database is reachable, then retry.",
+                  hint: "Verify the connection details and that the datasource is reachable, then retry.",
                 }),
               );
             case "error":
@@ -700,6 +802,86 @@ export function registerDatasourceTools(
                 envelope("validation_failed", outcome.message, { request_id: requestId }),
               );
           }
+        },
+      ),
+  );
+
+  // --- create_rest_datasource (mutate; OpenAPI spec + auth via masked form) ---
+  server.registerTool(
+    "create_rest_datasource",
+    {
+      title: "Create REST (OpenAPI) Datasource",
+      description: withErrorContract(CREATE_REST_DATASOURCE_DESCRIPTION, DATASOURCE_WRITE_ERROR_CODES),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+      inputSchema: {
+        display_name: z
+          .string()
+          .max(MAX_FILTER_LEN)
+          .optional()
+          .describe("Optional friendly name shown in the connections UI (non-secret; set by you, not collected in the secure prompt)."),
+      },
+    },
+    async ({ display_name }, extra): Promise<CallToolResult> =>
+      dispatch(
+        "create_rest_datasource",
+        // Gate 1 kill-switch + mcp:write + admin. NOT approval-gated — additive,
+        // the human-in-the-loop is the masked spec-URL/credential entry below.
+        { requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
+        async (requestId) => {
+          const org = requireBoundOrg();
+          if (!org.ok) return org.block;
+          const orgId = org.orgId;
+          const lib = await lifecycle();
+
+          // The openapi-generic config_schema (spec URL + auth_kind + auth_value
+          // + …) drives the masked form, exactly like the SQL types. Non-credential
+          // fields (display_name, write_allowlist, …) are excluded from the secure
+          // prompt by loadProvisionConfigFields; display_name comes from the arg.
+          const fieldsResult = await lib.loadProvisionConfigFields(REST_CATALOG_SLUG);
+          if (fieldsResult.kind !== "ok") {
+            return toEnvelopeResult(
+              envelope(
+                "validation_failed",
+                fieldsResult.kind === "not_found"
+                  ? "The generic REST (OpenAPI) datasource is not available in this workspace's catalog."
+                  : "The REST datasource catalog is misconfigured; provisioning is unavailable. Use the admin console.",
+              ),
+            );
+          }
+
+          // Collect spec URL + auth (the credential among them) via the masked
+          // form — values travel client→server only, never into agent context.
+          const collected = await collectMaskedConfig(
+            orgId,
+            fieldsResult.fields,
+            `Enter the OpenAPI spec URL and authentication for the new REST datasource. Sent securely and never shared with the agent.`,
+            extra.signal,
+          );
+          if (!collected.ok) return collected.block;
+
+          // The handler probes the spec on install (no separate pre-flight): a
+          // bad URL / auth / unreachable spec comes back as `validation`,
+          // secret-scrubbed, with nothing persisted. `display_name` is the
+          // agent-set label (non-secret), merged in alongside the elicited config.
+          const outcome = await lib.provisionRestDatasource(
+            orgId,
+            { ...collected.values, ...(display_name !== undefined ? { display_name } : {}) },
+            fieldsResult.secretKeys,
+          );
+          if (outcome.kind === "validation") {
+            return toEnvelopeResult(
+              envelope("validation_failed", outcome.message, {
+                hint: "Check the OpenAPI spec URL, the auth type/credential, and that the spec is reachable, then retry.",
+                request_id: requestId,
+              }),
+            );
+          }
+          return toJsonContent({
+            id: outcome.installId,
+            created: true,
+            kind: "rest",
+            next: "The REST datasource is installed and its operations are available to the agent. It is read-only by default; configure any write allowlist via the admin console.",
+          });
         },
       ),
   );
@@ -873,7 +1055,9 @@ const RESTORE_DATASOURCE_DESCRIPTION = `Restore (un-archive) a previously archiv
 
 const DELETE_DATASOURCE_DESCRIPTION = `Permanently delete a datasource — removes the configuration and drains the pool. IRREVERSIBLE (use archive_datasource for a recoverable disable). Destructive: requires the \`mcp:write\` scope and the admin role, and routes through the workspace approval flow when an origin=mcp approval rule requires it (the response then carries \`approval_required: true\` with an \`approval_request_id\` to follow up on). Example call: \`{ "id": "old-staging" }\`. Example success: \`{ "id": "old-staging", "deleted": true }\`.`;
 
-const CREATE_DATASOURCE_DESCRIPTION = `Provision a NEW datasource (postgres or mysql) for this workspace. You supply only non-secret fields — \`db_type\`, \`install_id\`, optional \`schema\`/\`description\`/\`group_id\`. The connection URL (the credential) is collected SEPARATELY via a secure masked prompt to the user; it is never passed as a tool argument and never shared with you. The connection is health-checked BEFORE it is persisted (a failed probe persists nothing), and lands as a \`draft\` — run profile_datasource next to make it queryable. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "db_type": "postgres", "install_id": "prod-us" }\`. Example success: \`{ "id": "prod-us", "db_type": "postgres", "status": "draft", "masked_url": "postgres://***@…", "created": true }\`.`;
+const CREATE_DATASOURCE_DESCRIPTION = `Provision a NEW datasource for this workspace. Supported types: postgres, mysql, clickhouse, snowflake, bigquery, elasticsearch/opensearch (plugin types require the corresponding datasource plugin to be installed). You supply only non-secret fields — \`db_type\`, \`install_id\`, optional \`description\`/\`group_id\`. ALL connection details (URL, API key, service-account JSON, etc.) are collected SEPARATELY via a secure masked prompt to the user; they are never passed as tool arguments and never shared with you. The connection is tested BEFORE it is persisted (a failed probe persists nothing), and lands as a \`draft\` — run profile_datasource next to make it queryable. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "db_type": "clickhouse", "install_id": "prod-us" }\`. Example success: \`{ "id": "prod-us", "db_type": "clickhouse", "status": "draft", "masked_url": "clickhouse://***@…", "created": true }\`.`;
+
+const CREATE_REST_DATASOURCE_DESCRIPTION = `Provision a NEW generic REST datasource from an OpenAPI 3.x spec for this workspace. You may pass an optional non-secret \`display_name\`; the spec URL, authentication type, and credential are ALL collected via a secure masked prompt to the user — they are never passed as tool arguments and never shared with you. The spec is fetched + validated BEFORE anything is persisted (a failed probe persists nothing). On success the API's operations become available to the agent; it is read-only by default (any write allowlist is configured via the admin console). Use this instead of create_datasource for HTTP/REST APIs (Stripe, GitHub, an internal service); use create_datasource for SQL databases. Requires the \`mcp:write\` scope and the admin role. Example success: \`{ "id": "<install-id>", "created": true, "kind": "rest" }\`.`;
 
 const PROFILE_DATASOURCE_DESCRIPTION = `Profile a datasource (introspect its tables) and generate its semantic layer — entities + the table whitelist — so the agent can query it with executeSQL. Long-running: emits progress per table and is cancellable. Typically run right after create_datasource. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example success: \`{ "id": "prod-us", "queryable": true, "entities_generated": 12, "tables": ["orders", "users"], "elapsed_ms": 1840 }\`.`;
 

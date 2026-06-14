@@ -418,3 +418,108 @@ describe("unregisterDatasourceInstall", () => {
     expect(unregisterCalls).toHaveLength(0);
   });
 });
+
+describe("probePluginDatasourceConnection (#3547)", () => {
+  it("returns no_plugin when no datasource plugin is registered for the dbType", async () => {
+    fakeDatasourcePlugins = [];
+    const out = await bridge.probePluginDatasourceConnection("clickhouse", { url: "clickhouse://h/db" });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toBe("no_plugin");
+  });
+
+  it("probes a SQL-only adapter (no ping) via SELECT 1, then closes it", async () => {
+    const sqlCalls: string[] = [];
+    let closed = false;
+    const conn = {
+      query: async (sql: string) => { sqlCalls.push(sql); return { columns: [], rows: [] }; },
+      close: async () => { closed = true; },
+    };
+    fakeDatasourcePlugins = [{ types: ["datasource"], connection: { dbType: "clickhouse", createFromConfig: () => conn } }];
+    const out = await bridge.probePluginDatasourceConnection("clickhouse", { url: "clickhouse://h/db" });
+    expect(out.ok).toBe(true);
+    expect(sqlCalls).toEqual(["SELECT 1"]);
+    expect(closed).toBe(true);
+  });
+
+  it("prefers the connection's ping() over SELECT 1 (ES/OpenSearch) and never runs SQL", async () => {
+    let pinged = false;
+    let queried = false;
+    let closed = false;
+    const conn = {
+      query: async () => { queried = true; return { columns: [], rows: [] }; },
+      ping: async () => { pinged = true; return { cluster_name: "es" }; },
+      close: async () => { closed = true; },
+    };
+    fakeDatasourcePlugins = [{ types: ["datasource"], connection: { dbType: "elasticsearch", createFromConfig: () => conn } }];
+    const out = await bridge.probePluginDatasourceConnection("elasticsearch", { url: "elasticsearch://h:9200", apiKey: "k" });
+    expect(out.ok).toBe(true);
+    expect(pinged).toBe(true);
+    expect(queried).toBe(false); // SQL surface (optional on OpenSearch) is NOT probed
+    expect(closed).toBe(true);
+  });
+
+  it("surfaces a failed probe as connect_failed (raw message; caller scrubs) and still closes", async () => {
+    let closed = false;
+    const conn = {
+      query: async () => { throw new Error("getaddrinfo ENOTFOUND warehouse"); },
+      close: async () => { closed = true; },
+    };
+    fakeDatasourcePlugins = [{ types: ["datasource"], connection: { dbType: "clickhouse", createFromConfig: () => conn } }];
+    const out = await bridge.probePluginDatasourceConnection("clickhouse", { url: "clickhouse://h/db" });
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.reason).toBe("connect_failed");
+      expect(out.message).toContain("ENOTFOUND");
+    }
+    expect(closed).toBe(true);
+  });
+
+  it("bounds a hung createFromConfig under the deadline (createFromConfig has no timeout of its own)", async () => {
+    // An adapter whose createFromConfig eagerly opens a TCP connection to an
+    // unreachable host (no RST) would otherwise hang the MCP create call; the
+    // overall deadline must reject it as connect_failed, not stall.
+    fakeDatasourcePlugins = [
+      {
+        types: ["datasource"],
+        connection: {
+          dbType: "clickhouse",
+          // Never resolves — simulates a build that blocks on a dead host.
+          createFromConfig: () => new Promise(() => {}),
+        },
+      },
+    ];
+    const start = Date.now();
+    const out = await bridge.probePluginDatasourceConnection("clickhouse", { url: "clickhouse://dead/db" }, 50);
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.reason).toBe("connect_failed");
+      expect(out.message).toContain("exceeded");
+    }
+    // Returned promptly on the deadline rather than hanging.
+    expect(Date.now() - start).toBeLessThan(1000);
+  });
+
+  it("salvage-closes a connection whose build resolves AFTER the deadline (no pool leak)", async () => {
+    let closed = false;
+    // Build resolves late (after the deadline) — the probe must still close the
+    // orphaned connection rather than leaking it.
+    const conn = {
+      query: async () => ({ columns: [], rows: [] }),
+      close: async () => { closed = true; },
+    };
+    fakeDatasourcePlugins = [
+      {
+        types: ["datasource"],
+        connection: {
+          dbType: "clickhouse",
+          createFromConfig: () => new Promise((resolve) => setTimeout(() => resolve(conn), 60)),
+        },
+      },
+    ];
+    const out = await bridge.probePluginDatasourceConnection("clickhouse", { url: "clickhouse://slow/db" }, 20);
+    expect(out.ok).toBe(false);
+    // Give the late build time to resolve + the salvage-close to run.
+    await new Promise((r) => setTimeout(r, 80));
+    expect(closed).toBe(true);
+  });
+});

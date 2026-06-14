@@ -284,34 +284,142 @@ export async function elicitMaskedField(
   server: McpServer,
   args: ElicitMaskedArgs,
 ): Promise<ElicitMaskedOutcome> {
+  // Thin wrapper over the multi-field {@link elicitMaskedForm} (a single
+  // required field) — the mint → elicit → verify → single-use-consume sequence
+  // lives in ONE place, so the MRTR-migration hardening this seam exists for
+  // can't drift between a single- and multi-field copy.
+  const fieldName = args.field.name ?? DEFAULT_FIELD_NAME;
+  const outcome = await elicitMaskedForm(server, {
+    principal: args.principal,
+    message: args.message,
+    fields: [
+      {
+        name: fieldName,
+        title: args.field.title,
+        ...(args.field.description ? { description: args.field.description } : {}),
+        required: true,
+        secret: true,
+      },
+    ],
+    ...(args.ttlMs != null ? { ttlMs: args.ttlMs } : {}),
+    ...(args.secret ? { secret: args.secret } : {}),
+    ...(args.nonceStore ? { nonceStore: args.nonceStore } : {}),
+    ...(args.signal ? { signal: args.signal } : {}),
+  });
+
+  if (outcome.action !== "accept") {
+    return { action: outcome.action };
+  }
+  // elicitMaskedForm drops empty values, so a missing key means the client
+  // returned an empty value for this required field — preserve the original
+  // single-field contract of failing closed on empty.
+  const value = outcome.values[fieldName];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ElicitationError("empty_value");
+  }
+  return { action: "accept", value };
+}
+
+// --- Multi-field masked form elicitation ------------------------------------
+
+/** One field in a masked elicitation form. */
+export interface MaskedFormField {
+  /** Property key on the returned form object + in the built schema. */
+  readonly name: string;
+  /** Human-facing label shown by the client. */
+  readonly title: string;
+  /** Optional help text. */
+  readonly description?: string;
+  /** Whether the client must collect this field (drives the schema `required` list). */
+  readonly required?: boolean;
+  /**
+   * Marks the field as a credential. The 2025-11-25 form schema has no
+   * "password" primitive, so this is a hint the client SHOULD render masked;
+   * the structural guarantee is the out-of-band delivery, identical for every
+   * field. Recorded so a caller can know which returned values are secrets.
+   */
+  readonly secret?: boolean;
+  /**
+   * A closed set of allowed values (a catalog `select` field). Rendered as an
+   * enum in the requested schema so the client shows a dropdown instead of free
+   * text — restores client-side validation for fields like `auth_kind`.
+   */
+  readonly options?: readonly string[];
+  /**
+   * The catalog default for the field. Surfaced in the schema AND injected
+   * server-side when the client returns the field empty, so a defaulted field
+   * (e.g. `auth_kind: "bearer"`) stays zero-effort rather than failing the
+   * required-field check.
+   */
+  readonly default?: string;
+}
+
+export type ElicitMaskedFormOutcome =
+  | { readonly action: "accept"; readonly values: Record<string, string> }
+  | { readonly action: "decline" | "cancel" };
+
+export interface ElicitMaskedFormArgs {
+  readonly principal: string;
+  readonly message: string;
+  /** The fields to collect in one form. At least one required field is expected. */
+  readonly fields: readonly MaskedFormField[];
+  readonly ttlMs?: number;
+  readonly secret?: string;
+  readonly nonceStore?: NonceStore;
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Ask the client for SEVERAL fields in one masked form mid-call — the
+ * multi-field sibling of {@link elicitMaskedField}, for credentials whose shape
+ * isn't a single `url` (e.g. Elasticsearch `apiKey` + `url`, BigQuery
+ * `service_account_json` + `project_id`).
+ *
+ * Same security contract as the single-field call: the entered values travel
+ * client→server out of band and NEVER enter the agent/LLM context, and a single
+ * principal-bound, TTL'd, single-use requestState authorizes consuming the whole
+ * form. The returned values are the caller's to use for connect/persist only —
+ * never to echo into a tool result. Empty optional fields are omitted; the
+ * caller validates required-field presence against its own schema.
+ */
+export async function elicitMaskedForm(
+  server: McpServer,
+  args: ElicitMaskedFormArgs,
+): Promise<ElicitMaskedFormOutcome> {
   const secret = args.secret ?? resolveElicitationSecret();
   const nonceStore = args.nonceStore ?? defaultNonceStore;
-  const fieldName = args.field.name ?? DEFAULT_FIELD_NAME;
 
   const requestState = signRequestState(
     {
       principal: args.principal,
-      purpose: `elicit:${fieldName}`,
+      purpose: "elicit:form",
       ...(args.ttlMs != null ? { ttlMs: args.ttlMs } : {}),
     },
     secret,
   );
 
+  const properties: Record<
+    string,
+    { type: "string"; title: string; description?: string; enum?: string[]; default?: string }
+  > = {};
+  const required: string[] = [];
+  for (const field of args.fields) {
+    properties[field.name] = {
+      type: "string",
+      title: field.title,
+      ...(field.description ? { description: field.description } : {}),
+      // A `select` field renders as a dropdown (enum), with its catalog default.
+      ...(field.options && field.options.length > 0 ? { enum: [...field.options] } : {}),
+      ...(field.default !== undefined ? { default: field.default } : {}),
+    };
+    if (field.required) required.push(field.name);
+  }
+
   const result = await server.server.elicitInput(
     {
       mode: "form",
       message: args.message,
-      requestedSchema: {
-        type: "object",
-        properties: {
-          [fieldName]: {
-            type: "string",
-            title: args.field.title,
-            ...(args.field.description ? { description: args.field.description } : {}),
-          },
-        },
-        required: [fieldName],
-      },
+      requestedSchema: { type: "object", properties, required },
     },
     args.signal ? { signal: args.signal } : undefined,
   );
@@ -330,9 +438,22 @@ export async function elicitMaskedField(
     throw new ElicitationError(verified.reason);
   }
 
-  const raw = result.content?.[fieldName];
-  if (typeof raw !== "string" || raw.length === 0) {
-    throw new ElicitationError("empty_value");
+  // Collect every non-blank string value. Empty/omitted/whitespace-only optionals
+  // are dropped so a blank field never persists as an empty credential (and the
+  // caller's required-field check, which tests key presence, then catches a
+  // blank required field instead of probing it as a present-but-empty value).
+  // The original (untrimmed) value is preserved when non-blank — a credential may
+  // legitimately carry internal whitespace; only the emptiness test trims.
+  const values: Record<string, string> = {};
+  for (const field of args.fields) {
+    const raw = result.content?.[field.name];
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      values[field.name] = raw;
+    } else if (field.default !== undefined && field.default.trim().length > 0) {
+      // The client returned the field empty but the catalog declares a default
+      // (e.g. `auth_kind: "bearer"`) — apply it so the field stays zero-effort.
+      values[field.name] = field.default;
+    }
   }
-  return { action: "accept", value: raw };
+  return { action: "accept", values };
 }

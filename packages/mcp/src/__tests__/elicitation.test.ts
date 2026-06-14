@@ -19,6 +19,7 @@ import {
   signRequestState,
   verifyRequestState,
   elicitMaskedField,
+  elicitMaskedForm,
   NonceStore,
   ElicitationError,
   DEFAULT_REQUEST_STATE_TTL_MS,
@@ -180,5 +181,170 @@ describe("elicitMaskedField round-trip", () => {
     });
     await client.callTool({ name: "needsSecret", arguments: {} });
     expect(captured.error).toBe("empty_value");
+  });
+});
+
+async function wireFormElicitation(reply: {
+  action: "accept" | "decline" | "cancel";
+  content?: Record<string, string>;
+}) {
+  const server = new McpServer({ name: "test", version: "0.0.1" });
+  const captured: { values?: Record<string, string>; outcome?: string } = {};
+
+  server.registerTool(
+    "needsForm",
+    { description: "Elicits a multi-field credential form", inputSchema: {} },
+    async (): Promise<CallToolResult> => {
+      const outcome = await elicitMaskedForm(server, {
+        principal: PRINCIPAL,
+        message: "Enter the connection details",
+        fields: [
+          { name: "url", title: "URL", required: true },
+          { name: "apiKey", title: "API key", required: false, secret: true },
+        ],
+        secret: SECRET,
+        nonceStore: new NonceStore(),
+      });
+      captured.outcome = outcome.action;
+      if (outcome.action === "accept") captured.values = outcome.values;
+      // The values must NEVER re-enter the agent/LLM context.
+      return { content: [{ type: "text", text: `done:${outcome.action}` }] };
+    },
+  );
+
+  const client = new Client(
+    { name: "test-client", version: "0.0.1" },
+    { capabilities: { elicitation: {} } },
+  );
+  client.setRequestHandler(ElicitRequestSchema, async () => reply);
+
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  return { client, captured };
+}
+
+describe("elicitMaskedForm round-trip", () => {
+  it("delivers every entered field to the server without any entering the tool result", async () => {
+    const { client, captured } = await wireFormElicitation({
+      action: "accept",
+      content: { url: "elasticsearch://h:9200", apiKey: "BASE64KEY==" },
+    });
+    const result = await client.callTool({ name: "needsForm", arguments: {} });
+    expect(captured.outcome).toBe("accept");
+    expect(captured.values).toEqual({ url: "elasticsearch://h:9200", apiKey: "BASE64KEY==" });
+    // No secret in the agent-visible result.
+    expect(JSON.stringify(result.content)).not.toContain("BASE64KEY");
+  });
+
+  it("omits empty/unprovided optional fields rather than persisting an empty value", async () => {
+    const { captured, client } = await wireFormElicitation({
+      action: "accept",
+      content: { url: "elasticsearch://h:9200", apiKey: "" },
+    });
+    await client.callTool({ name: "needsForm", arguments: {} });
+    expect(captured.values).toEqual({ url: "elasticsearch://h:9200" });
+    expect(captured.values).not.toHaveProperty("apiKey");
+  });
+
+  it("drops a whitespace-only field rather than persisting it as a present-but-blank value", async () => {
+    // A non-compliant client could `accept` with a required field set to only
+    // whitespace; that must be dropped (so the caller's presence check rejects
+    // it) instead of flowing into the config as a blank credential.
+    const { captured, client } = await wireFormElicitation({
+      action: "accept",
+      content: { url: "   ", apiKey: "BASE64KEY==" },
+    });
+    await client.callTool({ name: "needsForm", arguments: {} });
+    expect(captured.values).toEqual({ apiKey: "BASE64KEY==" });
+    expect(captured.values).not.toHaveProperty("url");
+  });
+
+  it("preserves a value with significant internal whitespace (only the emptiness test trims)", async () => {
+    const { captured, client } = await wireFormElicitation({
+      action: "accept",
+      content: { url: "elasticsearch://h:9200", apiKey: "key with spaces" },
+    });
+    await client.callTool({ name: "needsForm", arguments: {} });
+    expect(captured.values).toEqual({ url: "elasticsearch://h:9200", apiKey: "key with spaces" });
+  });
+
+  it("surfaces a decline with no values", async () => {
+    const { captured, client } = await wireFormElicitation({ action: "decline" });
+    await client.callTool({ name: "needsForm", arguments: {} });
+    expect(captured.outcome).toBe("decline");
+    expect(captured.values).toBeUndefined();
+  });
+});
+
+// A select field (e.g. openapi `auth_kind`) must render as an enum with its
+// default, and a defaulted field returned empty must fall back to the default.
+async function wireSelectForm(reply: {
+  action: "accept" | "decline" | "cancel";
+  content?: Record<string, string>;
+}) {
+  const server = new McpServer({ name: "test", version: "0.0.1" });
+  const captured: { values?: Record<string, string>; requestedSchema?: unknown } = {};
+
+  server.registerTool(
+    "needsSelect",
+    { description: "Elicits a form with a select field", inputSchema: {} },
+    async (): Promise<CallToolResult> => {
+      const outcome = await elicitMaskedForm(server, {
+        principal: PRINCIPAL,
+        message: "Enter the connection details",
+        fields: [
+          { name: "auth_kind", title: "Authentication", required: true, options: ["bearer", "basic", "apikey"], default: "bearer" },
+          { name: "engine", title: "Engine", required: false, options: ["elasticsearch", "opensearch"], default: "elasticsearch" },
+          { name: "auth_value", title: "Credential", required: true, secret: true },
+        ],
+        secret: SECRET,
+        nonceStore: new NonceStore(),
+      });
+      if (outcome.action === "accept") captured.values = outcome.values;
+      return { content: [{ type: "text", text: `done:${outcome.action}` }] };
+    },
+  );
+
+  const client = new Client(
+    { name: "test-client", version: "0.0.1" },
+    { capabilities: { elicitation: {} } },
+  );
+  client.setRequestHandler(ElicitRequestSchema, async (req) => {
+    captured.requestedSchema = (req.params as { requestedSchema?: unknown }).requestedSchema;
+    return reply;
+  });
+
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  return { client, captured };
+}
+
+describe("elicitMaskedForm select fields", () => {
+  it("renders a select field as an enum with its default in the requested schema", async () => {
+    const { client, captured } = await wireSelectForm({
+      action: "accept",
+      content: { auth_kind: "bearer", engine: "elasticsearch", auth_value: "tok" },
+    });
+    await client.callTool({ name: "needsSelect", arguments: {} });
+    const schema = captured.requestedSchema as {
+      properties: Record<string, { type: string; enum?: string[]; default?: string }>;
+    };
+    expect(schema.properties.auth_kind.enum).toEqual(["bearer", "basic", "apikey"]);
+    expect(schema.properties.auth_kind.default).toBe("bearer");
+    // A plain secret field carries no enum/default.
+    expect(schema.properties.auth_value.enum).toBeUndefined();
+  });
+
+  it("injects the catalog default when the client omits an optional defaulted field", async () => {
+    const { client, captured } = await wireSelectForm({
+      action: "accept",
+      // The client collected auth but left the optional `engine` unset.
+      content: { auth_kind: "bearer", auth_value: "tok" },
+    });
+    await client.callTool({ name: "needsSelect", arguments: {} });
+    // `engine` was omitted but its catalog default lands → zero-effort.
+    expect(captured.values).toEqual({ auth_kind: "bearer", engine: "elasticsearch", auth_value: "tok" });
   });
 });

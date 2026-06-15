@@ -5,12 +5,11 @@
  * mirror, which the host's registry-resolved profiler seam feeds into
  * `SemanticGenerator` without importing this package.
  *
- * Logic relocated from the CLI's `packages/cli/lib/profilers/duckdb.ts` — this
- * plugin package becomes the home the registry resolves and the CLI consumes
- * directly. CSV/Parquet ingestion (`ingestIntoDuckDB`) is a write path and stays
- * in the CLI; only the read-only introspection moves here. The CLI profiler lib
- * is intentionally NOT deleted in this slice; that consolidation is the deferred
- * umbrella follow-up (#3627), so the two coexist for now.
+ * Logic relocated from the CLI's former `packages/cli/lib/profilers/duckdb.ts`
+ * (now deleted, #3672) — this plugin package is the one home the registry
+ * resolves and the CLI consumes directly. CSV/Parquet ingestion
+ * (`ingestIntoDuckDB`) is a write path and stays in the CLI
+ * (`packages/cli/lib/duckdb-ingest.ts`); only the read-only introspection lives here.
  *
  * It runs every query through {@link createDuckDBConnection}, which opens file
  * databases with `access_mode: "READ_ONLY"` — so profiling honors the same
@@ -125,7 +124,7 @@ export async function listDuckDBObjects(
 export async function profileDuckDB(
   options: PluginProfileOptions,
 ): Promise<PluginProfilingResult> {
-  const { url, selectedTables, prefetchedObjects, progress } = options;
+  const { url, selectedTables, prefetchedObjects, progress, logger } = options;
   const conn = openConnection(url);
 
   const profiles: PluginTableProfile[] = [];
@@ -171,6 +170,7 @@ export async function profileDuckDB(
           let nullCount: number | null = null;
           let sampleValues: string[] = [];
           let isEnumLike = false;
+          const colNotes: string[] = [];
 
           try {
             const stats = (
@@ -213,7 +213,14 @@ export async function profileDuckDB(
             }
           } catch (colErr) {
             if (isFatalConnectionError(colErr)) throw colErr;
-            // Non-fatal: emit the column with the metadata we have.
+            // Non-fatal: emit the column with the metadata we have, but signal
+            // that its stats/samples are missing rather than dropping silently.
+            const msg = colErr instanceof Error ? colErr.message : String(colErr);
+            logger?.warn(
+              { table: tableName, column: col.column_name, err: msg },
+              "DuckDB: could not compute column statistics",
+            );
+            colNotes.push("Column statistics unavailable (introspection query failed).");
           }
 
           columns.push({
@@ -228,7 +235,7 @@ export async function profileDuckDB(
             fk_target_table: null,
             fk_target_column: null,
             is_enum_like: isEnumLike,
-            profiler_notes: [],
+            profiler_notes: colNotes,
           });
         }
 

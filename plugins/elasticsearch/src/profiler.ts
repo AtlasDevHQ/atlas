@@ -34,6 +34,7 @@ import type {
   PluginTableProfile,
   PluginListObjectsOptions,
   PluginProfileOptions,
+  PluginProfileLogger,
 } from "@useatlas/plugin-sdk";
 import {
   createElasticsearchClient,
@@ -176,6 +177,14 @@ export interface ProfileElasticsearchOptions {
    * per-tenant-creds rule). The tenant's own SigV4 keys must be in its config.
    */
   allowAmbientAwsCreds?: boolean;
+  /**
+   * Structured logger for best-effort enrichment failures (alias / data-stream /
+   * per-stream mapping fetches). The seam path threads the host's injected
+   * {@link PluginProfileLogger} here so these warnings reach the pino logger /
+   * request-id correlation instead of `console.warn`. Raw driver/error text goes
+   * ONLY here (server-side) — never into client-facing `profiler_notes`.
+   */
+  logger?: PluginProfileLogger;
 }
 
 /** The collapsed cluster shape both profiling paths consume. */
@@ -184,6 +193,14 @@ interface DiscoveredCluster {
   entities: EsEntityDoc[];
   /** Maps every concrete/backing index name to the `table` of its owning entity. */
   coverage: Map<string, string>;
+  /**
+   * Best-effort discovery failures that silently omit a logical object from the
+   * collapse (currently a per-data-stream `_mapping` fetch that failed → the
+   * stream vanishes). Surfaced so the caller can fold them into its
+   * `PluginProfilingResult.errors[]` rather than the omission going unnoticed.
+   * Messages are generic + credential-free (the raw cause is logged server-side).
+   */
+  discoveryErrors: PluginProfileError[];
 }
 
 /**
@@ -213,6 +230,10 @@ async function discoverCluster(
   );
 
   const includeSystem = options.includeSystem ?? false;
+  const logger = options.logger;
+  // Per-data-stream mapping failures collapse a stream out of the output — collect
+  // them so the omission is surfaced in the caller's `errors[]` rather than silent.
+  const discoveryErrors: PluginProfileError[] = [];
 
   try {
     // Mapping is required; aliases + data streams are best-effort enrichment —
@@ -220,14 +241,16 @@ async function discoverCluster(
     // must not abort the whole profile. The mapping rejection still propagates.
     const mappingP = client.getMapping();
     const aliasesP = client.getAliases().catch((err) => {
-      console.warn(
-        `  Warning: could not fetch aliases (${err instanceof Error ? err.message : String(err)}) — continuing without alias entities.`,
+      logger?.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Elasticsearch: could not fetch aliases — continuing without alias entities.",
       );
       return {};
     });
     const dataStreamsP = client.getDataStreams().catch((err) => {
-      console.warn(
-        `  Warning: could not fetch data streams (${err instanceof Error ? err.message : String(err)}) — continuing without data-stream entities.`,
+      logger?.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Elasticsearch: could not fetch data streams — continuing without data-stream entities.",
       );
       return {};
     });
@@ -242,9 +265,17 @@ async function discoverCluster(
       const dsMaps = await Promise.all(
         names.map((name) =>
           client.getMapping(name).catch((err) => {
-            console.warn(
-              `  Warning: could not fetch mapping for data stream "${name}" (${err instanceof Error ? err.message : String(err)}).`,
+            // A failed per-stream mapping fetch would silently drop this data
+            // stream from the collapse. Log the raw cause server-side and surface
+            // a generic, credential-free entry so the omission isn't invisible.
+            logger?.warn(
+              { dataStream: name, err: err instanceof Error ? err.message : String(err) },
+              "Elasticsearch: could not fetch mapping for data stream",
             );
+            discoveryErrors.push({
+              table: name,
+              error: "Data stream omitted (mapping fetch failed).",
+            });
             return {} as EsMappingResponse;
           }),
         ),
@@ -267,7 +298,7 @@ async function discoverCluster(
       },
     );
 
-    return { client, cluster: { entities, coverage } };
+    return { client, cluster: { entities, coverage, discoveryErrors } };
   } catch (err) {
     client.close();
     // `getMapping` already scrubs its errors, and `resolveElasticsearchConfig`
@@ -341,7 +372,9 @@ export async function profileElasticsearch(
   const secrets = collectConfigSecrets(config);
   const { client, cluster } = await discoverCluster(config, options ?? {}, secrets);
   try {
-    const errors: PluginProfileError[] = [];
+    // Seed with any best-effort discovery failures (e.g. a data stream whose
+    // mapping fetch failed and was collapsed out) so the omission is reported.
+    const errors: PluginProfileError[] = [...cluster.discoveryErrors];
     const entities = applyEntityFilter(cluster, filterIndices, errors);
     // One `_mapping` round-trip covers every index, so there is no per-index
     // progress to report — the caller logs the index list from `entities`.
@@ -444,6 +477,7 @@ async function sampleFields(
   client: ElasticsearchClient,
   objectName: string,
   fieldPaths: string[],
+  logger?: PluginProfileLogger,
 ): Promise<Map<string, FieldSamples>> {
   const out = new Map<string, FieldSamples>();
   for (const path of fieldPaths) {
@@ -462,8 +496,9 @@ async function sampleFields(
   } catch (err) {
     // Non-fatal: a sample-fetch failure leaves the columns with mapping-only
     // metadata. Logged, never silent (CLAUDE.md: no swallowed errors).
-    console.warn(
-      `  Warning: could not sample documents for "${objectName}" (${err instanceof Error ? err.message : String(err)}) — emitting fields without sample values.`,
+    logger?.warn(
+      { index: objectName, err: err instanceof Error ? err.message : String(err) },
+      "Elasticsearch: could not sample documents — emitting fields without sample values.",
     );
     return out;
   }
@@ -497,19 +532,40 @@ async function sampleFields(
   return out;
 }
 
-/** Best-effort document count for a logical object via `_count`. Never throws. */
-async function countDocs(client: ElasticsearchClient, objectName: string): Promise<number> {
+/** Outcome of a best-effort `_count`: the count, plus whether the query failed. */
+interface CountDocsResult {
+  /** Document count — `0` both when the index is genuinely empty AND on failure. */
+  count: number;
+  /** True when the `_count` query failed (so `count: 0` is "unknown", not "empty"). */
+  failed: boolean;
+}
+
+/**
+ * Best-effort document count for a logical object via `_count`. Never throws. A
+ * `_count` permission/timeout failure folds into `count: 0`, indistinguishable
+ * from a genuinely empty index — so the result also carries `failed` so the
+ * caller can mark the row count as unavailable rather than reporting a real
+ * index as empty. The raw cause is logged server-side, never echoed to the client.
+ */
+async function countDocs(
+  client: ElasticsearchClient,
+  objectName: string,
+  logger?: PluginProfileLogger,
+): Promise<CountDocsResult> {
   try {
     const response = await client.dslQuery({ index: objectName, endpoint: "_count", body: {} });
     if (isPlainObject(response) && typeof response.count === "number") {
-      return response.count;
+      return { count: response.count, failed: false };
     }
   } catch (err) {
-    console.warn(
-      `  Warning: could not count documents for "${objectName}" (${err instanceof Error ? err.message : String(err)}).`,
+    logger?.warn(
+      { index: objectName, err: err instanceof Error ? err.message : String(err) },
+      "Elasticsearch: could not count documents",
     );
+    return { count: 0, failed: true };
   }
-  return 0;
+  // A well-formed response without a numeric `count` is also a degraded result.
+  return { count: 0, failed: true };
 }
 
 /**
@@ -617,7 +673,7 @@ export async function profileElasticsearchObjects(
 ): Promise<PluginProfilingResult> {
   const { config, fromTenantConfig } = configForOptions(options);
   const secrets = collectConfigSecrets(config);
-  const { selectedTables, prefetchedObjects, progress } = options;
+  const { selectedTables, prefetchedObjects, progress, logger } = options;
 
   // When the host seam supplied the tenant's DB-stored config, SigV4 must NOT
   // read the operator's ambient AWS env (per-tenant-creds rule); the tenant's
@@ -625,11 +681,13 @@ export async function profileElasticsearchObjects(
   // shell's ambient creds (CLI `atlas init`).
   const { client, cluster } = await discoverCluster(
     config,
-    { allowAmbientAwsCreds: !fromTenantConfig },
+    { allowAmbientAwsCreds: !fromTenantConfig, ...(logger ? { logger } : {}) },
     secrets,
   );
   const profiles: PluginTableProfile[] = [];
-  const errors: PluginProfileError[] = [];
+  // Seed with any best-effort discovery failures (e.g. a data stream whose
+  // mapping fetch failed and was collapsed out) so the omission is surfaced.
+  const errors: PluginProfileError[] = [...cluster.discoveryErrors];
 
   try {
     // Honor a prefetched object list (from a prior listObjects) by name; else use
@@ -639,7 +697,11 @@ export async function profileElasticsearchObjects(
       const wanted = new Set(prefetchedObjects.map((o) => o.name));
       entities = entities.filter((e) => wanted.has(e.table));
     }
-    entities = applyEntityFilter({ entities, coverage: cluster.coverage }, selectedTables, errors);
+    entities = applyEntityFilter(
+      { entities, coverage: cluster.coverage, discoveryErrors: [] },
+      selectedTables,
+      errors,
+    );
 
     progress?.onStart(entities.length);
 
@@ -649,20 +711,28 @@ export async function profileElasticsearchObjects(
       try {
         const fieldPaths = entity.dimensions.map((d) => d.name);
         // Count + sample run independently — no waterfall.
-        const [rowCount, samples] = await Promise.all([
-          countDocs(client, objectName),
-          sampleFields(client, objectName, fieldPaths),
+        const [count, samples] = await Promise.all([
+          countDocs(client, objectName, logger),
+          sampleFields(client, objectName, fieldPaths, logger),
         ]);
+
+        // A `_count` failure folds into `row_count: 0`, indistinguishable from a
+        // genuinely empty index — flag it with a generic, credential-free note so
+        // a populated index isn't reported as empty. Keep `row_count` as 0 (the
+        // SDK mirror types it as a number, not nullable).
+        const tableNotes: string[] = count.failed
+          ? ["Row count unavailable (document count query failed)."]
+          : [];
 
         profiles.push({
           table_name: objectName,
           object_type: "table",
-          row_count: rowCount,
+          row_count: count.count,
           columns: columnsForEntity(entity, samples),
           primary_key_columns: [],
           foreign_keys: [],
           inferred_foreign_keys: [],
-          profiler_notes: [],
+          profiler_notes: tableNotes,
           table_flags: { possibly_abandoned: false, possibly_denormalized: false },
         });
         progress?.onTableDone(objectName, i, entities.length);

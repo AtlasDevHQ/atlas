@@ -66,6 +66,11 @@ function isFatalConnectionError(err: unknown): boolean {
   return false;
 }
 
+/** Type-narrow a caught error to a message string (never echoes secrets). */
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** Escape a Snowflake identifier for use inside double quotes (doubles any embedded quotes). */
 function escId(name: string): string {
   return name.replace(/"/g, '""');
@@ -198,7 +203,7 @@ async function querySnowflakeForeignKeys(
 export async function profileSnowflake(
   options: PluginProfileOptions,
 ): Promise<PluginProfilingResult> {
-  const { url, selectedTables, prefetchedObjects, progress } = options;
+  const { url, selectedTables, prefetchedObjects, progress, logger } = options;
   const conn = createSnowflakeConnection({ url, maxConnections: 3 });
   // Resolve the schema/database context for SHOW … IN TABLE qualification, parsed
   // from the URL (never logged) — same source the connection factory uses.
@@ -224,6 +229,7 @@ export async function profileSnowflake(
       const objectLabel = objectType === "view" ? " [view]" : "";
       progress?.onTableStart(tableName + objectLabel, i, objectsToProfile.length);
 
+      const tableNotes: string[] = [];
       try {
         let primaryKeyColumns: string[] = [];
         let foreignKeys: PluginForeignKey[] = [];
@@ -237,7 +243,15 @@ export async function profileSnowflake(
             );
           } catch (pkErr) {
             if (isFatalConnectionError(pkErr)) throw pkErr;
-            // Non-fatal: continue with no PK hints rather than failing the table.
+            // Non-fatal: continue with no PK hints rather than failing the table,
+            // but signal the gap (server log carries the cause; the note is a
+            // credential-free client-facing marker so empty PKs aren't mistaken
+            // for a genuinely keyless table).
+            logger?.warn(
+              { table: tableName, err: errMessage(pkErr) },
+              "Snowflake: could not read primary-key columns",
+            );
+            tableNotes.push("Primary-key metadata unavailable (introspection query failed).");
           }
           try {
             foreignKeys = await querySnowflakeForeignKeys(
@@ -248,7 +262,13 @@ export async function profileSnowflake(
             );
           } catch (fkErr) {
             if (isFatalConnectionError(fkErr)) throw fkErr;
-            // Non-fatal: continue with no FK metadata.
+            // Non-fatal: continue with no FK metadata, but signal the gap so empty
+            // FKs aren't mistaken for a table with no referential constraints.
+            logger?.warn(
+              { table: tableName, err: errMessage(fkErr) },
+              "Snowflake: could not read foreign-key constraints",
+            );
+            tableNotes.push("Foreign-key metadata unavailable (introspection query failed).");
           }
         }
 
@@ -284,7 +304,14 @@ export async function profileSnowflake(
             }
           } catch (bulkErr) {
             if (isFatalConnectionError(bulkErr)) throw bulkErr;
-            // Non-fatal: fall back to a bare row count.
+            // Non-fatal: per-column stats are lost; signal the gap so the null
+            // unique/null counts aren't mistaken for real values, then fall back
+            // to a bare row count.
+            logger?.warn(
+              { table: tableName, err: errMessage(bulkErr) },
+              "Snowflake: could not compute column statistics",
+            );
+            tableNotes.push("Column statistics unavailable (introspection query failed).");
             try {
               const countResult = await conn.query(
                 `SELECT COUNT(*) as "RC" FROM "${escId(tableName)}"`,
@@ -292,7 +319,13 @@ export async function profileSnowflake(
               rowCount = parseInt(String(countResult.rows[0]?.RC ?? "0"), 10);
             } catch (countErr) {
               if (isFatalConnectionError(countErr)) throw countErr;
-              // Non-fatal: leave rowCount at 0.
+              // Non-fatal: leave rowCount at 0, but flag it so a real-zero count
+              // can't be confused with a failed count query.
+              logger?.warn(
+                { table: tableName, err: errMessage(countErr) },
+                "Snowflake: could not read row count",
+              );
+              tableNotes.push("Row count unavailable (count query failed).");
             }
           }
         } else {
@@ -303,7 +336,13 @@ export async function profileSnowflake(
             rowCount = parseInt(String(countResult.rows[0]?.RC ?? "0"), 10);
           } catch (countErr) {
             if (isFatalConnectionError(countErr)) throw countErr;
-            // Non-fatal: leave rowCount at 0.
+            // Non-fatal: leave rowCount at 0, but flag it so a real-zero count
+            // can't be confused with a failed count query.
+            logger?.warn(
+              { table: tableName, err: errMessage(countErr) },
+              "Snowflake: could not read row count",
+            );
+            tableNotes.push("Row count unavailable (count query failed).");
           }
         }
 
@@ -338,7 +377,14 @@ export async function profileSnowflake(
             }
           } catch (sampleErr) {
             if (isFatalConnectionError(sampleErr)) throw sampleErr;
-            // Non-fatal: emit columns without sample values.
+            // Non-fatal: the batched sample query covers every column, so its
+            // failure drops sample values table-wide; signal the gap rather than
+            // emitting empty sample arrays silently.
+            logger?.warn(
+              { table: tableName, err: errMessage(sampleErr) },
+              "Snowflake: could not read sample values",
+            );
+            tableNotes.push("Sample values unavailable (introspection query failed).");
           }
         }
 
@@ -371,7 +417,7 @@ export async function profileSnowflake(
           primary_key_columns: primaryKeyColumns,
           foreign_keys: foreignKeys,
           inferred_foreign_keys: [],
-          profiler_notes: [],
+          profiler_notes: tableNotes,
           table_flags: { possibly_abandoned: false, possibly_denormalized: false },
         });
         progress?.onTableDone(tableName, i, objectsToProfile.length);

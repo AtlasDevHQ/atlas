@@ -145,6 +145,8 @@ export async function profileSalesforce(
       try {
         const desc = await source.describe(objectName);
 
+        const tableNotes: string[] = [];
+
         // Row count via a bounded aggregate SOQL query. Non-fatal failures
         // (e.g. objects that disallow COUNT) leave the count at 0.
         let rowCount = 0;
@@ -157,8 +159,24 @@ export async function profileSalesforce(
             // Salesforce COUNT(Id) returns { expr0: N } (or { count: N }).
             const countVal =
               firstRow.expr0 ?? firstRow.count ?? Object.values(firstRow)[0];
-            rowCount = parseInt(String(countVal ?? "0"), 10);
-            if (Number.isNaN(rowCount)) rowCount = 0;
+            const parsed = parseInt(String(countVal ?? "0"), 10);
+            if (countVal == null || Number.isNaN(parsed)) {
+              // Successful query but an unexpected result shape — distinct from
+              // the catch below (which handles a failed query). Signal the gap
+              // so a populated SObject isn't silently reported as 0 rows. The
+              // server log carries the raw cause; the note is a credential-free
+              // client-facing marker.
+              rowCount = 0;
+              logger?.warn(
+                { object: objectName, keys: Object.keys(firstRow) },
+                "Could not parse row count from COUNT() result (unexpected shape)",
+              );
+              tableNotes.push(
+                "Row count unavailable (unexpected COUNT() result shape).",
+              );
+            } else {
+              rowCount = parsed;
+            }
           }
         } catch (countErr) {
           if (isFatalConnectionError(countErr)) throw countErr;
@@ -222,7 +240,7 @@ export async function profileSalesforce(
           primary_key_columns: primaryKeyColumns,
           foreign_keys: foreignKeys,
           inferred_foreign_keys: [],
-          profiler_notes: [],
+          profiler_notes: tableNotes,
           table_flags: {
             possibly_abandoned: false,
             possibly_denormalized: false,

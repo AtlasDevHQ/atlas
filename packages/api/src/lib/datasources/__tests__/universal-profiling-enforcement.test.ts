@@ -28,20 +28,28 @@
 import { describe, expect, it, mock, beforeEach } from "bun:test";
 import type { ProfilingResult, DatabaseObject } from "@useatlas/types";
 import { createConnectionMock } from "../../../__mocks__/connection";
-import { MCP_PROVISIONABLE_CATALOG_SLUGS } from "../provisionable-types";
 
 // ── The enumerated universe of connectable datasource types ───────────
 //
-// The MCP provisionable catalog slugs already cover native pg/mysql + the
-// url/config plugin types (clickhouse / snowflake / bigquery / elasticsearch).
-// Salesforce is connectable via the OAuth pillar (NOT in the provisionable
-// slug list — it installs via OAuth, ADR-0014), so we add it explicitly. The
-// guarantee under test spans ALL of them.
+// Derived from the PRODUCTION SSOT (`BUILTIN_DATASOURCE_CATALOG_SLUGS`),
+// captured here before that module is mocked below. Deriving from the SSOT —
+// rather than the narrower `MCP_PROVISIONABLE_CATALOG_SLUGS` subset this test
+// used originally — is what keeps the guard fail-CLOSED: a new built-in
+// datasource type lands in this enumeration automatically instead of being
+// silently omitted. DuckDB was the live blind spot — connectable + profilable
+// via `createFromConfig`, yet absent from the old subset, so a DuckDB profiler
+// regression would not have turned this test red. `demo-postgres` is a demo
+// alias that resolves to native postgres (`catalogSlugToDbType` → postgres) and
+// is covered by the postgres case, so it's excluded from the iteration.
+// Salesforce is in the SSOT and routes via the OAuth pillar (ADR-0014);
+// `OAUTH_DATASOURCE_DBTYPES` drives that routing.
+const { BUILTIN_DATASOURCE_CATALOG_SLUGS: REAL_BUILTIN_SLUGS } = await import(
+  "@atlas/api/lib/db/datasource-pool-resolver"
+);
 const OAUTH_DATASOURCE_DBTYPES = ["salesforce"] as const;
-const CONNECTABLE_DATASOURCE_DBTYPES: readonly string[] = [
-  ...MCP_PROVISIONABLE_CATALOG_SLUGS,
-  ...OAUTH_DATASOURCE_DBTYPES,
-];
+const CONNECTABLE_DATASOURCE_DBTYPES: readonly string[] = REAL_BUILTIN_SLUGS.filter(
+  (s: string) => s !== "demo-postgres",
+);
 
 // ── A one-table profiling result + one discovered object ──────────────
 function oneTableResult(): ProfilingResult {
@@ -127,7 +135,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
 mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
   catalogSlugToDbType: (slug: string) => slug,
   resolveDatasourcePoolConfig: mock(() => poolConfigResult),
-  BUILTIN_DATASOURCE_CATALOG_SLUGS: [...CONNECTABLE_DATASOURCE_DBTYPES],
+  BUILTIN_DATASOURCE_CATALOG_SLUGS: REAL_BUILTIN_SLUGS,
 }));
 
 // secrets — passthrough decrypt (the resolver decrypts the row config).
@@ -235,10 +243,23 @@ beforeEach(() => {
 
 describe("universal datasource profiling — profilable iff connectable (#3667 AC #1)", () => {
   it("enumerates the full connectable universe (guards against a forgotten type)", () => {
-    // Sanity: the SSOT enumeration must cover every type the milestone names.
-    for (const t of ["postgres", "mysql", "clickhouse", "snowflake", "elasticsearch", "bigquery", "salesforce"]) {
+    // Derived from the production SSOT, so any new built-in datasource appears
+    // here automatically. Assert the milestone's named types are present —
+    // including duckdb, the type the old MCP_PROVISIONABLE subset silently dropped.
+    for (const t of [
+      "postgres",
+      "mysql",
+      "clickhouse",
+      "snowflake",
+      "elasticsearch",
+      "bigquery",
+      "duckdb",
+      "salesforce",
+    ]) {
       expect(CONNECTABLE_DATASOURCE_DBTYPES).toContain(t);
     }
+    // And nothing connectable was excluded except the documented demo alias.
+    expect(CONNECTABLE_DATASOURCE_DBTYPES).not.toContain("demo-postgres");
   });
 
   for (const dbType of CONNECTABLE_DATASOURCE_DBTYPES) {

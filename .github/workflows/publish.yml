@@ -71,140 +71,140 @@ jobs:
 
       - name: Build and publish @useatlas/types
         if: startsWith(github.ref, 'refs/tags/types-v')
-        run: cd packages/types && bun run build && npm publish --access public --provenance
+        run: cd packages/types && bun run build && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish create-atlas-agent
         if: startsWith(github.ref, 'refs/tags/atlas-agent-v')
-        run: cd create-atlas && npm publish --access public --provenance
+        run: cd create-atlas && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish create-atlas-plugin
         if: startsWith(github.ref, 'refs/tags/atlas-plugin-v')
-        run: cd create-atlas-plugin && npm publish --access public --provenance
+        run: cd create-atlas-plugin && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Build, test, and publish @useatlas/sdk
         if: startsWith(github.ref, 'refs/tags/sdk-v')
-        run: cd packages/sdk && bun run build && bun run test && npm publish --access public --provenance
+        run: cd packages/sdk && bun run build && bun run test && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Build, test, and publish @useatlas/plugin-sdk
         if: startsWith(github.ref, 'refs/tags/plugin-sdk-v')
-        run: cd packages/plugin-sdk && bun run build && bun run test && npm publish --access public --provenance
+        run: cd packages/plugin-sdk && bun run build && bun run test && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Build, test, and publish @useatlas/webhook-publisher
         if: startsWith(github.ref, 'refs/tags/webhook-publisher-v')
-        run: cd packages/webhook-publisher && bun run build && bun run test && npm publish --access public --provenance
+        run: cd packages/webhook-publisher && bun run build && bun run test && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Build and publish @useatlas/react
         if: startsWith(github.ref, 'refs/tags/react-v')
         run: |
           cd packages/sdk && bun run build
-          cd ../react && bun run build && npm publish --access public --provenance
+          cd ../react && bun run build && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       # Plugins — ship raw TypeScript, no build step needed
       # Tests are already run by CI on every push to main; tags are always cut from main
       # Datasource
       - name: Publish @useatlas/bigquery
         if: startsWith(github.ref, 'refs/tags/bigquery-v')
-        run: cd plugins/bigquery && npm publish --access public --provenance
+        run: cd plugins/bigquery && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/clickhouse
         if: startsWith(github.ref, 'refs/tags/clickhouse-v')
-        run: cd plugins/clickhouse && npm publish --access public --provenance
+        run: cd plugins/clickhouse && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/snowflake
         if: startsWith(github.ref, 'refs/tags/snowflake-v')
-        run: cd plugins/snowflake && npm publish --access public --provenance
+        run: cd plugins/snowflake && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/duckdb
         if: startsWith(github.ref, 'refs/tags/duckdb-v')
-        run: cd plugins/duckdb && npm publish --access public --provenance
+        run: cd plugins/duckdb && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/mysql
         if: startsWith(github.ref, 'refs/tags/mysql-v')
-        run: cd plugins/mysql && npm publish --access public --provenance
+        run: cd plugins/mysql && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/salesforce
         if: startsWith(github.ref, 'refs/tags/salesforce-v')
         # Ordering guard: fails if a bumped @useatlas/* peer range isn't published yet
-        run: bun scripts/check-publishable-peers.ts plugins/salesforce && cd plugins/salesforce && npm publish --access public --provenance
+        run: bun scripts/check-publishable-peers.ts plugins/salesforce && cd plugins/salesforce && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/elasticsearch
         if: startsWith(github.ref, 'refs/tags/elasticsearch-v')
         # Ordering guard: fails if a bumped @useatlas/* peer range isn't published yet
-        run: bun scripts/check-publishable-peers.ts plugins/elasticsearch && cd plugins/elasticsearch && npm publish --access public --provenance
+        run: bun scripts/check-publishable-peers.ts plugins/elasticsearch && cd plugins/elasticsearch && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       # Sandbox
       - name: Publish @useatlas/e2b
         if: startsWith(github.ref, 'refs/tags/e2b-v')
-        run: cd plugins/e2b && npm publish --access public --provenance
+        run: cd plugins/e2b && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/daytona
         if: startsWith(github.ref, 'refs/tags/daytona-v')
-        run: cd plugins/daytona && npm publish --access public --provenance
+        run: cd plugins/daytona && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/nsjail
         if: startsWith(github.ref, 'refs/tags/nsjail-v')
-        run: cd plugins/nsjail && npm publish --access public --provenance
+        run: cd plugins/nsjail && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/sidecar
         if: startsWith(github.ref, 'refs/tags/sidecar-v')
-        run: cd plugins/sidecar && npm publish --access public --provenance
+        run: cd plugins/sidecar && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/vercel-sandbox
         if: startsWith(github.ref, 'refs/tags/vercel-sandbox-v')
-        run: cd plugins/vercel-sandbox && npm publish --access public --provenance
+        run: cd plugins/vercel-sandbox && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/railway-sandbox
         if: startsWith(github.ref, 'refs/tags/railway-sandbox-v')
-        run: cd plugins/railway-sandbox && npm publish --access public --provenance
+        run: cd plugins/railway-sandbox && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       # Interaction
       - name: Publish @useatlas/chat
         if: startsWith(github.ref, 'refs/tags/chat-v')
-        run: cd plugins/chat && npm publish --access public --provenance
+        run: cd plugins/chat && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/webhook
         if: startsWith(github.ref, 'refs/tags/webhook-v')
-        run: cd plugins/webhook && npm publish --access public --provenance
+        run: cd plugins/webhook && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/teams
         if: startsWith(github.ref, 'refs/tags/teams-v')
-        run: cd plugins/teams && npm publish --access public --provenance
+        run: cd plugins/teams && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/email-digest
         if: startsWith(github.ref, 'refs/tags/email-digest-v')
-        run: cd plugins/email-digest && npm publish --access public --provenance
+        run: cd plugins/email-digest && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/mcp
         if: startsWith(github.ref, 'refs/tags/mcp-v')
-        run: cd plugins/mcp && npm publish --access public --provenance
+        run: cd plugins/mcp && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       # Action
       - name: Publish @useatlas/email
         if: startsWith(github.ref, 'refs/tags/email-v')
-        run: cd plugins/email && npm publish --access public --provenance
+        run: cd plugins/email && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/jira
         if: startsWith(github.ref, 'refs/tags/jira-v')
-        run: cd plugins/jira && npm publish --access public --provenance
+        run: cd plugins/jira && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/twenty
         if: startsWith(github.ref, 'refs/tags/twenty-v')
-        run: cd plugins/twenty && npm publish --access public --provenance
+        run: cd plugins/twenty && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/webhook-action
         if: startsWith(github.ref, 'refs/tags/webhook-action-v')
-        run: cd plugins/webhook-action && npm publish --access public --provenance
+        run: cd plugins/webhook-action && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       # Context
       - name: Publish @useatlas/yaml-context
         if: startsWith(github.ref, 'refs/tags/yaml-context-v')
-        run: cd plugins/yaml-context && npm publish --access public --provenance
+        run: cd plugins/yaml-context && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       - name: Publish @useatlas/obsidian-reader
         if: startsWith(github.ref, 'refs/tags/obsidian-reader-v')
-        run: cd plugins/obsidian-reader && npm publish --access public --provenance
+        run: cd plugins/obsidian-reader && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"
 
       # Community
       - name: Publish obsidian-atlas
         if: startsWith(github.ref, 'refs/tags/obsidian-v')
-        run: cd plugins/obsidian && npm publish --access public --provenance
+        run: cd plugins/obsidian && bash "$GITHUB_WORKSPACE/scripts/npm-publish-if-new.sh"

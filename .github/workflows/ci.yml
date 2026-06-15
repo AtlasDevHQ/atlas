@@ -77,6 +77,9 @@ jobs:
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
 
+      - name: Check no publishable package version is merged-but-unpublished
+        run: bun scripts/check-unpublished-versions.ts
+
       - name: Check security-headers drift
         run: bash scripts/check-security-headers-drift.sh
 

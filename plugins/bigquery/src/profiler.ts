@@ -19,10 +19,18 @@
  *     ~0 bytes of table data.
  *   - Row counts come from `INFORMATION_SCHEMA.TABLE_STORAGE.total_rows` —
  *     table metadata, NOT a scanning `COUNT(*)`.
- *   - Sample values come from a single `LIMIT`-bounded read per table (one
- *     small read shared across all columns), not a per-column scan. Enum-like
- *     detection is derived from that bounded sample, never a full
- *     `COUNT(DISTINCT)`.
+ *   - Sample values come from a single bounded read per table (one small read
+ *     shared across all columns), not a per-column scan. Enum-like detection is
+ *     derived from that bounded sample, never a full `COUNT(DISTINCT)`.
+ *
+ *     CRITICAL: a plain `SELECT * ... LIMIT n` does NOT bound BigQuery cost — a
+ *     `LIMIT` is applied AFTER the scan, so BigQuery still bills for every byte
+ *     of every selected column across the whole table. For base tables we use
+ *     `TABLESAMPLE SYSTEM (n PERCENT)`, which reads (and bills) only the
+ *     sampled storage blocks, then `LIMIT` to cap rows returned. Views can't be
+ *     `TABLESAMPLE`d, so they fall back to `LIMIT` — but a view's underlying
+ *     scan is bounded by its own definition, and views report 0 storage rows,
+ *     so the exposure is far smaller than an unbounded base-table scan.
  *
  * Every query runs through {@link createBigQueryConnection}, whose `query()`
  * issues read-only BigQuery jobs (no DML/DDL), so profiling honors the same
@@ -152,6 +160,29 @@ interface ColumnsRow {
   is_nullable: string;
 }
 
+/**
+ * Build the bounded sample-read SQL for one object. Cost posture (see header):
+ * a `LIMIT` alone does NOT bound BigQuery bytes billed — it is applied after the
+ * scan. For base tables we use `TABLESAMPLE SYSTEM`, which reads and bills only
+ * the sampled storage blocks, capping cost on large tables. Views and
+ * materialized views can't be `TABLESAMPLE`d (BigQuery rejects it), so they fall
+ * back to a plain `LIMIT`; a view's scan is bounded by its own definition and
+ * views carry no base storage of their own.
+ */
+function sampleSql(
+  dataset: string,
+  tableName: string,
+  objectType: PluginDatabaseObject["type"],
+): string {
+  const target = `${bqIdentifier(dataset)}.${bqIdentifier(tableName)}`;
+  if (objectType === "table") {
+    // 1 PERCENT keeps large tables cheap; small tables return whole blocks
+    // (still cheap). LIMIT then caps the rows we materialize.
+    return `SELECT * FROM ${target} TABLESAMPLE SYSTEM (1 PERCENT) LIMIT 100`;
+  }
+  return `SELECT * FROM ${target} LIMIT 100`;
+}
+
 /** Heuristic: which BigQuery types are text-like and can be enum-like. */
 function isTextType(dataType: string): boolean {
   const base = dataType.toUpperCase();
@@ -233,13 +264,13 @@ export async function profileBigQuery(
         ).rows as unknown as ColumnsRow[];
 
         // One bounded sample read shared across every column — never a full
-        // scan. LIMIT caps the bytes scanned to a small slice of the table.
+        // scan. Base tables use TABLESAMPLE SYSTEM so BigQuery bills only the
+        // sampled storage blocks (a bare LIMIT would still bill the whole
+        // table); views fall back to LIMIT. See sampleSql / the file header.
         let sampleRows: Record<string, unknown>[] = [];
         try {
           sampleRows = (
-            await conn.query(
-              `SELECT * FROM ${bqIdentifier(dataset)}.${bqIdentifier(tableName)} LIMIT 100`,
-            )
+            await conn.query(sampleSql(dataset, tableName, objectType))
           ).rows as Record<string, unknown>[];
         } catch (sampleErr) {
           if (isFatalConnectionError(sampleErr)) throw sampleErr;
@@ -286,7 +317,11 @@ export async function profileBigQuery(
             is_enum_like: isEnumLike,
             profiler_notes:
               sampleRows.length > 0
-                ? [`Sampled ${sampleRows.length} row(s) (LIMIT-bounded, no full scan)`]
+                ? [
+                    `Sampled ${sampleRows.length} row(s) (${
+                      objectType === "table" ? "TABLESAMPLE-bounded" : "LIMIT-bounded"
+                    }, no full scan)`,
+                  ]
                 : [],
           } satisfies PluginColumnProfile;
         });

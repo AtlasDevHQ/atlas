@@ -160,19 +160,33 @@ describe("profileBigQuery", () => {
     expect(events.primary_key_columns).toEqual([]);
   });
 
-  test("samples are LIMIT-bounded — no full scan, no COUNT(*)/COUNT(DISTINCT)", async () => {
+  test("samples a base table with TABLESAMPLE — bytes-bounded, no full scan, no COUNT/DISTINCT", async () => {
     await profileBigQuery({ url: URL, selectedTables: ["events"] });
-    // Every data-read of the table is LIMIT-bounded.
+    // Every data-read of the table is bounded.
     const dataReads = seenQueries.filter(
       (q) => q.includes("`events`") && !q.includes("INFORMATION_SCHEMA"),
     );
     expect(dataReads.length).toBeGreaterThan(0);
     expect(dataReads.every((q) => q.includes("LIMIT"))).toBe(true);
+    // A bare `LIMIT` does NOT bound BigQuery bytes billed — base-table sampling
+    // MUST use TABLESAMPLE so only sampled storage blocks are scanned/billed.
+    expect(dataReads.every((q) => /TABLESAMPLE\s+SYSTEM/i.test(q))).toBe(true);
     // No scanning aggregates anywhere.
     expect(seenQueries.some((q) => /COUNT\s*\(/i.test(q))).toBe(false);
     expect(seenQueries.some((q) => /DISTINCT/i.test(q))).toBe(false);
     // Row counts come from metadata, not a scan.
     expect(seenQueries.some((q) => q.includes("INFORMATION_SCHEMA.TABLE_STORAGE"))).toBe(true);
+  });
+
+  test("samples a view with a plain LIMIT — TABLESAMPLE is invalid on views", async () => {
+    await profileBigQuery({ url: URL, selectedTables: ["daily_report"] });
+    const dataReads = seenQueries.filter(
+      (q) => q.includes("`daily_report`") && !q.includes("INFORMATION_SCHEMA"),
+    );
+    expect(dataReads.length).toBeGreaterThan(0);
+    expect(dataReads.every((q) => q.includes("LIMIT"))).toBe(true);
+    // BigQuery rejects TABLESAMPLE on a view, so the view sample must not use it.
+    expect(dataReads.some((q) => /TABLESAMPLE/i.test(q))).toBe(false);
   });
 
   test("handles an empty dataset (no objects)", async () => {

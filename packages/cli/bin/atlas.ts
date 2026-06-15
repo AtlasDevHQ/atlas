@@ -112,15 +112,19 @@ export {
   type ClickHouseClient,
   listClickHouseObjects,
   profileClickHouse,
-  type SnowflakePool,
-  listSnowflakeObjects,
-  profileSnowflake,
   listSalesforceObjects,
   profileSalesforce,
   ingestIntoDuckDB,
   listDuckDBObjects,
   profileDuckDB,
 } from "../lib/profilers";
+// Snowflake profiling moved onto the plugin profiler contract (ADR-0017, #3622).
+// Re-export the plugin's profiler so the CLI's public surface keeps the
+// `listSnowflakeObjects` / `profileSnowflake` names, now options-based.
+export {
+  listSnowflakeObjects,
+  profileSnowflake,
+} from "../../../plugins/snowflake/src/profiler";
 
 // Re-export diff logic
 export {

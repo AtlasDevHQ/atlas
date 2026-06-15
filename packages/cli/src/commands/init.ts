@@ -53,12 +53,17 @@ import { testDatabaseConnection } from "../../lib/test-connection";
 import {
   listClickHouseObjects,
   profileClickHouse,
-  listSnowflakeObjects,
-  profileSnowflake,
   listSalesforceObjects,
   profileSalesforce,
   ingestIntoDuckDB,
 } from "../../lib/profilers";
+// Snowflake profiling lives on the plugin profiler contract (ADR-0017, #3622) —
+// the CLI consumes the plugin export directly (CLI → plugin, no @atlas/api), the
+// same pattern as the DuckDB case below.
+import {
+  listSnowflakeObjects,
+  profileSnowflake,
+} from "../../../../plugins/snowflake/src/profiler";
 // DuckDB profiling moved onto the plugin profiler contract (ADR-0017, #3623):
 // the CLI consumes the plugin's `listObjects`/`profile` exports directly (CLI →
 // plugin, no @atlas/api). Relative-path import matches the existing CLI ↔ duckdb
@@ -467,7 +472,7 @@ async function profileDatasource(
           allObjects = await listClickHouseObjects(connStr);
           break;
         case "snowflake":
-          allObjects = await listSnowflakeObjects(connStr);
+          allObjects = await listSnowflakeObjects({ url: connStr });
           break;
         case "duckdb": {
           allObjects = await listDuckDBObjects({ url: connStr });
@@ -564,12 +569,12 @@ async function profileDatasource(
       );
       break;
     case "snowflake":
-      result = await profileSnowflake(
-        connStr,
+      result = await profileSnowflake({
+        url: connStr,
         selectedTables,
         prefetchedObjects,
         progress,
-      );
+      });
       break;
     case "duckdb": {
       result = await profileDuckDB({

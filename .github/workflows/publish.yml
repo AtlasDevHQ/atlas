@@ -1,5 +1,12 @@
 name: Publish Atlas npm packages
 
+# ⚠️ GOTCHA: GitHub does NOT fire `push` events for tags when you push MORE THAN
+# THREE tags in a single `git push`. Batch-pushing 4+ release tags at once
+# silently triggers NONE of these publish runs (the tags land on the remote, but
+# nothing publishes). Push release tags in groups of ≤3, or one at a time, when
+# you need the publish to run. See https://docs.github.com/actions/reference/events-that-trigger-workflows#push
+# (caught 2026-06-15 backfilling 6 missing tags — all 6 pushes published nothing).
+
 on:
   push:
     tags:

@@ -1,4 +1,4 @@
-# ADR-0017: The two semantic generators stay separate (spec-derived vs profiled)
+# ADR-0019: The two semantic generators stay separate (spec-derived vs profiled)
 
 **Status:** Accepted
 **Date:** 2026-06-14

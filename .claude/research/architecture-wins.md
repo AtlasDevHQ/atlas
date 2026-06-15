@@ -2645,7 +2645,7 @@ The implementation survey narrowed the candidate's "16 pages" to the surfaces th
 - The two YAML dialects can no longer drift: shared key names have one home, asserted by a cross-renderer contract test.
 - Zero agent-token cost and zero prompt-representation change — the bake-off's `operation-graph` (Path A) default is untouched (the `twenty-acceptance` test passes unchanged); renderer golden output is byte-identical.
 
-**Category:** A visibility gap closed with one read-only derive-on-read module reusing the existing pure generator, plus a duplicated-vocabulary smell collapsed into a single shared contract — convergence on surface + vocabulary while the two generators stay deliberately, documentedly separate (ADR-0017).
+**Category:** A visibility gap closed with one read-only derive-on-read module reusing the existing pure generator, plus a duplicated-vocabulary smell collapsed into a single shared contract — convergence on surface + vocabulary while the two generators stay deliberately, documentedly separate (ADR-0019).
 
 ---
 

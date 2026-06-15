@@ -2668,3 +2668,21 @@ The implementation survey narrowed the candidate's "16 pages" to the surfaces th
 - Published-contract discipline held: `@useatlas/plugin-sdk` 0.0.9 → 0.0.10 with zero consumer ref bumps in-PR (exact-pin publish-before-ref-bump sequencing).
 
 **Category:** A new capability resolved off an *existing* capability predicate instead of a parallel matcher — the source half of a deep module (#3506's `SemanticGenerator`) filled from the registry, keeping connect-and-onboard in lockstep, with an optional structural-mirror SDK contract that preserves the core↔plugin decoupling and a tracer-bullet that proves the seam end-to-end.
+
+## 96. One profiler home — wizard, CLI, and MCP resolve profiling off a single `resolveLiveConnection`; "profilable iff connectable," CI-enforced (#3672)
+
+**Date:** 2026-06-15
+**Issue:** #3656 / #3661 (parents); absorbs #3627, #3657, #3666; generalized from #3667
+**PR:** #3670 (`resolveLiveConnection`, MCP), #3672 (wizard + CLI convergence, ADR-0017 amendment)
+
+**Problem:** #95 made profiling and provisioning answer to one capability *model* (the `native | plugin | unsupported` predicate) so they couldn't classify a dbType differently. But there were still three separate resolution *paths* to a profiler: MCP went through `resolveLiveConnection` (after #3667/#3670), the in-product wizard had its own `resolveWizardProfiler` plus the plugins' `connection`-namespace `listObjects`/`profile` exports, and the CLI carried a duplicate profiler home (`packages/cli/lib/profilers/*`). Native pg/mysql additionally paid a positional→options adapter shim at every call site (the impedance mismatch ADR-0017 had designed *out* of the plugin path, still live on the native path). Same predicate, three ways to reach the actual profiler — so the SDK could grow a second introspection surface, or a new datasource land a fourth home, with nothing failing.
+
+**Solution:** Collapse all three callers onto the one resolver. The wizard's three routes (`/profile`, `/generate`, `/enrich`) lose their copy-pasted resolve→detect→capability prologue to `resolveWizardConnection`, built on the *same* `resolveLiveConnection` MCP uses — introspection is just a capability of the resolved live connection, no url/config threading; `resolveWizardProfiler` is deleted. The CLI's `lib/profilers/*` is deleted; `init`/`diff`/`improve` consume each plugin's `src/profiler` directly (CSV/Parquet ingestion relocated to `lib/duckdb-ingest.ts` — a write path, not profiling). The connection-namespace `listObjects`/`profile` exports come off all six plugins, the SDK `AtlasDatasourcePlugin.connection` contract, and `definePlugin` validation; `resolveProfileCapabilityByDbType` reworks to the `createFromConfig` proxy (profilable = connectable). Native `profilePostgres`/`profileMySQL`/`list*Objects` are reshaped to *be* `DatasourceProfiler`s at their source, so `resolveProfiler` returns them directly and no positional→options shim survives at any call site.
+
+**Impact:**
+- Profiling, provisioning, and querying now ride the *same* resolved live connection — "profilable iff connectable" is a structural property, not a convention. A datasource you can connect is one you can onboard, through one code path, in every surface (wizard / CLI / MCP).
+- Adding a profilable datasource is "implement the plugin's built-connection `profile`" — there is no second place it could also be wired, and no native-vs-plugin shim to mirror.
+- The invariant is CI-enforced as a pair: `one-profiler-home.test.ts` asserts the negatives (no plugin exposes a namespace `connection.listObjects`/`profile`; `packages/cli/lib/profilers/` is gone) and `universal-profiling-enforcement.test.ts` asserts the positive (every connectable dbType profiles via the one resolver). A new datasource cannot reintroduce a second home without turning the suite red.
+- Zero behavior change to profiling output, wizard responses, or CLI output for any dbType — this is pure home-collapse + scaffolding deletion.
+
+**Category:** Convergence of N parallel resolution paths onto one — the deepening past #95's "one capability model" to "one resolution path," with the collapse locked in by an enforcement test that fails closed on any attempt to re-grow a second home.

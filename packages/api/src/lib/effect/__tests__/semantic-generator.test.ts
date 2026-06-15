@@ -494,6 +494,37 @@ describe("SemanticGenerator.profile — DSN scrub (#3579)", () => {
       expect(json).toContain("postgres://***@");
     }
   });
+
+  it("strips scheme://user:pass@host from per-table errors[] surfaced to the client", async () => {
+    // Plugin profilers push raw driver `err.message` into the per-table
+    // `errors[]` array (e.g. ClickHouse's `Fatal database error: ${msg}`). A
+    // driver connection error can echo the full DSN; on the wizard route the
+    // whole `errors[]` array is returned to the client. The host scrubs each
+    // entry at this boundary so no plugin (current or future) leaks credentials.
+    const DSN = "clickhouse://admin:hunter2@ch.prod:8123/analytics";
+    const result: ProfilingResult = {
+      profiles: [profile({ table_name: "a" })],
+      errors: [{ table: "events", error: `Fatal database error: connect ${DSN}` }],
+    };
+    const res = await run(
+      Effect.gen(function* () {
+        const svc = yield* SemanticGenerator;
+        // `force` bypasses the failure-threshold abort so the errors[] flows
+        // back to the caller (the path the wizard route returns to the client).
+        return yield* svc.profile({
+          url: DSN,
+          dbType: "clickhouse",
+          force: true,
+          profileFn: fakeProfiler(result),
+        });
+      }),
+    );
+    expect(res.errors).toHaveLength(1);
+    expect(res.errors[0].table).toBe("events");
+    expect(res.errors[0].error).not.toContain("hunter2");
+    expect(res.errors[0].error).not.toContain("admin:hunter2");
+    expect(res.errors[0].error).toContain("clickhouse://***@");
+  });
 });
 
 // ── #3581 — OperationCancelledError propagates as a defect ──────────

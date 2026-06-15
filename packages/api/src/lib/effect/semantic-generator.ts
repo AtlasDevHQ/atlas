@@ -456,7 +456,19 @@ function profileImpl(
 
     return {
       profiles: analyzeTableProfiles(result.profiles),
-      errors: result.errors,
+      // Scrub DSN userinfo from per-table profiler errors before they reach
+      // the client. Plugin profilers push raw driver `err.message` into
+      // `errors[]` (a `count()`/describe failure can echo
+      // `scheme://user:pass@host`); the top-level catch above already scrubs
+      // whole-profile failures via `errorMessage`, but this per-table array
+      // flowed through verbatim. Scrubbing here — the one host boundary that
+      // surfaces plugin errors to the wizard/MCP client — closes the leak for
+      // every plugin (current and future) without a per-plugin scrubber, which
+      // dependency-free plugin packages cannot share anyway (#3579 follow-up).
+      errors: result.errors.map((e) => ({
+        table: e.table,
+        error: errorMessage(e.error),
+      })),
       elapsedMs,
     } satisfies ProfileConnectionResult;
   });

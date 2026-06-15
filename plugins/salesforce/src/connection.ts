@@ -201,8 +201,23 @@ export function createSalesforceConnection(
         await ensureLoggedIn();
 
         let timeoutId: ReturnType<typeof setTimeout>;
+        // jsforce exposes no abort handle for an in-flight query, so on a
+        // timeout the underlying HTTP request keeps running and settles after
+        // the race already rejected. Hold a ref to that promise and attach a
+        // catch so a late rejection can never surface as an unhandledRejection.
+        const queryPromise = conn.query(soql) as Promise<{
+          records?: Record<string, unknown>[];
+        }>;
+        queryPromise.catch((lateErr: unknown) => {
+          // intentionally ignored: the race already settled (timeout won); this
+          // is the dropped loser's late rejection — log at debug, never rethrow.
+          logger?.debug(
+            { err: lateErr instanceof Error ? lateErr.message : String(lateErr) },
+            "Salesforce query settled after timeout (ignored)",
+          );
+        });
         const result = await Promise.race([
-          conn.query(soql),
+          queryPromise,
           new Promise<never>((_, reject) => {
             timeoutId = setTimeout(
               () => reject(new Error("Salesforce query timed out")),

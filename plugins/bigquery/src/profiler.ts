@@ -272,7 +272,7 @@ function isTextType(dataType: string): boolean {
 export async function profileBigQuery(
   options: PluginProfileOptions,
 ): Promise<PluginProfilingResult> {
-  const { selectedTables, prefetchedObjects, progress } = options;
+  const { selectedTables, prefetchedObjects, progress, logger } = options;
   const { config, dataset } = resolveConfig(options);
   const conn = createBigQueryConnection(config);
 
@@ -295,6 +295,11 @@ export async function profileBigQuery(
     // Row counts for the whole dataset come from one metadata read of
     // INFORMATION_SCHEMA.TABLE_STORAGE (total_rows) — no per-table COUNT(*).
     const rowCounts = new Map<string, number>();
+    // When this single read fails, EVERY base table falls back to row_count 0 at
+    // once — a permissions/region error would otherwise look like a dataset-wide
+    // "empty" answer. Track the failure so each affected base table carries a
+    // credential-free note explaining the 0 (views legitimately report 0).
+    let storageReadFailed = false;
     if (objectsToProfile.length > 0) {
       try {
         const storageRows = (
@@ -310,7 +315,15 @@ export async function profileBigQuery(
         if (isFatalConnectionError(storageErr)) throw storageErr;
         // Non-fatal: TABLE_STORAGE may be unavailable (e.g. for some view-only
         // datasets or restricted permissions). Fall back to a 0 row count per
-        // table rather than failing the whole profile — views report 0 anyway.
+        // table rather than failing the whole profile — views report 0 anyway —
+        // but record the cause once (server log) and mark each base table below
+        // so its 0 isn't mistaken for a genuinely empty table.
+        storageReadFailed = true;
+        const msg = storageErr instanceof Error ? storageErr.message : String(storageErr);
+        logger?.warn(
+          { err: msg },
+          "BigQuery: could not read row counts from TABLE_STORAGE for dataset",
+        );
       }
     }
 
@@ -320,8 +333,16 @@ export async function profileBigQuery(
       const objectLabel = objectType === "view" ? " [view]" : "";
       progress?.onTableStart(tableName + objectLabel, i, objectsToProfile.length);
 
+      const tableNotes: string[] = [];
       try {
         const rowCount = rowCounts.get(tableName) ?? 0;
+        // A base table sitting at 0 only because the dataset-wide storage read
+        // failed gets a credential-free marker, so an empty answer isn't read as
+        // a genuinely empty table. Views legitimately report 0 storage rows, so
+        // they're exempt.
+        if (storageReadFailed && objectType === "table" && rowCount === 0) {
+          tableNotes.push("Row count unavailable (storage metadata read failed).");
+        }
 
         const colRows = (
           await conn.query(
@@ -337,6 +358,7 @@ export async function profileBigQuery(
         // sampled storage blocks (a bare LIMIT would still bill the whole
         // table); views fall back to LIMIT. See sampleSql / the file header.
         let sampleRows: Record<string, unknown>[] = [];
+        let sampleReadFailed = false;
         try {
           sampleRows = (
             await conn.query(sampleSql(dataset, tableName, objectType))
@@ -344,7 +366,15 @@ export async function profileBigQuery(
         } catch (sampleErr) {
           if (isFatalConnectionError(sampleErr)) throw sampleErr;
           // Non-fatal: emit columns with metadata but no sample values rather
-          // than failing the table (e.g. a view that errors on read).
+          // than failing the table (e.g. a view that errors on read). Record the
+          // cause (server log) and mark each column below so missing samples
+          // aren't mistaken for a genuinely value-less column.
+          sampleReadFailed = true;
+          const msg = sampleErr instanceof Error ? sampleErr.message : String(sampleErr);
+          logger?.warn(
+            { table: tableName, err: msg },
+            "BigQuery: could not read sample rows",
+          );
         }
 
         const columns: PluginColumnProfile[] = colRows.map((col) => {
@@ -384,8 +414,9 @@ export async function profileBigQuery(
             fk_target_table: null,
             fk_target_column: null,
             is_enum_like: isEnumLike,
-            profiler_notes:
-              sampleRows.length > 0
+            profiler_notes: sampleReadFailed
+              ? ["Column samples unavailable (sample read failed)."]
+              : sampleRows.length > 0
                 ? [
                     `Sampled ${sampleRows.length} row(s) (${
                       objectType === "table" ? "TABLESAMPLE-bounded" : "LIMIT-bounded"
@@ -403,7 +434,7 @@ export async function profileBigQuery(
           primary_key_columns: [],
           foreign_keys: [],
           inferred_foreign_keys: [],
-          profiler_notes: [],
+          profiler_notes: tableNotes,
           table_flags: { possibly_abandoned: false, possibly_denormalized: false },
         });
         progress?.onTableDone(tableName, i, objectsToProfile.length);

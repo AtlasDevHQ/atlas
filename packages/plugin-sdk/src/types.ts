@@ -895,6 +895,8 @@ export interface PluginProfileOptions extends PluginListObjectsOptions {
 export interface PluginConnectionListObjectsOptions {
   /** Schema / database to enumerate. Dialect-specific; omit for the connection's default. */
   schema?: string;
+  /** Structured logger for diagnostics — mirrors core `LiveConnectionListOptions.logger`. */
+  logger?: PluginProfileLogger;
 }
 
 /**

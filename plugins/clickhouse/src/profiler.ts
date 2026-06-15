@@ -5,11 +5,9 @@
  * mirror, which the host's registry-resolved profiler seam feeds into
  * `SemanticGenerator` without importing this package.
  *
- * Logic adapted from the CLI's `packages/cli/lib/profilers/clickhouse.ts` —
- * this plugin package becomes the home the registry resolves and the CLI will
- * consume directly. The CLI profiler lib is intentionally NOT deleted in this
- * slice; that consolidation (and thinning the CLI lib to a re-export) is a
- * deferred follow-up per ADR-0017, so the two coexist for now.
+ * Logic relocated from the CLI's former `packages/cli/lib/profilers/clickhouse.ts`
+ * (now deleted, #3672) — this plugin package is the one home the registry
+ * resolves and the CLI consumes directly via re-export.
  *
  * It runs every query through {@link createClickHouseConnection}, whose `query()`
  * enforces `readonly: 1` and a per-statement timeout — so profiling honors the
@@ -91,7 +89,7 @@ export async function listClickHouseObjects(
 export async function profileClickHouse(
   options: PluginProfileOptions,
 ): Promise<PluginProfilingResult> {
-  const { url, schema, selectedTables, prefetchedObjects, progress } = options;
+  const { url, schema, selectedTables, prefetchedObjects, progress, logger } = options;
   const conn = createClickHouseConnection({ url, database: schema });
 
   const profiles: PluginTableProfile[] = [];
@@ -116,6 +114,7 @@ export async function profileClickHouse(
       const objectLabel = objectType === "view" ? " [view]" : "";
       progress?.onTableStart(tableName + objectLabel, i, objectsToProfile.length);
 
+      const tableNotes: string[] = [];
       try {
         const countRows = (await conn.query(
           `SELECT count() AS c FROM ${chIdentifier(tableName)}`,
@@ -137,7 +136,16 @@ export async function profileClickHouse(
             primaryKeyColumns = pkRows.map((r) => r.name);
           } catch (pkErr) {
             if (isFatalConnectionError(pkErr)) throw pkErr;
-            // Non-fatal: continue with no PK hints rather than failing the table.
+            // Non-fatal: continue with no PK hints rather than failing the table,
+            // but signal the gap (server log carries the cause; the note is a
+            // credential-free client-facing marker so empty PKs aren't mistaken
+            // for a genuinely keyless table).
+            const msg = pkErr instanceof Error ? pkErr.message : String(pkErr);
+            logger?.warn(
+              { table: tableName, err: msg },
+              "ClickHouse: could not read primary-key columns",
+            );
+            tableNotes.push("Primary-key hints unavailable (introspection query failed).");
           }
         }
 
@@ -154,6 +162,7 @@ export async function profileClickHouse(
           let sampleValues: string[] = [];
           let isEnumLike = false;
           const isPK = primaryKeyColumns.includes(col.name);
+          const colNotes: string[] = col.comment ? [`Column comment: ${col.comment}`] : [];
 
           try {
             const uqRows = (await conn.query(
@@ -188,7 +197,14 @@ export async function profileClickHouse(
             sampleValues = svRows.map((r) => String(r.v));
           } catch (colErr) {
             if (isFatalConnectionError(colErr)) throw colErr;
-            // Non-fatal: emit the column with the metadata we have.
+            // Non-fatal: emit the column with the metadata we have, but signal
+            // that its stats/samples are missing rather than dropping silently.
+            const msg = colErr instanceof Error ? colErr.message : String(colErr);
+            logger?.warn(
+              { table: tableName, column: col.name, err: msg },
+              "ClickHouse: could not compute column statistics",
+            );
+            colNotes.push("Column statistics unavailable (introspection query failed).");
           }
 
           columns.push({
@@ -203,7 +219,7 @@ export async function profileClickHouse(
             fk_target_table: null,
             fk_target_column: null,
             is_enum_like: isEnumLike,
-            profiler_notes: col.comment ? [`Column comment: ${col.comment}`] : [],
+            profiler_notes: colNotes,
           });
         }
 
@@ -215,7 +231,7 @@ export async function profileClickHouse(
           primary_key_columns: primaryKeyColumns,
           foreign_keys: [],
           inferred_foreign_keys: [],
-          profiler_notes: [],
+          profiler_notes: tableNotes,
           table_flags: { possibly_abandoned: false, possibly_denormalized: false },
         });
         progress?.onTableDone(tableName, i, objectsToProfile.length);

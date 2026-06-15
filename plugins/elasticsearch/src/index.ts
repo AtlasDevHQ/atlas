@@ -49,6 +49,7 @@ import {
   ELASTICSEARCH_FORBIDDEN_PATTERNS,
 } from "./connection";
 import type { ElasticsearchConnection, ElasticsearchPluginConfig } from "./connection";
+import { listElasticsearchObjects, profileElasticsearchObjects } from "./profiler";
 import { createQueryElasticsearchTool, ES_DSL_WHITELIST_SUBJECT } from "./tool";
 
 /**
@@ -277,6 +278,14 @@ export function buildElasticsearchPlugin(
     // base DML/DDL regex.
     parserDialect: ELASTICSEARCH_PARSER_DIALECT,
     forbiddenPatterns: ELASTICSEARCH_FORBIDDEN_PATTERNS,
+    // Introspection half of the datasource contract (ADR-0017). The host resolves
+    // `profile` off the registry (same predicate as `createFromConfig`) and feeds
+    // it into SemanticGenerator's profiler seam; the CLI consumes these exports
+    // directly. Both run read-only (`_mapping`/`_alias`/`_data_stream`/`_search`/
+    // `_count`) and collapse indices/aliases/data-streams into ONE logical object
+    // (#3269), so a wizard-profiled ES layer matches a CLI-profiled one.
+    listObjects: listElasticsearchObjects,
+    profile: profileElasticsearchObjects,
   };
 
   if (staticConfig) {
@@ -613,3 +622,19 @@ export type {
   ElasticsearchDslQueryOptions,
   ResolveAuthOptions,
 } from "./connection";
+// Profiler — the introspection half of the datasource contract (ADR-0017),
+// plus the ES-specific entity-doc path the CLI consumes directly. `flattenMapping`,
+// `entityFileSlug`, and `buildUniqueFileSlugs` are already exported from `./mapping`
+// above, so they are intentionally not re-listed here.
+export {
+  listElasticsearchObjects,
+  profileElasticsearchObjects,
+  profileElasticsearch,
+  elasticsearchCatalog,
+  elasticsearchConfigFromEnv,
+  ELASTICSEARCH_ENV_VARS_HINT,
+} from "./profiler";
+export type {
+  ElasticsearchProfilingResult,
+  ProfileElasticsearchOptions,
+} from "./profiler";

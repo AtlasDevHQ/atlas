@@ -38,6 +38,7 @@ import {
   extractAccount,
   parseSnowflakeURL,
 } from "./connection";
+import { listSnowflakeObjects, profileSnowflake } from "./profiler";
 import { SNOWFLAKE_FORBIDDEN_PATTERNS } from "./validation";
 
 /**
@@ -110,6 +111,14 @@ export function buildSnowflakePlugin(
     dbType: "snowflake",
     parserDialect: "Snowflake",
     forbiddenPatterns: SNOWFLAKE_FORBIDDEN_PATTERNS,
+    // Introspection half of the datasource contract (ADR-0017). The host resolves
+    // `profile` off the registry (same predicate as `createFromConfig`) and feeds
+    // it into SemanticGenerator's profiler seam; the CLI consumes these exports
+    // directly. Both run read-only — every query goes through the connection's
+    // statement-timeout + `QUERY_TAG = 'atlas:readonly'` path and issues only
+    // SELECT/INFORMATION_SCHEMA/SHOW introspection statements.
+    listObjects: listSnowflakeObjects,
+    profile: profileSnowflake,
   };
 
   if (staticUrl) {
@@ -211,4 +220,5 @@ export const snowflakePlugin = createPlugin({
 });
 
 export { createSnowflakeConnection, parseSnowflakeURL, extractAccount } from "./connection";
+export { listSnowflakeObjects, profileSnowflake } from "./profiler";
 export { SNOWFLAKE_FORBIDDEN_PATTERNS } from "./validation";

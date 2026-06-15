@@ -32,6 +32,60 @@ export interface BigQueryConnectionConfig {
 }
 
 /**
+ * Parse a `bigquery://` connection URL into a {@link BigQueryConnectionConfig}.
+ *
+ * Format: `bigquery://[location@]<project>[/<dataset>][?keyFilename=<path>]`
+ *
+ * Credentials are NOT embedded in the URL — they resolve the same way the
+ * BigQuery client always resolves them: an explicit `keyFilename` query param
+ * (or the `GOOGLE_APPLICATION_CREDENTIALS` env var the client reads), or
+ * Application Default Credentials in a GCP environment. This mirrors the
+ * Snowflake/Salesforce CLI url shape (the operator runs in their own shell —
+ * the same trust model as the static atlas.config.ts path) and keeps the
+ * url-based profiler-options contract (ADR-0017) usable for BigQuery without
+ * ever surfacing a service-account key in a connection string.
+ *
+ * @throws {Error} If the scheme is not `bigquery://` or no project is present.
+ */
+export function parseBigQueryUrl(url: string): BigQueryConnectionConfig {
+  if (!url.startsWith("bigquery://")) {
+    throw new Error('BigQuery URL must start with "bigquery://".');
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch (err) {
+    throw new Error(
+      `Invalid bigquery:// URL: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+
+  // `bigquery://location@project/dataset` — the URL host is `project`, and an
+  // optional `location@` prefix lands in the username. The path's first
+  // segment is the optional default dataset.
+  const location = parsed.username ? decodeURIComponent(parsed.username) : undefined;
+  const projectId = parsed.hostname ? decodeURIComponent(parsed.hostname) : "";
+  if (!projectId) {
+    throw new Error(
+      "bigquery:// URL must include a project: bigquery://[location@]<project>[/<dataset>].",
+    );
+  }
+  const datasetSegment = parsed.pathname.replace(/^\//, "").split("/")[0];
+  const dataset = datasetSegment ? decodeURIComponent(datasetSegment) : undefined;
+  const keyFilename = parsed.searchParams.get("keyFilename") ?? undefined;
+  const locationParam = parsed.searchParams.get("location") ?? undefined;
+
+  return {
+    projectId,
+    dataset,
+    location: location ?? locationParam,
+    keyFilename,
+  };
+}
+
+/**
  * Create a PluginDBConnection backed by @google-cloud/bigquery.
  * BigQuery is stateless REST — no pool to manage.
  *

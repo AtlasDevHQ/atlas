@@ -208,22 +208,33 @@ export async function handleDiff(args: string[]): Promise<void> {
           break;
         }
         case "snowflake": {
-          const { profileSnowflake } = await import("../../lib/profilers/snowflake");
-          result = await profileSnowflake(connStr, filterTables);
+          // Snowflake profiling lives on the plugin profiler contract (ADR-0017,
+          // #3622) — consume the plugin export directly (CLI → plugin, no @atlas/api).
+          const { profileSnowflake } = await import(
+            "../../../../plugins/snowflake/src/profiler"
+          );
+          result = await profileSnowflake({ url: connStr, selectedTables: filterTables });
           break;
         }
         case "duckdb": {
-          const { parseDuckDBUrl } = await import(
-            "../../../../plugins/duckdb/src/connection"
+          // DuckDB profiling consumes the plugin's `profile` export directly
+          // (ADR-0017, #3623) — CLI → plugin, no @atlas/api.
+          const { profileDuckDB } = await import(
+            "../../../../plugins/duckdb/src/profiler"
           );
-          const { profileDuckDB } = await import("../../lib/profilers/duckdb");
-          const duckConfig = parseDuckDBUrl(connStr);
-          result = await profileDuckDB(duckConfig.path, filterTables);
+          result = await profileDuckDB({ url: connStr, selectedTables: filterTables });
           break;
         }
         case "salesforce": {
           const { profileSalesforce } = await import("../../lib/profilers/salesforce");
           result = await profileSalesforce(connStr, filterTables);
+          break;
+        }
+        case "bigquery": {
+          const { profileBigQuery } = await import(
+            "../../../../plugins/bigquery/src/profiler"
+          );
+          result = await profileBigQuery({ url: connStr, selectedTables: filterTables });
           break;
         }
         default: {

@@ -355,9 +355,12 @@ function profileImpl(
           prefetchedObjects: opts.prefetchedObjects,
           progress: opts.progress,
           logger: opts.logger,
-          // Decrypted tenant config for separate-field-credential plugins
-          // (ES). The in-core pg/mysql profilers and url-embedded plugin
-          // profilers ignore it. Never logged (ADR-0017 amendment).
+          // Decrypted tenant config for separate-field-credential / non-url-shaped
+          // plugins (Elasticsearch's apiKey, BigQuery's service_account_json +
+          // project — #3664). The in-core pg/mysql profilers and url-embedded
+          // plugin profilers (ClickHouse/Snowflake) ignore it. Never logged
+          // (ADR-0017 amendment). NOTE: BigQuery depends on this forwarding —
+          // without it, its profiler falls back to ADC/operator env.
           ...(opts.config !== undefined ? { config: opts.config } : {}),
         }),
       catch: (err) => err,

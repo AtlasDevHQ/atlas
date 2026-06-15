@@ -50,6 +50,7 @@ import type {
 import {
   createBigQueryConnection,
   parseBigQueryUrl,
+  normalizeBigQueryConfigFields,
   type BigQueryConnectionConfig,
 } from "./connection";
 
@@ -101,33 +102,30 @@ function bqLiteral(value: string): string {
 function bigQueryConfigFromTenantConfig(
   raw: Readonly<Record<string, unknown>>,
 ): BigQueryConnectionConfig {
+  // Shared with the connection factory's `createFromConfig` (index.ts) so the
+  // profiling path and the query path resolve project + credentials identically:
+  // snake_case `project_id` → `projectId`, `service_account_json` →
+  // `credentials` (validated as a JSON object, never a silent ADC fallback),
+  // keyFilename-wins precedence.
+  const normalized = normalizeBigQueryConfigFields(raw);
   const str = (v: unknown): string | undefined =>
     typeof v === "string" && v.length > 0 ? v : undefined;
-  const projectId = str(raw.projectId) ?? str(raw.project_id);
-  const dataset = str(raw.dataset) ?? str(raw.schema);
-  const location = str(raw.location);
-  const keyFilename = str(raw.keyFilename);
-
-  let credentials: Record<string, unknown> | undefined;
-  const serviceAccountJson = str(raw.service_account_json);
-  if (serviceAccountJson) {
-    try {
-      credentials = JSON.parse(serviceAccountJson) as Record<string, unknown>;
-    } catch (err) {
-      throw new Error(
-        `BigQuery service_account_json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
-        { cause: err },
-      );
-    }
-  } else if (raw.credentials && typeof raw.credentials === "object") {
-    credentials = raw.credentials as Record<string, unknown>;
-  }
+  // BigQuery's dataset rides on the generic `schema` routing hint over the seam
+  // (the catalog form has no dedicated dataset field); an explicit `dataset`
+  // still wins for a programmatic caller.
+  const dataset = str(normalized.dataset) ?? str(normalized.schema);
+  const credentials =
+    normalized.credentials &&
+    typeof normalized.credentials === "object" &&
+    !Array.isArray(normalized.credentials)
+      ? (normalized.credentials as Record<string, unknown>)
+      : undefined;
 
   return {
-    ...(projectId !== undefined ? { projectId } : {}),
+    ...(str(normalized.projectId) !== undefined ? { projectId: str(normalized.projectId)! } : {}),
     ...(dataset !== undefined ? { dataset } : {}),
-    ...(location !== undefined ? { location } : {}),
-    ...(keyFilename !== undefined ? { keyFilename } : {}),
+    ...(str(normalized.location) !== undefined ? { location: str(normalized.location)! } : {}),
+    ...(str(normalized.keyFilename) !== undefined ? { keyFilename: str(normalized.keyFilename)! } : {}),
     ...(credentials !== undefined ? { credentials } : {}),
   };
 }
@@ -149,9 +147,16 @@ function bigQueryConfigFromTenantConfig(
 function resolveConfig(
   options: PluginListObjectsOptions,
 ): { config: BigQueryConnectionConfig; projectId: string; dataset: string } {
-  const base = options.config
-    ? bigQueryConfigFromTenantConfig(options.config)
-    : parseBigQueryUrl(options.url);
+  // Prefer the tenant config (registry/MCP path) ONLY when it actually carries
+  // connection fields (project / credentials / key file). An empty or
+  // label-only `config` (e.g. `{}` or `{ description }`) must NOT suppress URL
+  // parsing — fall back to the `bigquery://` url (CLI / static path) so a valid
+  // url isn't discarded just because a truthy-but-empty config was passed (#3664 review).
+  const fromConfig = options.config ? bigQueryConfigFromTenantConfig(options.config) : undefined;
+  const base =
+    fromConfig && (fromConfig.projectId || fromConfig.credentials || fromConfig.keyFilename)
+      ? fromConfig
+      : parseBigQueryUrl(options.url);
   const dataset = options.schema ?? base.dataset;
   if (!dataset) {
     throw new Error(

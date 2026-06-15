@@ -349,6 +349,35 @@ describe("config-based credential resolution (#3664)", () => {
     ).rejects.toThrow(/service_account_json is not valid JSON/);
   });
 
+  test("throws (no silent ADC fallback) when service_account_json parses to a non-object", async () => {
+    // `JSON.parse("null")` succeeds → null. Without a shape check, credentials
+    // would be a falsy non-object, createBigQueryConnection would omit it, and
+    // BigQuery would fall back to operator/ADC creds — a per-tenant-creds
+    // isolation violation. Fail loud instead.
+    for (const bad of ["null", "42", '"a-string"', "[1,2,3]"]) {
+      await expect(
+        profileBigQuery({
+          url: "bigquery://my-project",
+          config: { service_account_json: bad, project_id: "my-project", schema: "analytics" },
+        }),
+      ).rejects.toThrow(/must be a JSON object/);
+    }
+  });
+
+  test("an empty / label-only config does NOT suppress URL parsing (falls back to the bigquery:// url)", async () => {
+    // A truthy-but-empty config must not discard a perfectly valid url.
+    const result = await profileBigQuery({ url: "bigquery://US@my-project/analytics", config: {} });
+    expect(result.errors).toEqual([]);
+    expect(result.profiles).toHaveLength(2);
+    // No tenant creds in the config → the client resolved from the url path.
+    const clientOpts = (mockBigQuery.mock.calls.at(-1) as unknown[] | undefined)?.[0] as {
+      projectId?: string;
+      credentials?: unknown;
+    };
+    expect(clientOpts.projectId).toBe("my-project");
+    expect(clientOpts.credentials).toBeUndefined();
+  });
+
   test("listBigQueryObjects also authenticates from options.config", async () => {
     const objects = await listBigQueryObjects({
       url: "bigquery://my-project",

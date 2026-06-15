@@ -1088,9 +1088,9 @@ export async function runSemanticProfile(opts: {
       // types is a no-op; a plugin type requires it.
       ...(opts.profileFn !== undefined ? { profileFn: opts.profileFn } : {}),
       // Forward the decrypted tenant config (ADR-0017 amendment) so a
-      // separate-field-credential plugin profiler (ES) authenticates with the
-      // tenant's own creds, not operator env. Native + url-embedded profilers
-      // ignore it. Never logged.
+      // separate-field-credential / non-url-shaped plugin profiler (ES,
+      // BigQuery — #3664) authenticates with the tenant's own creds, not
+      // operator env. Native + url-embedded profilers ignore it. Never logged.
       ...(opts.config !== undefined ? { config: opts.config } : {}),
       connectionId: opts.connectionId,
       registerWhitelist: !shouldPersist,

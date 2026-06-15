@@ -226,6 +226,13 @@ export async function handleDiff(args: string[]): Promise<void> {
           result = await profileSalesforce(connStr, filterTables);
           break;
         }
+        case "bigquery": {
+          const { profileBigQuery } = await import(
+            "../../../../plugins/bigquery/src/profiler"
+          );
+          result = await profileBigQuery({ url: connStr, selectedTables: filterTables });
+          break;
+        }
         default: {
           throw new Error(`Unknown database type: ${dbType}`);
         }

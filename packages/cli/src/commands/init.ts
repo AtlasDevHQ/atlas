@@ -477,6 +477,13 @@ async function profileDatasource(
         case "salesforce":
           allObjects = await listSalesforceObjects(connStr);
           break;
+        case "bigquery": {
+          const { listBigQueryObjects } = await import(
+            "../../../../plugins/bigquery/src/profiler"
+          );
+          allObjects = await listBigQueryObjects({ url: connStr });
+          break;
+        }
         default: {
           throw new Error(`Unknown database type: ${dbType}`);
         }
@@ -593,6 +600,18 @@ async function profileDatasource(
         progress,
       );
       break;
+    case "bigquery": {
+      const { profileBigQuery } = await import(
+        "../../../../plugins/bigquery/src/profiler"
+      );
+      result = await profileBigQuery({
+        url: connStr,
+        selectedTables,
+        prefetchedObjects,
+        progress,
+      });
+      break;
+    }
     default: {
       throw new Error(`Unknown database type: ${dbType}`);
     }

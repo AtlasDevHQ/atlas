@@ -144,7 +144,28 @@ export function buildSalesforcePlugin(
       const parsed = SalesforceConnectionConfigSchema.parse(runtimeConfig);
       // Parse the runtime url here (never at build time) — surfaces parser
       // errors as a thrown error for the datasource bridge to handle.
-      return createSalesforceConnection(parseSalesforceURL(parsed.url), log);
+      const built = createSalesforceConnection(parseSalesforceURL(parsed.url), log);
+      // #3667 — introspection is a capability OF the built connection, bound to
+      // the `salesforce://` creds that built it (the host's unified resolver
+      // consumes these; no url/config re-resolution). Read-only (describe + a
+      // bounded COUNT(Id) SELECT, no DML). NOTE: this credential-form path is
+      // DORMANT for Atlas (the bridge skips salesforce → OAuth, ADR-0014); the
+      // OAuth path exposes its own introspection via the LazyPluginLoader. This
+      // serves the CLI's `atlas init` salesforce:// url + future self-host wiring.
+      return {
+        ...built,
+        listObjects: (o) =>
+          listSalesforceObjects({ url: parsed.url, ...(o?.schema !== undefined ? { schema: o.schema } : {}) }),
+        profile: (o) =>
+          profileSalesforce({
+            url: parsed.url,
+            ...(o?.schema !== undefined ? { schema: o.schema } : {}),
+            selectedTables: o?.selectedTables,
+            prefetchedObjects: o?.prefetchedObjects,
+            progress: o?.progress,
+            logger: o?.logger,
+          }),
+      };
     },
     dbType: "salesforce",
     validate(query: string): QueryValidationResult {

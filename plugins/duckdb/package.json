@@ -17,7 +17,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test __tests__/duckdb.test.ts && bun test __tests__/url-parser.test.ts"
+    "test": "bun test __tests__/duckdb.test.ts && bun test __tests__/url-parser.test.ts && bun test __tests__/built-connection-introspection.test.ts"
   },
   "keywords": [
     "atlas",

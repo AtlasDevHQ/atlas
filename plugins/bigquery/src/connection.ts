@@ -86,6 +86,69 @@ export function parseBigQueryUrl(url: string): BigQueryConnectionConfig {
 }
 
 /**
+ * Coerce a service-account JSON string into a credentials object, with an
+ * actionable error for malformed input. Shared by the connection factory's
+ * config normalization ({@link normalizeBigQueryConfigFields}) and the
+ * registry/MCP profiler so the two credential paths can't drift (#3664).
+ *
+ * @throws {Error} when the string is not valid JSON, OR parses to something
+ *   other than a JSON object (a non-null, non-array object). The shape check
+ *   matters: `JSON.parse("null")` / a parsed array/number/string would
+ *   otherwise be handed on as a falsy-or-malformed `credentials`, and the
+ *   BigQuery client would silently fall back to Application Default Credentials
+ *   (operator/ambient env) — a per-tenant-credential-isolation violation. Fail
+ *   loud instead.
+ */
+export function parseServiceAccountJson(serviceAccountJson: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serviceAccountJson);
+  } catch (err) {
+    throw new Error(
+      `BigQuery service_account_json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      "BigQuery service_account_json must be a JSON object (the service account key contents).",
+    );
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/**
+ * Normalize a DB-stored / tenant BigQuery config (the Admin → Connections
+ * catalog form shape: snake_case `service_account_json` + `project_id`) onto the
+ * connection factory's field shape (camelCase `credentials` + `projectId`),
+ * WITHOUT clobbering explicit camelCase values a programmatic caller passed.
+ * Shared by `createFromConfig` (index.ts) and the registry/MCP profiler
+ * (profiler.ts `bigQueryConfigFromTenantConfig`) so the connection path and the
+ * profiling path resolve credentials identically and can't drift (#3664). An
+ * explicit `keyFilename` takes precedence over `service_account_json` (the key
+ * file wins), matching the connection factory's historical behavior.
+ *
+ * @throws {Error} when `service_account_json` is present but not a valid JSON object.
+ */
+export function normalizeBigQueryConfigFields(
+  raw: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...raw };
+  if (out.projectId === undefined && typeof out.project_id === "string") {
+    out.projectId = out.project_id;
+  }
+  if (
+    out.credentials === undefined &&
+    out.keyFilename === undefined &&
+    typeof out.service_account_json === "string" &&
+    out.service_account_json.trim().length > 0
+  ) {
+    out.credentials = parseServiceAccountJson(out.service_account_json);
+  }
+  return out;
+}
+
+/**
  * Create a PluginDBConnection backed by @google-cloud/bigquery.
  * BigQuery is stateless REST — no pool to manage.
  *

@@ -315,7 +315,15 @@ function profileImpl(
   opts: ProfileConnectionOptions,
 ): Effect.Effect<ProfileConnectionResult, ProfilingFailedError> {
   return Effect.gen(function* () {
-    const schema = opts.schema ?? "public";
+    // #3662 — mirror the wizard's `effectiveSchema` (#3621) on the MCP seam:
+    // default a missing schema to `"public"` ONLY for native Postgres (its
+    // canonical search-path). A plugin dbType — where `"public"` is meaningless
+    // (ClickHouse database, Elasticsearch index) — passes the user-provided
+    // schema through, or `undefined` so the plugin profiler uses its OWN default
+    // (e.g. ClickHouse's `default`, or the URL-embedded database) instead of
+    // overriding it with a literal `"public"` and profiling zero objects. MySQL
+    // ignores schema either way.
+    const schema = opts.dbType === "postgres" ? opts.schema ?? "public" : opts.schema;
     const profiler = resolveProfiler(opts.dbType, opts.profileFn);
     if (profiler instanceof ProfilingFailedError) {
       return yield* Effect.fail(profiler);
@@ -347,9 +355,12 @@ function profileImpl(
           prefetchedObjects: opts.prefetchedObjects,
           progress: opts.progress,
           logger: opts.logger,
-          // Decrypted tenant config for separate-field-credential plugins
-          // (ES). The in-core pg/mysql profilers and url-embedded plugin
-          // profilers ignore it. Never logged (ADR-0017 amendment).
+          // Decrypted tenant config for separate-field-credential / non-url-shaped
+          // plugins (Elasticsearch's apiKey, BigQuery's service_account_json +
+          // project — #3664). The in-core pg/mysql profilers and url-embedded
+          // plugin profilers (ClickHouse/Snowflake) ignore it. Never logged
+          // (ADR-0017 amendment). NOTE: BigQuery depends on this forwarding —
+          // without it, its profiler falls back to ADC/operator env.
           ...(opts.config !== undefined ? { config: opts.config } : {}),
         }),
       catch: (err) => err,

@@ -50,6 +50,7 @@ import type {
 import {
   createBigQueryConnection,
   parseBigQueryUrl,
+  normalizeBigQueryConfigFields,
   type BigQueryConnectionConfig,
 } from "./connection";
 
@@ -83,29 +84,97 @@ function bqLiteral(value: string): string {
 }
 
 /**
- * Resolve the dataset to introspect. `schema` (the SDK option) wins over the
- * dataset embedded in the URL, mirroring how the CLI passes `--schema`.
- * @throws {Error} when neither the URL nor the option names a dataset.
+ * Build the base connection config from the host-carried tenant config
+ * (#3664 — the ADR-0017 amendment that lets a multi-field-credential profiler
+ * authenticate with the TENANT's own creds over the registry/MCP seam, mirroring
+ * Elasticsearch's `configForOptions`).
+ *
+ * BigQuery is non-url-shaped: its credentials (`service_account_json`) live in a
+ * SEPARATE config field, NEVER in the connection string. The Admin → Connections
+ * catalog form collects `service_account_json` (raw key JSON string) + `project_id`
+ * (snake_case) + the generic `schema` routing hint; map them onto the connection
+ * factory's `credentials` (object) + `projectId` + `dataset` shape. A
+ * programmatic caller passing camelCase `projectId`/`credentials`/`dataset`
+ * directly still works.
+ *
+ * @throws {Error} when `service_account_json` is present but not valid JSON.
+ */
+function bigQueryConfigFromTenantConfig(
+  raw: Readonly<Record<string, unknown>>,
+): BigQueryConnectionConfig {
+  // Shared with the connection factory's `createFromConfig` (index.ts) so the
+  // profiling path and the query path resolve project + credentials identically:
+  // snake_case `project_id` → `projectId`, `service_account_json` →
+  // `credentials` (validated as a JSON object, never a silent ADC fallback),
+  // keyFilename-wins precedence.
+  const normalized = normalizeBigQueryConfigFields(raw);
+  const str = (v: unknown): string | undefined =>
+    typeof v === "string" && v.length > 0 ? v : undefined;
+  // BigQuery's dataset rides on the generic `schema` routing hint over the seam
+  // (the catalog form has no dedicated dataset field); an explicit `dataset`
+  // still wins for a programmatic caller.
+  const dataset = str(normalized.dataset) ?? str(normalized.schema);
+  const credentials =
+    normalized.credentials &&
+    typeof normalized.credentials === "object" &&
+    !Array.isArray(normalized.credentials)
+      ? (normalized.credentials as Record<string, unknown>)
+      : undefined;
+
+  return {
+    ...(str(normalized.projectId) !== undefined ? { projectId: str(normalized.projectId)! } : {}),
+    ...(dataset !== undefined ? { dataset } : {}),
+    ...(str(normalized.location) !== undefined ? { location: str(normalized.location)! } : {}),
+    ...(str(normalized.keyFilename) !== undefined ? { keyFilename: str(normalized.keyFilename)! } : {}),
+    ...(credentials !== undefined ? { credentials } : {}),
+  };
+}
+
+/**
+ * Resolve the dataset to introspect and the base connection config.
+ *
+ * Two credential sources, chosen by whether the host seam supplied the tenant's
+ * config (registry/MCP path) or only a url (CLI / static-config path):
+ *   - `options.config` present → the host carried the datasource's DECRYPTED
+ *     config; build from the tenant's own service-account creds (#3664).
+ *   - `options.config` absent → parse the `bigquery://` url (operator shell).
+ *
+ * `options.schema` (the SDK routing hint) wins over the dataset embedded in
+ * either source, mirroring how the CLI passes `--schema`.
+ *
+ * @throws {Error} when no dataset or no project can be resolved.
  */
 function resolveConfig(
-  url: string,
-  schema: string | undefined,
+  options: PluginListObjectsOptions,
 ): { config: BigQueryConnectionConfig; projectId: string; dataset: string } {
-  const config = parseBigQueryUrl(url);
-  const dataset = schema ?? config.dataset;
+  // Prefer the tenant config (registry/MCP path) ONLY when it actually carries
+  // connection fields (project / credentials / key file). An empty or
+  // label-only `config` (e.g. `{}` or `{ description }`) must NOT suppress URL
+  // parsing — fall back to the `bigquery://` url (CLI / static path) so a valid
+  // url isn't discarded just because a truthy-but-empty config was passed (#3664 review).
+  const fromConfig = options.config ? bigQueryConfigFromTenantConfig(options.config) : undefined;
+  const base =
+    fromConfig && (fromConfig.projectId || fromConfig.credentials || fromConfig.keyFilename)
+      ? fromConfig
+      : parseBigQueryUrl(options.url);
+  const dataset = options.schema ?? base.dataset;
   if (!dataset) {
     throw new Error(
       "BigQuery profiling requires a dataset. Pass it in the URL " +
-        "(bigquery://project/dataset) or via the schema option.",
+        "(bigquery://project/dataset), via the schema option, or as a `schema` " +
+        "field on the datasource config.",
     );
   }
-  const projectId = config.projectId;
+  const projectId = base.projectId;
   if (!projectId) {
-    throw new Error("BigQuery profiling requires a project in the bigquery:// URL.");
+    throw new Error(
+      "BigQuery profiling requires a project (the bigquery:// URL host or a " +
+        "`project_id` datasource config field).",
+    );
   }
   // Scope the connection to the resolved dataset so unqualified references
   // (e.g. INFORMATION_SCHEMA) resolve against it.
-  return { config: { ...config, dataset }, projectId, dataset };
+  return { config: { ...base, dataset }, projectId, dataset };
 }
 
 /** A row from INFORMATION_SCHEMA.TABLES. */
@@ -142,7 +211,7 @@ function listObjectsSql(dataset: string): string {
 export async function listBigQueryObjects(
   options: PluginListObjectsOptions,
 ): Promise<PluginDatabaseObject[]> {
-  const { config, dataset } = resolveConfig(options.url, options.schema);
+  const { config, dataset } = resolveConfig(options);
   const conn = createBigQueryConnection(config);
   try {
     const { rows } = await conn.query(listObjectsSql(dataset));
@@ -203,8 +272,8 @@ function isTextType(dataType: string): boolean {
 export async function profileBigQuery(
   options: PluginProfileOptions,
 ): Promise<PluginProfilingResult> {
-  const { url, schema, selectedTables, prefetchedObjects, progress } = options;
-  const { config, dataset } = resolveConfig(url, schema);
+  const { selectedTables, prefetchedObjects, progress } = options;
+  const { config, dataset } = resolveConfig(options);
   const conn = createBigQueryConnection(config);
 
   const profiles: PluginTableProfile[] = [];

@@ -198,6 +198,44 @@ describe("loadDatasourceProfileTarget — plugin types (#3552)", () => {
     expect(res.target.config).toEqual({ url: "elasticsearch://es.tenant:9200", apiKey: "tenant-es-key" });
   });
 
+  it("bigquery (non-url-shaped) resolves to ok — synthetic url + decrypted config carried (#3664)", async () => {
+    // BigQuery's pool config has NO url (service-account multi-field). The seam
+    // synthesizes a `bigquery://<project>` identifier so it is profilable over
+    // MCP, and carries the decrypted config so the profiler authenticates with
+    // the tenant's own service-account creds.
+    poolConfigResult = {
+      dbType: "bigquery",
+      serviceAccountJson: '{"type":"service_account","project_id":"my-project"}',
+      projectId: "my-project",
+      schema: "analytics",
+    };
+    const profile = chProfiler();
+    pluginConn = { dbType: "bigquery", createFromConfig: () => ({}), profile };
+    internalRows = [
+      {
+        catalog_id: "cat_bq",
+        catalog_slug: "bigquery",
+        config: {
+          service_account_json: '{"type":"service_account","project_id":"my-project"}',
+          project_id: "my-project",
+          schema: "analytics",
+        },
+        config_schema: [],
+        group_id: null,
+      },
+    ];
+    const res = await loadDatasourceProfileTarget("org_1", "bq");
+    expect(res.kind).toBe("ok");
+    if (res.kind !== "ok") return;
+    expect(res.target.dbType).toBe("bigquery");
+    // Synthetic url derived from the project — NOT empty (it would fail the gate).
+    expect(res.target.url).toBe("bigquery://my-project");
+    // The dataset routing hint flows as the target schema.
+    expect(res.target.schema).toBe("analytics");
+    // The decrypted service-account config rides on the target (tenant creds).
+    expect(res.target.config).toMatchObject({ project_id: "my-project" });
+  });
+
   it("native pg/mysql resolves WITHOUT a profileFn (SemanticGenerator profiles in-core)", async () => {
     poolConfigResult = { dbType: "postgres", url: "postgres://u:p@h/db", schema: "public" };
     internalRows = [
@@ -333,5 +371,47 @@ describe("runSemanticProfile — plugin profileFn (#3552: entities + whitelist +
     expect(upsertCalls).toHaveLength(0);
     const tables = whitelist.getWhitelistedTables("wh-ephemeral");
     expect([...tables].some((t) => t.includes("events"))).toBe(true);
+  });
+});
+
+// =====================================================================
+// #3662 — the MCP seam must NOT coerce a missing schema to "public" for a
+// plugin dbType. This mirrors the #3621 wizard `effectiveSchema` fix: "public"
+// is Postgres's canonical default search-path, but it's meaningless for a
+// plugin dbType (ClickHouse's default database is `default`, not `public`).
+// Leaking "public" overrides the URL-embedded database and profiles zero
+// objects against a nonexistent database — the exact bug class #3621 fixed,
+// surviving on the sibling MCP seam.
+// =====================================================================
+describe("runSemanticProfile — schema default does not leak to plugin dbTypes (#3662)", () => {
+  it("clickhouse with NO configured schema → the plugin profiler receives undefined, NOT \"public\"", async () => {
+    const profile = chProfiler();
+    const outcome = await runSemanticProfile({
+      url: "clickhouse://h:8443/analytics",
+      dbType: "clickhouse",
+      profileFn: profile,
+      connectionId: "wh",
+      // no `schema` — relying on the URL-embedded database.
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(profile.calls).toHaveLength(1);
+    // The bug: this would be "public", overriding the URL's `analytics` database.
+    expect(profile.calls[0].schema).toBeUndefined();
+  });
+
+  it("clickhouse with an explicit schema → passed through verbatim", async () => {
+    const profile = chProfiler();
+    const outcome = await runSemanticProfile({
+      url: "clickhouse://h:8443/analytics",
+      dbType: "clickhouse",
+      profileFn: profile,
+      schema: "analytics",
+      connectionId: "wh",
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(profile.calls).toHaveLength(1);
+    expect(profile.calls[0].schema).toBe("analytics");
   });
 });

@@ -113,3 +113,24 @@ The original spine made the seam **url-only**: `profile(options)` took `{ url, s
 
 - A separate-field-credential plugin onboarded via the in-product wizard enumerates AND profiles with the tenant's own credentials — closing the wizard's operator-env-fallback hole for both seam halves. Native pg/mysql and url-embedded plugins (ClickHouse/Snowflake) are unchanged (they ignore `config`).
 - **Mirror-drift cost now also applies to `PluginListObjectsOptions.config`** — the SDK type and the host bridge shape (`DatasourceConnectionShape.listObjects`) are hand-maintained mirrors and must stay in lockstep.
+
+## Amendment (#3664): BigQuery profiles over MCP from its multi-field config
+
+**Status:** Accepted (#3664). Lifts the BigQuery fail-closed scope decision in *Decision* above.
+
+### Context
+
+The original scope (above) left `bigquery` **fail-closed** behind `loadDatasourceProfileTarget`'s URL-shape gate, because BigQuery is multi-field / non-url-shaped: its credentials live in a SEPARATE `service_account_json` config field, never in a connection string. But the milestone goal (#3664, #3552 AC #1) is that **every provisioning-supported type profiles over MCP** — and BigQuery is in `MCP_PROVISIONABLE_CATALOG_SLUGS`. The #3552/#3621 `config` amendment already carries the decrypted config through the seam; BigQuery just needed to pass the url-shape gate and consume it.
+
+### Decision
+
+**Synthesize a url for non-url-shaped config-credential types and have the profiler authenticate from the carried `config` — the same pattern ES uses.**
+
+- `loadDatasourceProfileTarget` resolves the seam url via `resolveProfileUrl(poolConfig)`: url-bearing pool configs return their url; BigQuery synthesizes `bigquery://<project>` from its `projectId`. The synthetic url is an identifier/routing hint only — it carries NO credentials. Types still without a path (duckdb file, salesforce OAuth) return `undefined` and stay fail-closed in their own slices.
+- The BigQuery profiler's `resolveConfig` builds the connection from `options.config` when present (the tenant's decrypted `service_account_json` → `credentials`, `project_id` → `projectId`, the generic `schema` routing hint → `dataset`), mirroring ES's `configForOptions`. It falls back to `parseBigQueryUrl(options.url)` for the CLI / static-config path (operator shell). No SDK contract change — `config` already exists on `PluginProfileOptions`/`PluginListObjectsOptions`.
+- `BigQueryPoolConfig` gains an optional `schema` (the dataset routing hint) so a dataset set at `create_datasource` time flows through to the profiler. The credentials never leave the lib layer (the existing `config` SECURITY discipline).
+
+### Consequences
+
+- BigQuery onboards end-to-end over MCP (add datasource → `profile_datasource` → semantic layer), with the tenant's own service-account creds, closing the add-but-can't-onboard dead-end for BigQuery.
+- The `resolveProfileUrl` seam is the extension point for the remaining non-url types: DuckDB (#3627) and Salesforce OAuth (#3663) plug in there rather than re-opening the gate.

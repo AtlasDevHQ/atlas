@@ -35,6 +35,7 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import {
   catalogSlugToDbType,
   resolveDatasourcePoolConfig,
+  type DatasourcePoolConfig,
 } from "@atlas/api/lib/db/datasource-pool-resolver";
 import {
   findDatasourcePluginConnection,
@@ -871,6 +872,31 @@ export type LoadProfileTargetResult =
   | { readonly kind: "unsupported"; readonly dbType: string; readonly message: string };
 
 /**
+ * Resolve the `url` the profiler seam passes to the resolved `profileFn`.
+ *
+ * - URL-shaped pool configs (native pg/mysql, clickhouse/snowflake/elasticsearch)
+ *   return their `url` directly.
+ * - BigQuery is multi-field / non-url-shaped: its credentials live in SEPARATE
+ *   config fields (`service_account_json`), never a connection string. The host
+ *   carries the decrypted `config` (the ADR-0017 amendment), and the BigQuery
+ *   profiler authenticates from it — but the seam contract is still
+ *   `url: string`, so synthesize a `bigquery://<project>` identifier from the
+ *   pool config. The synthetic url is a routing/identifier hint only; the
+ *   profiler reads credentials from `config`, never from this url (#3664).
+ * - Everything else with no url (duckdb file path, salesforce OAuth) returns
+ *   `undefined` and stays fail-closed in its own slice.
+ */
+function resolveProfileUrl(poolConfig: DatasourcePoolConfig): string | undefined {
+  if ("url" in poolConfig && typeof poolConfig.url === "string" && poolConfig.url.length > 0) {
+    return poolConfig.url;
+  }
+  if (poolConfig.dbType === "bigquery" && poolConfig.projectId.length > 0) {
+    return `bigquery://${encodeURIComponent(poolConfig.projectId)}`;
+  }
+  return undefined;
+}
+
+/**
  * Load + decrypt a datasource install's connection config and shape the
  * profiling target the semantic generator needs.
  *
@@ -936,14 +962,17 @@ export async function loadDatasourceProfileTarget(
     },
     decrypted,
   );
-  // The profiler seam is url-based (ADR-0017 spine): the resolved `profileFn`
-  // (and the in-core pg/mysql profiler) takes a `url`. Native pg/mysql and the
-  // url-bearing plugin pool configs (clickhouse / snowflake / elasticsearch)
-  // carry one; a multi-field-credential type (bigquery / duckdb) or an
-  // OAuth-managed one (salesforce) does not and is handled in its own per-dbType
-  // slice — fail closed here with an actionable message rather than profiling
-  // against an empty url.
-  const url = "url" in poolConfig ? poolConfig.url : undefined;
+  // The profiler seam passes a `url: string` to the resolved `profileFn` (and to
+  // the in-core pg/mysql profiler). Native pg/mysql and the url-bearing plugin
+  // pool configs (clickhouse / snowflake / elasticsearch) carry one directly. A
+  // multi-field-credential type (bigquery) carries its connection in SEPARATE
+  // config fields, not a url — the host carries the decrypted `config` (the
+  // ADR-0017 amendment that already lets ES authenticate from tenant config) and
+  // the plugin profiler builds the connection from it; we synthesize a url so
+  // the seam's `url: string` contract holds and logs/identifiers stay meaningful
+  // (#3664). Types with neither a url nor a config-credential profiler path
+  // (duckdb file path, salesforce OAuth) stay fail-closed in their own slices.
+  const url = resolveProfileUrl(poolConfig);
   if (typeof url !== "string" || url.length === 0) {
     return {
       kind: "unsupported",
@@ -1059,9 +1088,9 @@ export async function runSemanticProfile(opts: {
       // types is a no-op; a plugin type requires it.
       ...(opts.profileFn !== undefined ? { profileFn: opts.profileFn } : {}),
       // Forward the decrypted tenant config (ADR-0017 amendment) so a
-      // separate-field-credential plugin profiler (ES) authenticates with the
-      // tenant's own creds, not operator env. Native + url-embedded profilers
-      // ignore it. Never logged.
+      // separate-field-credential / non-url-shaped plugin profiler (ES,
+      // BigQuery — #3664) authenticates with the tenant's own creds, not
+      // operator env. Native + url-embedded profilers ignore it. Never logged.
       ...(opts.config !== undefined ? { config: opts.config } : {}),
       connectionId: opts.connectionId,
       registerWhitelist: !shouldPersist,

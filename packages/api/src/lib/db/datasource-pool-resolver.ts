@@ -169,6 +169,12 @@ export interface BigQueryPoolConfig {
   readonly dbType: "bigquery";
   readonly serviceAccountJson: string;
   readonly projectId: string;
+  /**
+   * Optional default dataset / routing hint (the generic `schema` field). Not a
+   * pool-routing key (BigQuery has no schema namespace in the pg sense), but
+   * carried so the profiler seam (#3664) can scope introspection to a dataset.
+   */
+  readonly schema?: string;
   readonly description?: string;
 }
 
@@ -387,6 +393,7 @@ function resolveBigQuery(c: Readonly<Record<string, unknown>>): BigQueryPoolConf
     dbType: "bigquery",
     serviceAccountJson,
     projectId,
+    ...(asString(c.schema) !== undefined ? { schema: asString(c.schema)! } : {}),
     ...(asString(c.description) !== undefined
       ? { description: asString(c.description)! }
       : {}),

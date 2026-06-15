@@ -278,3 +278,115 @@ describe("profileBigQuery", () => {
     expect(msg).not.toContain("/secrets/key.json");
   });
 });
+
+// The registry/MCP seam (#3664): BigQuery is non-url-shaped, so the host carries
+// the datasource's DECRYPTED config (service_account_json + project_id + the
+// generic `schema` routing hint) and the profiler authenticates from it — the
+// tenant's own service-account creds, never operator env (the per-tenant-creds
+// rule), mirroring the Elasticsearch amendment. The url is a synthetic
+// identifier only; credentials NEVER ride on it.
+describe("config-based credential resolution (#3664)", () => {
+  const SERVICE_ACCOUNT = JSON.stringify({
+    type: "service_account",
+    project_id: "my-project",
+    private_key: "-----BEGIN PRIVATE KEY-----\\nXXX\\n-----END PRIVATE KEY-----\\n",
+    client_email: "sa@my-project.iam.gserviceaccount.com",
+  });
+
+  test("builds the BigQuery client from options.config (parsed service account creds + project)", async () => {
+    const result = await profileBigQuery({
+      url: "bigquery://my-project", // synthetic identifier — carries no creds
+      config: {
+        service_account_json: SERVICE_ACCOUNT,
+        project_id: "my-project",
+        schema: "analytics",
+      },
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.profiles).toHaveLength(2);
+
+    // The client was constructed with the tenant's parsed service-account
+    // credentials and project — not from the url.
+    const clientOpts = (mockBigQuery.mock.calls.at(-1) as unknown[] | undefined)?.[0] as {
+      projectId?: string;
+      credentials?: Record<string, unknown>;
+    };
+    expect(clientOpts.projectId).toBe("my-project");
+    expect(clientOpts.credentials).toMatchObject({
+      type: "service_account",
+      client_email: "sa@my-project.iam.gserviceaccount.com",
+    });
+  });
+
+  test("resolves the dataset from the config `schema` routing hint when no schema option is passed", async () => {
+    await profileBigQuery({
+      url: "bigquery://my-project",
+      config: { service_account_json: SERVICE_ACCOUNT, project_id: "my-project", schema: "analytics" },
+    });
+    // INFORMATION_SCHEMA queries are scoped to the `analytics` dataset.
+    expect(seenQueries.some((q) => q.includes("analytics") && q.includes("INFORMATION_SCHEMA"))).toBe(
+      true,
+    );
+  });
+
+  test("the schema OPTION still wins over the config dataset", async () => {
+    await profileBigQuery({
+      url: "bigquery://my-project",
+      schema: "override_ds",
+      config: { service_account_json: SERVICE_ACCOUNT, project_id: "my-project", schema: "analytics" },
+    });
+    expect(seenQueries.some((q) => q.includes("override_ds") && q.includes("INFORMATION_SCHEMA"))).toBe(
+      true,
+    );
+  });
+
+  test("throws an actionable error when service_account_json is not valid JSON", async () => {
+    await expect(
+      profileBigQuery({
+        url: "bigquery://my-project",
+        config: { service_account_json: "{not json", project_id: "my-project", schema: "analytics" },
+      }),
+    ).rejects.toThrow(/service_account_json is not valid JSON/);
+  });
+
+  test("throws (no silent ADC fallback) when service_account_json parses to a non-object", async () => {
+    // `JSON.parse("null")` succeeds → null. Without a shape check, credentials
+    // would be a falsy non-object, createBigQueryConnection would omit it, and
+    // BigQuery would fall back to operator/ADC creds — a per-tenant-creds
+    // isolation violation. Fail loud instead.
+    for (const bad of ["null", "42", '"a-string"', "[1,2,3]"]) {
+      await expect(
+        profileBigQuery({
+          url: "bigquery://my-project",
+          config: { service_account_json: bad, project_id: "my-project", schema: "analytics" },
+        }),
+      ).rejects.toThrow(/must be a JSON object/);
+    }
+  });
+
+  test("an empty / label-only config does NOT suppress URL parsing (falls back to the bigquery:// url)", async () => {
+    // A truthy-but-empty config must not discard a perfectly valid url.
+    const result = await profileBigQuery({ url: "bigquery://US@my-project/analytics", config: {} });
+    expect(result.errors).toEqual([]);
+    expect(result.profiles).toHaveLength(2);
+    // No tenant creds in the config → the client resolved from the url path.
+    const clientOpts = (mockBigQuery.mock.calls.at(-1) as unknown[] | undefined)?.[0] as {
+      projectId?: string;
+      credentials?: unknown;
+    };
+    expect(clientOpts.projectId).toBe("my-project");
+    expect(clientOpts.credentials).toBeUndefined();
+  });
+
+  test("listBigQueryObjects also authenticates from options.config", async () => {
+    const objects = await listBigQueryObjects({
+      url: "bigquery://my-project",
+      config: { service_account_json: SERVICE_ACCOUNT, project_id: "my-project", schema: "analytics" },
+    });
+    expect(objects.map((o) => o.name)).toEqual(["events", "daily_report"]);
+    const clientOpts = (mockBigQuery.mock.calls.at(-1) as unknown[] | undefined)?.[0] as {
+      credentials?: unknown;
+    };
+    expect(clientOpts.credentials).toBeDefined();
+  });
+});

@@ -41,6 +41,7 @@ import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult, Plu
 import {
   createBigQueryConnection,
   extractProjectId,
+  normalizeBigQueryConfigFields,
 } from "./connection";
 import { listBigQueryObjects, profileBigQuery } from "./profiler";
 import { BIGQUERY_FORBIDDEN_PATTERNS } from "./validation";
@@ -83,43 +84,6 @@ const BigQueryConfigSchema = z.object({
 const BigQueryRuntimeConfigSchema = BigQueryConfigSchema.extend({
   projectId: z.string().min(1, "BigQuery projectId must not be empty"),
 });
-
-/**
- * Normalize a DB-stored BigQuery datasource config into the connection factory's
- * field shape. The Admin → Connections catalog form
- * (`seed-builtin-datasource-catalog.ts`) collects `service_account_json` (the raw
- * key JSON, as a string) + `project_id` (snake_case); the connection factory and
- * {@link BigQueryRuntimeConfigSchema} use `credentials` (object) + `projectId`
- * (camelCase). Map the form shape onto the factory shape WITHOUT clobbering
- * explicit camelCase values (so a programmatic `createFromConfig` caller passing
- * `projectId`/`credentials` directly still works). Without this, every
- * admin-installed BigQuery datasource would be rejected by the runtime schema
- * (missing `projectId`) and never register as a live connection.
- */
-function normalizeBigQueryRuntimeConfig(
-  raw: Readonly<Record<string, unknown>>,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...raw };
-  if (out.projectId === undefined && typeof out.project_id === "string") {
-    out.projectId = out.project_id;
-  }
-  if (
-    out.credentials === undefined &&
-    out.keyFilename === undefined &&
-    typeof out.service_account_json === "string" &&
-    out.service_account_json.trim().length > 0
-  ) {
-    try {
-      out.credentials = JSON.parse(out.service_account_json);
-    } catch (err) {
-      throw new Error(
-        `BigQuery service_account_json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
-        { cause: err },
-      );
-    }
-  }
-  return out;
-}
 
 /**
  * BigQuery config type. Uses `z.input` so both the `bigqueryPlugin()` factory
@@ -199,7 +163,7 @@ export function buildBigQueryPlugin(
       // Normalize the catalog form's snake_case / service_account_json shape onto
       // the factory's camelCase / credentials shape before validating.
       const parsed = BigQueryRuntimeConfigSchema.parse(
-        normalizeBigQueryRuntimeConfig(runtimeConfig),
+        normalizeBigQueryConfigFields(runtimeConfig),
       );
       return createBigQueryConnection({
         projectId: parsed.projectId,

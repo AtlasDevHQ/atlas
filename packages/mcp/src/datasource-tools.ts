@@ -42,9 +42,10 @@ import type { WorkspaceId } from "@useatlas/types";
 import { withErrorContract } from "@atlas/api/lib/tools/descriptions";
 // Registration-time value: the light, dependency-free provisionable-slugs const
 // (used by the `db_type` enum). The create_datasource success hint's profilable
-// check is resolved LAZILY via `lib.resolveProfileCapability` (#3552) so it can't
-// drift from `loadDatasourceProfileTarget`. Everything else from `mcp-lifecycle`
-// is loaded LAZILY (below) so registering these tools doesn't drag the installer /
+// check is resolved LAZILY via `lib.loadDatasourceProfileTarget` (#3552 / #3587)
+// — the EXACT predicate `profile_datasource` gates on — so the hint can't drift
+// from what profiling actually accepts. Everything else from `mcp-lifecycle` is
+// loaded LAZILY (below) so registering these tools doesn't drag the installer /
 // semantic-gen / Effect-startup graph into MCP server boot — see `lifecycle()`.
 import { MCP_PROVISIONABLE_CATALOG_SLUGS } from "@atlas/api/lib/datasources/provisionable-types";
 import type { DatasourceInstallerOutcome } from "@atlas/api/lib/datasources/mcp-lifecycle";
@@ -645,15 +646,24 @@ export function registerDatasourceTools(
             case "ok": {
               // Only masked (never plaintext) credential material is surfaced.
               // #3587 / #3552 — the success hint must be CONDITIONAL on whether
-              // `profile_datasource` can actually make the type queryable. Native
-              // pg/mysql always profile; a plugin type profiles iff a registered
-              // plugin implements `connection.profile`. Derive the check from the
-              // SAME capability resolver the profile tool itself uses
-              // (`loadDatasourceProfileTarget` → `resolveProfileCapability`) so
-              // the hint can never drift from what profiling actually supports —
-              // it's resolved off the catalog slug (`db_type`), the same input.
-              const profileCap = await lib.resolveProfileCapability(db_type);
-              const profilable = profileCap.kind !== "unsupported";
+              // `profile_datasource` can actually make the type queryable. Derive
+              // it from the EXACT predicate `profile_datasource` itself gates on:
+              // `loadDatasourceProfileTarget`, whose `ok` outcome is the single
+              // source of truth the profile tool requires. That predicate is
+              // STRICTER than `resolveProfileCapability` alone — beyond "a plugin
+              // implements `connection.profile`" it also applies a fail-closed
+              // URL-shape gate, so a provisionable + profile-capable type whose
+              // connection is NOT URL-shaped (e.g. bigquery) resolves to
+              // `unsupported` there. Calling the capability resolver here would
+              // advertise `profile_datasource` for such a type and send the agent
+              // into an impossible loop. Gating on `loadDatasourceProfileTarget`'s
+              // outcome (resolved off the freshly-provisioned install id) makes the
+              // hint provably non-drifting from what `profile_datasource` accepts.
+              const profileTarget = await lib.loadDatasourceProfileTarget(
+                orgId,
+                outcome.value.installId,
+              );
+              const profilable = profileTarget.kind === "ok";
               return toJsonContent({
                 id: outcome.value.installId,
                 db_type: outcome.value.dbType,
@@ -823,6 +833,11 @@ export function registerDatasourceTools(
                 // #3552 — the registry-resolved plugin profiler (undefined for
                 // native pg/mysql, which SemanticGenerator profiles in-core).
                 ...(target.target.profileFn !== undefined ? { profileFn: target.target.profileFn } : {}),
+                // ADR-0017 amendment — the decrypted tenant config, so a
+                // separate-field-credential plugin profiler (ES) authenticates
+                // with the tenant's own creds rather than operator env. Stays
+                // inside the lib; never surfaced here or logged.
+                config: target.target.config,
                 connectionId: id,
                 // #3546 — persist the generated layer to the org store as
                 // drafts so the whitelist survives a restart and is visible to

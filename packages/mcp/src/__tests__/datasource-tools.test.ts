@@ -904,8 +904,10 @@ describe("create_datasource", () => {
 
   it("#3587 — success hint tells user to run profile_datasource for profilable types (postgres/mysql)", async () => {
     // postgres is a native profilable type — the next-step hint must direct the
-    // agent to run profile_datasource to generate the semantic layer.
-    profileCapability = { kind: "native", dbType: "postgres" };
+    // agent to run profile_datasource to generate the semantic layer. The hint
+    // derives `profilable` from `loadDatasourceProfileTarget`'s outcome (the EXACT
+    // predicate `profile_datasource` gates on), so the test drives THAT mock.
+    profileTarget = { kind: "ok", target: { url: "postgres://u:p@h/db", dbType: "postgres", schema: "public" } };
     provisionOutcome = {
       kind: "ok",
       value: { installId: "new-pg", dbType: "postgres", status: "draft", maskedUrl: "postgres://***@host/db", description: null, schema: null, groupId: null },
@@ -914,6 +916,8 @@ describe("create_datasource", () => {
     const res = await client.callTool({ name: "create_datasource", arguments: { db_type: "postgres", install_id: "new-pg" } });
     const body = JSON.parse(getContentText(res.content));
     expect(body.created).toBe(true);
+    // Resolved off the freshly-provisioned install id, not the catalog slug.
+    expect(mockLoadProfileTarget).toHaveBeenCalledWith(expect.any(String), "new-pg");
     // Hint must tell the agent to run profile_datasource.
     expect(body.next).toContain("profile_datasource");
     // Must NOT warn about unavailable profiling for a profilable type.
@@ -921,10 +925,14 @@ describe("create_datasource", () => {
   });
 
   it("#3552 — success hint tells user to profile a PLUGIN type when its profiler IS registered", async () => {
-    // clickhouse with a registered profiling plugin is now profilable over MCP
-    // (#3552 / ADR-0017) — the hint directs the agent to run profile_datasource.
+    // clickhouse with a registered profiling plugin AND a url-shaped pool config
+    // is profilable over MCP (#3552 / ADR-0017) — `loadDatasourceProfileTarget`
+    // resolves to `ok`, so the hint directs the agent to run profile_datasource.
     provisionCapability = { kind: "plugin", dbType: "clickhouse" };
-    profileCapability = { kind: "plugin", dbType: "clickhouse", profileFn: () => Promise.resolve({ profiles: [], errors: [] }) };
+    profileTarget = {
+      kind: "ok",
+      target: { url: "clickhouse://u:p@h:8443/db", dbType: "clickhouse", profileFn: () => Promise.resolve({ profiles: [], errors: [] }) },
+    };
     provisionOutcome = {
       kind: "ok",
       value: { installId: "ch-wh", dbType: "clickhouse", status: "draft", maskedUrl: null, description: null, schema: null, groupId: null },
@@ -939,11 +947,11 @@ describe("create_datasource", () => {
 
   it("#3587 — success hint does NOT advertise profile_datasource when the type's profiler is absent", async () => {
     // A plugin type provisionable (createFromConfig) but with no registered
-    // `connection.profile` → `resolveProfileCapability` is `unsupported`. The
+    // `connection.profile` → `loadDatasourceProfileTarget` is `unsupported`. The
     // hint must NOT claim 'run profile_datasource' — that would leave the agent
     // in an impossible loop trying an unavailable operation.
     provisionCapability = { kind: "plugin", dbType: "clickhouse" };
-    profileCapability = { kind: "unsupported", dbType: "clickhouse", message: "no profiler" };
+    profileTarget = { kind: "unsupported", dbType: "clickhouse", message: "no profiler" };
     provisionOutcome = {
       kind: "ok",
       value: { installId: "ch-wh", dbType: "clickhouse", status: "draft", maskedUrl: null, description: null, schema: null, groupId: null },
@@ -955,6 +963,34 @@ describe("create_datasource", () => {
     // Hint must NOT tell the agent to profile — that operation is unavailable.
     expect(body.next).not.toContain("profile_datasource");
     // Must clearly state profiling is not available in this deployment.
+    expect(body.next).toContain("not available in this deployment");
+  });
+
+  it("#3587 — success hint does NOT advertise profile_datasource for a profile-capable but NOT-URL-shaped type (bigquery)", async () => {
+    // The drift hazard #3587 guarded: a type that BOTH provisions (createFromConfig)
+    // AND implements `connection.profile` — so `resolveProfileCapability` alone
+    // would say `plugin` (profilable) — but whose connection is NOT url-shaped
+    // (bigquery: project + service-account JSON). `profile_datasource` rejects it
+    // via `loadDatasourceProfileTarget`'s fail-closed URL-shape gate (`unsupported`),
+    // so the create hint must NOT advertise profile_datasource. Deriving the hint
+    // from `loadDatasourceProfileTarget` (not the looser capability resolver) makes
+    // it provably track what `profile_datasource` actually accepts.
+    provisionCapability = { kind: "plugin", dbType: "bigquery" };
+    profileTarget = {
+      kind: "unsupported",
+      dbType: "bigquery",
+      message:
+        'Profiling "bigquery" datasources via MCP is not supported yet — its connection is not URL-shaped.',
+    };
+    provisionOutcome = {
+      kind: "ok",
+      value: { installId: "bq-wh", dbType: "bigquery", status: "draft", maskedUrl: null, description: null, schema: null, groupId: null },
+    };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "create_datasource", arguments: { db_type: "bigquery", install_id: "bq-wh" } });
+    const body = JSON.parse(getContentText(res.content));
+    expect(body.created).toBe(true);
+    expect(body.next).not.toContain("profile_datasource");
     expect(body.next).toContain("not available in this deployment");
   });
 });

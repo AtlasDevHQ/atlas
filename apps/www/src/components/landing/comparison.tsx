@@ -64,7 +64,7 @@ const ROWS: ReadonlyArray<Row> = [
   {
     feature: "Multi-database",
     atlas:
-      "PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Salesforce",
+      "PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Elasticsearch, Salesforce",
     bi: "Usually one",
     textToSql: "Usually one",
   },

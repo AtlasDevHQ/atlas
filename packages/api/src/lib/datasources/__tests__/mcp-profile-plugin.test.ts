@@ -62,6 +62,7 @@ let pluginConn:
   | undefined;
 mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
   findDatasourcePluginConnection: mock(async () => pluginConn),
+  isHandlerManagedDatasourceDbType: (dbType: string) => dbType === "salesforce",
   probePluginDatasourceConnection: mock(async () => ({ ok: true })),
   probeNativeDatasourceConnection: mock(async () => ({ ok: true })),
   registerDatasourceInstall: mock(async () => true),

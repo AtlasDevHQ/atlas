@@ -68,6 +68,7 @@ const probeSpy = mock<(dbType: string, cfg: Record<string, unknown>) => Promise<
 );
 mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
   findDatasourcePluginConnection: mock(async () => pluginConn),
+  isHandlerManagedDatasourceDbType: (dbType: string) => dbType === "salesforce",
   probePluginDatasourceConnection: probeSpy,
   // Native probe seam (#3605) — imported by mcp-lifecycle but never reached on
   // the plugin provision path under test; stubbed so the import resolves.

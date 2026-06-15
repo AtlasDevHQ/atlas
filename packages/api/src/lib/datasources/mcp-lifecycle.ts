@@ -39,10 +39,23 @@ import {
 } from "@atlas/api/lib/db/datasource-pool-resolver";
 import {
   findDatasourcePluginConnection,
+  isHandlerManagedDatasourceDbType,
   probePluginDatasourceConnection,
   probeNativeDatasourceConnection,
 } from "@atlas/api/lib/db/datasource-registry-bridge";
-import type { DatasourceProfiler } from "@atlas/api/lib/effect/semantic-generator";
+import type {
+  DatasourceProfiler,
+  LiveConnectionListOptions,
+  LiveConnectionProfileOptions,
+} from "@atlas/api/lib/effect/semantic-generator";
+import {
+  profilePostgres,
+  profileMySQL,
+  listPostgresObjects,
+  listMySQLObjects,
+} from "@atlas/api/lib/profiler";
+import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
+import type { DatabaseObject, ProfilingResult } from "@useatlas/types";
 import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { getInstallHandler } from "@atlas/api/lib/integrations/install/dispatch";
@@ -819,6 +832,262 @@ export async function provisionRestDatasource(
     // eslint-disable-next-line preserve-caught-error -- attaching the raw cause would leak the scrubbed credential (see above)
     throw new Error(scrubSecretsFromMessage(raw, secrets));
   }
+}
+
+// ── ONE RESOLVER: resolveLiveConnection (#3667) ───────────────────────
+//
+// The single host-side resolver that returns a LIVE, authenticated connection
+// for a workspace datasource by dispatching across ALL transports/pillars using
+// the SAME resolution querying uses:
+//
+//   - native pg/mysql       → ConnectionRegistry (`connections.getForOrg`)
+//   - url/config plugins    → the plugin's `createFromConfig` (ClickHouse,
+//                             Snowflake, BigQuery, Elasticsearch, …)
+//   - OAuth integrations    → the `LazyPluginLoader` (Salesforce — ADR-0014,
+//                             NO `createFromConfig`/pool registration)
+//
+// Introspection (`listObjects` / `profile`) is a CAPABILITY of the resolved
+// connection (#3667), bound to whatever creds built it — the profiler consumes
+// THIS connection instead of re-deriving its own narrower notion of "how do I
+// reach this datasource" (the URL-shape gate that failed BigQuery #3664 and
+// Salesforce #3663 closed). A new transport inherits profiling for free; there
+// is no gate left to fail closed.
+
+/**
+ * A live, authenticated datasource connection with introspection as a
+ * first-class capability. The query surface (`query`) and the introspection
+ * surface (`listObjects` / `profile`) are both bound to the creds that resolved
+ * the connection — neither re-resolves auth from a url/config.
+ *
+ * SECURITY: this is built from DECRYPTED credentials / OAuth tokens. The
+ * connection object itself never leaves the lib layer and carries no plaintext
+ * secret on its surface (the bound creds are captured in closures); its outputs
+ * (columns/rows, profiles, object names) are non-secret.
+ */
+export interface LiveDatasourceConnection {
+  readonly dbType: DBType;
+  /** The install's connection-group scope (`null` for an ungrouped install). Metadata, never a secret. */
+  readonly connectionGroupId: string | null;
+  query(sql: string, timeoutMs?: number): Promise<{ columns: string[]; rows: Record<string, unknown>[] }>;
+  listObjects(options?: LiveConnectionListOptions): Promise<DatabaseObject[]>;
+  profile(options: LiveConnectionProfileOptions): Promise<ProfilingResult>;
+  close(): Promise<void>;
+}
+
+export type ResolveLiveConnectionResult =
+  | { readonly kind: "ok"; readonly connection: LiveDatasourceConnection }
+  | { readonly kind: "not_found" }
+  /** No transport can build a live connection for this type (no plugin / no introspection / unknown). */
+  | { readonly kind: "unsupported"; readonly dbType: string; readonly message: string }
+  /** An OAuth datasource whose tokens are stale/revoked — actionable reconnect, not a silent failure. */
+  | { readonly kind: "reconnect_required"; readonly dbType: string; readonly message: string };
+
+/** Structural shape of an OAuth lazy instance that supports introspection (Salesforce — #3667 slice 5). */
+interface ProfilableOAuthInstance {
+  query(sql: string, timeoutMs?: number): Promise<{ columns: readonly string[]; rows: readonly Record<string, unknown>[] }>;
+  listObjects?(options?: LiveConnectionListOptions): Promise<DatabaseObject[]>;
+  profile?(options: LiveConnectionProfileOptions): Promise<ProfilingResult>;
+  teardown?(): Promise<void>;
+}
+
+function notProfilableLiveMessage(dbType: string): string {
+  return (
+    `Datasource type "${dbType}" cannot be profiled in this deployment. No registered plugin ` +
+    `builds a live connection exposing the introspection capability (connection.profile) for it. ` +
+    `Install or upgrade the corresponding datasource plugin, or profile it with the Atlas CLI (atlas init).`
+  );
+}
+
+/**
+ * Resolve a live, authenticated connection for `(orgId, installId)` across all
+ * transports. Profiling (and any future capability) consumes this — it must NOT
+ * re-derive its own connection resolution.
+ *
+ * Returns `not_found` for an unknown install, `unsupported` when no transport
+ * can build a profilable connection (actionable, no secret), and
+ * `reconnect_required` when an OAuth datasource's tokens are stale (the agent
+ * surfaces a specific "reconnect" prompt rather than a silent failure).
+ */
+export async function resolveLiveConnection(
+  orgId: string,
+  installId: string,
+): Promise<ResolveLiveConnectionResult> {
+  if (!hasInternalDB()) return { kind: "not_found" };
+  const rows = await internalQuery<{
+    catalog_id: string;
+    catalog_slug: string;
+    config: Record<string, unknown> | null;
+    config_schema: unknown;
+    group_id: string | null;
+  }>(
+    `SELECT wp.catalog_id, pc.slug AS catalog_slug, wp.config, pc.config_schema,
+            wp.config->>'group_id' AS group_id
+       FROM workspace_plugins wp
+       JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+      WHERE wp.workspace_id = $1
+        AND wp.install_id = $2
+        AND wp.pillar = 'datasource'
+      LIMIT 1`,
+    [orgId, installId],
+  );
+  if (rows.length === 0) return { kind: "not_found" };
+  const row = rows[0];
+
+  const schema = parseConfigSchema(row.config_schema);
+  const decrypted = decryptSecretFields(row.config ?? {}, schema);
+  const connectionGroupId = row.group_id && row.group_id.length > 0 ? row.group_id : null;
+  const poolConfig = resolveDatasourcePoolConfig(
+    {
+      workspaceId: orgId,
+      catalogId: row.catalog_id,
+      installId,
+      pillar: "datasource",
+      catalogSlug: row.catalog_slug,
+    },
+    decrypted,
+  );
+  const dbType = poolConfig.dbType;
+  const poolSchema = "schema" in poolConfig ? poolConfig.schema : undefined;
+  const poolUrl = "url" in poolConfig && typeof poolConfig.url === "string" ? poolConfig.url : "";
+
+  // ── OAuth / handler-managed (Salesforce) — the LazyPluginLoader path ──
+  // ADR-0014: NO `createFromConfig` / pool registration. The connection is
+  // built from `integration_credentials` tokens, refreshed inline.
+  if (isHandlerManagedDatasourceDbType(dbType)) {
+    let instance: ProfilableOAuthInstance;
+    try {
+      instance = (await lazyPluginLoader.getOrInstantiate(
+        orgId,
+        row.catalog_id,
+      )) as unknown as ProfilableOAuthInstance;
+    } catch (err) {
+      // A stale/revoked OAuth install surfaces as a specific reconnect prompt
+      // (the lazy builder throws IntegrationReconnectRequiredError when the
+      // install is marked reconnect_needed). Detected by name to avoid coupling.
+      if (err instanceof Error && err.name === "IntegrationReconnectRequiredError") {
+        return {
+          kind: "reconnect_required",
+          dbType,
+          message:
+            `The ${dbType} connection needs to be reconnected before it can be profiled. ` +
+            `Reconnect it in Admin → Integrations, then retry.`,
+        };
+      }
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+    if (typeof instance.profile !== "function" || typeof instance.listObjects !== "function") {
+      return { kind: "unsupported", dbType, message: notProfilableLiveMessage(dbType) };
+    }
+    const profile = instance.profile.bind(instance);
+    const listObjects = instance.listObjects.bind(instance);
+    return {
+      kind: "ok",
+      connection: {
+        dbType,
+        connectionGroupId,
+        query: async (sql, timeoutMs) => {
+          const { columns, rows: r } = await instance.query(sql, timeoutMs);
+          return { columns: [...columns], rows: [...r] };
+        },
+        listObjects: (options) => Promise.resolve(listObjects(options)),
+        profile: (options) => profile(options),
+        close: async () => {
+          if (typeof instance.teardown === "function") await instance.teardown();
+        },
+      },
+    };
+  }
+
+  // ── Native pg/mysql — the ConnectionRegistry path ─────────────────────
+  if (isMcpNativeDbType(dbType)) {
+    const effectiveSchema = (opts?: { schema?: string }) =>
+      opts?.schema ?? poolSchema ?? (dbType === "postgres" ? "public" : undefined);
+    return {
+      kind: "ok",
+      connection: {
+        dbType,
+        connectionGroupId,
+        query: (sql, timeoutMs) => connections.getForOrg(orgId, installId).query(sql, timeoutMs),
+        listObjects: (options) =>
+          dbType === "mysql"
+            ? listMySQLObjects(poolUrl, options?.logger)
+            : listPostgresObjects(poolUrl, effectiveSchema(options), options?.logger),
+        profile: (options) =>
+          dbType === "mysql"
+            ? profileMySQL(poolUrl, options.selectedTables, options.prefetchedObjects, options.progress, options.logger)
+            : profilePostgres(
+                poolUrl,
+                options.selectedTables,
+                options.prefetchedObjects,
+                effectiveSchema(options),
+                options.progress,
+                options.logger,
+              ),
+        close: async () => {
+          // Registry-managed pool — not torn down by the caller.
+        },
+      },
+    };
+  }
+
+  // ── url/config plugins — the createFromConfig path ────────────────────
+  const conn = await findDatasourcePluginConnection(dbType);
+  if (!conn || typeof conn.createFromConfig !== "function") {
+    return { kind: "unsupported", dbType, message: notProfilableLiveMessage(dbType) };
+  }
+  const built = await conn.createFromConfig(decrypted);
+
+  // Introspection is a capability of the BUILT connection (#3667). Prefer the
+  // relocated instance methods; until a plugin migrates, adapt its (legacy)
+  // static `connection.profile`/`listObjects` bound to the resolved url+config —
+  // NO synthetic url is needed (a config-credential profiler like BigQuery reads
+  // creds from `config`; url-shaped plugins carry a real `poolUrl`).
+  const profile: ((o: LiveConnectionProfileOptions) => Promise<ProfilingResult>) | undefined =
+    typeof built.profile === "function"
+      ? (o) => built.profile!(o)
+      : typeof conn.profile === "function"
+        ? (o) =>
+            conn.profile!({
+              url: poolUrl,
+              ...(o.schema !== undefined ? { schema: o.schema } : poolSchema !== undefined ? { schema: poolSchema } : {}),
+              ...(o.selectedTables !== undefined ? { selectedTables: o.selectedTables } : {}),
+              ...(o.prefetchedObjects !== undefined ? { prefetchedObjects: o.prefetchedObjects } : {}),
+              ...(o.progress !== undefined ? { progress: o.progress } : {}),
+              ...(o.logger !== undefined ? { logger: o.logger } : {}),
+              config: decrypted,
+            })
+        : undefined;
+  if (!profile) {
+    return { kind: "unsupported", dbType, message: notProfilableLiveMessage(dbType) };
+  }
+  const listObjects: (o?: LiveConnectionListOptions) => Promise<DatabaseObject[]> =
+    typeof built.listObjects === "function"
+      ? (o) => Promise.resolve(built.listObjects!(o))
+      : typeof conn.listObjects === "function"
+        ? (o) =>
+            Promise.resolve(
+              conn.listObjects!({
+                url: poolUrl,
+                ...(o?.schema !== undefined ? { schema: o.schema } : poolSchema !== undefined ? { schema: poolSchema } : {}),
+                config: decrypted,
+              }),
+            )
+        : () => Promise.resolve([]);
+
+  return {
+    kind: "ok",
+    connection: {
+      dbType,
+      connectionGroupId,
+      query: async (sql, timeoutMs) => {
+        const out = (await built.query(sql, timeoutMs)) as { columns: string[]; rows: Record<string, unknown>[] };
+        return out;
+      },
+      listObjects,
+      profile,
+      close: () => built.close(),
+    },
+  };
 }
 
 // ── Profiling / semantic-gen (#3512) ──────────────────────────────────

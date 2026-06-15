@@ -34,8 +34,32 @@
 
 import { connections } from "@atlas/api/lib/db/connection";
 import type { ConnectionPluginMeta, DBConnection } from "@atlas/api/lib/db/connection";
-import type { DatabaseObject } from "@useatlas/types";
-import type { DatasourceProfiler } from "@atlas/api/lib/effect/semantic-generator";
+import type { DatabaseObject, ProfilingResult } from "@useatlas/types";
+import type {
+  DatasourceProfiler,
+  LiveConnectionListOptions,
+  LiveConnectionProfileOptions,
+} from "@atlas/api/lib/effect/semantic-generator";
+
+/**
+ * What a built datasource connection looks like to core. `query`/`close` are
+ * the query surface; `listObjects`/`profile` are the OPTIONAL introspection
+ * capability (#3667, ADR-0017 universalization) — methods bound to whatever
+ * creds built the connection, so the host's profiler seam consumes them WITHOUT
+ * re-resolving auth from a url/config. A query-only datasource omits them and
+ * the host degrades to its explicit `unsupported` outcome.
+ *
+ * The introspection option shapes are the host's `LiveConnection*Options` (no
+ * `url`/`config` — those are already bound), structurally aligned with the SDK
+ * `PluginConnectionProfileOptions` / `PluginConnectionListObjectsOptions` so a
+ * plugin's built connection flows in with no adapter and no plugin import.
+ */
+export interface BuiltDatasourceConnection {
+  query(sql: string, timeoutMs?: number): Promise<unknown>;
+  close(): Promise<void>;
+  listObjects?(options?: LiveConnectionListOptions): Promise<DatabaseObject[]> | DatabaseObject[];
+  profile?(options: LiveConnectionProfileOptions): Promise<ProfilingResult>;
+}
 import {
   type BuiltinDatasourceDbType,
   type DatasourcePoolConfig,
@@ -52,11 +76,16 @@ import {
  */
 interface DatasourceConnectionShape {
   dbType: string;
-  /** Build a connection from a runtime (DB-stored) config — see SDK `AtlasDatasourcePlugin`. */
+  /**
+   * Build a connection from a runtime (DB-stored) config — see SDK
+   * `AtlasDatasourcePlugin`. The built connection MAY carry the introspection
+   * capability (`listObjects` / `profile`) as methods bound to the creds that
+   * built it (#3667 — introspection is a capability OF the live connection, not
+   * a static function that re-resolves auth from a url/config).
+   */
   createFromConfig?(
     config: Readonly<Record<string, unknown>>,
-  ): Promise<{ query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> }>
-    | { query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> };
+  ): Promise<BuiltDatasourceConnection> | BuiltDatasourceConnection;
   validate?: (query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>;
   parserDialect?: string;
   forbiddenPatterns?: RegExp[];
@@ -355,6 +384,19 @@ export async function probeNativeDatasourceConnection(config: {
  */
 const HANDLER_MANAGED_DATASOURCE_DBTYPES: ReadonlySet<BuiltinDatasourceDbType> =
   new Set(["salesforce"]);
+
+/**
+ * Whether a datasource dbType is OAuth / handler-managed — its per-workspace
+ * connection is built from `integration_credentials` tokens via the
+ * `LazyPluginLoader`, NOT from `workspace_plugins.config` via `createFromConfig`
+ * (ADR-0014). The unified live-connection resolver (#3667,
+ * `mcp-lifecycle.resolveLiveConnection`) reads this to route such datasources to
+ * the OAuth path instead of the `createFromConfig` bridge — the SAME single
+ * choke point the boot/install registration uses, so the two can't drift.
+ */
+export function isHandlerManagedDatasourceDbType(dbType: string): boolean {
+  return (HANDLER_MANAGED_DATASOURCE_DBTYPES as ReadonlySet<string>).has(dbType);
+}
 
 /** Best-effort host for audit logging from a plugin pool config's URL (no credentials). */
 function pluginTargetHost(poolConfig: DatasourcePoolConfig): string {

@@ -49,6 +49,7 @@ import {
   extractHost,
 } from "./connection";
 import type { SalesforceConnection } from "./connection";
+import { listSalesforceObjects, profileSalesforce } from "./profiler";
 import { validateSOQLStructure } from "./validation";
 import { createQuerySalesforceTool, SOQL_WHITELIST_SUBJECT } from "./tool";
 
@@ -157,6 +158,15 @@ export function buildSalesforcePlugin(
         reason: result.error,
       };
     },
+    // Introspection half of the datasource contract (ADR-0017). The host
+    // resolves `profile` off the registry (same predicate as `createFromConfig`)
+    // and feeds it into SemanticGenerator's profiler seam; the CLI consumes
+    // these exports directly. Salesforce stays on OAuth (ADR-0014): the `url`
+    // these receive is the same `salesforce://` value `createFromConfig`
+    // resolves — built into a jsforce session, not assumed to be a SQL DSN.
+    // Both run read-only (describe + a bounded COUNT(Id) SELECT, no DML).
+    listObjects: listSalesforceObjects,
+    profile: profileSalesforce,
   };
 
   if (hasStaticConfig) {
@@ -317,5 +327,6 @@ export const salesforcePlugin = createPlugin({
 
 export { createSalesforceConnection, parseSalesforceURL, extractHost } from "./connection";
 export type { SalesforceConfig, SalesforceConnection, SObjectInfo, SObjectField, SObjectDescribe } from "./connection";
+export { listSalesforceObjects, profileSalesforce } from "./profiler";
 export { validateSOQL, validateSOQLStructure, appendSOQLLimit, SOQL_FORBIDDEN_PATTERNS, SENSITIVE_PATTERNS } from "./validation";
 export { createQuerySalesforceTool } from "./tool";

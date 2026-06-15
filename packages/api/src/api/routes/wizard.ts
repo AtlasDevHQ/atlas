@@ -26,7 +26,6 @@ import { connections } from "@atlas/api/lib/db/connection";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { _resetWhitelists, invalidateOrgWhitelist } from "@atlas/api/lib/semantic";
 import {
-  DEMO_CONNECTION_ID,
   bulkUpsertEntities,
   resolveGroupIdForConnection,
 } from "@atlas/api/lib/semantic/entities";

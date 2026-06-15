@@ -42,6 +42,7 @@ import {
   createBigQueryConnection,
   extractProjectId,
 } from "./connection";
+import { listBigQueryObjects, profileBigQuery } from "./profiler";
 import { BIGQUERY_FORBIDDEN_PATTERNS } from "./validation";
 import { estimateQueryCost, formatBytes } from "./cost-estimator";
 
@@ -212,6 +213,14 @@ export function buildBigQueryPlugin(
     dbType: "bigquery",
     parserDialect: "BigQuery",
     forbiddenPatterns: BIGQUERY_FORBIDDEN_PATTERNS,
+    // Introspection half of the datasource contract (ADR-0017). The host
+    // resolves `profile` off the registry (same predicate as `createFromConfig`)
+    // and feeds it into SemanticGenerator's profiler seam; the CLI consumes
+    // these exports directly. Both run read-only and never full-scan a table —
+    // structure/row-counts come from INFORMATION_SCHEMA metadata, sampling is
+    // LIMIT-bounded (BigQuery bills by bytes scanned).
+    listObjects: listBigQueryObjects,
+    profile: profileBigQuery,
   };
 
   // When any static connection field is configured the plugin wires a
@@ -325,7 +334,9 @@ export const bigqueryPlugin = createPlugin({
   create: buildBigQueryPlugin,
 });
 
-export { createBigQueryConnection, extractProjectId } from "./connection";
+export { createBigQueryConnection, extractProjectId, parseBigQueryUrl } from "./connection";
+export type { BigQueryConnectionConfig } from "./connection";
+export { listBigQueryObjects, profileBigQuery } from "./profiler";
 export { BIGQUERY_FORBIDDEN_PATTERNS } from "./validation";
 export { estimateQueryCost, formatBytes, _resetCachedClient } from "./cost-estimator";
 export type { CostEstimate } from "./cost-estimator";

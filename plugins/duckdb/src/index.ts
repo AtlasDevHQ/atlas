@@ -35,6 +35,7 @@ import { createPlugin } from "@useatlas/plugin-sdk";
 import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult } from "@useatlas/plugin-sdk";
 import { createDuckDBConnection, parseDuckDBUrl } from "./connection";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
+import { listDuckDBObjects, profileDuckDB } from "./profiler";
 import { DUCKDB_FORBIDDEN_PATTERNS } from "./validation";
 
 /**
@@ -124,6 +125,12 @@ export function buildDuckDBPlugin(
     dbType: "duckdb",
     parserDialect: "PostgresQL",
     forbiddenPatterns: DUCKDB_FORBIDDEN_PATTERNS,
+    // Introspection half of the datasource contract (ADR-0017). The host resolves
+    // `profile` off the registry (same predicate as `createFromConfig`) and feeds
+    // it into SemanticGenerator's profiler seam; the CLI consumes these exports
+    // directly. Both run read-only via the connection's READ_ONLY access mode.
+    listObjects: listDuckDBObjects,
+    profile: profileDuckDB,
   };
 
   if (hasStaticConfig) {
@@ -232,4 +239,5 @@ export const duckdbPlugin = createPlugin({
 });
 
 export { createDuckDBConnection, parseDuckDBUrl } from "./connection";
+export { listDuckDBObjects, profileDuckDB } from "./profiler";
 export { DUCKDB_FORBIDDEN_PATTERNS } from "./validation";

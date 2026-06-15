@@ -260,6 +260,30 @@ export async function testDatabaseConnection(
       }
     }
 
+    case "bigquery": {
+      // Credentials are NOT in the bigquery:// URL — the BigQuery client
+      // resolves them from a keyFilename query param, GOOGLE_APPLICATION_CREDENTIALS,
+      // or Application Default Credentials (the operator's own shell, same trust
+      // model as the static atlas.config.ts path). SELECT 1 processes 0 bytes —
+      // effectively free.
+      const { parseBigQueryUrl, createBigQueryConnection } = await import(
+        "../../../plugins/bigquery/src/connection"
+      );
+      const config = parseBigQueryUrl(connStr);
+      const conn = createBigQueryConnection(config);
+      try {
+        await conn.query("SELECT 1", 5000);
+        return `BigQuery (project: ${config.projectId ?? "(default-project)"})`;
+      } catch (err) {
+        throw new Error(
+          `Cannot connect to BigQuery: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
+      } finally {
+        await conn.close();
+      }
+    }
+
     case "elasticsearch": {
       // Credentials are NOT in the elasticsearch:// / opensearch:// URL (the
       // parser rejects them) — the auth mode (API key / Basic / SigV4) and an

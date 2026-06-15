@@ -40,16 +40,13 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { AtlasUser, AtlasRole } from "@atlas/api/lib/auth/types";
 import type { WorkspaceId } from "@useatlas/types";
 import { withErrorContract } from "@atlas/api/lib/tools/descriptions";
-// Registration-time values: the light, dependency-free provisionable-slugs const
-// (used by the `db_type` enum) and the profilable-type guard (used by the
-// create_datasource success hint so it can't drift from `loadDatasourceProfileTarget`).
-// Everything else from `mcp-lifecycle` is loaded LAZILY (below) so registering
-// these tools doesn't drag the installer / semantic-gen / Effect-startup graph
-// into MCP server boot — see `lifecycle()`.
-import {
-  MCP_PROVISIONABLE_CATALOG_SLUGS,
-  isMcpNativeDbType,
-} from "@atlas/api/lib/datasources/provisionable-types";
+// Registration-time value: the light, dependency-free provisionable-slugs const
+// (used by the `db_type` enum). The create_datasource success hint's profilable
+// check is resolved LAZILY via `lib.resolveProfileCapability` (#3552) so it can't
+// drift from `loadDatasourceProfileTarget`. Everything else from `mcp-lifecycle`
+// is loaded LAZILY (below) so registering these tools doesn't drag the installer /
+// semantic-gen / Effect-startup graph into MCP server boot — see `lifecycle()`.
+import { MCP_PROVISIONABLE_CATALOG_SLUGS } from "@atlas/api/lib/datasources/provisionable-types";
 import type { DatasourceInstallerOutcome } from "@atlas/api/lib/datasources/mcp-lifecycle";
 import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
 import type { McpTransport, McpDeployMode } from "./telemetry.js";
@@ -647,16 +644,16 @@ export function registerDatasourceTools(
           switch (outcome.kind) {
             case "ok": {
               // Only masked (never plaintext) credential material is surfaced.
-              // #3587 — the success hint must be CONDITIONAL on whether
-              // `profile_datasource` can actually make the type queryable.
-              // `loadDatasourceProfileTarget` returns `unsupported` for anything
-              // except postgres/mysql (= `isMcpNativeDbType`), so advertising
-              // "run profile_datasource" for clickhouse/snowflake/bigquery/
-              // elasticsearch would be misleading — those types connect but
-              // can't yet be profiled (tracked in #3552). Derive the profilable
-              // check from the same `isMcpNativeDbType` guard the profile tool
-              // itself uses so this hint can never drift from reality.
-              const profilable = isMcpNativeDbType(outcome.value.dbType);
+              // #3587 / #3552 — the success hint must be CONDITIONAL on whether
+              // `profile_datasource` can actually make the type queryable. Native
+              // pg/mysql always profile; a plugin type profiles iff a registered
+              // plugin implements `connection.profile`. Derive the check from the
+              // SAME capability resolver the profile tool itself uses
+              // (`loadDatasourceProfileTarget` → `resolveProfileCapability`) so
+              // the hint can never drift from what profiling actually supports —
+              // it's resolved off the catalog slug (`db_type`), the same input.
+              const profileCap = await lib.resolveProfileCapability(db_type);
+              const profilable = profileCap.kind !== "unsupported";
               return toJsonContent({
                 id: outcome.value.installId,
                 db_type: outcome.value.dbType,
@@ -668,7 +665,7 @@ export function registerDatasourceTools(
                 created: true,
                 next: profilable
                   ? `Run profile_datasource with id "${outcome.value.installId}" to generate its semantic layer and make it queryable.`
-                  : `Datasource "${outcome.value.installId}" is connected. Semantic-layer profiling for ${outcome.value.dbType} is not yet available via MCP (tracked in #3552); the datasource will not be queryable until profiling support lands.`,
+                  : `Datasource "${outcome.value.installId}" is connected, but semantic-layer profiling for ${outcome.value.dbType} is not available in this deployment (no registered plugin implements the profiling contract). Install or upgrade the corresponding datasource plugin, or profile it with the Atlas CLI; the datasource will not be queryable until its semantic layer is generated.`,
               });
             }
             case "unsupported":
@@ -800,12 +797,11 @@ export function registerDatasourceTools(
             );
           }
           if (target.kind === "unsupported") {
-            return toEnvelopeResult(
-              envelope(
-                "validation_failed",
-                `Profiling "${target.dbType}" datasources via MCP is not supported yet (only postgres and mysql).`,
-              ),
-            );
+            // The lib derives this from the SAME capability predicate
+            // provisioning uses (#3552 / ADR-0017): a plugin type with no
+            // registered `connection.profile`, an unknown slug, or a
+            // non-URL-shaped connection. `message` is actionable + secret-free.
+            return toEnvelopeResult(envelope("validation_failed", target.message));
           }
 
           // Long-running: report per-table progress and honor client
@@ -824,6 +820,9 @@ export function registerDatasourceTools(
                 url: target.target.url,
                 dbType: target.target.dbType,
                 ...(target.target.schema !== undefined ? { schema: target.target.schema } : {}),
+                // #3552 — the registry-resolved plugin profiler (undefined for
+                // native pg/mysql, which SemanticGenerator profiles in-core).
+                ...(target.target.profileFn !== undefined ? { profileFn: target.target.profileFn } : {}),
                 connectionId: id,
                 // #3546 — persist the generated layer to the org store as
                 // drafts so the whitelist survives a restart and is visible to

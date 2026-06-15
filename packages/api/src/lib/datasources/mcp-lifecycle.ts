@@ -30,7 +30,7 @@ import type { AtlasMode } from "@useatlas/types/auth";
 import type { WorkspaceId } from "@useatlas/types";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
 import { connections } from "@atlas/api/lib/db/connection";
-import type { HealthCheckResult } from "@atlas/api/lib/db/connection";
+import type { HealthCheckResult, DBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import {
   catalogSlugToDbType,
@@ -801,8 +801,22 @@ export async function provisionRestDatasource(
 /** Resolved profiling target — internal use only; `url` is the decrypted secret. */
 export interface DatasourceProfileTarget {
   readonly url: string;
-  readonly dbType: McpNativeDbType;
+  /**
+   * The datasource dialect. Widened from the native pg/mysql set to the full
+   * {@link DBType} (#3552): a plugin-managed type (clickhouse / snowflake / …)
+   * is profilable too, via the injected {@link profileFn} below.
+   */
+  readonly dbType: DBType;
   readonly schema?: string;
+  /**
+   * The registry-resolved plugin profiler (#3552 / ADR-0017), or `undefined`
+   * for native pg/mysql (which `SemanticGenerator` profiles in-core via
+   * `resolveProfiler`). Resolved off the SAME predicate provisioning uses
+   * (`resolveProfileCapability` → `findDatasourcePluginConnection`), so the
+   * plugin that provisions a datasource is the plugin that profiles it. Passed
+   * straight into `SemanticGenerator.profile({ profileFn })` — no adapter.
+   */
+  readonly profileFn?: DatasourceProfiler;
   /**
    * The install's connection-group scope (`workspace_plugins.config.group_id`),
    * or `null` for an ungrouped install. Carried so the persistence step
@@ -811,20 +825,40 @@ export interface DatasourceProfileTarget {
    * datasource. This is metadata (a group name), never a secret.
    */
   readonly connectionGroupId: string | null;
+  /**
+   * The install's resolved, DECRYPTED connection config (ADR-0017 amendment).
+   * Carried so the registry-resolved `profileFn` of a separate-field-credential
+   * plugin (Elasticsearch — `apiKey`/`username`/`password`/SigV4 live in config
+   * fields, NOT in the `url`) profiles with the TENANT's own credentials rather
+   * than falling back to operator `ATLAS_ES_*` env (the per-tenant-creds rule).
+   * Url-embedded plugin profilers (ClickHouse/Snowflake) and the native pg/mysql
+   * profiler ignore it.
+   *
+   * SECURITY: like `url`, this is DECRYPTED secret material — internal use only,
+   * it never leaves the lib layer / reaches the agent / is logged. The caller
+   * passes it straight into `runSemanticProfile` → `SemanticGenerator.profile`.
+   */
+  readonly config: Readonly<Record<string, unknown>>;
 }
 
 export type LoadProfileTargetResult =
   | { readonly kind: "ok"; readonly target: DatasourceProfileTarget }
   | { readonly kind: "not_found" }
-  | { readonly kind: "unsupported"; readonly dbType: string };
+  | { readonly kind: "unsupported"; readonly dbType: string; readonly message: string };
 
 /**
  * Load + decrypt a datasource install's connection config and shape the
- * profiling target the semantic generator needs. Returns `not_found` for an
- * unknown install and `unsupported` for a dbType without a built-in profiler
- * (only postgres/mysql profile in-core; other types need an injected
- * `profileFn`, out of scope for the MCP flow). The decrypted `url` never
- * leaves the lib layer — the caller passes it straight to the profiler.
+ * profiling target the semantic generator needs.
+ *
+ * Profilability is decided by the SAME capability predicate provisioning uses
+ * — {@link resolveProfileCapability} (in lockstep, #3547 AC #1 / ADR-0017) —
+ * NOT a hardcoded pg/mysql discriminant. Native pg/mysql profile in-core (no
+ * `profileFn`); a plugin-managed type carries the registry-resolved `profileFn`;
+ * anything with no plugin / no `connection.profile` resolves to `unsupported`
+ * with an actionable message.
+ *
+ * Returns `not_found` for an unknown install. The decrypted `url` never leaves
+ * the lib layer — the caller passes it straight to the profiler.
  */
 export async function loadDatasourceProfileTarget(
   orgId: string,
@@ -850,6 +884,18 @@ export async function loadDatasourceProfileTarget(
   );
   if (rows.length === 0) return { kind: "not_found" };
   const row = rows[0];
+
+  // Profilability is driven by the SAME capability predicate provisioning uses
+  // (the one shared `findDatasourcePluginConnection` lookup), so provisioning
+  // and profiling stay in lockstep as types are added (#3547 AC #1 / ADR-0017).
+  // Native pg/mysql → no profileFn (SemanticGenerator profiles in-core); a
+  // plugin type → the registry-resolved profileFn; no plugin / no
+  // `connection.profile` → an actionable `unsupported`.
+  const capability = await resolveProfileCapability(row.catalog_slug);
+  if (capability.kind === "unsupported") {
+    return { kind: "unsupported", dbType: capability.dbType, message: capability.message };
+  }
+
   const schema = parseConfigSchema(row.config_schema);
   const decrypted = decryptSecretFields(row.config ?? {}, schema);
   // Group scope for the persistence step — `null` when the install carries no
@@ -866,19 +912,36 @@ export async function loadDatasourceProfileTarget(
     },
     decrypted,
   );
-  // Discriminant check (not the `isMcpNativeDbType` string guard) so TS
-  // narrows the `DatasourcePoolConfig` union to the postgres/mysql members
-  // that carry `.url`. Same native set as `MCP_NATIVE_DB_TYPES`.
-  if (poolConfig.dbType !== "postgres" && poolConfig.dbType !== "mysql") {
-    return { kind: "unsupported", dbType: poolConfig.dbType };
+  // The profiler seam is url-based (ADR-0017 spine): the resolved `profileFn`
+  // (and the in-core pg/mysql profiler) takes a `url`. Native pg/mysql and the
+  // url-bearing plugin pool configs (clickhouse / snowflake / elasticsearch)
+  // carry one; a multi-field-credential type (bigquery / duckdb) or an
+  // OAuth-managed one (salesforce) does not and is handled in its own per-dbType
+  // slice — fail closed here with an actionable message rather than profiling
+  // against an empty url.
+  const url = "url" in poolConfig ? poolConfig.url : undefined;
+  if (typeof url !== "string" || url.length === 0) {
+    return {
+      kind: "unsupported",
+      dbType: poolConfig.dbType,
+      message:
+        `Profiling "${poolConfig.dbType}" datasources via MCP is not supported yet — its ` +
+        `connection is not URL-shaped. Profile it with the Atlas CLI (atlas init), or use a ` +
+        `URL-shaped datasource type.`,
+    };
   }
   return {
     kind: "ok",
     target: {
-      url: poolConfig.url,
+      url,
       dbType: poolConfig.dbType,
       schema: "schema" in poolConfig ? poolConfig.schema : undefined,
+      ...(capability.kind === "plugin" ? { profileFn: capability.profileFn } : {}),
       connectionGroupId,
+      // Decrypted tenant config (ADR-0017 amendment): carried so a
+      // separate-field-credential plugin profiler (ES) authenticates with the
+      // tenant's own creds, not operator env. NEVER leaves the lib layer.
+      config: decrypted,
     },
   };
 }
@@ -916,8 +979,27 @@ export type RunSemanticProfileOutcome =
  */
 export async function runSemanticProfile(opts: {
   url: string;
-  dbType: McpNativeDbType;
+  /**
+   * Datasource dialect. Widened from the native pg/mysql set (#3552): a
+   * plugin-managed type is profilable via the injected {@link profileFn}.
+   */
+  dbType: DBType;
   schema?: string;
+  /**
+   * Registry-resolved plugin profiler (#3552 / ADR-0017). Required for a
+   * plugin dbType (core profiles only pg/mysql in-core); omit for native
+   * pg/mysql. Passed straight into `SemanticGenerator.profile({ profileFn })`.
+   */
+  profileFn?: DatasourceProfiler;
+  /**
+   * The datasource's resolved, DECRYPTED connection config (ADR-0017 amendment).
+   * Forwarded into `SemanticGenerator.profile({ config })` so a
+   * separate-field-credential plugin profiler (Elasticsearch) authenticates with
+   * the tenant's own creds rather than operator env. Ignored by native pg/mysql
+   * and url-embedded plugin profilers (ClickHouse/Snowflake). SECURITY: decrypted
+   * secret material — never logged or surfaced to the agent.
+   */
+  config?: Readonly<Record<string, unknown>>;
   connectionId: string;
   /**
    * Workspace the generated rows belong to. When provided (and an internal DB
@@ -948,6 +1030,15 @@ export async function runSemanticProfile(opts: {
       url: opts.url,
       dbType: opts.dbType,
       ...(opts.schema !== undefined ? { schema: opts.schema } : {}),
+      // Inject the registry-resolved plugin profiler (#3552). `resolveProfiler`
+      // ignores it for pg/mysql (in-core), so passing `undefined` for native
+      // types is a no-op; a plugin type requires it.
+      ...(opts.profileFn !== undefined ? { profileFn: opts.profileFn } : {}),
+      // Forward the decrypted tenant config (ADR-0017 amendment) so a
+      // separate-field-credential plugin profiler (ES) authenticates with the
+      // tenant's own creds, not operator env. Native + url-embedded profilers
+      // ignore it. Never logged.
+      ...(opts.config !== undefined ? { config: opts.config } : {}),
       connectionId: opts.connectionId,
       registerWhitelist: !shouldPersist,
       ...(opts.progress !== undefined ? { progress: opts.progress } : {}),

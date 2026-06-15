@@ -413,3 +413,100 @@ describe("profileElasticsearchObjects — OpenSearch engine", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Credential source (ADR-0017 amendment, #3552 / #3647): the seam carries the
+// tenant's decrypted config so ES profiles with the TENANT's apiKey and does
+// NOT fall back to operator ATLAS_ES_* env. The CLI/no-config path still uses env.
+// ---------------------------------------------------------------------------
+
+/**
+ * A `globalThis.fetch` mock that records the `Authorization` header of every
+ * request (in addition to method/path), so a test can prove which credential the
+ * profiler authenticated with. Returns an empty-cluster mapping — auth, not
+ * shape, is under test.
+ */
+function installAuthCapturingFetch(): {
+  restore: () => void;
+  authHeaders: (string | undefined)[];
+} {
+  const original = globalThis.fetch;
+  const authHeaders: (string | undefined)[] = [];
+  const impl = mock(async (_input: string | URL, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    authHeaders.push(headers.Authorization);
+    return fetchResponse({});
+  }) as unknown as typeof fetch;
+  globalThis.fetch = impl;
+  return { restore: () => void (globalThis.fetch = original), authHeaders };
+}
+
+describe("profileElasticsearchObjects — credential source", () => {
+  // The operator env key is the module-level ATLAS_ES_API_KEY (API_KEY). The
+  // tenant supplies a DISTINCT key via the seam config — proving the tenant key
+  // wins and env is not consulted.
+  const TENANT_API_KEY = "dGVuYW50LWVzLWtleQ==";
+
+  test("uses the seam-supplied tenant apiKey, NOT the ATLAS_ES_* operator env", async () => {
+    expect(TENANT_API_KEY).not.toBe(API_KEY); // guard: the keys must differ
+    const { restore, authHeaders } = installAuthCapturingFetch();
+    try {
+      await profileElasticsearchObjects({ url: URL, config: { apiKey: TENANT_API_KEY } });
+      // Every authenticated request carried the TENANT's key, never the operator's.
+      expect(authHeaders.length).toBeGreaterThan(0);
+      for (const h of authHeaders) {
+        expect(h).toBe(`ApiKey ${TENANT_API_KEY}`);
+        expect(h).not.toBe(`ApiKey ${API_KEY}`);
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  test("uses tenant HTTP Basic creds from the seam config (separate username/password fields)", async () => {
+    const { restore, authHeaders } = installAuthCapturingFetch();
+    try {
+      await profileElasticsearchObjects({
+        url: URL,
+        config: { username: "tenant-user", password: "tenant-pass" },
+      });
+      const expected = `Basic ${Buffer.from("tenant-user:tenant-pass", "utf8").toString("base64")}`;
+      expect(authHeaders.length).toBeGreaterThan(0);
+      for (const h of authHeaders) expect(h).toBe(expected);
+    } finally {
+      restore();
+    }
+  });
+
+  test("does NOT read ATLAS_ES_* even when the seam config omits an apiKey but supplies Basic creds", async () => {
+    // Both an env apiKey AND a config Basic pair are present; the config (tenant)
+    // path must win — never silently merge the operator env apiKey on top.
+    const { restore, authHeaders } = installAuthCapturingFetch();
+    try {
+      await profileElasticsearchObjects({
+        url: URL,
+        config: { username: "u2", password: "p2" },
+      });
+      const basic = `Basic ${Buffer.from("u2:p2", "utf8").toString("base64")}`;
+      for (const h of authHeaders) {
+        expect(h).toBe(basic);
+        expect(h).not.toContain("ApiKey");
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  test("falls back to ATLAS_ES_* env on the no-config (CLI / atlas init) path", async () => {
+    const { restore, authHeaders } = installAuthCapturingFetch();
+    try {
+      // No `config` → the operator-shell CLI path; auth comes from the module-level
+      // ATLAS_ES_API_KEY env (API_KEY).
+      await profileElasticsearchObjects({ url: URL });
+      expect(authHeaders.length).toBeGreaterThan(0);
+      for (const h of authHeaders) expect(h).toBe(`ApiKey ${API_KEY}`);
+    } finally {
+      restore();
+    }
+  });
+});

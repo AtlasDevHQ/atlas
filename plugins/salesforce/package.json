@@ -17,7 +17,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test __tests__/salesforce.test.ts"
+    "test": "bun test __tests__/salesforce.test.ts __tests__/profiler.test.ts"
   },
   "keywords": [
     "atlas",

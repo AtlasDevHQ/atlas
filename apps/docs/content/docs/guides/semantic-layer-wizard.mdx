@@ -191,7 +191,9 @@ Check the error details in the review step. You can proceed with the successfull
 
 ### Unsupported database type
 
-The wizard currently supports **PostgreSQL** and **MySQL**. For other databases (ClickHouse, Snowflake, DuckDB, Salesforce), use `atlas init` from the CLI or the appropriate [datasource plugin](/plugins/datasources).
+The wizard profiles **any datasource Atlas can connect to** — not just PostgreSQL and MySQL. Profiling rides connection resolution: if a [datasource plugin](/plugins/datasources) can open a live connection, the wizard introspects and profiles it through the same flow. ClickHouse, Snowflake, DuckDB, BigQuery, Elasticsearch/OpenSearch, and Salesforce all profile in-product this way; `atlas init` from the CLI uses the same engine for terminal-driven setup.
+
+A datasource only falls back to "unsupported" when its plugin is query-only — i.e. it doesn't implement the optional introspection contract (`listObjects`/`profile`). See [authoring a datasource plugin](/plugins/authoring-guide#datasource-profiling-optional) to add profiling support.
 
 ---
 

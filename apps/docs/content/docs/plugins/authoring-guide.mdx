@@ -139,6 +139,39 @@ Key points:
 - `close()` cleans up resources
 - Lazy-load the driver with `require()` + `MODULE_NOT_FOUND` handling so it can be an optional peer dependency
 
+### Datasource profiling (optional)
+
+Beyond `query()`/`close()`, a `PluginDBConnection` may implement two **optional, read-only** methods that let Atlas profile the datasource — introspect its objects and generate a semantic layer — through the install wizard, `atlas init`, and the MCP `profile_datasource` tool. Implement them and your datasource becomes onboardable in-product, exactly like Postgres/MySQL; omit them and the host degrades to an explicit `unsupported` outcome (the datasource is still queryable, just not auto-profilable).
+
+```typescript
+import type {
+  PluginDBConnection,
+  PluginDatabaseObject,
+  PluginProfilingResult,
+} from "@useatlas/plugin-sdk";
+
+return {
+  async query(sql, timeoutMs) {
+    /* ... */
+  },
+  async close() {
+    /* ... */
+  },
+
+  // List the tables/views/collections this connection can see.
+  async listObjects(options): Promise<PluginDatabaseObject[]> {
+    /* ... read-only catalog query ... */
+  },
+
+  // Sample + describe the requested objects into entities/metrics.
+  async profile(options): Promise<PluginProfilingResult> {
+    /* ... read-only profiling ... */
+  },
+} satisfies PluginDBConnection;
+```
+
+Both methods are bound to the **same credentials** that built the connection (via `create` / `createFromConfig`), so they take **no** `url`/`config` argument — the host's profiler seam (`resolveLiveConnection`) resolves the connection once and reuses it, which is why "if it can connect, it can profile" holds with no URL-shape gate. Both **must** be read-only, and `profile` **must not** echo credentials in error messages. The exact option shapes ride the `listObjects`/`profile` signatures on the exported `PluginDBConnection` interface — let your editor infer them from `options`. See [ADR-0017](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0017-datasource-profiler-seam.md) for the contract rationale.
+
 ## 4. Plugin Object
 
 Wire everything together with `createPlugin()`, which validates config and returns a factory function. The `configSchema` can be any object with a `parse()` method -- Zod is recommended but not required (e.g. a custom validator that throws on invalid input works too). For plugins that don't need runtime configuration, use `definePlugin()` instead -- see [`createPlugin` vs `definePlugin`](#createplugin-vs-defineplugin) below.

@@ -476,11 +476,11 @@ The two-step path to make a new datasource queryable is **create → profile**:
 
 ### create_datasource
 
-Provision a new Postgres or MySQL datasource. You pass only non-secret fields (`db_type`, `install_id`, optional `schema` / `description` / `group_id`); the connection URL is collected via a masked prompt, health-checked **before** anything is persisted, and the datasource lands as a `draft`. It is not yet queryable — run `profile_datasource` next.
+Provision a new datasource of any type whose plugin can open a live connection — Postgres and MySQL natively, plus plugin-managed datasources such as BigQuery, Snowflake, ClickHouse, DuckDB, Elasticsearch/OpenSearch, and Salesforce. You pass only non-secret fields (`db_type`, `install_id`, optional `schema` / `description` / `group_id`); the connection URL or credential is collected via a masked prompt, health-checked **before** anything is persisted, and the datasource lands as a `draft`. It is not yet queryable — run `profile_datasource` next.
 
 ### profile_datasource
 
-Introspect the datasource's tables and generate its semantic layer (entities + metrics), then make it queryable. Long-running: emits per-table progress and is cancellable.
+Introspect the datasource's tables and generate its semantic layer (entities + metrics), then make it queryable. Long-running: emits per-table progress and is cancellable. Profiling rides connection resolution — the host resolves the live connection once and calls the plugin's introspection contract (`listObjects`/`profile`), so any plugin datasource that can connect can also be profiled over MCP, not just Postgres/MySQL.
 
 Profiling does two things with the generated layer:
 

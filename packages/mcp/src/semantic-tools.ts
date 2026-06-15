@@ -204,7 +204,7 @@ export function registerSemanticTools(
           .max(MAX_DESCRIBE_BATCH)
           .optional()
           .describe(
-            `Batch of entity/table names to describe in a single call (up to ${MAX_DESCRIBE_BATCH}). Prefer this over repeated single calls when a query spans multiple entities. Mutually exclusive with \`name\`.`,
+            `Batch of entity/table names to describe in a single call (up to ${MAX_DESCRIBE_BATCH}). Prefer this over repeated single calls when a query spans multiple entities. Duplicate names are de-duplicated, so \`count\` may be smaller than the number of names sent. Mutually exclusive with \`name\`.`,
           ),
       },
       // Read-only over the local semantic catalog (closed world).
@@ -268,7 +268,7 @@ export function registerSemanticTools(
             }
           }
 
-          const entities: unknown[] = [];
+          const entities: NonNullable<ReturnType<typeof getEntityByName>>[] = [];
           const notFound: string[] = [];
           for (const n of ordered) {
             const entity = getEntityByName(n);

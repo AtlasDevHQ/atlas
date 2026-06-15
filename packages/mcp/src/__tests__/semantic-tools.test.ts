@@ -470,6 +470,58 @@ describe("MCP semantic tools", () => {
     expect(envelope!.code).toBe("validation_failed");
   });
 
+  it("describeEntity batch with every name unknown returns count 0 and a hint", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: ["ghost", "phantom"] },
+    });
+    // The all-miss case is where the agent most needs the recovery hint —
+    // confirm it's present even when nothing resolved.
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(getContentText(result.content));
+    expect(parsed.count).toBe(0);
+    expect(parsed.entities).toEqual([]);
+    expect(parsed.notFound).toEqual(["ghost", "phantom"]);
+    expect(parsed.hint).toContain("listEntities");
+  });
+
+  it("describeEntity rejects a batch larger than the cap (schema bound)", async () => {
+    const { client } = await createTestClient();
+    // 51 distinct, well-formed names — exceeds MAX_DESCRIBE_BATCH (50). The
+    // Zod `.max()` rejects before the handler runs, capping the payload a
+    // hostile client can force into one round-trip. The SDK surfaces a
+    // schema rejection as `isError`, not as our `validation_failed` envelope.
+    const tooMany = Array.from({ length: 51 }, (_, i) => `entity_${i}`);
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: tooMany },
+    });
+    expect(result.isError).toBe(true);
+  });
+
+  it("describeEntity rejects an empty `names` batch (schema bound)", async () => {
+    const { client } = await createTestClient();
+    // Empty array is distinct from "neither supplied" ({}): `names` is
+    // present, so the mutual-exclusion check passes, but `.min(1)` rejects it.
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: [] },
+    });
+    expect(result.isError).toBe(true);
+  });
+
+  it("describeEntity rejects path-traversal characters in a batch name (schema bound)", async () => {
+    const { client } = await createTestClient();
+    // The per-element regex is the same path-traversal guard the single-name
+    // path enforces — a `/` must be rejected before reaching the resolver.
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: ["users", "../etc/passwd"] },
+    });
+    expect(result.isError).toBe(true);
+  });
+
   // --- searchGlossary ---
 
   it("searchGlossary returns an ambiguous_term envelope when any match has status: ambiguous", async () => {

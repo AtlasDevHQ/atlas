@@ -114,12 +114,10 @@ export function buildClickHousePlugin(
     dbType: "clickhouse",
     parserDialect: "PostgresQL", // closest match in node-sql-parser
     forbiddenPatterns: CLICKHOUSE_FORBIDDEN_PATTERNS,
-    // Introspection half of the datasource contract (ADR-0017 / #3667). Exposed
-    // as a capability of the BUILT connection above (the host's unified resolver
-    // path). These namespace exports remain for the CLI + the in-product wizard
-    // (whose convergence onto the built connection is the #3667 follow-up).
-    listObjects: listClickHouseObjects,
-    profile: profileClickHouse,
+    // Introspection (listObjects / profile) is a capability of the BUILT
+    // connection (createFromConfig above), bound to the creds that built it — the
+    // one home MCP, the wizard, and the CLI all consume (ADR-0017 / #3670). No
+    // connection-namespace profiler exports remain.
   };
 
   if (staticUrl) {

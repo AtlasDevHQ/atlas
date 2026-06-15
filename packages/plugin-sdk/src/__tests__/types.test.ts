@@ -920,24 +920,33 @@ describe("datasource plugin entities and dialect", () => {
     expect(plugin.connection.forbiddenPatterns).toBeUndefined();
   });
 
-  test("accepts listObjects + profile introspection capabilities (ADR-0017)", () => {
+  test("introspection is a capability of the BUILT connection (ADR-0017 / #3667)", () => {
+    // listObjects / profile are no longer connection-namespace members; they ride
+    // the connection createFromConfig builds, bound to the creds that built it.
     const plugin = definePlugin({
       id: "introspectable-ds",
       types: ["datasource"],
       version: "1.0.0",
       connection: {
-        createFromConfig: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        createFromConfig: () => ({
+          query: async () => ({ columns: [], rows: [] }),
+          close: async () => {},
+          listObjects: () => [{ name: "events", type: "table" as const }],
+          profile: async () => ({ profiles: [], errors: [] }),
+        }),
         dbType: "clickhouse",
-        listObjects: () => [{ name: "events", type: "table" as const }],
-        profile: async () => ({ profiles: [], errors: [] }),
       },
     } satisfies AtlasDatasourcePlugin);
 
-    expect(typeof plugin.connection.listObjects).toBe("function");
-    expect(typeof plugin.connection.profile).toBe("function");
+    const built = plugin.connection.createFromConfig!() as {
+      listObjects?: unknown;
+      profile?: unknown;
+    };
+    expect(typeof built.listObjects).toBe("function");
+    expect(typeof built.profile).toBe("function");
   });
 
-  test("listObjects + profile are optional (query-only datasource compiles)", () => {
+  test("a query-only built connection omits listObjects/profile (compiles)", () => {
     const plugin: AtlasDatasourcePlugin = definePlugin({
       id: "query-only-ds",
       types: ["datasource"],
@@ -948,34 +957,9 @@ describe("datasource plugin entities and dialect", () => {
       },
     });
 
-    expect(plugin.connection.listObjects).toBeUndefined();
-    expect(plugin.connection.profile).toBeUndefined();
-  });
-
-  test("throws when listObjects is not a function", () => {
-    expect(() => definePlugin({
-      id: "bad-introspect",
-      types: ["datasource"],
-      version: "1.0.0",
-      connection: {
-        createFromConfig: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
-        dbType: "clickhouse",
-        listObjects: "nope",
-      },
-    } as any)).toThrow('"listObjects" must be a function when provided');
-  });
-
-  test("throws when profile is not a function", () => {
-    expect(() => definePlugin({
-      id: "bad-introspect",
-      types: ["datasource"],
-      version: "1.0.0",
-      connection: {
-        createFromConfig: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
-        dbType: "clickhouse",
-        profile: 42,
-      },
-    } as any)).toThrow('"profile" must be a function when provided');
+    const built = plugin.connection.create!() as { listObjects?: unknown; profile?: unknown };
+    expect(built.listObjects).toBeUndefined();
+    expect(built.profile).toBeUndefined();
   });
 
   test("throws when parserDialect is empty string", () => {

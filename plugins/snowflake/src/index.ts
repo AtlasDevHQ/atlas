@@ -126,14 +126,10 @@ export function buildSnowflakePlugin(
     dbType: "snowflake",
     parserDialect: "Snowflake",
     forbiddenPatterns: SNOWFLAKE_FORBIDDEN_PATTERNS,
-    // Introspection half of the datasource contract (ADR-0017). The host resolves
-    // `profile` off the registry (same predicate as `createFromConfig`) and feeds
-    // it into SemanticGenerator's profiler seam; the CLI consumes these exports
-    // directly. Both run read-only — every query goes through the connection's
-    // statement-timeout + `QUERY_TAG = 'atlas:readonly'` path and issues only
-    // SELECT/INFORMATION_SCHEMA/SHOW introspection statements.
-    listObjects: listSnowflakeObjects,
-    profile: profileSnowflake,
+    // Introspection (listObjects / profile) is a capability of the BUILT
+    // connection (createFromConfig above), bound to the creds that built it — the
+    // one home MCP, the wizard, and the CLI all consume (ADR-0017 / #3670). No
+    // connection-namespace profiler exports remain.
   };
 
   if (staticUrl) {

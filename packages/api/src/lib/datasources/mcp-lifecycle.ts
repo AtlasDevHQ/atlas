@@ -389,59 +389,44 @@ export async function resolveProvisionCapability(
   return { kind: "unsupported", dbType, message: unsupportedProvisionMessage(catalogSlug) };
 }
 
-// ── Profiling capability (#3620 — ADR-0017) ──────────────────────────
+// ── Profilability proxy (#3620 / #3667 — ADR-0017) ───────────────────
 
 /**
- * Profiling-capability resolution — the SOURCE side of the profiler seam
- * (ADR-0017) that feeds `SemanticGenerator`'s `profileFn` injection point
- * (`effect/semantic-generator.ts:108`). Deliberately DERIVED from
- * {@link resolveProvisionCapability}: native/plugin/unsupported classification
- * comes from the EXACT same predicate provisioning uses (the one shared lookup,
- * {@link findDatasourcePluginConnection}), so the plugin that provisions a
- * datasource is the plugin that profiles it — provisioning and profiling stay in
- * lockstep, never a divergent second structural matcher.
+ * Profilability classification for a `dbType` — a cheap (no connection build)
+ * proxy for what `profile_datasource` accepts, used by the MCP `create_datasource`
+ * success hint. Since profiling now rides the unified {@link resolveLiveConnection}
+ * and introspection is a capability of the BUILT connection (#3667), "profilable"
+ * is "connectable": native pg/mysql, or a registered plugin that builds a
+ * connection (`createFromConfig`). Every shipped plugin's built connection exposes
+ * `profile`, and the enforcement test (`universal-profiling-enforcement.test.ts`)
+ * keeps that invariant — so `createFromConfig` is a sound proxy without the cost
+ * of building a throwaway connection just to read a hint.
  *
- *   - `native`      — pg/mysql: `SemanticGenerator` profiles these in-core
- *                     (`resolveProfiler`), so no `profileFn` is supplied.
- *   - `plugin`      — a registered datasource plugin that ALSO implements the
- *                     introspection contract (`connection.profile`). Carries the
- *                     `profileFn` the caller passes straight into
- *                     `SemanticGenerator.profile({ profileFn })`. `profile` is
- *                     structurally the host `DatasourceProfiler`, so no adapter.
- *   - `unsupported` — no plugin / unknown slug, OR a plugin that is provisionable
- *                     (`createFromConfig`) but does not implement `profile` yet.
- *                     Explicit + actionable — mirrors `SemanticGenerator`'s
- *                     fail-closed `unsupported_db_type`, never a silent skip.
+ * Uses the SAME single plugin lookup ({@link findDatasourcePluginConnection}) and
+ * native predicate ({@link isMcpNativeDbType}) provisioning uses, so the two can
+ * never drift.
  */
 export type ProfileCapability =
   | { readonly kind: "native"; readonly dbType: McpNativeDbType }
-  | { readonly kind: "plugin"; readonly dbType: string; readonly profileFn: DatasourceProfiler }
+  | { readonly kind: "plugin"; readonly dbType: string }
   | { readonly kind: "unsupported"; readonly dbType: string; readonly message: string };
 
 function notProfilableMessage(dbType: string): string {
   return (
     `Datasource type "${dbType}" cannot be profiled in this deployment. No registered plugin ` +
-    `implements the profiling contract (connection.profile) for it. Install or upgrade the ` +
-    `corresponding datasource plugin, or profile it with the Atlas CLI (atlas init).`
+    `builds a connection for it. Install or upgrade the corresponding datasource plugin, ` +
+    `or profile it with the Atlas CLI (atlas init).`
   );
 }
 
 /**
- * Profiling-capability resolution keyed by an already-resolved `dbType` rather
- * than a catalog slug — the seam the in-product **wizard** consumes (#3621). The
- * wizard resolves a connection's `dbType` directly off its decrypted URL/config
- * (`detectDBType`), so it has no catalog slug to feed {@link resolveProfileCapability}.
- *
- * Stays in lockstep with provisioning/profiling by using the SAME single plugin
- * lookup ({@link findDatasourcePluginConnection}) and the SAME native predicate
- * ({@link isMcpNativeDbType}) the slug-keyed resolver uses — it is NOT a second
- * structural matcher, just the dbType-keyed entry into the one shared lookup
- * (ADR-0017). Returns:
- *   - `native`      — pg/mysql; `SemanticGenerator` profiles in-core (no `profileFn`).
- *   - `plugin`      — a registered datasource plugin implementing `connection.profile`;
- *                     carries the `profileFn` for `SemanticGenerator.profile({ profileFn })`.
- *   - `unsupported` — no registered plugin for the dbType, OR a plugin that does
- *                     not implement `profile` yet. Explicit + actionable, fail-closed.
+ * Resolve the profilability of an already-resolved `dbType`. Returns:
+ *   - `native`      — pg/mysql; profiled in-core.
+ *   - `plugin`      — a registered datasource plugin that builds a connection
+ *                     (`createFromConfig`); its built connection carries the
+ *                     introspection capability (#3667).
+ *   - `unsupported` — no native handler and no registered plugin. Explicit +
+ *                     actionable, fail-closed.
  */
 export async function resolveProfileCapabilityByDbType(
   dbType: string,
@@ -450,12 +435,11 @@ export async function resolveProfileCapabilityByDbType(
     return { kind: "native", dbType };
   }
   const conn = await findDatasourcePluginConnection(dbType);
-  if (conn && typeof conn.profile === "function") {
-    return { kind: "plugin", dbType, profileFn: conn.profile };
+  if (conn && typeof conn.createFromConfig === "function") {
+    return { kind: "plugin", dbType };
   }
-  // No plugin for the dbType, or a plugin without the profiling half of the
-  // contract — fail-closed and explicit (mirrors SemanticGenerator's
-  // `unsupported_db_type`, never a silent empty result).
+  // No native handler and no registered plugin that builds a connection —
+  // fail-closed and explicit (never a silent empty result).
   return { kind: "unsupported", dbType, message: notProfilableMessage(dbType) };
 }
 

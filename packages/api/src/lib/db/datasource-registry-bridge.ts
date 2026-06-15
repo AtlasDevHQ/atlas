@@ -36,7 +36,6 @@ import { connections } from "@atlas/api/lib/db/connection";
 import type { ConnectionPluginMeta, DBConnection } from "@atlas/api/lib/db/connection";
 import type { DatabaseObject, ProfilingResult } from "@useatlas/types";
 import type {
-  DatasourceProfiler,
   LiveConnectionListOptions,
   LiveConnectionProfileOptions,
 } from "@atlas/api/lib/effect/semantic-generator";
@@ -89,26 +88,10 @@ interface DatasourceConnectionShape {
   validate?: (query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>;
   parserDialect?: string;
   forbiddenPatterns?: RegExp[];
-  /**
-   * Introspection contract (ADR-0017, SDK `AtlasDatasourcePlugin.connection`).
-   * Optional — query-only datasources omit it. `profile` is structurally the
-   * host's {@link DatasourceProfiler}, so `resolveProfileCapability` can feed it
-   * straight into `SemanticGenerator`'s injection point with no adapter. Matched
-   * structurally off the registry — core never imports the plugin package.
-   */
-  listObjects?(options: {
-    url: string;
-    schema?: string;
-    /**
-     * The datasource's resolved, DECRYPTED connection config (ADR-0017
-     * amendment, #3552 wizard equivalent). Carried so a separate-field-credential
-     * plugin (Elasticsearch) enumerates with the TENANT's own credentials rather
-     * than falling back to operator env. Url-embedded plugins ignore it.
-     * SECURITY: decrypted secret material — never logged or surfaced to the agent.
-     */
-    config?: Readonly<Record<string, unknown>>;
-  }): Promise<DatabaseObject[]> | DatabaseObject[];
-  profile?: DatasourceProfiler;
+  // Introspection (listObjects / profile) is NOT a connection-namespace member.
+  // It is a capability of the BUILT connection {@link createFromConfig} returns
+  // (see {@link BuiltDatasourceConnection}), bound to the creds that built it —
+  // the one home the unified `resolveLiveConnection` consumes (#3667 / #3670).
 }
 
 /** Narrow a registry plugin to its datasource `connection` shape, or undefined if it isn't one. */

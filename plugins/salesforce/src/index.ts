@@ -179,15 +179,11 @@ export function buildSalesforcePlugin(
         reason: result.error,
       };
     },
-    // Introspection half of the datasource contract (ADR-0017). The host
-    // resolves `profile` off the registry (same predicate as `createFromConfig`)
-    // and feeds it into SemanticGenerator's profiler seam; the CLI consumes
-    // these exports directly. Salesforce stays on OAuth (ADR-0014): the `url`
-    // these receive is the same `salesforce://` value `createFromConfig`
-    // resolves — built into a jsforce session, not assumed to be a SQL DSN.
-    // Both run read-only (describe + a bounded COUNT(Id) SELECT, no DML).
-    listObjects: listSalesforceObjects,
-    profile: profileSalesforce,
+    // Introspection (listObjects / profile) is a capability of the BUILT
+    // connection (createFromConfig above), bound to the salesforce:// creds that
+    // built it — the one home MCP, the wizard, and the CLI all consume (ADR-0017
+    // / #3670). Atlas's Salesforce stays on OAuth (ADR-0014; the LazyPluginLoader
+    // exposes its own introspection). No connection-namespace profiler exports.
   };
 
   if (hasStaticConfig) {

@@ -453,14 +453,14 @@ async function profileDatasource(
     try {
       switch (dbType) {
         case "mysql":
-          allObjects = await listMySQLObjects(connStr, cliProfileLogger);
+          allObjects = await listMySQLObjects({ url: connStr, logger: cliProfileLogger });
           break;
         case "postgres":
-          allObjects = await listPostgresObjects(
-            connStr,
-            schemaArg,
-            cliProfileLogger,
-          );
+          allObjects = await listPostgresObjects({
+            url: connStr,
+            schema: schemaArg,
+            logger: cliProfileLogger,
+          });
           break;
         case "clickhouse":
           allObjects = await listClickHouseObjects({ url: connStr });
@@ -543,23 +543,23 @@ async function profileDatasource(
   let result: ProfilingResult;
   switch (dbType) {
     case "mysql":
-      result = await profileMySQL(
-        connStr,
+      result = await profileMySQL({
+        url: connStr,
         selectedTables,
         prefetchedObjects,
         progress,
-        cliProfileLogger,
-      );
+        logger: cliProfileLogger,
+      });
       break;
     case "postgres":
-      result = await profilePostgres(
-        connStr,
+      result = await profilePostgres({
+        url: connStr,
+        schema: schemaArg,
         selectedTables,
         prefetchedObjects,
-        schemaArg,
         progress,
-        cliProfileLogger,
-      );
+        logger: cliProfileLogger,
+      });
       break;
     case "clickhouse":
       result = await profileClickHouse({

@@ -1005,19 +1005,25 @@ export async function resolveLiveConnection(
         query: (sql, timeoutMs) => connections.getForOrg(orgId, installId).query(sql, timeoutMs),
         listObjects: (options) =>
           dbType === "mysql"
-            ? listMySQLObjects(poolUrl, options?.logger)
-            : listPostgresObjects(poolUrl, effectiveSchema(options), options?.logger),
+            ? listMySQLObjects({ url: poolUrl, logger: options?.logger })
+            : listPostgresObjects({ url: poolUrl, schema: effectiveSchema(options), logger: options?.logger }),
         profile: (options) =>
           dbType === "mysql"
-            ? profileMySQL(poolUrl, options.selectedTables, options.prefetchedObjects, options.progress, options.logger)
-            : profilePostgres(
-                poolUrl,
-                options.selectedTables,
-                options.prefetchedObjects,
-                effectiveSchema(options),
-                options.progress,
-                options.logger,
-              ),
+            ? profileMySQL({
+                url: poolUrl,
+                selectedTables: options.selectedTables,
+                prefetchedObjects: options.prefetchedObjects,
+                progress: options.progress,
+                logger: options.logger,
+              })
+            : profilePostgres({
+                url: poolUrl,
+                schema: effectiveSchema(options),
+                selectedTables: options.selectedTables,
+                prefetchedObjects: options.prefetchedObjects,
+                progress: options.progress,
+                logger: options.logger,
+              }),
         close: async () => {
           // Registry-managed pool — not torn down by the caller.
         },

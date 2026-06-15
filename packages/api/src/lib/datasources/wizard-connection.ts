@@ -36,10 +36,7 @@ import {
   profileMySQL,
 } from "@atlas/api/lib/profiler";
 import { DEMO_CONNECTION_ID } from "@atlas/api/lib/semantic/entities";
-import {
-  resolveLiveConnection,
-  type LiveDatasourceConnection,
-} from "@atlas/api/lib/datasources/mcp-lifecycle";
+import type { LiveDatasourceConnection } from "@atlas/api/lib/datasources/mcp-lifecycle";
 
 /**
  * Resolved wizard profiling context — a live connection (introspection bound to
@@ -88,6 +85,12 @@ export async function resolveWizardConnection(
   orgId: string | null | undefined,
 ): Promise<WizardConnectionContext> {
   // ── SaaS primary: the workspace_plugins → live-connection spine ───────
+  // Lazy-import the resolver so the heavy `mcp-lifecycle` graph (workspace-
+  // installer, semantic-generator, Effect layers) stays OUT of the wizard route's
+  // static module-load path — mirroring how the prior `resolveWizardProfiler`
+  // lazy-imported it. Keeps partial-`mock.module` route tests loading cleanly.
+  const { resolveLiveConnection } = await import("@atlas/api/lib/datasources/mcp-lifecycle");
+
   // Workspace-scoped first, then the global (`__global__`) config row — the
   // same priority `resolveConnectionUrl` used (workspace wins over global).
   for (const scope of orgId ? [orgId, "__global__"] : ["__global__"]) {
@@ -158,12 +161,12 @@ function buildEnvVarLiveConnection(
     query: (sql, timeoutMs) => connections.get(connectionId).query(sql, timeoutMs),
     listObjects: (o) =>
       dbType === "mysql"
-        ? listMySQLObjects(url, o?.logger)
-        : listPostgresObjects(url, o?.schema ?? "public", o?.logger),
+        ? listMySQLObjects({ url, logger: o?.logger })
+        : listPostgresObjects({ url, schema: o?.schema ?? "public", logger: o?.logger }),
     profile: (o) =>
       dbType === "mysql"
-        ? profileMySQL(url, o.selectedTables, o.prefetchedObjects, o.progress, o.logger)
-        : profilePostgres(url, o.selectedTables, o.prefetchedObjects, o.schema ?? "public", o.progress, o.logger),
+        ? profileMySQL({ url, selectedTables: o.selectedTables, prefetchedObjects: o.prefetchedObjects, progress: o.progress, logger: o.logger })
+        : profilePostgres({ url, schema: o.schema ?? "public", selectedTables: o.selectedTables, prefetchedObjects: o.prefetchedObjects, progress: o.progress, logger: o.logger }),
     close: async () => {
       // Native profilers own their own throwaway pools; nothing to tear down.
     },

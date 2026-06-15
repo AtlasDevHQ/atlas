@@ -184,23 +184,19 @@ export async function handleDiff(args: string[]): Promise<void> {
       let result: ProfilingResult;
       switch (dbType) {
         case "mysql":
-          result = await profileMySQL(
-            connStr,
-            filterTables,
-            undefined,
-            undefined,
-            cliProfileLogger,
-          );
+          result = await profileMySQL({
+            url: connStr,
+            selectedTables: filterTables,
+            logger: cliProfileLogger,
+          });
           break;
         case "postgres":
-          result = await profilePostgres(
-            connStr,
-            filterTables,
-            undefined,
-            schemaArg,
-            undefined,
-            cliProfileLogger,
-          );
+          result = await profilePostgres({
+            url: connStr,
+            schema: schemaArg,
+            selectedTables: filterTables,
+            logger: cliProfileLogger,
+          });
           break;
         case "clickhouse": {
           const { profileClickHouse } = await import("../../../../plugins/clickhouse/src/profiler");

@@ -81,9 +81,16 @@ describeIfPg("MCP create → profile → query (live Postgres, #3546)", () => {
     dbType: "postgres",
     connectionGroupId: GROUP_ID,
     query: (sql, timeoutMs) => connections.get(GROUP_ID).query(sql, timeoutMs),
-    listObjects: (o) => listPostgresObjects(TEST_DB_URL as string, o?.schema ?? srcSchema),
+    listObjects: (o) => listPostgresObjects({ url: TEST_DB_URL as string, schema: o?.schema ?? srcSchema }),
     profile: (o) =>
-      profilePostgres(TEST_DB_URL as string, o.selectedTables, o.prefetchedObjects, o.schema ?? srcSchema, o.progress, o.logger),
+      profilePostgres({
+        url: TEST_DB_URL as string,
+        schema: o.schema ?? srcSchema,
+        selectedTables: o.selectedTables,
+        prefetchedObjects: o.prefetchedObjects,
+        progress: o.progress,
+        logger: o.logger,
+      }),
     close: async () => {},
   });
 

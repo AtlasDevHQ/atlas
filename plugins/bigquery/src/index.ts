@@ -195,14 +195,10 @@ export function buildBigQueryPlugin(
     dbType: "bigquery",
     parserDialect: "BigQuery",
     forbiddenPatterns: BIGQUERY_FORBIDDEN_PATTERNS,
-    // Introspection half of the datasource contract (ADR-0017). The host
-    // resolves `profile` off the registry (same predicate as `createFromConfig`)
-    // and feeds it into SemanticGenerator's profiler seam; the CLI consumes
-    // these exports directly. Both run read-only and never full-scan a table —
-    // structure/row-counts come from INFORMATION_SCHEMA metadata, sampling is
-    // LIMIT-bounded (BigQuery bills by bytes scanned).
-    listObjects: listBigQueryObjects,
-    profile: profileBigQuery,
+    // Introspection (listObjects / profile) is a capability of the BUILT
+    // connection (createFromConfig above), bound to the creds that built it — the
+    // one home MCP, the wizard, and the CLI all consume (ADR-0017 / #3670). No
+    // connection-namespace profiler exports remain.
   };
 
   // When any static connection field is configured the plugin wires a

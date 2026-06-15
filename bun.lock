@@ -315,7 +315,7 @@
     },
     "packages/plugin-sdk": {
       "name": "@useatlas/plugin-sdk",
-      "version": "0.0.12",
+      "version": "0.0.13",
       "devDependencies": {
         "ai": "^6.0.193",
         "hono": "^4.12.23",
@@ -395,7 +395,7 @@
     },
     "packages/schemas": {
       "name": "@useatlas/schemas",
-      "version": "0.0.6",
+      "version": "0.0.7",
       "dependencies": {
         "@useatlas/types": "workspace:*",
         "zod": "^4.4.3",

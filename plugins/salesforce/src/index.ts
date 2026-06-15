@@ -144,7 +144,28 @@ export function buildSalesforcePlugin(
       const parsed = SalesforceConnectionConfigSchema.parse(runtimeConfig);
       // Parse the runtime url here (never at build time) — surfaces parser
       // errors as a thrown error for the datasource bridge to handle.
-      return createSalesforceConnection(parseSalesforceURL(parsed.url), log);
+      const built = createSalesforceConnection(parseSalesforceURL(parsed.url), log);
+      // #3667 — introspection is a capability OF the built connection, bound to
+      // the `salesforce://` creds that built it (the host's unified resolver
+      // consumes these; no url/config re-resolution). Read-only (describe + a
+      // bounded COUNT(Id) SELECT, no DML). NOTE: this credential-form path is
+      // DORMANT for Atlas (the bridge skips salesforce → OAuth, ADR-0014); the
+      // OAuth path exposes its own introspection via the LazyPluginLoader. This
+      // serves the CLI's `atlas init` salesforce:// url + future self-host wiring.
+      return {
+        ...built,
+        listObjects: (o) =>
+          listSalesforceObjects({ url: parsed.url, ...(o?.schema !== undefined ? { schema: o.schema } : {}) }),
+        profile: (o) =>
+          profileSalesforce({
+            url: parsed.url,
+            ...(o?.schema !== undefined ? { schema: o.schema } : {}),
+            selectedTables: o?.selectedTables,
+            prefetchedObjects: o?.prefetchedObjects,
+            progress: o?.progress,
+            logger: o?.logger,
+          }),
+      };
     },
     dbType: "salesforce",
     validate(query: string): QueryValidationResult {
@@ -158,15 +179,11 @@ export function buildSalesforcePlugin(
         reason: result.error,
       };
     },
-    // Introspection half of the datasource contract (ADR-0017). The host
-    // resolves `profile` off the registry (same predicate as `createFromConfig`)
-    // and feeds it into SemanticGenerator's profiler seam; the CLI consumes
-    // these exports directly. Salesforce stays on OAuth (ADR-0014): the `url`
-    // these receive is the same `salesforce://` value `createFromConfig`
-    // resolves — built into a jsforce session, not assumed to be a SQL DSN.
-    // Both run read-only (describe + a bounded COUNT(Id) SELECT, no DML).
-    listObjects: listSalesforceObjects,
-    profile: profileSalesforce,
+    // Introspection (listObjects / profile) is a capability of the BUILT
+    // connection (createFromConfig above), bound to the salesforce:// creds that
+    // built it — the one home MCP, the wizard, and the CLI all consume (ADR-0017
+    // / #3670). Atlas's Salesforce stays on OAuth (ADR-0014; the LazyPluginLoader
+    // exposes its own introspection). No connection-namespace profiler exports.
   };
 
   if (hasStaticConfig) {

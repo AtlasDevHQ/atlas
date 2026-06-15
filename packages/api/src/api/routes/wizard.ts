@@ -22,15 +22,10 @@ import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import { validationHook } from "./validation-hook";
-import { connections, detectDBType } from "@atlas/api/lib/db/connection";
-import { hasInternalDB, internalQuery, decryptSecret } from "@atlas/api/lib/db/internal";
-// Decrypt the full per-field config (ADR-0017 amendment / #3552 wizard
-// equivalent) so separate-field credentials (ES apiKey / Basic / SigV4) reach
-// the profiler seam — the SAME decrypt `loadDatasourceProfileTarget` uses.
-import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
+import { connections } from "@atlas/api/lib/db/connection";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { _resetWhitelists, invalidateOrgWhitelist } from "@atlas/api/lib/semantic";
 import {
-  DEMO_CONNECTION_ID,
   bulkUpsertEntities,
   resolveGroupIdForConnection,
 } from "@atlas/api/lib/semantic/entities";
@@ -46,13 +41,14 @@ import {
   SEMANTIC_TYPES,
   outputDirForGroup,
 } from "@atlas/api/lib/profiler";
-// Profiler-seam dispatch (#3621 / ADR-0017): native pg/mysql keep the in-core
-// fast path; any other dbType whose datasource plugin implements the profiling
-// contract dispatches through the registry-resolved profiler. The wizard
-// resolves the capability for a dbType via this lib helper — never the removed
-// "PostgreSQL and MySQL" gate. The only remaining rejection is the actionable
-// "this datasource's plugin doesn't implement profiling yet" state.
-import { resolveWizardProfiler } from "@atlas/api/lib/datasources/wizard-profiler";
+// One profiler home (#3657, ADR-0017 §Amendment(#3667)): the wizard resolves a
+// LIVE connection via the SAME resolver MCP uses — `resolveLiveConnection`,
+// surfaced for the wizard as `resolveWizardConnection`. Introspection
+// (`listObjects` / `profile`) is a capability OF that connection, bound to the
+// creds that built it — there is no second profiler seam, no url/config
+// threading, and no per-call native signature adaptation. The only rejections
+// are the actionable not-found / not-profilable / reconnect-required states.
+import { resolveWizardConnection } from "@atlas/api/lib/datasources/wizard-connection";
 // Mechanical generation runs through the shared semantic engine (issue #3233)
 // so the wizard and the CLI emit identical YAML. Both the `/generate` entity
 // YAML and the `/save` catalog/glossary/metric assembly delegate to
@@ -545,76 +541,77 @@ wizard.openapi(profileRoute, async (c) => {
 
     const { connectionId } = c.req.valid("json");
 
-    // Look up the connection URL — resolveConnectionUrl throws on infrastructure errors
-    const connUrlResult = yield* Effect.tryPromise({
-      try: () => resolveConnectionUrl(connectionId, user?.activeOrganizationId),
+    // One resolver, shared with MCP: resolve a LIVE connection whose
+    // introspection is bound to its creds. Throws only on infrastructure errors.
+    const ctxResult = yield* Effect.tryPromise({
+      try: () => resolveWizardConnection(connectionId, user?.activeOrganizationId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.either);
 
-    if (connUrlResult._tag === "Left") {
-      const err = connUrlResult.left;
-      log.error({ err, requestId, connectionId }, "Failed to resolve connection URL");
+    if (ctxResult._tag === "Left") {
+      const err = ctxResult.left;
+      log.error({ err, requestId, connectionId }, "Failed to resolve connection");
       return c.json({
         error: "connection_resolution_failed",
         message: "Failed to resolve connection. Check server logs for details.",
         requestId,
       }, 500);
     }
-    const connUrl = connUrlResult.right;
-    if (!connUrl) {
+    const ctx = ctxResult.right;
+    if (ctx.kind === "not_found") {
       return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
     }
-
-    const { url, dbType, schema, config } = connUrl;
-    // Enumeration schema: pg → "public"; a plugin dbType passes the user value
-    // through (or undefined → the plugin's own default) so it doesn't list zero
-    // objects against a literal "public" (#3621 review).
-    const querySchema = effectiveSchema(dbType, schema);
-
-    // Resolve the profiler capability for this dbType (#3621). Native pg/mysql
-    // keep the in-core fast path; any other dbType dispatches through its
-    // datasource plugin's registry-resolved profiler — or, if the plugin
-    // doesn't implement profiling yet, surfaces the actionable not-profilable
-    // state (the only remaining rejection; the "PostgreSQL and MySQL" gate is gone).
-    const capabilityResult = yield* Effect.tryPromise({
-      try: () => resolveWizardProfiler(dbType),
-      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-    }).pipe(Effect.either);
-    if (capabilityResult._tag === "Left") {
-      log.error({ err: capabilityResult.left, requestId, connectionId }, "Wizard profile: capability resolution failed");
-      return c.json({
-        error: "profile_failed",
-        message: "Failed to resolve the datasource profiler. Check server logs and retry.",
-        requestId,
-      }, 500);
+    if (ctx.kind === "unsupported") {
+      return c.json({ error: "not_profilable", message: ctx.message }, 400);
     }
-    const capability = capabilityResult.right;
-    if (capability.kind === "unsupported") {
-      return c.json({ error: "not_profilable", message: capability.message }, 400);
+    if (ctx.kind === "reconnect_required") {
+      return c.json({ error: "reconnect_required", message: ctx.message }, 400);
     }
+
+    const { connection, dbType, querySchema } = ctx;
 
     const profileResult = yield* Effect.tryPromise({
       try: async () => {
-        // Thread the decrypted tenant config (ADR-0017 amendment / #3552 wizard
-        // equivalent) so a separate-field-credential plugin (ES) enumerates with
-        // the tenant's own creds, not operator env. Native pg/mysql ignore it.
-        const objects = await capability.listObjects({
-          url,
-          ...(querySchema !== undefined ? { schema: querySchema } : {}),
-          logger: log,
-          ...(config !== undefined ? { config } : {}),
-        });
-        return { ok: true as const, objects };
+        try {
+          // Introspection rides the resolved connection — bound to its creds, so
+          // a separate-field-credential plugin (ES) enumerates with the tenant's
+          // own creds with no url/config threading. `querySchema` scopes the
+          // enumeration (pg → "public"; plugin → its own default when undefined).
+          const objects = await connection.listObjects({
+            ...(querySchema !== undefined ? { schema: querySchema } : {}),
+            logger: log,
+          });
+          return { ok: true as const, objects };
+        } finally {
+          // The built connection holds a real (lazy) pool — close it after
+          // enumeration. Native pg/mysql + registry-managed pools no-op.
+          // A close failure can't fail the request (enumeration already
+          // settled), but it mustn't be swallowed silently either: log it so a
+          // pool leak during onboarding is visible (CLAUDE.md: no empty catch).
+          await connection.close().catch((closeErr) =>
+            log.warn(
+              { err: closeErr instanceof Error ? closeErr.message : String(closeErr), requestId, connectionId },
+              "Wizard profile: connection close after enumeration failed",
+            ),
+          );
+        }
       },
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.either);
 
     if (profileResult._tag === "Left") {
       const err = profileResult.left;
+      // Keep the raw driver error in the logs; the client gets a sanitized
+      // message + requestId. The converged resolver routes EVERY datasource
+      // type (ClickHouse, Snowflake, BigQuery, ES, Salesforce, native pg/mysql)
+      // through here, and a driver connection error can embed host/port or DSN
+      // userinfo — never echo `err.message` to the client (CLAUDE.md: no
+      // connection strings / stack traces in responses), mirroring the MCP
+      // path's secret-scrubbing and the /enrich route below.
       log.error({ err, requestId, connectionId }, "Wizard profile failed");
       return c.json({
         error: "profile_failed",
-        message: `Failed to list tables: ${err.message}`,
+        message: "Failed to list tables. Please retry; if it persists, check the connection settings and server logs.",
         requestId,
       }, 500);
     }
@@ -649,65 +646,58 @@ wizard.openapi(generateRoute, async (c) => {
 
     const { connectionId, tables: tableNames } = c.req.valid("json");
 
-    const connUrlResult = yield* Effect.tryPromise({
-      try: () => resolveConnectionUrl(connectionId, user?.activeOrganizationId),
+    const ctxResult = yield* Effect.tryPromise({
+      try: () => resolveWizardConnection(connectionId, user?.activeOrganizationId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.either);
 
-    if (connUrlResult._tag === "Left") {
-      const err = connUrlResult.left;
-      log.error({ err, requestId, connectionId }, "Failed to resolve connection URL");
+    if (ctxResult._tag === "Left") {
+      const err = ctxResult.left;
+      log.error({ err, requestId, connectionId }, "Failed to resolve connection");
       return c.json({
         error: "connection_resolution_failed",
         message: "Failed to resolve connection. Check server logs for details.",
         requestId,
       }, 500);
     }
-    const connUrl = connUrlResult.right;
-    if (!connUrl) {
+    const ctx = ctxResult.right;
+    if (ctx.kind === "not_found") {
       return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
     }
-
-    const { url, dbType, schema, config } = connUrl;
-    // pg → "public"; a plugin dbType passes the user value through (or undefined
-    // → the plugin's own default) so it doesn't profile zero objects against a
-    // literal "public" (#3621 review).
-    const querySchema = effectiveSchema(dbType, schema);
-
-    // Resolve the profiler for this dbType (#3621): native pg/mysql in-core,
-    // else the registry-resolved plugin profiler. Surfaces the actionable
-    // not-profilable state when no plugin implements the contract.
-    const capabilityResult = yield* Effect.tryPromise({
-      try: () => resolveWizardProfiler(dbType),
-      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-    }).pipe(Effect.either);
-    if (capabilityResult._tag === "Left") {
-      log.error({ err: capabilityResult.left, requestId, connectionId }, "Wizard generate: capability resolution failed");
-      return c.json({
-        error: "generate_failed",
-        message: "Failed to resolve the datasource profiler. Check server logs and retry.",
-        requestId,
-      }, 500);
+    if (ctx.kind === "unsupported") {
+      return c.json({ error: "not_profilable", message: ctx.message }, 400);
     }
-    const capability = capabilityResult.right;
-    if (capability.kind === "unsupported") {
-      return c.json({ error: "not_profilable", message: capability.message }, 400);
+    if (ctx.kind === "reconnect_required") {
+      return c.json({ error: "reconnect_required", message: ctx.message }, 400);
     }
+
+    const { connection, dbType, querySchema } = ctx;
 
     const genResult = yield* Effect.tryPromise({
       try: async () => {
-        // Profile through the resolved seam — pg/mysql in-core, plugin via its
-        // registered `connection.profile` (ADR-0017). Thread the decrypted tenant
-        // config (ADR-0017 amendment / #3552 wizard equivalent) so a
-        // separate-field-credential plugin (ES) profiles with the tenant's own
-        // creds, not operator env. Native pg/mysql ignore it.
-        const result: ProfilingResult = await capability.profile({
-          url,
-          ...(querySchema !== undefined ? { schema: querySchema } : {}),
-          selectedTables: tableNames,
-          logger: log,
-          ...(config !== undefined ? { config } : {}),
-        });
+        // Profile through the resolved live connection — introspection bound to
+        // its creds, so a separate-field-credential plugin (ES) profiles with the
+        // tenant's own creds with no url/config threading. `querySchema` scopes
+        // it (pg → "public"; plugin → its own default when undefined).
+        let result: ProfilingResult;
+        try {
+          result = await connection.profile({
+            ...(querySchema !== undefined ? { schema: querySchema } : {}),
+            selectedTables: tableNames,
+            logger: log,
+          });
+        } finally {
+          // Profiling is done; generation below is pure. Release the built
+          // connection's pool now (native pg/mysql + registry pools no-op).
+          // Log (don't swallow) a close failure so a pool leak is visible
+          // without failing the request (CLAUDE.md: no empty catch).
+          await connection.close().catch((closeErr) =>
+            log.warn(
+              { err: closeErr instanceof Error ? closeErr.message : String(closeErr), requestId, connectionId },
+              "Wizard generate: connection close after profiling failed",
+            ),
+          );
+        }
 
         // Run heuristics (returns new array — no mutation)
         const analyzedProfiles = analyzeTableProfiles(result.profiles);
@@ -806,10 +796,14 @@ wizard.openapi(generateRoute, async (c) => {
 
     if (genResult._tag === "Left") {
       const err = genResult.left;
+      // Sanitized client message + requestId; raw driver detail stays in the
+      // logs. Same reasoning as /profile above — the converged resolver routes
+      // every datasource type through here and driver errors can embed
+      // host/port/DSN userinfo (CLAUDE.md: no connection strings in responses).
       log.error({ err, requestId, connectionId }, "Wizard generate failed");
       return c.json({
         error: "generate_failed",
-        message: `Failed to profile tables: ${err.message}`,
+        message: "Failed to profile tables. Please retry; if it persists, check the connection settings and server logs.",
         requestId,
       }, 500);
     }
@@ -874,66 +868,58 @@ wizard.openapi(enrichRoute, async (c) => {
     }
     const model = modelChoice.model;
 
-    const connUrlResult = yield* Effect.tryPromise({
-      try: () => resolveConnectionUrl(connectionId, user?.activeOrganizationId),
+    const ctxResult = yield* Effect.tryPromise({
+      try: () => resolveWizardConnection(connectionId, user?.activeOrganizationId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.either);
 
-    if (connUrlResult._tag === "Left") {
-      const err = connUrlResult.left;
-      log.error({ err, requestId, connectionId }, "Failed to resolve connection URL");
+    if (ctxResult._tag === "Left") {
+      const err = ctxResult.left;
+      log.error({ err, requestId, connectionId }, "Failed to resolve connection");
       return c.json({
         error: "connection_resolution_failed",
         message: "Failed to resolve connection. Check server logs for details.",
         requestId,
       }, 500);
     }
-    const connUrl = connUrlResult.right;
-    if (!connUrl) {
+    const ctx = ctxResult.right;
+    if (ctx.kind === "not_found") {
       return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
     }
-
-    const { url, dbType, schema, config } = connUrl;
-    // pg → "public"; a plugin dbType passes the user value through (or undefined
-    // → the plugin's own default) so re-profile-on-enrich doesn't target a
-    // literal "public" (#3621 review).
-    const querySchema = effectiveSchema(dbType, schema);
-
-    // Resolve the profiler for this dbType (#3621). Re-profile-on-enrich works
-    // for a plugin dbType through the same registry-resolved seam.
-    const capabilityResult = yield* Effect.tryPromise({
-      try: () => resolveWizardProfiler(dbType),
-      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-    }).pipe(Effect.either);
-    if (capabilityResult._tag === "Left") {
-      log.error({ err: capabilityResult.left, requestId, connectionId }, "Wizard enrich: capability resolution failed");
-      return c.json({
-        error: "enrich_failed",
-        message: "Failed to resolve the datasource profiler. Check server logs and retry.",
-        requestId,
-      }, 500);
+    if (ctx.kind === "unsupported") {
+      return c.json({ error: "not_profilable", message: ctx.message }, 400);
     }
-    const capability = capabilityResult.right;
-    if (capability.kind === "unsupported") {
-      return c.json({ error: "not_profilable", message: capability.message }, 400);
+    if (ctx.kind === "reconnect_required") {
+      return c.json({ error: "reconnect_required", message: ctx.message }, 400);
     }
+
+    const { connection, dbType, querySchema } = ctx;
 
     const enrichResult = yield* Effect.tryPromise({
       try: async () => {
         // Re-profile JUST this table so the LLM is grounded in fresh DB
         // samples/distributions (semantic-onboarding § D: enrichment "receives
         // the table profile AND read-only access to the DB" — the profiler IS
-        // that read-only access). pg/mysql in-core, plugin via the seam. Thread
-        // the decrypted tenant config (ADR-0017 amendment / #3552 wizard
-        // equivalent) so a separate-field-credential plugin (ES) re-profiles with
-        // the tenant's own creds, not operator env. Native pg/mysql ignore it.
-        const result: ProfilingResult = await capability.profile({
-          url,
-          ...(querySchema !== undefined ? { schema: querySchema } : {}),
-          selectedTables: [tableName],
-          logger: log,
-          ...(config !== undefined ? { config } : {}),
-        });
+        // that read-only access). Introspection rides the resolved connection,
+        // bound to its creds — a separate-field-credential plugin (ES)
+        // re-profiles with the tenant's own creds with no url/config threading.
+        let result: ProfilingResult;
+        try {
+          result = await connection.profile({
+            ...(querySchema !== undefined ? { schema: querySchema } : {}),
+            selectedTables: [tableName],
+            logger: log,
+          });
+        } finally {
+          // Log (don't swallow) a close failure so a pool leak is visible
+          // without failing the request (CLAUDE.md: no empty catch).
+          await connection.close().catch((closeErr) =>
+            log.warn(
+              { err: closeErr instanceof Error ? closeErr.message : String(closeErr), requestId, connectionId, tableName },
+              "Wizard enrich: connection close after re-profile failed",
+            ),
+          );
+        }
         const profile =
           result.profiles.find((p) => p.table_name === tableName) ?? result.profiles[0];
         if (!profile) {
@@ -1399,177 +1385,6 @@ async function resolveEnrichModel(
     };
   }
   return { kind: "ok", model: getModel() };
-}
-
-interface ResolvedConnection {
-  url: string;
-  dbType: ReturnType<typeof detectDBType>;
-  /**
-   * The user-configured schema/search-path, or `null` when none was set. The
-   * route applies a dbType-specific default: native Postgres falls back to
-   * `"public"`; a plugin dbType (ClickHouse database, ES index) where `"public"`
-   * is meaningless passes the user value through (or lets the plugin use its own
-   * default) rather than listing zero objects against a literal `"public"`.
-   */
-  schema: string | null;
-  /**
-   * The install's resolved, DECRYPTED connection config (ADR-0017 amendment,
-   * #3552 wizard equivalent). Threaded into the profiler seam so a
-   * separate-field-credential plugin (Elasticsearch — `apiKey` / `username` /
-   * `password` / SigV4 live in config fields, NOT in the `url`) profiles +
-   * enumerates with the TENANT's own credentials rather than falling back to
-   * operator `ATLAS_ES_*` env (the per-tenant-creds rule). Url-embedded plugins
-   * (ClickHouse / Snowflake) and native pg/mysql ignore it.
-   *
-   * `undefined` for the env-var (`ATLAS_DATASOURCE_URL`) fast path, where the
-   * decrypted config is just `{ url }` and there is no separate-field credential
-   * to carry — the seam falls back to its url-only / env path for those.
-   *
-   * SECURITY: like `url`, this carries DECRYPTED secret material — internal use
-   * only, it never leaves the lib layer / reaches the agent / is logged.
-   */
-  config?: Readonly<Record<string, unknown>>;
-}
-
-/**
- * Apply the dbType-specific schema default. Native Postgres defaults a missing
- * schema to `"public"` (its canonical default search-path) — unchanged. A plugin
- * dbType (ClickHouse database, Elasticsearch index) where `"public"` is
- * meaningless passes the user-provided schema through, or `undefined` when none
- * was set, so the plugin uses its OWN default instead of listing zero objects
- * against a literal `"public"` (#3621 review). MySQL ignores schema either way.
- */
-function effectiveSchema(
-  dbType: ReturnType<typeof detectDBType>,
-  schema: string | null,
-): string | undefined {
-  if (dbType === "postgres") return schema ?? "public";
-  return schema ?? undefined;
-}
-
-/** Raw `workspace_plugins` projection the resolver shapes a connection from. */
-type DatasourceConfigRow = {
-  config: Record<string, unknown> | null;
-  schema_name: string | null;
-  config_schema: unknown;
-};
-
-/**
- * Shape a `workspace_plugins` row into a {@link ResolvedConnection}: decrypt the
- * `url` (byte-for-byte via the legacy `decryptSecret` path, unchanged) AND the
- * full per-field config (`decryptSecretFields` keyed on the catalog
- * `config_schema` — the SAME decrypt the MCP profiling path uses in
- * `loadDatasourceProfileTarget`). The decrypted `config` is threaded into the
- * profiler seam so a separate-field-credential plugin (ES) authenticates with
- * the tenant's own creds (#3552 wizard equivalent).
- */
-function shapeResolvedConnection(row: DatasourceConfigRow): ResolvedConnection {
-  // `url` keeps its existing dedicated decrypt so detectDBType + the seam see
-  // the exact same plaintext url they did before this change.
-  const url = decryptSecret(
-    typeof row.config?.url === "string" ? (row.config.url as string) : "",
-  );
-  const dbType = detectDBType(url);
-  // Full decrypted config (ADR-0017 amendment) — the `secret: true` fields
-  // (ES apiKey / Basic / SigV4) are decrypted per the catalog schema.
-  const config = decryptSecretFields(row.config ?? {}, parseConfigSchema(row.config_schema));
-  // Carry the raw configured schema (or null) — the route applies the
-  // dbType-specific default (pg → "public"; plugin types pass through).
-  return { url, dbType, schema: row.schema_name, config };
-}
-
-/** Columns + table the resolver reads from `workspace_plugins` (+ catalog schema). */
-const DATASOURCE_CONFIG_SELECT =
-  `SELECT wp.config AS config, wp.config->>'schema' AS schema_name, pc.config_schema AS config_schema
-     FROM workspace_plugins wp
-     JOIN plugin_catalog pc ON pc.id = wp.catalog_id`;
-
-/**
- * Resolve a connection URL from either the runtime ConnectionRegistry
- * or the internal database (encrypted connections table).
- *
- * Returns the resolved connection, or null if the connection does not exist.
- * Throws on infrastructure errors (e.g. database unreachable, pool exhaustion,
- * decryption failure, missing encryption key) so callers can distinguish
- * "not found" from "lookup failed".
- */
-async function resolveConnectionUrl(
-  connectionId: string,
-  orgId?: string | null,
-): Promise<ResolvedConnection | null> {
-  // First try: runtime registry (works for self-hosted / env-var connections)
-  if (connections.has(connectionId)) {
-    const entry = connections.describe().find((c) => c.id === connectionId);
-    if (entry) {
-      // Get the actual URL from the registry's internal state
-      // The describe() method masks the URL, so we need the raw URL for profiling.
-      // Check internal DB first (it has the encrypted URL).
-      if (hasInternalDB()) {
-        // Post-0096 cutover (#2744 / ADR-0007): datasource installs live
-        // in workspace_plugins; url + schema_name are JSONB keys in
-        // config. The two encryption modules produce identical
-        // AES-256-GCM `enc:v<N>:...` ciphertext, so `decryptSecret`
-        // unwraps the JSONB url field byte-for-byte. The full config is
-        // also decrypted per the catalog `config_schema` so separate-field
-        // credentials (ES) reach the profiler seam (#3552 wizard equivalent).
-        // The `status != 'archived'` filter preserves the per-workspace hide
-        // semantics.
-        const rows = await internalQuery<DatasourceConfigRow>(
-          `${DATASOURCE_CONFIG_SELECT}
-           WHERE wp.install_id = $1 AND wp.pillar = 'datasource'
-             AND wp.status != 'archived' AND (wp.workspace_id = $2 OR wp.workspace_id = '__global__')
-           ORDER BY CASE WHEN wp.workspace_id = $2 THEN 0 ELSE 1 END LIMIT 1`,
-          [connectionId, orgId ?? "__global__"],
-        );
-        if (rows.length > 0) {
-          return shapeResolvedConnection(rows[0]);
-        }
-      }
-
-      // ATLAS_DATASOURCE_URL is the canonical URL for both seeded
-      // onboarding identities — `default` (config-managed) and `__demo__`
-      // (#1474). The internal-DB lookup can miss when the caller's
-      // session orgId doesn't match the row's org_id (e.g. platform_admin
-      // spanning workspaces) — without this fallback those callers
-      // dead-end on a registered identity. Other underscore-prefixed ids
-      // are intentionally excluded — the wizard frontend filters them
-      // out of its datasource list and the backend mirrors that filter.
-      if (
-        (connectionId === "default" || connectionId === DEMO_CONNECTION_ID) &&
-        process.env.ATLAS_DATASOURCE_URL
-      ) {
-        const url = process.env.ATLAS_DATASOURCE_URL;
-        const dbType = detectDBType(url);
-        // No DB-stored config for the env-var fast path — the seam falls back to
-        // its url-only / env path (correct for the operator's own ATLAS_* env).
-        // `schema: null` lets the route apply the dbType default (pg → "public").
-        return { url, dbType, schema: null };
-      }
-    }
-  }
-
-  // Second try: internal DB only (install not in runtime registry).
-  // Excludes archived rows so per-workspace hide tombstones read as
-  // not-found here, mirroring the first-try filter above. Post-0096
-  // cutover (#2744 / ADR-0007) — pivoted to workspace_plugins.
-  if (hasInternalDB()) {
-    const orgFilter = orgId
-      ? " AND (wp.workspace_id = $2 OR wp.workspace_id = '__global__') ORDER BY CASE WHEN wp.workspace_id = $2 THEN 0 ELSE 1 END LIMIT 1"
-      : "";
-    const params: unknown[] = [connectionId];
-    if (orgId) params.push(orgId);
-
-    const rows = await internalQuery<DatasourceConfigRow>(
-      `${DATASOURCE_CONFIG_SELECT}
-        WHERE wp.install_id = $1 AND wp.pillar = 'datasource' AND wp.status != 'archived'${orgFilter}`,
-      params,
-    );
-    if (rows.length > 0) {
-      return shapeResolvedConnection(rows[0]);
-    }
-  }
-
-  return null;
 }
 
 export { wizard };

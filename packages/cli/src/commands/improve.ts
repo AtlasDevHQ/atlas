@@ -140,14 +140,12 @@ export async function handleImprove(args: string[]): Promise<void> {
   if (dbType === "postgres") {
     const schema = getFlag(args, "--schema") ?? "public";
     const filterTables = entities.map((e) => e.table);
-    const result = await profilePostgres(
-      process.env.ATLAS_DATASOURCE_URL,
-      filterTables,
-      undefined,
+    const result = await profilePostgres({
+      url: process.env.ATLAS_DATASOURCE_URL,
       schema,
-      undefined,
-      cliProfileLogger,
-    );
+      selectedTables: filterTables,
+      logger: cliProfileLogger,
+    });
     profiles = result.profiles;
     if (result.errors.length > 0) {
       console.warn(pc.yellow(`  ${result.errors.length} table(s) failed to profile`));

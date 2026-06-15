@@ -948,7 +948,7 @@ describe("create_datasource", () => {
     // is profilable over MCP (#3552 / ADR-0017) — `loadDatasourceProfileTarget`
     // resolves to `ok`, so the hint directs the agent to run profile_datasource.
     provisionCapability = { kind: "plugin", dbType: "clickhouse" };
-    profileCapability = { kind: "plugin", dbType: "clickhouse", profileFn: () => Promise.resolve({ profiles: [], errors: [] }) };
+    profileCapability = { kind: "plugin", dbType: "clickhouse" };
     provisionOutcome = {
       kind: "ok",
       value: { installId: "ch-wh", dbType: "clickhouse", status: "draft", maskedUrl: null, description: null, schema: null, groupId: null },
@@ -989,7 +989,7 @@ describe("create_datasource", () => {
     // gate to fail it closed. So a provisionable BigQuery datasource that implements
     // `connection.profile` IS profilable over MCP, and the create hint must say so.
     provisionCapability = { kind: "plugin", dbType: "bigquery" };
-    profileCapability = { kind: "plugin", dbType: "bigquery", profileFn: () => Promise.resolve({ profiles: [], errors: [] }) };
+    profileCapability = { kind: "plugin", dbType: "bigquery" };
     provisionOutcome = {
       kind: "ok",
       value: { installId: "bq-wh", dbType: "bigquery", status: "draft", maskedUrl: null, description: null, schema: null, groupId: null },

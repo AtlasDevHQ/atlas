@@ -119,7 +119,7 @@ describe.skip("listDuckDBObjects", () => {
     const dbPath = path.join(dir, "test.duckdb");
     await ingestIntoDuckDB(dbPath, [{ path: csvPath, format: "csv" }]);
 
-    const objects = await listDuckDBObjects(dbPath);
+    const objects = await listDuckDBObjects({ url: `duckdb://${dbPath}` });
     expect(objects).toHaveLength(1);
     expect(objects[0].name).toBe("data");
     expect(objects[0].type).toBe("table");
@@ -143,7 +143,7 @@ describe.skip("profileDuckDB", () => {
     const dbPath = path.join(dir, "test.duckdb");
     await ingestIntoDuckDB(dbPath, [{ path: csvPath, format: "csv" }]);
 
-    const result = await profileDuckDB(dbPath);
+    const result = await profileDuckDB({ url: `duckdb://${dbPath}` });
     expect(result.profiles).toHaveLength(1);
     expect(result.errors).toHaveLength(0);
 
@@ -176,7 +176,7 @@ describe.skip("profileDuckDB", () => {
       { path: csv2, format: "csv" },
     ]);
 
-    const result = await profileDuckDB(dbPath, ["a"]);
+    const result = await profileDuckDB({ url: `duckdb://${dbPath}`, selectedTables: ["a"] });
     expect(result.profiles).toHaveLength(1);
     expect(result.profiles[0].table_name).toBe("a");
   });

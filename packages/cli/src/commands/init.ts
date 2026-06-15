@@ -50,24 +50,18 @@ import {
   SEMANTIC_DIR,
 } from "../../lib/cli-utils";
 import { testDatabaseConnection } from "../../lib/test-connection";
-import {
-  listClickHouseObjects,
-  profileClickHouse,
-  listSalesforceObjects,
-  profileSalesforce,
-  ingestIntoDuckDB,
-} from "../../lib/profilers";
-// Snowflake profiling lives on the plugin profiler contract (ADR-0017, #3622) —
-// the CLI consumes the plugin export directly (CLI → plugin, no @atlas/api), the
-// same pattern as the DuckDB case below.
+// All datasource profiling is the plugins' job — the ONE profiler home per type
+// (ADR-0017 / #3670). The CLI consumes each plugin's profiler module directly
+// (CLI → plugin, no @atlas/api, no parallel `cli/lib/profilers/*` home). Native
+// pg/mysql are core, profiled via `@atlas/api/lib/profiler`. CSV/Parquet
+// ingestion is a CLI write path (`lib/duckdb-ingest`), distinct from profiling.
+import { listClickHouseObjects, profileClickHouse } from "../../../../plugins/clickhouse/src/profiler";
+import { listSalesforceObjects, profileSalesforce } from "../../../../plugins/salesforce/src/profiler";
+import { ingestIntoDuckDB } from "../../lib/duckdb-ingest";
 import {
   listSnowflakeObjects,
   profileSnowflake,
 } from "../../../../plugins/snowflake/src/profiler";
-// DuckDB profiling moved onto the plugin profiler contract (ADR-0017, #3623):
-// the CLI consumes the plugin's `listObjects`/`profile` exports directly (CLI →
-// plugin, no @atlas/api). Relative-path import matches the existing CLI ↔ duckdb
-// plugin convention (e.g. the duckdb connection import in test-connection.ts).
 import { listDuckDBObjects, profileDuckDB } from "../../../../plugins/duckdb/src/profiler";
 import { profileMySQL, profilePostgres } from "@atlas/api/lib/profiler";
 import {
@@ -75,7 +69,7 @@ import {
   elasticsearchCatalog,
   elasticsearchConfigFromEnv,
   buildUniqueFileSlugs,
-} from "../../lib/profilers/elasticsearch";
+} from "../../../../plugins/elasticsearch/src/profiler";
 
 // --- Demo dataset ---
 //
@@ -459,17 +453,17 @@ async function profileDatasource(
     try {
       switch (dbType) {
         case "mysql":
-          allObjects = await listMySQLObjects(connStr, cliProfileLogger);
+          allObjects = await listMySQLObjects({ url: connStr, logger: cliProfileLogger });
           break;
         case "postgres":
-          allObjects = await listPostgresObjects(
-            connStr,
-            schemaArg,
-            cliProfileLogger,
-          );
+          allObjects = await listPostgresObjects({
+            url: connStr,
+            schema: schemaArg,
+            logger: cliProfileLogger,
+          });
           break;
         case "clickhouse":
-          allObjects = await listClickHouseObjects(connStr);
+          allObjects = await listClickHouseObjects({ url: connStr });
           break;
         case "snowflake":
           allObjects = await listSnowflakeObjects({ url: connStr });
@@ -479,7 +473,7 @@ async function profileDatasource(
           break;
         }
         case "salesforce":
-          allObjects = await listSalesforceObjects(connStr);
+          allObjects = await listSalesforceObjects({ url: connStr });
           break;
         case "bigquery": {
           const { listBigQueryObjects } = await import(
@@ -549,31 +543,31 @@ async function profileDatasource(
   let result: ProfilingResult;
   switch (dbType) {
     case "mysql":
-      result = await profileMySQL(
-        connStr,
+      result = await profileMySQL({
+        url: connStr,
         selectedTables,
         prefetchedObjects,
         progress,
-        cliProfileLogger,
-      );
+        logger: cliProfileLogger,
+      });
       break;
     case "postgres":
-      result = await profilePostgres(
-        connStr,
+      result = await profilePostgres({
+        url: connStr,
+        schema: schemaArg,
         selectedTables,
         prefetchedObjects,
-        schemaArg,
         progress,
-        cliProfileLogger,
-      );
+        logger: cliProfileLogger,
+      });
       break;
     case "clickhouse":
-      result = await profileClickHouse(
-        connStr,
+      result = await profileClickHouse({
+        url: connStr,
         selectedTables,
         prefetchedObjects,
         progress,
-      );
+      });
       break;
     case "snowflake":
       result = await profileSnowflake({
@@ -593,12 +587,12 @@ async function profileDatasource(
       break;
     }
     case "salesforce":
-      result = await profileSalesforce(
-        connStr,
+      result = await profileSalesforce({
+        url: connStr,
         selectedTables,
         prefetchedObjects,
         progress,
-      );
+      });
       break;
     case "bigquery": {
       const { profileBigQuery } = await import(

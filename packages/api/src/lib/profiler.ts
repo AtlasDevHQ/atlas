@@ -201,7 +201,26 @@ function assertSafePathSegment(value: string, kind: "group" | "org"): void {
 // PostgreSQL profiler — list objects and profile tables
 // ---------------------------------------------------------------------------
 
-export async function listPostgresObjects(connectionString: string, schema: string = "public", log: ProfileLogger = defaultLog): Promise<DatabaseObject[]> {
+/**
+ * Options for the native PostgreSQL/MySQL profilers — the SAME single-options
+ * shape the unified profiler seam ({@link DatasourceProfiler}) uses, so a native
+ * profiler IS a `DatasourceProfiler` (no positional→options adapter shim at any
+ * call site: MCP `resolveProfiler`, the wizard's env-var byproduct, the CLI).
+ */
+export interface NativeListObjectsOptions {
+  url: string;
+  /** PostgreSQL schema (defaults to `"public"`). Ignored by MySQL. */
+  schema?: string;
+  logger?: ProfileLogger;
+}
+export interface NativeProfileOptions extends NativeListObjectsOptions {
+  selectedTables?: string[];
+  prefetchedObjects?: DatabaseObject[];
+  progress?: ProfileProgressCallbacks;
+}
+
+export async function listPostgresObjects({ url, schema = "public", logger: log = defaultLog }: NativeListObjectsOptions): Promise<DatabaseObject[]> {
+  const connectionString = url;
   const { Pool } = await import("pg");
   const pool = new Pool({ connectionString, max: 1, connectionTimeoutMillis: 5000 });
   try {
@@ -241,7 +260,8 @@ export async function listPostgresObjects(connectionString: string, schema: stri
   }
 }
 
-export async function listMySQLObjects(connectionString: string, log: ProfileLogger = defaultLog): Promise<DatabaseObject[]> {
+export async function listMySQLObjects({ url, logger: log = defaultLog }: NativeListObjectsOptions): Promise<DatabaseObject[]> {
+  const connectionString = url;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mysql = require("mysql2/promise");
   const pool = mysql.createPool({
@@ -327,14 +347,15 @@ async function queryForeignKeys(
   }));
 }
 
-export async function profilePostgres(
-  connectionString: string,
-  filterTables?: string[],
-  prefetchedObjects?: DatabaseObject[],
-  schema: string = "public",
-  progress?: ProfileProgressCallbacks,
-  log: ProfileLogger = defaultLog,
-): Promise<ProfilingResult> {
+export async function profilePostgres({
+  url,
+  schema = "public",
+  selectedTables: filterTables,
+  prefetchedObjects,
+  progress,
+  logger: log = defaultLog,
+}: NativeProfileOptions): Promise<ProfilingResult> {
+  const connectionString = url;
   const { Pool } = await import("pg");
   const pool = new Pool({ connectionString, max: 3 });
   try {
@@ -667,13 +688,14 @@ async function queryMySQLForeignKeys(
   }));
 }
 
-export async function profileMySQL(
-  connectionString: string,
-  filterTables?: string[],
-  prefetchedObjects?: DatabaseObject[],
-  progress?: ProfileProgressCallbacks,
-  log: ProfileLogger = defaultLog,
-): Promise<ProfilingResult> {
+export async function profileMySQL({
+  url,
+  selectedTables: filterTables,
+  prefetchedObjects,
+  progress,
+  logger: log = defaultLog,
+}: NativeProfileOptions): Promise<ProfilingResult> {
+  const connectionString = url;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mysql = require("mysql2/promise");
   const pool = mysql.createPool({

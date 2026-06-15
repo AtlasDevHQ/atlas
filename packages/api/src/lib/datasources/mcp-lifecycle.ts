@@ -389,59 +389,54 @@ export async function resolveProvisionCapability(
   return { kind: "unsupported", dbType, message: unsupportedProvisionMessage(catalogSlug) };
 }
 
-// ── Profiling capability (#3620 — ADR-0017) ──────────────────────────
+// ── Profilability proxy (#3620 / #3667 — ADR-0017) ───────────────────
 
 /**
- * Profiling-capability resolution — the SOURCE side of the profiler seam
- * (ADR-0017) that feeds `SemanticGenerator`'s `profileFn` injection point
- * (`effect/semantic-generator.ts:108`). Deliberately DERIVED from
- * {@link resolveProvisionCapability}: native/plugin/unsupported classification
- * comes from the EXACT same predicate provisioning uses (the one shared lookup,
- * {@link findDatasourcePluginConnection}), so the plugin that provisions a
- * datasource is the plugin that profiles it — provisioning and profiling stay in
- * lockstep, never a divergent second structural matcher.
+ * Profilability classification for a `dbType` — a cheap (no connection build)
+ * proxy for what `profile_datasource` accepts, used by the MCP `create_datasource`
+ * success hint. Since profiling now rides the unified {@link resolveLiveConnection}
+ * and introspection is a capability of the BUILT connection (#3667), "profilable"
+ * is treated as "connectable": native pg/mysql, or a registered plugin that builds
+ * a connection (`createFromConfig`).
  *
- *   - `native`      — pg/mysql: `SemanticGenerator` profiles these in-core
- *                     (`resolveProfiler`), so no `profileFn` is supplied.
- *   - `plugin`      — a registered datasource plugin that ALSO implements the
- *                     introspection contract (`connection.profile`). Carries the
- *                     `profileFn` the caller passes straight into
- *                     `SemanticGenerator.profile({ profileFn })`. `profile` is
- *                     structurally the host `DatasourceProfiler`, so no adapter.
- *   - `unsupported` — no plugin / unknown slug, OR a plugin that is provisionable
- *                     (`createFromConfig`) but does not implement `profile` yet.
- *                     Explicit + actionable — mirrors `SemanticGenerator`'s
- *                     fail-closed `unsupported_db_type`, never a silent skip.
+ * CAVEAT — this is a PROXY, not a guarantee. The SDK's `PluginDBConnection`
+ * genuinely permits a connectable-but-not-profilable plugin (a query-only
+ * datasource whose built connection omits `profile`/`listObjects`), so
+ * "connectable ⇒ profilable" is NOT enforced by the type system here. It holds by
+ * a runtime/test-enforced invariant instead: every SHIPPED plugin's built
+ * connection exposes both introspection methods, and the enforcement tests
+ * (`universal-profiling-enforcement.test.ts` positive,
+ * `one-profiler-home.test.ts` negative) keep it that way. A hint computed from
+ * this proxy could therefore over-promise for a hypothetical query-only plugin —
+ * but {@link resolveLiveConnection} fails closed at profile time for that case, so
+ * the worst outcome is an optimistic hint, never a silent bad profile. The
+ * trade-off buys avoiding a throwaway connection build just to read a hint.
+ *
+ * Uses the SAME single plugin lookup ({@link findDatasourcePluginConnection}) and
+ * native predicate ({@link isMcpNativeDbType}) provisioning uses, so the two can
+ * never drift.
  */
 export type ProfileCapability =
   | { readonly kind: "native"; readonly dbType: McpNativeDbType }
-  | { readonly kind: "plugin"; readonly dbType: string; readonly profileFn: DatasourceProfiler }
+  | { readonly kind: "plugin"; readonly dbType: string }
   | { readonly kind: "unsupported"; readonly dbType: string; readonly message: string };
 
 function notProfilableMessage(dbType: string): string {
   return (
     `Datasource type "${dbType}" cannot be profiled in this deployment. No registered plugin ` +
-    `implements the profiling contract (connection.profile) for it. Install or upgrade the ` +
-    `corresponding datasource plugin, or profile it with the Atlas CLI (atlas init).`
+    `builds a connection for it. Install or upgrade the corresponding datasource plugin, ` +
+    `or profile it with the Atlas CLI (atlas init).`
   );
 }
 
 /**
- * Profiling-capability resolution keyed by an already-resolved `dbType` rather
- * than a catalog slug — the seam the in-product **wizard** consumes (#3621). The
- * wizard resolves a connection's `dbType` directly off its decrypted URL/config
- * (`detectDBType`), so it has no catalog slug to feed {@link resolveProfileCapability}.
- *
- * Stays in lockstep with provisioning/profiling by using the SAME single plugin
- * lookup ({@link findDatasourcePluginConnection}) and the SAME native predicate
- * ({@link isMcpNativeDbType}) the slug-keyed resolver uses — it is NOT a second
- * structural matcher, just the dbType-keyed entry into the one shared lookup
- * (ADR-0017). Returns:
- *   - `native`      — pg/mysql; `SemanticGenerator` profiles in-core (no `profileFn`).
- *   - `plugin`      — a registered datasource plugin implementing `connection.profile`;
- *                     carries the `profileFn` for `SemanticGenerator.profile({ profileFn })`.
- *   - `unsupported` — no registered plugin for the dbType, OR a plugin that does
- *                     not implement `profile` yet. Explicit + actionable, fail-closed.
+ * Resolve the profilability of an already-resolved `dbType`. Returns:
+ *   - `native`      — pg/mysql; profiled in-core.
+ *   - `plugin`      — a registered datasource plugin that builds a connection
+ *                     (`createFromConfig`); its built connection carries the
+ *                     introspection capability (#3667).
+ *   - `unsupported` — no native handler and no registered plugin. Explicit +
+ *                     actionable, fail-closed.
  */
 export async function resolveProfileCapabilityByDbType(
   dbType: string,
@@ -450,12 +445,11 @@ export async function resolveProfileCapabilityByDbType(
     return { kind: "native", dbType };
   }
   const conn = await findDatasourcePluginConnection(dbType);
-  if (conn && typeof conn.profile === "function") {
-    return { kind: "plugin", dbType, profileFn: conn.profile };
+  if (conn && typeof conn.createFromConfig === "function") {
+    return { kind: "plugin", dbType };
   }
-  // No plugin for the dbType, or a plugin without the profiling half of the
-  // contract — fail-closed and explicit (mirrors SemanticGenerator's
-  // `unsupported_db_type`, never a silent empty result).
+  // No native handler and no registered plugin that builds a connection —
+  // fail-closed and explicit (never a silent empty result).
   return { kind: "unsupported", dbType, message: notProfilableMessage(dbType) };
 }
 
@@ -858,7 +852,23 @@ export interface LiveDatasourceConnection {
 }
 
 export type ResolveLiveConnectionResult =
-  | { readonly kind: "ok"; readonly connection: LiveDatasourceConnection }
+  | {
+      readonly kind: "ok";
+      readonly connection: LiveDatasourceConnection;
+      /**
+       * The connection's CONFIGURED schema/database/dataset scope — the
+       * `workspace_plugins` config schema (`poolSchema`) — or `undefined` when
+       * none was configured / it's not meaningful (MySQL, OAuth). This is the
+       * configured scope, NOT the fully-resolved effective scope: the canonical
+       * dialect default (Postgres → `"public"`) is applied DOWNSTREAM by the
+       * consumer ({@link WizardConnectionContext}'s `effectiveSchema`), not baked
+       * in here. Surfaced so the in-product wizard, which rides this same resolver
+       * (one profiler home), can report the schema in its response without
+       * re-deriving its own connection resolution. The MCP profiling path ignores
+       * it. (Always present on the `ok` variant so every `ok` branch must decide.)
+       */
+      readonly defaultSchema: string | undefined;
+    }
   | { readonly kind: "not_found" }
   /** No transport can build a live connection for this type (no plugin / no introspection / unknown). */
   | { readonly kind: "unsupported"; readonly dbType: string; readonly message: string }
@@ -891,7 +901,8 @@ function reconnectRequiredMessage(dbType: string): string {
 function notProfilableLiveMessage(dbType: string): string {
   return (
     `Datasource type "${dbType}" cannot be profiled in this deployment. No registered plugin ` +
-    `builds a live connection exposing the introspection capability (connection.profile) for it. ` +
+    `builds a live connection exposing the introspection capability (connection.profile + ` +
+    `connection.listObjects) for it. ` +
     `Install or upgrade the corresponding datasource plugin, or profile it with the Atlas CLI (atlas init).`
   );
 }
@@ -925,6 +936,14 @@ export async function resolveLiveConnection(
       WHERE wp.workspace_id = $1
         AND wp.install_id = $2
         AND wp.pillar = 'datasource'
+        -- An archived install is a per-workspace hide tombstone (0094 / #2744):
+        -- it must read as not_found so neither the MCP profile_datasource tool
+        -- nor the in-product wizard (both ride this one resolver) can profile a
+        -- datasource the workspace removed. This restores the status-archived
+        -- filter the pre-convergence wizard resolver carried; list_datasources
+        -- excludes archived too, so an archived datasource being unprofilable is
+        -- consistent end-to-end.
+        AND wp.status != 'archived'
       LIMIT 1`,
     [orgId, installId],
   );
@@ -978,6 +997,8 @@ export async function resolveLiveConnection(
     const listObjects = instance.listObjects.bind(instance);
     return {
       kind: "ok",
+      // OAuth datasources (Salesforce/SOQL) have no schema/database scope.
+      defaultSchema: undefined,
       connection: {
         dbType,
         connectionGroupId,
@@ -1000,25 +1021,32 @@ export async function resolveLiveConnection(
       opts?.schema ?? poolSchema ?? (dbType === "postgres" ? "public" : undefined);
     return {
       kind: "ok",
+      defaultSchema: poolSchema,
       connection: {
         dbType,
         connectionGroupId,
         query: (sql, timeoutMs) => connections.getForOrg(orgId, installId).query(sql, timeoutMs),
         listObjects: (options) =>
           dbType === "mysql"
-            ? listMySQLObjects(poolUrl, options?.logger)
-            : listPostgresObjects(poolUrl, effectiveSchema(options), options?.logger),
+            ? listMySQLObjects({ url: poolUrl, logger: options?.logger })
+            : listPostgresObjects({ url: poolUrl, schema: effectiveSchema(options), logger: options?.logger }),
         profile: (options) =>
           dbType === "mysql"
-            ? profileMySQL(poolUrl, options.selectedTables, options.prefetchedObjects, options.progress, options.logger)
-            : profilePostgres(
-                poolUrl,
-                options.selectedTables,
-                options.prefetchedObjects,
-                effectiveSchema(options),
-                options.progress,
-                options.logger,
-              ),
+            ? profileMySQL({
+                url: poolUrl,
+                selectedTables: options.selectedTables,
+                prefetchedObjects: options.prefetchedObjects,
+                progress: options.progress,
+                logger: options.logger,
+              })
+            : profilePostgres({
+                url: poolUrl,
+                schema: effectiveSchema(options),
+                selectedTables: options.selectedTables,
+                prefetchedObjects: options.prefetchedObjects,
+                progress: options.progress,
+                logger: options.logger,
+              }),
         close: async () => {
           // Registry-managed pool — not torn down by the caller.
         },
@@ -1035,11 +1063,15 @@ export async function resolveLiveConnection(
 
   // Introspection is a capability of the BUILT connection (#3667), bound to the
   // creds `createFromConfig` resolved — NO host shim re-resolving auth from a
-  // url/config. A plugin whose built connection exposes no `profile` is not
-  // profilable (fail-closed, actionable). `poolSchema` provides the
-  // dialect-default scope (ClickHouse database, BigQuery dataset) when the caller
-  // passes none.
-  if (typeof built.profile !== "function") {
+  // url/config. Both halves of the introspection surface are required to be
+  // profilable: `profile` (column/row analysis) AND `listObjects` (the table
+  // picker's enumeration). A connection missing EITHER is fail-closed and
+  // actionable — symmetric with the OAuth path above (which gates on both), and
+  // never a silent empty table list (a `listObjects`-less connection would have
+  // rendered "0 tables" in the wizard, reading as an empty database). `poolSchema`
+  // provides the dialect-default scope (ClickHouse database, BigQuery dataset)
+  // when the caller passes none.
+  if (typeof built.profile !== "function" || typeof built.listObjects !== "function") {
     // The built connection is a real (lazy) client/pool — close it before
     // bailing so a query-only plugin doesn't leak a connection on every
     // profile attempt (the OK path closes via the caller's `finally`; this
@@ -1051,18 +1083,17 @@ export async function resolveLiveConnection(
     return { kind: "unsupported", dbType, message: notProfilableLiveMessage(dbType) };
   }
   const builtProfile = built.profile.bind(built);
+  const builtListObjects = built.listObjects.bind(built);
   const profile = (o: LiveConnectionProfileOptions): Promise<ProfilingResult> =>
     builtProfile({ ...o, ...(o.schema === undefined && poolSchema !== undefined ? { schema: poolSchema } : {}) });
-  const listObjects: (o?: LiveConnectionListOptions) => Promise<DatabaseObject[]> =
-    typeof built.listObjects === "function"
-      ? (o) =>
-          Promise.resolve(
-            built.listObjects!({ ...(o?.schema !== undefined ? { schema: o.schema } : poolSchema !== undefined ? { schema: poolSchema } : {}) }),
-          )
-      : () => Promise.resolve([]);
+  const listObjects = (o?: LiveConnectionListOptions): Promise<DatabaseObject[]> =>
+    Promise.resolve(
+      builtListObjects({ ...(o?.schema !== undefined ? { schema: o.schema } : poolSchema !== undefined ? { schema: poolSchema } : {}) }),
+    );
 
   return {
     kind: "ok",
+    defaultSchema: poolSchema,
     connection: {
       dbType,
       connectionGroupId,

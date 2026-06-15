@@ -290,7 +290,7 @@ export async function testDatabaseConnection(
       // optional Elastic Cloud ID come from the ATLAS_ES_* env contract,
       // mirroring the plugin config (#3309). An empty connStr means the
       // endpoint is ATLAS_ES_CLOUD_ID.
-      const { elasticsearchConfigFromEnv } = await import("./profilers/elasticsearch");
+      const { elasticsearchConfigFromEnv } = await import("../../../plugins/elasticsearch/src/profiler");
       const config = elasticsearchConfigFromEnv(connStr || undefined);
       const {
         resolveElasticsearchConfig,

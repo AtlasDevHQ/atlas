@@ -325,14 +325,10 @@ function resolveProfiler(
   profileFn: DatasourceProfiler | undefined,
 ): DatasourceProfiler | ProfilingFailedError {
   if (profileFn) return profileFn;
-  if (dbType === "postgres") {
-    return ({ url, schema, selectedTables, prefetchedObjects, progress, logger }) =>
-      profilePostgres(url, selectedTables, prefetchedObjects, schema, progress, logger);
-  }
-  if (dbType === "mysql") {
-    return ({ url, selectedTables, prefetchedObjects, progress, logger }) =>
-      profileMySQL(url, selectedTables, prefetchedObjects, progress, logger);
-  }
+  // Native pg/mysql profilers take the unified options shape at source, so they
+  // ARE `DatasourceProfiler`s — no positional→options adapter shim here (#3666).
+  if (dbType === "postgres") return profilePostgres;
+  if (dbType === "mysql") return profileMySQL;
   return new ProfilingFailedError({
     message:
       `No profiler available for dbType "${dbType}". Core profiles postgres/mysql; ` +

@@ -120,17 +120,35 @@ export function buildDuckDBPlugin(
     createFromConfig: (runtimeConfig) => {
       const parsed = DuckDBConnectionConfigSchema.parse(runtimeConfig);
       const dbConfig = resolveDbConfig(parsed);
-      return createDuckDBConnection({ ...dbConfig, logger: log });
+      const built = createDuckDBConnection({ ...dbConfig, logger: log });
+      // #3667 — introspection is a capability OF the built connection, bound to
+      // the path/url that built it (the host's unified resolver consumes these;
+      // no url/config re-resolution). `parseDuckDBUrl` round-trips a reconstructed
+      // `duckdb://<path>` when the config carried a bare `path`. Read-only via the
+      // connection's READ_ONLY access mode.
+      const introspectUrl = parsed.url ?? `duckdb://${dbConfig.path}`;
+      return {
+        ...built,
+        listObjects: (o) =>
+          listDuckDBObjects({ url: introspectUrl, ...(o?.schema !== undefined ? { schema: o.schema } : {}) }),
+        profile: (o) =>
+          profileDuckDB({
+            url: introspectUrl,
+            ...(o?.schema !== undefined ? { schema: o.schema } : {}),
+            selectedTables: o?.selectedTables,
+            prefetchedObjects: o?.prefetchedObjects,
+            progress: o?.progress,
+            logger: o?.logger,
+          }),
+      };
     },
     dbType: "duckdb",
     parserDialect: "PostgresQL",
     forbiddenPatterns: DUCKDB_FORBIDDEN_PATTERNS,
-    // Introspection half of the datasource contract (ADR-0017). The host resolves
-    // `profile` off the registry (same predicate as `createFromConfig`) and feeds
-    // it into SemanticGenerator's profiler seam; the CLI consumes these exports
-    // directly. Both run read-only via the connection's READ_ONLY access mode.
-    listObjects: listDuckDBObjects,
-    profile: profileDuckDB,
+    // Introspection (listObjects / profile) is a capability of the BUILT
+    // connection (createFromConfig above), bound to the path/url that built it —
+    // the one home MCP, the wizard, and the CLI all consume (ADR-0017 / #3670).
+    // No connection-namespace profiler exports remain.
   };
 
   if (hasStaticConfig) {

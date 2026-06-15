@@ -143,7 +143,7 @@ describe("DuckDB profiler — error propagation behavior", () => {
           fs.writeSync(fd, garbage, 0, garbage.length, 1024);
           fs.closeSync(fd);
 
-          await profileDuckDB(dbPath);
+          await profileDuckDB({ url: "duckdb://" + dbPath });
           // If we get here, the corruption wasn't detected
           process.exit(2);
         } catch {
@@ -184,7 +184,7 @@ describe("DuckDB profiler — error propagation behavior", () => {
     await ingestIntoDuckDB(dbPath, [{ path: csvPath, format: "csv" }]);
 
     const t0 = performance.now();
-    const result = await profileDuckDB(dbPath);
+    const result = await profileDuckDB({ url: `duckdb://${dbPath}` });
     const elapsed = performance.now() - t0;
 
     expect(result.profiles).toHaveLength(1);

@@ -1013,40 +1013,12 @@ export interface AtlasDatasourcePlugin<TConfig = undefined> extends AtlasPluginB
      * the entire SQL validation pipeline).
      */
     forbiddenPatterns?: RegExp[];
-    /**
-     * Introspect: enumerate the datasource's queryable objects (tables, views,
-     * materialized views). The discovery half of the profiler seam (ADR-0017):
-     * the host calls this to populate a "which tables to onboard" picker and to
-     * feed `prefetchedObjects` into {@link profile}, avoiding a second catalog
-     * round-trip.
-     *
-     * Optional and additive — a query-only datasource (one that cannot, or does
-     * not wish to, be auto-onboarded) omits both `listObjects` and `profile` and
-     * the host degrades to its explicit `unsupported_db_type` outcome rather than
-     * a silent empty result. Must run **read-only**.
-     */
-    listObjects?(
-      options: PluginListObjectsOptions,
-    ): Promise<PluginDatabaseObject[]> | PluginDatabaseObject[];
-    /**
-     * Introspect: profile the datasource's objects into a {@link PluginProfilingResult}
-     * — column types, sample values, key metadata, and per-table errors — the raw
-     * material the host's shared generate/enrich engine turns into a semantic
-     * layer. The profiling half of the profiler seam (ADR-0017).
-     *
-     * The host resolves this off the plugin registry by the SAME predicate that
-     * resolves {@link createFromConfig} (provisioning and profiling stay in
-     * lockstep — see `resolveProfileCapability`) and feeds it into
-     * `SemanticGenerator`'s `DatasourceProfiler` injection point. Core never
-     * imports the plugin package; resolution is structural.
-     *
-     * Optional and additive (see {@link listObjects}). Must run **read-only** and
-     * MUST NOT surface credentials in thrown errors — the host scrubs DSN
-     * userinfo from messages, but the profiler should not echo secrets either.
-     */
-    profile?(
-      options: PluginProfileOptions,
-    ): Promise<PluginProfilingResult>;
+    // Introspection (listObjects / profile) is NOT a namespace member. It is a
+    // capability of the BUILT connection {@link createFromConfig} returns
+    // (`PluginDBConnection.listObjects` / `.profile`, bound to the creds that
+    // built it) — the one home the host's unified resolver, the in-product
+    // wizard, and the CLI all consume (#3667 / #3670, ADR-0017). A query-only
+    // datasource simply omits them from its built connection.
   };
   /**
    * Optional entity definitions — plugin-provided semantic layer fragments.

@@ -36,7 +36,7 @@ import {
 import {
   profileElasticsearch,
   elasticsearchConfigFromEnv,
-} from "../../lib/profilers/elasticsearch";
+} from "../../../../plugins/elasticsearch/src/profiler";
 
 export async function handleDiff(args: string[]): Promise<void> {
   // An Elastic Cloud ID names the endpoint without a URL (#3309). Trimmed so
@@ -184,27 +184,23 @@ export async function handleDiff(args: string[]): Promise<void> {
       let result: ProfilingResult;
       switch (dbType) {
         case "mysql":
-          result = await profileMySQL(
-            connStr,
-            filterTables,
-            undefined,
-            undefined,
-            cliProfileLogger,
-          );
+          result = await profileMySQL({
+            url: connStr,
+            selectedTables: filterTables,
+            logger: cliProfileLogger,
+          });
           break;
         case "postgres":
-          result = await profilePostgres(
-            connStr,
-            filterTables,
-            undefined,
-            schemaArg,
-            undefined,
-            cliProfileLogger,
-          );
+          result = await profilePostgres({
+            url: connStr,
+            schema: schemaArg,
+            selectedTables: filterTables,
+            logger: cliProfileLogger,
+          });
           break;
         case "clickhouse": {
-          const { profileClickHouse } = await import("../../lib/profilers/clickhouse");
-          result = await profileClickHouse(connStr, filterTables);
+          const { profileClickHouse } = await import("../../../../plugins/clickhouse/src/profiler");
+          result = await profileClickHouse({ url: connStr, selectedTables: filterTables });
           break;
         }
         case "snowflake": {
@@ -226,8 +222,8 @@ export async function handleDiff(args: string[]): Promise<void> {
           break;
         }
         case "salesforce": {
-          const { profileSalesforce } = await import("../../lib/profilers/salesforce");
-          result = await profileSalesforce(connStr, filterTables);
+          const { profileSalesforce } = await import("../../../../plugins/salesforce/src/profiler");
+          result = await profileSalesforce({ url: connStr, selectedTables: filterTables });
           break;
         }
         case "bigquery": {

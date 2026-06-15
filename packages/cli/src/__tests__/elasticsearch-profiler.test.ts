@@ -5,7 +5,7 @@ import {
   profileElasticsearch,
   elasticsearchCatalog,
   elasticsearchConfigFromEnv,
-} from "../../lib/profilers/elasticsearch";
+} from "../../../../plugins/elasticsearch/src/profiler";
 import { detectDBType } from "../../lib/cli-utils";
 import {
   esEntityToSnapshot,

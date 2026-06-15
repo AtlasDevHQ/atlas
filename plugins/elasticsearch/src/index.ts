@@ -298,14 +298,11 @@ export function buildElasticsearchPlugin(
     // base DML/DDL regex.
     parserDialect: ELASTICSEARCH_PARSER_DIALECT,
     forbiddenPatterns: ELASTICSEARCH_FORBIDDEN_PATTERNS,
-    // Introspection half of the datasource contract (ADR-0017). The host resolves
-    // `profile` off the registry (same predicate as `createFromConfig`) and feeds
-    // it into SemanticGenerator's profiler seam; the CLI consumes these exports
-    // directly. Both run read-only (`_mapping`/`_alias`/`_data_stream`/`_search`/
-    // `_count`) and collapse indices/aliases/data-streams into ONE logical object
-    // (#3269), so a wizard-profiled ES layer matches a CLI-profiled one.
-    listObjects: listElasticsearchObjects,
-    profile: profileElasticsearchObjects,
+    // Introspection (listObjects / profile) is a capability of the BUILT
+    // connection (createFromConfig above), bound to the creds that built it — the
+    // one home MCP, the wizard, and the CLI all consume (ADR-0017 / #3670). It
+    // collapses indices/aliases/data-streams into ONE logical object (#3269). No
+    // connection-namespace profiler exports remain.
   };
 
   if (staticConfig) {

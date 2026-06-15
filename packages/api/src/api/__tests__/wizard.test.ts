@@ -429,52 +429,69 @@ mock.module("@atlas/api/lib/semantic/enrich", () => ({
   enrichSemanticLayer: async () => {},
 }));
 
-// Profiler-seam capability resolution (#3621 / ADR-0017). The wizard routes
-// dispatch through `resolveWizardProfiler(dbType)`: pg/mysql resolve to the
-// native in-core fast path, any other dbType to a registry-resolved plugin
-// profiler (or an actionable `unsupported` outcome). We mock the resolver so
-// the route-level dispatch tests can:
-//   - drive the native pg/mysql path through the same (mocked) profiler module
-//     the rest of the suite already wires (default impl below), AND
-//   - inject a plugin capability for a non-pg/mysql dbType without standing up
-//     a real plugin registry.
-// Default impl mirrors the real resolver for pg/mysql by delegating to the
-// already-mocked profiler module, so every existing pg/mysql test is unchanged.
-const mockResolveWizardProfiler: Mock<
-  (dbType: string) => Promise<
-    | {
-        kind: "ok";
-        listObjects: (args: { url: string; schema: string }) => Promise<{ name: string; type: string }[]>;
-        profile: (args: { url: string; schema: string; selectedTables?: string[] }) => Promise<{
-          profiles: unknown[];
-          errors: unknown[];
-        }>;
-      }
-    | { kind: "unsupported"; message: string }
-  >
-> = mock(async (dbType: string) => {
-  if (dbType === "postgres") {
-    return {
-      kind: "ok" as const,
-      listObjects: async () => mockListPostgresObjects(),
-      profile: async () => mockProfilePostgres(),
-    };
-  }
-  if (dbType === "mysql") {
-    return {
-      kind: "ok" as const,
-      listObjects: async () => mockListMySQLObjects(),
-      profile: async () => mockProfileMySQL(),
-    };
-  }
-  // Non-pg/mysql with no injected plugin → actionable not-profilable state.
+// One profiler home (#3657, ADR-0017 §Amendment(#3667)). The wizard routes now
+// resolve a LIVE connection via `resolveWizardConnection` (which rides the same
+// `resolveLiveConnection` MCP uses) — introspection is a capability OF that
+// connection, not a second profiler seam. We mock that ONE seam so the route
+// tests drive resolution outcomes (ok / not_found / unsupported / reconnect)
+// directly. The resolver's own internals (workspace vs global vs env-var
+// byproduct, the connections.has gate) are unit-tested in
+// `datasources/__tests__/wizard-connection.test.ts`.
+type WizListObjects = (o?: { schema?: string }) => Promise<{ name: string; type: string }[]>;
+type WizProfile = (o?: { schema?: string; selectedTables?: string[] }) => Promise<{
+  profiles: unknown[];
+  errors: unknown[];
+}>;
+type WizCtx =
+  | {
+      kind: "ok";
+      dbType: string;
+      querySchema: string | undefined;
+      connection: {
+        dbType: string;
+        connectionGroupId: string | null;
+        query: () => Promise<{ columns: string[]; rows: Record<string, unknown>[] }>;
+        listObjects: WizListObjects;
+        profile: WizProfile;
+        close: () => Promise<void>;
+      };
+    }
+  | { kind: "not_found" }
+  | { kind: "unsupported"; message: string }
+  | { kind: "reconnect_required"; message: string };
+
+function okCtx(opts: {
+  dbType: string;
+  querySchema: string | undefined;
+  listObjects: WizListObjects;
+  profile: WizProfile;
+}): WizCtx {
   return {
-    kind: "unsupported" as const,
-    message: `Datasource type "${dbType}" cannot be profiled in this deployment. No registered plugin implements the profiling contract (connection.profile) for it.`,
+    kind: "ok",
+    dbType: opts.dbType,
+    querySchema: opts.querySchema,
+    connection: {
+      dbType: opts.dbType,
+      connectionGroupId: null,
+      query: async () => ({ columns: [], rows: [] as Record<string, unknown>[] }),
+      listObjects: opts.listObjects,
+      profile: opts.profile,
+      close: async () => {},
+    },
   };
-});
-mock.module("@atlas/api/lib/datasources/wizard-profiler", () => ({
-  resolveWizardProfiler: mockResolveWizardProfiler,
+}
+
+const mockResolveWizardConnection: Mock<(connectionId: string, orgId?: string | null) => Promise<WizCtx>> = mock(
+  async () =>
+    okCtx({
+      dbType: "postgres",
+      querySchema: "public",
+      listObjects: () => mockListPostgresObjects(),
+      profile: () => mockProfilePostgres(),
+    }),
+);
+mock.module("@atlas/api/lib/datasources/wizard-connection", () => ({
+  resolveWizardConnection: mockResolveWizardConnection,
 }));
 
 // --- Import after mocks ---
@@ -575,27 +592,15 @@ beforeEach(() => {
   mockRunEnterprise.mockReset();
   mockRunEnterprise.mockImplementation(async () => null); // no workspace BYOT by default
 
-  mockResolveWizardProfiler.mockReset();
-  mockResolveWizardProfiler.mockImplementation(async (dbType: string) => {
-    if (dbType === "postgres") {
-      return {
-        kind: "ok" as const,
-        listObjects: async () => mockListPostgresObjects(),
-        profile: async () => mockProfilePostgres(),
-      };
-    }
-    if (dbType === "mysql") {
-      return {
-        kind: "ok" as const,
-        listObjects: async () => mockListMySQLObjects(),
-        profile: async () => mockProfileMySQL(),
-      };
-    }
-    return {
-      kind: "unsupported" as const,
-      message: `Datasource type "${dbType}" cannot be profiled in this deployment. No registered plugin implements the profiling contract (connection.profile) for it.`,
-    };
-  });
+  mockResolveWizardConnection.mockReset();
+  mockResolveWizardConnection.mockImplementation(async () =>
+    okCtx({
+      dbType: "postgres",
+      querySchema: "public",
+      listObjects: () => mockListPostgresObjects(),
+      profile: () => mockProfilePostgres(),
+    }),
+  );
 });
 
 // =====================================================================
@@ -648,6 +653,9 @@ describe("POST /api/v1/wizard/profile", () => {
     const data = await json(res);
     expect(data.error).toBe("profile_failed");
     expect(data.requestId).toBeDefined();
+    // The raw driver detail stays in the logs — never echoed to the client (a
+    // driver error can embed host/port/DSN userinfo).
+    expect(data.message).not.toContain("connection timeout");
   });
 
   it("returns 400 for malformed JSON body", async () => {
@@ -806,6 +814,8 @@ describe("POST /api/v1/wizard/generate", () => {
     const data = await json(res);
     expect(data.error).toBe("generate_failed");
     expect(data.requestId).toBeDefined();
+    // Raw driver detail stays out of the client response.
+    expect(data.message).not.toContain("statement timeout");
   });
 });
 
@@ -912,8 +922,7 @@ describe("POST /api/v1/wizard/enrich", () => {
   });
 
   it("returns 404 when the connection is not found", async () => {
-    mockConnectionHas.mockImplementation(() => false);
-    mockHasInternalDB.mockImplementation(() => false);
+    mockResolveWizardConnection.mockImplementation(async () => ({ kind: "not_found" }));
     const res = await postJson("/api/v1/wizard/enrich", {
       connectionId: "nonexistent",
       tableName: "users",
@@ -1656,12 +1665,13 @@ describe("POST /api/v1/wizard/save", () => {
 });
 
 // =====================================================================
-// Profiler-seam dispatch for a plugin dbType (#3621 / ADR-0017)
+// Profiler dispatch for a plugin dbType (#3657 / ADR-0017)
 //
-// The wizard routes dispatch any non-pg/mysql dbType through the
-// registry-resolved profiler (`resolveWizardProfiler`). These tests pin that
-// dispatch end-to-end with a clickhouse-shaped connection: a plugin capability
-// flows the same baseline → enrich → save path pg/mysql does, and a plugin that
+// The wizard reads introspection off the ONE resolved live connection
+// (`resolveWizardConnection`). These tests pin that dispatch end-to-end with a
+// clickhouse-shaped connection: a plugin connection flows the same baseline →
+// enrich → save path pg/mysql does, and a connection exposing no profiling
+// capability surfaces the actionable not_profilable state, and a plugin that
 // doesn't implement the contract surfaces the actionable `not_profilable` state
 // (the only remaining rejection — the "PostgreSQL and MySQL" gate is gone).
 // =====================================================================
@@ -1694,21 +1704,14 @@ describe("wizard profiler-seam dispatch — plugin dbType (#3621)", () => {
   const pluginProfile = mock(async () => ({ profiles: [mockOrdersProfile], errors: [] }));
 
   function injectClickHousePlugin() {
-    mockResolveWizardProfiler.mockImplementation(async (dbType: string) => {
-      if (dbType === "clickhouse") {
-        return {
-          kind: "ok" as const,
-          listObjects: pluginListObjects,
-          profile: pluginProfile,
-        };
-      }
-      // pg/mysql still resolve natively (kept for any default-connection call).
-      return {
-        kind: "ok" as const,
-        listObjects: async () => mockListPostgresObjects(),
-        profile: async () => mockProfilePostgres(),
-      };
-    });
+    mockResolveWizardConnection.mockImplementation(async () =>
+      okCtx({
+        dbType: "clickhouse",
+        querySchema: "default",
+        listObjects: pluginListObjects,
+        profile: pluginProfile,
+      }),
+    );
   }
 
   beforeEach(() => {
@@ -1727,8 +1730,9 @@ describe("wizard profiler-seam dispatch — plugin dbType (#3621)", () => {
     expect(data.dbType).toBe("clickhouse");
     const tables = data.tables as { name: string }[];
     expect(tables.map((t) => t.name).toSorted()).toEqual(["events", "sessions"]);
-    // Routed through the registry-resolved profiler, not the native pg path.
-    expect(mockResolveWizardProfiler).toHaveBeenCalledWith("clickhouse");
+    // Routed through the ONE resolver (the same `resolveLiveConnection` MCP uses),
+    // reading `listObjects` off the resolved live connection — not the native pg path.
+    expect(mockResolveWizardConnection).toHaveBeenCalledWith("analytics", "org-1");
     expect(pluginListObjects).toHaveBeenCalledTimes(1);
     expect(mockListPostgresObjects).not.toHaveBeenCalled();
   });
@@ -1772,9 +1776,20 @@ describe("wizard profiler-seam dispatch — plugin dbType (#3621)", () => {
     expect(mockEnrichEntityYaml.mock.calls[0][4]).toBe("clickhouse");
   });
 
+  // A clickhouse install whose resolved connection exposes no profiling
+  // capability → the resolver surfaces the actionable not-profilable state.
+  function injectUnprofilableClickHouse() {
+    mockResolveWizardConnection.mockImplementation(async () => ({
+      kind: "unsupported" as const,
+      message:
+        `Datasource type "clickhouse" cannot be profiled in this deployment. No registered plugin ` +
+        `builds a live connection exposing the introspection capability (connection.profile) for it.`,
+    }));
+  }
+
   it("profile → returns the actionable not_profilable state when the plugin doesn't implement profiling", async () => {
     registerClickHouseConnection();
-    // Default impl returns `unsupported` for any non-pg/mysql dbType (no plugin).
+    injectUnprofilableClickHouse();
     const res = await postJson("/api/v1/wizard/profile", { connectionId: "analytics" });
     expect(res.status).toBe(400);
     const data = await json(res);
@@ -1787,6 +1802,7 @@ describe("wizard profiler-seam dispatch — plugin dbType (#3621)", () => {
 
   it("generate → returns not_profilable (400) when the plugin doesn't implement profiling", async () => {
     registerClickHouseConnection();
+    injectUnprofilableClickHouse();
     const res = await postJson("/api/v1/wizard/generate", {
       connectionId: "analytics",
       tables: ["events"],
@@ -1798,6 +1814,7 @@ describe("wizard profiler-seam dispatch — plugin dbType (#3621)", () => {
 
   it("enrich → returns not_profilable (400) when the plugin doesn't implement profiling", async () => {
     registerClickHouseConnection();
+    injectUnprofilableClickHouse();
     const res = await postJson("/api/v1/wizard/enrich", {
       connectionId: "analytics",
       tableName: "events",
@@ -1812,13 +1829,18 @@ describe("wizard profiler-seam dispatch — plugin dbType (#3621)", () => {
 });
 
 // =====================================================================
-// resolveConnectionUrl — tested indirectly via endpoints
+// Connection resolution → route mapping (#3657)
+//
+// Resolution moved into the ONE resolver (`resolveWizardConnection`, riding
+// `resolveLiveConnection`); its internals — workspace vs global vs env-var
+// byproduct, the connections.has gate — are unit-tested in
+// `datasources/__tests__/wizard-connection.test.ts`. Here we pin the ROUTE's
+// mapping of each resolver outcome to an HTTP response.
 // =====================================================================
 
-describe("resolveConnectionUrl", () => {
-  it("returns 404 when connection is not found anywhere", async () => {
-    mockConnectionHas.mockImplementation(() => false);
-    mockHasInternalDB.mockImplementation(() => false);
+describe("wizard connection resolution → route mapping", () => {
+  it("not_found → 404 with the connectionId in the message", async () => {
+    mockResolveWizardConnection.mockImplementation(async () => ({ kind: "not_found" }));
 
     const res = await postJson("/api/v1/wizard/profile", { connectionId: "nonexistent" });
     expect(res.status).toBe(404);
@@ -1827,20 +1849,8 @@ describe("resolveConnectionUrl", () => {
     expect(data.message).toContain("nonexistent");
   });
 
-  it("returns 404 when connection not in registry and internal DB returns empty", async () => {
-    mockConnectionHas.mockImplementation(() => false);
-    mockHasInternalDB.mockImplementation(() => true);
-    mockInternalQuery.mockImplementation(async () => []);
-
-    const res = await postJson("/api/v1/wizard/profile", { connectionId: "missing-conn" });
-    expect(res.status).toBe(404);
-    const data = await json(res);
-    expect(data.error).toBe("not_found");
-  });
-
-  it("returns 500 when internal DB query throws (infrastructure error)", async () => {
-    mockConnectionHas.mockImplementation(() => true);
-    mockInternalQuery.mockImplementation(async () => {
+  it("resolver throws (infrastructure error) → 500 connection_resolution_failed + requestId", async () => {
+    mockResolveWizardConnection.mockImplementation(async () => {
       throw new Error("Connection pool exhausted");
     });
 
@@ -1851,43 +1861,22 @@ describe("resolveConnectionUrl", () => {
     expect(data.requestId).toBeDefined();
   });
 
-  it("returns 500 when decryption fails", async () => {
-    mockConnectionHas.mockImplementation(() => true);
-    mockInternalQuery.mockImplementation(
-      async () => [
-        { config: { url: "encrypted:secret-url", schema: "public" }, schema_name: "public", config_schema: null },
-      ],
-    );
-    mockDecryptUrl.mockImplementation(() => {
-      throw new Error("Decryption failed: invalid key");
-    });
+  it("reconnect_required (OAuth token stale) → 400 reconnect_required", async () => {
+    mockResolveWizardConnection.mockImplementation(async () => ({
+      kind: "reconnect_required",
+      message: "The salesforce connection needs to be reconnected before it can be profiled.",
+    }));
 
-    const res = await postJson("/api/v1/wizard/profile", { connectionId: "default" });
-    expect(res.status).toBe(500);
+    const res = await postJson("/api/v1/wizard/profile", { connectionId: "sf" });
+    expect(res.status).toBe(400);
     const data = await json(res);
-    expect(data.error).toBe("connection_resolution_failed");
-    expect(data.requestId).toBeDefined();
+    expect(data.error).toBe("reconnect_required");
   });
 
-  it("falls back to ATLAS_DATASOURCE_URL for default connection", async () => {
-    const originalUrl = process.env.ATLAS_DATASOURCE_URL;
-    process.env.ATLAS_DATASOURCE_URL = "postgresql://fallback/test";
-
-    try {
-      // Registry has it, but no internal DB configured
-      mockConnectionHas.mockImplementation(() => true);
-      mockHasInternalDB.mockImplementation(() => false);
-
-      const res = await postJson("/api/v1/wizard/profile", { connectionId: "default" });
-      // Should succeed using the env var fallback
-      expect(res.status).toBe(200);
-    } finally {
-      if (originalUrl === undefined) {
-        delete process.env.ATLAS_DATASOURCE_URL;
-      } else {
-        process.env.ATLAS_DATASOURCE_URL = originalUrl;
-      }
-    }
+  it("ok → 200 (the resolver handled workspace/global/env-var resolution internally)", async () => {
+    // Default impl resolves an ok postgres context — the route just profiles it.
+    const res = await postJson("/api/v1/wizard/profile", { connectionId: "default" });
+    expect(res.status).toBe(200);
   });
 });
 
@@ -1960,65 +1949,32 @@ describe("wizard __demo__ end-to-end", () => {
     expect(mkdirPaths.some((p) => p.includes(path.join("groups", "__demo__")))).toBe(true);
   });
 
-  it("profile → falls back to ATLAS_DATASOURCE_URL when DB lookup misses __demo__", async () => {
-    // Reproduces the production failure mode: __demo__ is in the runtime
-    // registry (loadSavedConnections hydrates it from any org), but the
-    // caller's session orgId resolves to a row miss (e.g. platform_admin
-    // visiting a workspace where __demo__ was seeded under a different
-    // org_id). Without the env-var fallback __demo__ dead-ends the
-    // wizard — `default` already gets this fallback and __demo__ should
-    // too, since both point at ATLAS_DATASOURCE_URL by construction.
+  it("profile → resolves __demo__ when the resolver returns ok (e.g. env-var byproduct)", async () => {
+    // The resolver owns the workspace-miss → ATLAS_DATASOURCE_URL byproduct
+    // fallback (unit-tested in wizard-connection.test.ts). At the route level we
+    // pin that an ok outcome for __demo__ profiles normally.
     registerDemoInRegistry();
-    mockHasInternalDB.mockImplementation(() => true);
-    mockInternalQuery.mockImplementation(async () => []); // no row for any orgId
-
-    const originalUrl = process.env.ATLAS_DATASOURCE_URL;
-    process.env.ATLAS_DATASOURCE_URL = "postgresql://fallback/atlas";
-    try {
-      const res = await postJson("/api/v1/wizard/profile", { connectionId: "__demo__" });
-      expect(res.status).toBe(200);
-      const data = await json(res);
-      expect(data.connectionId).toBe("__demo__");
-    } finally {
-      if (originalUrl === undefined) delete process.env.ATLAS_DATASOURCE_URL;
-      else process.env.ATLAS_DATASOURCE_URL = originalUrl;
-    }
+    const res = await postJson("/api/v1/wizard/profile", { connectionId: "__demo__" });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.connectionId).toBe("__demo__");
   });
 
-  it("profile → still 404s for __demo__ when it isn't registered AND the DB has no row", async () => {
-    // Pins current behavior: the env-var fallback is gated by
-    // `connections.has(connectionId)`. If a caller hand-crafts
-    // `connectionId: "__demo__"` against a server where
-    // loadSavedConnections() never hydrated the registry AND no DB row
-    // exists for the user's org, we 404 rather than silently profile
-    // ATLAS_DATASOURCE_URL — admins must set up the demo first
-    // (the wizard frontend hides this case via its visibility filter).
-    mockConnectionHas.mockImplementation(() => false);
-    mockHasInternalDB.mockImplementation(() => true);
-    mockInternalQuery.mockImplementation(async () => []);
-
-    const originalUrl = process.env.ATLAS_DATASOURCE_URL;
-    process.env.ATLAS_DATASOURCE_URL = "postgresql://fallback/atlas";
-    try {
-      const res = await postJson("/api/v1/wizard/profile", { connectionId: "__demo__" });
-      expect(res.status).toBe(404);
-      const data = await json(res);
-      expect(data.error).toBe("not_found");
-    } finally {
-      if (originalUrl === undefined) delete process.env.ATLAS_DATASOURCE_URL;
-      else process.env.ATLAS_DATASOURCE_URL = originalUrl;
-    }
+  it("profile → 404s for __demo__ when the resolver finds nothing (not registered, no DB row)", async () => {
+    // The connections.has gate + workspace/global misses live in the resolver;
+    // here we pin the route maps that not_found to a 404 rather than silently
+    // profiling ATLAS_DATASOURCE_URL.
+    mockResolveWizardConnection.mockImplementation(async () => ({ kind: "not_found" }));
+    const res = await postJson("/api/v1/wizard/profile", { connectionId: "__demo__" });
+    expect(res.status).toBe(404);
+    const data = await json(res);
+    expect(data.error).toBe("not_found");
   });
 
-  it("profile → still 404s for other underscore-prefixed identities (e.g. draft_test)", async () => {
-    // Mirror the wizard frontend filter: only __demo__ is first-class.
-    // draft_test (and any other `_`-prefixed id) must stay invisible
-    // end-to-end so a stray fixture can't be profiled even when
-    // ATLAS_DATASOURCE_URL is configured.
-    mockConnectionHas.mockImplementation(() => false);
-    mockHasInternalDB.mockImplementation(() => true);
-    mockInternalQuery.mockImplementation(async () => []);
-
+  it("profile → 404s for other underscore-prefixed identities (e.g. draft_test)", async () => {
+    // Mirror the wizard frontend filter: only __demo__ is first-class. The
+    // resolver never env-var-profiles a stray `_`-prefixed id → not_found → 404.
+    mockResolveWizardConnection.mockImplementation(async () => ({ kind: "not_found" }));
     const originalUrl = process.env.ATLAS_DATASOURCE_URL;
     process.env.ATLAS_DATASOURCE_URL = "postgresql://fallback/atlas";
     try {

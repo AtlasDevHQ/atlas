@@ -1,0 +1,36 @@
+# Self-serve trial signup over MCP: anonymous onboarding caller, claim-gated metering, business-email-only
+
+Atlas lets a prospect spin up a trial Workspace from inside an MCP client (`start_trial`), provision it, and convert later — without ever leaving the agent for the web signup form. OAuth can't mint a token for an account that doesn't exist yet, so signup must begin unauthenticated, and an autonomous, scriptable channel must not become a free-resource or spam surface. Decided in the grill of PRD #3646.
+
+## The cold-start entry point is a non-actor, not a fourth actor kind
+
+`CONTEXT.md` defines an **MCP actor** as exactly three kinds (governed / trusted / hosted), all identity-bearing, and ADR-0016 makes "RBAC is the only source of authority" a hard invariant. `start_trial` runs *before* any user, Workspace, or bearer exists, so it is modeled as the **anonymous onboarding caller** — an identity-less entry point that is **not** an MCP actor, is structurally incapable of reaching the dispatch gate pipeline, and can invoke exactly one tool on a separate pre-auth path. That call *produces* a real user + Workspace; a normal *hosted* actor then takes over via the OAuth/DCR connect. It is the single, audited pre-actor carve-out — never a `system:mcp` (*trusted*) fallback (that is the operator's own process, a different boundary), so the three-kind actor model and the origin ceiling stay intact.
+
+## Metering is a claim-gate at the agent seam, NOT a budget clamp and NOT in Gate 0
+
+A Workspace provisioned over MCP is **unclaimed** until a human completes the web OTP interstitial (emailOTP — Atlas never uses magic links — set a credential/passkey, accept ToS). Unclaimed = **metered**, claimed = **full**. The meter exists because *asking questions of data on Atlas's tokens* is the real cost; *setup* (connect a Datasource, build the semantic layer) is cheap and stays fully open.
+
+The non-obvious part — and the reason this is recorded — is **where** the meter is enforced. Every MCP datasource tool (including the write/setup tools) declares `checksBilling: true`, and the shared `checkAgentBillingGate` blocks on the token hard-cap (`plan_limit_exceeded`). So implementing "metered" as a `tokenBudgetPerSeat: 0` clamp would trip Gate 0 and block **setup and client-paid MCP querying**, not just Atlas-token Q&A — the opposite of the intent. Therefore the meter is a **claim-gate placed on the Atlas-token-spending path only (`executeAgentQuery`: web `/api/v1/query`, chat platforms, scheduler)**, keyed on the owner's `emailVerified` bit. MCP `executeSQL` never enters `executeAgentQuery` (client model pays, no Atlas tokens) and setup tools only hit Gate-0 solvency, so both keep working pre-claim. No new plan tier, no `meter_state` column — a clamp function over the existing `trial` limits plus an existing bit.
+
+## Expiry reuses Gate 0 unchanged; the trial clock starts at claim
+
+An *expired* trial is a **solvency** concern, distinct from the meter, and Gate 0 already enforces it on every surface including MCP (`trial_expired` blocks `executeSQL`/`runMetric` and every `checksBilling` setup tool). So once a trial expires unconverted, the prospect can neither query nor keep setting things up until a paid subscription makes the Workspace solvent — no new code, and it is the conversion lever. A short **unclaimed-grace** reaps abandoned signups; the full 14-day trial clock is **triggered at claim**, so an unclaimed Workspace can't sit on a 14-day free window.
+
+## CRM attribution rides the existing lead-source pipeline, not a new column or `agentOrigin`
+
+An MCP signup flows to the CRM the same way a web trial signup does — through the existing `SaasCrm.upsertLead` → `crm_outbox` → Twenty pipeline — as a distinct **lead source** value (`MCP_SIGNUP` → `atlasFirstSource`), so the channel is measurable. Lead source (CRM acquisition attribution) is deliberately kept separate from **Agent origin** (approval/audit of agent traffic, ADR-0015): both can say "mcp", but unifying them would recreate the `surface`→`origin` overload ADR-0015 killed. The trial grant carries no acquisition/`origin` column; its only runtime provenance is the claim state.
+
+## Business-email-only, identical on web and MCP
+
+Because `start_trial` provisions through the same Better Auth signup path, signup-quality policy is shared by construction. We **hard-deny disposable mailboxes** (via `better-auth-harmony`'s `emailHarmony`, which also normalizes to a unique `normalizedEmail` — collapsing `+alias`/dot variations and thereby restoring teeth to the one-trial-per-user bound) and **hard-deny freemium/consumer domains** (gmail/outlook/yahoo/…) via a maintained denylist in `databaseHooks.user.create.before`. The MCP tool surfaces a rejection as a typed envelope. This is a global signup policy (web too), not MCP-only.
+
+## Abuse posture
+
+The one-trial-per-*user* cap is a no-op against fresh-email MCP signups and is **not** the abuse bound — and it doesn't need to be, because the meter removes the thing worth abusing (pre-claim costs Atlas ~nothing: no Atlas tokens, web Q&A claim-gated, MCP querying client-paid). Residual spam is DB-row/provisioning churn, bounded by **Turnstile + per-IP/email rate-limiting + the short unclaimed-grace reaper + the email-quality policy above**. Per-IP *trial* caps were rejected (punish shared NATs).
+
+## Considered and rejected
+
+- **Meter as `tokenBudgetPerSeat: 0`, a new `trial_metered` plan tier, or a `meter_state` column** — rejected; the budget clamp blocks setup + MCP via Gate 0, and a new tier duplicates the whole limit table. The meter is a claim-gate at `executeAgentQuery` keyed on `emailVerified`.
+- **An `origin`/acquisition column on the trial grant** — rejected; CRM attribution rides the existing lead-source pipeline, runtime metering rides `emailVerified`.
+- **Payment to *start* a trial (card-on-file, AP2/MPP/x402)** — rejected; signup is human-present, so Stripe Checkout at *conversion* is the simpler, PCI-offloaded surface. Agentic-payment protocols target human-absent procurement, a post-alpha concern.
+- **`start_trial` as an ordinary (or degenerate `trusted`) MCP actor** — rejected; an unauthenticated mutation inside the actor model is an erosion of the ADR-0016 gate spine. It is a non-actor entry point that produces an actor.

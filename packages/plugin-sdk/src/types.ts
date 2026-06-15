@@ -825,6 +825,25 @@ export interface PluginProfileOptions extends PluginListObjectsOptions {
   progress?: PluginProfileProgress;
   /** Structured logger for profiler diagnostics. */
   logger?: PluginProfileLogger;
+  /**
+   * The datasource's resolved, DECRYPTED connection config — the same record
+   * `createFromConfig` receives. Carried by the host's profiler seam (ADR-0017)
+   * so plugins that hold credentials in SEPARATE config fields (not embedded in
+   * the `url`) profile with the TENANT's own credentials rather than falling back
+   * to operator env vars. Elasticsearch is the motivating case: its `apiKey` /
+   * `username` / `password` / SigV4 fields live alongside the endpoint `url`, so
+   * without this the profiler would read `ATLAS_ES_*` operator env — a violation
+   * of the "per-tenant plugin creds never fall back to operator env" rule.
+   *
+   * Plugins whose credentials are fully embedded in the `url` (ClickHouse,
+   * Snowflake) ignore this field. Omitted by the CLI/static-config path, which
+   * legitimately resolves auth from env in the operator's own shell.
+   *
+   * SECURITY: this carries DECRYPTED secret material. It must NEVER be logged,
+   * echoed in an error, or surfaced to the agent/LLM — same discipline as the
+   * decrypted `url`.
+   */
+  config?: Readonly<Record<string, unknown>>;
 }
 
 // ---------------------------------------------------------------------------

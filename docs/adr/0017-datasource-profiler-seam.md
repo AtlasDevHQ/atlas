@@ -134,3 +134,31 @@ The original scope (above) left `bigquery` **fail-closed** behind `loadDatasourc
 
 - BigQuery onboards end-to-end over MCP (add datasource → `profile_datasource` → semantic layer), with the tenant's own service-account creds, closing the add-but-can't-onboard dead-end for BigQuery.
 - The `resolveProfileUrl` seam is the extension point for the remaining non-url types: DuckDB (#3627) and Salesforce OAuth (#3663) plug in there rather than re-opening the gate.
+
+## Amendment (#3667): universal profiling — profiling rides connection resolution
+
+**Status:** Accepted (#3667). Generalizes the per-type seam into one resolver and **removes** the URL-shape gate + `resolveProfileUrl` synthetic-url branches added above (incl. the #3664 BigQuery one).
+
+### Context
+
+The per-type approach above is the recurring-miss trap: the profiling seam resolved its **own**, narrower notion of "how do I reach this datasource" — the URL-shape gate in `loadDatasourceProfileTarget` — while querying had a different, complete resolution path (ConnectionRegistry for pg/mysql, `createFromConfig` for url+config plugins, the OAuth `LazyPluginLoader` for integration-pillar datasources). Every new transport that querying supported, the profiling gate failed **closed** for: BigQuery (config-shaped, #3664) and Salesforce (OAuth, #3663) were the same bug, twice. Patching each with a `resolveProfileUrl` special-case (a synthetic `bigquery://…` url) treated the symptom; the next non-url transport would slip the same way.
+
+### Decision
+
+**Profiling rides the query path's connection resolution. A single host-side `resolveLiveConnection(orgId, installId)` returns a live, authenticated connection by dispatching across ALL transports/pillars — the same resolution querying uses — and introspection (`listObjects` / `profile`) is a capability OF that resolved connection. The guarantee becomes a type invariant: profilable iff connectable.**
+
+- **One resolver — `resolveLiveConnection` (`mcp-lifecycle.ts`).** Dispatches: native pg/mysql → `ConnectionRegistry`; url/config plugins → the plugin's `createFromConfig`; OAuth integrations (Salesforce) → the `LazyPluginLoader` (ADR-0014 — **no** `createFromConfig` / pool registration). Returns `ok` (a `LiveDatasourceConnection` with `query` + `listObjects` + `profile`), `not_found`, `unsupported`, or `reconnect_required` (an OAuth datasource whose tokens are stale — actionable, not a silent failure).
+- **Introspection is bound to the connection's creds.** `profileLiveDatasource` feeds `SemanticGenerator`'s `DatasourceProfiler` injection point a thin adapter that delegates to the resolved connection's `profile()` — its `url`/`config` args are inert because the connection is already authenticated. The profiler no longer takes `url`/`config` and re-resolves auth.
+- **The gate is deleted.** The URL-shape fail-closed gate, `resolveProfileUrl` (incl. the #3664 BigQuery synthetic-url branch), `loadDatasourceProfileTarget`, `DatasourceProfileTarget`, and the slug-keyed `resolveProfileCapability` are removed. BigQuery profiles through the unified path with the special-case gone (it reads creds from the decrypted config — no synthetic url).
+- **The enforcement test (AC #1).** A CI contract test (`datasources/__tests__/universal-profiling-enforcement.test.ts`) enumerates every registered/provisionable datasource type plus the OAuth/handler-managed dbTypes and asserts each resolves an end-to-end profile path through `resolveLiveConnection`. It is the recurrence guard: a connectable type that is not profilable goes red, by construction — the lockstep this ADR "gestured at" is now enforced across all types.
+- **Salesforce (OAuth) is the proof case.** Profiles end-to-end over MCP via `resolveLiveConnection` → `LazyPluginLoader`. Because core must not import the plugin package (ADR-0013) and Salesforce stays OAuth-managed (ADR-0014), the OAuth introspection lives in core (`lib/integrations/salesforce/oauth-introspection.ts`), running `listObjects`/`profile` over the OAuth `jsforce` session the lazy builder owns, each call refresh-retried. A mid-profile `INVALID_SESSION_ID` refreshes once; a permanent failure surfaces `reconnect_required`. Tokens never leave the lib / are never logged.
+
+### SDK contract
+
+Introspection moves from static functions on the `connection` namespace (`connection.listObjects(url, config)` / `connection.profile(url, config)`) onto the **built connection** returned by `create` / `createFromConfig` — `PluginDBConnection` gains optional `listObjects?()` / `profile?()` bound to the creds that built it. Published `@useatlas/plugin-sdk` change → minor bump under the publish-before-ref-bump discipline (consumer refs bump in a follow-up after publish). The relocation across the bundled plugins (ClickHouse / Snowflake / BigQuery / Elasticsearch / DuckDB / Salesforce) + the CLI direct-export path is mechanical and lands on this seam; during the transition the host adapts a plugin's legacy static introspection bound to the resolved creds, so a connectable type is profilable throughout.
+
+### Consequences
+
+- A new transport inherits profiling for free — there is no gate left to fail closed. The "profilable iff connectable" invariant is enforced by the CI contract test, not a remembered convention.
+- `resolveProfileCapabilityByDbType` (kept) is now an accurate, gate-free profilability proxy (the create_datasource success hint uses it). BigQuery's hint flips to "run `profile_datasource`".
+- The wizard's url-form path (`resolveWizardProfiler`) still resolves the dbType-keyed capability + a separate `listObjects`; converging it onto `resolveLiveConnection` follows (#3657 prologue dedup lands on top), as scoped by #3667.

@@ -217,12 +217,12 @@ export async function handleDiff(args: string[]): Promise<void> {
           break;
         }
         case "duckdb": {
-          const { parseDuckDBUrl } = await import(
-            "../../../../plugins/duckdb/src/connection"
+          // DuckDB profiling consumes the plugin's `profile` export directly
+          // (ADR-0017, #3623) — CLI → plugin, no @atlas/api.
+          const { profileDuckDB } = await import(
+            "../../../../plugins/duckdb/src/profiler"
           );
-          const { profileDuckDB } = await import("../../lib/profilers/duckdb");
-          const duckConfig = parseDuckDBUrl(connStr);
-          result = await profileDuckDB(duckConfig.path, filterTables);
+          result = await profileDuckDB({ url: connStr, selectedTables: filterTables });
           break;
         }
         case "salesforce": {

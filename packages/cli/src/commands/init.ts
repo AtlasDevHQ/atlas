@@ -56,8 +56,6 @@ import {
   listSalesforceObjects,
   profileSalesforce,
   ingestIntoDuckDB,
-  listDuckDBObjects,
-  profileDuckDB,
 } from "../../lib/profilers";
 // Snowflake profiling lives on the plugin profiler contract (ADR-0017, #3622) —
 // the CLI consumes the plugin export directly (CLI → plugin, no @atlas/api), the
@@ -66,6 +64,11 @@ import {
   listSnowflakeObjects,
   profileSnowflake,
 } from "../../../../plugins/snowflake/src/profiler";
+// DuckDB profiling moved onto the plugin profiler contract (ADR-0017, #3623):
+// the CLI consumes the plugin's `listObjects`/`profile` exports directly (CLI →
+// plugin, no @atlas/api). Relative-path import matches the existing CLI ↔ duckdb
+// plugin convention (e.g. the duckdb connection import in test-connection.ts).
+import { listDuckDBObjects, profileDuckDB } from "../../../../plugins/duckdb/src/profiler";
 import { profileMySQL, profilePostgres } from "@atlas/api/lib/profiler";
 import {
   profileElasticsearch,
@@ -472,11 +475,7 @@ async function profileDatasource(
           allObjects = await listSnowflakeObjects({ url: connStr });
           break;
         case "duckdb": {
-          const { parseDuckDBUrl } = await import(
-            "../../../../plugins/duckdb/src/connection"
-          );
-          const duckConfig = parseDuckDBUrl(connStr);
-          allObjects = await listDuckDBObjects(duckConfig.path);
+          allObjects = await listDuckDBObjects({ url: connStr });
           break;
         }
         case "salesforce":
@@ -578,16 +577,12 @@ async function profileDatasource(
       });
       break;
     case "duckdb": {
-      const { parseDuckDBUrl } = await import(
-        "../../../../plugins/duckdb/src/connection"
-      );
-      const duckConfig = parseDuckDBUrl(connStr);
-      result = await profileDuckDB(
-        duckConfig.path,
+      result = await profileDuckDB({
+        url: connStr,
         selectedTables,
         prefetchedObjects,
         progress,
-      );
+      });
       break;
     }
     case "salesforce":
@@ -989,12 +984,13 @@ export async function handleInit(args: string[]): Promise<void> {
     const duckFilterTables = filterTables ?? tableNames;
     const duckProgress = createProgressTracker();
     const duckStart = Date.now();
-    const duckResult = await profileDuckDB(
-      dbPath,
-      duckFilterTables,
-      undefined,
-      duckProgress,
-    );
+    // The plugin profiler takes a duckdb:// URL; `parseDuckDBUrl` treats
+    // everything after the scheme as the path verbatim, round-tripping dbPath.
+    const duckResult = await profileDuckDB({
+      url: `duckdb://${dbPath}`,
+      selectedTables: duckFilterTables,
+      progress: duckProgress,
+    });
     let { profiles } = duckResult;
     duckProgress.onComplete(profiles.length, Date.now() - duckStart);
 

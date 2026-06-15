@@ -20,10 +20,13 @@ const mockListEntities = mock<(...args: unknown[]) => unknown>(async () => [
   { name: "orders", table: "orders", description: "Orders", source: "default" },
 ]);
 const mockGetEntityByName = mock<(...args: unknown[]) => unknown>(
-  (name: unknown) =>
-    name === "users"
-      ? { name: "User", table: "users", dimensions: [{ name: "id" }] }
-      : null,
+  (name: unknown) => {
+    if (name === "users")
+      return { name: "User", table: "users", dimensions: [{ name: "id" }] };
+    if (name === "orders")
+      return { name: "orders", table: "orders", dimensions: [{ name: "id" }] };
+    return null;
+  },
 );
 const mockSearchGlossary = mock<(...args: unknown[]) => unknown>(
   (term: unknown) =>
@@ -391,6 +394,132 @@ describe("MCP semantic tools", () => {
     expect(envelope!.code).toBe("unknown_entity");
     expect(envelope!.message).toContain("ghost");
     expect(envelope!.hint).toContain("listEntities");
+  });
+
+  it("describeEntity batches multiple entities in one call via `names`", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: ["users", "orders"] },
+    });
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(getContentText(result.content));
+    expect(parsed.count).toBe(2);
+    expect(parsed.entities.map((e: { table: string }) => e.table)).toEqual([
+      "users",
+      "orders",
+    ]);
+    expect(parsed.notFound).toEqual([]);
+    expect(parsed.hint).toBeUndefined();
+  });
+
+  it("describeEntity batch reports misses in `notFound` without failing the call", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: ["users", "ghost"] },
+    });
+    // A bad name in a batch is not a tool failure — the resolved entity still
+    // comes back, and the miss is machine-readable in `notFound`.
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(getContentText(result.content));
+    expect(parsed.count).toBe(1);
+    expect(parsed.entities).toHaveLength(1);
+    expect(parsed.entities[0].table).toBe("users");
+    expect(parsed.notFound).toEqual(["ghost"]);
+    expect(parsed.hint).toContain("listEntities");
+  });
+
+  it("describeEntity batch dedupes names, preserving first-seen order", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: ["orders", "users", "orders"] },
+    });
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(getContentText(result.content));
+    expect(parsed.count).toBe(2);
+    expect(parsed.entities.map((e: { table: string }) => e.table)).toEqual([
+      "orders",
+      "users",
+    ]);
+  });
+
+  it("describeEntity rejects supplying both `name` and `names`", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { name: "users", names: ["orders"] },
+    });
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope).not.toBeNull();
+    expect(envelope!.code).toBe("validation_failed");
+    expect(envelope!.message).toContain("exactly one");
+  });
+
+  it("describeEntity rejects supplying neither `name` nor `names`", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: {},
+    });
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope).not.toBeNull();
+    expect(envelope!.code).toBe("validation_failed");
+  });
+
+  it("describeEntity batch with every name unknown returns count 0 and a hint", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: ["ghost", "phantom"] },
+    });
+    // The all-miss case is where the agent most needs the recovery hint —
+    // confirm it's present even when nothing resolved.
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(getContentText(result.content));
+    expect(parsed.count).toBe(0);
+    expect(parsed.entities).toEqual([]);
+    expect(parsed.notFound).toEqual(["ghost", "phantom"]);
+    expect(parsed.hint).toContain("listEntities");
+  });
+
+  it("describeEntity rejects a batch larger than the cap (schema bound)", async () => {
+    const { client } = await createTestClient();
+    // 51 distinct, well-formed names — exceeds MAX_DESCRIBE_BATCH (50). The
+    // Zod `.max()` rejects before the handler runs, capping the payload a
+    // hostile client can force into one round-trip. The SDK surfaces a
+    // schema rejection as `isError`, not as our `validation_failed` envelope.
+    const tooMany = Array.from({ length: 51 }, (_, i) => `entity_${i}`);
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: tooMany },
+    });
+    expect(result.isError).toBe(true);
+  });
+
+  it("describeEntity rejects an empty `names` batch (schema bound)", async () => {
+    const { client } = await createTestClient();
+    // Empty array is distinct from "neither supplied" ({}): `names` is
+    // present, so the mutual-exclusion check passes, but `.min(1)` rejects it.
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: [] },
+    });
+    expect(result.isError).toBe(true);
+  });
+
+  it("describeEntity rejects path-traversal characters in a batch name (schema bound)", async () => {
+    const { client } = await createTestClient();
+    // The per-element regex is the same path-traversal guard the single-name
+    // path enforces — a `/` must be rejected before reaching the resolver.
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: ["users", "../etc/passwd"] },
+    });
+    expect(result.isError).toBe(true);
   });
 
   // --- searchGlossary ---

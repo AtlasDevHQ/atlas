@@ -39,11 +39,13 @@ Use this when you do not yet know which entity holds the data the user is asking
 
 Don't use this to read a single entity's columns or query patterns — call \`describeEntity\` once you know the name. Avoid the \`explore\` shell for catalog reads; the typed result is structured and faster.`;
 
-export const DESCRIBE_ENTITY_TOOL_DESCRIPTION = `Return the parsed entity definition — dimensions (with types and \`sample_values\`), measures, joins, \`query_patterns\`, grain, and the \`connection\` it lives on — for one entity, looked up by either its \`name\` field or \`table\` name. Example call: \`{ "name": "orders" }\`. Example response: \`{ "found": true, "entity": { "name": "orders", "dimensions": [...], "measures": [...], "query_patterns": [...] } }\`.
+export const DESCRIBE_ENTITY_TOOL_DESCRIPTION = `Return the parsed entity definition — dimensions (types, \`sample_values\`), measures, joins, \`query_patterns\`, grain, and \`connection\` — looked up by \`name\` field or \`table\` name. Pass \`name\` for one entity or \`names\` for a batch (exactly one). Single: \`{"name":"orders"}\` → \`{"found":true,"entity":{...}}\`. Batch: \`{"names":["orders","order_items"]}\` → \`{"count":2,"entities":[...],"notFound":[]}\`.
 
-Use this when you are about to write SQL against an unfamiliar table, when you need exact column names, when you need a pre-validated query pattern (preferred over hand-written SQL), or when you need the \`connection\` field to route an \`executeSQL\` call to the right datasource.
+Prefer the \`names\` batch when a query spans multiple entities (a join): one round-trip instead of one call per table. In batch mode an unrecognized name is not an error — matches return in \`entities\`, misses in \`notFound\`.
 
-Don't use this to enumerate the catalog — call \`listEntities\` first when the entity name is unknown. Avoid \`explore\` for entity reads; the typed result is normalized and survives YAML format changes.`;
+Use this when you are about to write SQL against an unfamiliar table, need exact column names, want a pre-validated query pattern (preferred over hand-written SQL), or need the \`connection\` to route an \`executeSQL\` call.
+
+Don't use this to enumerate the catalog — call \`listEntities\` first when names are unknown. Avoid \`explore\` for entity reads; the typed result survives YAML format changes.`;
 
 export const SEARCH_GLOSSARY_TOOL_DESCRIPTION = `Search the business glossary for a term, phrase, or column name. Returns matching entries with \`{ term, status, definition, note, possible_mappings, source }\` — substring match across term, definition, note, and \`possible_mappings\`, so \`orders.status\` will surface a parent term that lists it. Example call: \`{ "term": "churn" }\`. Example response: \`{ "count": 1, "matches": [{ "term": "churn", "status": "defined", "definition": "...", "possible_mappings": ["users.churned_at"] }] }\`.
 
@@ -93,6 +95,10 @@ export const LIST_ENTITIES_ERROR_CODES = [
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
 export const DESCRIBE_ENTITY_ERROR_CODES = [
+  // `validation_failed` (#mcp-token-reduction): the raw-shape inputSchema
+  // can't express "exactly one of `name` / `names`", so the handler enforces
+  // it and returns this code when both or neither are supplied.
+  "validation_failed",
   "unknown_entity",
   "rate_limited",
   "internal_error",

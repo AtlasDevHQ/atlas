@@ -107,24 +107,14 @@ export {
   loadDuckDB,
 } from "../lib/test-connection";
 
-// Re-export profilers
-export {
-  type ClickHouseClient,
-  listClickHouseObjects,
-  profileClickHouse,
-  listSalesforceObjects,
-  profileSalesforce,
-  ingestIntoDuckDB,
-  listDuckDBObjects,
-  profileDuckDB,
-} from "../lib/profilers";
-// Snowflake profiling moved onto the plugin profiler contract (ADR-0017, #3622).
-// Re-export the plugin's profiler so the CLI's public surface keeps the
-// `listSnowflakeObjects` / `profileSnowflake` names, now options-based.
-export {
-  listSnowflakeObjects,
-  profileSnowflake,
-} from "../../../plugins/snowflake/src/profiler";
+// Re-export profilers — each from its plugin's profiler module, the ONE profiler
+// home per type (ADR-0017 / #3670). There is no `cli/lib/profilers/*` parallel
+// home anymore. CSV/Parquet ingestion is a CLI write path, re-exported separately.
+export { listClickHouseObjects, profileClickHouse } from "../../../plugins/clickhouse/src/profiler";
+export { listSalesforceObjects, profileSalesforce } from "../../../plugins/salesforce/src/profiler";
+export { listSnowflakeObjects, profileSnowflake } from "../../../plugins/snowflake/src/profiler";
+export { listDuckDBObjects, profileDuckDB } from "../../../plugins/duckdb/src/profiler";
+export { ingestIntoDuckDB } from "../lib/duckdb-ingest";
 
 // Re-export diff logic
 export {

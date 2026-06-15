@@ -167,6 +167,15 @@ export interface ProfileElasticsearchOptions {
   includeSystem?: boolean;
   /** Inject a fetch implementation (tests). Defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
+  /**
+   * Allow SigV4 to read AWS credentials from the ambient AWS env chain. Default
+   * `true` — the CLI / static-config / entity-doc path runs in the operator's
+   * own shell (same trust model as `atlas.config.ts`). The seam path that
+   * carries a TENANT's DB-stored config sets this `false`: a tenant datasource
+   * must NOT authenticate with the operator's ambient AWS creds (the
+   * per-tenant-creds rule). The tenant's own SigV4 keys must be in its config.
+   */
+  allowAmbientAwsCreds?: boolean;
 }
 
 /** The collapsed cluster shape both profiling paths consume. */
@@ -191,9 +200,13 @@ async function discoverCluster(
   options: ProfileElasticsearchOptions,
   secrets: readonly string[],
 ): Promise<{ client: ElasticsearchClient; cluster: DiscoveredCluster }> {
-  // Ambient AWS creds are allowed: the CLI / static-config path runs in the
-  // operator's own shell (same trust model as atlas.config.ts).
-  const resolved = resolveElasticsearchConfig(config, { allowAmbientAwsCreds: true });
+  // Ambient AWS creds are allowed for the CLI / static-config path (operator's
+  // own shell, same trust model as atlas.config.ts) — the default. The seam path
+  // carrying a TENANT's DB-stored config passes `false` so a tenant datasource
+  // can't authenticate with the operator's ambient AWS creds.
+  const resolved = resolveElasticsearchConfig(config, {
+    allowAmbientAwsCreds: options.allowAmbientAwsCreds ?? true,
+  });
   const client = createElasticsearchClient(
     resolved,
     options.fetchImpl ? { fetchImpl: options.fetchImpl } : undefined,
@@ -565,7 +578,11 @@ function columnsForEntity(
 export async function listElasticsearchObjects(
   options: PluginListObjectsOptions,
 ): Promise<PluginDatabaseObject[]> {
-  const config = configFromUrl(options.url);
+  // listObjects carries only a url (no per-tenant config field on its options),
+  // so it resolves auth from the `ATLAS_ES_*` env contract — the CLI / static
+  // discovery path. Per-tenant credentialed profiling flows through
+  // `profileElasticsearchObjects` (which carries the decrypted config).
+  const config = elasticsearchConfigFromEnv(options.url || undefined);
   const secrets = collectConfigSecrets(config);
   const { client, cluster } = await discoverCluster(config, {}, secrets);
   try {
@@ -592,11 +609,19 @@ export async function listElasticsearchObjects(
 export async function profileElasticsearchObjects(
   options: PluginProfileOptions,
 ): Promise<PluginProfilingResult> {
-  const config = configFromUrl(options.url);
+  const { config, fromTenantConfig } = configForOptions(options);
   const secrets = collectConfigSecrets(config);
   const { selectedTables, prefetchedObjects, progress } = options;
 
-  const { client, cluster } = await discoverCluster(config, {}, secrets);
+  // When the host seam supplied the tenant's DB-stored config, SigV4 must NOT
+  // read the operator's ambient AWS env (per-tenant-creds rule); the tenant's
+  // own keys must be in its config. The env-fallback path keeps the operator
+  // shell's ambient creds (CLI `atlas init`).
+  const { client, cluster } = await discoverCluster(
+    config,
+    { allowAmbientAwsCreds: !fromTenantConfig },
+    secrets,
+  );
   const profiles: PluginTableProfile[] = [];
   const errors: PluginProfileError[] = [];
 
@@ -654,15 +679,60 @@ export async function profileElasticsearchObjects(
 // Options → config adapter
 // ---------------------------------------------------------------------------
 
+/** Connection/auth keys lifted from a seam `config` record into the plugin config. */
+const ES_CONFIG_KEYS = [
+  "url",
+  "cloudId",
+  "engine",
+  "apiKey",
+  "username",
+  "password",
+  "awsRegion",
+  "awsAccessKeyId",
+  "awsSecretAccessKey",
+  "awsSessionToken",
+  "awsService",
+  "description",
+] as const;
+
 /**
- * The seam options carry only a `url`. Build the plugin config from it the same
- * way the static-config path does — auth comes from the `ATLAS_ES_*` env contract
- * (the seam is consumed by the CLI / static-config host, which runs in the
- * operator's own shell). A `schema` field is not meaningful for ES (no
- * database/schema namespace) and is ignored.
+ * Build the plugin config for a {@link profileElasticsearchObjects} call,
+ * choosing the credential source by whether the host seam supplied the tenant's
+ * config (ADR-0017 amendment):
+ *
+ *   - `options.config` present → the host carried the datasource's DECRYPTED
+ *     connection config (the same record `createFromConfig` resolves). Build
+ *     from the tenant's own creds (`apiKey` / Basic / SigV4 live in SEPARATE
+ *     config fields, NOT in the `url`), with the seam's resolved `url` as the
+ *     endpoint. The tenant path must NOT read `ATLAS_ES_*` operator env — that
+ *     would authenticate against the tenant's datasource with the operator's
+ *     credentials (a per-tenant-creds-rule violation).
+ *   - `options.config` absent → the CLI / static-config path (operator shell);
+ *     fall back to the `ATLAS_ES_*` env contract via {@link elasticsearchConfigFromEnv}.
+ *
+ * A `schema` field is not meaningful for ES (no database/schema namespace) and
+ * is ignored. The boolean tells the caller which trust model to apply to ambient
+ * AWS creds.
  */
-function configFromUrl(url: string): ElasticsearchPluginConfig {
-  return elasticsearchConfigFromEnv(url || undefined);
+function configForOptions(
+  options: PluginProfileOptions,
+): { config: ElasticsearchPluginConfig; fromTenantConfig: boolean } {
+  if (options.config) {
+    const raw = options.config;
+    const config: ElasticsearchPluginConfig = {};
+    for (const key of ES_CONFIG_KEYS) {
+      const value = raw[key];
+      if (typeof value === "string" && value.length > 0) {
+        // The `engine` union is validated downstream by resolveElasticsearchConfig.
+        (config as Record<string, string>)[key] = value;
+      }
+    }
+    // The seam's resolved endpoint url is authoritative — it's the value the
+    // host built the pool config / profile target from.
+    if (options.url) config.url = options.url;
+    return { config, fromTenantConfig: true };
+  }
+  return { config: elasticsearchConfigFromEnv(options.url || undefined), fromTenantConfig: false };
 }
 
 // Re-export the pure flatten helper for callers that want the raw field list.

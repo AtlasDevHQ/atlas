@@ -81,6 +81,21 @@ export type DatasourceProfiler = (args: {
   prefetchedObjects?: DatabaseObject[];
   progress?: ProfileProgressCallbacks;
   logger?: ProfileLogger;
+  /**
+   * The datasource's resolved, DECRYPTED connection config — the same record the
+   * plugin's `createFromConfig` receives. Carried so plugins that hold
+   * credentials in SEPARATE config fields (not embedded in the `url`) profile
+   * with the TENANT's own credentials instead of operator env vars (ADR-0017
+   * amendment). Elasticsearch is the motivating case: its `apiKey` / `username` /
+   * `password` / SigV4 fields live alongside the endpoint `url`. Plugins whose
+   * credentials are fully url-embedded (ClickHouse, Snowflake) and the in-core
+   * pg/mysql profilers ignore this field; the CLI/static-config path omits it
+   * (auth from env is legitimate there).
+   *
+   * SECURITY: like the decrypted `url`, this carries decrypted secret material —
+   * it must NEVER leave the lib layer, reach the agent/LLM, or be logged.
+   */
+  config?: Readonly<Record<string, unknown>>;
 }) => Promise<ProfilingResult>;
 
 // ── Option / result shapes ───────────────────────────────────────────
@@ -108,6 +123,15 @@ export interface ProfileConnectionOptions {
    * `postgres`/`mysql`; ignored (but honored if present) for those two.
    */
   profileFn?: DatasourceProfiler;
+  /**
+   * The datasource's resolved, DECRYPTED connection config, forwarded into the
+   * injected `profileFn` (ADR-0017 amendment) so separate-field-credential
+   * plugins (Elasticsearch) profile with the tenant's own creds rather than
+   * operator env. Ignored by the in-core pg/mysql profilers and by url-embedded
+   * plugin profilers (ClickHouse / Snowflake). SECURITY: decrypted secret
+   * material — never logged or surfaced to the agent.
+   */
+  config?: Readonly<Record<string, unknown>>;
 }
 
 /** Outcome of {@link SemanticGeneratorShape.profile}. */
@@ -317,6 +341,10 @@ function profileImpl(
           prefetchedObjects: opts.prefetchedObjects,
           progress: opts.progress,
           logger: opts.logger,
+          // Decrypted tenant config for separate-field-credential plugins
+          // (ES). The in-core pg/mysql profilers and url-embedded plugin
+          // profilers ignore it. Never logged (ADR-0017 amendment).
+          ...(opts.config !== undefined ? { config: opts.config } : {}),
         }),
       catch: (err) => err,
     }).pipe(

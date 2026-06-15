@@ -48,10 +48,11 @@ mock.module("@atlas/api/lib/db/datasource-pool-resolver", () => ({
     if (slug === "clickhouse") return "clickhouse";
     if (slug === "snowflake") return "snowflake";
     if (slug === "bigquery") return "bigquery";
+    if (slug === "elasticsearch") return "elasticsearch";
     throw new Error(`unknown slug ${slug}`);
   },
   resolveDatasourcePoolConfig: mock(() => poolConfigResult),
-  BUILTIN_DATASOURCE_CATALOG_SLUGS: ["postgres", "mysql", "clickhouse", "snowflake", "bigquery"],
+  BUILTIN_DATASOURCE_CATALOG_SLUGS: ["postgres", "mysql", "clickhouse", "snowflake", "bigquery", "elasticsearch"],
 }));
 
 // The plugin registry seam — fully controllable per test. `findDatasourcePluginConnection`
@@ -97,12 +98,16 @@ const whitelist = await import("@atlas/api/lib/semantic/whitelist");
 // A profiler returning one analyzable table, recording its calls — a stand-in for
 // the real `plugins/clickhouse/src/profiler.ts` `profileClickHouse`, injected so the
 // test needs no live cluster.
-function chProfiler(): ((args: { url: string; schema: string }) => Promise<ProfilingResult>) & {
-  calls: Array<{ url: string; schema: string }>;
+function chProfiler(): ((args: {
+  url: string;
+  schema: string;
+  config?: Readonly<Record<string, unknown>>;
+}) => Promise<ProfilingResult>) & {
+  calls: Array<{ url: string; schema: string; config?: Readonly<Record<string, unknown>> }>;
 } {
   const fn = Object.assign(
-    (args: { url: string; schema: string }) => {
-      fn.calls.push({ url: args.url, schema: args.schema });
+    (args: { url: string; schema: string; config?: Readonly<Record<string, unknown>> }) => {
+      fn.calls.push({ url: args.url, schema: args.schema, config: args.config });
       return Promise.resolve<ProfilingResult>({
         profiles: [
           {
@@ -135,7 +140,7 @@ function chProfiler(): ((args: { url: string; schema: string }) => Promise<Profi
         errors: [],
       });
     },
-    { calls: [] as Array<{ url: string; schema: string }> },
+    { calls: [] as Array<{ url: string; schema: string; config?: Readonly<Record<string, unknown>> }> },
   );
   return fn;
 }
@@ -167,6 +172,30 @@ describe("loadDatasourceProfileTarget — plugin types (#3552)", () => {
     expect(res.target.profileFn).toBe(profile as unknown as typeof res.target.profileFn);
     // #3546 — the install's group scope drives where the persisted drafts land.
     expect(res.target.connectionGroupId).toBe("warehouse");
+  });
+
+  it("carries the install's DECRYPTED config so a separate-field-credential profiler (ES) gets the tenant's creds (ADR-0017 amendment)", async () => {
+    // ES holds apiKey in a SEPARATE config field, not in the url. The target must
+    // carry the decrypted config (here passed through by the secrets mock) so the
+    // profiler authenticates with the TENANT's apiKey, never operator ATLAS_ES_* env.
+    poolConfigResult = { dbType: "elasticsearch", url: "elasticsearch://es.tenant:9200" };
+    const profile = chProfiler();
+    pluginConn = { dbType: "elasticsearch", createFromConfig: () => ({}), profile };
+    internalRows = [
+      {
+        catalog_id: "cat_es",
+        catalog_slug: "elasticsearch",
+        config: { url: "elasticsearch://es.tenant:9200", apiKey: "tenant-es-key" },
+        config_schema: [],
+        group_id: null,
+      },
+    ];
+    const res = await loadDatasourceProfileTarget("org_1", "es");
+    expect(res.kind).toBe("ok");
+    if (res.kind !== "ok") return;
+    // The decrypted connection config rides on the target (secret material —
+    // internal use only).
+    expect(res.target.config).toEqual({ url: "elasticsearch://es.tenant:9200", apiKey: "tenant-es-key" });
   });
 
   it("native pg/mysql resolves WITHOUT a profileFn (SemanticGenerator profiles in-core)", async () => {
@@ -245,6 +274,29 @@ describe("runSemanticProfile — plugin profileFn (#3552: entities + whitelist +
     // The in-memory whitelist is populated so an in-process executeSQL is permitted.
     const tables = whitelist.getWhitelistedTables("wh");
     expect([...tables].some((t) => t.includes("events"))).toBe(true);
+  });
+
+  it("forwards the decrypted tenant config into the injected profileFn (ADR-0017 amendment)", async () => {
+    // The seam carries `config` straight into SemanticGenerator.profile, which
+    // forwards it into the plugin profileFn args — so a separate-field-credential
+    // profiler (ES) authenticates with the tenant's own creds.
+    poolConfigResult = { dbType: "elasticsearch", url: "elasticsearch://es.tenant:9200" };
+    const profile = chProfiler();
+    const tenantConfig = { url: "elasticsearch://es.tenant:9200", apiKey: "tenant-es-key" };
+    const outcome = await runSemanticProfile({
+      url: "elasticsearch://es.tenant:9200",
+      dbType: "elasticsearch",
+      profileFn: profile,
+      config: tenantConfig,
+      connectionId: "es",
+      orgId: "org_1",
+      connectionGroupId: null,
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(profile.calls).toHaveLength(1);
+    // The tenant's decrypted config reached the profiler verbatim.
+    expect(profile.calls[0].config).toEqual(tenantConfig);
   });
 
   it("Snowflake (url-shaped) profiles via the injected profileFn too — per-type parity", async () => {

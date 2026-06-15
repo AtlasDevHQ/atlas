@@ -825,6 +825,20 @@ export interface DatasourceProfileTarget {
    * datasource. This is metadata (a group name), never a secret.
    */
   readonly connectionGroupId: string | null;
+  /**
+   * The install's resolved, DECRYPTED connection config (ADR-0017 amendment).
+   * Carried so the registry-resolved `profileFn` of a separate-field-credential
+   * plugin (Elasticsearch — `apiKey`/`username`/`password`/SigV4 live in config
+   * fields, NOT in the `url`) profiles with the TENANT's own credentials rather
+   * than falling back to operator `ATLAS_ES_*` env (the per-tenant-creds rule).
+   * Url-embedded plugin profilers (ClickHouse/Snowflake) and the native pg/mysql
+   * profiler ignore it.
+   *
+   * SECURITY: like `url`, this is DECRYPTED secret material — internal use only,
+   * it never leaves the lib layer / reaches the agent / is logged. The caller
+   * passes it straight into `runSemanticProfile` → `SemanticGenerator.profile`.
+   */
+  readonly config: Readonly<Record<string, unknown>>;
 }
 
 export type LoadProfileTargetResult =
@@ -924,6 +938,10 @@ export async function loadDatasourceProfileTarget(
       schema: "schema" in poolConfig ? poolConfig.schema : undefined,
       ...(capability.kind === "plugin" ? { profileFn: capability.profileFn } : {}),
       connectionGroupId,
+      // Decrypted tenant config (ADR-0017 amendment): carried so a
+      // separate-field-credential plugin profiler (ES) authenticates with the
+      // tenant's own creds, not operator env. NEVER leaves the lib layer.
+      config: decrypted,
     },
   };
 }
@@ -973,6 +991,15 @@ export async function runSemanticProfile(opts: {
    * pg/mysql. Passed straight into `SemanticGenerator.profile({ profileFn })`.
    */
   profileFn?: DatasourceProfiler;
+  /**
+   * The datasource's resolved, DECRYPTED connection config (ADR-0017 amendment).
+   * Forwarded into `SemanticGenerator.profile({ config })` so a
+   * separate-field-credential plugin profiler (Elasticsearch) authenticates with
+   * the tenant's own creds rather than operator env. Ignored by native pg/mysql
+   * and url-embedded plugin profilers (ClickHouse/Snowflake). SECURITY: decrypted
+   * secret material — never logged or surfaced to the agent.
+   */
+  config?: Readonly<Record<string, unknown>>;
   connectionId: string;
   /**
    * Workspace the generated rows belong to. When provided (and an internal DB
@@ -1007,6 +1034,11 @@ export async function runSemanticProfile(opts: {
       // ignores it for pg/mysql (in-core), so passing `undefined` for native
       // types is a no-op; a plugin type requires it.
       ...(opts.profileFn !== undefined ? { profileFn: opts.profileFn } : {}),
+      // Forward the decrypted tenant config (ADR-0017 amendment) so a
+      // separate-field-credential plugin profiler (ES) authenticates with the
+      // tenant's own creds, not operator env. Native + url-embedded profilers
+      // ignore it. Never logged.
+      ...(opts.config !== undefined ? { config: opts.config } : {}),
       connectionId: opts.connectionId,
       registerWhitelist: !shouldPersist,
       ...(opts.progress !== undefined ? { progress: opts.progress } : {}),

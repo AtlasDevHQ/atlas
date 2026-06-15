@@ -268,13 +268,23 @@ const mockProfile = mock(async () => ({
 }));
 const mockListObjects = mock(async () => [{ name: "orders", type: "table" }]);
 
-mock.module("@atlas/api/lib/datasources/wizard-profiler", () => ({
-  resolveWizardProfiler: async (dbType: string) => {
-    if (dbType === "clickhouse") {
-      return { kind: "ok" as const, listObjects: mockListObjects, profile: mockProfile };
-    }
-    return { kind: "unsupported" as const, message: `Datasource type "${dbType}" cannot be profiled.` };
-  },
+// One profiler home (#3657): the wizard resolves a LIVE connection whose
+// introspection is bound to its creds. The clickhouse install resolves to a
+// connection exposing the (mock) listObjects/profile capability.
+mock.module("@atlas/api/lib/datasources/wizard-connection", () => ({
+  resolveWizardConnection: async () => ({
+    kind: "ok" as const,
+    dbType: "clickhouse",
+    querySchema: "default",
+    connection: {
+      dbType: "clickhouse",
+      connectionGroupId: null,
+      query: async () => ({ columns: [], rows: [] as Record<string, unknown>[] }),
+      listObjects: mockListObjects,
+      profile: mockProfile,
+      close: async () => {},
+    },
+  }),
 }));
 
 // --- Import after mocks ---

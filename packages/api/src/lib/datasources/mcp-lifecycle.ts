@@ -858,7 +858,19 @@ export interface LiveDatasourceConnection {
 }
 
 export type ResolveLiveConnectionResult =
-  | { readonly kind: "ok"; readonly connection: LiveDatasourceConnection }
+  | {
+      readonly kind: "ok";
+      readonly connection: LiveDatasourceConnection;
+      /**
+       * The connection's resolved default schema/database/dataset scope (the
+       * `workspace_plugins` config schema, or the dialect default) — `undefined`
+       * when none is configured / not meaningful (MySQL, OAuth). Surfaced so the
+       * in-product wizard, which rides this same resolver (one profiler home),
+       * can report the effective schema in its response without re-deriving its
+       * own connection resolution. The MCP profiling path ignores it.
+       */
+      readonly defaultSchema: string | undefined;
+    }
   | { readonly kind: "not_found" }
   /** No transport can build a live connection for this type (no plugin / no introspection / unknown). */
   | { readonly kind: "unsupported"; readonly dbType: string; readonly message: string }
@@ -978,6 +990,8 @@ export async function resolveLiveConnection(
     const listObjects = instance.listObjects.bind(instance);
     return {
       kind: "ok",
+      // OAuth datasources (Salesforce/SOQL) have no schema/database scope.
+      defaultSchema: undefined,
       connection: {
         dbType,
         connectionGroupId,
@@ -1000,6 +1014,7 @@ export async function resolveLiveConnection(
       opts?.schema ?? poolSchema ?? (dbType === "postgres" ? "public" : undefined);
     return {
       kind: "ok",
+      defaultSchema: poolSchema,
       connection: {
         dbType,
         connectionGroupId,
@@ -1063,6 +1078,7 @@ export async function resolveLiveConnection(
 
   return {
     kind: "ok",
+    defaultSchema: poolSchema,
     connection: {
       dbType,
       connectionGroupId,

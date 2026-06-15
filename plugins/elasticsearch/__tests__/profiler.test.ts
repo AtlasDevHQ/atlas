@@ -510,3 +510,51 @@ describe("profileElasticsearchObjects — credential source", () => {
     }
   });
 });
+
+// listObjects carries the SAME tenant config the wizard threads (#3621 — the
+// listObjects equivalent of the ADR-0017 amendment). The table-picker step must
+// enumerate with the TENANT's creds, never the operator's ATLAS_ES_* env.
+describe("listElasticsearchObjects — credential source (#3621)", () => {
+  const TENANT_API_KEY = "dGVuYW50LWxpc3Qta2V5";
+
+  test("uses the seam-supplied tenant apiKey, NOT the ATLAS_ES_* operator env", async () => {
+    expect(TENANT_API_KEY).not.toBe(API_KEY); // guard: the keys must differ
+    const { restore, authHeaders } = installAuthCapturingFetch();
+    try {
+      await listElasticsearchObjects({ url: URL, config: { apiKey: TENANT_API_KEY } });
+      expect(authHeaders.length).toBeGreaterThan(0);
+      for (const h of authHeaders) {
+        expect(h).toBe(`ApiKey ${TENANT_API_KEY}`);
+        expect(h).not.toBe(`ApiKey ${API_KEY}`);
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  test("uses tenant HTTP Basic creds from the seam config (separate username/password fields)", async () => {
+    const { restore, authHeaders } = installAuthCapturingFetch();
+    try {
+      await listElasticsearchObjects({
+        url: URL,
+        config: { username: "tenant-user", password: "tenant-pass" },
+      });
+      const expected = `Basic ${Buffer.from("tenant-user:tenant-pass", "utf8").toString("base64")}`;
+      expect(authHeaders.length).toBeGreaterThan(0);
+      for (const h of authHeaders) expect(h).toBe(expected);
+    } finally {
+      restore();
+    }
+  });
+
+  test("falls back to ATLAS_ES_* env on the no-config (CLI / atlas init) path", async () => {
+    const { restore, authHeaders } = installAuthCapturingFetch();
+    try {
+      await listElasticsearchObjects({ url: URL });
+      expect(authHeaders.length).toBeGreaterThan(0);
+      for (const h of authHeaders) expect(h).toBe(`ApiKey ${API_KEY}`);
+    } finally {
+      restore();
+    }
+  });
+});

@@ -69,8 +69,13 @@ mock.module("@atlas/api/lib/db/connection", () =>
 );
 
 const mockHasInternalDB: Mock<() => boolean> = mock(() => true);
+// resolveConnectionUrl now selects the full `config` JSONB + the catalog
+// `config_schema` (to decrypt separate-field credentials — ADR-0017 amendment /
+// #3552 wizard equivalent), shaping `{ config, schema_name, config_schema }`.
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>> = mock(
-  async () => [{ url: "postgresql://localhost/test", schema_name: "public" }],
+  async () => [
+    { config: { url: "postgresql://localhost/test", schema: "public" }, schema_name: "public", config_schema: null },
+  ],
 );
 const mockDecryptUrl: Mock<(url: string) => string> = mock(
   (url: string) => url.startsWith("postgresql://") ? url : "postgresql://localhost/test",
@@ -522,7 +527,9 @@ beforeEach(() => {
 
   mockInternalQuery.mockReset();
   mockInternalQuery.mockImplementation(
-    async () => [{ url: "postgresql://localhost/test", schema_name: "public" }],
+    async () => [
+      { config: { url: "postgresql://localhost/test", schema: "public" }, schema_name: "public", config_schema: null },
+    ],
   );
 
   mockDecryptUrl.mockReset();
@@ -1669,7 +1676,11 @@ describe("wizard profiler-seam dispatch — plugin dbType (#3621)", () => {
       { id: "analytics", dbType: "clickhouse", status: "healthy" },
     ]);
     mockInternalQuery.mockImplementation(async () => [
-      { url: "clickhouse://localhost:8123/analytics", schema_name: "default" },
+      {
+        config: { url: "clickhouse://localhost:8123/analytics", schema: "default" },
+        schema_name: "default",
+        config_schema: null,
+      },
     ]);
     mockDecryptUrl.mockImplementation((url: string) => url);
   }
@@ -1843,7 +1854,9 @@ describe("resolveConnectionUrl", () => {
   it("returns 500 when decryption fails", async () => {
     mockConnectionHas.mockImplementation(() => true);
     mockInternalQuery.mockImplementation(
-      async () => [{ url: "encrypted:secret-url", schema_name: "public" }],
+      async () => [
+        { config: { url: "encrypted:secret-url", schema: "public" }, schema_name: "public", config_schema: null },
+      ],
     );
     mockDecryptUrl.mockImplementation(() => {
       throw new Error("Decryption failed: invalid key");

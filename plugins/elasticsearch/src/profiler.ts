@@ -578,13 +578,19 @@ function columnsForEntity(
 export async function listElasticsearchObjects(
   options: PluginListObjectsOptions,
 ): Promise<PluginDatabaseObject[]> {
-  // listObjects carries only a url (no per-tenant config field on its options),
-  // so it resolves auth from the `ATLAS_ES_*` env contract — the CLI / static
-  // discovery path. Per-tenant credentialed profiling flows through
-  // `profileElasticsearchObjects` (which carries the decrypted config).
-  const config = elasticsearchConfigFromEnv(options.url || undefined);
+  // The wizard's table-picker carries the tenant's DECRYPTED config (#3621, the
+  // listObjects equivalent of the ADR-0017 amendment): when present, enumerate
+  // with the TENANT's own creds (`apiKey` / Basic / SigV4 in SEPARATE config
+  // fields, NOT in the url) and forbid SigV4 reading the operator's ambient AWS
+  // env (per-tenant-creds rule). When absent — the CLI / static discovery path —
+  // fall back to the `ATLAS_ES_*` env contract (operator's own shell).
+  const { config, fromTenantConfig } = configForOptions(options);
   const secrets = collectConfigSecrets(config);
-  const { client, cluster } = await discoverCluster(config, {}, secrets);
+  const { client, cluster } = await discoverCluster(
+    config,
+    { allowAmbientAwsCreds: !fromTenantConfig },
+    secrets,
+  );
   try {
     return cluster.entities.map((e): PluginDatabaseObject => ({ name: e.table, type: "table" }));
   } finally {
@@ -696,9 +702,10 @@ const ES_CONFIG_KEYS = [
 ] as const;
 
 /**
- * Build the plugin config for a {@link profileElasticsearchObjects} call,
- * choosing the credential source by whether the host seam supplied the tenant's
- * config (ADR-0017 amendment):
+ * Build the plugin config for a {@link profileElasticsearchObjects} OR
+ * {@link listElasticsearchObjects} call, choosing the credential source by
+ * whether the host seam supplied the tenant's config (ADR-0017 amendment for
+ * `profile`; #3621 for the wizard's `listObjects`):
  *
  *   - `options.config` present → the host carried the datasource's DECRYPTED
  *     connection config (the same record `createFromConfig` resolves). Build
@@ -710,12 +717,14 @@ const ES_CONFIG_KEYS = [
  *   - `options.config` absent → the CLI / static-config path (operator shell);
  *     fall back to the `ATLAS_ES_*` env contract via {@link elasticsearchConfigFromEnv}.
  *
+ * Takes the narrower {@link PluginListObjectsOptions} (just `url` + `config`)
+ * since that is all it reads — both the profile and listObjects seams supply it.
  * A `schema` field is not meaningful for ES (no database/schema namespace) and
  * is ignored. The boolean tells the caller which trust model to apply to ambient
  * AWS creds.
  */
 function configForOptions(
-  options: PluginProfileOptions,
+  options: PluginListObjectsOptions,
 ): { config: ElasticsearchPluginConfig; fromTenantConfig: boolean } {
   if (options.config) {
     const raw = options.config;

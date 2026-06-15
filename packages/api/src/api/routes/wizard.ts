@@ -24,6 +24,10 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { validationHook } from "./validation-hook";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, decryptSecret } from "@atlas/api/lib/db/internal";
+// Decrypt the full per-field config (ADR-0017 amendment / #3552 wizard
+// equivalent) so separate-field credentials (ES apiKey / Basic / SigV4) reach
+// the profiler seam — the SAME decrypt `loadDatasourceProfileTarget` uses.
+import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import { _resetWhitelists, invalidateOrgWhitelist } from "@atlas/api/lib/semantic";
 import {
   DEMO_CONNECTION_ID,
@@ -561,7 +565,11 @@ wizard.openapi(profileRoute, async (c) => {
       return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
     }
 
-    const { url, dbType, schema } = connUrl;
+    const { url, dbType, schema, config } = connUrl;
+    // Enumeration schema: pg → "public"; a plugin dbType passes the user value
+    // through (or undefined → the plugin's own default) so it doesn't list zero
+    // objects against a literal "public" (#3621 review).
+    const querySchema = effectiveSchema(dbType, schema);
 
     // Resolve the profiler capability for this dbType (#3621). Native pg/mysql
     // keep the in-core fast path; any other dbType dispatches through its
@@ -587,7 +595,15 @@ wizard.openapi(profileRoute, async (c) => {
 
     const profileResult = yield* Effect.tryPromise({
       try: async () => {
-        const objects = await capability.listObjects({ url, schema, logger: log });
+        // Thread the decrypted tenant config (ADR-0017 amendment / #3552 wizard
+        // equivalent) so a separate-field-credential plugin (ES) enumerates with
+        // the tenant's own creds, not operator env. Native pg/mysql ignore it.
+        const objects = await capability.listObjects({
+          url,
+          ...(querySchema !== undefined ? { schema: querySchema } : {}),
+          logger: log,
+          ...(config !== undefined ? { config } : {}),
+        });
         return { ok: true as const, objects };
       },
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
@@ -610,7 +626,10 @@ wizard.openapi(profileRoute, async (c) => {
     return c.json({
       connectionId,
       dbType,
-      schema,
+      // Stable wire shape: surface the effective schema, falling back to "public"
+      // for a plugin with no configured schema (placeholder only — enumeration
+      // above used `undefined` so the plugin applied its own default).
+      schema: querySchema ?? "public",
       tables: profileData.objects.map((o) => ({
         name: o.name,
         type: o.type,
@@ -649,7 +668,11 @@ wizard.openapi(generateRoute, async (c) => {
       return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
     }
 
-    const { url, dbType, schema } = connUrl;
+    const { url, dbType, schema, config } = connUrl;
+    // pg → "public"; a plugin dbType passes the user value through (or undefined
+    // → the plugin's own default) so it doesn't profile zero objects against a
+    // literal "public" (#3621 review).
+    const querySchema = effectiveSchema(dbType, schema);
 
     // Resolve the profiler for this dbType (#3621): native pg/mysql in-core,
     // else the registry-resolved plugin profiler. Surfaces the actionable
@@ -674,12 +697,16 @@ wizard.openapi(generateRoute, async (c) => {
     const genResult = yield* Effect.tryPromise({
       try: async () => {
         // Profile through the resolved seam — pg/mysql in-core, plugin via its
-        // registered `connection.profile` (ADR-0017).
+        // registered `connection.profile` (ADR-0017). Thread the decrypted tenant
+        // config (ADR-0017 amendment / #3552 wizard equivalent) so a
+        // separate-field-credential plugin (ES) profiles with the tenant's own
+        // creds, not operator env. Native pg/mysql ignore it.
         const result: ProfilingResult = await capability.profile({
           url,
-          schema,
+          ...(querySchema !== undefined ? { schema: querySchema } : {}),
           selectedTables: tableNames,
           logger: log,
+          ...(config !== undefined ? { config } : {}),
         });
 
         // Run heuristics (returns new array — no mutation)
@@ -717,7 +744,7 @@ wizard.openapi(generateRoute, async (c) => {
         // instead of silently mis-pairing YAML with the wrong metadata.
         const generated = generateSemanticLayer(analyzedProfiles, {
           dbType,
-          schema,
+          ...(querySchema !== undefined ? { schema: querySchema } : {}),
           sourceId,
         });
         const entityYamlByTable = new Map(generated.entities.map((e) => [e.table, e.yaml]));
@@ -800,7 +827,10 @@ wizard.openapi(generateRoute, async (c) => {
     return c.json({
       connectionId,
       dbType,
-      schema,
+      // Stable wire shape: the effective schema, "public" placeholder for a
+      // plugin with no configured schema (the YAML/enumeration used the
+      // plugin's own default).
+      schema: querySchema ?? "public",
       entities: genData.entities,
       errors: genData.errors,
     }, 200);
@@ -863,7 +893,11 @@ wizard.openapi(enrichRoute, async (c) => {
       return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
     }
 
-    const { url, dbType, schema } = connUrl;
+    const { url, dbType, schema, config } = connUrl;
+    // pg → "public"; a plugin dbType passes the user value through (or undefined
+    // → the plugin's own default) so re-profile-on-enrich doesn't target a
+    // literal "public" (#3621 review).
+    const querySchema = effectiveSchema(dbType, schema);
 
     // Resolve the profiler for this dbType (#3621). Re-profile-on-enrich works
     // for a plugin dbType through the same registry-resolved seam.
@@ -889,12 +923,16 @@ wizard.openapi(enrichRoute, async (c) => {
         // Re-profile JUST this table so the LLM is grounded in fresh DB
         // samples/distributions (semantic-onboarding § D: enrichment "receives
         // the table profile AND read-only access to the DB" — the profiler IS
-        // that read-only access). pg/mysql in-core, plugin via the seam.
+        // that read-only access). pg/mysql in-core, plugin via the seam. Thread
+        // the decrypted tenant config (ADR-0017 amendment / #3552 wizard
+        // equivalent) so a separate-field-credential plugin (ES) re-profiles with
+        // the tenant's own creds, not operator env. Native pg/mysql ignore it.
         const result: ProfilingResult = await capability.profile({
           url,
-          schema,
+          ...(querySchema !== undefined ? { schema: querySchema } : {}),
           selectedTables: [tableName],
           logger: log,
+          ...(config !== undefined ? { config } : {}),
         });
         const profile =
           result.profiles.find((p) => p.table_name === tableName) ?? result.profiles[0];
@@ -1366,8 +1404,85 @@ async function resolveEnrichModel(
 interface ResolvedConnection {
   url: string;
   dbType: ReturnType<typeof detectDBType>;
-  schema: string;
+  /**
+   * The user-configured schema/search-path, or `null` when none was set. The
+   * route applies a dbType-specific default: native Postgres falls back to
+   * `"public"`; a plugin dbType (ClickHouse database, ES index) where `"public"`
+   * is meaningless passes the user value through (or lets the plugin use its own
+   * default) rather than listing zero objects against a literal `"public"`.
+   */
+  schema: string | null;
+  /**
+   * The install's resolved, DECRYPTED connection config (ADR-0017 amendment,
+   * #3552 wizard equivalent). Threaded into the profiler seam so a
+   * separate-field-credential plugin (Elasticsearch — `apiKey` / `username` /
+   * `password` / SigV4 live in config fields, NOT in the `url`) profiles +
+   * enumerates with the TENANT's own credentials rather than falling back to
+   * operator `ATLAS_ES_*` env (the per-tenant-creds rule). Url-embedded plugins
+   * (ClickHouse / Snowflake) and native pg/mysql ignore it.
+   *
+   * `undefined` for the env-var (`ATLAS_DATASOURCE_URL`) fast path, where the
+   * decrypted config is just `{ url }` and there is no separate-field credential
+   * to carry — the seam falls back to its url-only / env path for those.
+   *
+   * SECURITY: like `url`, this carries DECRYPTED secret material — internal use
+   * only, it never leaves the lib layer / reaches the agent / is logged.
+   */
+  config?: Readonly<Record<string, unknown>>;
 }
+
+/**
+ * Apply the dbType-specific schema default. Native Postgres defaults a missing
+ * schema to `"public"` (its canonical default search-path) — unchanged. A plugin
+ * dbType (ClickHouse database, Elasticsearch index) where `"public"` is
+ * meaningless passes the user-provided schema through, or `undefined` when none
+ * was set, so the plugin uses its OWN default instead of listing zero objects
+ * against a literal `"public"` (#3621 review). MySQL ignores schema either way.
+ */
+function effectiveSchema(
+  dbType: ReturnType<typeof detectDBType>,
+  schema: string | null,
+): string | undefined {
+  if (dbType === "postgres") return schema ?? "public";
+  return schema ?? undefined;
+}
+
+/** Raw `workspace_plugins` projection the resolver shapes a connection from. */
+type DatasourceConfigRow = {
+  config: Record<string, unknown> | null;
+  schema_name: string | null;
+  config_schema: unknown;
+};
+
+/**
+ * Shape a `workspace_plugins` row into a {@link ResolvedConnection}: decrypt the
+ * `url` (byte-for-byte via the legacy `decryptSecret` path, unchanged) AND the
+ * full per-field config (`decryptSecretFields` keyed on the catalog
+ * `config_schema` — the SAME decrypt the MCP profiling path uses in
+ * `loadDatasourceProfileTarget`). The decrypted `config` is threaded into the
+ * profiler seam so a separate-field-credential plugin (ES) authenticates with
+ * the tenant's own creds (#3552 wizard equivalent).
+ */
+function shapeResolvedConnection(row: DatasourceConfigRow): ResolvedConnection {
+  // `url` keeps its existing dedicated decrypt so detectDBType + the seam see
+  // the exact same plaintext url they did before this change.
+  const url = decryptSecret(
+    typeof row.config?.url === "string" ? (row.config.url as string) : "",
+  );
+  const dbType = detectDBType(url);
+  // Full decrypted config (ADR-0017 amendment) — the `secret: true` fields
+  // (ES apiKey / Basic / SigV4) are decrypted per the catalog schema.
+  const config = decryptSecretFields(row.config ?? {}, parseConfigSchema(row.config_schema));
+  // Carry the raw configured schema (or null) — the route applies the
+  // dbType-specific default (pg → "public"; plugin types pass through).
+  return { url, dbType, schema: row.schema_name, config };
+}
+
+/** Columns + table the resolver reads from `workspace_plugins` (+ catalog schema). */
+const DATASOURCE_CONFIG_SELECT =
+  `SELECT wp.config AS config, wp.config->>'schema' AS schema_name, pc.config_schema AS config_schema
+     FROM workspace_plugins wp
+     JOIN plugin_catalog pc ON pc.id = wp.catalog_id`;
 
 /**
  * Resolve a connection URL from either the runtime ConnectionRegistry
@@ -1394,19 +1509,20 @@ async function resolveConnectionUrl(
         // in workspace_plugins; url + schema_name are JSONB keys in
         // config. The two encryption modules produce identical
         // AES-256-GCM `enc:v<N>:...` ciphertext, so `decryptSecret`
-        // unwraps the JSONB url field byte-for-byte. The `status !=
-        // 'archived'` filter preserves the per-workspace hide semantics.
-        const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-          `SELECT config->>'url' AS url, config->>'schema' AS schema_name FROM workspace_plugins
-           WHERE install_id = $1 AND pillar = 'datasource'
-             AND status != 'archived' AND (workspace_id = $2 OR workspace_id = '__global__')
-           ORDER BY CASE WHEN workspace_id = $2 THEN 0 ELSE 1 END LIMIT 1`,
+        // unwraps the JSONB url field byte-for-byte. The full config is
+        // also decrypted per the catalog `config_schema` so separate-field
+        // credentials (ES) reach the profiler seam (#3552 wizard equivalent).
+        // The `status != 'archived'` filter preserves the per-workspace hide
+        // semantics.
+        const rows = await internalQuery<DatasourceConfigRow>(
+          `${DATASOURCE_CONFIG_SELECT}
+           WHERE wp.install_id = $1 AND wp.pillar = 'datasource'
+             AND wp.status != 'archived' AND (wp.workspace_id = $2 OR wp.workspace_id = '__global__')
+           ORDER BY CASE WHEN wp.workspace_id = $2 THEN 0 ELSE 1 END LIMIT 1`,
           [connectionId, orgId ?? "__global__"],
         );
         if (rows.length > 0) {
-          const url = decryptSecret(rows[0].url);
-          const dbType = detectDBType(url);
-          return { url, dbType, schema: rows[0].schema_name ?? "public" };
+          return shapeResolvedConnection(rows[0]);
         }
       }
 
@@ -1424,7 +1540,10 @@ async function resolveConnectionUrl(
       ) {
         const url = process.env.ATLAS_DATASOURCE_URL;
         const dbType = detectDBType(url);
-        return { url, dbType, schema: "public" };
+        // No DB-stored config for the env-var fast path — the seam falls back to
+        // its url-only / env path (correct for the operator's own ATLAS_* env).
+        // `schema: null` lets the route apply the dbType default (pg → "public").
+        return { url, dbType, schema: null };
       }
     }
   }
@@ -1435,20 +1554,18 @@ async function resolveConnectionUrl(
   // cutover (#2744 / ADR-0007) — pivoted to workspace_plugins.
   if (hasInternalDB()) {
     const orgFilter = orgId
-      ? " AND (workspace_id = $2 OR workspace_id = '__global__') ORDER BY CASE WHEN workspace_id = $2 THEN 0 ELSE 1 END LIMIT 1"
+      ? " AND (wp.workspace_id = $2 OR wp.workspace_id = '__global__') ORDER BY CASE WHEN wp.workspace_id = $2 THEN 0 ELSE 1 END LIMIT 1"
       : "";
     const params: unknown[] = [connectionId];
     if (orgId) params.push(orgId);
 
-    const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-      `SELECT config->>'url' AS url, config->>'schema' AS schema_name FROM workspace_plugins
-        WHERE install_id = $1 AND pillar = 'datasource' AND status != 'archived'${orgFilter}`,
+    const rows = await internalQuery<DatasourceConfigRow>(
+      `${DATASOURCE_CONFIG_SELECT}
+        WHERE wp.install_id = $1 AND wp.pillar = 'datasource' AND wp.status != 'archived'${orgFilter}`,
       params,
     );
     if (rows.length > 0) {
-      const url = decryptSecret(rows[0].url);
-      const dbType = detectDBType(url);
-      return { url, dbType, schema: rows[0].schema_name ?? "public" };
+      return shapeResolvedConnection(rows[0]);
     }
   }
 

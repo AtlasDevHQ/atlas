@@ -67,7 +67,18 @@ interface DatasourceConnectionShape {
    * straight into `SemanticGenerator`'s injection point with no adapter. Matched
    * structurally off the registry — core never imports the plugin package.
    */
-  listObjects?(options: { url: string; schema?: string }): Promise<DatabaseObject[]> | DatabaseObject[];
+  listObjects?(options: {
+    url: string;
+    schema?: string;
+    /**
+     * The datasource's resolved, DECRYPTED connection config (ADR-0017
+     * amendment, #3552 wizard equivalent). Carried so a separate-field-credential
+     * plugin (Elasticsearch) enumerates with the TENANT's own credentials rather
+     * than falling back to operator env. Url-embedded plugins ignore it.
+     * SECURITY: decrypted secret material — never logged or surfaced to the agent.
+     */
+    config?: Readonly<Record<string, unknown>>;
+  }): Promise<DatabaseObject[]> | DatabaseObject[];
   profile?: DatasourceProfiler;
 }
 

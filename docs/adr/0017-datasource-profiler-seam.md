@@ -90,4 +90,26 @@ The original spine made the seam **url-only**: `profile(options)` took `{ url, s
 
 - A separate-field-credential plugin datasource profiles over MCP with the tenant's own credentials — closing the operator-env-fallback hole. The `config` flows through the **same** registry-resolved seam, no new coupling.
 - **Mirror-drift cost (per the ADR above) now also applies to `config`.** The host `DatasourceProfiler` and the SDK `PluginProfileOptions` are hand-maintained mirrors; the new `config` field must stay in lockstep across both. Drift surfaces structurally — a plugin that reads `options.config` against an un-amended SDK is a type error at the plugin, not silent data loss.
-- `listObjects` is intentionally **not** amended — its options stay `{ url, schema? }`. Per-tenant credentialed introspection flows through `profile`; `listObjects` remains the CLI/static discovery surface (env-resolved).
+- `listObjects` was intentionally **not** amended here — its options stayed `{ url, schema? }` — because the MCP profiling surface never calls it (it profiles a fixed set). **The wizard (#3621) is the first caller to exercise the plugin `listObjects`/`profile` seam, and it amends `listObjects` to carry `config` too** (see *Amendment (#3621)* below): the wizard's table-picker step calls `listObjects` separately, so a separate-field-credential plugin (ES) needs the tenant's creds there as well, not just on `profile`. The CLI/static discovery path still omits `config` and resolves auth from env.
+
+## Amendment (#3621): the wizard threads decrypted config through BOTH `listObjects` and `profile`
+
+**Status:** Accepted (#3621, #3648). Extends the #3552 amendment to the `listObjects` half and to the in-product wizard.
+
+### Context
+
+#3552 added `config` to `profile` only — correct for the MCP profiling surface, which never lists (it profiles a fixed table set). The **in-product wizard** (#3621), however, is the first caller to actually exercise the plugin `profile`/`listObjects` seam, and it calls `listObjects` **separately** for its table-picker step. With a url-only `listObjects` and a url-only wizard `resolveConnectionUrl` (which extracted only `config->>'url'`), an Elasticsearch datasource onboarded via the wizard fell back to operator `ATLAS_ES_*` env for BOTH enumeration and profiling — the same per-tenant-creds violation #3552 closed for MCP, but on the wizard path and for `listObjects`.
+
+### Decision
+
+**The wizard resolves the datasource's DECRYPTED connection config (the SAME `decryptSecretFields` + `config_schema` decrypt `loadDatasourceProfileTarget` uses) and threads it through BOTH halves of the seam.**
+
+- `PluginListObjectsOptions` (SDK) gains the SAME optional `config?: Readonly<Record<string, unknown>>` field `PluginProfileOptions` already carries, with the identical SECURITY note (decrypted secret material — never logged / surfaced to the agent). Additive → `@useatlas/plugin-sdk` patch bump (0.0.11 → 0.0.12) under the publish-before-ref-bump discipline.
+- The host's wizard seam (`lib/datasources/wizard-profiler.ts`, `lib/db/datasource-registry-bridge.ts`) threads `config` into the plugin's `listObjects` and `profile`. `wizard.ts` `resolveConnectionUrl` now returns the decrypted config alongside the `url`.
+- ES `listElasticsearchObjects` consumes the carried config the SAME way `profileElasticsearchObjects` does (tenant config → `allowAmbientAwsCreds: false`; no-config CLI path → `elasticsearchConfigFromEnv`), via the shared `configForOptions` helper.
+- **Schema default no longer leaks to plugin dbTypes.** The wizard defaulted a missing schema to `"public"` for ALL dbTypes; for a plugin dbType where `"public"` is meaningless (ClickHouse database, ES index) this could list zero objects. The wizard now defaults to `"public"` only for native Postgres; a plugin dbType passes the user-provided schema through, or `undefined` (the plugin uses its own default). `DatasourceProfiler.schema` / `DatasourceListObjects.schema` widened to optional accordingly.
+
+### Consequences
+
+- A separate-field-credential plugin onboarded via the in-product wizard enumerates AND profiles with the tenant's own credentials — closing the wizard's operator-env-fallback hole for both seam halves. Native pg/mysql and url-embedded plugins (ClickHouse/Snowflake) are unchanged (they ignore `config`).
+- **Mirror-drift cost now also applies to `PluginListObjectsOptions.config`** — the SDK type and the host bridge shape (`DatasourceConnectionShape.listObjects`) are hand-maintained mirrors and must stay in lockstep.

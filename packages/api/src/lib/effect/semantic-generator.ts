@@ -76,7 +76,13 @@ const log = createLogger("effect:semantic-generator");
  */
 export type DatasourceProfiler = (args: {
   url: string;
-  schema: string;
+  /**
+   * Schema / database to profile. `undefined` for a plugin dbType where the
+   * caller passed no schema (ClickHouse database, ES index) — the plugin uses
+   * its own default rather than a literal `"public"` (#3621 review). The in-core
+   * pg profiler defaults a missing schema to `"public"`.
+   */
+  schema?: string;
   selectedTables?: string[];
   prefetchedObjects?: DatabaseObject[];
   progress?: ProfileProgressCallbacks;

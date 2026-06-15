@@ -37,8 +37,24 @@ import type { DatasourceProfiler } from "@atlas/api/lib/effect/semantic-generato
 /** Lists the discoverable tables/views of a datasource for the wizard picker. */
 export type DatasourceListObjects = (args: {
   url: string;
-  schema: string;
+  /**
+   * Schema / database to enumerate. `undefined` for a plugin dbType where the
+   * caller passed no schema — the plugin uses its own default rather than a
+   * literal `"public"` (#3621 review). Native Postgres always receives a value.
+   */
+  schema?: string;
   logger?: ProfileLogger;
+  /**
+   * The datasource's resolved, DECRYPTED connection config (ADR-0017 amendment,
+   * #3552 wizard equivalent). Carried so a separate-field-credential plugin
+   * (Elasticsearch — `apiKey` / `username` / `password` / SigV4 live in config
+   * fields, NOT in the `url`) enumerates with the TENANT's own credentials rather
+   * than falling back to operator `ATLAS_ES_*` env (the per-tenant-creds rule).
+   * Url-embedded plugins (ClickHouse / Snowflake) and native pg/mysql ignore it.
+   *
+   * SECURITY: DECRYPTED secret material — never logged or surfaced to the agent.
+   */
+  config?: Readonly<Record<string, unknown>>;
 }) => Promise<DatabaseObject[]>;
 
 /**
@@ -129,7 +145,23 @@ export async function resolveWizardProfiler(
   const listObjects = conn.listObjects.bind(conn);
   return {
     kind: "ok",
-    listObjects: ({ url, schema }) => Promise.resolve(listObjects({ url, schema })),
+    // Thread `config` (the decrypted tenant creds — ADR-0017 amendment / #3552
+    // wizard equivalent) and `schema` into the plugin's `listObjects` so a
+    // separate-field-credential plugin (ES) enumerates with the TENANT's own
+    // credentials, not operator env. The plugin contract has no logger slot
+    // (`PluginListObjectsOptions` is `{ url, schema?, config? }`), so the route's
+    // `logger` is accepted by this seam but not forwardable to the plugin —
+    // captured here so it is no longer silently dropped (#3621 review).
+    listObjects: ({ url, schema, config, logger }) => {
+      void logger; // intentionally unused: plugin listObjects has no logger param
+      return Promise.resolve(
+        listObjects({
+          url,
+          ...(schema !== undefined ? { schema } : {}),
+          ...(config !== undefined ? { config } : {}),
+        }),
+      );
+    },
     profile: capability.profileFn,
   };
 }

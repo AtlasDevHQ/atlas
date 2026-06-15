@@ -56,6 +56,13 @@ import {
   type LazyPluginBuilderArgs,
 } from "@atlas/api/lib/plugins/lazy-loader";
 import type { PluginLike } from "@atlas/api/lib/plugins/registry";
+import type { DatabaseObject, ProfilingResult } from "@useatlas/types";
+import type { LiveConnectionListOptions, LiveConnectionProfileOptions } from "@atlas/api/lib/effect/semantic-generator";
+import {
+  listSalesforceOAuthObjects,
+  profileSalesforceOAuth,
+  type SalesforceDescribeSurface,
+} from "@atlas/api/lib/integrations/salesforce/oauth-introspection";
 
 const log = createLogger("integrations.salesforce.lazy-builder");
 
@@ -71,6 +78,16 @@ export interface SalesforceQueryResult {
  */
 export interface SalesforcePluginInstance extends PluginLike {
   query(soql: string, timeoutMs?: number): Promise<SalesforceQueryResult>;
+  /**
+   * Introspection as a capability of the live OAuth connection (#3667, ADR-0017
+   * universalization). `listObjects`/`profile` run over the SAME OAuth `jsforce`
+   * session `query` uses (refresh-retried), so the unified
+   * `resolveLiveConnection` profiles Salesforce end-to-end over MCP without the
+   * `createFromConfig` bridge (ADR-0014). A mid-profile `INVALID_SESSION_ID`
+   * refreshes once and, on permanent failure, surfaces a reconnect-required.
+   */
+  listObjects(options?: LiveConnectionListOptions): Promise<DatabaseObject[]>;
+  profile(options?: LiveConnectionProfileOptions): Promise<ProfilingResult>;
 }
 
 /**
@@ -106,6 +123,10 @@ function readInstanceUrl(config: Record<string, unknown>): string | null {
  */
 interface JsforceConnection {
   query(soql: string): Promise<{ records?: Record<string, unknown>[] }>;
+  // Describe surface used by the OAuth introspection (#3667). jsforce is an
+  // untyped optional peer dep, so these are structural.
+  describeGlobal(): Promise<{ sobjects?: ReadonlyArray<{ name?: string; queryable?: boolean }> }>;
+  describe(objectName: string): Promise<{ fields?: readonly Record<string, unknown>[] }>;
 }
 
 /**
@@ -225,12 +246,39 @@ export function createSalesforceLazyBuilder(
       },
     });
 
+    // Describe/query surface for the OAuth introspection (#3667). Each call is
+    // refresh-retried, so a stale token refreshes on the FIRST call (effectively
+    // a host-side pre-refresh: `listObjects`/`describeGlobal` runs first in a
+    // profile, validating the session before the per-object loop) and a
+    // mid-profile `INVALID_SESSION_ID` refreshes once more; a permanent failure
+    // throws `IntegrationReconnectRequiredError`, which the unified resolver maps
+    // to an actionable reconnect-required. Tokens stay inside these closures.
+    const describeSurface = {
+      describeGlobal: () => withRetry((c) => c.describeGlobal()),
+      describe: (objectName: string) => withRetry((c) => c.describe(objectName)),
+      query: async (soql: string) => {
+        const result = await withRetry((c) => c.query(soql));
+        return result.records ?? [];
+      },
+      // jsforce is an untyped optional peer dep — its describe shapes are
+      // structurally compatible with SalesforceDescribeSurface but TS can't
+      // verify the optional-field narrowing across the `unknown` boundary.
+    } as unknown as SalesforceDescribeSurface;
+
     const instance: SalesforcePluginInstance = {
       id: `salesforce:${workspaceId}`,
       types: ["datasource"] as const,
       version: "0.1.0",
       name: "Salesforce",
       config: { instanceUrl, scope: bundle.scope },
+
+      listObjects(): Promise<DatabaseObject[]> {
+        return listSalesforceOAuthObjects(describeSurface);
+      },
+
+      profile(options: LiveConnectionProfileOptions = {}): Promise<ProfilingResult> {
+        return profileSalesforceOAuth(describeSurface, options);
+      },
 
       async query(soql: string, timeoutMs = 30_000): Promise<SalesforceQueryResult> {
         return withRetry(async (c) => {

@@ -268,7 +268,7 @@ export function buildSalesforcePlugin(
         const conn = getOrCreateConnection();
         let timer: ReturnType<typeof setTimeout>;
         const result = await Promise.race([
-          conn.listObjects().then(() => "ok" as const),
+          conn.listSObjects().then(() => "ok" as const),
           new Promise<"timeout">((resolve) => {
             timer = setTimeout(() => resolve("timeout"), 5000);
           }),

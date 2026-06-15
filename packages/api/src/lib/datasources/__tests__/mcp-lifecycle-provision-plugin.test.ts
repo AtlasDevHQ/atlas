@@ -68,6 +68,7 @@ const probeSpy = mock<(dbType: string, cfg: Record<string, unknown>) => Promise<
 );
 mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
   findDatasourcePluginConnection: mock(async () => pluginConn),
+  isHandlerManagedDatasourceDbType: (dbType: string) => dbType === "salesforce",
   probePluginDatasourceConnection: probeSpy,
   // Native probe seam (#3605) — imported by mcp-lifecycle but never reached on
   // the plugin provision path under test; stubbed so the import resolves.
@@ -117,7 +118,6 @@ mock.module("@atlas/api/lib/effect/workspace-installer", () => ({
 
 const {
   resolveProvisionCapability,
-  resolveProfileCapability,
   resolveProfileCapabilityByDbType,
   provisionDatasource,
 } = await import("../mcp-lifecycle.js");
@@ -160,16 +160,16 @@ describe("resolveProvisionCapability", () => {
   });
 });
 
-describe("resolveProfileCapability (#3620 — ADR-0017)", () => {
+describe("resolveProfileCapabilityByDbType (#3620/#3621 — ADR-0017)", () => {
   it("native pg/mysql → kind:native (no profileFn — SemanticGenerator profiles in-core)", async () => {
-    expect(await resolveProfileCapability("postgres")).toEqual({ kind: "native", dbType: "postgres" });
-    expect(await resolveProfileCapability("mysql")).toEqual({ kind: "native", dbType: "mysql" });
+    expect(await resolveProfileCapabilityByDbType("postgres")).toEqual({ kind: "native", dbType: "postgres" });
+    expect(await resolveProfileCapabilityByDbType("mysql")).toEqual({ kind: "native", dbType: "mysql" });
   });
 
   it("a plugin implementing BOTH createFromConfig and profile → kind:plugin with the profileFn", async () => {
     const profile = mock(async () => ({ profiles: [], errors: [] }));
     pluginConn = { dbType: "clickhouse", createFromConfig: () => ({}), profile };
-    const cap = await resolveProfileCapability("clickhouse");
+    const cap = await resolveProfileCapabilityByDbType("clickhouse");
     expect(cap.kind).toBe("plugin");
     if (cap.kind === "plugin") {
       expect(cap.dbType).toBe("clickhouse");
@@ -183,7 +183,7 @@ describe("resolveProfileCapability (#3620 — ADR-0017)", () => {
     pluginConn = { dbType: "clickhouse", createFromConfig: () => ({}) };
     const provision = await resolveProvisionCapability("clickhouse");
     expect(provision.kind).toBe("plugin");
-    const profileCap = await resolveProfileCapability("clickhouse");
+    const profileCap = await resolveProfileCapabilityByDbType("clickhouse");
     expect(profileCap.kind).toBe("unsupported");
     if (profileCap.kind === "unsupported") {
       expect(profileCap.dbType).toBe("clickhouse");
@@ -193,12 +193,12 @@ describe("resolveProfileCapability (#3620 — ADR-0017)", () => {
 
   it("no registered plugin → unsupported (never a silent empty result)", async () => {
     pluginConn = undefined;
-    const cap = await resolveProfileCapability("clickhouse");
+    const cap = await resolveProfileCapabilityByDbType("clickhouse");
     expect(cap.kind).toBe("unsupported");
   });
 
   it("an unknown catalog slug → unsupported (mirrors provisioning)", async () => {
-    const cap = await resolveProfileCapability("mystery-db");
+    const cap = await resolveProfileCapabilityByDbType("mystery-db");
     expect(cap.kind).toBe("unsupported");
   });
 
@@ -276,7 +276,7 @@ describe("resolveProfileCapability (#3620 — ADR-0017)", () => {
     const profile = mock(async () => chResult);
     pluginConn = { dbType: "clickhouse", createFromConfig: () => ({}), profile };
 
-    const cap = await resolveProfileCapability("clickhouse");
+    const cap = await resolveProfileCapabilityByDbType("clickhouse");
     expect(cap.kind).toBe("plugin");
     if (cap.kind !== "plugin") return;
 

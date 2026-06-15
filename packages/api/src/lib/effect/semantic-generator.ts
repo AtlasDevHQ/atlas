@@ -104,6 +104,36 @@ export type DatasourceProfiler = (args: {
   config?: Readonly<Record<string, unknown>>;
 }) => Promise<ProfilingResult>;
 
+/**
+ * Introspection options for a RESOLVED LIVE CONNECTION (#3667). Unlike
+ * {@link DatasourceProfiler}, these carry NO `url` / `config`: the connection is
+ * already authenticated and bound to its creds, so `profile`/`listObjects` are
+ * capabilities OF the connection (alongside `query`) rather than static
+ * functions that re-resolve auth. The host's profiler seam consumes these so a
+ * new transport (OAuth, future) inherits profiling for free — there is no
+ * url-shape gate to fail closed.
+ */
+export interface LiveConnectionProfileOptions {
+  /** Schema / database / dataset to profile. Dialect-specific; omit for the connection's default. */
+  schema?: string;
+  /** Restrict profiling to these tables/views. Omit to profile every object. */
+  selectedTables?: string[];
+  /** Pre-listed objects (from a prior `listObjects`) — avoids a second catalog round-trip. */
+  prefetchedObjects?: DatabaseObject[];
+  /** Progress callbacks (e.g. the MCP progress bridge). */
+  progress?: ProfileProgressCallbacks;
+  /** Structured logger for profiler diagnostics. */
+  logger?: ProfileLogger;
+}
+
+/** Introspection options for enumerating a resolved live connection's objects (#3667). */
+export interface LiveConnectionListOptions {
+  /** Schema / database to enumerate. Dialect-specific; omit for the connection's default. */
+  schema?: string;
+  /** Structured logger for diagnostics. */
+  logger?: ProfileLogger;
+}
+
 // ── Option / result shapes ───────────────────────────────────────────
 
 /** Inputs for profiling one connection into analyzed profiles. */
@@ -369,6 +399,21 @@ function profileImpl(
         if (err instanceof Error && err.name === "OperationCancelledError") {
           // Cooperative cancellation → surface as a defect so its identity
           // survives to the MCP layer instead of becoming `validation_failed`.
+          return Effect.die(err);
+        }
+        if (err instanceof Error && err.name === "IntegrationReconnectRequiredError") {
+          // #3667 — an OAuth datasource (Salesforce) whose token is revoked /
+          // permanently un-refreshable mid-profile throws this from inside the
+          // injected `profileFn` (the live OAuth connection's bound `profile()`).
+          // Its first API call (describeGlobal) happens here, NOT at connection
+          // resolution, so the resolver's reconnect mapping never sees it.
+          // Wrapping it in a generic `ProfilingFailedError` would erase its
+          // identity and surface a bare "Profiling failed" instead of the
+          // actionable reconnect prompt. Surface it as a DEFECT (like
+          // cancellation) so `profileLiveDatasource`'s `causeToError` recovers
+          // the original error and maps it to `reconnect_required`. Detected by
+          // name (mirroring the cancellation handling) to keep the generator off
+          // any error-class import cycle.
           return Effect.die(err);
         }
         // #3579 — scrub DSN userinfo from profiler error messages. A verbose

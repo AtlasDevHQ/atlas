@@ -244,7 +244,7 @@ export async function testDatabaseConnection(
       const config = parseSalesforceURL(connStr);
       const source = createSalesforceConnection(config);
       try {
-        const objects = await source.listObjects();
+        const objects = await source.listSObjects();
         return `Salesforce (${objects.length} queryable objects)`;
       } catch (err) {
         throw new Error(

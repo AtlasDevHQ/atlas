@@ -268,7 +268,27 @@ export function buildElasticsearchPlugin(
     // a credential-less SigV4 config is rejected at validation, not silently.
     createFromConfig: (runtimeConfig) => {
       const parsed = ElasticsearchConnectionConfigSchema.parse(runtimeConfig);
-      return createElasticsearchConnection(parsed, { logger: log });
+      const built = createElasticsearchConnection(parsed, { logger: log });
+      // #3667 — introspection as a capability of the built connection. ES holds
+      // credentials in SEPARATE config fields (apiKey / username / password /
+      // SigV4), so the bound `config` (the tenant's decrypted record) is what the
+      // profiler authenticates with — never operator ATLAS_ES_* env (#2850). The
+      // tenant-config path sets allowAmbientAwsCreds: false inside the profiler.
+      return {
+        ...built,
+        listObjects: (o) =>
+          listElasticsearchObjects({ url: parsed.url ?? "", schema: o?.schema, config: runtimeConfig }),
+        profile: (o) =>
+          profileElasticsearchObjects({
+            url: parsed.url ?? "",
+            schema: o?.schema,
+            config: runtimeConfig,
+            selectedTables: o?.selectedTables,
+            prefetchedObjects: o?.prefetchedObjects,
+            progress: o?.progress,
+            logger: o?.logger,
+          }),
+      };
     },
     dbType: "elasticsearch",
     // ES SQL is real SQL, so there is intentionally NO custom `validate`: the

@@ -61,12 +61,18 @@ mock.module("@atlas/api/lib/integrations/install/salesforce-token-refresh", () =
 // last-constructed Connection's args so assertions can inspect them.
 const mockJsforceQuery: Mock<(soql: string) => Promise<{ records?: Record<string, unknown>[] }>> =
   mock(() => Promise.resolve({ records: [] }));
+const mockDescribeGlobal: Mock<() => Promise<{ sobjects?: { name?: string; queryable?: boolean }[] }>> =
+  mock(() => Promise.resolve({ sobjects: [] }));
+const mockDescribe: Mock<(name: string) => Promise<{ fields?: Record<string, unknown>[] }>> =
+  mock(() => Promise.resolve({ fields: [] }));
 let lastConnectionArgs: unknown = null;
 class MockJsforceConnection {
   constructor(args: unknown) {
     lastConnectionArgs = args;
   }
   query = mockJsforceQuery;
+  describeGlobal = mockDescribeGlobal;
+  describe = mockDescribe;
 }
 mock.module("jsforce", () => ({
   default: { Connection: MockJsforceConnection },
@@ -122,6 +128,8 @@ beforeEach(() => {
   mockReadCredentialBundle.mockClear();
   mockRefreshSalesforceToken.mockClear();
   mockJsforceQuery.mockClear();
+  mockDescribeGlobal.mockClear();
+  mockDescribe.mockClear();
   lastConnectionArgs = null;
 });
 
@@ -162,6 +170,94 @@ describe("createSalesforceLazyBuilder — happy path", () => {
       { Id: "001x000000", Name: "Acme Corp" },
       { Id: "001x000001", Name: "Globex" },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3667 — introspection as a capability of the live OAuth connection
+// ---------------------------------------------------------------------------
+
+describe("createSalesforceLazyBuilder — OAuth introspection (#3667)", () => {
+  async function buildInstance(): Promise<SalesforcePluginInstance> {
+    mockReadCredentialBundle.mockResolvedValueOnce(HAPPY_BUNDLE);
+    const build = builderMod.createSalesforceLazyBuilder(BUILDER_CONFIG);
+    return (await build({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      config: { instance_url: "https://na139.my.salesforce.com", status: "ok" },
+    })) as SalesforcePluginInstance;
+  }
+
+  it("listObjects() enumerates the queryable SObjects over the OAuth session", async () => {
+    mockDescribeGlobal.mockResolvedValueOnce({
+      sobjects: [
+        { name: "Account", queryable: true },
+        { name: "Contact", queryable: true },
+        { name: "ApexClass", queryable: false }, // not queryable → filtered
+      ],
+    });
+    const instance = await buildInstance();
+    const objects = await instance.listObjects();
+    expect(objects).toEqual([
+      { name: "Account", type: "table" },
+      { name: "Contact", type: "table" },
+    ]);
+  });
+
+  it("profile() maps describe metadata → column profiles (Id PK, reference FK, picklist enum) end-to-end", async () => {
+    mockDescribeGlobal.mockResolvedValueOnce({ sobjects: [{ name: "Account", queryable: true }] });
+    mockDescribe.mockResolvedValueOnce({
+      fields: [
+        { name: "Id", type: "id", nillable: false },
+        { name: "Name", type: "string", nillable: true },
+        { name: "OwnerId", type: "reference", nillable: true, referenceTo: ["User"] },
+        {
+          name: "Industry",
+          type: "picklist",
+          nillable: true,
+          picklistValues: [
+            { value: "Tech", active: true },
+            { value: "Retired", active: false },
+          ],
+        },
+      ],
+    });
+    // SELECT COUNT(Id) → Salesforce returns { expr0: N }.
+    mockJsforceQuery.mockResolvedValueOnce({ records: [{ expr0: 42 }] });
+
+    const instance = await buildInstance();
+    const result = await instance.profile();
+
+    expect(result.profiles).toHaveLength(1);
+    const p = result.profiles[0];
+    expect(p.table_name).toBe("Account");
+    expect(p.row_count).toBe(42);
+    expect(p.primary_key_columns).toEqual(["Id"]);
+    // reference field → foreign key to the referenced SObject's Id.
+    expect(p.foreign_keys).toEqual([
+      { from_column: "OwnerId", to_table: "User", to_column: "Id", source: "constraint" },
+    ]);
+    // picklist → enum-like, active values only.
+    const industry = p.columns.find((c) => c.name === "Industry");
+    expect(industry?.is_enum_like).toBe(true);
+    expect(industry?.sample_values).toEqual(["Tech"]);
+  });
+
+  it("a mid-profile INVALID_SESSION_ID refreshes the token once and retries (no silent failure)", async () => {
+    mockDescribeGlobal.mockResolvedValueOnce({ sobjects: [{ name: "Account", queryable: true }] });
+    // First describe throws INVALID_SESSION_ID → the retry harness refreshes and
+    // retries; the second describe succeeds.
+    mockDescribe
+      .mockRejectedValueOnce(new Error("INVALID_SESSION_ID: Session expired or invalid"))
+      .mockResolvedValueOnce({ fields: [{ name: "Id", type: "id", nillable: false }] });
+    mockJsforceQuery.mockResolvedValueOnce({ records: [{ expr0: 1 }] });
+
+    const instance = await buildInstance();
+    const result = await instance.profile();
+
+    expect(mockRefreshSalesforceToken).toHaveBeenCalledTimes(1);
+    expect(result.profiles).toHaveLength(1);
+    expect(result.profiles[0].table_name).toBe("Account");
   });
 });
 

@@ -98,7 +98,7 @@ export async function listSalesforceObjects(
   const config = parseSalesforceURL(options.url);
   const source = createSalesforceConnection(config);
   try {
-    const objects = await source.listObjects();
+    const objects = await source.listSObjects();
     return objects.map((obj) => ({ name: obj.name, type: "table" as const }));
   } finally {
     await closeQuietly(source);
@@ -127,7 +127,7 @@ export async function profileSalesforce(
   try {
     const allObjects: PluginDatabaseObject[] = prefetchedObjects
       ? prefetchedObjects
-      : (await source.listObjects()).map((obj) => ({
+      : (await source.listSObjects()).map((obj) => ({
           name: obj.name,
           type: "table" as const,
         }));

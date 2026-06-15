@@ -102,11 +102,26 @@ export function buildSnowflakePlugin(
     // SaaS per-workspace path and the only path in adapter-only mode.
     createFromConfig: (runtimeConfig) => {
       const parsed = SnowflakeConnectionConfigSchema.parse(runtimeConfig);
-      return createSnowflakeConnection({
+      const built = createSnowflakeConnection({
         url: parsed.url,
         maxConnections: parsed.maxConnections,
         logger: log,
       });
+      // #3667 — introspection as a capability of the built connection, bound to
+      // the creds that built it (no url/config re-resolution by the host).
+      return {
+        ...built,
+        listObjects: (o) => listSnowflakeObjects({ url: parsed.url, schema: o?.schema }),
+        profile: (o) =>
+          profileSnowflake({
+            url: parsed.url,
+            schema: o?.schema,
+            selectedTables: o?.selectedTables,
+            prefetchedObjects: o?.prefetchedObjects,
+            progress: o?.progress,
+            logger: o?.logger,
+          }),
+      };
     },
     dbType: "snowflake",
     parserDialect: "Snowflake",

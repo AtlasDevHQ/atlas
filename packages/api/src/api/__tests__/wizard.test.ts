@@ -59,6 +59,10 @@ mock.module("@atlas/api/lib/db/connection", () =>
       const connStr = url ?? "";
       if (connStr.startsWith("postgresql://") || connStr.startsWith("postgres://")) return "postgres";
       if (connStr.startsWith("mysql://") || connStr.startsWith("mysql2://")) return "mysql";
+      // Plugin dbType used by the profiler-seam dispatch tests (#3621). The
+      // wizard treats any non-pg/mysql dbType as a plugin type and resolves its
+      // profiler off the registry.
+      if (connStr.startsWith("clickhouse://")) return "clickhouse";
       throw new Error("Unsupported database URL scheme");
     },
   }),
@@ -420,6 +424,54 @@ mock.module("@atlas/api/lib/semantic/enrich", () => ({
   enrichSemanticLayer: async () => {},
 }));
 
+// Profiler-seam capability resolution (#3621 / ADR-0017). The wizard routes
+// dispatch through `resolveWizardProfiler(dbType)`: pg/mysql resolve to the
+// native in-core fast path, any other dbType to a registry-resolved plugin
+// profiler (or an actionable `unsupported` outcome). We mock the resolver so
+// the route-level dispatch tests can:
+//   - drive the native pg/mysql path through the same (mocked) profiler module
+//     the rest of the suite already wires (default impl below), AND
+//   - inject a plugin capability for a non-pg/mysql dbType without standing up
+//     a real plugin registry.
+// Default impl mirrors the real resolver for pg/mysql by delegating to the
+// already-mocked profiler module, so every existing pg/mysql test is unchanged.
+const mockResolveWizardProfiler: Mock<
+  (dbType: string) => Promise<
+    | {
+        kind: "ok";
+        listObjects: (args: { url: string; schema: string }) => Promise<{ name: string; type: string }[]>;
+        profile: (args: { url: string; schema: string; selectedTables?: string[] }) => Promise<{
+          profiles: unknown[];
+          errors: unknown[];
+        }>;
+      }
+    | { kind: "unsupported"; message: string }
+  >
+> = mock(async (dbType: string) => {
+  if (dbType === "postgres") {
+    return {
+      kind: "ok" as const,
+      listObjects: async () => mockListPostgresObjects(),
+      profile: async () => mockProfilePostgres(),
+    };
+  }
+  if (dbType === "mysql") {
+    return {
+      kind: "ok" as const,
+      listObjects: async () => mockListMySQLObjects(),
+      profile: async () => mockProfileMySQL(),
+    };
+  }
+  // Non-pg/mysql with no injected plugin → actionable not-profilable state.
+  return {
+    kind: "unsupported" as const,
+    message: `Datasource type "${dbType}" cannot be profiled in this deployment. No registered plugin implements the profiling contract (connection.profile) for it.`,
+  };
+});
+mock.module("@atlas/api/lib/datasources/wizard-profiler", () => ({
+  resolveWizardProfiler: mockResolveWizardProfiler,
+}));
+
 // --- Import after mocks ---
 
 const { wizard } = await import("../routes/wizard");
@@ -515,6 +567,28 @@ beforeEach(() => {
   );
   mockRunEnterprise.mockReset();
   mockRunEnterprise.mockImplementation(async () => null); // no workspace BYOT by default
+
+  mockResolveWizardProfiler.mockReset();
+  mockResolveWizardProfiler.mockImplementation(async (dbType: string) => {
+    if (dbType === "postgres") {
+      return {
+        kind: "ok" as const,
+        listObjects: async () => mockListPostgresObjects(),
+        profile: async () => mockProfilePostgres(),
+      };
+    }
+    if (dbType === "mysql") {
+      return {
+        kind: "ok" as const,
+        listObjects: async () => mockListMySQLObjects(),
+        profile: async () => mockProfileMySQL(),
+      };
+    }
+    return {
+      kind: "unsupported" as const,
+      message: `Datasource type "${dbType}" cannot be profiled in this deployment. No registered plugin implements the profiling contract (connection.profile) for it.`,
+    };
+  });
 });
 
 // =====================================================================
@@ -1571,6 +1645,158 @@ describe("POST /api/v1/wizard/save", () => {
       name: "orders",
       connectionGroupId: "warehouse",
     });
+  });
+});
+
+// =====================================================================
+// Profiler-seam dispatch for a plugin dbType (#3621 / ADR-0017)
+//
+// The wizard routes dispatch any non-pg/mysql dbType through the
+// registry-resolved profiler (`resolveWizardProfiler`). These tests pin that
+// dispatch end-to-end with a clickhouse-shaped connection: a plugin capability
+// flows the same baseline → enrich → save path pg/mysql does, and a plugin that
+// doesn't implement the contract surfaces the actionable `not_profilable` state
+// (the only remaining rejection — the "PostgreSQL and MySQL" gate is gone).
+// =====================================================================
+
+describe("wizard profiler-seam dispatch — plugin dbType (#3621)", () => {
+  // A clickhouse install: registry has it, internal DB returns a clickhouse://
+  // url (→ detectDBType → "clickhouse"), decrypt passes the url through.
+  function registerClickHouseConnection() {
+    mockConnectionHas.mockImplementation((id: string) => id === "analytics" || id === "default");
+    mockConnectionDescribe.mockImplementation(() => [
+      { id: "default", dbType: "postgres", status: "healthy" },
+      { id: "analytics", dbType: "clickhouse", status: "healthy" },
+    ]);
+    mockInternalQuery.mockImplementation(async () => [
+      { url: "clickhouse://localhost:8123/analytics", schema_name: "default" },
+    ]);
+    mockDecryptUrl.mockImplementation((url: string) => url);
+  }
+
+  // Inject a plugin capability with spy list/profile fns returning a usable
+  // profile so the shared generate engine emits an entity.
+  const pluginListObjects = mock(async () => [
+    { name: "events", type: "table" },
+    { name: "sessions", type: "table" },
+  ]);
+  const pluginProfile = mock(async () => ({ profiles: [mockOrdersProfile], errors: [] }));
+
+  function injectClickHousePlugin() {
+    mockResolveWizardProfiler.mockImplementation(async (dbType: string) => {
+      if (dbType === "clickhouse") {
+        return {
+          kind: "ok" as const,
+          listObjects: pluginListObjects,
+          profile: pluginProfile,
+        };
+      }
+      // pg/mysql still resolve natively (kept for any default-connection call).
+      return {
+        kind: "ok" as const,
+        listObjects: async () => mockListPostgresObjects(),
+        profile: async () => mockProfilePostgres(),
+      };
+    });
+  }
+
+  beforeEach(() => {
+    pluginListObjects.mockClear();
+    pluginProfile.mockClear();
+  });
+
+  it("profile → lists tables via the plugin's listObjects for a clickhouse dbType", async () => {
+    registerClickHouseConnection();
+    injectClickHousePlugin();
+
+    const res = await postJson("/api/v1/wizard/profile", { connectionId: "analytics" });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.connectionId).toBe("analytics");
+    expect(data.dbType).toBe("clickhouse");
+    const tables = data.tables as { name: string }[];
+    expect(tables.map((t) => t.name).toSorted()).toEqual(["events", "sessions"]);
+    // Routed through the registry-resolved profiler, not the native pg path.
+    expect(mockResolveWizardProfiler).toHaveBeenCalledWith("clickhouse");
+    expect(pluginListObjects).toHaveBeenCalledTimes(1);
+    expect(mockListPostgresObjects).not.toHaveBeenCalled();
+  });
+
+  it("generate → profiles + emits clickhouse-dialect entity YAML via the plugin profiler", async () => {
+    registerClickHouseConnection();
+    injectClickHousePlugin();
+
+    const res = await postJson("/api/v1/wizard/generate", {
+      connectionId: "analytics",
+      tables: ["orders"],
+    });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.dbType).toBe("clickhouse");
+    const entities = data.entities as { tableName: string; yaml: string }[];
+    expect(entities.length).toBe(1);
+    expect(entities[0].tableName).toBe("orders");
+    // The plugin's profile fn ran; the native pg profiler did not.
+    expect(pluginProfile).toHaveBeenCalledTimes(1);
+    expect(mockProfilePostgres).not.toHaveBeenCalled();
+  });
+
+  it("enrich → re-profiles one table via the plugin profiler", async () => {
+    registerClickHouseConnection();
+    injectClickHousePlugin();
+
+    const res = await postJson("/api/v1/wizard/enrich", {
+      connectionId: "analytics",
+      tableName: "orders",
+      yaml: "table: orders\n",
+    });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.tableName).toBe("orders");
+    expect(data.enriched).toBe(true);
+    // Re-profile-on-enrich ran through the plugin profiler, and the enrichment
+    // engine got the datasource dialect (clickhouse) as its 5th arg.
+    expect(pluginProfile).toHaveBeenCalledTimes(1);
+    expect(mockEnrichEntityYaml).toHaveBeenCalledTimes(1);
+    expect(mockEnrichEntityYaml.mock.calls[0][4]).toBe("clickhouse");
+  });
+
+  it("profile → returns the actionable not_profilable state when the plugin doesn't implement profiling", async () => {
+    registerClickHouseConnection();
+    // Default impl returns `unsupported` for any non-pg/mysql dbType (no plugin).
+    const res = await postJson("/api/v1/wizard/profile", { connectionId: "analytics" });
+    expect(res.status).toBe(400);
+    const data = await json(res);
+    expect(data.error).toBe("not_profilable");
+    expect(typeof data.message).toBe("string");
+    expect(data.message as string).toContain("clickhouse");
+    // The removed gate's copy must NOT appear.
+    expect(data.message as string).not.toContain("currently supported for PostgreSQL and MySQL");
+  });
+
+  it("generate → returns not_profilable (400) when the plugin doesn't implement profiling", async () => {
+    registerClickHouseConnection();
+    const res = await postJson("/api/v1/wizard/generate", {
+      connectionId: "analytics",
+      tables: ["events"],
+    });
+    expect(res.status).toBe(400);
+    const data = await json(res);
+    expect(data.error).toBe("not_profilable");
+  });
+
+  it("enrich → returns not_profilable (400) when the plugin doesn't implement profiling", async () => {
+    registerClickHouseConnection();
+    const res = await postJson("/api/v1/wizard/enrich", {
+      connectionId: "analytics",
+      tableName: "events",
+      yaml: "table: events\n",
+    });
+    expect(res.status).toBe(400);
+    const data = await json(res);
+    expect(data.error).toBe("not_profilable");
+    // Fail-closed: never profiled, never enriched.
+    expect(mockEnrichEntityYaml).not.toHaveBeenCalled();
   });
 });
 

@@ -40,12 +40,15 @@ import {
   FK_SOURCES,
   PARTITION_STRATEGIES,
   SEMANTIC_TYPES,
-  listPostgresObjects,
-  listMySQLObjects,
-  profilePostgres,
-  profileMySQL,
   outputDirForGroup,
 } from "@atlas/api/lib/profiler";
+// Profiler-seam dispatch (#3621 / ADR-0017): native pg/mysql keep the in-core
+// fast path; any other dbType whose datasource plugin implements the profiling
+// contract dispatches through the registry-resolved profiler. The wizard
+// resolves the capability for a dbType via this lib helper — never the removed
+// "PostgreSQL and MySQL" gate. The only remaining rejection is the actionable
+// "this datasource's plugin doesn't implement profiling yet" state.
+import { resolveWizardProfiler } from "@atlas/api/lib/datasources/wizard-profiler";
 // Mechanical generation runs through the shared semantic engine (issue #3233)
 // so the wizard and the CLI emit identical YAML. Both the `/generate` entity
 // YAML and the `/save` catalog/glossary/metric assembly delegate to
@@ -264,7 +267,8 @@ const profileRoute = createRoute({
   summary: "List tables from a connected datasource",
   description:
     "Discovers tables, views, and materialized views in a connected database for the wizard table selection step. " +
-    "Supports PostgreSQL and MySQL datasources. Requires admin role.",
+    "Supports PostgreSQL and MySQL natively, plus any datasource whose plugin implements the profiling contract " +
+    "(connection.listObjects). Requires admin role.",
   request: {
     body: {
       content: {
@@ -280,7 +284,7 @@ const profileRoute = createRoute({
       content: { "application/json": { schema: ProfileResponseSchema } },
     },
     400: {
-      description: "Invalid request (missing connectionId or unsupported database type)",
+      description: "Invalid request (missing connectionId, or the datasource's plugin doesn't implement profiling)",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: {
@@ -329,7 +333,7 @@ const generateRoute = createRoute({
       content: { "application/json": { schema: GenerateResponseSchema } },
     },
     400: {
-      description: "Invalid request (missing connectionId, empty tables, or unsupported database type)",
+      description: "Invalid request (missing connectionId, empty tables, or the datasource's plugin doesn't implement profiling)",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: {
@@ -382,7 +386,7 @@ const enrichRoute = createRoute({
       content: { "application/json": { schema: EnrichResponseSchema } },
     },
     400: {
-      description: "Invalid request (missing fields or unsupported database type)",
+      description: "Invalid request (missing fields, or the datasource's plugin doesn't implement profiling)",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: {
@@ -559,19 +563,31 @@ wizard.openapi(profileRoute, async (c) => {
 
     const { url, dbType, schema } = connUrl;
 
+    // Resolve the profiler capability for this dbType (#3621). Native pg/mysql
+    // keep the in-core fast path; any other dbType dispatches through its
+    // datasource plugin's registry-resolved profiler — or, if the plugin
+    // doesn't implement profiling yet, surfaces the actionable not-profilable
+    // state (the only remaining rejection; the "PostgreSQL and MySQL" gate is gone).
+    const capabilityResult = yield* Effect.tryPromise({
+      try: () => resolveWizardProfiler(dbType),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.either);
+    if (capabilityResult._tag === "Left") {
+      log.error({ err: capabilityResult.left, requestId, connectionId }, "Wizard profile: capability resolution failed");
+      return c.json({
+        error: "profile_failed",
+        message: "Failed to resolve the datasource profiler. Check server logs and retry.",
+        requestId,
+      }, 500);
+    }
+    const capability = capabilityResult.right;
+    if (capability.kind === "unsupported") {
+      return c.json({ error: "not_profilable", message: capability.message }, 400);
+    }
+
     const profileResult = yield* Effect.tryPromise({
       try: async () => {
-        let objects;
-        switch (dbType) {
-          case "postgres":
-            objects = await listPostgresObjects(url, schema, log);
-            break;
-          case "mysql":
-            objects = await listMySQLObjects(url);
-            break;
-          default:
-            return { error: "unsupported_db" as const, dbType };
-        }
+        const objects = await capability.listObjects({ url, schema, logger: log });
         return { ok: true as const, objects };
       },
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
@@ -588,12 +604,6 @@ wizard.openapi(profileRoute, async (c) => {
     }
 
     const profileData = profileResult.right;
-    if ("error" in profileData) {
-      return c.json({
-        error: "unsupported_db",
-        message: `Wizard profiling is currently supported for PostgreSQL and MySQL. Got: ${profileData.dbType}`,
-      }, 400);
-    }
 
     log.info({ requestId, connectionId, dbType, tableCount: profileData.objects.length }, "Wizard profile complete");
 
@@ -641,19 +651,36 @@ wizard.openapi(generateRoute, async (c) => {
 
     const { url, dbType, schema } = connUrl;
 
+    // Resolve the profiler for this dbType (#3621): native pg/mysql in-core,
+    // else the registry-resolved plugin profiler. Surfaces the actionable
+    // not-profilable state when no plugin implements the contract.
+    const capabilityResult = yield* Effect.tryPromise({
+      try: () => resolveWizardProfiler(dbType),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.either);
+    if (capabilityResult._tag === "Left") {
+      log.error({ err: capabilityResult.left, requestId, connectionId }, "Wizard generate: capability resolution failed");
+      return c.json({
+        error: "generate_failed",
+        message: "Failed to resolve the datasource profiler. Check server logs and retry.",
+        requestId,
+      }, 500);
+    }
+    const capability = capabilityResult.right;
+    if (capability.kind === "unsupported") {
+      return c.json({ error: "not_profilable", message: capability.message }, 400);
+    }
+
     const genResult = yield* Effect.tryPromise({
       try: async () => {
-        let result: ProfilingResult;
-        switch (dbType) {
-          case "postgres":
-            result = await profilePostgres(url, tableNames, undefined, schema, undefined, log);
-            break;
-          case "mysql":
-            result = await profileMySQL(url, tableNames, undefined, undefined, log);
-            break;
-          default:
-            return { error: "unsupported_db" as const, dbType };
-        }
+        // Profile through the resolved seam — pg/mysql in-core, plugin via its
+        // registered `connection.profile` (ADR-0017).
+        const result: ProfilingResult = await capability.profile({
+          url,
+          schema,
+          selectedTables: tableNames,
+          logger: log,
+        });
 
         // Run heuristics (returns new array — no mutation)
         const analyzedProfiles = analyzeTableProfiles(result.profiles);
@@ -761,12 +788,6 @@ wizard.openapi(generateRoute, async (c) => {
     }
 
     const genData = genResult.right;
-    if ("error" in genData) {
-      return c.json({
-        error: "unsupported_db",
-        message: `Wizard profiling is currently supported for PostgreSQL and MySQL. Got: ${genData.dbType}`,
-      }, 400);
-    }
 
     log.info({
       requestId,
@@ -844,23 +865,37 @@ wizard.openapi(enrichRoute, async (c) => {
 
     const { url, dbType, schema } = connUrl;
 
+    // Resolve the profiler for this dbType (#3621). Re-profile-on-enrich works
+    // for a plugin dbType through the same registry-resolved seam.
+    const capabilityResult = yield* Effect.tryPromise({
+      try: () => resolveWizardProfiler(dbType),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.either);
+    if (capabilityResult._tag === "Left") {
+      log.error({ err: capabilityResult.left, requestId, connectionId }, "Wizard enrich: capability resolution failed");
+      return c.json({
+        error: "enrich_failed",
+        message: "Failed to resolve the datasource profiler. Check server logs and retry.",
+        requestId,
+      }, 500);
+    }
+    const capability = capabilityResult.right;
+    if (capability.kind === "unsupported") {
+      return c.json({ error: "not_profilable", message: capability.message }, 400);
+    }
+
     const enrichResult = yield* Effect.tryPromise({
       try: async () => {
         // Re-profile JUST this table so the LLM is grounded in fresh DB
         // samples/distributions (semantic-onboarding § D: enrichment "receives
         // the table profile AND read-only access to the DB" — the profiler IS
-        // that read-only access).
-        let result: ProfilingResult;
-        switch (dbType) {
-          case "postgres":
-            result = await profilePostgres(url, [tableName], undefined, schema, undefined, log);
-            break;
-          case "mysql":
-            result = await profileMySQL(url, [tableName], undefined, undefined, log);
-            break;
-          default:
-            return { error: "unsupported_db" as const, dbType };
-        }
+        // that read-only access). pg/mysql in-core, plugin via the seam.
+        const result: ProfilingResult = await capability.profile({
+          url,
+          schema,
+          selectedTables: [tableName],
+          logger: log,
+        });
         const profile =
           result.profiles.find((p) => p.table_name === tableName) ?? result.profiles[0];
         if (!profile) {
@@ -888,12 +923,6 @@ wizard.openapi(enrichRoute, async (c) => {
 
     const data = enrichResult.right;
     if ("error" in data) {
-      if (data.error === "unsupported_db") {
-        return c.json({
-          error: "unsupported_db",
-          message: `Wizard enrichment is currently supported for PostgreSQL and MySQL. Got: ${data.dbType}`,
-        }, 400);
-      }
       // no_profile — the table vanished between generate and enrich.
       return c.json({
         error: "not_found",

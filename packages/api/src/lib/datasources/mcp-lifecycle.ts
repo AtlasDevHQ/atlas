@@ -426,16 +426,40 @@ export async function resolveProfileCapability(
   }
   // provision.kind === "plugin" — re-resolve the SAME plugin via the shared
   // lookup and check for the introspection half of the contract.
-  const conn = await findDatasourcePluginConnection(provision.dbType);
-  if (conn && typeof conn.profile === "function") {
-    return { kind: "plugin", dbType: provision.dbType, profileFn: conn.profile };
+  return resolveProfileCapabilityByDbType(provision.dbType);
+}
+
+/**
+ * Profiling-capability resolution keyed by an already-resolved `dbType` rather
+ * than a catalog slug — the seam the in-product **wizard** consumes (#3621). The
+ * wizard resolves a connection's `dbType` directly off its decrypted URL/config
+ * (`detectDBType`), so it has no catalog slug to feed {@link resolveProfileCapability}.
+ *
+ * Stays in lockstep with provisioning/profiling by using the SAME single plugin
+ * lookup ({@link findDatasourcePluginConnection}) and the SAME native predicate
+ * ({@link isMcpNativeDbType}) the slug-keyed resolver uses — it is NOT a second
+ * structural matcher, just the dbType-keyed entry into the one shared lookup
+ * (ADR-0017). Returns:
+ *   - `native`      — pg/mysql; `SemanticGenerator` profiles in-core (no `profileFn`).
+ *   - `plugin`      — a registered datasource plugin implementing `connection.profile`;
+ *                     carries the `profileFn` for `SemanticGenerator.profile({ profileFn })`.
+ *   - `unsupported` — no registered plugin for the dbType, OR a plugin that does
+ *                     not implement `profile` yet. Explicit + actionable, fail-closed.
+ */
+export async function resolveProfileCapabilityByDbType(
+  dbType: string,
+): Promise<ProfileCapability> {
+  if (isMcpNativeDbType(dbType)) {
+    return { kind: "native", dbType };
   }
-  // Provisionable but not (yet) profilable — fail-closed and explicit.
-  return {
-    kind: "unsupported",
-    dbType: provision.dbType,
-    message: notProfilableMessage(provision.dbType),
-  };
+  const conn = await findDatasourcePluginConnection(dbType);
+  if (conn && typeof conn.profile === "function") {
+    return { kind: "plugin", dbType, profileFn: conn.profile };
+  }
+  // No plugin for the dbType, or a plugin without the profiling half of the
+  // contract — fail-closed and explicit (mirrors SemanticGenerator's
+  // `unsupported_db_type`, never a silent empty result).
+  return { kind: "unsupported", dbType, message: notProfilableMessage(dbType) };
 }
 
 /**

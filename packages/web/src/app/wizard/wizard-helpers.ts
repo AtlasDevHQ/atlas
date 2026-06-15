@@ -72,3 +72,44 @@ export function partitionConnections(
   );
   return { demo, user };
 }
+
+/** A UI-safe error surfaced in the wizard (message already scrubbed). */
+export interface WizardError {
+  message: string;
+  requestId?: string;
+}
+
+/** The shape of a non-OK wizard API error body (all fields untrusted). */
+export interface ApiErrorBody {
+  error?: unknown;
+  message?: unknown;
+  requestId?: unknown;
+}
+
+/**
+ * Translate a non-OK wizard API error into UI-safe copy. The raw `message` may
+ * concatenate driver / filesystem detail (`api/routes/wizard.ts` builds messages
+ * like `Failed to save: ${err.message}`), so it MUST pass through
+ * {@link userMessageFor} before display.
+ *
+ * Exception (#3621): the `not_profilable` envelope — surfaced when a datasource's
+ * plugin doesn't implement the profiling contract — carries actionable, path-
+ * and secret-free deployment guidance ("install/upgrade the plugin, or use the
+ * CLI"). Show it VERBATIM rather than collapsing it to the generic fallback, the
+ * same carve-out the 503 "no provider configured" enrich banner uses. This is
+ * what makes the "not profilable yet" state actionable in the UI.
+ *
+ * Pure (takes the status + parsed body, not a `Response`) so it's unit-testable.
+ */
+export function errorFromBody(
+  status: number,
+  body: ApiErrorBody,
+  fallback: string,
+): WizardError {
+  const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
+  if (body.error === "not_profilable" && typeof body.message === "string" && body.message) {
+    return { message: body.message, requestId };
+  }
+  const raw = typeof body.message === "string" ? body.message : `HTTP ${status}`;
+  return { message: userMessageFor(new Error(raw), fallback), requestId };
+}

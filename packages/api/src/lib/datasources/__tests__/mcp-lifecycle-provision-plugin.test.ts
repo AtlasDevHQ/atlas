@@ -115,9 +115,12 @@ mock.module("@atlas/api/lib/effect/workspace-installer", () => ({
   }),
 }));
 
-const { resolveProvisionCapability, resolveProfileCapability, provisionDatasource } = await import(
-  "../mcp-lifecycle.js"
-);
+const {
+  resolveProvisionCapability,
+  resolveProfileCapability,
+  resolveProfileCapabilityByDbType,
+  provisionDatasource,
+} = await import("../mcp-lifecycle.js");
 const { SemanticGenerator, SemanticGeneratorLive } = await import(
   "@atlas/api/lib/effect/semantic-generator"
 );
@@ -197,6 +200,42 @@ describe("resolveProfileCapability (#3620 — ADR-0017)", () => {
   it("an unknown catalog slug → unsupported (mirrors provisioning)", async () => {
     const cap = await resolveProfileCapability("mystery-db");
     expect(cap.kind).toBe("unsupported");
+  });
+
+  // resolveProfileCapabilityByDbType (#3621) — the dbType-keyed entry the wizard
+  // consumes. Same single plugin lookup; never a second structural matcher.
+  describe("resolveProfileCapabilityByDbType (#3621 — wizard seam)", () => {
+    it("native pg/mysql → kind:native (no profileFn)", async () => {
+      expect(await resolveProfileCapabilityByDbType("postgres")).toEqual({ kind: "native", dbType: "postgres" });
+      expect(await resolveProfileCapabilityByDbType("mysql")).toEqual({ kind: "native", dbType: "mysql" });
+    });
+
+    it("a plugin implementing profile → kind:plugin with the profileFn", async () => {
+      const profile = mock(async () => ({ profiles: [], errors: [] }));
+      pluginConn = { dbType: "clickhouse", createFromConfig: () => ({}), profile };
+      const cap = await resolveProfileCapabilityByDbType("clickhouse");
+      expect(cap.kind).toBe("plugin");
+      if (cap.kind === "plugin") {
+        expect(cap.dbType).toBe("clickhouse");
+        expect(cap.profileFn).toBe(profile as unknown as typeof cap.profileFn);
+      }
+    });
+
+    it("a registered plugin WITHOUT profile → unsupported (actionable, fail-closed)", async () => {
+      pluginConn = { dbType: "clickhouse", createFromConfig: () => ({}) };
+      const cap = await resolveProfileCapabilityByDbType("clickhouse");
+      expect(cap.kind).toBe("unsupported");
+      if (cap.kind === "unsupported") {
+        expect(cap.dbType).toBe("clickhouse");
+        expect(cap.message).toContain("connection.profile");
+      }
+    });
+
+    it("no registered plugin for the dbType → unsupported (never a silent skip)", async () => {
+      pluginConn = undefined;
+      const cap = await resolveProfileCapabilityByDbType("clickhouse");
+      expect(cap.kind).toBe("unsupported");
+    });
   });
 
   it("the resolved profileFn flows through SemanticGenerator.profile (seam end-to-end)", async () => {

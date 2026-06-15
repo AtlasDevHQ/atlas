@@ -198,6 +198,44 @@ describe("loadDatasourceProfileTarget — plugin types (#3552)", () => {
     expect(res.target.config).toEqual({ url: "elasticsearch://es.tenant:9200", apiKey: "tenant-es-key" });
   });
 
+  it("bigquery (non-url-shaped) resolves to ok — synthetic url + decrypted config carried (#3664)", async () => {
+    // BigQuery's pool config has NO url (service-account multi-field). The seam
+    // synthesizes a `bigquery://<project>` identifier so it is profilable over
+    // MCP, and carries the decrypted config so the profiler authenticates with
+    // the tenant's own service-account creds.
+    poolConfigResult = {
+      dbType: "bigquery",
+      serviceAccountJson: '{"type":"service_account","project_id":"my-project"}',
+      projectId: "my-project",
+      schema: "analytics",
+    };
+    const profile = chProfiler();
+    pluginConn = { dbType: "bigquery", createFromConfig: () => ({}), profile };
+    internalRows = [
+      {
+        catalog_id: "cat_bq",
+        catalog_slug: "bigquery",
+        config: {
+          service_account_json: '{"type":"service_account","project_id":"my-project"}',
+          project_id: "my-project",
+          schema: "analytics",
+        },
+        config_schema: [],
+        group_id: null,
+      },
+    ];
+    const res = await loadDatasourceProfileTarget("org_1", "bq");
+    expect(res.kind).toBe("ok");
+    if (res.kind !== "ok") return;
+    expect(res.target.dbType).toBe("bigquery");
+    // Synthetic url derived from the project — NOT empty (it would fail the gate).
+    expect(res.target.url).toBe("bigquery://my-project");
+    // The dataset routing hint flows as the target schema.
+    expect(res.target.schema).toBe("analytics");
+    // The decrypted service-account config rides on the target (tenant creds).
+    expect(res.target.config).toMatchObject({ project_id: "my-project" });
+  });
+
   it("native pg/mysql resolves WITHOUT a profileFn (SemanticGenerator profiles in-core)", async () => {
     poolConfigResult = { dbType: "postgres", url: "postgres://u:p@h/db", schema: "public" };
     internalRows = [

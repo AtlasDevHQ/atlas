@@ -315,7 +315,15 @@ function profileImpl(
   opts: ProfileConnectionOptions,
 ): Effect.Effect<ProfileConnectionResult, ProfilingFailedError> {
   return Effect.gen(function* () {
-    const schema = opts.schema ?? "public";
+    // #3662 — mirror the wizard's `effectiveSchema` (#3621) on the MCP seam:
+    // default a missing schema to `"public"` ONLY for native Postgres (its
+    // canonical search-path). A plugin dbType — where `"public"` is meaningless
+    // (ClickHouse database, Elasticsearch index) — passes the user-provided
+    // schema through, or `undefined` so the plugin profiler uses its OWN default
+    // (e.g. ClickHouse's `default`, or the URL-embedded database) instead of
+    // overriding it with a literal `"public"` and profiling zero objects. MySQL
+    // ignores schema either way.
+    const schema = opts.dbType === "postgres" ? opts.schema ?? "public" : opts.schema;
     const profiler = resolveProfiler(opts.dbType, opts.profileFn);
     if (profiler instanceof ProfilingFailedError) {
       return yield* Effect.fail(profiler);

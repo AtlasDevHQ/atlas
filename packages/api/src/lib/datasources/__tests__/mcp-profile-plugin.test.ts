@@ -335,3 +335,45 @@ describe("runSemanticProfile — plugin profileFn (#3552: entities + whitelist +
     expect([...tables].some((t) => t.includes("events"))).toBe(true);
   });
 });
+
+// =====================================================================
+// #3662 — the MCP seam must NOT coerce a missing schema to "public" for a
+// plugin dbType. This mirrors the #3621 wizard `effectiveSchema` fix: "public"
+// is Postgres's canonical default search-path, but it's meaningless for a
+// plugin dbType (ClickHouse's default database is `default`, not `public`).
+// Leaking "public" overrides the URL-embedded database and profiles zero
+// objects against a nonexistent database — the exact bug class #3621 fixed,
+// surviving on the sibling MCP seam.
+// =====================================================================
+describe("runSemanticProfile — schema default does not leak to plugin dbTypes (#3662)", () => {
+  it("clickhouse with NO configured schema → the plugin profiler receives undefined, NOT \"public\"", async () => {
+    const profile = chProfiler();
+    const outcome = await runSemanticProfile({
+      url: "clickhouse://h:8443/analytics",
+      dbType: "clickhouse",
+      profileFn: profile,
+      connectionId: "wh",
+      // no `schema` — relying on the URL-embedded database.
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(profile.calls).toHaveLength(1);
+    // The bug: this would be "public", overriding the URL's `analytics` database.
+    expect(profile.calls[0].schema).toBeUndefined();
+  });
+
+  it("clickhouse with an explicit schema → passed through verbatim", async () => {
+    const profile = chProfiler();
+    const outcome = await runSemanticProfile({
+      url: "clickhouse://h:8443/analytics",
+      dbType: "clickhouse",
+      profileFn: profile,
+      schema: "analytics",
+      connectionId: "wh",
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(profile.calls).toHaveLength(1);
+    expect(profile.calls[0].schema).toBe("analytics");
+  });
+});

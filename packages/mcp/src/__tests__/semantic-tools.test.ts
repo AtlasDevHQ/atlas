@@ -20,10 +20,13 @@ const mockListEntities = mock<(...args: unknown[]) => unknown>(async () => [
   { name: "orders", table: "orders", description: "Orders", source: "default" },
 ]);
 const mockGetEntityByName = mock<(...args: unknown[]) => unknown>(
-  (name: unknown) =>
-    name === "users"
-      ? { name: "User", table: "users", dimensions: [{ name: "id" }] }
-      : null,
+  (name: unknown) => {
+    if (name === "users")
+      return { name: "User", table: "users", dimensions: [{ name: "id" }] };
+    if (name === "orders")
+      return { name: "orders", table: "orders", dimensions: [{ name: "id" }] };
+    return null;
+  },
 );
 const mockSearchGlossary = mock<(...args: unknown[]) => unknown>(
   (term: unknown) =>
@@ -391,6 +394,80 @@ describe("MCP semantic tools", () => {
     expect(envelope!.code).toBe("unknown_entity");
     expect(envelope!.message).toContain("ghost");
     expect(envelope!.hint).toContain("listEntities");
+  });
+
+  it("describeEntity batches multiple entities in one call via `names`", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: ["users", "orders"] },
+    });
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(getContentText(result.content));
+    expect(parsed.count).toBe(2);
+    expect(parsed.entities.map((e: { table: string }) => e.table)).toEqual([
+      "users",
+      "orders",
+    ]);
+    expect(parsed.notFound).toEqual([]);
+    expect(parsed.hint).toBeUndefined();
+  });
+
+  it("describeEntity batch reports misses in `notFound` without failing the call", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: ["users", "ghost"] },
+    });
+    // A bad name in a batch is not a tool failure — the resolved entity still
+    // comes back, and the miss is machine-readable in `notFound`.
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(getContentText(result.content));
+    expect(parsed.count).toBe(1);
+    expect(parsed.entities).toHaveLength(1);
+    expect(parsed.entities[0].table).toBe("users");
+    expect(parsed.notFound).toEqual(["ghost"]);
+    expect(parsed.hint).toContain("listEntities");
+  });
+
+  it("describeEntity batch dedupes names, preserving first-seen order", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: ["orders", "users", "orders"] },
+    });
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(getContentText(result.content));
+    expect(parsed.count).toBe(2);
+    expect(parsed.entities.map((e: { table: string }) => e.table)).toEqual([
+      "orders",
+      "users",
+    ]);
+  });
+
+  it("describeEntity rejects supplying both `name` and `names`", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: { name: "users", names: ["orders"] },
+    });
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope).not.toBeNull();
+    expect(envelope!.code).toBe("validation_failed");
+    expect(envelope!.message).toContain("exactly one");
+  });
+
+  it("describeEntity rejects supplying neither `name` nor `names`", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "describeEntity",
+      arguments: {},
+    });
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope).not.toBeNull();
+    expect(envelope!.code).toBe("validation_failed");
   });
 
   // --- searchGlossary ---

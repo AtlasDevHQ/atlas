@@ -65,6 +65,12 @@ import { withProgressAndCancellation } from "./progress.js";
 const MAX_IDENTIFIER_LEN = 256;
 const MAX_FREE_TEXT_LEN = 1024;
 
+// Upper bound on a single batched `describeEntity` call. Generous enough to
+// cover any realistic multi-entity join (the whole catalog is typically a few
+// dozen entities) while capping the payload a hostile client can force into
+// one round-trip.
+const MAX_DESCRIBE_BATCH = 50;
+
 // Mirrors the entity-name shape `isValidEntityName` accepts in
 // `lib/semantic/files.ts` (no `/`, `\`, `..`, `\0`). Surfacing the
 // constraint at the Zod boundary gives the MCP client an immediate
@@ -186,8 +192,19 @@ export function registerSemanticTools(
           .min(1)
           .max(MAX_IDENTIFIER_LEN)
           .regex(ENTITY_NAME_PATTERN)
+          .optional()
           .describe(
-            "Entity name (`name` field) or table name. Alphanumerics, `_`, `-`, `.` only — no path separators.",
+            "Single entity name (`name` field) or table name. Alphanumerics, `_`, `-`, `.` only — no path separators. Mutually exclusive with `names`.",
+          ),
+        names: z
+          .array(
+            z.string().min(1).max(MAX_IDENTIFIER_LEN).regex(ENTITY_NAME_PATTERN),
+          )
+          .min(1)
+          .max(MAX_DESCRIBE_BATCH)
+          .optional()
+          .describe(
+            `Batch of entity/table names to describe in a single call (up to ${MAX_DESCRIBE_BATCH}). Prefer this over repeated single calls when a query spans multiple entities. Mutually exclusive with \`name\`.`,
           ),
       },
       // Read-only over the local semantic catalog (closed world).
@@ -196,27 +213,79 @@ export function registerSemanticTools(
         openWorldHint: false,
       },
     },
-    async ({ name }): Promise<CallToolResult> =>
+    async ({ name, names }): Promise<CallToolResult> =>
       dispatch(
         "describeEntity",
         { requiresWrite: false, minRole: "member" },
         async () => {
-          const entity = getEntityByName(name);
-          if (!entity) {
-            // Unknown-entity isn't really a "tool failed" condition for the
-            // agent — the agent's recovery is "call listEntities and pick a
-            // known one." Emit it as a typed envelope so the recovery is
-            // machine-readable, with a hint pointing the agent at the right
-            // next call.
+          // The MCP raw-shape inputSchema can't express a cross-field
+          // "exactly one of" refinement, so enforce it here. Both-or-neither
+          // is a client mistake, not a catalog miss — return `validation_failed`
+          // with a hint rather than guessing which arg was intended.
+          if ((name !== undefined) === (names !== undefined)) {
             return toEnvelopeResult(
               envelope(
-                "unknown_entity",
-                `Entity "${name}" not found in the semantic layer.`,
-                { hint: "Call listEntities to discover available entities." },
+                "validation_failed",
+                "Provide exactly one of `name` (single entity) or `names` (batch).",
+                {
+                  hint: "Pass `name` to describe one entity, or `names` to describe several in one call.",
+                },
               ),
             );
           }
-          return toJsonContent({ found: true, entity });
+
+          // Single-name path — wire shape unchanged for existing clients.
+          if (name !== undefined) {
+            const entity = getEntityByName(name);
+            if (!entity) {
+              // Unknown-entity isn't really a "tool failed" condition for the
+              // agent — the agent's recovery is "call listEntities and pick a
+              // known one." Emit it as a typed envelope so the recovery is
+              // machine-readable, with a hint pointing the agent at the right
+              // next call.
+              return toEnvelopeResult(
+                envelope(
+                  "unknown_entity",
+                  `Entity "${name}" not found in the semantic layer.`,
+                  { hint: "Call listEntities to discover available entities." },
+                ),
+              );
+            }
+            return toJsonContent({ found: true, entity });
+          }
+
+          // Batch path — dedupe (preserving first-seen order) and resolve each.
+          // A miss is not a tool failure here: resolved entities come back in
+          // `entities`, misses in `notFound`, so the agent recovers per-name
+          // instead of losing the whole batch to one bad name.
+          const requested = names ?? [];
+          const seen = new Set<string>();
+          const ordered: string[] = [];
+          for (const n of requested) {
+            if (!seen.has(n)) {
+              seen.add(n);
+              ordered.push(n);
+            }
+          }
+
+          const entities: unknown[] = [];
+          const notFound: string[] = [];
+          for (const n of ordered) {
+            const entity = getEntityByName(n);
+            if (entity) entities.push(entity);
+            else notFound.push(n);
+          }
+
+          return toJsonContent({
+            count: entities.length,
+            entities,
+            notFound,
+            ...(notFound.length > 0
+              ? {
+                  hint: "Unrecognized names are listed in `notFound`; call listEntities to discover valid names.",
+                }
+              : {}),
+          });
         },
       ),
   );

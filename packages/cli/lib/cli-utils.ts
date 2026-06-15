@@ -99,6 +99,7 @@ export function detectDBType(url: string): DBType {
   if (url.startsWith("snowflake://")) return "snowflake";
   if (url.startsWith("duckdb://")) return "duckdb";
   if (url.startsWith("salesforce://")) return "salesforce";
+  if (url.startsWith("bigquery://")) return "bigquery";
   // Both engines route through the Elasticsearch profiler — the plugin's
   // resolver picks the engine (SQL endpoint) from the scheme (#3266/#3309).
   if (url.startsWith("elasticsearch://") || url.startsWith("opensearch://"))
@@ -106,7 +107,7 @@ export function detectDBType(url: string): DBType {
   const scheme = url.split("://")[0] || "(empty)";
   throw new Error(
     `Unsupported database URL scheme "${scheme}://". ` +
-      "Supported: postgresql:// (or postgres://), mysql:// (or mysql2://), clickhouse:// (or clickhouses://), snowflake://, duckdb://, salesforce://, elasticsearch://, opensearch://.",
+      "Supported: postgresql:// (or postgres://), mysql:// (or mysql2://), clickhouse:// (or clickhouses://), snowflake://, duckdb://, salesforce://, bigquery://, elasticsearch://, opensearch://.",
   );
 }
 

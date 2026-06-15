@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/bigquery",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Atlas BigQuery datasource plugin",
   "type": "module",
   "main": "./src/index.ts",
@@ -17,7 +17,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test __tests__/bigquery.test.ts"
+    "test": "bun test __tests__/bigquery.test.ts __tests__/profiler.test.ts __tests__/cost-estimator.test.ts"
   },
   "keywords": [
     "atlas",

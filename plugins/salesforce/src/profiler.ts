@@ -13,10 +13,16 @@
  * profiler is therefore **read-only** — describe + a single aggregate SELECT
  * per object, no DML.
  *
- * Salesforce stays on OAuth (ADR-0014): the `url` here is the same
- * `salesforce://` value `createFromConfig` resolves, which the connection
- * factory turns into the OAuth/jsforce session. No SQL `url` assumption — the
- * connection is built the same way the query path builds it.
+ * Auth: this profiler takes a credentialed `salesforce://` url and authenticates
+ * via jsforce's SOAP username/password login (`parseSalesforceURL` extracts the
+ * username, password, and optional security token; `conn.login()` performs the
+ * SOAP login) — it is NOT the OAuth-token path. Production OAuth Salesforce
+ * connections are built from tokens in `integration_credentials` via the
+ * `LazyPluginLoader`, not from this url. The registry consequently keeps
+ * Salesforce fail-closed for over-the-registry (MCP) profiling — see
+ * `datasource-registry-bridge.ts` (HANDLER_MANAGED_DATASOURCE_DBTYPES); only the
+ * CLI-with-credentialed-url path reaches this profiler today. OAuth-token-resolved
+ * registry profiling is tracked as a follow-up (ADR-0014, ADR-0017; #3663).
  *
  * Logic adapted from the CLI's `packages/cli/lib/profilers/salesforce.ts` —
  * this plugin package becomes the home the registry resolves and the CLI

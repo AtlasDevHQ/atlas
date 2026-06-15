@@ -98,6 +98,19 @@ mock.module("@atlas/api/lib/plugins/secrets", () => ({
   maskSecretFields: (config: Record<string, unknown>) => config,
 }));
 
+// Controllable plugin lookup so the `createFromConfig` path in
+// `resolveLiveConnection` can be exercised without registering real plugins.
+// Defaults to `undefined` ("no plugin registered" — the real lookup's result in
+// a bare test env), so the existing no-plugin assertions stay valid; a test sets
+// `pluginConnection` to inject a built connection with a specific introspection
+// surface. The rest of the bridge (probe/native predicates) stays real.
+let pluginConnection: { createFromConfig?: (cfg: unknown) => unknown } | undefined = undefined;
+const realBridge = await import("@atlas/api/lib/db/datasource-registry-bridge");
+mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
+  ...realBridge,
+  findDatasourcePluginConnection: mock(async () => pluginConnection),
+}));
+
 const {
   listDatasources,
   runDatasourceInstaller,
@@ -118,6 +131,7 @@ beforeEach(() => {
   healthResult = { status: "healthy", latencyMs: 1, checkedAt: new Date(0) };
   healthThrows = null;
   poolConfigResult = { dbType: "postgres", url: "postgres://u:p@h/db", schema: "public" };
+  pluginConnection = undefined;
   mockHasInternalDB.mockReturnValue(true);
 });
 
@@ -536,5 +550,70 @@ describe("resolveLiveConnection (#3667)", () => {
     const res = await resolveLiveConnection("org_1", "ch");
     expect(res.kind).toBe("unsupported");
     if (res.kind === "unsupported") expect(res.dbType).toBe("clickhouse");
+  });
+
+  it("fails closed when a registered plugin's built connection has no profile (the relocated wizard-profiler gate)", async () => {
+    internalRows = [
+      { catalog_id: "cat_ch", catalog_slug: "clickhouse", config: {}, config_schema: [] },
+    ];
+    poolConfigResult = { dbType: "clickhouse", url: "clickhouse://h/db" };
+    const closeSpy = mock(async () => {});
+    // A query-only plugin: builds a connection, but no `profile` capability.
+    pluginConnection = {
+      createFromConfig: () => ({
+        query: async () => ({ columns: [], rows: [] }),
+        close: closeSpy,
+        listObjects: async () => [],
+      }),
+    };
+    const res = await resolveLiveConnection("org_1", "ch");
+    expect(res.kind).toBe("unsupported");
+    // The throwaway built connection is torn down before bailing — no pool leak
+    // on every profile attempt against a query-only plugin.
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed (not a silent empty table list) when a built connection has profile but no listObjects", async () => {
+    internalRows = [
+      { catalog_id: "cat_ch", catalog_slug: "clickhouse", config: {}, config_schema: [] },
+    ];
+    poolConfigResult = { dbType: "clickhouse", url: "clickhouse://h/db" };
+    const closeSpy = mock(async () => {});
+    // Has `profile` but no `listObjects` — the table picker can't enumerate, so
+    // this must be `unsupported`, NOT an "ok" connection that returns [] tables.
+    pluginConnection = {
+      createFromConfig: () => ({
+        query: async () => ({ columns: [], rows: [] }),
+        close: closeSpy,
+        profile: async () => ({ profiles: [], errors: [] }),
+      }),
+    };
+    const res = await resolveLiveConnection("org_1", "ch");
+    expect(res.kind).toBe("unsupported");
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves a plugin-built connection exposing both introspection methods to ok with the configured defaultSchema", async () => {
+    internalRows = [
+      { catalog_id: "cat_ch", catalog_slug: "clickhouse", config: {}, config_schema: [] },
+    ];
+    poolConfigResult = { dbType: "clickhouse", url: "clickhouse://h/db", schema: "analytics" };
+    pluginConnection = {
+      createFromConfig: () => ({
+        query: async () => ({ columns: [], rows: [] }),
+        close: async () => {},
+        listObjects: async () => [],
+        profile: async () => ({ profiles: [], errors: [] }),
+      }),
+    };
+    const res = await resolveLiveConnection("org_1", "ch");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      expect(res.connection.dbType).toBe("clickhouse");
+      expect(typeof res.connection.profile).toBe("function");
+      expect(typeof res.connection.listObjects).toBe("function");
+      // The configured pool schema surfaces as defaultSchema for the wizard.
+      expect(res.defaultSchema).toBe("analytics");
+    }
   });
 });

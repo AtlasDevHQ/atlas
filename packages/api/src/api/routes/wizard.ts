@@ -585,7 +585,15 @@ wizard.openapi(profileRoute, async (c) => {
         } finally {
           // The built connection holds a real (lazy) pool — close it after
           // enumeration. Native pg/mysql + registry-managed pools no-op.
-          await connection.close().catch(() => {});
+          // A close failure can't fail the request (enumeration already
+          // settled), but it mustn't be swallowed silently either: log it so a
+          // pool leak during onboarding is visible (CLAUDE.md: no empty catch).
+          await connection.close().catch((closeErr) =>
+            log.warn(
+              { err: closeErr instanceof Error ? closeErr.message : String(closeErr), requestId, connectionId },
+              "Wizard profile: connection close after enumeration failed",
+            ),
+          );
         }
       },
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
@@ -593,10 +601,17 @@ wizard.openapi(profileRoute, async (c) => {
 
     if (profileResult._tag === "Left") {
       const err = profileResult.left;
+      // Keep the raw driver error in the logs; the client gets a sanitized
+      // message + requestId. The converged resolver routes EVERY datasource
+      // type (ClickHouse, Snowflake, BigQuery, ES, Salesforce, native pg/mysql)
+      // through here, and a driver connection error can embed host/port or DSN
+      // userinfo — never echo `err.message` to the client (CLAUDE.md: no
+      // connection strings / stack traces in responses), mirroring the MCP
+      // path's secret-scrubbing and the /enrich route below.
       log.error({ err, requestId, connectionId }, "Wizard profile failed");
       return c.json({
         error: "profile_failed",
-        message: `Failed to list tables: ${err.message}`,
+        message: "Failed to list tables. Please retry; if it persists, check the connection settings and server logs.",
         requestId,
       }, 500);
     }
@@ -674,7 +689,14 @@ wizard.openapi(generateRoute, async (c) => {
         } finally {
           // Profiling is done; generation below is pure. Release the built
           // connection's pool now (native pg/mysql + registry pools no-op).
-          await connection.close().catch(() => {});
+          // Log (don't swallow) a close failure so a pool leak is visible
+          // without failing the request (CLAUDE.md: no empty catch).
+          await connection.close().catch((closeErr) =>
+            log.warn(
+              { err: closeErr instanceof Error ? closeErr.message : String(closeErr), requestId, connectionId },
+              "Wizard generate: connection close after profiling failed",
+            ),
+          );
         }
 
         // Run heuristics (returns new array — no mutation)
@@ -774,10 +796,14 @@ wizard.openapi(generateRoute, async (c) => {
 
     if (genResult._tag === "Left") {
       const err = genResult.left;
+      // Sanitized client message + requestId; raw driver detail stays in the
+      // logs. Same reasoning as /profile above — the converged resolver routes
+      // every datasource type through here and driver errors can embed
+      // host/port/DSN userinfo (CLAUDE.md: no connection strings in responses).
       log.error({ err, requestId, connectionId }, "Wizard generate failed");
       return c.json({
         error: "generate_failed",
-        message: `Failed to profile tables: ${err.message}`,
+        message: "Failed to profile tables. Please retry; if it persists, check the connection settings and server logs.",
         requestId,
       }, 500);
     }
@@ -885,7 +911,14 @@ wizard.openapi(enrichRoute, async (c) => {
             logger: log,
           });
         } finally {
-          await connection.close().catch(() => {});
+          // Log (don't swallow) a close failure so a pool leak is visible
+          // without failing the request (CLAUDE.md: no empty catch).
+          await connection.close().catch((closeErr) =>
+            log.warn(
+              { err: closeErr instanceof Error ? closeErr.message : String(closeErr), requestId, connectionId, tableName },
+              "Wizard enrich: connection close after re-profile failed",
+            ),
+          );
         }
         const profile =
           result.profiles.find((p) => p.table_name === tableName) ?? result.profiles[0];

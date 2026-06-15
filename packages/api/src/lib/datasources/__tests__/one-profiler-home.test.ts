@@ -14,20 +14,18 @@
  * POSITIVE: every connectable type IS profilable via the one resolver
  * (`resolveLiveConnection`). This file asserts the NEGATIVES: no parallel homes.
  *
- * Imports the plugin factories directly (relative path, the same CLI → plugin
- * convention) — instantiating each in adapter-only mode does not load a driver,
- * so no optional peer dep is needed.
+ * The plugin set is DISCOVERED from the filesystem (every `plugins/*` whose
+ * package.json carries the `datasource` keyword), NOT a hand-maintained array —
+ * so a NEW datasource plugin is auto-enrolled in this guard instead of silently
+ * skipping it. Instantiating each in adapter-only mode (`factory({})`) does not
+ * load a driver, so no optional peer dep is needed. The native pg/mysql plugins
+ * (which profile in-core and expose `connection.create`, not `createFromConfig`)
+ * are partitioned out — their profiler home is the resolver's native branch.
  */
 
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { clickhousePlugin } from "../../../../../../plugins/clickhouse/src/index";
-import { snowflakePlugin } from "../../../../../../plugins/snowflake/src/index";
-import { bigqueryPlugin } from "../../../../../../plugins/bigquery/src/index";
-import { duckdbPlugin } from "../../../../../../plugins/duckdb/src/index";
-import { salesforcePlugin } from "../../../../../../plugins/salesforce/src/index";
-import { elasticsearchPlugin } from "../../../../../../plugins/elasticsearch/src/index";
 
 /** Walk up from this test to the monorepo root (has both `plugins/` and `packages/`). */
 function repoRoot(): string {
@@ -41,28 +39,91 @@ function repoRoot(): string {
   throw new Error(`repo root not found from ${import.meta.dir}`);
 }
 
-// Every datasource plugin, instantiated in adapter-only mode (no static config).
-const PLUGIN_FACTORIES: ReadonlyArray<readonly [string, () => { connection: Record<string, unknown> }]> = [
-  ["clickhouse", () => clickhousePlugin({})],
-  ["snowflake", () => snowflakePlugin({})],
-  ["bigquery", () => bigqueryPlugin({})],
-  ["duckdb", () => duckdbPlugin({})],
-  ["salesforce", () => salesforcePlugin({})],
-  ["elasticsearch", () => elasticsearchPlugin({})],
-];
+interface DiscoveredPlugin {
+  readonly name: string;
+  readonly connection: Record<string, unknown>;
+}
+
+/**
+ * Discover every datasource plugin from the filesystem and instantiate it in
+ * adapter-only mode. A plugin is a datasource iff its package.json `keywords`
+ * include `"datasource"`; its factory export is the `*Plugin` callable that is
+ * NOT a `build*` (the createPlugin-wrapped, config-validating entry point).
+ */
+async function discoverDatasourcePlugins(): Promise<DiscoveredPlugin[]> {
+  const pluginsDir = path.join(repoRoot(), "plugins");
+  const dirs = fs
+    .readdirSync(pluginsDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort();
+
+  const discovered: DiscoveredPlugin[] = [];
+  for (const name of dirs) {
+    const pkgPath = path.join(pluginsDir, name, "package.json");
+    const indexPath = path.join(pluginsDir, name, "src", "index.ts");
+    if (!fs.existsSync(pkgPath) || !fs.existsSync(indexPath)) continue;
+    const keywords = (JSON.parse(fs.readFileSync(pkgPath, "utf8")).keywords ?? []) as string[];
+    if (!keywords.includes("datasource")) continue;
+
+    const mod = (await import(indexPath)) as Record<string, unknown>;
+    const factory = Object.entries(mod).find(
+      ([exportName, value]) =>
+        typeof value === "function" && exportName.endsWith("Plugin") && !exportName.startsWith("build"),
+    );
+    if (!factory) throw new Error(`datasource plugin "${name}" exposes no *Plugin factory export`);
+
+    // Native pg/mysql plugins require a `url` at config time (no adapter-only
+    // mode) — their profiler home is the resolver's native in-core branch, not
+    // `createFromConfig`, so they're intentionally out of scope here. A throw on
+    // adapter-only instantiation partitions them out. The floor assertion below
+    // guarantees the six plugin-managed datasources still instantiate, so this
+    // catch can't silently swallow a regression in one of THEM.
+    let built: { connection?: Record<string, unknown> };
+    try {
+      built = (factory[1] as (c: unknown) => unknown)({}) as { connection?: Record<string, unknown> };
+    } catch {
+      continue;
+    }
+    if (!built.connection || typeof built.connection !== "object") {
+      throw new Error(`datasource plugin "${name}" built object has no connection namespace`);
+    }
+    discovered.push({ name, connection: built.connection });
+  }
+  return discovered;
+}
+
+const ALL_DATASOURCE_PLUGINS = await discoverDatasourcePlugins();
+
+// The plugin-managed profiler-home set: datasource plugins that build a
+// connection via `createFromConfig` (the ClickHouse/Snowflake/BigQuery/DuckDB/
+// Salesforce/ES path). Native pg/mysql plugins (`connection.create`, profiled
+// in-core) are NOT a `createFromConfig` home and are partitioned out here.
+const CREATE_FROM_CONFIG_PLUGINS = ALL_DATASOURCE_PLUGINS.filter(
+  (p) => typeof p.connection.createFromConfig === "function",
+);
 
 describe("one profiler home per datasource type (#3670 enforcement)", () => {
-  for (const [name, make] of PLUGIN_FACTORIES) {
+  it("discovers the known datasource plugins (discovery can't silently degrade to a vacuous pass)", () => {
+    const names = ALL_DATASOURCE_PLUGINS.map((p) => p.name);
+    // Floor on the known set so a broken glob / rename doesn't make every
+    // assertion below vacuous. New datasource plugins push this higher.
+    for (const known of ["bigquery", "clickhouse", "duckdb", "elasticsearch", "salesforce", "snowflake"]) {
+      expect(names).toContain(known);
+    }
+    expect(CREATE_FROM_CONFIG_PLUGINS.length).toBeGreaterThanOrEqual(6);
+  });
+
+  for (const { name, connection } of CREATE_FROM_CONFIG_PLUGINS) {
     it(`${name}: introspection rides the BUILT connection, not a connection-namespace export`, () => {
-      const conn = make().connection;
       // No SECOND home: the connection namespace must not re-export profiler
       // functions. Introspection is a capability of the built connection only.
-      expect(conn.listObjects).toBeUndefined();
-      expect(conn.profile).toBeUndefined();
+      expect(connection.listObjects).toBeUndefined();
+      expect(connection.profile).toBeUndefined();
       // The ONE home: createFromConfig builds the connection that carries the
       // bound listObjects/profile (asserted per-plugin in their built-connection
       // introspection tests, and end-to-end by universal-profiling-enforcement).
-      expect(typeof conn.createFromConfig).toBe("function");
+      expect(typeof connection.createFromConfig).toBe("function");
     });
   }
 

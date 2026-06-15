@@ -653,6 +653,9 @@ describe("POST /api/v1/wizard/profile", () => {
     const data = await json(res);
     expect(data.error).toBe("profile_failed");
     expect(data.requestId).toBeDefined();
+    // The raw driver detail stays in the logs — never echoed to the client (a
+    // driver error can embed host/port/DSN userinfo).
+    expect(data.message).not.toContain("connection timeout");
   });
 
   it("returns 400 for malformed JSON body", async () => {
@@ -811,6 +814,8 @@ describe("POST /api/v1/wizard/generate", () => {
     const data = await json(res);
     expect(data.error).toBe("generate_failed");
     expect(data.requestId).toBeDefined();
+    // Raw driver detail stays out of the client response.
+    expect(data.message).not.toContain("statement timeout");
   });
 });
 

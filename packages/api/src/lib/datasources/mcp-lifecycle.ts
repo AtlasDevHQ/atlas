@@ -396,11 +396,21 @@ export async function resolveProvisionCapability(
  * proxy for what `profile_datasource` accepts, used by the MCP `create_datasource`
  * success hint. Since profiling now rides the unified {@link resolveLiveConnection}
  * and introspection is a capability of the BUILT connection (#3667), "profilable"
- * is "connectable": native pg/mysql, or a registered plugin that builds a
- * connection (`createFromConfig`). Every shipped plugin's built connection exposes
- * `profile`, and the enforcement test (`universal-profiling-enforcement.test.ts`)
- * keeps that invariant — so `createFromConfig` is a sound proxy without the cost
- * of building a throwaway connection just to read a hint.
+ * is treated as "connectable": native pg/mysql, or a registered plugin that builds
+ * a connection (`createFromConfig`).
+ *
+ * CAVEAT — this is a PROXY, not a guarantee. The SDK's `PluginDBConnection`
+ * genuinely permits a connectable-but-not-profilable plugin (a query-only
+ * datasource whose built connection omits `profile`/`listObjects`), so
+ * "connectable ⇒ profilable" is NOT enforced by the type system here. It holds by
+ * a runtime/test-enforced invariant instead: every SHIPPED plugin's built
+ * connection exposes both introspection methods, and the enforcement tests
+ * (`universal-profiling-enforcement.test.ts` positive,
+ * `one-profiler-home.test.ts` negative) keep it that way. A hint computed from
+ * this proxy could therefore over-promise for a hypothetical query-only plugin —
+ * but {@link resolveLiveConnection} fails closed at profile time for that case, so
+ * the worst outcome is an optimistic hint, never a silent bad profile. The
+ * trade-off buys avoiding a throwaway connection build just to read a hint.
  *
  * Uses the SAME single plugin lookup ({@link findDatasourcePluginConnection}) and
  * native predicate ({@link isMcpNativeDbType}) provisioning uses, so the two can
@@ -846,12 +856,16 @@ export type ResolveLiveConnectionResult =
       readonly kind: "ok";
       readonly connection: LiveDatasourceConnection;
       /**
-       * The connection's resolved default schema/database/dataset scope (the
-       * `workspace_plugins` config schema, or the dialect default) — `undefined`
-       * when none is configured / not meaningful (MySQL, OAuth). Surfaced so the
-       * in-product wizard, which rides this same resolver (one profiler home),
-       * can report the effective schema in its response without re-deriving its
-       * own connection resolution. The MCP profiling path ignores it.
+       * The connection's CONFIGURED schema/database/dataset scope — the
+       * `workspace_plugins` config schema (`poolSchema`) — or `undefined` when
+       * none was configured / it's not meaningful (MySQL, OAuth). This is the
+       * configured scope, NOT the fully-resolved effective scope: the canonical
+       * dialect default (Postgres → `"public"`) is applied DOWNSTREAM by the
+       * consumer ({@link WizardConnectionContext}'s `effectiveSchema`), not baked
+       * in here. Surfaced so the in-product wizard, which rides this same resolver
+       * (one profiler home), can report the schema in its response without
+       * re-deriving its own connection resolution. The MCP profiling path ignores
+       * it. (Always present on the `ok` variant so every `ok` branch must decide.)
        */
       readonly defaultSchema: string | undefined;
     }
@@ -887,7 +901,8 @@ function reconnectRequiredMessage(dbType: string): string {
 function notProfilableLiveMessage(dbType: string): string {
   return (
     `Datasource type "${dbType}" cannot be profiled in this deployment. No registered plugin ` +
-    `builds a live connection exposing the introspection capability (connection.profile) for it. ` +
+    `builds a live connection exposing the introspection capability (connection.profile + ` +
+    `connection.listObjects) for it. ` +
     `Install or upgrade the corresponding datasource plugin, or profile it with the Atlas CLI (atlas init).`
   );
 }
@@ -921,6 +936,14 @@ export async function resolveLiveConnection(
       WHERE wp.workspace_id = $1
         AND wp.install_id = $2
         AND wp.pillar = 'datasource'
+        -- An archived install is a per-workspace hide tombstone (0094 / #2744):
+        -- it must read as not_found so neither the MCP profile_datasource tool
+        -- nor the in-product wizard (both ride this one resolver) can profile a
+        -- datasource the workspace removed. This restores the status-archived
+        -- filter the pre-convergence wizard resolver carried; list_datasources
+        -- excludes archived too, so an archived datasource being unprofilable is
+        -- consistent end-to-end.
+        AND wp.status != 'archived'
       LIMIT 1`,
     [orgId, installId],
   );
@@ -1040,11 +1063,15 @@ export async function resolveLiveConnection(
 
   // Introspection is a capability of the BUILT connection (#3667), bound to the
   // creds `createFromConfig` resolved — NO host shim re-resolving auth from a
-  // url/config. A plugin whose built connection exposes no `profile` is not
-  // profilable (fail-closed, actionable). `poolSchema` provides the
-  // dialect-default scope (ClickHouse database, BigQuery dataset) when the caller
-  // passes none.
-  if (typeof built.profile !== "function") {
+  // url/config. Both halves of the introspection surface are required to be
+  // profilable: `profile` (column/row analysis) AND `listObjects` (the table
+  // picker's enumeration). A connection missing EITHER is fail-closed and
+  // actionable — symmetric with the OAuth path above (which gates on both), and
+  // never a silent empty table list (a `listObjects`-less connection would have
+  // rendered "0 tables" in the wizard, reading as an empty database). `poolSchema`
+  // provides the dialect-default scope (ClickHouse database, BigQuery dataset)
+  // when the caller passes none.
+  if (typeof built.profile !== "function" || typeof built.listObjects !== "function") {
     // The built connection is a real (lazy) client/pool — close it before
     // bailing so a query-only plugin doesn't leak a connection on every
     // profile attempt (the OK path closes via the caller's `finally`; this
@@ -1056,15 +1083,13 @@ export async function resolveLiveConnection(
     return { kind: "unsupported", dbType, message: notProfilableLiveMessage(dbType) };
   }
   const builtProfile = built.profile.bind(built);
+  const builtListObjects = built.listObjects.bind(built);
   const profile = (o: LiveConnectionProfileOptions): Promise<ProfilingResult> =>
     builtProfile({ ...o, ...(o.schema === undefined && poolSchema !== undefined ? { schema: poolSchema } : {}) });
-  const listObjects: (o?: LiveConnectionListOptions) => Promise<DatabaseObject[]> =
-    typeof built.listObjects === "function"
-      ? (o) =>
-          Promise.resolve(
-            built.listObjects!({ ...(o?.schema !== undefined ? { schema: o.schema } : poolSchema !== undefined ? { schema: poolSchema } : {}) }),
-          )
-      : () => Promise.resolve([]);
+  const listObjects = (o?: LiveConnectionListOptions): Promise<DatabaseObject[]> =>
+    Promise.resolve(
+      builtListObjects({ ...(o?.schema !== undefined ? { schema: o.schema } : poolSchema !== undefined ? { schema: poolSchema } : {}) }),
+    );
 
   return {
     kind: "ok",

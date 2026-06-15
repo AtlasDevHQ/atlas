@@ -35,7 +35,6 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import {
   catalogSlugToDbType,
   resolveDatasourcePoolConfig,
-  type DatasourcePoolConfig,
 } from "@atlas/api/lib/db/datasource-pool-resolver";
 import {
   findDatasourcePluginConnection,
@@ -425,22 +424,6 @@ function notProfilableMessage(dbType: string): string {
     `implements the profiling contract (connection.profile) for it. Install or upgrade the ` +
     `corresponding datasource plugin, or profile it with the Atlas CLI (atlas init).`
   );
-}
-
-export async function resolveProfileCapability(
-  catalogSlug: string,
-): Promise<ProfileCapability> {
-  // Classify by the SAME predicate provisioning uses — never a second matcher.
-  const provision = await resolveProvisionCapability(catalogSlug);
-  if (provision.kind === "native") {
-    return { kind: "native", dbType: provision.dbType };
-  }
-  if (provision.kind === "unsupported") {
-    return { kind: "unsupported", dbType: provision.dbType, message: provision.message };
-  }
-  // provision.kind === "plugin" — re-resolve the SAME plugin via the shared
-  // lookup and check for the introspection half of the contract.
-  return resolveProfileCapabilityByDbType(provision.dbType);
 }
 
 /**
@@ -1090,305 +1073,108 @@ export async function resolveLiveConnection(
   };
 }
 
-// ── Profiling / semantic-gen (#3512) ──────────────────────────────────
-
-/** Resolved profiling target — internal use only; `url` is the decrypted secret. */
-export interface DatasourceProfileTarget {
-  readonly url: string;
-  /**
-   * The datasource dialect. Widened from the native pg/mysql set to the full
-   * {@link DBType} (#3552): a plugin-managed type (clickhouse / snowflake / …)
-   * is profilable too, via the injected {@link profileFn} below.
-   */
-  readonly dbType: DBType;
-  readonly schema?: string;
-  /**
-   * The registry-resolved plugin profiler (#3552 / ADR-0017), or `undefined`
-   * for native pg/mysql (which `SemanticGenerator` profiles in-core via
-   * `resolveProfiler`). Resolved off the SAME predicate provisioning uses
-   * (`resolveProfileCapability` → `findDatasourcePluginConnection`), so the
-   * plugin that provisions a datasource is the plugin that profiles it. Passed
-   * straight into `SemanticGenerator.profile({ profileFn })` — no adapter.
-   */
-  readonly profileFn?: DatasourceProfiler;
-  /**
-   * The install's connection-group scope (`workspace_plugins.config.group_id`),
-   * or `null` for an ungrouped install. Carried so the persistence step
-   * (#3546) lands the generated entities under the SAME `connection_group_id`
-   * the whitelist loader reads — a group-of-one for a standalone MCP-created
-   * datasource. This is metadata (a group name), never a secret.
-   */
-  readonly connectionGroupId: string | null;
-  /**
-   * The install's resolved, DECRYPTED connection config (ADR-0017 amendment).
-   * Carried so the registry-resolved `profileFn` of a separate-field-credential
-   * plugin (Elasticsearch — `apiKey`/`username`/`password`/SigV4 live in config
-   * fields, NOT in the `url`) profiles with the TENANT's own credentials rather
-   * than falling back to operator `ATLAS_ES_*` env (the per-tenant-creds rule).
-   * Url-embedded plugin profilers (ClickHouse/Snowflake) and the native pg/mysql
-   * profiler ignore it.
-   *
-   * SECURITY: like `url`, this is DECRYPTED secret material — internal use only,
-   * it never leaves the lib layer / reaches the agent / is logged. The caller
-   * passes it straight into `runSemanticProfile` → `SemanticGenerator.profile`.
-   */
-  readonly config: Readonly<Record<string, unknown>>;
-}
-
-export type LoadProfileTargetResult =
-  | { readonly kind: "ok"; readonly target: DatasourceProfileTarget }
-  | { readonly kind: "not_found" }
-  | { readonly kind: "unsupported"; readonly dbType: string; readonly message: string };
-
-/**
- * Resolve the `url` the profiler seam passes to the resolved `profileFn`.
- *
- * - URL-shaped pool configs (native pg/mysql, clickhouse/snowflake/elasticsearch)
- *   return their `url` directly.
- * - BigQuery is multi-field / non-url-shaped: its credentials live in SEPARATE
- *   config fields (`service_account_json`), never a connection string. The host
- *   carries the decrypted `config` (the ADR-0017 amendment), and the BigQuery
- *   profiler authenticates from it — but the seam contract is still
- *   `url: string`, so synthesize a `bigquery://<project>` identifier from the
- *   pool config. The synthetic url is a routing/identifier hint only; the
- *   profiler reads credentials from `config`, never from this url (#3664).
- * - Everything else with no url (duckdb file path, salesforce OAuth) returns
- *   `undefined` and stays fail-closed in its own slice.
- */
-function resolveProfileUrl(poolConfig: DatasourcePoolConfig): string | undefined {
-  if ("url" in poolConfig && typeof poolConfig.url === "string" && poolConfig.url.length > 0) {
-    return poolConfig.url;
-  }
-  if (poolConfig.dbType === "bigquery" && poolConfig.projectId.length > 0) {
-    return `bigquery://${encodeURIComponent(poolConfig.projectId)}`;
-  }
-  return undefined;
-}
-
-/**
- * Load + decrypt a datasource install's connection config and shape the
- * profiling target the semantic generator needs.
- *
- * Profilability is decided by the SAME capability predicate provisioning uses
- * — {@link resolveProfileCapability} (in lockstep, #3547 AC #1 / ADR-0017) —
- * NOT a hardcoded pg/mysql discriminant. Native pg/mysql profile in-core (no
- * `profileFn`); a plugin-managed type carries the registry-resolved `profileFn`;
- * anything with no plugin / no `connection.profile` resolves to `unsupported`
- * with an actionable message.
- *
- * Returns `not_found` for an unknown install. The decrypted `url` never leaves
- * the lib layer — the caller passes it straight to the profiler.
- */
-export async function loadDatasourceProfileTarget(
-  orgId: string,
-  installId: string,
-): Promise<LoadProfileTargetResult> {
-  if (!hasInternalDB()) return { kind: "not_found" };
-  const rows = await internalQuery<{
-    catalog_id: string;
-    catalog_slug: string;
-    config: Record<string, unknown> | null;
-    config_schema: unknown;
-    group_id: string | null;
-  }>(
-    `SELECT wp.catalog_id, pc.slug AS catalog_slug, wp.config, pc.config_schema,
-            wp.config->>'group_id' AS group_id
-       FROM workspace_plugins wp
-       JOIN plugin_catalog pc ON pc.id = wp.catalog_id
-      WHERE wp.workspace_id = $1
-        AND wp.install_id = $2
-        AND wp.pillar = 'datasource'
-      LIMIT 1`,
-    [orgId, installId],
-  );
-  if (rows.length === 0) return { kind: "not_found" };
-  const row = rows[0];
-
-  // Profilability is driven by the SAME capability predicate provisioning uses
-  // (the one shared `findDatasourcePluginConnection` lookup), so provisioning
-  // and profiling stay in lockstep as types are added (#3547 AC #1 / ADR-0017).
-  // Native pg/mysql → no profileFn (SemanticGenerator profiles in-core); a
-  // plugin type → the registry-resolved profileFn; no plugin / no
-  // `connection.profile` → an actionable `unsupported`.
-  const capability = await resolveProfileCapability(row.catalog_slug);
-  if (capability.kind === "unsupported") {
-    return { kind: "unsupported", dbType: capability.dbType, message: capability.message };
-  }
-
-  const schema = parseConfigSchema(row.config_schema);
-  const decrypted = decryptSecretFields(row.config ?? {}, schema);
-  // Group scope for the persistence step — `null` when the install carries no
-  // group binding (the flat default scope), matching the whitelist loader's
-  // NULL-scope bucket.
-  const connectionGroupId = row.group_id && row.group_id.length > 0 ? row.group_id : null;
-  const poolConfig = resolveDatasourcePoolConfig(
-    {
-      workspaceId: orgId,
-      catalogId: row.catalog_id,
-      installId,
-      pillar: "datasource",
-      catalogSlug: row.catalog_slug,
-    },
-    decrypted,
-  );
-  // The profiler seam passes a `url: string` to the resolved `profileFn` (and to
-  // the in-core pg/mysql profiler). Native pg/mysql and the url-bearing plugin
-  // pool configs (clickhouse / snowflake / elasticsearch) carry one directly. A
-  // multi-field-credential type (bigquery) carries its connection in SEPARATE
-  // config fields, not a url — the host carries the decrypted `config` (the
-  // ADR-0017 amendment that already lets ES authenticate from tenant config) and
-  // the plugin profiler builds the connection from it; we synthesize a url so
-  // the seam's `url: string` contract holds and logs/identifiers stay meaningful
-  // (#3664). Types with neither a url nor a config-credential profiler path
-  // (duckdb file path, salesforce OAuth) stay fail-closed in their own slices.
-  const url = resolveProfileUrl(poolConfig);
-  if (typeof url !== "string" || url.length === 0) {
-    return {
-      kind: "unsupported",
-      dbType: poolConfig.dbType,
-      message:
-        `Profiling "${poolConfig.dbType}" datasources via MCP is not supported yet — its ` +
-        `connection is not URL-shaped. Profile it with the Atlas CLI (atlas init), or use a ` +
-        `URL-shaped datasource type.`,
-    };
-  }
-  return {
-    kind: "ok",
-    target: {
-      url,
-      dbType: poolConfig.dbType,
-      schema: "schema" in poolConfig ? poolConfig.schema : undefined,
-      ...(capability.kind === "plugin" ? { profileFn: capability.profileFn } : {}),
-      connectionGroupId,
-      // Decrypted tenant config (ADR-0017 amendment): carried so a
-      // separate-field-credential plugin profiler (ES) authenticates with the
-      // tenant's own creds, not operator env. NEVER leaves the lib layer.
-      config: decrypted,
-    },
-  };
-}
+// ── Profiling / semantic-gen (#3512, #3667) ──────────────────────────
 
 export type RunSemanticProfileOutcome =
   | {
       readonly kind: "ok";
       readonly result: ProfileAndGenerateResult;
       /**
-       * Durable-persistence counts (#3546). Present when an `orgId` was
-       * supplied AND an internal DB is configured (the generated entities were
-       * upserted as drafts to `semantic_entities`); `null` when persistence was
-       * skipped (no `orgId` / no internal DB — the in-memory whitelist is the
-       * only registration, e.g. a self-hosted stdio server with no internal DB).
+       * Durable-persistence counts (#3546). Present when an `orgId` was supplied
+       * AND an internal DB is configured (entities upserted as drafts to
+       * `semantic_entities`); `null` when persistence was skipped (the in-memory
+       * whitelist is the only registration, e.g. a self-hosted stdio server).
        */
       readonly persisted: { readonly entities: number; readonly metrics: number } | null;
     }
   | { readonly kind: "error"; readonly reason: ProfilingFailedError["reason"]; readonly message: string };
 
 /**
- * Profile a connection and generate its semantic layer via the #3506
- * `SemanticGenerator` service, registering the generated entities into the
- * in-process table whitelist so a subsequent in-process `executeSQL` is
- * permitted, AND — when an `orgId` is supplied and an internal DB is
- * configured — DURABLY persisting the generated entities + metrics to the org
- * semantic store as drafts (#3546). Persistence is what makes the connection
- * queryable (a) after an MCP-server restart and (b) from the API process the
- * web `/chat` `executeSQL` runs in (a stdio MCP server is a different process,
- * so its in-memory whitelist alone is not cross-surface). `progress` bridges
- * the profiler's per-table callbacks to the MCP progress seam.
+ * Profile a RESOLVED LIVE CONNECTION (#3667) and generate its semantic layer via
+ * the #3506 `SemanticGenerator`, registering the generated entities into the
+ * in-process table whitelist (so a subsequent in-process `executeSQL` is
+ * permitted) and — when an `orgId` is supplied and an internal DB is configured —
+ * DURABLY persisting the generated entities + metrics to the org semantic store
+ * as drafts (#3546).
  *
- * A tagged `ProfilingFailedError` (no tables, threshold exceeded, persist
- * failure, …) is returned as a typed `error` outcome; an unexpected defect
- * re-throws for the caller's `internal_error` path.
+ * The connection comes from {@link resolveLiveConnection}: the profiler RIDES the
+ * query path's connection resolution rather than re-deriving its own (the bug
+ * class that bit BigQuery #3664 and Salesforce #3663). The injected
+ * `SemanticGenerator` profiler is a thin ADAPTER that delegates to the live
+ * connection's bound `profile()` — its url/config args are inert because the
+ * connection is already authenticated. So there is no `url`/`config`/`profileFn`
+ * threading here, and no URL-shape gate: a connectable type is profilable by
+ * construction.
+ *
+ * The caller owns the connection lifecycle (it `close()`s after profiling). A
+ * tagged `ProfilingFailedError` is returned as a typed `error` outcome; an
+ * unexpected defect re-throws for the caller's `internal_error` path.
  */
-export async function runSemanticProfile(opts: {
-  url: string;
+export async function profileLiveDatasource(opts: {
+  connection: LiveDatasourceConnection;
   /**
-   * Datasource dialect. Widened from the native pg/mysql set (#3552): a
-   * plugin-managed type is profilable via the injected {@link profileFn}.
+   * Connection-group identifier — the whitelist key + entity `connection:` field.
+   * The MCP `profile_datasource` tool passes the datasource install id.
    */
-  dbType: DBType;
+  connectionId: string;
+  /** Optional profiling schema/database/dataset override. Omit for the connection's default. */
   schema?: string;
   /**
-   * Registry-resolved plugin profiler (#3552 / ADR-0017). Required for a
-   * plugin dbType (core profiles only pg/mysql in-core); omit for native
-   * pg/mysql. Passed straight into `SemanticGenerator.profile({ profileFn })`.
-   */
-  profileFn?: DatasourceProfiler;
-  /**
-   * The datasource's resolved, DECRYPTED connection config (ADR-0017 amendment).
-   * Forwarded into `SemanticGenerator.profile({ config })` so a
-   * separate-field-credential plugin profiler (Elasticsearch) authenticates with
-   * the tenant's own creds rather than operator env. Ignored by native pg/mysql
-   * and url-embedded plugin profilers (ClickHouse/Snowflake). SECURITY: decrypted
-   * secret material — never logged or surfaced to the agent.
-   */
-  config?: Readonly<Record<string, unknown>>;
-  connectionId: string;
-  /**
-   * Workspace the generated rows belong to. When provided (and an internal DB
-   * is configured) the generated layer is persisted as drafts; when omitted,
-   * only the in-memory whitelist is populated. The MCP `profile_datasource`
-   * tool always passes the bound workspace.
+   * Workspace the generated rows belong to. When provided (and an internal DB is
+   * configured) the generated layer is persisted as drafts; when omitted, only
+   * the in-memory whitelist is populated.
    */
   orgId?: string;
-  /**
-   * Connection-group scope for the persisted rows — pass the value from
-   * {@link DatasourceProfileTarget.connectionGroupId} so the rows land in the
-   * same scope the whitelist loader reads. Ignored when `orgId` is omitted.
-   */
-  connectionGroupId?: string | null;
   progress?: ProfileProgressCallbacks;
 }): Promise<RunSemanticProfileOutcome> {
   const shouldPersist = opts.orgId !== undefined && hasInternalDB();
+  const conn = opts.connection;
+
+  // The seam (#3667): `SemanticGenerator`'s url-based `DatasourceProfiler`
+  // injection point delegates to the resolved live connection's bound
+  // `profile()`. The `url`/`config` args are ignored — the connection is already
+  // authenticated and bound to its creds — so profiling consumes the connection
+  // instead of re-resolving auth.
+  const profileFn: DatasourceProfiler = (args) =>
+    conn.profile({
+      ...(args.schema !== undefined ? { schema: args.schema } : {}),
+      ...(args.selectedTables !== undefined ? { selectedTables: args.selectedTables } : {}),
+      ...(args.prefetchedObjects !== undefined ? { prefetchedObjects: args.prefetchedObjects } : {}),
+      ...(args.progress !== undefined ? { progress: args.progress } : {}),
+      ...(args.logger !== undefined ? { logger: args.logger } : {}),
+    });
 
   const program = Effect.gen(function* () {
     const gen = yield* SemanticGenerator;
-    // When persist will run, defer in-memory whitelist registration until AFTER
-    // persist succeeds (#3589). A persist failure otherwise leaves the connection
-    // queryable in-process (split-brain: executeSQL accepts it, but the entities
-    // aren't durable and won't survive a restart). When there's nothing to persist
-    // (no orgId / no internal DB) the in-memory whitelist IS the only durability
-    // mechanism, so register immediately as before.
+    // Defer in-memory whitelist registration until AFTER persist succeeds when
+    // persisting (#3589) — a persist failure otherwise leaves the connection
+    // queryable in-process but not durable (split-brain).
     const result = yield* gen.profileAndGenerate({
-      url: opts.url,
-      dbType: opts.dbType,
+      // `url` is not load-bearing — the profiler adapter delegates to the bound
+      // connection. Pass empty so the seam's `url: string` contract holds.
+      url: "",
+      dbType: conn.dbType,
       ...(opts.schema !== undefined ? { schema: opts.schema } : {}),
-      // Inject the registry-resolved plugin profiler (#3552). `resolveProfiler`
-      // ignores it for pg/mysql (in-core), so passing `undefined` for native
-      // types is a no-op; a plugin type requires it.
-      ...(opts.profileFn !== undefined ? { profileFn: opts.profileFn } : {}),
-      // Forward the decrypted tenant config (ADR-0017 amendment) so a
-      // separate-field-credential / non-url-shaped plugin profiler (ES,
-      // BigQuery — #3664) authenticates with the tenant's own creds, not
-      // operator env. Native + url-embedded profilers ignore it. Never logged.
-      ...(opts.config !== undefined ? { config: opts.config } : {}),
+      profileFn,
       connectionId: opts.connectionId,
       registerWhitelist: !shouldPersist,
       ...(opts.progress !== undefined ? { progress: opts.progress } : {}),
     });
 
-    // Durably persist as drafts so the whitelist survives a restart and is
-    // visible cross-process (#3546). A persist failure is a tagged
-    // ProfilingFailedError (reason: "persist_error") — surfaced as a typed
-    // `error` outcome below, not a silent success on a non-durable layer.
     if (shouldPersist && opts.orgId !== undefined) {
       const persisted = yield* gen.persist({
         orgId: opts.orgId,
-        connectionGroupId: opts.connectionGroupId ?? null,
+        connectionGroupId: conn.connectionGroupId,
         entities: result.entities,
         metrics: result.metrics,
       });
-      // Persist succeeded: now safe to register the in-memory whitelist so
-      // subsequent in-process executeSQL calls are permitted (#3589).
-      const connectionId = opts.connectionId ?? "default";
-      gen.registerWhitelist(connectionId, result.entities);
+      gen.registerWhitelist(opts.connectionId, result.entities);
       return { result, persisted };
     }
     return { result, persisted: null };
   });
 
-  const exit = await Effect.runPromiseExit(
-    program.pipe(Effect.provide(SemanticGeneratorLive)),
-  );
+  const exit = await Effect.runPromiseExit(program.pipe(Effect.provide(SemanticGeneratorLive)));
   if (exit._tag === "Success") {
     return {
       kind: "ok",
@@ -1403,10 +1189,9 @@ export async function runSemanticProfile(opts: {
   if (failure._tag === "Some" && failure.value instanceof ProfilingFailedError) {
     return { kind: "error", reason: failure.value.reason, message: failure.value.message };
   }
-  // Re-throw the ORIGINAL underlying error (not a wrapped one) so the MCP
-  // layer can recognise an `OperationCancelledError` raised cooperatively from
-  // the progress callback when the client cancels — wrapping it in a fresh
-  // `Error` would erase that identity and surface a spurious internal_error.
+  // Re-throw the ORIGINAL underlying error (not a wrapped one) so the MCP layer
+  // can recognise an `OperationCancelledError` raised cooperatively from the
+  // progress callback when the client cancels.
   const original = causeToError(exit.cause);
   throw original instanceof Error
     ? original

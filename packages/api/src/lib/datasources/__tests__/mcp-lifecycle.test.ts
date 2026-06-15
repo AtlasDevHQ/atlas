@@ -102,7 +102,7 @@ const {
   listDatasources,
   runDatasourceInstaller,
   provisionDatasource,
-  loadDatasourceProfileTarget,
+  resolveLiveConnection,
   loadProvisionConfigFields,
 } = await import("../mcp-lifecycle.js");
 
@@ -494,26 +494,27 @@ describe("loadProvisionConfigFields — credential fields carry secret:true (#35
   });
 });
 
-describe("loadDatasourceProfileTarget", () => {
+describe("resolveLiveConnection (#3667)", () => {
   it("returns not_found for an unknown install", async () => {
     internalRows = [];
-    const res = await loadDatasourceProfileTarget("org_1", "nope");
+    const res = await resolveLiveConnection("org_1", "nope");
     expect(res.kind).toBe("not_found");
   });
 
-  it("returns the decrypted target (with the install's group scope) for a postgres install", async () => {
+  it("resolves a native postgres install to a live connection carrying the install's group scope", async () => {
     internalRows = [
       { catalog_id: "cat_pg", catalog_slug: "postgres", config: { url: "enc:v1:…" }, config_schema: [], group_id: "prod" },
     ];
     poolConfigResult = { dbType: "postgres", url: "postgres://u:p@h/db", schema: "analytics" };
-    const res = await loadDatasourceProfileTarget("org_1", "pg");
+    const res = await resolveLiveConnection("org_1", "pg");
     expect(res.kind).toBe("ok");
     if (res.kind === "ok") {
-      expect(res.target.dbType).toBe("postgres");
-      expect(res.target.url).toBe("postgres://u:p@h/db");
-      expect(res.target.schema).toBe("analytics");
+      expect(res.connection.dbType).toBe("postgres");
+      // Introspection is a capability of the resolved connection (no url/config surfaced).
+      expect(typeof res.connection.profile).toBe("function");
+      expect(typeof res.connection.listObjects).toBe("function");
       // #3546 — the group scope drives where persisted drafts land.
-      expect(res.target.connectionGroupId).toBe("prod");
+      expect(res.connection.connectionGroupId).toBe("prod");
     }
   });
 
@@ -522,17 +523,17 @@ describe("loadDatasourceProfileTarget", () => {
       { catalog_id: "cat_pg", catalog_slug: "postgres", config: { url: "enc:v1:…" }, config_schema: [], group_id: null },
     ];
     poolConfigResult = { dbType: "postgres", url: "postgres://u:p@h/db", schema: "public" };
-    const res = await loadDatasourceProfileTarget("org_1", "pg");
+    const res = await resolveLiveConnection("org_1", "pg");
     expect(res.kind).toBe("ok");
-    if (res.kind === "ok") expect(res.target.connectionGroupId).toBeNull();
+    if (res.kind === "ok") expect(res.connection.connectionGroupId).toBeNull();
   });
 
-  it("returns unsupported for a non-profilable dbType", async () => {
+  it("returns unsupported for a plugin dbType with no registered plugin (never a silent skip)", async () => {
     internalRows = [
       { catalog_id: "cat_ch", catalog_slug: "clickhouse", config: {}, config_schema: [] },
     ];
     poolConfigResult = { dbType: "clickhouse", url: "clickhouse://h/db" };
-    const res = await loadDatasourceProfileTarget("org_1", "ch");
+    const res = await resolveLiveConnection("org_1", "ch");
     expect(res.kind).toBe("unsupported");
     if (res.kind === "unsupported") expect(res.dbType).toBe("clickhouse");
   });

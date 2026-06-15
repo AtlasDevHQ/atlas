@@ -30,7 +30,9 @@ import * as yaml from "js-yaml";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
 import type { InternalPool } from "@atlas/api/lib/db/internal";
-import { runSemanticProfile } from "../mcp-lifecycle";
+import { profileLiveDatasource } from "../mcp-lifecycle";
+import type { LiveDatasourceConnection } from "../mcp-lifecycle";
+import { profilePostgres, listPostgresObjects } from "@atlas/api/lib/profiler";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
 import { connections } from "@atlas/api/lib/db/connection";
 import {
@@ -69,6 +71,21 @@ describeIfPg("MCP create → profile → query (live Postgres, #3546)", () => {
   // `hasInternalDB()` (the persist + whitelist-load gate) keys on DATABASE_URL.
   // Set it for this file so the durable path runs; restored in afterAll.
   let prevDatabaseUrl: string | undefined;
+
+  // #3667 — profiling now consumes a resolved LiveDatasourceConnection. For a
+  // native pg datasource the connection binds the in-core profilers to the
+  // resolved url; here we build it directly off the live test DB (the install
+  // row carries only the group scope, which `profileLiveDatasource` reads from
+  // the connection's `connectionGroupId`).
+  const pgLiveConnection = (): LiveDatasourceConnection => ({
+    dbType: "postgres",
+    connectionGroupId: GROUP_ID,
+    query: (sql, timeoutMs) => connections.get(GROUP_ID).query(sql, timeoutMs),
+    listObjects: (o) => listPostgresObjects(TEST_DB_URL as string, o?.schema ?? srcSchema),
+    profile: (o) =>
+      profilePostgres(TEST_DB_URL as string, o.selectedTables, o.prefetchedObjects, o.schema ?? srcSchema, o.progress, o.logger),
+    close: async () => {},
+  });
 
   beforeAll(async () => {
     prevDatabaseUrl = process.env.DATABASE_URL;
@@ -147,13 +164,11 @@ describeIfPg("MCP create → profile → query (live Postgres, #3546)", () => {
   });
 
   it("persists generated entities as drafts AND makes the profiled table queryable cross-process", async () => {
-    const outcome = await runSemanticProfile({
-      url: TEST_DB_URL as string,
-      dbType: "postgres",
+    const outcome = await profileLiveDatasource({
+      connection: pgLiveConnection(),
       schema: srcSchema,
       connectionId: GROUP_ID,
       orgId: ORG,
-      connectionGroupId: GROUP_ID,
     });
 
     expect(outcome.kind).toBe("ok");
@@ -203,13 +218,11 @@ describeIfPg("MCP create → profile → query (live Postgres, #3546)", () => {
 
   it("a published-mode whitelist does NOT see the freshly-profiled drafts (status discipline)", async () => {
     // Re-profile is idempotent (ON CONFLICT draft upsert); the rows stay draft.
-    await runSemanticProfile({
-      url: TEST_DB_URL as string,
-      dbType: "postgres",
+    await profileLiveDatasource({
+      connection: pgLiveConnection(),
       schema: srcSchema,
       connectionId: GROUP_ID,
       orgId: ORG,
-      connectionGroupId: GROUP_ID,
     });
 
     const parsedRows = await pool.query<{ yaml_content: string }>(

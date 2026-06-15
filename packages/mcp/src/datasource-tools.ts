@@ -42,11 +42,12 @@ import type { WorkspaceId } from "@useatlas/types";
 import { withErrorContract } from "@atlas/api/lib/tools/descriptions";
 // Registration-time value: the light, dependency-free provisionable-slugs const
 // (used by the `db_type` enum). The create_datasource success hint's profilable
-// check is resolved LAZILY via `lib.loadDatasourceProfileTarget` (#3552 / #3587)
-// — the EXACT predicate `profile_datasource` gates on — so the hint can't drift
-// from what profiling actually accepts. Everything else from `mcp-lifecycle` is
-// loaded LAZILY (below) so registering these tools doesn't drag the installer /
-// semantic-gen / Effect-startup graph into MCP server boot — see `lifecycle()`.
+// check is resolved LAZILY via `lib.resolveProfileCapabilityByDbType` (#3667) —
+// now an accurate proxy for what `profile_datasource` accepts because the
+// URL-shape gate is gone (profiling rides the unified `resolveLiveConnection`).
+// Everything else from `mcp-lifecycle` is loaded LAZILY (below) so registering
+// these tools doesn't drag the installer / semantic-gen / Effect-startup graph
+// into MCP server boot — see `lifecycle()`.
 import { MCP_PROVISIONABLE_CATALOG_SLUGS } from "@atlas/api/lib/datasources/provisionable-types";
 import type { DatasourceInstallerOutcome } from "@atlas/api/lib/datasources/mcp-lifecycle";
 import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
@@ -645,25 +646,18 @@ export function registerDatasourceTools(
           switch (outcome.kind) {
             case "ok": {
               // Only masked (never plaintext) credential material is surfaced.
-              // #3587 / #3552 — the success hint must be CONDITIONAL on whether
-              // `profile_datasource` can actually make the type queryable. Derive
-              // it from the EXACT predicate `profile_datasource` itself gates on:
-              // `loadDatasourceProfileTarget`, whose `ok` outcome is the single
-              // source of truth the profile tool requires. That predicate is
-              // STRICTER than `resolveProfileCapability` alone — beyond "a plugin
-              // implements `connection.profile`" it also applies a fail-closed
-              // URL-shape gate, so a provisionable + profile-capable type whose
-              // connection is NOT URL-shaped (e.g. bigquery) resolves to
-              // `unsupported` there. Calling the capability resolver here would
-              // advertise `profile_datasource` for such a type and send the agent
-              // into an impossible loop. Gating on `loadDatasourceProfileTarget`'s
-              // outcome (resolved off the freshly-provisioned install id) makes the
-              // hint provably non-drifting from what `profile_datasource` accepts.
-              const profileTarget = await lib.loadDatasourceProfileTarget(
-                orgId,
-                outcome.value.installId,
-              );
-              const profilable = profileTarget.kind === "ok";
+              // #3587 / #3552 / #3667 — the success hint must be CONDITIONAL on
+              // whether `profile_datasource` can actually make the type queryable.
+              // Since the URL-shape gate is gone (#3667 — profiling now rides the
+              // unified `resolveLiveConnection`, so a connectable type is profilable
+              // by construction), the capability predicate is now an ACCURATE,
+              // non-drifting proxy for what `profile_datasource` accepts: native
+              // pg/mysql, or a registered plugin that implements `connection.profile`
+              // (incl. non-url-shaped config-credential types like bigquery). It is
+              // cheap (no connection build), so we use it for the hint here. (OAuth
+              // datasources like Salesforce don't arrive via create_datasource.)
+              const profileCap = await lib.resolveProfileCapabilityByDbType(outcome.value.dbType);
+              const profilable = profileCap.kind !== "unsupported";
               return toJsonContent({
                 id: outcome.value.installId,
                 db_type: outcome.value.dbType,
@@ -798,56 +792,61 @@ export function registerDatasourceTools(
         async () => {
           const org = requireBoundOrg();
           if (!org.ok) return org.block;
-          const target = await (await lifecycle()).loadDatasourceProfileTarget(org.orgId, id);
-          if (target.kind === "not_found") {
+          // #3667 — ONE RESOLVER. Profiling rides the SAME connection resolution
+          // querying uses (registry / createFromConfig / OAuth LazyPluginLoader);
+          // there is no URL-shape gate to fail closed. The live connection carries
+          // its own creds — only the connectionId + progress counts surface here.
+          const resolved = await (await lifecycle()).resolveLiveConnection(org.orgId, id);
+          if (resolved.kind === "not_found") {
             return toEnvelopeResult(
               envelope("unknown_entity", `Datasource "${id}" not found.`, {
                 hint: "Call list_datasources to see configured datasources.",
               }),
             );
           }
-          if (target.kind === "unsupported") {
-            // The lib derives this from the SAME capability predicate
-            // provisioning uses (#3552 / ADR-0017): a plugin type with no
-            // registered `connection.profile`, an unknown slug, or a
-            // non-URL-shaped connection. `message` is actionable + secret-free.
-            return toEnvelopeResult(envelope("validation_failed", target.message));
+          if (resolved.kind === "unsupported") {
+            // No transport builds a profilable live connection for this type (no
+            // plugin / no `connection.profile`). `message` is actionable + secret-free.
+            return toEnvelopeResult(envelope("validation_failed", resolved.message));
+          }
+          if (resolved.kind === "reconnect_required") {
+            // An OAuth datasource (Salesforce) whose tokens are stale/revoked —
+            // surface the specific reconnect prompt, not a silent failure (#3667).
+            return toEnvelopeResult(envelope("validation_failed", resolved.message));
           }
 
-          // Long-running: report per-table progress and honor client
-          // cancellation (#3500). The decrypted URL stays inside the lib —
-          // only the connectionId + progress counts surface here. The profiler
-          // has no native AbortSignal, so cancellation is cooperative: the
-          // progress bridge checks `signal` between tables and aborts the loop,
-          // while `withProgressAndCancellation` also severs the await
-          // immediately on the client's cancel.
-          const result = await withProgressAndCancellation(
-            extra,
-            { startMessage: `Profiling datasource "${id}"`, endMessage: "Semantic layer generated" },
-            async (reporter, signal) => {
-              const progress = makeProfileProgress(reporter, signal);
-              return (await lifecycle()).runSemanticProfile({
-                url: target.target.url,
-                dbType: target.target.dbType,
-                ...(target.target.schema !== undefined ? { schema: target.target.schema } : {}),
-                // #3552 — the registry-resolved plugin profiler (undefined for
-                // native pg/mysql, which SemanticGenerator profiles in-core).
-                ...(target.target.profileFn !== undefined ? { profileFn: target.target.profileFn } : {}),
-                // ADR-0017 amendment — the decrypted tenant config, so a
-                // separate-field-credential plugin profiler (ES) authenticates
-                // with the tenant's own creds rather than operator env. Stays
-                // inside the lib; never surfaced here or logged.
-                config: target.target.config,
-                connectionId: id,
-                // #3546 — persist the generated layer to the org store as
-                // drafts so the whitelist survives a restart and is visible to
-                // the API process (web `/chat`), not just this MCP process.
-                orgId: org.orgId,
-                connectionGroupId: target.target.connectionGroupId,
-                progress,
-              });
-            },
-          );
+          const connection = resolved.connection;
+          // Long-running: report per-table progress and honor client cancellation
+          // (#3500). The profiler has no native AbortSignal, so cancellation is
+          // cooperative: the progress bridge checks `signal` between tables and
+          // aborts the loop, while `withProgressAndCancellation` also severs the
+          // await immediately on the client's cancel. We own the connection
+          // lifecycle — close it once profiling settles (a throwaway plugin
+          // connection is torn down; a registry/OAuth connection close is a no-op).
+          let result: Awaited<ReturnType<LifecycleModule["profileLiveDatasource"]>>;
+          try {
+            result = await withProgressAndCancellation(
+              extra,
+              { startMessage: `Profiling datasource "${id}"`, endMessage: "Semantic layer generated" },
+              async (reporter, signal) => {
+                const progress = makeProfileProgress(reporter, signal);
+                return (await lifecycle()).profileLiveDatasource({
+                  connection,
+                  connectionId: id,
+                  // #3546 — persist the generated layer to the org store as drafts
+                  // so the whitelist survives a restart and is visible to the API
+                  // process (web `/chat`), not just this MCP process.
+                  orgId: org.orgId,
+                  progress,
+                });
+              },
+            );
+          } finally {
+            await connection.close().catch(() => {
+              // intentionally ignored: best-effort teardown of the profiling
+              // connection — a close failure must not mask the profile result.
+            });
+          }
 
           if (result.kind === "error") {
             // Tagged ProfilingFailedError — an agent-actionable validation

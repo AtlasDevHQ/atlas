@@ -20,6 +20,22 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.16",
+    title: "In-Product Datasource Onboarding (Profiler Seam)",
+    date: "2026-06-15",
+    summary:
+      "Onboarding a datasource no longer means a trip to the terminal — and it no longer stops at Postgres and MySQL. Every datasource type Atlas can connect to can now be profiled and turned into a queryable semantic layer in-product, through the install wizard, the CLI, and the MCP server alike. Underneath, a single registry-resolved profiler seam replaces the old per-database special-casing: the connection is resolved once and its credentials are carried as one value, so the wizard, atlas init/diff, and MCP all share the exact same profiling path. The rule is now simply: if it can connect, it can profile. Snowflake, DuckDB, Salesforce, Elasticsearch/OpenSearch, BigQuery, and ClickHouse all move onto the shared plugin profiler contract, and profiling an unfamiliar datasource over MCP works the same as a native one.",
+    highlights: [
+      "Profiler seam — a registry-resolved profiler spine with an SDK contract, so every datasource type onboards through one shared path instead of a pg/mysql gate (#3620, #3621, ADR-0017)",
+      "Universal profiling — profiling now rides connection resolution: if Atlas can connect to a datasource, it can profile it (#3667)",
+      "Six datasources on the shared contract — Snowflake, DuckDB, Salesforce (SOQL), Elasticsearch/OpenSearch, BigQuery, and ClickHouse profilers all converge onto the plugin profiler seam (#3622–#3626)",
+      "Profile over MCP — plugin-managed datasources can be profiled directly from an MCP client, including BigQuery and Salesforce (#3552, #3664, #3663)",
+      "One profiler home — the CLI's parallel profiler directory is deleted; wizard, CLI, and MCP share a single profiling engine (#3627)",
+      "Deepened credential seam — the decrypted-credentials path carries one value type instead of parallel url + config fields, and the triplicated wizard prologue is extracted (#3658, #3659, #3657)",
+      "Hardened review pass — non-fatal profiler failures de-silenced, per-table errors scrubbed of sensitive detail, and a full .15→.16 diff audit (#3676, #3661)",
+    ],
+  },
+  {
     version: "v0.0.15",
     title: "MCP V2: Prime-Time MCP Server",
     date: "2026-06-14",

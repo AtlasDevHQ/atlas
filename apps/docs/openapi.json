@@ -13679,7 +13679,7 @@
           "Wizard"
         ],
         "summary": "List tables from a connected datasource",
-        "description": "Discovers tables, views, and materialized views in a connected database for the wizard table selection step. Supports PostgreSQL and MySQL datasources. Requires admin role.",
+        "description": "Discovers tables, views, and materialized views in a connected database for the wizard table selection step. Supports PostgreSQL and MySQL natively, plus any datasource whose plugin implements the profiling contract (connection.listObjects). Requires admin role.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -13734,7 +13734,7 @@
             }
           },
           "400": {
-            "description": "Invalid request (missing connectionId or unsupported database type)",
+            "description": "Invalid request (missing connectionId, or the datasource's plugin doesn't implement profiling)",
             "content": {
               "application/json": {
                 "schema": {
@@ -14123,7 +14123,7 @@
             }
           },
           "400": {
-            "description": "Invalid request (missing connectionId, empty tables, or unsupported database type)",
+            "description": "Invalid request (missing connectionId, empty tables, or the datasource's plugin doesn't implement profiling)",
             "content": {
               "application/json": {
                 "schema": {
@@ -14298,7 +14298,7 @@
             }
           },
           "400": {
-            "description": "Invalid request (missing fields or unsupported database type)",
+            "description": "Invalid request (missing fields, or the datasource's plugin doesn't implement profiling)",
             "content": {
               "application/json": {
                 "schema": {

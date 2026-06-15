@@ -5,6 +5,7 @@ import {
   connectionDisplayName,
   partitionConnections,
   userMessageFor,
+  errorFromBody,
 } from "./wizard-helpers";
 
 const conn = (id: string, extras: Partial<ConnectionInfo> = {}): ConnectionInfo => ({
@@ -132,6 +133,43 @@ describe("wizard-helpers", () => {
     it("returns no demo when demo connection is absent", () => {
       const all = [conn("default"), conn("warehouse")];
       expect(partitionConnections(all).demo).toBeNull();
+    });
+  });
+
+  describe("errorFromBody (#3621)", () => {
+    it("surfaces the not_profilable plugin message VERBATIM (actionable state)", () => {
+      const message =
+        'Datasource type "clickhouse" cannot be profiled in this deployment. No registered plugin ' +
+        "implements the profiling contract (connection.profile) for it. Install or upgrade the " +
+        "corresponding datasource plugin, or profile it with the Atlas CLI (atlas init).";
+      const result = errorFromBody(400, { error: "not_profilable", message }, "fallback");
+      // Shown verbatim — NOT collapsed to the generic fallback by userMessageFor.
+      expect(result.message).toBe(message);
+    });
+
+    it("carries the requestId through for a not_profilable envelope", () => {
+      const result = errorFromBody(
+        400,
+        { error: "not_profilable", message: "clickhouse cannot be profiled", requestId: "req-1" },
+        "fallback",
+      );
+      expect(result.requestId).toBe("req-1");
+    });
+
+    it("still scrubs non-not_profilable messages through userMessageFor", () => {
+      // A path-bearing message must NOT leak; it falls back to the safe copy.
+      const result = errorFromBody(
+        500,
+        { error: "save_failed", message: "EACCES: permission denied, open '/srv/semantic/x.yml'" },
+        "Couldn't save the semantic layer.",
+      );
+      expect(result.message).not.toContain("/srv/");
+      expect(result.message).toMatch(/semantic layer directory/i);
+    });
+
+    it("falls back to an HTTP-status message when the body has no message", () => {
+      const result = errorFromBody(503, {}, "Couldn't list tables.");
+      expect(result.message).toBe("Couldn't list tables.");
     });
   });
 });

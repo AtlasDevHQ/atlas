@@ -58,6 +58,9 @@ import {
   connectionDisplayName,
   partitionConnections,
   userMessageFor,
+  errorFromBody,
+  type WizardError,
+  type ApiErrorBody,
 } from "./wizard-helpers";
 import {
   ENRICH_CONCURRENCY,
@@ -89,11 +92,6 @@ import {
 // Error UI shared across steps
 // ---------------------------------------------------------------------------
 
-interface WizardError {
-  message: string;
-  requestId?: string;
-}
-
 function ErrorBanner({ error }: { error: WizardError }) {
   return (
     <div
@@ -113,11 +111,6 @@ function ErrorBanner({ error }: { error: WizardError }) {
   );
 }
 
-interface ApiErrorBody {
-  message?: unknown;
-  requestId?: unknown;
-}
-
 /**
  * Read a non-OK response body as JSON. Logs (not silently swallows) when the
  * server returns non-JSON (e.g. an HTML 500 page from a misconfigured proxy)
@@ -135,20 +128,13 @@ async function readErrorBody(res: Response, label: string): Promise<ApiErrorBody
   }
 }
 
-/**
- * Translate an HTTP error response into a UI-safe `WizardError`. The raw
- * `message` from the server may concatenate driver / filesystem detail
- * (`api/routes/wizard.ts` builds messages like `\`Failed to save: ${err.message}\``),
- * so it MUST be passed through `userMessageFor` before display.
- */
+/** Thin `Response`-aware wrapper over the pure {@link errorFromBody}. */
 function errorFromResponse(
   res: Response,
   body: ApiErrorBody,
   fallback: string,
 ): WizardError {
-  const raw = typeof body.message === "string" ? body.message : `HTTP ${res.status}`;
-  const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
-  return { message: userMessageFor(new Error(raw), fallback), requestId };
+  return errorFromBody(res.status, body, fallback);
 }
 
 // ---------------------------------------------------------------------------

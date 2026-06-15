@@ -808,6 +808,29 @@ export interface PluginListObjectsOptions {
   url: string;
   /** Schema / database to enumerate. Dialect-specific (Postgres schema, ClickHouse database). */
   schema?: string;
+  /**
+   * The datasource's resolved, DECRYPTED connection config — the same record
+   * `createFromConfig` receives. Carried by the host's in-product wizard so
+   * plugins that hold credentials in SEPARATE config fields (not embedded in the
+   * `url`) ENUMERATE with the TENANT's own credentials rather than falling back
+   * to operator env vars (#3621, the wizard equivalent of the ADR-0017 amendment
+   * that added `config` to {@link PluginProfileOptions}). Elasticsearch is the
+   * motivating case: its `apiKey` / `username` / `password` / SigV4 fields live
+   * alongside the endpoint `url`, so without this the table picker would read
+   * `ATLAS_ES_*` operator env — a violation of the "per-tenant plugin creds never
+   * fall back to operator env" rule.
+   *
+   * The MCP profiling surface never calls `listObjects` (it profiles a fixed set),
+   * so this field is exercised by the wizard's table-picker step. Plugins whose
+   * credentials are fully url-embedded (ClickHouse, Snowflake) ignore it. Omitted
+   * by the CLI/static-config path, which legitimately resolves auth from env in
+   * the operator's own shell.
+   *
+   * SECURITY: this carries DECRYPTED secret material. It must NEVER be logged,
+   * echoed in an error, or surfaced to the agent/LLM — same discipline as the
+   * decrypted `url`.
+   */
+  config?: Readonly<Record<string, unknown>>;
 }
 
 /**

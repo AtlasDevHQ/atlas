@@ -100,13 +100,13 @@ const whitelist = await import("@atlas/api/lib/semantic/whitelist");
 // test needs no live cluster.
 function chProfiler(): ((args: {
   url: string;
-  schema: string;
+  schema?: string;
   config?: Readonly<Record<string, unknown>>;
 }) => Promise<ProfilingResult>) & {
-  calls: Array<{ url: string; schema: string; config?: Readonly<Record<string, unknown>> }>;
+  calls: Array<{ url: string; schema?: string; config?: Readonly<Record<string, unknown>> }>;
 } {
   const fn = Object.assign(
-    (args: { url: string; schema: string; config?: Readonly<Record<string, unknown>> }) => {
+    (args: { url: string; schema?: string; config?: Readonly<Record<string, unknown>> }) => {
       fn.calls.push({ url: args.url, schema: args.schema, config: args.config });
       return Promise.resolve<ProfilingResult>({
         profiles: [
@@ -140,7 +140,7 @@ function chProfiler(): ((args: {
         errors: [],
       });
     },
-    { calls: [] as Array<{ url: string; schema: string; config?: Readonly<Record<string, unknown>> }> },
+    { calls: [] as Array<{ url: string; schema?: string; config?: Readonly<Record<string, unknown>> }> },
   );
   return fn;
 }

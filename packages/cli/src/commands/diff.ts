@@ -208,8 +208,12 @@ export async function handleDiff(args: string[]): Promise<void> {
           break;
         }
         case "snowflake": {
-          const { profileSnowflake } = await import("../../lib/profilers/snowflake");
-          result = await profileSnowflake(connStr, filterTables);
+          // Snowflake profiling lives on the plugin profiler contract (ADR-0017,
+          // #3622) — consume the plugin export directly (CLI → plugin, no @atlas/api).
+          const { profileSnowflake } = await import(
+            "../../../../plugins/snowflake/src/profiler"
+          );
+          result = await profileSnowflake({ url: connStr, selectedTables: filterTables });
           break;
         }
         case "duckdb": {

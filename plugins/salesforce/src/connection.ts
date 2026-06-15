@@ -48,7 +48,7 @@ export interface SalesforceConfig {
  */
 export interface SalesforceConnection extends PluginDBConnection {
   describe(objectName: string): Promise<SObjectDescribe>;
-  listObjects(): Promise<SObjectInfo[]>;
+  listSObjects(): Promise<SObjectInfo[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +266,7 @@ export function createSalesforceConnection(
       });
     },
 
-    async listObjects(): Promise<SObjectInfo[]> {
+    async listSObjects(): Promise<SObjectInfo[]> {
       return withSessionRetry(async () => {
         await ensureLoggedIn();
         const result = await conn.describeGlobal();

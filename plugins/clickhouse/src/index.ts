@@ -89,19 +89,35 @@ export function buildClickHousePlugin(
     // SaaS per-workspace path and the only path in adapter-only mode.
     createFromConfig: (runtimeConfig) => {
       const parsed = ClickHouseConnectionConfigSchema.parse(runtimeConfig);
-      return createClickHouseConnection({
+      const built = createClickHouseConnection({
         url: parsed.url,
         database: parsed.database,
         logger: log,
       });
+      // #3667 — introspection is a capability OF the built connection, bound to
+      // the creds that built it (the host's unified resolver consumes these; no
+      // url/config re-resolution). Read-only via the connection's query path.
+      return {
+        ...built,
+        listObjects: (o) => listClickHouseObjects({ url: parsed.url, schema: o?.schema ?? parsed.database }),
+        profile: (o) =>
+          profileClickHouse({
+            url: parsed.url,
+            schema: o?.schema ?? parsed.database,
+            selectedTables: o?.selectedTables,
+            prefetchedObjects: o?.prefetchedObjects,
+            progress: o?.progress,
+            logger: o?.logger,
+          }),
+      };
     },
     dbType: "clickhouse",
     parserDialect: "PostgresQL", // closest match in node-sql-parser
     forbiddenPatterns: CLICKHOUSE_FORBIDDEN_PATTERNS,
-    // Introspection half of the datasource contract (ADR-0017). The host resolves
-    // `profile` off the registry (same predicate as `createFromConfig`) and feeds
-    // it into SemanticGenerator's profiler seam; the CLI consumes these exports
-    // directly. Both run read-only via the connection's `readonly: 1` query path.
+    // Introspection half of the datasource contract (ADR-0017 / #3667). Exposed
+    // as a capability of the BUILT connection above (the host's unified resolver
+    // path). These namespace exports remain for the CLI + the in-product wizard
+    // (whose convergence onto the built connection is the #3667 follow-up).
     listObjects: listClickHouseObjects,
     profile: profileClickHouse,
   };

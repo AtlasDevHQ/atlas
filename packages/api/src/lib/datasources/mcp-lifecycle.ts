@@ -1020,42 +1020,25 @@ export async function resolveLiveConnection(
   }
   const built = await conn.createFromConfig(decrypted);
 
-  // Introspection is a capability of the BUILT connection (#3667). Prefer the
-  // relocated instance methods; until a plugin migrates, adapt its (legacy)
-  // static `connection.profile`/`listObjects` bound to the resolved url+config —
-  // NO synthetic url is needed (a config-credential profiler like BigQuery reads
-  // creds from `config`; url-shaped plugins carry a real `poolUrl`).
-  const profile: ((o: LiveConnectionProfileOptions) => Promise<ProfilingResult>) | undefined =
-    typeof built.profile === "function"
-      ? (o) => built.profile!(o)
-      : typeof conn.profile === "function"
-        ? (o) =>
-            conn.profile!({
-              url: poolUrl,
-              ...(o.schema !== undefined ? { schema: o.schema } : poolSchema !== undefined ? { schema: poolSchema } : {}),
-              ...(o.selectedTables !== undefined ? { selectedTables: o.selectedTables } : {}),
-              ...(o.prefetchedObjects !== undefined ? { prefetchedObjects: o.prefetchedObjects } : {}),
-              ...(o.progress !== undefined ? { progress: o.progress } : {}),
-              ...(o.logger !== undefined ? { logger: o.logger } : {}),
-              config: decrypted,
-            })
-        : undefined;
-  if (!profile) {
+  // Introspection is a capability of the BUILT connection (#3667), bound to the
+  // creds `createFromConfig` resolved — NO host shim re-resolving auth from a
+  // url/config. A plugin whose built connection exposes no `profile` is not
+  // profilable (fail-closed, actionable). `poolSchema` provides the
+  // dialect-default scope (ClickHouse database, BigQuery dataset) when the caller
+  // passes none.
+  if (typeof built.profile !== "function") {
     return { kind: "unsupported", dbType, message: notProfilableLiveMessage(dbType) };
   }
+  const builtProfile = built.profile.bind(built);
+  const profile = (o: LiveConnectionProfileOptions): Promise<ProfilingResult> =>
+    builtProfile({ ...o, ...(o.schema === undefined && poolSchema !== undefined ? { schema: poolSchema } : {}) });
   const listObjects: (o?: LiveConnectionListOptions) => Promise<DatabaseObject[]> =
     typeof built.listObjects === "function"
-      ? (o) => Promise.resolve(built.listObjects!(o))
-      : typeof conn.listObjects === "function"
-        ? (o) =>
-            Promise.resolve(
-              conn.listObjects!({
-                url: poolUrl,
-                ...(o?.schema !== undefined ? { schema: o.schema } : poolSchema !== undefined ? { schema: poolSchema } : {}),
-                config: decrypted,
-              }),
-            )
-        : () => Promise.resolve([]);
+      ? (o) =>
+          Promise.resolve(
+            built.listObjects!({ ...(o?.schema !== undefined ? { schema: o.schema } : poolSchema !== undefined ? { schema: poolSchema } : {}) }),
+          )
+      : () => Promise.resolve([]);
 
   return {
     kind: "ok",

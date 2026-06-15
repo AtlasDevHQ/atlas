@@ -902,7 +902,7 @@ describe("connection factory", () => {
       username: "user",
       password: "pass",
     });
-    const objects = await conn.listObjects();
+    const objects = await conn.listSObjects();
     expect(objects).toEqual([
       { name: "Account", label: "Account", queryable: true },
       { name: "Contact", label: "Contact", queryable: true },

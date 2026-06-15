@@ -97,62 +97,12 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
 const { resolveLiveConnection, profileLiveDatasource } = await import("../mcp-lifecycle.js");
 const whitelist = await import("@atlas/api/lib/semantic/whitelist");
 
-// A profiler returning one analyzable table, recording its calls — a stand-in for
-// the real `plugins/clickhouse/src/profiler.ts` `profileClickHouse`, injected so the
-// test needs no live cluster.
-function chProfiler(): ((args: {
-  url: string;
-  schema?: string;
-  config?: Readonly<Record<string, unknown>>;
-}) => Promise<ProfilingResult>) & {
-  calls: Array<{ url: string; schema?: string; config?: Readonly<Record<string, unknown>> }>;
-} {
-  const fn = Object.assign(
-    (args: { url: string; schema?: string; config?: Readonly<Record<string, unknown>> }) => {
-      fn.calls.push({ url: args.url, schema: args.schema, config: args.config });
-      return Promise.resolve<ProfilingResult>({
-        profiles: [
-          {
-            table_name: "events",
-            object_type: "table",
-            row_count: 10,
-            columns: [
-              {
-                name: "id",
-                type: "UInt64",
-                nullable: false,
-                unique_count: 10,
-                null_count: 0,
-                sample_values: [],
-                is_primary_key: true,
-                is_foreign_key: false,
-                fk_target_table: null,
-                fk_target_column: null,
-                is_enum_like: false,
-                profiler_notes: [],
-              },
-            ],
-            primary_key_columns: ["id"],
-            foreign_keys: [],
-            inferred_foreign_keys: [],
-            profiler_notes: [],
-            table_flags: { possibly_abandoned: false, possibly_denormalized: false },
-          },
-        ],
-        errors: [],
-      });
-    },
-    { calls: [] as Array<{ url: string; schema?: string; config?: Readonly<Record<string, unknown>> }> },
-  );
-  return fn;
-}
-
 beforeEach(() => {
   internalRows = [];
   upsertCalls = [];
   mockHasInternalDB.mockReturnValue(true);
   poolConfigResult = { dbType: "clickhouse", url: "clickhouse://h:8443/analytics" };
-  pluginConn = { dbType: "clickhouse", createFromConfig: () => ({}), profile: chProfiler() };
+  pluginConn = pluginWithBuiltProfile("clickhouse", liveProfileSpy());
   whitelist._resetWhitelists();
   whitelist._resetPluginEntities();
   whitelist._resetOrgWhitelists();
@@ -223,12 +173,27 @@ function fakeLiveConn(over: {
   };
 }
 
+// A plugin whose createFromConfig returns a BUILT connection carrying the
+// relocated introspection (#3667) — `profile`/`listObjects` are capabilities of
+// the built connection, bound to the creds createFromConfig resolved (so the
+// host never re-resolves auth / passes a url). The profile spy records the
+// bound options it receives (schema only — no url/config).
+function pluginWithBuiltProfile(dbType: string, profile: ReturnType<typeof liveProfileSpy>) {
+  return {
+    dbType,
+    createFromConfig: () => ({
+      query: async () => ({ columns: [], rows: [] }),
+      close: async () => {},
+      listObjects: async () => [],
+      profile,
+    }),
+  };
+}
+
 describe("resolveLiveConnection — plugin types (#3667)", () => {
-  it("resolves a plugin clickhouse install to a live connection bound to the install's group + decrypted config", async () => {
-    const profile = chProfiler();
-    // Built connection has no introspection → resolveLiveConnection adapts the
-    // plugin's (legacy) static profile bound to the resolved url + decrypted config.
-    pluginConn = { dbType: "clickhouse", createFromConfig: () => ({}), profile };
+  it("resolves a plugin clickhouse install to a live connection carrying the group + the built-connection's profile", async () => {
+    const profile = liveProfileSpy();
+    pluginConn = pluginWithBuiltProfile("clickhouse", profile);
     internalRows = [
       { catalog_id: "cat_ch", catalog_slug: "clickhouse", config: { url: "enc:v1:…" }, config_schema: [], group_id: "warehouse" },
     ];
@@ -238,47 +203,20 @@ describe("resolveLiveConnection — plugin types (#3667)", () => {
     expect(res.connection.dbType).toBe("clickhouse");
     expect(res.connection.connectionGroupId).toBe("warehouse");
     expect(typeof res.connection.profile).toBe("function");
-    // The bound profile delegates to the plugin profiler with the resolved url
-    // + the TENANT's decrypted config — never re-resolving auth.
+    // Profiling consumes the built connection's bound profile — no url is passed
+    // (the connection is already authenticated); the schema passes through.
     await res.connection.profile({ schema: "analytics" });
     expect(profile.calls).toHaveLength(1);
-    expect(profile.calls[0].url).toBe("clickhouse://h:8443/analytics");
     expect(profile.calls[0].schema).toBe("analytics");
-  });
-
-  it("carries the install's DECRYPTED config so a separate-field-credential profiler (ES) gets the tenant's creds", async () => {
-    poolConfigResult = { dbType: "elasticsearch", url: "elasticsearch://es.tenant:9200" };
-    const profile = chProfiler();
-    pluginConn = { dbType: "elasticsearch", createFromConfig: () => ({}), profile };
-    internalRows = [
-      {
-        catalog_id: "cat_es",
-        catalog_slug: "elasticsearch",
-        config: { url: "elasticsearch://es.tenant:9200", apiKey: "tenant-es-key" },
-        config_schema: [],
-        group_id: null,
-      },
-    ];
-    const res = await resolveLiveConnection("org_1", "es");
-    expect(res.kind).toBe("ok");
-    if (res.kind !== "ok") return;
-    await res.connection.profile({});
-    // The decrypted tenant config reached the profiler verbatim (apiKey is in a
-    // SEPARATE field, not the url) — operator ATLAS_ES_* env is never consulted.
-    expect(profile.calls[0].config).toEqual({ url: "elasticsearch://es.tenant:9200", apiKey: "tenant-es-key" });
   });
 
   it("bigquery (non-url-shaped) resolves to ok — the URL-shape gate is GONE (#3664/#3667)", async () => {
     // BigQuery's pool config has NO url (service-account multi-field). With the
-    // gate deleted, the unified resolver builds a profilable live connection and
-    // the profiler reads creds from the decrypted config — no synthetic url.
-    poolConfigResult = {
-      dbType: "bigquery",
-      projectId: "my-project",
-      schema: "analytics",
-    };
-    const profile = chProfiler();
-    pluginConn = { dbType: "bigquery", createFromConfig: () => ({}), profile };
+    // gate deleted, the unified resolver builds a profilable live connection whose
+    // creds are bound at createFromConfig — no synthetic url, no fail-closed gate.
+    poolConfigResult = { dbType: "bigquery", projectId: "my-project", schema: "analytics" };
+    const profile = liveProfileSpy();
+    pluginConn = pluginWithBuiltProfile("bigquery", profile);
     internalRows = [
       {
         catalog_id: "cat_bq",
@@ -293,9 +231,9 @@ describe("resolveLiveConnection — plugin types (#3667)", () => {
     if (res.kind !== "ok") return;
     expect(res.connection.dbType).toBe("bigquery");
     await res.connection.profile({});
-    // No url is fabricated — the profiler authenticates from the decrypted config.
-    expect(profile.calls[0].url).toBe("");
-    expect(profile.calls[0].config).toMatchObject({ project_id: "my-project" });
+    expect(profile.calls).toHaveLength(1);
+    // The pool config's dataset (`schema`) is the connection's default scope.
+    expect(profile.calls[0].schema).toBe("analytics");
   });
 
   it("native pg resolves WITHOUT a plugin (in-core profilers bound to the resolved url)", async () => {
@@ -311,8 +249,9 @@ describe("resolveLiveConnection — plugin types (#3667)", () => {
     expect(typeof res.connection.profile).toBe("function");
   });
 
-  it("a provisionable plugin with NO profile capability → unsupported (never a silent empty layer)", async () => {
-    pluginConn = { dbType: "clickhouse", createFromConfig: () => ({}) }; // createFromConfig but no profile
+  it("a provisionable plugin whose BUILT connection has NO profile → unsupported (never a silent empty layer)", async () => {
+    // createFromConfig builds a query-only connection (no relocated introspection).
+    pluginConn = { dbType: "clickhouse", createFromConfig: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }) };
     internalRows = [
       { catalog_id: "cat_ch", catalog_slug: "clickhouse", config: {}, config_schema: [], group_id: null },
     ];

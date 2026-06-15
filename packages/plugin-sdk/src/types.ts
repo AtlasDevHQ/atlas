@@ -27,6 +27,23 @@ export interface PluginQueryResult {
 export interface PluginDBConnection {
   query(sql: string, timeoutMs?: number): Promise<PluginQueryResult>;
   close(): Promise<void>;
+  /**
+   * Introspection as a capability OF the live connection (#3667, ADR-0017
+   * universalization). `listObjects`/`profile` are bound to the creds that built
+   * the connection (`create` / `createFromConfig`), so the host's unified
+   * profiler seam (`resolveLiveConnection`) consumes them WITHOUT re-resolving
+   * auth from a `url`/`config` — there is no URL-shape gate to fail closed.
+   *
+   * Optional and additive: a query-only datasource omits them and the host
+   * degrades to its explicit `unsupported` outcome. Both must run **read-only**.
+   * See {@link PluginConnectionListObjectsOptions} / {@link PluginConnectionProfileOptions}
+   * for the option shapes (note: NO `url`/`config` — the connection is already
+   * authenticated and bound). `profile` MUST NOT echo credentials in errors.
+   */
+  listObjects?(
+    options?: PluginConnectionListObjectsOptions,
+  ): Promise<PluginDatabaseObject[]> | PluginDatabaseObject[];
+  profile?(options: PluginConnectionProfileOptions): Promise<PluginProfilingResult>;
 }
 
 /**
@@ -869,10 +886,37 @@ export interface PluginProfileOptions extends PluginListObjectsOptions {
   config?: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * Inputs for the BUILT connection's bound {@link PluginDBConnection.listObjects}
+ * (#3667). No `url`/`config`: the connection is already authenticated and bound
+ * to the creds that built it, so introspection is a capability OF the connection
+ * rather than a static function that re-resolves auth.
+ */
+export interface PluginConnectionListObjectsOptions {
+  /** Schema / database to enumerate. Dialect-specific; omit for the connection's default. */
+  schema?: string;
+}
+
+/**
+ * Inputs for the BUILT connection's bound {@link PluginDBConnection.profile}
+ * (#3667). No `url`/`config` — see {@link PluginConnectionListObjectsOptions}.
+ */
+export interface PluginConnectionProfileOptions {
+  /** Schema / database / dataset to profile. Dialect-specific; omit for the default. */
+  schema?: string;
+  /** Restrict profiling to these tables/views. Omit to profile every object. */
+  selectedTables?: string[];
+  /** Pre-listed objects (from a prior {@link PluginDBConnection.listObjects}) — avoids a second catalog round-trip. */
+  prefetchedObjects?: PluginDatabaseObject[];
+  /** Progress callbacks (e.g. the host's MCP progress bridge). */
+  progress?: PluginProfileProgress;
+  /** Structured logger for profiler diagnostics. */
+  logger?: PluginProfileLogger;
+}
+
 // ---------------------------------------------------------------------------
 // Datasource plugin
 // ---------------------------------------------------------------------------
-
 /**
  * A single entity definition shipped by a datasource plugin.
  * Uses the same YAML format as `semantic/entities/*.yml`.

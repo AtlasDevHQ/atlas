@@ -165,7 +165,7 @@ export function buildBigQueryPlugin(
       const parsed = BigQueryRuntimeConfigSchema.parse(
         normalizeBigQueryConfigFields(runtimeConfig),
       );
-      return createBigQueryConnection({
+      const built = createBigQueryConnection({
         projectId: parsed.projectId,
         dataset: parsed.dataset,
         location: parsed.location,
@@ -173,6 +173,24 @@ export function buildBigQueryPlugin(
         credentials: parsed.credentials,
         logger: log,
       });
+      // #3667 — introspection as a capability of the built connection. BigQuery
+      // is non-url-shaped: the profiler reads the tenant's service-account creds
+      // from the bound `config` (the same record `createFromConfig` received),
+      // never a url — there is no synthetic url / URL-shape gate.
+      return {
+        ...built,
+        listObjects: (o) => listBigQueryObjects({ url: "", schema: o?.schema ?? parsed.dataset, config: runtimeConfig }),
+        profile: (o) =>
+          profileBigQuery({
+            url: "",
+            schema: o?.schema ?? parsed.dataset,
+            config: runtimeConfig,
+            selectedTables: o?.selectedTables,
+            prefetchedObjects: o?.prefetchedObjects,
+            progress: o?.progress,
+            logger: o?.logger,
+          }),
+      };
     },
     dbType: "bigquery",
     parserDialect: "BigQuery",

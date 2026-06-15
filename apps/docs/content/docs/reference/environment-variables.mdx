@@ -991,6 +991,7 @@ Destructive operator-CLI subcommands gated by explicit env confirmation. None of
 | `ATLAS_DASHBOARD_DRAFTS_ENABLED` | `true` | Per-user dashboard drafts. When enabled, admin mutations to a bound dashboard write to the caller's draft and the **Publish** flow promotes them via an atomic three-way merge against the persisted baseline. Set to the literal string `false` to fall back to the direct-write model — draft fetch returns `503` and the chat-bound editor degrades to a read-only viewer. See [Dashboards → Chat as editor](/guides/dashboards#chat-as-editor) |
 | `ATLAS_INTERNAL_SCREENSHOT_COOKIE` | — | Service cookie value used by the `screenshotDashboard` vision tool (#2367). The headless Chromium worker calls back into `/admin/dashboards/:id/screenshot` and must authenticate as the requesting user; without this cookie the screenshot request is rejected and the agent falls back to its last-good description. Set this on **both** the API and web services when running behind a reverse proxy. See [Dashboards → Chat as editor](/guides/dashboards#chat-as-editor) |
 | `ATLAS_WEB_BASE_URL` | `http://localhost:3000` | Base URL of the Next.js web app used by `screenshotDashboard` to construct the screenshot target URL (`${ATLAS_WEB_BASE_URL}/dashboards/:id`). Set to the production web origin when self-hosting (e.g. `https://atlas.acme.com`) so the headless Chromium worker hits the right host |
+| `ATLAS_DASHBOARD_EXPORT_TIMEOUT_MS` | `60000` | Overall render timeout (ms) for the headless dashboard export/screenshot worker. Clamped to the range `5000`–`180000`; out-of-range or unparseable values fall back to the default. Raise it for dashboards with many heavy panels that exceed 60s to render |
 
 ---
 
@@ -1020,6 +1021,7 @@ The sub-processor publisher fetches Atlas's authoritative sub-processor list (th
 |----------|---------|-------------|
 | `ATLAS_LOG_LEVEL` | `info` | Pino log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OpenTelemetry collector endpoint (e.g. `http://localhost:4318`). When set, the API server (`atlas-api`) and web frontend (`atlas`) emit distributed trace spans for HTTP requests, agent steps, SQL queries, and explore commands |
+| `ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS` | `15000` | TTL (ms) for the cached plugin-liveness results that feed the `plugins` component of `/api/health`. Clamped to `0`–`300000`; out-of-range or unparseable values fall back to the default with a warning. `0` disables caching so every health hit re-probes each plugin upstream |
 
 See [Observability](/platform-ops/observability) for the full setup guide.
 

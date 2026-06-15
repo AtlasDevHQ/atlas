@@ -886,6 +886,12 @@ export function registerDatasourceTools(
             metrics_generated: r.metrics.length,
             tables,
             profiling_errors: r.errors.length,
+            // Honest partial-success signal: some tables failed introspection
+            // but stayed under the fatal threshold, so the layer persisted with
+            // those tables ABSENT. `profiling_errors` alone reads as a side
+            // note next to an unconditional success; `incomplete` makes the
+            // degraded layer unmissable to the MCP client before it publishes.
+            incomplete: r.errors.length > 0,
             elapsed_ms: r.elapsedMs,
           });
         },

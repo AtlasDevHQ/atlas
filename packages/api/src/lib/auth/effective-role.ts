@@ -22,12 +22,13 @@
  *   2. `customSession` plugin — populates `session.user.effectiveRole` so
  *      the client (`useUserRole`) can hide/show admin chrome consistently.
  *
- * Returns the resolved role on success, `undefined` only when neither side
- * yields one. On a member-table lookup error it falls back to `userRole` —
- * the SAFE (fail-closed) direction: post-#2890 a non-platform user's
- * `userRole` is a non-admin default, so a transient DB blip down-privileges an
- * org admin (bounces them from the console) rather than over-granting.
- * Platform admins are unaffected — they short-circuit before the lookup.
+ * Returns the resolved role on success, `undefined` when neither side yields
+ * one. On a member-table lookup ERROR it returns `undefined` (least privilege)
+ * — the intrinsic fail-closed direction: a transient DB blip down-privileges an
+ * org admin (bounces them from the console) rather than over-granting, and does
+ * so regardless of what `userRole` the caller passed (no longer relying on it
+ * being a non-admin default). Platform admins are unaffected — they
+ * short-circuit before the lookup.
  */
 
 import type { AtlasRole } from "@atlas/api/lib/auth/types";
@@ -62,8 +63,16 @@ export async function resolveEffectiveRole(
     // is a real production signal, and it down-privileges an org admin.
     log.error(
       { err: err instanceof Error ? err.message : String(err), userId, orgId: activeOrganizationId },
-      "Failed to look up org member role — falling back to user-level role (org admins fail closed)",
+      "Failed to look up org member role — failing closed to least privilege (org admins down-privileged)",
     );
-    return userRole;
+    // Intrinsic fail-closed: the member lookup was ATTEMPTED (we have an active
+    // org) and threw, so we genuinely don't know the tenant role. Return
+    // `undefined` — least privilege downstream — rather than `userRole`. The
+    // old `return userRole` was only safe because every current caller passes a
+    // non-admin `userRole` here (platform_admin short-circuits at the top, the
+    // hosted MCP path forces `undefined`); making it `undefined` removes that
+    // caller-dependent invariant so a future caller passing a privileged
+    // `userRole` can't accidentally retain it through a DB brownout.
+    return undefined;
   }
 }

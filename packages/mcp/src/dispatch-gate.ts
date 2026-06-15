@@ -169,7 +169,20 @@ export async function runMcpDispatchGate(
   // ── Gate 2: mcp:write scope (hosted only; stdio exempt via clientId) ──
   if (reqs.requiresWrite) {
     const scopeBlock = writeScopeOrNull({ clientId: ctx.clientId, scopes: ctx.scopes });
-    if (scopeBlock) return scopeBlock;
+    if (scopeBlock) {
+      // Observability parity with gates 1/3/4: a write-scope denial is a
+      // security decision on the v0.0.15 spine and must leave a server-side
+      // breadcrumb (probing / mis-scoped client), not a silent fail-closed.
+      log.warn(
+        {
+          toolName: reqs.toolName,
+          ...(ctx.clientId ? { clientId: ctx.clientId } : {}),
+          ...(ctx.requestId ? { requestId: ctx.requestId } : {}),
+        },
+        "MCP tool denied at gate 2 — missing mcp:write scope",
+      );
+      return scopeBlock;
+    }
   }
 
   // ── Gate 3: RBAC role on the bound actor (live-resolved, #3505/#3569) ──

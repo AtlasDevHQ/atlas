@@ -1161,6 +1161,15 @@ export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidErro
     const secretKey = process.env.STRIPE_SECRET_KEY;
     if (!secretKey) return;
 
+    // Once Stripe IS configured (secret key present), the webhook secret is
+    // mandatory: `auth/server.ts` only LOGS and then silently declines to mount
+    // the @better-auth/stripe plugin when STRIPE_WEBHOOK_SECRET is absent, so a
+    // region boots green with checkout + plan-sync dead. This is the exact
+    // silent-billing-outage class this guard exists to convert into a boot
+    // failure — keep it in the pure fail-fast block below.
+    const webhookSecretMissing =
+      !process.env.STRIPE_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET.length === 0;
+
     const {
       findMissingMonthlyPriceIdEnvVars,
       detectStripeKeyMode,
@@ -1179,12 +1188,19 @@ export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidErro
     // ── Pure check 2: secret-key mode shape (fail-fast) ──────────────────
     // Collected with the price-ID result so a region missing both gets one
     // boot-failure log naming both, rather than fixing one then re-failing.
-    if (missingPriceIdEnvVars.length > 0 || keyMode === "unknown") {
+    if (missingPriceIdEnvVars.length > 0 || keyMode === "unknown" || webhookSecretMissing) {
       const parts: string[] = [];
       if (missingPriceIdEnvVars.length > 0) {
         parts.push(
           `missing required monthly price ID env var(s): [${missingPriceIdEnvVars.join(", ")}] — ` +
             `getStripePlans() silently omits each absent tier from checkout`,
+        );
+      }
+      if (webhookSecretMissing) {
+        parts.push(
+          `STRIPE_WEBHOOK_SECRET is unset — the @better-auth/stripe plugin declines to mount ` +
+            `(auth/server.ts logs and continues), so checkout, the billing portal, and webhook ` +
+            `plan-sync are all dead while the region boots green`,
         );
       }
       if (keyMode === "unknown") {

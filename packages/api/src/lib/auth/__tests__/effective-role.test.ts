@@ -92,13 +92,18 @@ describe("resolveEffectiveRole()", () => {
     expect(r).toBe("member");
   });
 
-  it("fails open to userRole on a DB error", async () => {
+  it("fails closed to undefined on a DB error (intrinsic, caller-independent)", async () => {
     // Non-platform role so resolution actually reaches the member-table
-    // lookup (platform_admin short-circuits before the try/catch).
+    // lookup (platform_admin short-circuits before the try/catch). The lookup
+    // was attempted and threw, so we don't know the tenant role → least
+    // privilege (`undefined`), regardless of the passed `userRole`.
     mockHasInternalDB = true;
     mockInternalQuery = () => { queryCalls++; return Promise.reject(new Error("connection lost")); };
-    const r = await resolveEffectiveRole("member", "usr_1", "org_1");
-    expect(r).toBe("member");
+    expect(await resolveEffectiveRole("member", "usr_1", "org_1")).toBeUndefined();
+    // Even a privileged userRole is NOT retained through a brownout — the
+    // fail-closed direction no longer depends on the caller passing a non-admin
+    // default.
+    expect(await resolveEffectiveRole("admin", "usr_1", "org_1")).toBeUndefined();
   });
 });
 

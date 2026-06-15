@@ -323,7 +323,9 @@ For `0.0.x` semver, `^0.0.2` pins EXACTLY to `0.0.2`. When bumping a published p
 2. **After merge** — tag the release (`git tag types-v0.0.4 && git push origin types-v0.0.4`); wait for the publish workflow
 3. **Then** push a follow-up bumping refs in `packages/sdk`, `packages/react`, `create-atlas/templates/*/package.json`
 
-`scripts/check-published-symbols.ts` (in `/ci`) catches "added a new export and used it before publishing" locally — it diffs braced **value** imports from `@useatlas/*` in scaffold-bound source against the symbols exported by the pinned published version. Type-only imports are skipped.
+⚠️ **Never push more than 3 release tags in one `git push`** — GitHub silently fires NO `push` event for tags when >3 land in a single push, so `publish.yml` runs for none of them (the tags land on the remote, nothing publishes). Push release tags in groups of ≤3, or one at a time. (Caught 2026-06-15 backfilling 6 tags — published nothing.)
+
+Two guards keep this honest: `scripts/check-published-symbols.ts` catches "added a new export and used it before publishing" (diffs braced **value** imports from `@useatlas/*` in scaffold-bound source against the pinned published version; type-only imports skipped). `scripts/check-unpublished-versions.ts` (in the `drift` CI job) fails when a publishable package's version is on `main` but not on npm and the current change didn't introduce the bump — i.e. a merged version bump whose post-merge publish was forgotten (npm is the oracle; the bumping PR is exempt so it stays green). `publish.yml` publishes via `scripts/npm-publish-if-new.sh`, which skips when `name@version` is already on npm, so re-tagging an already-published version is a green no-op rather than a 403.
 
 ## Environment Variables
 

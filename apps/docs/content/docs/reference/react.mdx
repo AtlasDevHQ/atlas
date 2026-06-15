@@ -21,7 +21,7 @@ The hooks require these peer dependencies:
 bun add react react-dom ai @ai-sdk/react
 ```
 
-The pre-built `AtlasChat` component additionally uses `lucide-react`, `react-syntax-highlighter`, `recharts`, `tailwindcss`, and `xlsx` (all optional peer deps).
+The pre-built `AtlasChat` component additionally uses `lucide-react`, `react-syntax-highlighter`, `recharts`, `tailwindcss`, and `exceljs` (all optional peer deps).
 
 ## Imports
 
@@ -1050,6 +1050,7 @@ type ChatErrorCode =
   | "org_not_found"
   | "plan_limit_exceeded"
   | "trial_expired"
+  | "subscription_required"
   | "billing_check_failed"
   | "workspace_check_failed"
   | "workspace_throttled"

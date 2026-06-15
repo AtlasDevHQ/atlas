@@ -35,6 +35,10 @@ interface McpToolContext {
   readonly clientId?: string;
   readonly requestId: string;
   readonly pluginId: string;
+  /** Conversation execution target (or per-turn override). Absent for non-chat-routed dispatches. Pass through to connection-keyed tools. (#2345) */
+  readonly connectionId?: string;
+  /** Content scope — the connection group whose entities/dashboards/approvals resolve for this turn. Decoupled from `connectionId`. (#2345) */
+  readonly connectionGroupId?: string;
   readonly logger: PluginLogger;
   audit(entry: McpToolAuditEntry): void;
 }

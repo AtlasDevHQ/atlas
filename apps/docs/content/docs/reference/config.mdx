@@ -868,7 +868,7 @@ export default defineConfig({
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `label` | `string` | Yes | — | Human-readable region name for the admin console |
-| `databaseUrl` | `string` | Yes | — | Connection string for the region's internal database |
+| `databaseUrl` | `string` | Conditional | — | Connection string for the region's internal database. Optional in the schema, but the URL for the region **this service serves** must resolve at boot (hard-validated by the region guard); URLs for other regions may be left empty |
 | `datasourceUrl` | `string` | No | — | Analytics datasource override for the region. When unset, uses the default datasource |
 | `apiUrl` | `string` | No | — | Public API endpoint for this region (e.g. `https://api-eu.useatlas.dev`). Used in `421 Misdirected Request` responses to redirect clients to the correct region |
 

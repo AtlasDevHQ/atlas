@@ -304,7 +304,7 @@ describe("my-datasource plugin", () => {
   test("creates plugin with valid config", () => {
     const plugin = myPlugin({ url: "postgresql://localhost/test" });
     expect(plugin.id).toBe("my-datasource");
-    expect(plugin.type).toBe("datasource");
+    expect(plugin.types).toContain("datasource");
   });
 
   test("health check reports status", async () => {
@@ -318,7 +318,7 @@ describe("my-datasource plugin", () => {
 Key testing patterns:
 
 - **Config validation** — Verify that invalid configs throw at factory call time, not at runtime
-- **Plugin shape** — Check `id`, `type`, `version`, and variant-specific properties (`connection`, `contextProvider`, `actions`, etc.)
+- **Plugin shape** — Check `id`, `types` (a readonly array), `version`, and variant-specific properties (`connection`, `contextProvider`, `actions`, etc.)
 - **Health checks** — Ensure `healthCheck()` returns `{ healthy: boolean }` and never throws (even when the service is unreachable)
 - **Connection factory** — For datasource plugins, test that `connection.create()` returns a valid `PluginDBConnection`
 
@@ -580,13 +580,13 @@ import type { $InferServerPlugin } from "@useatlas/plugin-sdk";
 import type { clickhousePlugin } from "@useatlas/clickhouse";
 
 type CH = $InferServerPlugin<typeof clickhousePlugin>;
-// CH["Config"] → { url: string; database?: string }
-// CH["Type"]   → "datasource"
+// CH["Config"] → { url?: string; database?: string }
+// CH["Types"]  → readonly ["datasource"]
 // CH["Id"]     → string
 // CH["DbType"] → "clickhouse"
 ```
 
-Available inference keys: `Config`, `Type`, `Id`, `Name`, `Version`, `DbType` (datasource only), `Actions` (action only), `Security` (sandbox only).
+Available inference keys: `Config`, `Types`, `Id`, `Name`, `Version`, `DbType` (datasource only), `Actions` (action only), `Security` (sandbox only).
 
 ## Plugin Status Lifecycle
 
@@ -724,14 +724,16 @@ export default definePlugin({
 
 | Hook | Context | Mutable | Description |
 |------|---------|---------|-------------|
-| `beforeQuery` | `{ sql, connectionId? }` | Yes -- return `{ sql }` to rewrite, throw to reject | Fires before each SQL query is executed |
-| `afterQuery` | `{ sql, connectionId?, result, durationMs }` | No | Fires after each SQL query with results |
+| `beforeQuery` | `{ sql, connectionId?, metadata? }` | Yes -- return `{ sql }` to rewrite, throw to reject | Fires before each SQL query is executed |
+| `afterQuery` | `{ sql, connectionId?, metadata?, result, durationMs }` | No | Fires after each SQL query with results |
+| `beforeToolCall` | `{ toolName, args, context }` | Yes -- return `{ args }` to rewrite, throw to reject | Fires before each tool call |
+| `afterToolCall` | `{ toolName, args, context, result, durationMs }` | No | Fires after each tool call with its return value |
 | `beforeExplore` | `{ command }` | Yes -- return `{ command }` to rewrite, throw to reject | Fires before each explore command |
 | `afterExplore` | `{ command, output }` | No | Fires after each explore command with output |
 | `onRequest` | `{ path, method, headers }` | No | HTTP-level: fires before routing a request |
 | `onResponse` | `{ path, method, status }` | No | HTTP-level: fires after sending a response |
 
-`beforeQuery` and `beforeExplore` are mutable hooks -- handlers can return a mutation object (`{ sql }` or `{ command }`) to rewrite the operation, or throw an error to reject it entirely. All other hooks are observation-only (void return).
+`beforeQuery`, `beforeToolCall`, and `beforeExplore` are mutable hooks -- handlers can return a mutation object (`{ sql }`, `{ args }`, or `{ command }`) to rewrite the operation, or throw an error to reject it entirely. All other hooks are observation-only (void return).
 
 ## Schema Migrations
 
@@ -961,15 +963,15 @@ async initialize(ctx) {
 
 ## Reference Plugins
 
-The Atlas monorepo includes 21 reference plugin implementations in the `plugins/` directory. These serve as working examples for every plugin type:
+The Atlas monorepo includes 25 reference plugin implementations in the `plugins/` directory. These serve as working examples for every plugin type:
 
-**Datasource:** `bigquery`, `clickhouse`, `duckdb`, `mysql`, `salesforce`, `snowflake`
+**Datasource:** `bigquery`, `clickhouse`, `duckdb`, `elasticsearch`, `mysql`, `salesforce`, `snowflake`
 
 **Context:** `yaml-context`
 
-**Interaction:** `chat`, `email-digest`, `mcp`, `obsidian`, `slack`, `teams`, `webhook`
+**Interaction:** `chat`, `email-digest`, `mcp`, `obsidian`, `teams`, `webhook`
 
-**Action:** `email`, `jira`
+**Action:** `email`, `jira`, `obsidian-reader`, `twenty`, `webhook-action`
 
 **Sandbox:** `daytona`, `e2b`, `nsjail`, `railway-sandbox`, `sidecar`, `vercel-sandbox`
 

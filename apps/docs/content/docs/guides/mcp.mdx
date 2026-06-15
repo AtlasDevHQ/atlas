@@ -470,13 +470,13 @@ The `filters` parameter is reserved for future pre-aggregation filter pass-throu
 
 ## Datasource lifecycle tools
 
-Beyond the read-only semantic tools above, the server exposes a set of **admin, write-scoped** tools for managing datasources from an agent: `list_datasources`, `test_datasource`, `create_datasource`, `profile_datasource`, `archive_datasource`, `restore_datasource`, and `delete_datasource`. They require the `admin` role and (for the mutating tools) the `mcp:write` scope, and route through the same RBAC + approval gates as the rest of the admin surface. None of them ever return a connection URL or any secret — `create_datasource` collects the credential via a separate masked prompt that is never shared with the agent.
+Beyond the read-only semantic tools above, the server exposes a set of **admin, write-scoped** tools for managing datasources from an agent: `list_datasources`, `test_datasource`, `create_datasource`, `create_rest_datasource`, `profile_datasource`, `archive_datasource`, `restore_datasource`, and `delete_datasource`. They require the `admin` role and (for the mutating tools) the `mcp:write` scope, and route through RBAC plus the per-workspace MCP action policy; the `destructive` `delete_datasource` additionally routes through the approval gate. None of them ever return a connection URL or any secret — `create_datasource` collects the credential via a separate masked prompt that is never shared with the agent.
 
 The two-step path to make a new datasource queryable is **create → profile**:
 
 ### create_datasource
 
-Provision a new datasource of any type whose plugin can open a live connection — Postgres and MySQL natively, plus plugin-managed datasources such as BigQuery, Snowflake, ClickHouse, DuckDB, Elasticsearch/OpenSearch, and Salesforce. You pass only non-secret fields (`db_type`, `install_id`, optional `schema` / `description` / `group_id`); the connection URL or credential is collected via a masked prompt, health-checked **before** anything is persisted, and the datasource lands as a `draft`. It is not yet queryable — run `profile_datasource` next.
+Provision a new config-installable datasource — Postgres and MySQL natively, plus the plugin-managed types BigQuery, Snowflake, ClickHouse, and Elasticsearch/OpenSearch. (DuckDB is file-based and Salesforce is OAuth-managed, so neither is provisioned through `create_datasource`; a profiled Salesforce datasource is created through its OAuth install flow. REST/OpenAPI sources use `create_rest_datasource`.) You pass only non-secret fields (`db_type`, `install_id`, optional `schema` / `description` / `group_id`); the connection URL or credential is collected via a masked prompt, health-checked **before** anything is persisted, and the datasource lands as a `draft`. It is not yet queryable — run `profile_datasource` next.
 
 ### profile_datasource
 
@@ -505,6 +505,19 @@ Profiling does two things with the generated layer:
 Because the persisted rows land as **drafts**, they follow the standard [content-mode](/security/sql-validation) status discipline: queryable immediately in **developer mode** (the draft overlay), but **not** on the published `/chat` surface until an admin promotes them through the atomic publish endpoint (`/api/v1/admin/publish`). This keeps machine-generated, unreviewed entities out of the published whitelist until a human signs off. Profiling fails loud (a `validation_failed` envelope) rather than report success if any generated table cannot be persisted — a partially-persisted layer would silently leave some tables unqueryable.
 
 If profiling persists fewer rows than it generated, or the workspace has no internal database configured (a self-hosted stdio server with no `DATABASE_URL`), `persisted` is `false` and only the in-process whitelist is populated for the current session.
+
+---
+
+## MCP action policy
+
+Each workspace has a **per-workspace MCP action policy** — a customer-admin kill-switch that governs which categories of MCP action are allowed from MCP clients. Admins manage it from **Admin → MCP Action Policy** in the web app; it is also exposed over the API at `GET` / `PUT /api/v1/admin/mcp/action-policy` (admin role required).
+
+- **Default posture is `allowed`** — every action category is permitted until an admin explicitly sets it to `blocked`.
+- A `blocked` category **short-circuits** matching MCP tool dispatches *before* scope, RBAC, and approval checks run.
+- **Governance is raise-only** (ADR-0016): the policy can only ever *tighten* what MCP clients may do. It never lowers the non-configurable origin ceiling — MCP can restrict, but never broaden, the workspace's configured permissions.
+- Policy changes and gated dispatches carry audit-trail attribution.
+
+This is the kill-switch to reach for when you want to keep, say, datasource mutation or destructive actions off the MCP surface for a workspace while leaving the read-only analyst tools available.
 
 ---
 

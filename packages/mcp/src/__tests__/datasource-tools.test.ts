@@ -143,7 +143,12 @@ const mockProvisionRest = mock<(...a: unknown[]) => Promise<unknown>>(async () =
 // #3667 — the profile tool resolves a LIVE connection (across all transports)
 // and profiles it. `okConn` builds the resolved-ok result with introspection as
 // a capability of the connection (bound creds — no url/config surfaced).
+// `lastCloseSpy` captures the built connection's close so a test can assert the
+// tool tears it down (the throwaway plugin-connection leak guard).
+let lastCloseSpy = mock(async () => {});
 function okConn(connectionGroupId: string | null, dbType = "postgres"): unknown {
+  const close = mock(async () => {});
+  lastCloseSpy = close;
   return {
     kind: "ok",
     connection: {
@@ -152,7 +157,7 @@ function okConn(connectionGroupId: string | null, dbType = "postgres"): unknown 
       query: async () => ({ columns: [], rows: [] }),
       listObjects: async () => [],
       profile: async () => ({ profiles: [], errors: [] }),
-      close: async () => {},
+      close,
     },
   };
 }
@@ -1101,6 +1106,9 @@ describe("profile_datasource", () => {
     expect(profileArgs.connection?.connectionGroupId).toBeNull();
     // The decrypted URL the profiler used must not surface.
     expect(getContentText(res.content)).not.toContain("user:pass");
+    // We own the connection lifecycle — it must be torn down once profiling
+    // settles (a throwaway plugin connection would otherwise leak per call).
+    expect(lastCloseSpy).toHaveBeenCalledTimes(1);
   });
 
   it("a not-found datasource → unknown_entity", async () => {
@@ -1165,5 +1173,24 @@ describe("profile_datasource", () => {
     const client = await createTestClient();
     const res = await client.callTool({ name: "profile_datasource", arguments: { id: "prod-us" } });
     expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("validation_failed");
+  });
+
+  it("#3667 — a MID-profile reconnect_required outcome → validation_failed reconnect prompt (not internal_error), connection still closed", async () => {
+    // The connection RESOLVED ok (token valid at resolution), but the OAuth token
+    // was revoked when profiling hit the API. profileLiveDatasource returns the
+    // distinct reconnect_required outcome — the tool must surface the actionable
+    // prompt, not a 500, and still tear the connection down.
+    resolvedConnection = okConn(null, "salesforce");
+    profileResult = {
+      kind: "reconnect_required",
+      dbType: "salesforce",
+      message: "The salesforce connection needs to be reconnected before it can be profiled. Reconnect it in Admin → Integrations, then retry.",
+    };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "profile_datasource", arguments: { id: "sf" } });
+    const err = parseAtlasMcpToolError(getContentText(res.content));
+    expect(err?.code).toBe("validation_failed");
+    expect(err?.message).toContain("reconnected");
+    expect(lastCloseSpy).toHaveBeenCalledTimes(1);
   });
 });

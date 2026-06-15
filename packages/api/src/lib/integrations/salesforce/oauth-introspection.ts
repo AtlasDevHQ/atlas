@@ -118,8 +118,16 @@ export async function profileSalesforceOAuth(
       try {
         const rows = await surface.query(`SELECT COUNT(Id) FROM ${objectName}`);
         if (rows.length > 0) {
+          // jsforce aggregate records are `{ attributes: {...}, expr0: N }`. Read
+          // the aliased count (`expr0`/`count`); fall back to the first NON-object
+          // value so the `attributes` envelope can't be mistaken for the count
+          // (which would `parseInt` to NaN → a silent 0 row-count feeding the
+          // abandonment/denormalization heuristics).
           const first = rows[0];
-          const countVal = first.expr0 ?? first.count ?? Object.values(first)[0];
+          const fallback = Object.entries(first).find(
+            ([k, v]) => k !== "attributes" && (typeof v === "number" || typeof v === "string"),
+          )?.[1];
+          const countVal = first.expr0 ?? first.count ?? fallback;
           rowCount = parseInt(String(countVal ?? "0"), 10);
           if (Number.isNaN(rowCount)) rowCount = 0;
         }

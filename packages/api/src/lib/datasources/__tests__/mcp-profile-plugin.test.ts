@@ -23,6 +23,7 @@ import { describe, expect, it, mock, beforeEach } from "bun:test";
 import type { ProfilingResult } from "@useatlas/types";
 import { createConnectionMock } from "../../../__mocks__/connection";
 import type { LiveDatasourceConnection } from "../mcp-lifecycle.js";
+import { IntegrationReconnectRequiredError } from "@atlas/api/lib/effect/errors";
 
 // ── internal DB (loadDatasourceProfileTarget row + persist gate) ──────
 const realInternal = await import("@atlas/api/lib/db/internal");
@@ -190,6 +191,32 @@ function pluginWithBuiltProfile(dbType: string, profile: ReturnType<typeof liveP
   };
 }
 
+// A plugin that CAPTURES the config `createFromConfig` is called with + the
+// close() invocations on the built connection — the #2850 per-tenant-creds seam
+// (decrypted tenant config flows INTO createFromConfig) and the no-leak
+// discipline are otherwise untested at the host level (the relocated
+// introspection binds whatever config createFromConfig receives).
+function capturingPlugin(dbType: string, opts: { withProfile: boolean } = { withProfile: true }) {
+  const createCalls: Array<Readonly<Record<string, unknown>>> = [];
+  const close = mock(async () => {});
+  return {
+    createCalls,
+    close,
+    plugin: {
+      dbType,
+      createFromConfig: (cfg: Readonly<Record<string, unknown>>) => {
+        createCalls.push(cfg);
+        return {
+          query: async () => ({ columns: [], rows: [] }),
+          close,
+          listObjects: async () => [],
+          ...(opts.withProfile ? { profile: liveProfileSpy() } : {}),
+        };
+      },
+    },
+  };
+}
+
 describe("resolveLiveConnection — plugin types (#3667)", () => {
   it("resolves a plugin clickhouse install to a live connection carrying the group + the built-connection's profile", async () => {
     const profile = liveProfileSpy();
@@ -261,6 +288,45 @@ describe("resolveLiveConnection — plugin types (#3667)", () => {
       expect(res.dbType).toBe("clickhouse");
       expect(res.message).toContain("connection.profile");
     }
+  });
+
+  // #2850 — the per-tenant-creds seam: the resolver MUST pass the DECRYPTED
+  // tenant config into createFromConfig (the relocated profile/listObjects bind
+  // whatever creds it receives). The old loadDatasourceProfileTarget test pinned
+  // this via `target.config`; that assertion was lost in the relocation.
+  it("passes the install's DECRYPTED config into createFromConfig (tenant creds bound at build, #2850)", async () => {
+    const cap = capturingPlugin("elasticsearch");
+    pluginConn = cap.plugin;
+    poolConfigResult = { dbType: "elasticsearch", url: "elasticsearch://es.tenant:9200" };
+    // decryptSecretFields is mocked passthrough, so the row config IS the decrypted config.
+    internalRows = [
+      {
+        catalog_id: "cat_es",
+        catalog_slug: "elasticsearch",
+        config: { url: "elasticsearch://es.tenant:9200", apiKey: "tenant-es-key" },
+        config_schema: [],
+        group_id: null,
+      },
+    ];
+    const res = await resolveLiveConnection("org_1", "es");
+    expect(res.kind).toBe("ok");
+    expect(cap.createCalls).toHaveLength(1);
+    // The tenant's own decrypted creds (apiKey) reach createFromConfig — never {}
+    // or the still-encrypted row, which would force an operator-env fallback.
+    expect(cap.createCalls[0]).toEqual({ url: "elasticsearch://es.tenant:9200", apiKey: "tenant-es-key" });
+  });
+
+  // No-leak discipline: the unsupported early-return must close the built
+  // (lazy) connection, or a query-only plugin leaks one per profile attempt.
+  it("closes the built connection when it exposes no profile (no leak on the unsupported branch)", async () => {
+    const cap = capturingPlugin("clickhouse", { withProfile: false });
+    pluginConn = cap.plugin;
+    internalRows = [
+      { catalog_id: "cat_ch", catalog_slug: "clickhouse", config: { url: "enc:v1:…" }, config_schema: [], group_id: null },
+    ];
+    const res = await resolveLiveConnection("org_1", "ch");
+    expect(res.kind).toBe("unsupported");
+    expect(cap.close).toHaveBeenCalledTimes(1);
   });
 
   it("no registered plugin → unsupported", async () => {
@@ -335,5 +401,34 @@ describe("profileLiveDatasource — entities + whitelist + draft persistence (#3
     const outcome = await profileLiveDatasource({ connection, connectionId: "wh", schema: "analytics" });
     expect(outcome.kind).toBe("ok");
     expect(profile.calls[0].schema).toBe("analytics");
+  });
+
+  // #3667 — an OAuth token (Salesforce) revoked MID-profile throws
+  // IntegrationReconnectRequiredError from inside the connection's profile()
+  // (its first API call lands here, not at resolution). It must map to the
+  // distinct `reconnect_required` outcome, NOT a generic `error`/"Profiling
+  // failed" — so the agent gets the actionable reconnect prompt.
+  it("a mid-profile IntegrationReconnectRequiredError → reconnect_required (not a generic error)", async () => {
+    const connection: LiveDatasourceConnection = {
+      dbType: "salesforce" as LiveDatasourceConnection["dbType"],
+      connectionGroupId: null,
+      query: async () => ({ columns: [], rows: [] }),
+      listObjects: async () => [],
+      profile: async () => {
+        throw new IntegrationReconnectRequiredError({
+          message: "Salesforce session could not be refreshed (invalid_grant).",
+          workspaceId: "org_1",
+          platform: "salesforce",
+          upstreamError: "invalid_grant",
+        });
+      },
+      close: async () => {},
+    };
+    const outcome = await profileLiveDatasource({ connection, connectionId: "sf", orgId: "org_1" });
+    expect(outcome.kind).toBe("reconnect_required");
+    if (outcome.kind === "reconnect_required") {
+      expect(outcome.dbType).toBe("salesforce");
+      expect(outcome.message).toContain("reconnected");
+    }
   });
 });

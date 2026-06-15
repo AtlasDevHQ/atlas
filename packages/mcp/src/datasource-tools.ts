@@ -650,12 +650,16 @@ export function registerDatasourceTools(
               // whether `profile_datasource` can actually make the type queryable.
               // Since the URL-shape gate is gone (#3667 — profiling now rides the
               // unified `resolveLiveConnection`, so a connectable type is profilable
-              // by construction), the capability predicate is now an ACCURATE,
-              // non-drifting proxy for what `profile_datasource` accepts: native
-              // pg/mysql, or a registered plugin that implements `connection.profile`
-              // (incl. non-url-shaped config-credential types like bigquery). It is
-              // cheap (no connection build), so we use it for the hint here. (OAuth
-              // datasources like Salesforce don't arrive via create_datasource.)
+              // by construction), the capability predicate is a cheap (no connection
+              // build) proxy for what `profile_datasource` accepts: native pg/mysql,
+              // or a registered plugin that implements the profiling contract (incl.
+              // non-url-shaped config-credential types like bigquery). NOTE: this
+              // resolver checks the registry-level `connection.profile`, whereas
+              // profile_datasource builds the connection and checks the BUILT
+              // connection's `profile` — for every shipped plugin both are present,
+              // so they agree; a (hypothetical) plugin exposing only one would let
+              // the hint over-advertise. The four MCP plugins keep them in lockstep.
+              // (OAuth datasources like Salesforce don't arrive via create_datasource.)
               const profileCap = await lib.resolveProfileCapabilityByDbType(outcome.value.dbType);
               const profilable = profileCap.kind !== "unsupported";
               return toJsonContent({
@@ -848,6 +852,13 @@ export function registerDatasourceTools(
             });
           }
 
+          if (result.kind === "reconnect_required") {
+            // #3667 — an OAuth token (Salesforce) revoked mid-profile, after the
+            // connection resolved. Surface the SAME actionable reconnect prompt
+            // the resolution-time reconnect path does, not a bare "Profiling
+            // failed" — never a silent failure.
+            return toEnvelopeResult(envelope("validation_failed", result.message));
+          }
           if (result.kind === "error") {
             // Tagged ProfilingFailedError — an agent-actionable validation
             // outcome (no tables, too many failures, persist failure), not a 500.

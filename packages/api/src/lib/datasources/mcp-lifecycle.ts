@@ -79,7 +79,7 @@ import {
   SemanticGeneratorLive,
   type ProfileAndGenerateResult,
 } from "@atlas/api/lib/effect/semantic-generator";
-import { ProfilingFailedError } from "@atlas/api/lib/effect/errors";
+import { ProfilingFailedError, IntegrationReconnectRequiredError } from "@atlas/api/lib/effect/errors";
 import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
 
 // Module-level synchronous content-mode registry — mirrors the one in
@@ -873,6 +873,21 @@ interface ProfilableOAuthInstance {
   teardown?(): Promise<void>;
 }
 
+/**
+ * Actionable prompt for an OAuth datasource whose tokens are stale/revoked.
+ * Shared by both reconnect paths — connection resolution ({@link
+ * resolveLiveConnection}, when the install is already marked reconnect_needed)
+ * AND mid-profile ({@link profileLiveDatasource}, when the token is revoked
+ * between resolution and the first introspection call) — so the agent sees the
+ * identical reconnect guidance regardless of WHERE the token failure surfaces.
+ */
+function reconnectRequiredMessage(dbType: string): string {
+  return (
+    `The ${dbType} connection needs to be reconnected before it can be profiled. ` +
+    `Reconnect it in Admin → Integrations, then retry.`
+  );
+}
+
 function notProfilableLiveMessage(dbType: string): string {
   return (
     `Datasource type "${dbType}" cannot be profiled in this deployment. No registered plugin ` +
@@ -946,15 +961,13 @@ export async function resolveLiveConnection(
     } catch (err) {
       // A stale/revoked OAuth install surfaces as a specific reconnect prompt
       // (the lazy builder throws IntegrationReconnectRequiredError when the
-      // install is marked reconnect_needed). Detected by name to avoid coupling.
-      if (err instanceof Error && err.name === "IntegrationReconnectRequiredError") {
-        return {
-          kind: "reconnect_required",
-          dbType,
-          message:
-            `The ${dbType} connection needs to be reconnected before it can be profiled. ` +
-            `Reconnect it in Admin → Integrations, then retry.`,
-        };
+      // install is marked reconnect_needed). `IntegrationReconnectRequiredError`
+      // is a core error class (lib/effect/errors), so `instanceof` is sturdier
+      // than a `.name` string-match (a rename then fails at compile time, not
+      // silently). NOTE: this only covers a token failure at RESOLUTION time;
+      // a token revoked mid-profile is mapped by `profileLiveDatasource`.
+      if (err instanceof IntegrationReconnectRequiredError) {
+        return { kind: "reconnect_required", dbType, message: reconnectRequiredMessage(dbType) };
       }
       throw err instanceof Error ? err : new Error(String(err));
     }
@@ -1027,6 +1040,14 @@ export async function resolveLiveConnection(
   // dialect-default scope (ClickHouse database, BigQuery dataset) when the caller
   // passes none.
   if (typeof built.profile !== "function") {
+    // The built connection is a real (lazy) client/pool — close it before
+    // bailing so a query-only plugin doesn't leak a connection on every
+    // profile attempt (the OK path closes via the caller's `finally`; this
+    // early return has no caller-side close). Best-effort: a close failure
+    // must not mask the actionable `unsupported` outcome.
+    await built.close().catch(() => {
+      // intentionally ignored: tearing down an unprofilable throwaway connection.
+    });
     return { kind: "unsupported", dbType, message: notProfilableLiveMessage(dbType) };
   }
   const builtProfile = built.profile.bind(built);
@@ -1070,7 +1091,15 @@ export type RunSemanticProfileOutcome =
        */
       readonly persisted: { readonly entities: number; readonly metrics: number } | null;
     }
-  | { readonly kind: "error"; readonly reason: ProfilingFailedError["reason"]; readonly message: string };
+  | { readonly kind: "error"; readonly reason: ProfilingFailedError["reason"]; readonly message: string }
+  /**
+   * An OAuth datasource (Salesforce) whose token was revoked / could not be
+   * refreshed mid-profile (#3667). Surfaced as a distinct outcome — not a
+   * generic `error` — so the MCP tool renders the SAME actionable reconnect
+   * prompt the resolution-time `resolveLiveConnection` reconnect path does,
+   * rather than a bare "Profiling failed".
+   */
+  | { readonly kind: "reconnect_required"; readonly dbType: string; readonly message: string };
 
 /**
  * Profile a RESOLVED LIVE CONNECTION (#3667) and generate its semantic layer via
@@ -1172,10 +1201,19 @@ export async function profileLiveDatasource(opts: {
   if (failure._tag === "Some" && failure.value instanceof ProfilingFailedError) {
     return { kind: "error", reason: failure.value.reason, message: failure.value.message };
   }
+  // #3667 — an OAuth token revoked mid-profile is surfaced by `profileImpl` as a
+  // DEFECT (so its identity survives the generic `ProfilingFailedError` wrap),
+  // recovered here via `causeToError`. Map it to `reconnect_required` so the
+  // agent gets the actionable reconnect prompt rather than a bare "Profiling
+  // failed" — the token's first API call lands here, not at connection
+  // resolution, so this is the only place to catch the common revocation path.
+  const original = causeToError(exit.cause);
+  if (original instanceof IntegrationReconnectRequiredError) {
+    return { kind: "reconnect_required", dbType: conn.dbType, message: reconnectRequiredMessage(conn.dbType) };
+  }
   // Re-throw the ORIGINAL underlying error (not a wrapped one) so the MCP layer
   // can recognise an `OperationCancelledError` raised cooperatively from the
   // progress callback when the client cancels.
-  const original = causeToError(exit.cause);
   throw original instanceof Error
     ? original
     : new Error(`SemanticGenerator profile failed: ${Cause.pretty(exit.cause)}`);

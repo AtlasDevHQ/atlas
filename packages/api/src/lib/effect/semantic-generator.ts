@@ -401,6 +401,21 @@ function profileImpl(
           // survives to the MCP layer instead of becoming `validation_failed`.
           return Effect.die(err);
         }
+        if (err instanceof Error && err.name === "IntegrationReconnectRequiredError") {
+          // #3667 — an OAuth datasource (Salesforce) whose token is revoked /
+          // permanently un-refreshable mid-profile throws this from inside the
+          // injected `profileFn` (the live OAuth connection's bound `profile()`).
+          // Its first API call (describeGlobal) happens here, NOT at connection
+          // resolution, so the resolver's reconnect mapping never sees it.
+          // Wrapping it in a generic `ProfilingFailedError` would erase its
+          // identity and surface a bare "Profiling failed" instead of the
+          // actionable reconnect prompt. Surface it as a DEFECT (like
+          // cancellation) so `profileLiveDatasource`'s `causeToError` recovers
+          // the original error and maps it to `reconnect_required`. Detected by
+          // name (mirroring the cancellation handling) to keep the generator off
+          // any error-class import cycle.
+          return Effect.die(err);
+        }
         // #3579 — scrub DSN userinfo from profiler error messages. A verbose
         // driver error can echo the connection string (scheme://user:pass@host).
         // `errorMessage` strips `scheme://***@host` patterns and truncates to

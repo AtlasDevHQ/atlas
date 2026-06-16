@@ -20,7 +20,7 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
-No tag milestone is currently kicked off — `v0.0.16` shipped 2026-06-15 (see [History](#history)). The next tag firms up as work begins; candidates live under [Planned tags](#planned-tags).
+No tag milestone is formally kicked off — `v0.0.16` shipped 2026-06-15 (see [History](#history)). Banking toward the next tag: a post-v0.0.16 prod-readiness audit (#3688 fixed the actionable findings, filed #3679–#3687 as follow-ups), www/docs accuracy sweeps (#3677/#3678), and the first slices of **Performance-aware Atlas** (PRD [#3617](https://github.com/AtlasDevHQ/atlas/issues/3617)) — A-0 sargability prompt (#3692) and B-0 latency/staleness migration (#3693), with leak fixes #3610/#3611 closed (#3690) unblocking B-2. The next tag firms up as work begins; candidates live under [Planned tags](#planned-tags).
 
 The **Staging environment** track ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) continues in parallel, independent of the tag train — code-complete; only the HITL OAuth/Railway provisioning slices (#2900–#2918) remain, needing operator action (detail under [Planned tags](#planned-tags)).
 
@@ -31,6 +31,10 @@ The **Staging environment** track ([milestone #57](https://github.com/AtlasDevHQ
 Lightweight forward-look. Conviction firms as work begins.
 
 - **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md). All code slices have landed (clamp wiring, `api-staging` config, misrouting coverage, smoke workflow, operator runbook #2899, and the review-surfaced hardening cluster #3095/#2984/#3088/#3096/#3097 via #3100); the staging services are live and green. Remaining: only the HITL OAuth/Railway provisioning slices (#2900–#2918), which need operator action.
+
+- **Performance-aware Atlas** (PRD [#3617](https://github.com/AtlasDevHQ/atlas/issues/3617)) — make query performance a first-class signal in the semantic layer + learned patterns. Two slices shipped (A-0 sargability prompt #3692, B-0 latency/staleness migration #3693); A-1/A-2 index+cardinality surfacing (#3630/#3634) and B-1–B-4 perf-weighted patterns (#3635/#3636/#3632/#3633) remain.
+
+- **Prod-readiness follow-ups** ([#3679](https://github.com/AtlasDevHQ/atlas/issues/3679)–#3687) — deferred findings from the post-v0.0.16 audit (#3688): Stripe-teardown outbox, dunning durability, uninstall-orphan teardown, profiler partial-marker, `/use-demo` atomicity, OTel spans, health-endpoint reshape, migration-0133 expand-contract.
 
 - **`v0.1.0` — Public launch** ([#2919](https://github.com/AtlasDevHQ/atlas/issues/2919)) — the July 2026 launch event; first minor out of the `v0.0.x` train. Points at the banked changelog accumulated under `v0.0.x` (release-process plumbing, REST datasources, staging live). Tracked outside the tag train until the bundle firms up.
 

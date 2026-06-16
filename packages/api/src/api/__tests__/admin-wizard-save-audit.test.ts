@@ -142,6 +142,9 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   DEMO_CONNECTION_ID: "__demo__",
   SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,
   bulkUpsertEntities: mockBulkUpsertEntities,
+  // #3682 — durable partial-profile marker helpers (wizard /save + publish read).
+  upsertProfileStatus: mock(() => Promise.resolve()),
+  listIncompleteProfileLayers: mock(() => Promise.resolve([])),
   // #3234: the wizard resolves the connection's group before saving.
   resolveGroupIdForConnection: mock(async (_orgId: string, connectionId?: string | null) =>
     !connectionId || connectionId === "default" ? null : connectionId,

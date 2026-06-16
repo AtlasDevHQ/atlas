@@ -28,6 +28,7 @@ import { getInternalDB } from "@atlas/api/lib/db/internal";
 import { readDemoIndustry } from "@atlas/api/lib/demo-industry";
 import {
   archiveSingleConnection,
+  listIncompleteProfileLayers,
   DEMO_CONNECTION_ID,
 } from "@atlas/api/lib/semantic/entities";
 import { runHandler } from "@atlas/api/lib/effect/hono";
@@ -89,6 +90,29 @@ const PublishResponseSchema = z.object({
     entities: z.number().int().nonnegative(),
     prompts: z.number().int().nonnegative(),
   }),
+  /**
+   * Durable partial-profile warning (#3682). Present (non-empty) when the org
+   * has one or more semantic layers that were profiled INCOMPLETELY — some
+   * tables failed introspection below the abort threshold, so the layer is live
+   * with those tables NOT queryable. Surfaced here so an admin publishing the
+   * layer sees the degraded state instead of an unconditional success. Read from
+   * the durable `semantic_profile_status` marker, so it survives a restart and
+   * reflects layers profiled in any process. Omitted when no layer is partial.
+   */
+  warnings: z
+    .object({
+      incompleteLayers: z.array(
+        z.object({
+          connectionGroupId: z.string().nullable(),
+          totalTables: z.number().int().nonnegative(),
+          failedCount: z.number().int().nonnegative(),
+          failedTables: z.array(
+            z.object({ table: z.string(), error: z.string() }),
+          ),
+        }),
+      ),
+    })
+    .optional(),
 });
 
 export type PublishResponse = z.infer<typeof PublishResponseSchema>;
@@ -375,6 +399,37 @@ adminPublish.openapi(publishRoute, async (c) =>
       "Publish succeeded",
     );
 
+    // #3682 — surface any DURABLE partial-profile markers for the org. The
+    // publish just promoted these layers to `published`; if one was profiled
+    // incompletely (tables failed introspection below the abort threshold), it
+    // is now live with those tables NOT queryable. Read the marker AFTER commit
+    // so an admin sees the degraded state. Best-effort: a read failure must not
+    // turn an already-committed publish into a 500 — log and omit the warning.
+    let incompleteLayers: Awaited<ReturnType<typeof listIncompleteProfileLayers>> = [];
+    try {
+      incompleteLayers = await listIncompleteProfileLayers(orgId);
+    } catch (warnErr) {
+      log.warn(
+        {
+          requestId,
+          orgId,
+          err: warnErr instanceof Error ? warnErr.message : String(warnErr),
+        },
+        "Publish committed, but reading partial-profile markers failed — warning omitted",
+      );
+    }
+    if (incompleteLayers.length > 0) {
+      log.warn(
+        {
+          requestId,
+          orgId,
+          partialLayers: incompleteLayers.length,
+          groups: incompleteLayers.map((l) => l.connectionGroupId),
+        },
+        "Published one or more INCOMPLETE semantic layers — some tables are not queryable",
+      );
+    }
+
     const response: PublishResponse = {
       promoted: {
         connections: promotedConnectionCount,
@@ -388,6 +443,21 @@ adminPublish.openapi(publishRoute, async (c) =>
         entities: archivedEntityCount,
         prompts: archivedPromptCount,
       },
+      ...(incompleteLayers.length > 0
+        ? {
+            warnings: {
+              incompleteLayers: incompleteLayers.map((l) => ({
+                connectionGroupId: l.connectionGroupId,
+                totalTables: l.totalTables,
+                failedCount: l.failedCount,
+                failedTables: l.failedTables.map((f) => ({
+                  table: f.table,
+                  error: f.error,
+                })),
+              })),
+            },
+          }
+        : {}),
     };
     return c.json(response, 200);
   }),

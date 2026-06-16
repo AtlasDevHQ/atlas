@@ -891,7 +891,16 @@ export function registerDatasourceTools(
             // those tables ABSENT. `profiling_errors` alone reads as a side
             // note next to an unconditional success; `incomplete` makes the
             // degraded layer unmissable to the MCP client before it publishes.
+            // When persisted, this transient flag is also recorded DURABLY in
+            // `semantic_profile_status` (#3682) so the publish flow surfaces it
+            // even after a restart / from the web `/chat` process.
             incomplete: r.errors.length > 0,
+            // The specific tables that are NOT queryable — name them so the
+            // client/agent can tell the user exactly what is missing rather than
+            // just a count. Errors are DSN-scrubbed upstream.
+            ...(r.errors.length > 0
+              ? { incomplete_tables: r.errors.map((e) => e.table) }
+              : {}),
             elapsed_ms: r.elapsedMs,
           });
         },

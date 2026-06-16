@@ -156,6 +156,8 @@ mock.module("@atlas/api/lib/semantic", () => ({
 }));
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
+  upsertProfileStatus: mock(() => Promise.resolve()),
+  listIncompleteProfileLayers: mock(() => Promise.resolve([])),
   DEMO_CONNECTION_ID: "__demo__",
   SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,
   bulkUpsertEntities: async () => 0,

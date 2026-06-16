@@ -86,6 +86,12 @@ bun run atlas -- init --org org-123 --no-import
 
 If more than 20% of tables fail to profile, `init` exits with an error — this usually indicates a systemic issue like wrong credentials or missing permissions. Use `--force` to override this threshold.
 
+### Partial profiles
+
+When _fewer_ than 20% of tables fail (or you pass `--force`), `init` continues with the tables it could profile — but it prints an unmissable warning naming the tables that are **NOT queryable** and are excluded from the generated semantic layer. A skipped table is usually a per-table permission gap; the agent will refuse questions about it (the SQL whitelist denies the absent table) rather than silently misroute. Fix the underlying access and re-run `init` to include the missing tables.
+
+The same partial-profile signal is recorded **durably** when profiling through the web wizard or the `profile_datasource` MCP tool (which persist to the org store): the publish flow surfaces the incomplete layers in its response before you make a degraded layer live, so the gap stays visible across restarts ([#3682](https://github.com/AtlasDevHQ/atlas/issues/3682)).
+
 In TTY mode (interactive terminal), `init` presents a table picker. Pass `--tables` to skip the picker for scripted/CI usage.
 
 **What it generates:**

@@ -116,13 +116,13 @@ const SECTIONS: LegalSectionData[] = [
     id: "share",
     title: "Who we share with",
     legal: [
-      "Sub-processors: a small set of vendors that help us run the Service (cloud infrastructure, error monitoring, payment processing). The current list is published at useatlas.dev/dpa and customers receive 30 days’ notice of additions.",
+      "Sub-processors: a small set of vendors that help us run the Service (cloud infrastructure, uptime monitoring, payment processing). The current list is published at useatlas.dev/dpa and customers receive 30 days’ notice of additions.",
       "Model providers: when Customer uses Atlas’s hosted models, prompts are routed through Vercel AI Gateway, which forwards them to the upstream model provider configured for that Customer (e.g. Anthropic, OpenAI). Vercel acts as a sub-processor for routing, observability, and fallback. Where Customer uses BYO model keys, traffic is sent directly to the provider Customer specifies and does not transit Vercel.",
       "Legal: we may disclose information when required by law, court order, or to protect our rights, with notice to Customer where legally permitted.",
       "Successors: in a merger or sale of substantially all assets, the acquirer takes on the same obligations under this Policy.",
     ],
     plain:
-      "A short list of operational vendors (cloud infra, error monitoring, payments), the model provider you select, and disclosures required by valid legal process.",
+      "A short list of operational vendors (cloud infra, uptime monitoring, payments), the model provider you select, and disclosures required by valid legal process.",
   },
   {
     id: "rights",

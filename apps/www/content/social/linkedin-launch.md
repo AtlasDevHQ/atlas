@@ -11,4 +11,4 @@ Today we're open-sourcing Atlas, a text-to-SQL agent that solves this differentl
 
 Atlas ships with 7 database adapters (PostgreSQL, MySQL, BigQuery, ClickHouse, DuckDB, Snowflake, Salesforce), 20+ plugins (Slack, Teams, Discord, MCP server, webhooks), an embeddable React widget, TypeScript SDK, admin console, and enterprise features like SSO/SCIM, custom roles, and audit log export. It's built in TypeScript end-to-end (Hono + Next.js + Effect.ts + bun) and deploys with Docker, Railway, or Vercel. The core is AGPL-3.0 licensed — self-host the full product for free, every feature, no artificial limits. Atlas Cloud (app.useatlas.dev) is the managed option for teams that don't want to run infrastructure.
 
-Try the live demo at demo.useatlas.dev — no signup, no installation. It's connected to a cybersecurity SaaS dataset with 60 tables and 200K rows of realistic data. Source code and quick start: github.com/AtlasDevHQ/atlas
+Try the live demo at app.useatlas.dev/demo — no signup, no installation. It's connected to a cybersecurity SaaS dataset with 60 tables and 200K rows of realistic data. Source code and quick start: github.com/AtlasDevHQ/atlas

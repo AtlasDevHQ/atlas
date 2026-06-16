@@ -19,13 +19,13 @@ const ROWS: ReadonlyArray<Row> = [
   {
     feature: "Agent-native",
     atlas:
-      "MCP server first — Claude Desktop, Cursor, Continue with bunx @useatlas/mcp init",
+      "MCP server first — Claude Desktop, Cursor, Continue with bunx @useatlas/mcp init; read tools open, datasource writes gated by OAuth scope + RBAC",
     bi: "Bolted-on AI feature",
     textToSql: "Standalone chat UI",
   },
   {
     feature: "Embeddable",
-    atlas: "Script tag, React component, headless API, MCP, 8 chat platforms",
+    atlas: "Script tag, React component, headless API, MCP, 6 chat platforms",
     bi: "Standalone app",
     textToSql: "Standalone app",
   },

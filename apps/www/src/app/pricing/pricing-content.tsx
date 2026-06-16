@@ -123,7 +123,7 @@ const TIERS: Tier[] = [
       "Unlimited seats & connections",
       "Default model: Sonnet 4.6",
       "BYOK for unlimited queries",
-      "All 8 chat integrations",
+      "All 8 integrations (6 chat + Linear + GitHub)",
       "SSO, SCIM & custom roles",
       "IP allowlist & approval workflows",
       "PII masking & audit retention",
@@ -151,7 +151,7 @@ const COMPARISON_SECTIONS: ComparisonSection[] = [
       { feature: "Default model", selfHosted: "Your choice", starter: "Haiku 4.5", pro: "Sonnet 4.6", business: "Sonnet 4.6" },
       { feature: "Seats", selfHosted: "Unlimited", starter: "Up to 10", pro: "Up to 25", business: "Unlimited" },
       { feature: "Database connections", selfHosted: "Unlimited", starter: "1", pro: "3", business: "Unlimited" },
-      { feature: "Chat integrations", selfHosted: "Config-based", starter: "1 platform", pro: "3 platforms", business: "All 8" },
+      { feature: "Chat integrations", selfHosted: "Config-based", starter: "1 platform", pro: "3 platforms", business: "All 6" },
       { feature: "When you hit the budget", selfHosted: "No limit (BYOK)", starter: "Warn → 10% grace → pause", pro: "Warn → 10% grace → pause", business: "Warn → 10% grace → pause" },
     ],
   },
@@ -208,7 +208,7 @@ const FAQS: FAQ[] = [
   {
     question: "Is there a free option?",
     answer:
-      "Yes — self-hosted Atlas is free and always will be (AGPL-3.0). Deploy on your own infrastructure with unlimited everything. For Atlas Cloud, all paid plans include a 14-day free trial with no credit card required.",
+      "Yes — self-hosted Atlas is free and always will be (AGPL-3.0). Deploy on your own infrastructure with unlimited everything. For Atlas Cloud, all paid plans include a 14-day free trial with no credit card required. Every trial runs at Starter-tier usage limits (2M tokens/seat, up to 10 seats, 1 connection) for 14 days, regardless of the plan you start from.",
   },
   {
     question: "Do you offer annual billing?",

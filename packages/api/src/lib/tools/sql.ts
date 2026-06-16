@@ -1235,6 +1235,9 @@ function executeAndAuditEffect(opts: {
               getCache().set(cacheKey, {
                 columns: result.columns, rows: result.rows,
                 cachedAt: Date.now(), ttl: getDefaultTtl(),
+                // #3616 — stamp the real execution cost so the cache-hit
+                // audit row replays it instead of logging duration_ms=0.
+                executionMs: durationMs,
               });
             } catch (cacheErr) {
               log.error({ err: cacheErr, connectionId: connId }, "Cache write failed — result not cached");
@@ -1933,11 +1936,28 @@ async function executeSqlForConnection({
           cacheKey = buildCacheKey(normalizedSql, connId, cacheOrgId, claims);
           const cached = getCache().get(cacheKey);
           if (cached) {
-            logQueryAudit({
-              sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: cached.rows.length,
-              success: true, sourceId: connId, sourceType: dbType, targetHost,
-              parentAuditId,
-            });
+            // Wrapped locally (mirrors the live-path audit at ~1248) so an
+            // audit-write failure on a hit doesn't fall through to the outer
+            // catch — that catch mislabels any throw here as "Cache read
+            // failed" and needlessly re-executes the query, silently defeating
+            // the cache. A failed audit log should not cost us the cache hit.
+            try {
+              logQueryAudit({
+                // #3616 — replay the original execution duration persisted on
+                // the cache entry so this hit carries the query's real cost,
+                // not duration_ms=0. Falls back to 0 only for legacy/external
+                // entries written before executionMs was stamped.
+                sql: normalizedSql.slice(0, 2000), durationMs: cached.executionMs ?? 0,
+                rowCount: cached.rows.length,
+                success: true, sourceId: connId, sourceType: dbType, targetHost,
+                parentAuditId,
+              });
+            } catch (auditErr) {
+              log.warn(
+                { err: auditErr instanceof Error ? auditErr.message : String(auditErr), connectionId: connId },
+                "Failed to write cache-hit query audit log",
+              );
+            }
             // Apply PII masking to cached results (same as live query path)
             const cacheResponse = yield* Effect.tryPromise({
               try: async () => {
@@ -1978,6 +1998,11 @@ async function executeSqlForConnection({
                   columns: cached.columns, rows: cachedRows,
                   truncated: cachedTruncated, cached: true,
                   maskingApplied: cachedMaskingApplied,
+                  // Cost of *serving this hit* (~0, no DB round-trip) — NOT the
+                  // original execution cost. The query's real duration is
+                  // replayed onto the audit row above via `cached.executionMs`;
+                  // this response field intentionally reports the cache-serve
+                  // cost (#3616 naming: two distinct "executionMs" meanings).
                   executionMs: 0,
                 };
               },
@@ -2146,6 +2171,16 @@ async function executeSqlFanout(args: {
     // `source_id IN (<connection ids>)`. The children carry the real
     // connection ids; the group dimension is recoverable by JOINing
     // children's `source_id` back to `connections.group_id`.
+    //
+    // #3616 — the parent stays at duration_ms=0 deliberately: it is pure
+    // linkage housekeeping written BEFORE any shard runs (its id must exist
+    // for the children's FK), so it has no execution cost of its own. The
+    // real per-shard durations live on the child rows (and the merged
+    // total wall-clock rides `executionMs` in the returned result). 0 is the
+    // sentinel that `/analytics/slow` filters out of its AVG so these
+    // housekeeping rows never distort slow-query rankings. Do NOT stamp the
+    // total here — children already contribute their durations to the
+    // aggregate, so a non-zero parent would double-count the same SQL prefix.
     logQueryAudit({
       id: parentAuditId,
       sql: sql.slice(0, 2000),

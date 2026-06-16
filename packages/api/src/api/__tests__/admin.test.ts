@@ -2829,6 +2829,66 @@ describe("Admin routes — audit analytics", () => {
       expect(body.queries[0].maxDuration).toBe(3000);
       expect(body.queries[0].count).toBe(5);
     });
+
+    // #3616 — duration_ms=0 fanout-parent housekeeping rows must not drag
+    // the slow-query average down. The fix excludes zero-duration rows from
+    // the AVG via a FILTER (rather than a WHERE) so COUNT/MAX still see every
+    // row but the average reflects only real execution cost.
+    it("excludes zero-duration rows from the AVG (fanout parents / cache misses)", async () => {
+      let capturedSlowSql = "";
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        capturedSlowSql = sql;
+        return Promise.resolve([
+          { query: "SELECT * FROM big_table", avg_duration: "1500", max_duration: "3000", count: "5" },
+        ]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/slow"));
+      expect(res.status).toBe(200);
+
+      const normalized = capturedSlowSql.replace(/\s+/g, " ");
+      // AVG is filtered to non-zero durations…
+      expect(normalized).toContain("AVG(duration_ms) FILTER (WHERE duration_ms > 0)");
+      // …and the ranking orders by that same filtered average.
+      expect(normalized).toContain("ORDER BY AVG(duration_ms) FILTER (WHERE duration_ms > 0) DESC");
+      // Every `duration_ms > 0` predicate must live inside a FILTER, never a
+      // bare WHERE — a WHERE would also drop the rows from COUNT(*),
+      // under-reporting how often the query ran. Asserting the counts match
+      // is robust to whitespace/clause-ordering, unlike a single substring.
+      const totalPredicates = normalized.match(/duration_ms > 0/g)?.length ?? 0;
+      const filteredPredicates = normalized.match(/FILTER \(WHERE duration_ms > 0\)/g)?.length ?? 0;
+      expect(totalPredicates).toBeGreaterThan(0);
+      expect(filteredPredicates).toBe(totalPredicates);
+    });
+
+    // #3616 — response plumbing: the endpoint must map each aggregate column
+    // (avg/max/count) to the right wire field and parse the string values the
+    // pg driver returns. Distinct numbers (avg≠max≠count) catch a column-swap.
+    // NOTE: the FILTER/COALESCE/NULLS-LAST *SQL semantics* (that the average
+    // actually excludes zero rows) are verified against real Postgres in
+    // `audit-slow-pg.test.ts` — a mocked query layer can't exercise them, so
+    // this test deliberately does NOT re-derive the average in JS.
+    it("maps avg/max/count aggregate columns onto the response shape", async () => {
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        if (!sql.includes("AVG(duration_ms)")) return Promise.resolve([]);
+        // Postgres returns numeric aggregates as strings; distinct values so a
+        // mis-mapping (e.g. avg↔max) would surface as a wrong field.
+        return Promise.resolve([
+          { query: "SELECT * FROM big_table", avg_duration: "2250", max_duration: "3000", count: "3" },
+        ]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/slow"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { queries: { query: string; avgDuration: number; maxDuration: number; count: number }[] };
+      expect(body.queries).toHaveLength(1);
+      expect(body.queries[0].query).toBe("SELECT * FROM big_table");
+      expect(body.queries[0].avgDuration).toBe(2250);
+      expect(body.queries[0].maxDuration).toBe(3000);
+      expect(body.queries[0].count).toBe(3);
+    });
   });
 
   // Frequent queries

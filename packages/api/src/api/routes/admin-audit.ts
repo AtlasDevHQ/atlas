@@ -60,6 +60,32 @@ function analyticsDateRange(
   return { where, params, nextIdx: idx } as const;
 }
 
+/**
+ * SQL for `/analytics/slow` — top 20 query prefixes by real average duration.
+ *
+ * #3616 — exclude zero-duration rows from the AVG via FILTER (not a WHERE) so
+ * cache-hit replays carry their real cost while fanout-parent housekeeping rows
+ * (duration_ms=0) and sub-ms rounding noise are kept out of the average.
+ * COUNT/MAX still see every row for the prefix, and COALESCE guards a prefix
+ * that is *only* zero-duration rows (NULL AVG). `NULLS LAST` sinks all-zero
+ * prefixes to the bottom of the ranking instead of the top (Postgres sorts
+ * NULL first under DESC by default).
+ *
+ * Exported so `audit-slow-pg.test.ts` runs the *exact* production SQL against
+ * real Postgres — the FILTER / COALESCE / NULLS LAST semantics can't be
+ * exercised by a mocked query layer, and a duplicated string would drift.
+ * `whereClause` is the pre-built `WHERE …` from `analyticsDateRange` (its
+ * params are interpolated positionally, never the clause text from user input).
+ */
+export function buildSlowQuerySql(whereClause: string): string {
+  return `SELECT LEFT(sql, 200) as query,
+          COALESCE(ROUND(AVG(duration_ms) FILTER (WHERE duration_ms > 0)), 0) as avg_duration,
+          MAX(duration_ms) as max_duration, COUNT(*) as count
+   FROM audit_log ${whereClause}
+   GROUP BY LEFT(sql, 200)
+   ORDER BY AVG(duration_ms) FILTER (WHERE duration_ms > 0) DESC NULLS LAST LIMIT 20`;
+}
+
 // ---------------------------------------------------------------------------
 // Route definitions
 // ---------------------------------------------------------------------------
@@ -434,10 +460,7 @@ adminAudit.openapi(auditSlowRoute, async (c) => {
     const rows = yield* queryEffect<{
       query: string; avg_duration: string; max_duration: string; count: string;
     }>(
-      `SELECT LEFT(sql, 200) as query, ROUND(AVG(duration_ms)) as avg_duration,
-              MAX(duration_ms) as max_duration, COUNT(*) as count
-       FROM audit_log ${range.where}
-       GROUP BY LEFT(sql, 200) ORDER BY AVG(duration_ms) DESC LIMIT 20`,
+      buildSlowQuerySql(range.where),
       range.params,
     );
 

@@ -28,8 +28,8 @@ Shipped ahead of kickoff: A-0 sargability prompt + MySQL date-filter fix (#3629 
 
 Open slices:
 - [x] **A-1** — surface `unique_count`/`null_count` cardinality through the semantic index ([#3630](https://github.com/AtlasDevHQ/atlas/issues/3630) → [#3697](https://github.com/AtlasDevHQ/atlas/pull/3697))
-- [ ] **A-2** — index harvest (PG + MySQL) → `IndexProfile` → YAML → composite-aware prompt hints ([#3634](https://github.com/AtlasDevHQ/atlas/issues/3634))
-- [ ] **B-1** — thread `durationMs` into the proposer → rolling average in `incrementPatternCount` ([#3635](https://github.com/AtlasDevHQ/atlas/issues/3635))
+- [x] **A-2** — index harvest (PG + MySQL) → `IndexProfile` → YAML → composite-aware prompt hints ([#3634](https://github.com/AtlasDevHQ/atlas/issues/3634) → [#3716](https://github.com/AtlasDevHQ/atlas/pull/3716))
+- [x] **B-1** — thread `durationMs` into the proposer → rolling average in `incrementPatternCount` ([#3635](https://github.com/AtlasDevHQ/atlas/issues/3635) → [#3715](https://github.com/AtlasDevHQ/atlas/pull/3715))
 - [ ] **B-2** — perf-weighted scoring + nightly auto-promote/decay fiber ([#3636](https://github.com/AtlasDevHQ/atlas/issues/3636))
 - [x] **B-3** — multi-turn question context for pattern retrieval ([#3632](https://github.com/AtlasDevHQ/atlas/issues/3632) → [#3698](https://github.com/AtlasDevHQ/atlas/pull/3698))
 - [x] **B-4** — feed favorites + approved suggestions into agent context ([#3633](https://github.com/AtlasDevHQ/atlas/issues/3633) → [#3714](https://github.com/AtlasDevHQ/atlas/pull/3714))

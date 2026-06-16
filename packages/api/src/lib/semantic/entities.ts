@@ -1574,3 +1574,143 @@ export async function bulkUpsertEntities(
   }
   return upserted;
 }
+
+// ---------------------------------------------------------------------------
+// Durable partial-profile marker (#3682)
+// ---------------------------------------------------------------------------
+//
+// The profiler fails CLOSED above a 20% table-failure threshold, but BELOW it
+// the failed tables are silently absent from the generated layer while persist
+// proceeds on the partial set. `semantic_profile_status` records the durable
+// signal — how many tables were attempted vs. failed, for one (org, connection
+// group) — so a sub-threshold partial layer is marked incomplete in a way that
+// SURVIVES a restart and is readable by the publish flow before an admin makes
+// the degraded layer live. See migration 0138.
+
+/** One failed-table entry — the DSN-scrubbed shape the host surfaces (#3579). */
+export interface ProfileStatusFailedTable {
+  readonly table: string;
+  readonly error: string;
+}
+
+/** Inputs for {@link upsertProfileStatus}. */
+export interface ProfileStatusInput {
+  /** Total tables ATTEMPTED (profiled successfully + failed). */
+  readonly totalTables: number;
+  /** Per-table profiling failures below the abort threshold. Empty = complete. */
+  readonly failedTables: ReadonlyArray<ProfileStatusFailedTable>;
+}
+
+/**
+ * Upsert the durable partial-profile marker for one (org, connection group).
+ *
+ * Called on EVERY (re)profile — when `failedTables` is empty the row is written
+ * with `partial = false`, which CLEARS a prior partial marker (e.g. after a
+ * permission fix and a clean re-profile). Keyed on the same
+ * `COALESCE(connection_group_id, '__default__')` sentinel the `semantic_entities`
+ * partial unique indexes use, so the NULL-scope (default-group) row stays a
+ * single bucket.
+ */
+export async function upsertProfileStatus(
+  orgId: string,
+  connectionGroupId: string | null | undefined,
+  input: ProfileStatusInput,
+): Promise<void> {
+  if (!hasInternalDB()) {
+    throw new Error("Internal DB required for semantic profile status");
+  }
+  // Normalise undefined / "" → null so a "no scope" caller can't split rows
+  // across distinct buckets from genuinely NULL-scoped rows (mirrors
+  // `withGroupScope`).
+  const groupId = connectionGroupId == null || connectionGroupId === "" ? null : connectionGroupId;
+  const failedCount = input.failedTables.length;
+  await internalQuery(
+    `INSERT INTO semantic_profile_status
+       (org_id, connection_group_id, total_tables, failed_count, failed_tables, partial)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+     ON CONFLICT (org_id, ${coalescedScopeColumn(GROUP_COLUMN)})
+     DO UPDATE SET total_tables = EXCLUDED.total_tables,
+                   failed_count = EXCLUDED.failed_count,
+                   failed_tables = EXCLUDED.failed_tables,
+                   partial = EXCLUDED.partial,
+                   profiled_at = now(),
+                   updated_at = now()`,
+    [
+      orgId,
+      groupId,
+      input.totalTables,
+      failedCount,
+      JSON.stringify(input.failedTables.map((t) => ({ table: t.table, error: t.error }))),
+      failedCount > 0,
+    ],
+  );
+}
+
+/** A partial (incomplete) semantic layer surfaced to the publish flow (#3682). */
+export interface IncompleteProfileLayer {
+  /** `null` for the flat default group. */
+  readonly connectionGroupId: string | null;
+  readonly totalTables: number;
+  readonly failedCount: number;
+  readonly failedTables: ProfileStatusFailedTable[];
+  /** ISO-8601 timestamp of the profile that produced this marker. */
+  readonly profiledAt: string | null;
+}
+
+/**
+ * List the org's INCOMPLETE (partial) semantic layers — the durable read the
+ * publish flow uses to warn an admin that a layer they're about to publish is
+ * missing tables. Returns `[]` when no internal DB is configured.
+ */
+export async function listIncompleteProfileLayers(
+  orgId: string,
+): Promise<IncompleteProfileLayer[]> {
+  if (!hasInternalDB()) return [];
+  const rows = await internalQuery<{
+    connection_group_id: string | null;
+    total_tables: number;
+    failed_count: number;
+    failed_tables: unknown;
+    profiled_at: unknown;
+  }>(
+    `SELECT connection_group_id, total_tables, failed_count, failed_tables, profiled_at
+       FROM semantic_profile_status
+      WHERE org_id = $1 AND partial = true
+      ORDER BY connection_group_id NULLS FIRST`,
+    [orgId],
+  );
+  return rows.map((r) => ({
+    connectionGroupId: r.connection_group_id ?? null,
+    totalTables: Number(r.total_tables),
+    failedCount: Number(r.failed_count),
+    failedTables: normalizeFailedTables(r.failed_tables),
+    profiledAt: profiledAtToIso(r.profiled_at),
+  }));
+}
+
+/** Coerce a jsonb `failed_tables` value (pg returns it parsed) to the typed shape. */
+function normalizeFailedTables(value: unknown): ProfileStatusFailedTable[] {
+  if (!Array.isArray(value)) return [];
+  const out: ProfileStatusFailedTable[] = [];
+  for (const item of value) {
+    if (item && typeof item === "object") {
+      const rec = item as Record<string, unknown>;
+      const table = typeof rec.table === "string" ? rec.table : null;
+      const error = typeof rec.error === "string" ? rec.error : "";
+      if (table) out.push({ table, error });
+    }
+  }
+  return out;
+}
+
+/** `timestamptz` (Date or string from pg) → ISO-8601, or null when unparseable. */
+function profiledAtToIso(value: unknown): string | null {
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+  }
+  if (typeof value === "string") {
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+  }
+  return null;
+}

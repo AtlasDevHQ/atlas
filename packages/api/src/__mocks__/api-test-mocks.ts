@@ -517,6 +517,9 @@ export function createApiTestMocks(
     deleteDraftEntity: mock(() => Promise.resolve(false)),
     countEntities: mock(() => Promise.resolve(0)),
     bulkUpsertEntities: mock(() => Promise.resolve(0)),
+    // Durable partial-profile marker helpers (#3682) — default no-ops / empty.
+    upsertProfileStatus: mock(() => Promise.resolve()),
+    listIncompleteProfileLayers: mock(() => Promise.resolve([])),
     createVersion: mock(() => Promise.resolve("v1")),
     listVersions: mock(() => Promise.resolve({ versions: [], total: 0 })),
     getVersion: mock(() => Promise.resolve(null)),

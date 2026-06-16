@@ -240,6 +240,8 @@ mock.module("@atlas/api/lib/semantic", () => ({
 }));
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
+  upsertProfileStatus: mock(() => Promise.resolve()),
+  listIncompleteProfileLayers: mock(() => Promise.resolve([])),
   listEntityRows: mock(() => Promise.resolve([])),
   listEntitiesWithOverlay: mock(() => Promise.resolve([])),
   listEntities: mock(() => Promise.resolve([])),

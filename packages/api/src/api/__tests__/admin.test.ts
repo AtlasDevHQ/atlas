@@ -396,6 +396,8 @@ const { AmbiguousEntityError: RealAmbiguousEntityError } = await import(
 );
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
+  upsertProfileStatus: mock(() => Promise.resolve()),
+  listIncompleteProfileLayers: mock(() => Promise.resolve([])),
   AmbiguousEntityError: RealAmbiguousEntityError,
   listEntityRows: mockListEntitiesAdmin,
   listEntitiesWithOverlay: mockListEntitiesWithOverlay,

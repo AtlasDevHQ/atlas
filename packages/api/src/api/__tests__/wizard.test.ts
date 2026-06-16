@@ -130,6 +130,8 @@ const mockResolveGroupId: Mock<(orgId: string, connectionId?: string | null) => 
 );
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
+  upsertProfileStatus: mock(() => Promise.resolve()),
+  listIncompleteProfileLayers: mock(() => Promise.resolve([])),
   // Constants the wizard route imports statically
   DEMO_CONNECTION_ID: "__demo__",
   SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,

@@ -72,6 +72,7 @@ import {
 } from "./wizard-enrich";
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowRight,
   Ban,
   CheckCircle2,
@@ -106,6 +107,48 @@ function ErrorBanner({ error }: { error: WizardError }) {
             requestId: {error.requestId}
           </p>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** A table that failed introspection during profiling (#3682). */
+type ProfilingError = { table: string; error: string };
+
+/**
+ * Warn that some tables could NOT be profiled and will be ABSENT from the saved
+ * semantic layer — the agent won't be able to query them (#3682). The `/generate`
+ * step returns these below the fatal threshold; surfacing them here makes the
+ * partial state unmissable before the user saves and publishes.
+ */
+function PartialProfileBanner({ errors }: { errors: ProfilingError[] }) {
+  if (errors.length === 0) return null;
+  const preview = errors.slice(0, 5);
+  return (
+    <div
+      role="alert"
+      className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+    >
+      <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <div className="space-y-1">
+        <p className="font-medium">
+          {errors.length} {errors.length === 1 ? "table" : "tables"} could not be profiled and{" "}
+          {errors.length === 1 ? "is" : "are"} NOT queryable
+        </p>
+        <p className="opacity-90">
+          These tables failed introspection (often a permission gap) and are excluded from the
+          generated layer. Fix access and re-run the wizard to include them.
+        </p>
+        <ul className="list-disc space-y-0.5 pl-4 font-mono text-[11px] opacity-80">
+          {preview.map((e) => (
+            <li key={e.table}>
+              {e.table}: {e.error}
+            </li>
+          ))}
+          {errors.length > preview.length && (
+            <li>… and {errors.length - preview.length} more</li>
+          )}
+        </ul>
       </div>
     </div>
   );
@@ -591,6 +634,8 @@ function StepReview({
   onBack,
   entities,
   setEntities,
+  profilingErrors,
+  setProfilingErrors,
   ignored,
   setIgnored,
   saving,
@@ -604,6 +649,8 @@ function StepReview({
   onBack: () => void;
   entities: WizardEntityResult[];
   setEntities: Dispatch<SetStateAction<WizardEntityResult[]>>;
+  profilingErrors: ProfilingError[];
+  setProfilingErrors: Dispatch<SetStateAction<ProfilingError[]>>;
   ignored: Set<string>;
   setIgnored: Dispatch<SetStateAction<Set<string>>>;
   saving: boolean;
@@ -649,6 +696,10 @@ function StepReview({
         const data = await res.json();
         const generated = (data.entities ?? []) as WizardEntityResult[];
         setEntities(generated);
+        // #3682 — capture the sub-threshold per-table failures so the review
+        // step warns about them and the save forwards them as the durable
+        // partial-profile marker.
+        setProfilingErrors((data.errors ?? []) as ProfilingError[]);
         const yamlMap: Record<string, string> = {};
         for (const entity of generated) yamlMap[entity.tableName] = entity.yaml;
         setEditingYaml(yamlMap);
@@ -913,6 +964,7 @@ function StepReview({
       <CardContent className="space-y-3">
         {saveError && <ErrorBanner error={saveError} />}
         {enrichError && <ErrorBanner error={enrichError} />}
+        <PartialProfileBanner errors={profilingErrors} />
 
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/20 p-3">
           <div className="min-w-0 space-y-0.5">
@@ -1373,6 +1425,9 @@ export default function WizardPage() {
   const [connectionId, setConnectionId] = useState(params.connectionId || "");
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
   const [entities, setEntities] = useState<WizardEntityResult[]>([]);
+  // #3682 — sub-threshold per-table profiling failures from `/generate`; lifted
+  // so the save step can forward them as the durable partial-profile marker.
+  const [profilingErrors, setProfilingErrors] = useState<ProfilingError[]>([]);
   // Tables excluded from enrichment AND from the final save (§ D). Pre-seeded in
   // StepReview from the profiler's possibly-abandoned signal; user-adjustable.
   const [ignored, setIgnored] = useState<Set<string>>(new Set());
@@ -1389,6 +1444,7 @@ export default function WizardPage() {
   // The ignore list is regenerated from the fresh profile, so clear it too.
   function goBackFromReview() {
     setEntities([]);
+    setProfilingErrors([]);
     setIgnored(new Set());
     goTo(2);
   }
@@ -1406,6 +1462,11 @@ export default function WizardPage() {
         body: JSON.stringify({
           connectionId,
           entities: entitiesToSave.map((e) => ({ tableName: e.tableName, yaml: e.yaml })),
+          // #3682 — forward the sub-threshold profiling failures so the saved
+          // layer is durably marked incomplete (visible to the publish flow).
+          // `totalTables` is everything ATTEMPTED: generated entities + failures.
+          failedTables: profilingErrors,
+          totalTables: entities.length + profilingErrors.length,
         }),
       });
       if (!res.ok) {
@@ -1467,6 +1528,8 @@ export default function WizardPage() {
           credentials={credentials}
           entities={entities}
           setEntities={setEntities}
+          profilingErrors={profilingErrors}
+          setProfilingErrors={setProfilingErrors}
           ignored={ignored}
           setIgnored={setIgnored}
           onNext={() => {

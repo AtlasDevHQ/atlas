@@ -76,7 +76,7 @@ Self-hosted is free, every feature, no limits. Cloud is for teams that want mana
 
 Try it now — no signup needed:
 
-demo.useatlas.dev
+app.useatlas.dev/demo
 
 60 tables, 200K rows of realistic cybersecurity SaaS data. Ask it anything.
 

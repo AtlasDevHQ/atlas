@@ -26,7 +26,7 @@ Atlas turns a directory of YAML files into a complete semantic layer for analyti
 
 Every YAML field exists because an LLM needs it to write correct SQL: `sample_values` ground the agent in real data, `glossary.status: ambiguous` forces clarifying questions, `metrics.objective` picks `MAX` vs `MIN`, `query_patterns` teach the canonical join shapes for your domain.
 
-Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ollama, and Vercel AI Gateway. Works with PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, and Salesforce.
+Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ollama, and Vercel AI Gateway. Works with PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Elasticsearch, and Salesforce.
 
 ## Try the demo locally
 
@@ -135,7 +135,7 @@ The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `A
 | **Deploy anywhere** | Docker, Railway, Vercel, or your own infra | Vendor-hosted | Vendor-hosted |
 | **Plugin ecosystem** | 21 plugins across 5 types — extend anything | Closed | Limited |
 | **Open source** | AGPL-3.0 core, MIT client libs | Proprietary | Varies |
-| **Multi-database** | PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Salesforce | Usually one | Usually one |
+| **Multi-database** | PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Elasticsearch, Salesforce | Usually one | Usually one |
 | **REST APIs as datasources** | Stripe, GitHub, Notion, any OpenAPI spec — read like a datasource, write-gated; generic OpenAPI installs auto-refresh | None | None |
 
 ## Deploy

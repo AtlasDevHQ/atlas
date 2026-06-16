@@ -26,11 +26,11 @@ Kicked off 2026-06-16 from PRD [#3617](https://github.com/AtlasDevHQ/atlas/issue
 
 Shipped ahead of kickoff: A-0 sargability prompt + MySQL date-filter fix (#3629 → #3692), B-0 latency/staleness migration (#3631 → #3693), and the cross-tenant leak fixes #3610/#3611 (#3690) that unblock B-2.
 
-Open slices:
+Slices (all shipped — milestone code-complete; anchor PRD [#3617](https://github.com/AtlasDevHQ/atlas/issues/3617) pending `/closeout`):
 - [x] **A-1** — surface `unique_count`/`null_count` cardinality through the semantic index ([#3630](https://github.com/AtlasDevHQ/atlas/issues/3630) → [#3697](https://github.com/AtlasDevHQ/atlas/pull/3697))
 - [x] **A-2** — index harvest (PG + MySQL) → `IndexProfile` → YAML → composite-aware prompt hints ([#3634](https://github.com/AtlasDevHQ/atlas/issues/3634) → [#3716](https://github.com/AtlasDevHQ/atlas/pull/3716))
 - [x] **B-1** — thread `durationMs` into the proposer → rolling average in `incrementPatternCount` ([#3635](https://github.com/AtlasDevHQ/atlas/issues/3635) → [#3715](https://github.com/AtlasDevHQ/atlas/pull/3715))
-- [ ] **B-2** — perf-weighted scoring + nightly auto-promote/decay fiber ([#3636](https://github.com/AtlasDevHQ/atlas/issues/3636))
+- [x] **B-2** — perf-weighted scoring + nightly auto-promote/decay fiber ([#3636](https://github.com/AtlasDevHQ/atlas/issues/3636) → [#3718](https://github.com/AtlasDevHQ/atlas/pull/3718))
 - [x] **B-3** — multi-turn question context for pattern retrieval ([#3632](https://github.com/AtlasDevHQ/atlas/issues/3632) → [#3698](https://github.com/AtlasDevHQ/atlas/pull/3698))
 - [x] **B-4** — feed favorites + approved suggestions into agent context ([#3633](https://github.com/AtlasDevHQ/atlas/issues/3633) → [#3714](https://github.com/AtlasDevHQ/atlas/pull/3714))
 
@@ -48,7 +48,11 @@ Lightweight forward-look. Conviction firms as work begins.
 
 - **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md). All code slices have landed (clamp wiring, `api-staging` config, misrouting coverage, smoke workflow, operator runbook #2899, and the review-surfaced hardening cluster #3095/#2984/#3088/#3096/#3097 via #3100); the staging services are live and green. Remaining: only the HITL OAuth/Railway provisioning slices (#2900–#2918), which need operator action.
 
-- **Prod-readiness follow-ups** ([#3679](https://github.com/AtlasDevHQ/atlas/issues/3679)–#3687) — deferred findings from the post-v0.0.16 audit (#3688): Stripe-teardown outbox, dunning durability, uninstall-orphan teardown, profiler partial-marker, `/use-demo` atomicity, OTel spans, health-endpoint reshape, migration-0133 expand-contract.
+- **Prod-readiness follow-ups** ([#3679](https://github.com/AtlasDevHQ/atlas/issues/3679)–#3687) — deferred findings from the post-v0.0.16 audit (#3688). Shipped: health-endpoint reshape (#3685 → #3691), dunning durability (#3680 → #3717), profiler partial-marker (#3682 → #3719). Remaining: Stripe-teardown outbox (#3679), uninstall-orphan teardown (#3681), `/use-demo` atomicity (#3683), OTel spans (#3684), migration-0133 expand-contract (#3686), operational verifications (#3687).
+
+- **`v0.0.18` — Self-serve MCP Trial Signup** ([milestone #68](https://github.com/AtlasDevHQ/atlas/milestone/68), PRD [#3646](https://github.com/AtlasDevHQ/atlas/issues/3646)) — origin-tagged trial provisioning over MCP: `start_trial` spins up a metered trial workspace + connect URL, business-email-only signup, claim-gated metering, an unclaimed-grace reaper, and MCP_SIGNUP CRM lead source. Not yet begun (7 issues, all `ready-for-agent`).
+
+- **SaaS-first env-var reduction** ([milestone #69](https://github.com/AtlasDevHQ/atlas/milestone/69), parent [#3701](https://github.com/AtlasDevHQ/atlas/issues/3701)) — make config runtime-controllable: promote tuning knobs, Stripe price IDs, and operator integration creds out of boot-time env into the settings registry; env reserved for secrets + pre-DB boot inputs. Follows the SaaS-env audit (#3709). Not yet begun (8 issues).
 
 - **`v0.1.0` — Public launch** ([#2919](https://github.com/AtlasDevHQ/atlas/issues/2919)) — the July 2026 launch event; first minor out of the `v0.0.x` train. Points at the banked changelog accumulated under `v0.0.x` (release-process plumbing, REST datasources, staging live). Tracked outside the tag train until the bundle firms up.
 

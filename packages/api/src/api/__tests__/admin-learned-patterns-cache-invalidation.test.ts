@@ -8,7 +8,9 @@
  * for up to 5 minutes — approvals looked broken.
  *
  * These tests assert the route handlers call `invalidatePatternCache(orgId)`
- * after the DB write for approve AND reject (PATCH) and for bulk approve.
+ * after the DB write for any PATCH status flip (approve, reject, or un-approve
+ * back to pending — each changes the `status = 'approved'` set) and for bulk
+ * approve, while description-only PATCH and no-op bulk do not.
  */
 
 import {
@@ -135,6 +137,20 @@ describe("learned-pattern cache invalidation (#3612)", () => {
     });
 
     const res = await req("PATCH", "/pat-1", { status: "rejected" });
+    expect(res.status).toBe(200);
+    expect(invalidatePatternCache).toHaveBeenCalledTimes(1);
+    expect(invalidatePatternCache).toHaveBeenCalledWith("org-1");
+  });
+
+  it("PATCH un-approve (approved → pending) also invalidates (pattern leaves approved set)", async () => {
+    let callCount = 0;
+    mocks.mockInternalQuery.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) return Promise.resolve([mockRow({ status: "approved" })]);
+      return Promise.resolve([mockRow({ status: "pending", reviewed_by: "admin-1", reviewed_at: "2026-03-18T00:00:00Z" })]);
+    });
+
+    const res = await req("PATCH", "/pat-1", { status: "pending" });
     expect(res.status).toBe(200);
     expect(invalidatePatternCache).toHaveBeenCalledTimes(1);
     expect(invalidatePatternCache).toHaveBeenCalledWith("org-1");

@@ -512,6 +512,16 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
     const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND ${updateOrg.clause} RETURNING *`, updateParams);
     if (updated.length === 0) return c.json({ error: "not_found", message: "Pattern was deleted before update completed." }, 404);
 
+    // Any status flip changes which patterns the agent sees: the approved set
+    // is `status = 'approved'` (db/internal.ts getApprovedPatterns), so approve
+    // adds to it and reject OR un-approve (back to pending) removes from it.
+    // Evict the org's cached patterns so the next agent turn reads fresh data
+    // instead of the stale 5-min TTL copy (#3612). Description-only edits leave
+    // `status` undefined and don't touch the approved set, so skip those.
+    if (status !== undefined) {
+      invalidatePatternCache(orgId ?? null);
+    }
+
     if (status === "approved") {
       logAdminAction({
         actionType: ADMIN_ACTIONS.pattern.approve,
@@ -615,6 +625,13 @@ adminLearnedPatterns.openapi(bulkStatusRoute, async (c) => {
       } else {
         updated.push(id);
       }
+    }
+
+    // Bulk approve/reject flips the approved set for this org. Evict once after
+    // the loop (the handler is org-scoped) so the agent stops serving the stale
+    // 5-min TTL cache — only when at least one row actually changed (#3612).
+    if (updated.length > 0) {
+      invalidatePatternCache(orgId ?? null);
     }
 
     return c.json({ updated, notFound, ...(errors.length > 0 ? { errors } : {}) }, 200);

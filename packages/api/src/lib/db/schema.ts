@@ -542,6 +542,13 @@ export const learnedPatterns = pgTable(
     // NULL = default (flat entities/) group. Lets the admin approve path
     // rebuild the correct group scope from a persisted amendment row.
     connectionGroupId: text("connection_group_id"),
+    // Performance-aware Atlas (PRD #3617 B-0, #3631). Rolling mean wall-clock
+    // (ms), last-observed timestamp (staleness), and error counter for the
+    // pattern's executions. avg_duration_ms / last_seen_at are NULL until the
+    // pattern is first observed; error_count starts at 0.
+    avgDurationMs: doublePrecision("avg_duration_ms"),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    errorCount: integer("error_count").notNull().default(0),
   },
   (t) => [
     index("idx_learned_patterns_org_status").on(t.orgId, t.status),
@@ -679,6 +686,9 @@ export const querySuggestions = pgTable(
     approvedAt: timestamp("approved_at", { withTimezone: true }),
     distinctUserClicks: integer("distinct_user_clicks").notNull().default(0),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    // Performance-aware Atlas (PRD #3617 B-0, #3631). Rolling mean wall-clock
+    // (ms) of the suggestion's runs. NULL until first observed.
+    avgDurationMs: doublePrecision("avg_duration_ms"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -61,6 +61,19 @@ mock.module("@atlas/api/lib/config", () => ({
   _setConfigForTest: () => {},
 }));
 
+// pattern-cache reads the confidence threshold from the settings registry.
+mock.module("@atlas/api/lib/settings", () => {
+  const settingValue = (key: string): string | undefined =>
+    key === "ATLAS_LEARN_CONFIDENCE_THRESHOLD" && mockConfigLearn?.confidenceThreshold !== undefined
+      ? String(mockConfigLearn.confidenceThreshold)
+      : undefined;
+  return {
+    getSetting: (key: string) => settingValue(key),
+    getSettingAuto: (key: string) => settingValue(key),
+    getSettingLive: async (key: string) => settingValue(key),
+  };
+});
+
 mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock(),
 );

@@ -957,7 +957,7 @@ export async function runAgent({
               // turns, not just the final message, so a keyword-less
               // follow-up ("now break that down by region") still matches
               // patterns via the keywords of earlier turns.
-              const question = buildRetrievalQuery(messages, getRetrievalTurns());
+              const question = buildRetrievalQuery(messages, getRetrievalTurns(orgId ?? null));
               if (!question) return undefined;
               // #3611 — scope retrieval to the active connection group so a
               // `us-prod` session is never primed with `eu-prod`'s patterns.

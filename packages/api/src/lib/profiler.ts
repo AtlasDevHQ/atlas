@@ -395,7 +395,10 @@ function normalizeIndexType(amname: string | null | undefined): IndexType {
  * version falls back to the portable `indnatts`, so harvest never throws on the
  * column reference (it would otherwise be lost to the fail-soft catch).
  */
-async function queryPostgresIndexes(
+// Exported for DB-free unit coverage of the version-branch column selection and
+// the row→IndexProfile mapping (profiler-index-harvest-unit.test.ts); the
+// live-Postgres path is covered separately by profiler-index-harvest-pg.test.ts.
+export async function queryPostgresIndexes(
   pool: import("pg").Pool,
   tableName: string,
   schema: string = "public",
@@ -853,7 +856,10 @@ function mysqlIndexType(indexType: string | null | undefined): IndexType {
  * flagged `is_primary`. MySQL has no partial indexes (`is_partial: false`,
  * `predicate: null`).
  */
-async function queryMySQLIndexes(
+// Exported for DB-free unit coverage of functional/expression key-part skipping
+// and the row-grouping logic (profiler-index-harvest-unit.test.ts); the
+// live-MySQL path is covered separately by profiler-index-harvest-mysql.test.ts.
+export async function queryMySQLIndexes(
   pool: { execute: (sql: string, params?: unknown[]) => Promise<[unknown[], unknown]> },
   tableName: string,
   log: ProfileLogger = defaultLog,

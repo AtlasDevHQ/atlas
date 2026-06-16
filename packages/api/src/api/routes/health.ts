@@ -24,6 +24,7 @@ import { getSetting } from "@atlas/api/lib/settings";
 import { getApiRegion, getMisroutedCount } from "@atlas/api/lib/residency/misrouting";
 import { getConfig } from "@atlas/api/lib/config";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
+import { getUserRole } from "@atlas/api/lib/auth/permissions";
 import type { PluginStatus } from "@atlas/api/lib/plugins/registry";
 
 // Canonical plugin lifecycle states for the /health wire format. The
@@ -187,7 +188,12 @@ async function isOperatorHealthRequest(req: Request): Promise<boolean> {
     const auth = await authenticateRequest(req);
     if (!auth.authenticated) return false;
     if (auth.mode === "none") return true;
-    return !!auth.user.role && OPERATOR_ROLES.has(auth.user.role);
+    // Resolve the EFFECTIVE role, not the raw field: simple-key auth leaves
+    // `user.role` undefined unless ATLAS_API_KEY_ROLE is set, and the documented
+    // `admin` default is applied by getUserRole (AUTH_MODE_DEFAULT_ROLE), not
+    // stamped on the user. Reading the raw field treated the common self-hosted
+    // operator (bare ATLAS_API_KEY) as anonymous, stripping the fleet view (#3685).
+    return OPERATOR_ROLES.has(getUserRole(auth.user));
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err.message : String(err) },

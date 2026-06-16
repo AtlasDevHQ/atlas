@@ -86,6 +86,40 @@ export function buildSlowQuerySql(whereClause: string): string {
    ORDER BY AVG(duration_ms) FILTER (WHERE duration_ms > 0) DESC NULLS LAST LIMIT 20`;
 }
 
+/**
+ * SQL for `/analytics/frequent` — top 20 query prefixes by execution count.
+ *
+ * Same `duration_ms > 0` FILTER as {@link buildSlowQuerySql} (#3616): the avg
+ * here is a secondary stat on a count-ranked list, but zero-duration housekeeping
+ * rows would skew it identically, so it must use the same filter for consistency.
+ * Exported so the real-PG test exercises the exact production SQL (no drift).
+ */
+export function buildFrequentQuerySql(whereClause: string): string {
+  return `SELECT LEFT(sql, 200) as query, COUNT(*) as count,
+          COALESCE(ROUND(AVG(duration_ms) FILTER (WHERE duration_ms > 0)), 0) as avg_duration,
+          COUNT(*) FILTER (WHERE NOT success) as error_count
+   FROM audit_log ${whereClause}
+   GROUP BY LEFT(sql, 200) ORDER BY COUNT(*) DESC LIMIT 20`;
+}
+
+/**
+ * SQL for `/analytics/users` — top 50 users by execution count, with per-user
+ * average duration. Same `duration_ms > 0` FILTER as {@link buildSlowQuerySql}
+ * (#3616) on the `a.duration_ms` alias. Exported so the real-PG test runs the
+ * exact production SQL (the JOIN + alias make a duplicated string drift-prone).
+ */
+export function buildUserStatsQuerySql(whereClause: string): string {
+  return `SELECT COALESCE(a.user_id, 'anonymous') as user_id, u.email as user_email,
+          COUNT(*) as count,
+          COALESCE(ROUND(AVG(a.duration_ms) FILTER (WHERE a.duration_ms > 0)), 0) as avg_duration,
+          COUNT(*) FILTER (WHERE NOT a.success) as error_count
+   FROM audit_log a
+   LEFT JOIN "user" u ON a.user_id = u.id
+   ${whereClause}
+   GROUP BY COALESCE(a.user_id, 'anonymous'), u.email
+   ORDER BY COUNT(*) DESC LIMIT 50`;
+}
+
 // ---------------------------------------------------------------------------
 // Route definitions
 // ---------------------------------------------------------------------------
@@ -487,11 +521,7 @@ adminAudit.openapi(auditFrequentRoute, async (c) => {
     const rows = yield* queryEffect<{
       query: string; count: string; avg_duration: string; error_count: string;
     }>(
-      `SELECT LEFT(sql, 200) as query, COUNT(*) as count,
-              ROUND(AVG(duration_ms)) as avg_duration,
-              COUNT(*) FILTER (WHERE NOT success) as error_count
-       FROM audit_log ${range.where}
-       GROUP BY LEFT(sql, 200) ORDER BY COUNT(*) DESC LIMIT 20`,
+      buildFrequentQuerySql(range.where),
       range.params,
     );
 
@@ -546,14 +576,7 @@ adminAudit.openapi(auditUsersRoute, async (c) => {
       user_id: string; user_email: string | null; count: string;
       avg_duration: string; error_count: string;
     }>(
-      `SELECT COALESCE(a.user_id, 'anonymous') as user_id, u.email as user_email,
-              COUNT(*) as count, ROUND(AVG(a.duration_ms)) as avg_duration,
-              COUNT(*) FILTER (WHERE NOT a.success) as error_count
-       FROM audit_log a
-       LEFT JOIN "user" u ON a.user_id = u.id
-       ${range.where}
-       GROUP BY COALESCE(a.user_id, 'anonymous'), u.email
-       ORDER BY COUNT(*) DESC LIMIT 50`,
+      buildUserStatsQuerySql(range.where),
       range.params,
     );
 

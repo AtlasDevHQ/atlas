@@ -84,6 +84,17 @@ export async function _analyzeAndPropose(input: PatternProposalInput): Promise<v
 
   const existing = await findPatternBySQL(orgId, connectionGroupId, normalized);
   if (existing) {
+    // An admin reject is sticky: the row stays frozen, and we neither bump it
+    // (which would inflate its confidence/repetition and resurrect it as a
+    // re-proposal candidate) nor insert a fresh duplicate (the match already
+    // suppresses that). Repeat traffic on a rejected pattern is a no-op (#3636).
+    if (existing.status === "rejected") {
+      log.debug(
+        { patternId: existing.id },
+        "Query matches a rejected learned pattern — leaving it frozen",
+      );
+      return;
+    }
     // Duplicate — bump count and confidence, append source fingerprint, and
     // fold this execution's latency into the pattern's rolling average (#3635).
     incrementPatternCount(existing.id, fingerprint, durationMs);

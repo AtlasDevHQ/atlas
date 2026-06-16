@@ -60,8 +60,11 @@ export const auditLog = pgTable(
     orgId: text("org_id"),
     // Soft-delete (retention purge)
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
-    // #2067 — MCP filter discriminators. NULL for non-MCP rows; today
-    // only the MCP transport populates these. See migration 0049.
+    // #2067 / #3615 — actor discriminators. `actor_kind` is populated on
+    // every new row (web chat / `/query` → 'human', scheduler → 'scheduler',
+    // MCP → 'mcp', any other agent-loop SQL → 'agent'); only pre-#3615
+    // historical rows are NULL. `client_id` / `tool_name` stay MCP-only. See
+    // migrations 0049 (columns) + the writer wiring in lib/auth/audit.ts.
     actorKind: text("actor_kind"),
     clientId: text("client_id"),
     toolName: text("tool_name"),

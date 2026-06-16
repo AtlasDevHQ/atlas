@@ -527,9 +527,11 @@ demo.openapi(demoChatRoute, async (c) => {
 
   // Bind request context (no org for demo users).
   // #2072 — demo runs the same flow as chat from the user's POV.
+  // #3615 — and is human-initiated like the web chat route, so stamp the
+  // same 'human' audit discriminator rather than letting it default to 'agent'.
   const demoUser = createAtlasUser(userId, "simple-key", `demo:${email}`);
   return withRequestContext(
-    { requestId, user: demoUser, agentOrigin: "chat" },
+    { requestId, user: demoUser, agentOrigin: "chat", actor: { kind: "human" } },
     async () => {
       // Startup diagnostics
       const diagnostics = await validateEnvironment();

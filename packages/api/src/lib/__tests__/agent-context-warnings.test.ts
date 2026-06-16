@@ -85,9 +85,17 @@ mock.module("@atlas/api/lib/semantic", () => ({
 mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   buildRetrievalQuery: () => "revenue by region",
   getRetrievalTurns: () => 3,
-  buildLearnedPatternsSection: async () => {
+  buildLearnedPatternsSection: async () => "",
+}));
+
+// #3633 — agent.ts assembles the org-knowledge block (learned patterns +
+// favorites + approved suggestions) via this module. Toggleable so the
+// per-branch tests can pin the "org-knowledge loader fails alone" case that
+// surfaces the `learned_patterns_unavailable` structured warning.
+mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
+  resolveOrgKnowledgeSection: async () => {
     if (semanticState.patternsThrows) {
-      throw new Error("simulated pool exhaustion (learned patterns)");
+      throw new Error("simulated pool exhaustion (org knowledge)");
     }
     return "";
   },

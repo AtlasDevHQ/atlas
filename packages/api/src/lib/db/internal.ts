@@ -1256,10 +1256,23 @@ export function insertLearnedPattern(pattern: {
   sourceEntity: string;
   sourceQueries: string[];
   proposedBy: string;
+  /**
+   * Wall-clock execution time (ms) of the first observed query for this pattern
+   * (#3635, PRD #3617 B-1). Seeds `avg_duration_ms` and `last_seen_at`. Omitted
+   * /`undefined`/`null` leaves both NULL — the "not yet observed" state — so a
+   * caller without a measurement doesn't fabricate a zero latency.
+   */
+  durationMs?: number | null | undefined;
 }): void {
+  // Seed the rolling average from the first observation. A finite, non-negative
+  // measurement also stamps `last_seen_at`; absent it, both stay NULL.
+  const seedDuration =
+    typeof pattern.durationMs === "number" && Number.isFinite(pattern.durationMs) && pattern.durationMs >= 0
+      ? pattern.durationMs
+      : null;
   internalExecute(
-    `INSERT INTO learned_patterns (org_id, pattern_sql, description, source_entity, source_queries, confidence, repetition_count, status, proposed_by, connection_group_id)
-     VALUES ($1, $2, $3, $4, $5, 0.1, 1, 'pending', $6, $7)`,
+    `INSERT INTO learned_patterns (org_id, pattern_sql, description, source_entity, source_queries, confidence, repetition_count, status, proposed_by, connection_group_id, avg_duration_ms, last_seen_at)
+     VALUES ($1, $2, $3, $4, $5, 0.1, 1, 'pending', $6, $7, $8, CASE WHEN $8::double precision IS NULL THEN NULL ELSE now() END)`,
     [
       pattern.orgId ?? null,
       pattern.patternSql,
@@ -1268,6 +1281,7 @@ export function insertLearnedPattern(pattern: {
       JSON.stringify(pattern.sourceQueries),
       pattern.proposedBy,
       pattern.connectionGroupId ?? null,
+      seedDuration,
     ],
   );
 }
@@ -1517,15 +1531,42 @@ export async function reviewSemanticAmendment(
 /**
  * Increment repetition_count by 1 and increase confidence by 0.1 (capped at 1.0).
  * When sourceFingerprint is provided, appends it to source_queries (capped at 100 entries).
+ *
+ * Latency (#3635, PRD #3617 B-1): when a finite, non-negative `durationMs` is
+ * supplied, folds it into `avg_duration_ms` as an incremental rolling mean and
+ * advances `last_seen_at`. The new average weights the existing mean by the
+ * *old* `repetition_count` — `(avg * n + d) / (n + 1)` — which converges to the
+ * true mean across repetitions. Every SET clause's RHS reads the pre-UPDATE row,
+ * so `repetition_count` here is the old `n` even though another clause bumps it.
+ * A first-ever observation (`avg_duration_ms IS NULL`) seeds directly to `d`. A
+ * missing/invalid measurement leaves both latency columns untouched.
+ *
  * Fire-and-forget — errors are logged, never thrown.
  */
-export function incrementPatternCount(id: string, sourceFingerprint?: string): void {
+export function incrementPatternCount(
+  id: string,
+  sourceFingerprint?: string,
+  durationMs?: number | null | undefined,
+): void {
+  const observation =
+    typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0 ? durationMs : null;
+
+  // Rolling-average + last_seen_at fragment, parameterized on the observation.
+  // NULL observation → no-op on both columns (keeps the prior value).
+  const latencyAssignments = `
+        avg_duration_ms = CASE
+          WHEN $LAT::double precision IS NULL THEN avg_duration_ms
+          WHEN avg_duration_ms IS NULL THEN $LAT::double precision
+          ELSE (avg_duration_ms * repetition_count + $LAT::double precision) / (repetition_count + 1)
+        END,
+        last_seen_at = CASE WHEN $LAT::double precision IS NULL THEN last_seen_at ELSE now() END,`;
+
   if (sourceFingerprint) {
     const newEntry = JSON.stringify([sourceFingerprint]);
     internalExecute(
       `UPDATE learned_patterns SET
         repetition_count = repetition_count + 1,
-        confidence = LEAST(1.0, confidence + 0.1),
+        confidence = LEAST(1.0, confidence + 0.1),${latencyAssignments.replaceAll("$LAT", "$3")}
         source_queries = CASE
           WHEN source_queries IS NULL THEN $2::jsonb
           WHEN jsonb_array_length(source_queries) >= 100 THEN source_queries
@@ -1533,16 +1574,16 @@ export function incrementPatternCount(id: string, sourceFingerprint?: string): v
         END,
         updated_at = now()
       WHERE id = $1`,
-      [id, newEntry],
+      [id, newEntry, observation],
     );
   } else {
     internalExecute(
       `UPDATE learned_patterns SET
         repetition_count = repetition_count + 1,
-        confidence = LEAST(1.0, confidence + 0.1),
+        confidence = LEAST(1.0, confidence + 0.1),${latencyAssignments.replaceAll("$LAT", "$2")}
         updated_at = now()
       WHERE id = $1`,
-      [id],
+      [id, observation],
     );
   }
 }

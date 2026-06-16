@@ -1287,6 +1287,9 @@ function executeAndAuditEffect(opts: {
             sql: querySql, dialect: parserDatabase(dbType, connId), connectionId: connId,
             orgId: learnReqCtx?.user?.activeOrganizationId,
             connectionGroupId: learnReqCtx?.connectionGroupId,
+            // Same wall-clock the audit/SLA path records — seeds/feeds the
+            // pattern's rolling avg_duration_ms (#3635, PRD #3617 B-1).
+            durationMs,
           });
 
           // PII masking (fails open) — via `MaskingPolicy` Tag (#2566)

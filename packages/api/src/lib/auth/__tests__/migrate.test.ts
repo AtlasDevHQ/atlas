@@ -381,6 +381,7 @@ describe("migrateAuthTables", () => {
             { name: "0134_mcp_action_policy.sql" },
             { name: "0135_approval_rule_type_datasource.sql" },
             { name: "0136_mcp_action_policy_default_allowed.sql" },
+            { name: "0137_learning_tables_performance_columns.sql" },
           ],
         };
       }

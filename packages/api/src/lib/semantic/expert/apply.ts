@@ -6,7 +6,8 @@
  */
 
 import * as yaml from "js-yaml";
-import type { AnalysisResult } from "./types";
+import { ANALYSIS_CATEGORIES, type AnalysisResult, type AnalysisCategory } from "./types";
+import { AMENDMENT_TYPES, type AmendmentType } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("semantic-expert-apply");
@@ -136,6 +137,97 @@ export async function applyAmendmentToEntity(
   log.info(
     { requestId, orgId, entity: result.entityName, amendmentType: result.amendmentType, group: targetGroupId },
     "Semantic amendment applied via expert agent",
+  );
+}
+
+/**
+ * Reconstruct an {@link AnalysisResult} from a stored `amendment_payload`
+ * envelope and apply it to the org's semantic entity. Shared by every admin
+ * approve path — the learned-patterns single-PATCH + bulk handlers and the
+ * dedicated amendment-review endpoint — so the envelope→`AnalysisResult`
+ * mapping lives once, beside {@link applyAmendmentToEntity} that consumes it.
+ *
+ * The stored payload is the full envelope
+ * (`{ entityName, amendmentType, amendment, rationale, category, … }`); the YAML
+ * mutation in {@link applyAmendment} reads the INNER `amendment` object, so the
+ * reconstructed result carries `payload.amendment`, never the envelope itself.
+ *
+ * @throws when the payload is missing/malformed, or the YAML apply fails. An
+ *   `AmbiguousEntityError` (a name shared across Connection groups) propagates
+ *   to the caller (the route layer maps it to 409).
+ */
+export async function applyAmendmentFromPayload(params: {
+  orgId: string | null;
+  /** Entity the amendment targets — the row's authoritative `source_entity`. */
+  sourceEntity: string;
+  /** The amendment's Connection group; NULL = the default (flat) scope. */
+  connectionGroupId: string | null;
+  /** Raw `amendment_payload` column value — a JSON string or a parsed object. */
+  rawPayload: unknown;
+  requestId: string;
+  /** Identifier surfaced in error messages (pattern / amendment id). */
+  label?: string;
+}): Promise<void> {
+  const { orgId, sourceEntity, connectionGroupId, rawPayload, requestId } = params;
+  const label = params.label ?? sourceEntity;
+
+  let payload: Record<string, unknown> | null = null;
+  if (typeof rawPayload === "string") {
+    try {
+      const parsed: unknown = JSON.parse(rawPayload);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        payload = parsed as Record<string, unknown>;
+      }
+    } catch (err) {
+      throw new Error(
+        `Corrupt amendment_payload JSON for amendment ${label}: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
+  } else if (rawPayload && typeof rawPayload === "object" && !Array.isArray(rawPayload)) {
+    payload = rawPayload as Record<string, unknown>;
+  }
+
+  if (!payload) {
+    throw new Error(
+      `Amendment ${label} has no amendment_payload — cannot apply its YAML change.`,
+    );
+  }
+
+  const innerAmendment = payload.amendment;
+  if (!innerAmendment || typeof innerAmendment !== "object" || Array.isArray(innerAmendment)) {
+    throw new Error(
+      `Amendment ${label} payload is missing a valid \`amendment\` object — cannot apply its YAML change.`,
+    );
+  }
+
+  const rawCategory = String(payload.category ?? "coverage_gaps");
+  const rawAmendmentType = String(payload.amendmentType ?? "update_description");
+
+  await applyAmendmentToEntity(
+    orgId,
+    {
+      entityName: sourceEntity,
+      // Recover the Connection group the amendment was analyzed against so the
+      // apply targets that group's row, not the default scope or a 409 (#3284).
+      // A NULL group means the default (flat) group — map it to the explicit
+      // `"default"` label so the lookup is scoped to NULL rather than running
+      // the unscoped ambiguity check.
+      group: connectionGroupId ?? "default",
+      category: (ANALYSIS_CATEGORIES as readonly string[]).includes(rawCategory)
+        ? (rawCategory as AnalysisCategory)
+        : "coverage_gaps",
+      amendmentType: (AMENDMENT_TYPES as readonly string[]).includes(rawAmendmentType)
+        ? (rawAmendmentType as AmendmentType)
+        : "update_description",
+      amendment: innerAmendment as Record<string, unknown>,
+      rationale: typeof payload.rationale === "string" ? payload.rationale : "",
+      confidence: 0,
+      impact: 0,
+      score: 0,
+      staleness: 0,
+    },
+    requestId,
   );
 }
 

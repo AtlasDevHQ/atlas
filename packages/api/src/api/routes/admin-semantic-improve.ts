@@ -902,35 +902,20 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
 
       const payload = target.amendment_payload;
       if (payload) {
-        const { applyAmendmentToEntity } = await import("@atlas/api/lib/semantic/expert/apply");
-        const { ANALYSIS_CATEGORIES } = await import("@atlas/api/lib/semantic/expert/types");
-        const { AMENDMENT_TYPES } = await import("@useatlas/types");
-
-        const rawCategory = String(payload.category ?? "coverage_gaps");
-        const rawAmendmentType = String(payload.amendmentType ?? "update_description");
-
-        // This throws on failure — runHandler maps it to 500
-        await applyAmendmentToEntity(orgId, {
-          entityName: target.source_entity,
-          // Recover the Connection group the amendment was analyzed against so
-          // the apply targets that group's row, not the default scope or a 409
-          // (#3284). A NULL column means the default (flat) group — map it to
-          // the explicit `"default"` label so the lookup is scoped to NULL
-          // rather than running the unscoped ambiguity check.
-          group: target.connection_group_id ?? "default",
-          category: (ANALYSIS_CATEGORIES as readonly string[]).includes(rawCategory)
-            ? rawCategory as typeof ANALYSIS_CATEGORIES[number]
-            : "coverage_gaps",
-          amendmentType: (AMENDMENT_TYPES as readonly string[]).includes(rawAmendmentType)
-            ? rawAmendmentType as typeof AMENDMENT_TYPES[number]
-            : "update_description",
-          amendment: payload,
-          rationale: typeof payload.rationale === "string" ? payload.rationale : "",
-          confidence: 0,
-          impact: 0,
-          score: 0,
-          staleness: 0,
-        }, requestId);
+        const { applyAmendmentFromPayload } = await import("@atlas/api/lib/semantic/expert/apply");
+        // This throws on failure — runHandler maps it to 500 (or 409 for an
+        // AmbiguousEntityError). The shared helper owns the envelope→
+        // AnalysisResult mapping, including extracting the INNER `amendment`
+        // object (the YAML mutation reads `payload.amendment`, not the whole
+        // envelope) and recovering the Connection group (#3284).
+        await applyAmendmentFromPayload({
+          orgId,
+          sourceEntity: target.source_entity,
+          connectionGroupId: target.connection_group_id ?? null,
+          rawPayload: payload,
+          requestId,
+          label: target.id,
+        });
       }
     }
 

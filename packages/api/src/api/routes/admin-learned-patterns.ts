@@ -91,84 +91,25 @@ const VALID_STATUSES = new Set<string>(LEARNED_PATTERN_STATUSES);
  * a failed apply never leaves an approved-but-unapplied row whose YAML stays
  * stale until restart (#3613).
  *
- * The stored `amendment_payload` is the full envelope
- * (`{ entityName, amendmentType, amendment, rationale, category, … }`); the YAML
- * mutation consumes the inner `amendment` object, not the envelope — so the
- * reconstructed {@link AnalysisResult} carries `payload.amendment`, never
- * `payload` itself.
- *
- * @throws when the payload is missing/malformed or the YAML apply fails. An
- *   `AmbiguousEntityError` (a name shared across Connection groups) propagates
- *   so the route layer maps it to 409 with the conflicting groups.
+ * Adapts a `learned_patterns` row to the shared `applyAmendmentFromPayload`
+ * helper, which owns the envelope→`AnalysisResult` mapping (incl. extracting the
+ * inner `amendment` object and recovering the Connection group). Throws on a
+ * missing/malformed payload or a failed apply.
  */
 async function applyAmendmentRow(
   row: Record<string, unknown>,
   orgId: string | null,
   requestId: string,
 ): Promise<void> {
-  const rawPayload = row.amendment_payload;
-  let payload: Record<string, unknown> | null = null;
-  if (typeof rawPayload === "string") {
-    try {
-      const parsed: unknown = JSON.parse(rawPayload);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        payload = parsed as Record<string, unknown>;
-      }
-    } catch (err) {
-      throw new Error(
-        `Corrupt amendment_payload JSON for semantic amendment ${String(row.id)}: ${err instanceof Error ? err.message : String(err)}`,
-        { cause: err },
-      );
-    }
-  } else if (rawPayload && typeof rawPayload === "object" && !Array.isArray(rawPayload)) {
-    payload = rawPayload as Record<string, unknown>;
-  }
-
-  if (!payload) {
-    throw new Error(
-      `Semantic amendment ${String(row.id)} has no amendment_payload — cannot apply its YAML change.`,
-    );
-  }
-
-  const innerAmendment = payload.amendment;
-  if (!innerAmendment || typeof innerAmendment !== "object" || Array.isArray(innerAmendment)) {
-    throw new Error(
-      `Semantic amendment ${String(row.id)} payload is missing a valid \`amendment\` object — cannot apply its YAML change.`,
-    );
-  }
-
-  const { applyAmendmentToEntity } = await import("@atlas/api/lib/semantic/expert/apply");
-  const { ANALYSIS_CATEGORIES } = await import("@atlas/api/lib/semantic/expert/types");
-  const { AMENDMENT_TYPES } = await import("@useatlas/types");
-
-  const rawCategory = String(payload.category ?? "coverage_gaps");
-  const rawAmendmentType = String(payload.amendmentType ?? "update_description");
-
-  await applyAmendmentToEntity(
+  const { applyAmendmentFromPayload } = await import("@atlas/api/lib/semantic/expert/apply");
+  await applyAmendmentFromPayload({
     orgId,
-    {
-      entityName: String(row.source_entity),
-      // Recover the Connection group the amendment was analyzed against so the
-      // apply targets that group's row, not the default scope or a 409 (#3284).
-      // A NULL column means the default (flat) group — map it to the explicit
-      // `"default"` label so the lookup is scoped to NULL rather than running
-      // the unscoped ambiguity check.
-      group: (row.connection_group_id as string | null) ?? "default",
-      category: (ANALYSIS_CATEGORIES as readonly string[]).includes(rawCategory)
-        ? (rawCategory as (typeof ANALYSIS_CATEGORIES)[number])
-        : "coverage_gaps",
-      amendmentType: (AMENDMENT_TYPES as readonly string[]).includes(rawAmendmentType)
-        ? (rawAmendmentType as (typeof AMENDMENT_TYPES)[number])
-        : "update_description",
-      amendment: innerAmendment as Record<string, unknown>,
-      rationale: typeof payload.rationale === "string" ? payload.rationale : "",
-      confidence: 0,
-      impact: 0,
-      score: 0,
-      staleness: 0,
-    },
+    sourceEntity: String(row.source_entity),
+    connectionGroupId: (row.connection_group_id as string | null) ?? null,
+    rawPayload: row.amendment_payload,
     requestId,
-  );
+    label: String(row.id),
+  });
 }
 
 // ---------------------------------------------------------------------------

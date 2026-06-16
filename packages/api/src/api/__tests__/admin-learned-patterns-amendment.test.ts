@@ -33,17 +33,28 @@ const mocks = createApiTestMocks({
   },
 });
 
-// Capture every applyAmendmentToEntity invocation so each test can assert what
-// AnalysisResult the approve path dispatched. Default: resolve (apply succeeds);
-// tests that exercise the failure path override the implementation.
-const applyAmendmentToEntity = mock(
-  async (_orgId: string | null, _result: unknown, _requestId: string): Promise<void> => {},
+// The approve paths delegate to the shared `applyAmendmentFromPayload` helper.
+// Capture every invocation so each test can assert what the route dispatched
+// (entity, group, raw payload). The helper's own envelope→AnalysisResult
+// mapping — including pulling the INNER `amendment` object — is unit-tested in
+// lib/semantic/expert/__tests__/apply-from-payload.test.ts. Default: resolve
+// (apply succeeds); failure-path tests override the implementation.
+const applyAmendmentFromPayload = mock(
+  async (_params: {
+    orgId: string | null;
+    sourceEntity: string;
+    connectionGroupId: string | null;
+    rawPayload: unknown;
+    requestId: string;
+    label?: string;
+  }): Promise<void> => {},
 );
 
 mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
-  applyAmendmentToEntity,
-  // Pure helper also exported by the real module — keep it present so a
-  // transitive `import { applyAmendment }` never SyntaxErrors at load time.
+  applyAmendmentFromPayload,
+  // Other exports of the real module — keep them present so a transitive
+  // `import { … }` never SyntaxErrors at load time.
+  applyAmendmentToEntity: mock(async () => undefined),
   applyAmendment: mock((entity: Record<string, unknown>) => entity),
 }));
 
@@ -113,8 +124,8 @@ beforeEach(() => {
   mocks.mockInternalQuery.mockReset();
   mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
   mocks.mockCheckRateLimit.mockImplementation(() => ({ allowed: true }));
-  applyAmendmentToEntity.mockReset();
-  applyAmendmentToEntity.mockImplementation(async () => {});
+  applyAmendmentFromPayload.mockReset();
+  applyAmendmentFromPayload.mockImplementation(async () => {});
 });
 
 // ---------------------------------------------------------------------------
@@ -144,22 +155,20 @@ describe("learned-patterns semantic_amendment YAML side-effect (#3613)", () => {
       expect(body.updated).toContain("pat-sem");
       expect(body.errors).toBeUndefined();
 
-      // The YAML rewrite ran exactly once — for the semantic row only.
-      expect(applyAmendmentToEntity).toHaveBeenCalledTimes(1);
-      const [orgId, result, requestId] = applyAmendmentToEntity.mock.calls[0];
-      expect(orgId).toBe("org-1");
-      expect(typeof requestId).toBe("string");
-      // The inner amendment object feeds the YAML mutation — NOT the envelope.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
-      const ar = result as any;
-      expect(ar.entityName).toBe("orders");
-      expect(ar.amendmentType).toBe("add_dimension");
-      expect(ar.group).toBe("default"); // NULL connection_group_id → explicit default scope
-      expect(ar.amendment).toEqual(INNER_AMENDMENT);
+      // The YAML rewrite was dispatched exactly once — for the semantic row only
+      // — with the row's authoritative entity, group, and the raw payload (the
+      // helper extracts the inner amendment; see apply-from-payload.test.ts).
+      expect(applyAmendmentFromPayload).toHaveBeenCalledTimes(1);
+      const [params] = applyAmendmentFromPayload.mock.calls[0];
+      expect(params.orgId).toBe("org-1");
+      expect(params.sourceEntity).toBe("orders");
+      expect(params.connectionGroupId).toBeNull();
+      expect(params.rawPayload).toEqual(AMENDMENT_PAYLOAD);
+      expect(typeof params.requestId).toBe("string");
     });
 
     it("does NOT stamp approved when the YAML apply fails", async () => {
-      applyAmendmentToEntity.mockImplementation(async () => {
+      applyAmendmentFromPayload.mockImplementation(async () => {
         throw new Error("entity not found");
       });
 
@@ -198,7 +207,7 @@ describe("learned-patterns semantic_amendment YAML side-effect (#3613)", () => {
 
       const res = await req("POST", "/bulk", { ids: ["pat-sem"], status: "rejected" });
       expect(res.status).toBe(200);
-      expect(applyAmendmentToEntity).not.toHaveBeenCalled();
+      expect(applyAmendmentFromPayload).not.toHaveBeenCalled();
     });
   });
 
@@ -216,15 +225,15 @@ describe("learned-patterns semantic_amendment YAML side-effect (#3613)", () => {
 
       const res = await req("PATCH", "/pat-sem", { status: "approved" });
       expect(res.status).toBe(200);
-      expect(applyAmendmentToEntity).toHaveBeenCalledTimes(1);
+      expect(applyAmendmentFromPayload).toHaveBeenCalledTimes(1);
       expect(sawUpdate).toBe(true);
-      const [, result] = applyAmendmentToEntity.mock.calls[0];
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
-      expect((result as any).amendment).toEqual(INNER_AMENDMENT);
+      const [params] = applyAmendmentFromPayload.mock.calls[0];
+      expect(params.sourceEntity).toBe("orders");
+      expect(params.rawPayload).toEqual(AMENDMENT_PAYLOAD);
     });
 
     it("returns 500 and does NOT update status when the YAML apply fails", async () => {
-      applyAmendmentToEntity.mockImplementation(async () => {
+      applyAmendmentFromPayload.mockImplementation(async () => {
         throw new Error("entity not found");
       });
 

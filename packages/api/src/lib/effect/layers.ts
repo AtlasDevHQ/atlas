@@ -215,6 +215,7 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   settings_refresh: "atlas.scheduler.settings_refresh",
   onboarding_email: "atlas.scheduler.onboarding_email",
   expert_scheduler: "atlas.scheduler.expert_scheduler",
+  promote_decay: "atlas.scheduler.promote_decay",
   billing_reconcile: "atlas.scheduler.billing_reconcile",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
@@ -1461,6 +1462,56 @@ export function makeSchedulerLive(
         log.info({ intervalMs: getExpertSchedulerIntervalMs() }, "Semantic expert scheduler started");
       } else {
         log.debug("Semantic expert scheduler not started — feature disabled");
+      }
+
+      // ── Periodic fiber: learned-pattern auto-promote/decay (#3636) ──
+      const promoteDecayEnabled = yield* Effect.try({
+        try: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { isPromoteDecaySchedulerEnabled } = require("@atlas/api/lib/learn/promote-decay-scheduler") as {
+            isPromoteDecaySchedulerEnabled: () => boolean;
+          };
+          return isPromoteDecaySchedulerEnabled();
+        },
+        catch: (err) => {
+          log.debug({ err: errorMessage(err) }, "Promote/decay scheduler module not available — skipping");
+          return false;
+        },
+      }).pipe(Effect.catchAll(() => Effect.succeed(false)));
+
+      if (promoteDecayEnabled) {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { getPromoteDecaySchedulerIntervalMs } = require("@atlas/api/lib/learn/promote-decay-scheduler") as {
+          getPromoteDecaySchedulerIntervalMs: () => number;
+        };
+        const promoteDecayTick = Effect.tryPromise({
+          try: async () => {
+            const { runPromoteDecayTick } = await import("@atlas/api/lib/learn/promote-decay-scheduler");
+            await runPromoteDecayTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              log.warn({ err: errorMessage(err) }, "Promote/decay tick failed");
+            }),
+          ),
+        );
+        // forkScoped, not fork — see SettingsLive for rationale.
+        yield* Effect.forkScoped(
+          withFiberDeathLog(
+            "promote_decay",
+            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.promote_decay, {}, promoteDecayTick).pipe(
+              Effect.repeat(Schedule.spaced(Duration.millis(getPromoteDecaySchedulerIntervalMs()))),
+            ),
+          ),
+        );
+        log.info(
+          { intervalMs: getPromoteDecaySchedulerIntervalMs() },
+          "Learned-pattern auto-promote/decay scheduler started",
+        );
+      } else {
+        log.debug("Learned-pattern auto-promote/decay scheduler not started — feature disabled");
       }
 
       // ── Periodic fiber: plan-tier reconciliation sweep (#3423) ──────

@@ -21767,6 +21767,15 @@
                               "null"
                             ],
                             "additionalProperties": {}
+                          },
+                          "autoPromoted": {
+                            "type": "boolean"
+                          },
+                          "avgDurationMs": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
@@ -21785,7 +21794,9 @@
                           "updatedAt",
                           "reviewedAt",
                           "type",
-                          "amendmentPayload"
+                          "amendmentPayload",
+                          "autoPromoted",
+                          "avgDurationMs"
                         ]
                       }
                     },
@@ -22040,6 +22051,15 @@
                         "null"
                       ],
                       "additionalProperties": {}
+                    },
+                    "autoPromoted": {
+                      "type": "boolean"
+                    },
+                    "avgDurationMs": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
@@ -22058,7 +22078,9 @@
                     "updatedAt",
                     "reviewedAt",
                     "type",
-                    "amendmentPayload"
+                    "amendmentPayload",
+                    "autoPromoted",
+                    "avgDurationMs"
                   ]
                 }
               }
@@ -22291,6 +22313,15 @@
                         "null"
                       ],
                       "additionalProperties": {}
+                    },
+                    "autoPromoted": {
+                      "type": "boolean"
+                    },
+                    "avgDurationMs": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
                     }
                   },
                   "required": [
@@ -22309,7 +22340,9 @@
                     "updatedAt",
                     "reviewedAt",
                     "type",
-                    "amendmentPayload"
+                    "amendmentPayload",
+                    "autoPromoted",
+                    "avgDurationMs"
                   ]
                 }
               }

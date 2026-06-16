@@ -1600,6 +1600,9 @@ export interface ApprovedPatternRow {
   source_entity: string | null;
   /** Confidence score between 0.0 and 1.0. */
   confidence: number;
+  /** Rolling-mean wall-clock execution time (ms), or null until first observed
+   *  (PRD #3617 B-0). Drives perf-weighted retrieval down-weighting (B-2). */
+  avg_duration_ms: number | null;
   [key: string]: unknown;
 }
 
@@ -1663,13 +1666,118 @@ export async function getApprovedPatterns(
   }
 
   return internalQuery<ApprovedPatternRow>(
-    `SELECT id, org_id, connection_group_id, pattern_sql, description, source_entity, confidence
+    `SELECT id, org_id, connection_group_id, pattern_sql, description, source_entity, confidence, avg_duration_ms
      FROM learned_patterns
      WHERE status = 'approved' AND ${orgClause} AND ${groupClause}
      ORDER BY confidence DESC
      LIMIT 100`,
     params,
   );
+}
+
+// ── Auto-promote / decay (PRD #3617 B-2, #3636) ─────────────────────
+
+/** `reviewed_by` stamp the nightly job writes on an auto-promotion, so the
+ *  audit trail and admin UI can tell a machine approval from a human one even
+ *  before reading the `auto_promoted` flag. */
+export const AUTO_PROMOTE_REVIEWER = "atlas-auto-promote";
+
+/** Projection of `learned_patterns` the promote/decay decision needs. */
+export interface PromoteDecayCandidateRow {
+  readonly id: string;
+  readonly org_id: string | null;
+  readonly type: string;
+  readonly status: string;
+  readonly confidence: number;
+  readonly repetition_count: number;
+  readonly avg_duration_ms: number | null;
+  readonly last_seen_at: string | null;
+  readonly auto_promoted: boolean;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Fetch the rows the nightly promote/decay job evaluates: pending query
+ * patterns (promotion candidates) and approved query patterns the job itself
+ * promoted (decay candidates). `semantic_amendment` rows are excluded — they
+ * keep human review. The apply step (`promoteLearnedPatterns` /
+ * `demoteLearnedPatterns`) keys updates by `id` and never writes `org_id` or
+ * `connection_group_id`, so a single global scan can never move a pattern across
+ * tenants (#3610/#3611) — which is why this projection doesn't even select the
+ * scope columns; each row's own `org_id` (for cache invalidation) is returned by
+ * the apply step's `RETURNING`.
+ *
+ * Capped at `limit` rows (oldest-touched first) so a runaway table can't make
+ * one tick unbounded; the scheduler logs when the cap is hit.
+ */
+export async function getPromoteDecayCandidates(
+  limit = 10000,
+): Promise<PromoteDecayCandidateRow[]> {
+  if (!hasInternalDB()) return [];
+  return internalQuery<PromoteDecayCandidateRow>(
+    `SELECT id, org_id, type, status, confidence, repetition_count,
+            avg_duration_ms, last_seen_at::text AS last_seen_at, auto_promoted
+     FROM learned_patterns
+     WHERE type = 'query_pattern'
+       AND (status = 'pending' OR (status = 'approved' AND auto_promoted = true))
+     ORDER BY updated_at ASC
+     LIMIT $1`,
+    [limit],
+  );
+}
+
+/** Distinct org ids (including a single NULL bucket) from a set of returned
+ *  rows — the cache-invalidation key set for the affected workspaces. */
+function distinctOrgIds(rows: ReadonlyArray<{ org_id: string | null }>): Array<string | null> {
+  const seen = new Set<string | null>();
+  for (const r of rows) seen.add(r.org_id);
+  return [...seen];
+}
+
+/**
+ * Promote a batch of pending query patterns to approved (auto-promotion).
+ *
+ * The WHERE re-asserts `status = 'pending'` / `type = 'query_pattern'` so a
+ * human approve/reject landing between the candidate read and this update can
+ * never be clobbered. Returns the affected-row count and the distinct org ids
+ * for cache invalidation.
+ */
+export async function promoteLearnedPatterns(
+  ids: readonly string[],
+): Promise<{ count: number; orgIds: Array<string | null> }> {
+  if (ids.length === 0 || !hasInternalDB()) return { count: 0, orgIds: [] };
+  const rows = await internalQuery<{ org_id: string | null }>(
+    `UPDATE learned_patterns
+     SET status = 'approved', auto_promoted = true,
+         reviewed_by = $1, reviewed_at = now(), updated_at = now()
+     WHERE id = ANY($2::uuid[]) AND status = 'pending' AND type = 'query_pattern'
+     RETURNING org_id`,
+    [AUTO_PROMOTE_REVIEWER, [...ids]],
+  );
+  return { count: rows.length, orgIds: distinctOrgIds(rows) };
+}
+
+/**
+ * Demote a batch of stale auto-promoted patterns back to pending (decay).
+ *
+ * `auto_promoted` is intentionally left true so the row stays a machine-managed
+ * candidate and can be re-promoted if it's seen again. The WHERE re-asserts
+ * `auto_promoted = true` so a human approval (which clears the flag) is never
+ * demoted out from under the admin.
+ */
+export async function demoteLearnedPatterns(
+  ids: readonly string[],
+): Promise<{ count: number; orgIds: Array<string | null> }> {
+  if (ids.length === 0 || !hasInternalDB()) return { count: 0, orgIds: [] };
+  const rows = await internalQuery<{ org_id: string | null }>(
+    `UPDATE learned_patterns
+     SET status = 'pending', updated_at = now()
+     WHERE id = ANY($1::uuid[]) AND status = 'approved'
+       AND auto_promoted = true AND type = 'query_pattern'
+     RETURNING org_id`,
+    [[...ids]],
+  );
+  return { count: rows.length, orgIds: distinctOrgIds(rows) };
 }
 
 export async function upsertSuggestion(suggestion: {

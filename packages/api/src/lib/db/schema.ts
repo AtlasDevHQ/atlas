@@ -592,6 +592,12 @@ export const learnedPatterns = pgTable(
     avgDurationMs: doublePrecision("avg_duration_ms"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     errorCount: integer("error_count").notNull().default(0),
+    // Performance-aware Atlas (PRD #3617 B-2, #3636). True once the nightly
+    // auto-promote/decay job (lib/learn/promote-decay-scheduler.ts) promoted
+    // this row from pending → approved. Stays true across a later auto-demote
+    // so decay only demotes machine-promoted rows, never human approvals, and
+    // so the admin UI can mark them visually distinct.
+    autoPromoted: boolean("auto_promoted").notNull().default(false),
   },
   (t) => [
     index("idx_learned_patterns_org_status").on(t.orgId, t.status),

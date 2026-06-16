@@ -221,6 +221,27 @@ export function getConfidenceThreshold(orgId?: string | null): number {
   return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : DEFAULT_CONFIDENCE_THRESHOLD;
 }
 
+/**
+ * Default latency budget (ms) for perf-weighted retrieval. A pattern whose
+ * rolling-mean wall-clock stays at or under this gets no penalty; slower
+ * patterns are down-weighted (never excluded). Also the default budget for the
+ * nightly auto-promote gate. PRD #3617 B-2.
+ */
+export const DEFAULT_LATENCY_BUDGET_MS = 5000;
+
+/**
+ * Resolve the latency budget (ms) for an org, falling back to the default.
+ * Workspace-scoped settings-registry read (see {@link getRetrievalTurns}); the
+ * nightly job reads the same key at platform scope. Non-positive / invalid
+ * values fall back to the default rather than disabling the budget, so a typo
+ * can't silently turn off down-weighting.
+ */
+export function getLatencyBudgetMs(orgId?: string | null): number {
+  const raw = getSettingAuto("ATLAS_LEARN_LATENCY_BUDGET_MS", orgId ?? undefined);
+  const parsed = raw === undefined ? Number.NaN : Number.parseFloat(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_LATENCY_BUDGET_MS;
+}
+
 /** Extract meaningful keywords from a text string. */
 export function extractKeywords(text: string): Set<string> {
   const words = text
@@ -257,10 +278,81 @@ function scorePattern(
 /** Default maximum patterns to inject into the system prompt. */
 const DEFAULT_MAX_PATTERNS = 10;
 
+/**
+ * Floor for the perf weight. A pattern arbitrarily slower than the budget is
+ * down-weighted to at most this factor — never to zero — so slow-but-relevant
+ * patterns stay PRESENT in retrieval as reference, just ranked below faster
+ * peers. Keeping the floor > 0 is what makes this a down-weight, not a filter.
+ */
+const MIN_PERF_WEIGHT = 0.5;
+
 export interface RelevantPattern {
   sourceEntity: string | null;
   description: string | null;
   patternSql: string;
+  /** Rolling-mean wall-clock (ms) of this pattern's runs, or null until first
+   *  observed. Surfaced in the injected context so the agent can judge cost. */
+  avgDurationMs: number | null;
+}
+
+/**
+ * Latency down-weight factor in [{@link MIN_PERF_WEIGHT}, 1].
+ *
+ * - Unknown latency (null / non-finite / negative) → 1.0: we don't penalize a
+ *   pattern whose speed we've never measured.
+ * - At or under budget → 1.0: no penalty.
+ * - Beyond budget → decays toward the floor as `budget / avg` shrinks, so a
+ *   pattern 2× the budget keeps ~0.75 of its weight and one 10× keeps ~0.55.
+ *
+ * Pure helper, exported for direct testing.
+ */
+export function perfWeight(avgDurationMs: number | null, budgetMs: number): number {
+  if (avgDurationMs === null || !Number.isFinite(avgDurationMs) || avgDurationMs < 0) return 1;
+  if (!Number.isFinite(budgetMs) || budgetMs <= 0) return 1;
+  if (avgDurationMs <= budgetMs) return 1;
+  const ratio = budgetMs / avgDurationMs; // in (0, 1)
+  return MIN_PERF_WEIGHT + (1 - MIN_PERF_WEIGHT) * ratio;
+}
+
+/** One scored pattern after keyword + perf weighting. Exported for testing. */
+export interface ScoredPattern {
+  pattern: ApprovedPatternRow;
+  keywordScore: number;
+  perfWeight: number;
+  score: number;
+}
+
+/**
+ * Rank approved patterns for a question, down-weighting slow ones (PRD #3617
+ * B-2). PURE: no DB, no settings — takes the candidate rows, the question
+ * keywords, and the latency budget.
+ *
+ * The eligibility filter stays on RAW keyword overlap (`keywordScore > 0`), so
+ * latency never DROPS a relevant pattern — it only reorders. The combined score
+ * is `keywordScore × perfWeight`, which lets a much-more-relevant slow pattern
+ * still outrank a barely-relevant fast one (relevance dominates), while a fast
+ * pattern wins among similarly-relevant peers. Ties break on confidence, then
+ * on lower latency (unknown latency sorts last).
+ */
+export function rankPatterns(
+  patterns: readonly ApprovedPatternRow[],
+  questionKeywords: Set<string>,
+  opts: { latencyBudgetMs: number; maxPatterns: number },
+): ScoredPattern[] {
+  return patterns
+    .map((pattern): ScoredPattern => {
+      const keywordScore = scorePattern(pattern, questionKeywords);
+      const weight = perfWeight(pattern.avg_duration_ms, opts.latencyBudgetMs);
+      return { pattern, keywordScore, perfWeight: weight, score: keywordScore * weight };
+    })
+    .filter((s) => s.keywordScore > 0)
+    .toSorted(
+      (a, b) =>
+        b.score - a.score ||
+        b.pattern.confidence - a.pattern.confidence ||
+        (a.pattern.avg_duration_ms ?? Infinity) - (b.pattern.avg_duration_ms ?? Infinity),
+    )
+    .slice(0, opts.maxPatterns);
 }
 
 /**
@@ -287,21 +379,33 @@ export async function getRelevantPatterns(
   const aboveThreshold = allPatterns.filter((p) => p.confidence >= threshold);
   if (aboveThreshold.length === 0) return [];
 
-  // Score by keyword relevance
+  // Score by keyword relevance, down-weighting (not excluding) slow patterns.
   const questionKeywords = extractKeywords(question);
   if (questionKeywords.size === 0) return [];
 
-  const scored = aboveThreshold
-    .map((p) => ({ pattern: p, score: scorePattern(p, questionKeywords) }))
-    .filter((s) => s.score > 0)
-    .toSorted((a, b) => b.score - a.score || b.pattern.confidence - a.pattern.confidence)
-    .slice(0, maxPatterns);
+  const scored = rankPatterns(aboveThreshold, questionKeywords, {
+    latencyBudgetMs: getLatencyBudgetMs(orgId),
+    maxPatterns,
+  });
 
   return scored.map((s) => ({
     sourceEntity: s.pattern.source_entity,
     description: s.pattern.description,
     patternSql: s.pattern.pattern_sql,
+    avgDurationMs: s.pattern.avg_duration_ms,
   }));
+}
+
+/**
+ * Format a pattern's average latency as a compact, injectable suffix, e.g.
+ * ` (avg ~123ms)`. Returns `""` for unmeasured latency so a never-observed
+ * pattern doesn't claim a fabricated speed. Exported so the org-knowledge
+ * builder renders latency identically. PRD #3617 B-2 — surfacing this lets the
+ * agent weigh a pattern's cost when choosing which to reuse.
+ */
+export function formatAvgLatency(avgDurationMs: number | null): string {
+  if (avgDurationMs === null || !Number.isFinite(avgDurationMs) || avgDurationMs < 0) return "";
+  return ` (avg ~${Math.round(avgDurationMs)}ms)`;
 }
 
 /** Sanitize text for safe prompt injection — truncate and strip markdown headings. */
@@ -329,7 +433,8 @@ export async function buildLearnedPatternsSection(
       const entity = p.sourceEntity ? `[${p.sourceEntity}]` : "[general]";
       const desc = sanitizeForPrompt(p.description ?? "Query pattern", 200);
       const sql = sanitizeForPrompt(p.patternSql, 500);
-      return `- ${entity}: ${desc}\n  SQL: ${sql}`;
+      const latency = formatAvgLatency(p.avgDurationMs);
+      return `- ${entity}: ${desc}${latency}\n  SQL: ${sql}`;
     });
 
     return [

@@ -24,7 +24,7 @@ import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getPopularSuggestions } from "@atlas/api/lib/db/internal";
 import { listFavorites } from "@atlas/api/lib/starter-prompts/favorite-store";
-import { getRelevantPatterns, type RelevantPattern } from "./pattern-cache";
+import { getRelevantPatterns, formatAvgLatency, type RelevantPattern } from "./pattern-cache";
 
 const log = createLogger("org-knowledge-section");
 
@@ -94,12 +94,15 @@ export function buildOrgKnowledgeSection(input: OrgKnowledgeInput): string {
       const entity = p.sourceEntity ? `[${p.sourceEntity}]` : "[general]";
       const desc = sanitize(p.description ?? "Query pattern", 200);
       const sql = sanitize(p.patternSql, 500);
-      return `- ${entity}: ${desc}\n  SQL: ${sql}`;
+      // Surface the pattern's measured average latency (PRD #3617 B-2) so the
+      // agent can weigh cost; "" when never observed.
+      const latency = formatAvgLatency(p.avgDurationMs);
+      return `- ${entity}: ${desc}${latency}\n  SQL: ${sql}`;
     });
     subsections.push(
       [
         "### Previously successful query patterns",
-        "These patterns have been validated by your organization.",
+        "These patterns have been validated by your organization. The `avg ~Nms` hint on a pattern is its typical execution time — prefer faster patterns when they answer the question equally well.",
         ...lines,
       ].join("\n"),
     );

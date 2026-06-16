@@ -64,6 +64,11 @@ function toLearnedPattern(row: Record<string, unknown>): LearnedPattern {
           }
         })()
       : null,
+    autoPromoted: Boolean(row.auto_promoted),
+    avgDurationMs:
+      row.avg_duration_ms === null || row.avg_duration_ms === undefined
+        ? null
+        : Number(row.avg_duration_ms),
   };
 }
 
@@ -133,6 +138,8 @@ const LearnedPatternSchema = z.object({
   reviewedAt: z.string().nullable(),
   type: z.enum(["query_pattern", "semantic_amendment"]),
   amendmentPayload: z.record(z.string(), z.unknown()).nullable(),
+  autoPromoted: z.boolean(),
+  avgDurationMs: z.number().nullable(),
 });
 
 const ListResponseSchema = createListResponseSchema("patterns", LearnedPatternSchema, {
@@ -503,7 +510,11 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
     const updateParams: unknown[] = [];
     let paramIdx = 1;
     if (description !== undefined) { updateParams.push(description); setClauses.push(`description = $${paramIdx}`); paramIdx++; }
-    if (status !== undefined) { updateParams.push(status); setClauses.push(`status = $${paramIdx}`); paramIdx++; updateParams.push(user?.id ?? null); setClauses.push(`reviewed_by = $${paramIdx}`); paramIdx++; setClauses.push(`reviewed_at = now()`); }
+    // A human status change re-attributes the row to that human: clear
+    // `auto_promoted` so a row the nightly job promoted (then perhaps decayed to
+    // pending) no longer renders the machine "Auto-approved" badge once a person
+    // reviews it, and so decay never demotes it out from under the admin (#3636).
+    if (status !== undefined) { updateParams.push(status); setClauses.push(`status = $${paramIdx}`); paramIdx++; updateParams.push(user?.id ?? null); setClauses.push(`reviewed_by = $${paramIdx}`); paramIdx++; setClauses.push(`reviewed_at = now()`); setClauses.push(`auto_promoted = false`); }
 
     updateParams.push(id);
     const idIdx = paramIdx;
@@ -611,7 +622,8 @@ adminLearnedPatterns.openapi(bulkStatusRoute, async (c) => {
 
           const updateParams: unknown[] = [status, user?.id ?? null, id];
           const updateOrg = orgFilter(orgId, updateParams, updateParams.length + 1);
-          await internalQuery(`UPDATE learned_patterns SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now() WHERE id = $3 AND ${updateOrg.clause}`, updateParams);
+          // Clear auto_promoted on a human review (see single-update path, #3636).
+          await internalQuery(`UPDATE learned_patterns SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now(), auto_promoted = false WHERE id = $3 AND ${updateOrg.clause}`, updateParams);
           return "updated" as const;
         },
         catch: (err) => err instanceof Error ? err : new Error(String(err)),

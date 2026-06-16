@@ -73,4 +73,16 @@ export interface LearnedPattern {
   type: LearnedPatternType;
   /** Structured amendment payload (only for type='semantic_amendment'). */
   amendmentPayload: AmendmentPayload | null;
+  /**
+   * True when the nightly auto-promote/decay job promoted this row from
+   * pending → approved without human review (PRD #3617 B-2). Lets the admin UI
+   * mark machine-approved patterns distinct from human-approved ones.
+   */
+  autoPromoted: boolean;
+  /**
+   * Rolling-mean wall-clock execution time (ms) of the pattern's runs, or null
+   * until first observed (PRD #3617 B-0/B-2). Drives perf-weighted retrieval
+   * down-weighting and is surfaced to the agent in injected context.
+   */
+  avgDurationMs: number | null;
 }

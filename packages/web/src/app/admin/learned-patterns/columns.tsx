@@ -16,6 +16,8 @@ import {
   Bot,
   Calendar,
   Layers,
+  Sparkles,
+  Timer,
 } from "lucide-react";
 import { formatDate } from "@/lib/format";
 
@@ -37,6 +39,14 @@ export const statusBadge: Record<string, { variant: "outline"; className: string
     className: "border-red-300 text-red-700 dark:border-red-700 dark:text-red-400",
     label: "Rejected",
   },
+};
+
+/** Distinct badge for a pattern the nightly job auto-approved — violet +
+ *  Sparkles, so machine approvals never read as a human "Approved" (#3636). */
+export const autoApprovedBadge = {
+  variant: "outline" as const,
+  className: "border-violet-300 text-violet-700 dark:border-violet-700 dark:text-violet-400",
+  label: "Auto-approved",
 };
 
 export const typeBadge: Record<string, { variant: "outline"; className: string; label: string }> = {
@@ -103,12 +113,21 @@ export function getLearnedPatternColumns(): ColumnDef<LearnedPattern>[] {
       ),
       cell: ({ row }) => {
         const status = row.getValue<string>("status");
+        // An auto-promoted approved row is shown distinct from a human approval.
+        if (status === "approved" && row.original.autoPromoted) {
+          return (
+            <Badge variant={autoApprovedBadge.variant} className={`${autoApprovedBadge.className} gap-1`}>
+              <Sparkles className="size-3" />
+              {autoApprovedBadge.label}
+            </Badge>
+          );
+        }
         const badge = statusBadge[status] ?? statusBadge.pending;
         return <Badge variant={badge.variant} className={badge.className}>{badge.label}</Badge>;
       },
       meta: { label: "Status", icon: CircleDot },
       enableSorting: false,
-      size: 100,
+      size: 130,
     },
     {
       id: "type",
@@ -203,6 +222,26 @@ export function getLearnedPatternColumns(): ColumnDef<LearnedPattern>[] {
       },
       meta: { label: "Confidence", icon: TrendingUp },
       size: 120,
+    },
+    {
+      id: "avgDurationMs",
+      accessorKey: "avgDurationMs",
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} label="Avg latency" />
+      ),
+      cell: ({ row }) => {
+        const ms = row.getValue<number | null>("avgDurationMs");
+        if (ms === null || ms === undefined) {
+          return <span className="text-xs text-muted-foreground">{"—"}</span>;
+        }
+        return (
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {Math.round(ms).toLocaleString()}ms
+          </span>
+        );
+      },
+      meta: { label: "Avg latency", icon: Timer },
+      size: 96,
     },
     {
       id: "repetitionCount",

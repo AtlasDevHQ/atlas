@@ -157,6 +157,7 @@ function pattern(over: Partial<RelevantPattern> = {}): RelevantPattern {
     sourceEntity: "companies",
     description: "Total company revenue",
     patternSql: "SELECT SUM(revenue) FROM companies",
+    avgDurationMs: null,
     ...over,
   };
 }
@@ -183,6 +184,24 @@ describe("buildOrgKnowledgeSection (pure)", () => {
     expect(section).toContain("### Previously successful query patterns");
     expect(section).toContain("[companies]: Total company revenue");
     expect(section).toContain("SQL: SELECT SUM(revenue) FROM companies");
+  });
+
+  test("surfaces a pattern's average latency when measured (PRD #3617 B-2)", () => {
+    const section = buildOrgKnowledgeSection({
+      patterns: [pattern({ avgDurationMs: 123.4 })],
+      favorites: [],
+      suggestions: [],
+    });
+    expect(section).toContain("(avg ~123ms)");
+  });
+
+  test("omits the latency hint for a never-observed pattern", () => {
+    const section = buildOrgKnowledgeSection({
+      patterns: [pattern({ avgDurationMs: null })],
+      favorites: [],
+      suggestions: [],
+    });
+    expect(section).not.toContain("(avg ~");
   });
 
   test("renders favorites and suggestions alongside patterns", () => {

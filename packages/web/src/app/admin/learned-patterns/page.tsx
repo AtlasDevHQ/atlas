@@ -5,7 +5,7 @@ import { useQueryStates } from "nuqs";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { LearnedPattern, LearnedPatternStatus } from "@/ui/lib/types";
 import { learnedPatternsSearchParams } from "./search-params";
-import { getLearnedPatternColumns, statusBadge } from "./columns";
+import { getLearnedPatternColumns, statusBadge, autoApprovedBadge } from "./columns";
 import { useAtlasConfig } from "@/ui/context";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
@@ -544,6 +544,13 @@ export default function LearnedPatternsPage() {
                   <SheetTitle className="flex items-center gap-2">
                     Learned Pattern
                     {(() => {
+                      if (detailPattern.status === "approved" && detailPattern.autoPromoted) {
+                        return (
+                          <Badge variant={autoApprovedBadge.variant} className={autoApprovedBadge.className}>
+                            {autoApprovedBadge.label}
+                          </Badge>
+                        );
+                      }
                       const badge = statusBadge[detailPattern.status] ?? statusBadge.pending;
                       return <Badge variant={badge.variant} className={badge.className}>{badge.label}</Badge>;
                     })()}
@@ -614,6 +621,14 @@ export default function LearnedPatternsPage() {
                     <div className="space-y-1">
                       <span className="text-xs font-medium text-muted-foreground">Times seen</span>
                       <p className="text-xs tabular-nums">{detailPattern.repetitionCount}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-xs font-medium text-muted-foreground">Avg latency</span>
+                      <p className="text-xs tabular-nums">
+                        {detailPattern.avgDurationMs === null
+                          ? "—"
+                          : `${Math.round(detailPattern.avgDurationMs).toLocaleString()}ms`}
+                      </p>
                     </div>
                     <div className="space-y-1">
                       <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">

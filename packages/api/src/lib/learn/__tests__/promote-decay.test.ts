@@ -100,6 +100,41 @@ describe("decidePromoteDecay — promotion gate", () => {
     );
     expect(promote).toEqual([]);
   });
+
+  it("does NOT promote a pending row unseen past the decay window", () => {
+    // Recency gate — without it, decay is futile: a row demoted for going stale
+    // would clear the other (cumulative) gates and re-promote next tick (#3636).
+    const { promote } = decidePromoteDecay(
+      [candidate({ id: "stale-pending", lastSeenAt: daysAgo(31) })],
+      THRESHOLDS,
+      NOW,
+    );
+    expect(promote).toEqual([]);
+  });
+
+  it("does NOT promote a pending row with no last_seen timestamp", () => {
+    const { promote } = decidePromoteDecay(
+      [candidate({ id: "noseen", lastSeenAt: null })],
+      THRESHOLDS,
+      NOW,
+    );
+    expect(promote).toEqual([]);
+  });
+
+  it("re-promotes a previously-decayed row once it is seen again (no oscillation)", () => {
+    // Steady state after fix #1: a demoted row (back to pending, autoPromoted
+    // still true) stays pending until a fresh observation updates last_seen_at;
+    // once seen within the window it legitimately re-promotes.
+    const justDemoted = candidate({
+      id: "demoted-then-seen",
+      status: "pending",
+      autoPromoted: true,
+      lastSeenAt: daysAgo(1),
+    });
+    const { promote, demote } = decidePromoteDecay([justDemoted], THRESHOLDS, NOW);
+    expect(promote).toEqual(["demoted-then-seen"]);
+    expect(demote).toEqual([]);
+  });
 });
 
 describe("decidePromoteDecay — decay/demote gate", () => {

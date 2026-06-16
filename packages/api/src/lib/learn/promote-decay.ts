@@ -15,6 +15,11 @@
  *     never a human's explicit approval.
  */
 
+// Type-only import — erased at compile time, zero runtime coupling. Ties the
+// decision's `type`/`status` discriminants to the wire SSOT so the literal
+// comparisons below can't drift from the canonical value set.
+import type { LearnedPatternStatus, LearnedPatternType } from "@useatlas/types";
+
 /** Tunable gates for one promote/decay pass. */
 export interface PromoteDecayThresholds {
   /** Minimum confidence (0–1) for a pending row to auto-promote. */
@@ -38,9 +43,9 @@ export interface PromoteDecayThresholds {
 export interface PromoteDecayCandidate {
   id: string;
   /** Row type; only `"query_pattern"` is ever acted on. */
-  type: string;
-  /** Lifecycle status: `"pending"` | `"approved"` | `"rejected"`. */
-  status: string;
+  type: LearnedPatternType;
+  /** Lifecycle status. */
+  status: LearnedPatternStatus;
   confidence: number;
   repetitionCount: number;
   /** Rolling-mean wall-clock (ms), or null until first observed. */
@@ -64,25 +69,52 @@ function hasMeasuredLatency(avgDurationMs: number | null): avgDurationMs is numb
   return avgDurationMs !== null && Number.isFinite(avgDurationMs) && avgDurationMs >= 0;
 }
 
+/**
+ * Milliseconds since the pattern was last observed running, or `null` when
+ * there is no usable timestamp (never seen, or an unparseable value). A row
+ * `incrementPatternCount` has measured at least once carries both
+ * `avg_duration_ms` and `last_seen_at` (they're stamped together), so a row
+ * eligible on the latency gate will always have a usable timestamp here.
+ */
+function msSinceLastSeen(p: PromoteDecayCandidate, now: number): number | null {
+  if (p.lastSeenAt === null) return null;
+  const seen = Date.parse(p.lastSeenAt);
+  if (Number.isNaN(seen)) return null;
+  return now - seen;
+}
+
 /** Whether a pending row clears every auto-promote gate. */
-function shouldPromote(p: PromoteDecayCandidate, t: PromoteDecayThresholds): boolean {
-  return (
-    p.type === "query_pattern" &&
-    p.status === "pending" &&
-    p.confidence >= t.confidenceThreshold &&
-    p.repetitionCount >= t.minRepetitions &&
-    hasMeasuredLatency(p.avgDurationMs) &&
-    p.avgDurationMs <= t.latencyBudgetMs
-  );
+function shouldPromote(p: PromoteDecayCandidate, t: PromoteDecayThresholds, now: number): boolean {
+  if (
+    !(
+      p.type === "query_pattern" &&
+      p.status === "pending" &&
+      p.confidence >= t.confidenceThreshold &&
+      p.repetitionCount >= t.minRepetitions &&
+      hasMeasuredLatency(p.avgDurationMs) &&
+      p.avgDurationMs <= t.latencyBudgetMs
+    )
+  ) {
+    return false;
+  }
+  // Recency gate: a pattern unseen past the decay window must NOT be
+  // (re-)promoted until a fresh observation stamps `last_seen_at`. Without this,
+  // decay is futile — the other gates look only at cumulative confidence /
+  // repetition / rolling latency, none of which a decay-demote changes, so a
+  // stale-but-popular row demoted for going unseen would clear the gate again on
+  // the very next tick and flip approved → pending → approved forever (#3636
+  // review). Mirroring the demote window keeps "stale enough to demote" and
+  // "fresh enough to (re-)promote" as exact complements.
+  const sinceSeen = msSinceLastSeen(p, now);
+  return sinceSeen !== null && sinceSeen <= t.decayUnseenMs;
 }
 
 /** Whether an approved, machine-promoted row has gone stale past the window. */
 function shouldDemote(p: PromoteDecayCandidate, t: PromoteDecayThresholds, now: number): boolean {
   if (p.type !== "query_pattern" || p.status !== "approved" || !p.autoPromoted) return false;
-  if (p.lastSeenAt === null) return false; // can't prove staleness without a timestamp
-  const seen = Date.parse(p.lastSeenAt);
-  if (Number.isNaN(seen)) return false; // unparseable → leave it alone
-  return now - seen > t.decayUnseenMs;
+  const sinceSeen = msSinceLastSeen(p, now);
+  if (sinceSeen === null) return false; // can't prove staleness without a timestamp
+  return sinceSeen > t.decayUnseenMs;
 }
 
 /**
@@ -99,7 +131,7 @@ export function decidePromoteDecay(
   const promote: string[] = [];
   const demote: string[] = [];
   for (const p of patterns) {
-    if (shouldPromote(p, thresholds)) promote.push(p.id);
+    if (shouldPromote(p, thresholds, now)) promote.push(p.id);
     else if (shouldDemote(p, thresholds, now)) demote.push(p.id);
   }
   return { promote, demote };

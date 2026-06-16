@@ -20,6 +20,7 @@ let promotedIds: readonly string[] = [];
 let demotedIds: readonly string[] = [];
 let invalidatedOrgs: Array<string | null> = [];
 let failPromote = false;
+let failDemote = false;
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => dbAvailable,
@@ -34,6 +35,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     return { count: ids.length, orgIds: ids.length > 0 ? ["org-a"] : [] };
   },
   demoteLearnedPatterns: async (ids: readonly string[]) => {
+    if (failDemote) throw new Error("kaboom");
     demotedIds = ids;
     return { count: ids.length, orgIds: ids.length > 0 ? ["org-b"] : [] };
   },
@@ -90,6 +92,7 @@ beforeEach(() => {
   demotedIds = [];
   invalidatedOrgs = [];
   failPromote = false;
+  failDemote = false;
 });
 
 afterEach(() => {
@@ -202,5 +205,26 @@ describe("runPromoteDecayTick", () => {
     failPromote = true;
     const r = await runPromoteDecayTick();
     expect(r.errors).toBe(1);
+  });
+
+  it("preserves the successful side when the other batch throws (no Promise.all masking)", async () => {
+    // promote succeeds, demote throws: the committed promotion's count must
+    // survive AND its cache must still be invalidated — a Promise.all would lose
+    // both by unwinding to the outer catch (#3636 review).
+    dbAvailable = true;
+    candidates = [
+      candidateRow({ id: "promote-me" }),
+      candidateRow({ id: "demote-me", status: "approved", auto_promoted: true, last_seen_at: daysAgo(60) }),
+    ];
+    failDemote = true;
+
+    const r = await runPromoteDecayTick();
+
+    expect(r.promoted).toBe(1); // not lost
+    expect(r.demoted).toBe(0); // the failed side
+    expect(r.errors).toBe(1); // exactly the demote failure
+    expect(promotedIds).toEqual(["promote-me"]);
+    // The successful promote still invalidated its workspace's cache.
+    expect(invalidatedOrgs).toContain("org-a");
   });
 });

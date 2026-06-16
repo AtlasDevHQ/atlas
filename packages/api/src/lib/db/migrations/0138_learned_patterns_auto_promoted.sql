@@ -10,9 +10,12 @@
 -- touches the row, so it can't carry that signal; a dedicated boolean can.
 --
 --   auto_promoted — true once the nightly job promotes the row; stays true
---                   across a later auto-demote so the row remains an
---                   auto-managed candidate. A human approve/reject leaves it
---                   false (or, on override, the admin path may clear it).
+--                   across a later auto-demote (approved → pending) so the row
+--                   remains an auto-managed candidate that decay can still act
+--                   on. A human approve/reject via the admin route clears it
+--                   back to false, re-attributing the row to that human, so a
+--                   human-reviewed row never reads as machine-approved and decay
+--                   never demotes it out from under the admin.
 --
 -- Additive-only: one NOT NULL column with a DEFAULT, no constraint changes, no
 -- rewrites of existing semantics — ships safely in a single release (only

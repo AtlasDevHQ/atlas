@@ -34,6 +34,11 @@ import {
 
 const log = createLogger("promote-decay-scheduler");
 
+/** Narrow an unknown thrown value to a log-safe message string. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** Default interval: 24 hours. */
 export const DEFAULT_PROMOTE_DECAY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -131,12 +136,16 @@ export function resolvePromoteDecayThresholds(): PromoteDecayThresholds {
 }
 
 /** Project a DB candidate row (snake_case) onto the pure-decision input shape
- *  (camelCase) — the one place the two representations are bridged. */
+ *  (camelCase) — the one place the two representations are bridged. The raw row
+ *  types `type`/`status` as bare `string` (Postgres text); the SELECT in
+ *  `getPromoteDecayCandidates` filters `type = 'query_pattern'` and
+ *  `status IN ('pending','approved')`, so narrowing them to the wire unions here
+ *  is the single, documented `string → union` coercion. */
 function toCandidate(row: PromoteDecayCandidateRow): PromoteDecayCandidate {
   return {
     id: row.id,
-    type: row.type,
-    status: row.status,
+    type: row.type as PromoteDecayCandidate["type"],
+    status: row.status as PromoteDecayCandidate["status"],
     confidence: row.confidence,
     repetitionCount: row.repetition_count,
     avgDurationMs: row.avg_duration_ms,
@@ -193,30 +202,69 @@ export async function runPromoteDecayTick(): Promise<PromoteDecayTickResult> {
       Date.now(),
     );
 
-    const [promoteRes, demoteRes] = await Promise.all([
+    // Settle promote and demote INDEPENDENTLY. A `Promise.all` would reject as
+    // soon as either side throws and unwind to the outer catch — losing the
+    // OTHER side's already-committed count AND skipping cache invalidation for
+    // its just-flipped rows, leaving stale agent context until the 5-min TTL
+    // lapses (#3636 review). Each batch DB write is its own transaction, so a
+    // success on one side is durable regardless of the other.
+    const affected = new Set<string | null>();
+    const [promoteRes, demoteRes] = await Promise.allSettled([
       promoteLearnedPatterns(promote),
       demoteLearnedPatterns(demote),
     ]);
-    result.promoted = promoteRes.count;
-    result.demoted = demoteRes.count;
+    if (promoteRes.status === "fulfilled") {
+      result.promoted = promoteRes.value.count;
+      for (const orgId of promoteRes.value.orgIds) affected.add(orgId);
+    } else {
+      result.errors++;
+      log.error(
+        { err: errorMessage(promoteRes.reason), ids: promote.length },
+        "Auto-promote batch failed",
+      );
+    }
+    if (demoteRes.status === "fulfilled") {
+      result.demoted = demoteRes.value.count;
+      for (const orgId of demoteRes.value.orgIds) affected.add(orgId);
+    } else {
+      result.errors++;
+      log.error(
+        { err: errorMessage(demoteRes.reason), ids: demote.length },
+        "Auto-demote batch failed",
+      );
+    }
 
     // A promotion/demotion changes which patterns the agent sees, so evict the
     // 5-min retrieval cache for every affected workspace (mirrors the admin
     // approve/reject path). Imported here, not at module top, to avoid a cycle
-    // through the settings → internal → pattern-cache graph.
-    if (promoteRes.count > 0 || demoteRes.count > 0) {
-      const { invalidatePatternCache } = await import("@atlas/api/lib/learn/pattern-cache");
-      const affected = new Set<string | null>([...promoteRes.orgIds, ...demoteRes.orgIds]);
-      for (const orgId of affected) invalidatePatternCache(orgId);
+    // through the settings → internal → pattern-cache graph. Wrapped on its own
+    // so a cache-import/invalidation failure is logged distinctly rather than
+    // masquerading as a tick-wide failure that discards the committed counts.
+    if (affected.size > 0) {
+      try {
+        const { invalidatePatternCache } = await import("@atlas/api/lib/learn/pattern-cache");
+        for (const orgId of affected) invalidatePatternCache(orgId);
+      } catch (err) {
+        result.errors++;
+        log.error(
+          { err: errorMessage(err) },
+          "Promote/decay cache invalidation failed — rows were flipped but cache stays stale until TTL",
+        );
+      }
     }
 
     log.info(
-      { candidates: result.candidates, promoted: result.promoted, demoted: result.demoted },
+      {
+        candidates: result.candidates,
+        promoted: result.promoted,
+        demoted: result.demoted,
+        errors: result.errors,
+      },
       "Promote/decay tick complete",
     );
   } catch (err) {
     log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
+      { err: errorMessage(err) },
       "Promote/decay tick failed",
     );
     result.errors++;

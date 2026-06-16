@@ -1700,9 +1700,12 @@ export interface PromoteDecayCandidateRow {
  * Fetch the rows the nightly promote/decay job evaluates: pending query
  * patterns (promotion candidates) and approved query patterns the job itself
  * promoted (decay candidates). `semantic_amendment` rows are excluded — they
- * keep human review. Rows carry their own `org_id` / `connection_group_id`, and
- * the apply step keys updates by `id` without ever changing scope, so a single
- * global scan can never move a pattern across tenants (#3610/#3611).
+ * keep human review. The apply step (`promoteLearnedPatterns` /
+ * `demoteLearnedPatterns`) keys updates by `id` and never writes `org_id` or
+ * `connection_group_id`, so a single global scan can never move a pattern across
+ * tenants (#3610/#3611) — which is why this projection doesn't even select the
+ * scope columns; each row's own `org_id` (for cache invalidation) is returned by
+ * the apply step's `RETURNING`.
  *
  * Capped at `limit` rows (oldest-touched first) so a runaway table can't make
  * one tick unbounded; the scheduler logs when the cap is hit.

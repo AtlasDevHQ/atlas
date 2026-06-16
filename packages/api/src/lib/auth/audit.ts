@@ -68,7 +68,15 @@ export function logQueryAudit(entry: AuditEntry): void {
   const userLabel = ctx?.user?.label ?? null;
   const authMode = ctx?.user?.mode ?? "none";
   const actor = ctx?.actor;
-  const actorKind = actor?.kind ?? null;
+  // #3615 — `logQueryAudit` is reached only from the `executeSQL` tool, which
+  // only ever runs inside an agent loop (web chat, scheduler, MCP, chat
+  // platforms, proactive). So an audit row with no more-specific actor IS an
+  // agent-loop SQL execution — default it to "agent" rather than NULL so the
+  // admin audit filter never has invisible rows. The specific entry paths
+  // override this: web chat / `/query` stamp "human", the scheduler stamps
+  // "scheduler", and both MCP dispatchers stamp "mcp" before executeSQL runs,
+  // so this fallback never relabels those.
+  const actorKind = actor?.kind ?? "agent";
   // The mcp branch is the only one carrying clientId / toolName — the
   // discriminated union in `lib/logger.ts` makes this guard a type
   // narrow rather than an ad-hoc truthy check.

@@ -214,8 +214,11 @@ query.openapi(
       // Bind user identity into AsyncLocalStorage for downstream logging/audit.
       // #2072 — `/api/v1/query` is the API form of chat; origin-scoped
       // approval rules treat it identically to the chat UI.
+      // #3615 — same reasoning for the audit discriminator: stamp `human`.
+      // `executeAgentQuery` re-enters `withRequestContext` and propagates this
+      // inherited actor, so executeSQL audit rows record actor_kind='human'.
       return withRequestContext(
-        { requestId, user: authResult.user, agentOrigin: "chat" },
+        { requestId, user: authResult.user, agentOrigin: "chat", actor: { kind: "human" } },
         async () => {
 
         // #3419/#3420 — workspace status, abuse, and plan-limit

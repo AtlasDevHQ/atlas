@@ -8,6 +8,7 @@
 
 import { runAgent } from "@atlas/api/lib/agent";
 import { createLogger, getRequestContext, withRequestContext } from "@atlas/api/lib/logger";
+import type { ActorKind, RequestActor } from "@atlas/api/lib/logger";
 import { checkAgentBillingGate, BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
 import type { PlanLimitWarning } from "@atlas/api/lib/billing/enforcement";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
@@ -79,6 +80,17 @@ export interface ExecuteAgentQueryOptions {
    */
   actor?: AtlasUser;
   /**
+   * #3615 — audit_log discriminator for this agent run. System callers
+   * that run outside a route-level `withRequestContext` (the scheduler)
+   * MUST pass this so executeSQL audit rows record the right actor_kind
+   * (e.g. `scheduler`). When omitted, the actor is propagated from the
+   * parent RequestContext (e.g. the `/query` route stamps `human`); when
+   * neither is present, `logQueryAudit` defaults the row to `agent`.
+   * Excludes `mcp` because the MCP dispatchers set their own actor (with
+   * `clientId` / `toolName`) and never route through `executeAgentQuery`.
+   */
+  actorKind?: Exclude<ActorKind, "mcp">;
+  /**
    * #2072 — agent origin for origin-scoped approval rules. System
    * callers (scheduler, chat-platform receivers) MUST pass this so an
    * "MCP-only" or "scheduler-only" rule fires for the correct transport.
@@ -136,6 +148,13 @@ export async function executeAgentQuery(
   const origin = options?.agentOrigin ?? inheritedCtx?.agentOrigin;
   const connectionId = options?.connectionId ?? inheritedCtx?.connectionId;
   const connectionGroupId = options?.connectionGroupId ?? inheritedCtx?.connectionGroupId;
+  // #3615 — explicit `actorKind` wins (the scheduler passes "scheduler");
+  // otherwise propagate the parent context's actor (the `/query` route stamps
+  // "human") so the re-entered context below doesn't drop it. When neither is
+  // present, leave it unset — `logQueryAudit` defaults the audit row to "agent".
+  const actor: RequestActor | undefined = options?.actorKind
+    ? { kind: options.actorKind }
+    : inheritedCtx?.actor;
 
   if (!boundUser) {
     log.warn(
@@ -151,6 +170,7 @@ export async function executeAgentQuery(
       ...(boundUser ? { user: boundUser } : {}),
       ...(inheritedMode ? { atlasMode: inheritedMode } : {}),
       ...(origin ? { agentOrigin: origin } : {}),
+      ...(actor ? { actor } : {}),
       ...(connectionId ? { connectionId } : {}),
       ...(connectionGroupId ? { connectionGroupId } : {}),
     },

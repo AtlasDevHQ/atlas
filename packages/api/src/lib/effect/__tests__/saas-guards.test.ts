@@ -1542,6 +1542,7 @@ describe("ChatAdapterEnvGuardLive", () => {
 // `withCleanEnv` doesn't manage them. Save/clear/restore them here.
 const BILLING_ENV_KEYS = [
   "STRIPE_SECRET_KEY",
+  "STRIPE_WEBHOOK_SECRET",
   "STRIPE_STARTER_PRICE_ID",
   "STRIPE_PRO_PRICE_ID",
   "STRIPE_BUSINESS_PRICE_ID",
@@ -1625,6 +1626,26 @@ describe("BillingConfigGuardLive", () => {
     );
   });
 
+  test("fails boot in SaaS when STRIPE_WEBHOOK_SECRET is missing", async () => {
+    // Secret key + all prices valid, but no webhook secret. Without this the
+    // @better-auth/stripe plugin silently declines to mount (auth/server.ts
+    // logs + continues), so the region boots green with billing dead.
+    await withBillingEnv(
+      { STRIPE_SECRET_KEY: "sk_test_abc", ...ALL_PRICES },
+      async () => {
+        const exit = await runBillingGuard("saas");
+        expect(Exit.isFailure(exit)).toBe(true);
+        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+        expect(failure).toBeInstanceOf(BillingConfigInvalidError);
+        const e = failure as TBillingConfigInvalidError;
+        expect(e.message).toContain("STRIPE_WEBHOOK_SECRET");
+        // The price/key checks pass — only the webhook-secret gap fires.
+        expect(e.missingPriceIdEnvVars).toEqual([]);
+        expect(e.keyMode).toBe("test");
+      },
+    );
+  });
+
   test("fails boot in SaaS on a non-standard secret-key mode", async () => {
     await withBillingEnv(
       { STRIPE_SECRET_KEY: "rk_live_restricted", ...ALL_PRICES },
@@ -1655,7 +1676,7 @@ describe("BillingConfigGuardLive", () => {
 
   test("boots (warn-only) when all prices resolve consistently with the key mode", async () => {
     await withBillingEnv(
-      { STRIPE_SECRET_KEY: "sk_test_abc", ...ALL_PRICES },
+      { STRIPE_SECRET_KEY: "sk_test_abc", STRIPE_WEBHOOK_SECRET: "whsec_test", ...ALL_PRICES },
       async () => {
         // All three prices are test-mode (livemode false) — consistent with sk_test_.
         mockStripePrices = {
@@ -1671,7 +1692,7 @@ describe("BillingConfigGuardLive", () => {
 
   test("does NOT fail boot when a configured price can't be resolved (warn, not crash)", async () => {
     await withBillingEnv(
-      { STRIPE_SECRET_KEY: "sk_test_abc", ...ALL_PRICES },
+      { STRIPE_SECRET_KEY: "sk_test_abc", STRIPE_WEBHOOK_SECRET: "whsec_test", ...ALL_PRICES },
       async () => {
         // price_pro absent from the mock → "No such price" → unresolved warn path.
         mockStripePrices = {
@@ -1686,7 +1707,7 @@ describe("BillingConfigGuardLive", () => {
 
   test("does NOT fail boot on a livemode↔key-mode mismatch (warn, not crash)", async () => {
     await withBillingEnv(
-      { STRIPE_SECRET_KEY: "sk_test_abc", ...ALL_PRICES },
+      { STRIPE_SECRET_KEY: "sk_test_abc", STRIPE_WEBHOOK_SECRET: "whsec_test", ...ALL_PRICES },
       async () => {
         // A live-mode price configured under a test key — the classic mixup.
         mockStripePrices = {
@@ -1702,7 +1723,7 @@ describe("BillingConfigGuardLive", () => {
 
   test("does NOT fail boot when getStripeClient() returns null", async () => {
     await withBillingEnv(
-      { STRIPE_SECRET_KEY: "sk_test_abc", ...ALL_PRICES },
+      { STRIPE_SECRET_KEY: "sk_test_abc", STRIPE_WEBHOOK_SECRET: "whsec_test", ...ALL_PRICES },
       async () => {
         mockStripeClientNull = true;
         const exit = await runBillingGuard("saas");

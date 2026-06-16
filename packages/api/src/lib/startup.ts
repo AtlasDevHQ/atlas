@@ -488,6 +488,17 @@ async function checkConfigFile(errors: DiagnosticError[]): Promise<void> {
     if (typeof configMod.loadConfig === "function" && !configMod.getConfig()) {
       await configMod.loadConfig();
     }
+    // #3184 follow-up: a config-file `deployMode: "saas"` that silently
+    // downgraded to self-hosted (enterprise off) previously surfaced ONLY as a
+    // CRITICAL log + a `/health` flag — not in the diagnostics warnings array
+    // that the startup surface aggregates. Mirror the other startup warnings so
+    // an operator paging on `getStartupWarnings()` sees the downgrade reason
+    // alongside the rest. (The env-var path fails boot via EnterpriseGuardLive.)
+    const downgrade = configMod.getConfig()?.deployModeDowngraded;
+    if (downgrade) {
+      const msg = `Deploy-mode downgrade: ${downgrade.reason}`;
+      if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
+    }
   } catch (err) {
     const detail = errorMessage(err);
     log.error({ err: detail }, "Config validation failed");

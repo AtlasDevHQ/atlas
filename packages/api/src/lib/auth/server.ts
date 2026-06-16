@@ -2182,6 +2182,16 @@ export function buildStripePluginOptions(deps: {
         }
 
         await recordStripeEvent(ledgerEvent, appliedTier);
+
+        // Observability: the skip path logged, but a SUCCESSFULLY-processed
+        // event (tier write applied + ledger recorded) was silent — so a
+        // tier-write storm or slow processing left no positive audit trail of
+        // which subscription events were actually applied. Log the applied
+        // disposition (no PII — ids + tier only).
+        billingLog.info(
+          { eventId: event.id, eventType: event.type, appliedTier: appliedTier ?? null },
+          "Processed Stripe webhook event",
+        );
       });
     },
   };

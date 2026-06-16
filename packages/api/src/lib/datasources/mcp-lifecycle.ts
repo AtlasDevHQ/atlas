@@ -56,6 +56,7 @@ import {
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import type { DatabaseObject, ProfilingResult } from "@useatlas/types";
 import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
+import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { getInstallHandler } from "@atlas/api/lib/integrations/install/dispatch";
 import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/persist-form-install";
@@ -81,6 +82,8 @@ import {
 } from "@atlas/api/lib/effect/semantic-generator";
 import { ProfilingFailedError, IntegrationReconnectRequiredError } from "@atlas/api/lib/effect/errors";
 import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
+
+const log = createLogger("datasources:mcp-lifecycle");
 
 // Module-level synchronous content-mode registry — mirrors the one in
 // `api/routes/admin-connections.ts`. `readFilter` is a pure function of the
@@ -951,6 +954,18 @@ export async function resolveLiveConnection(
   const row = rows[0];
 
   const schema = parseConfigSchema(row.config_schema);
+  if (schema.state === "corrupt") {
+    // Breadcrumb only — `decryptSecretFields` fails closed on a corrupt schema
+    // (it attempts to decrypt every string value), so profiling can still
+    // proceed, but a malformed `config_schema` (DB drift / SDK skew / manual
+    // ops edit) is the kind of silent root cause that makes a profile-over-MCP
+    // outage undiagnosable. Mirror the breadcrumb `loadProvisionConfigFields`
+    // emits on the write path. No credential material is logged.
+    log.error(
+      { orgId, installId, catalogSlug: row.catalog_slug, reason: schema.reason },
+      "resolveLiveConnection: catalog config_schema is corrupt — credential field mapping is degraded",
+    );
+  }
   const decrypted = decryptSecretFields(row.config ?? {}, schema);
   const connectionGroupId = row.group_id && row.group_id.length > 0 ? row.group_id : null;
   const poolConfig = resolveDatasourcePoolConfig(

@@ -495,6 +495,7 @@ export async function profilePostgres({
         let null_count: number | null = null;
         let sample_values: string[] = [];
         let isEnumLike = false;
+        const colNotes: string[] = [];
 
         const isPK = primaryKeyColumns.includes(col.column_name);
         const fkInfo = fkLookup.get(col.column_name);
@@ -532,6 +533,10 @@ export async function profilePostgres({
           } catch (colErr) {
             if (isFatalConnectionError(colErr)) throw colErr;
             log.warn({ err: colErr instanceof Error ? colErr.message : String(colErr), table: table_name, column: col.column_name }, "Could not profile column");
+            // Mark the degraded column so a missing stats/samples set reads as
+            // "introspection failed" rather than a genuinely empty column —
+            // matches the plugin-profiler discipline restored in #3676.
+            colNotes.push("Column statistics unavailable (introspection query failed).");
           }
         }
 
@@ -547,7 +552,7 @@ export async function profilePostgres({
           fk_target_table: fkInfo?.to_table ?? null,
           fk_target_column: fkInfo?.to_column ?? null,
           is_enum_like: isEnumLike,
-          profiler_notes: [],
+          profiler_notes: colNotes,
         });
       }
 
@@ -781,6 +786,7 @@ export async function profileMySQL({
           let null_count: number | null = null;
           let sample_values: string[] = [];
           let isEnumLike = false;
+          const colNotes: string[] = [];
 
           const isPK = primaryKeyColumns.includes(col.COLUMN_NAME);
           const fkInfo = fkLookup.get(col.COLUMN_NAME);
@@ -822,6 +828,10 @@ export async function profileMySQL({
           } catch (colErr) {
             if (isFatalConnectionError(colErr)) throw colErr;
             log.warn({ err: colErr instanceof Error ? colErr.message : String(colErr), table: table_name, column: col.COLUMN_NAME }, "Could not profile column");
+            // Mark the degraded column so a missing stats/samples set reads as
+            // "introspection failed" rather than a genuinely empty column —
+            // matches the plugin-profiler discipline restored in #3676.
+            colNotes.push("Column statistics unavailable (introspection query failed).");
           }
 
           columns.push({
@@ -836,7 +846,7 @@ export async function profileMySQL({
             fk_target_table: fkInfo?.to_table ?? null,
             fk_target_column: fkInfo?.to_column ?? null,
             is_enum_like: isEnumLike,
-            profiler_notes: [],
+            profiler_notes: colNotes,
           });
         }
 

@@ -859,8 +859,10 @@ onboarding.openapi(
 
       // Skip re-registration if the in-memory pool already has this id —
       // concurrent onboarders would otherwise needlessly drain and recreate
-      // the pool. The DB-level race (different URLs racing to commit) is
-      // resolved by ON CONFLICT DO NOTHING above.
+      // the pool. The DB-level race (two onboarders racing to commit) is
+      // resolved by the `(workspace_id, catalog_id, install_id)` unique index
+      // backing the `ON CONFLICT DO UPDATE` above — last write wins on the same
+      // demo config, so no duplicate rows result.
       try {
         if (!connections.has(id)) {
           connections.register(id, { url, description: `${demoLabel} — demo ${dbType} datasource` });

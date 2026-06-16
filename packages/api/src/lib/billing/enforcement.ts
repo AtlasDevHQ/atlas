@@ -212,6 +212,11 @@ export async function checkPlanLimits(
   // entitlements even with its own keys configured — resubscribing is the
   // only way back in.
   if (tier === "locked") {
+    // Defense-in-depth breadcrumb: every current caller logs the block at the
+    // seam, but logging the decision here too means a future caller can't
+    // accidentally make a billing-block invisible (parity with the token
+    // hard-limit log in evaluateUsage).
+    log.warn({ orgId, tier, reason: "subscription_required" }, "Plan enforcement blocked request — workspace locked (subscription ended)");
     return {
       allowed: false,
       errorCode: "subscription_required",
@@ -230,6 +235,7 @@ export async function checkPlanLimits(
   if (tier === "trial") {
     const trialExpired = isTrialExpired(workspace);
     if (trialExpired) {
+      log.warn({ orgId, tier, reason: "trial_expired" }, "Plan enforcement blocked request — trial expired");
       return {
         allowed: false,
         errorCode: "trial_expired",

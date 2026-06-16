@@ -43,6 +43,7 @@ import { checkWorkspaceStatus } from "@atlas/api/lib/workspace";
 import { checkAbuseStatus } from "@atlas/api/lib/security/abuse";
 import { checkPlanLimits, type PlanLimitWarning } from "./enforcement";
 import { createLogger } from "@atlas/api/lib/logger";
+import { withSpan } from "@atlas/api/lib/tracing";
 
 const log = createLogger("billing:agent-gate");
 
@@ -105,6 +106,23 @@ export class BillingBlockedError extends Error {
  * optional plan-limit warning (80–109% band) passed through.
  */
 export async function checkAgentBillingGate(
+  orgId: string | undefined,
+): Promise<AgentBillingGateResult> {
+  // Span the composed enforcement seam so its three DB-touching checks are
+  // attributable on the hot path (a slow checkWorkspaceStatus / checkPlanLimits
+  // lookup was previously invisible in traces). Zero overhead when OTel is off.
+  return withSpan(
+    "billing.agent_gate",
+    { "atlas.org_id": orgId ?? "none" },
+    () => runAgentBillingGate(orgId),
+    (result) => ({
+      "atlas.billing.allowed": result.allowed,
+      ...(result.allowed ? {} : { "atlas.billing.error_code": result.errorCode }),
+    }),
+  );
+}
+
+async function runAgentBillingGate(
   orgId: string | undefined,
 ): Promise<AgentBillingGateResult> {
   // 1. Workspace status — suspended / deleted / lookup failure.

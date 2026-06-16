@@ -71,5 +71,5 @@ These five questions — drawn from the [NovaMart demo dataset](/getting-started
 </Cards>
 
 <Callout type="info" title="Generating the YAML">
-  Run `bun run atlas -- init` against any PostgreSQL or MySQL database to auto-generate entity files, glossary, metrics, and catalog from the schema. The profiler picks up types, samples real values, infers joins from foreign keys, and flags data-quality issues. See the [CLI reference](/reference/cli#init) for all flags.
+  Run `bun run atlas -- init` against any datasource Atlas can connect to — PostgreSQL and MySQL natively, plus plugin-managed types like BigQuery, Snowflake, ClickHouse, DuckDB, Elasticsearch/OpenSearch, and Salesforce — to auto-generate entity files, glossary, metrics, and catalog from the schema. The profiler picks up types, samples real values, infers joins from foreign keys, and flags data-quality issues. See the [CLI reference](/reference/cli#init) for all flags.
 </Callout>

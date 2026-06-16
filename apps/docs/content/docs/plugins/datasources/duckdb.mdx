@@ -66,6 +66,15 @@ duckdb:///absolute/path.duckdb
 - Supports window functions, CTEs, and lateral joins
 - In-process engine -- no connection pooling needed
 
+## Profiling & semantic layer
+
+DuckDB profiles into a semantic layer (entities, metrics, glossary) the same way Postgres and MySQL do. Since v0.0.16 profiling rides connection resolution — if Atlas can connect to the datasource, it can profile it — and DuckDB uses the shared plugin profiler contract (`listObjects` / `profile`). DuckDB is a self-hosted datasource (not SaaS-eligible), so profiling runs locally:
+
+- **CLI** — `bun run atlas -- init` (and `diff`) against a DuckDB file, or load flat files directly with `--csv <files>` / `--parquet <files>` (no DB server needed; requires `@duckdb/node-api`).
+- **In-product wizard / MCP** — on a self-hosted deployment, the same connection can be profiled from the install wizard or the `profile_datasource` MCP tool.
+
+See the [semantic layer wizard](/guides/semantic-layer-wizard) for the full flow.
+
 ## Validation
 
 The plugin blocks DuckDB-specific statements beyond the standard SQL pipeline: `PRAGMA`, `ATTACH`, `DETACH`, `INSTALL`, `EXPORT`, `IMPORT`, `CHECKPOINT`, `SET`, `DESCRIBE`, `EXPLAIN`, and `SHOW`. File-reading table functions (`read_csv_auto`, `read_csv`, `read_parquet`, `read_json`, `read_json_auto`, `read_text`, `parquet_scan`, `csv_scan`, `json_scan`) are blocked to prevent host filesystem access. The AST parser uses PostgreSQL mode.

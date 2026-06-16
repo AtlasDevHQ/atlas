@@ -128,6 +128,16 @@ When a query proceeds (in `"auto"` mode or under threshold in `"threshold"` mode
 
 The agent uses this metadata to inform the user about query costs.
 
+## Profiling & semantic layer
+
+BigQuery profiles into a semantic layer (entities, metrics, glossary) the same way Postgres and MySQL do. Since v0.0.16 profiling rides connection resolution — if Atlas can connect to the datasource, it can profile it — and BigQuery uses the shared plugin profiler contract (`listObjects` / `profile`), including over MCP. Three entry points share one profiler:
+
+- **In-product wizard** — add and profile the connection from **Admin → Connections** (no terminal needed).
+- **CLI** — `bun run atlas -- init` (and `diff`) against a named BigQuery datasource from `atlas.config.ts` (`--connection <name>`).
+- **MCP** — the `profile_datasource` tool, to profile directly from an MCP client.
+
+See the [semantic layer wizard](/guides/semantic-layer-wizard) for the full flow.
+
 ## Validation
 
 In addition to the standard SQL validation pipeline (regex guard + AST parse + table whitelist), the plugin blocks BigQuery-specific statements: `MERGE`, `EXPORT DATA`, `DECLARE`, `SET`, `BEGIN`, `ASSERT`, and `RAISE`. The AST parser uses BigQuery mode natively (supported by `node-sql-parser`).

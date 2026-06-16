@@ -68,6 +68,16 @@ snowflake://user:password@account/database/schema?warehouse=WAREHOUSE&role=ROLE
 - Identifiers are case-insensitive and stored uppercase by default
 - `VARIANT` type supports semi-structured data -- use `:key` or `['key']` notation to access fields
 
+## Profiling & semantic layer
+
+Snowflake profiles into a semantic layer (entities, metrics, glossary) the same way Postgres and MySQL do. Since v0.0.16 profiling rides connection resolution — if Atlas can connect to the datasource, it can profile it — and Snowflake uses the shared plugin profiler contract (`listObjects` / `profile`). Three entry points share one profiler:
+
+- **In-product wizard** — add and profile the connection from **Admin → Connections** (no terminal needed).
+- **CLI** — `bun run atlas -- init` (and `diff`) against a named Snowflake datasource from `atlas.config.ts` (`--connection <name>`) or a `snowflake://` `ATLAS_DATASOURCE_URL`.
+- **MCP** — the `profile_datasource` tool, to profile directly from an MCP client.
+
+See the [semantic layer wizard](/guides/semantic-layer-wizard) for the full flow.
+
 ## Validation
 
 The plugin blocks Snowflake-specific statements beyond the standard SQL pipeline: `PUT`, `GET`, `LIST`, `REMOVE`, `RM`, `MERGE`, `SHOW`, `DESCRIBE`, `DESC`, `EXPLAIN`, and `USE`. The AST parser uses `Snowflake` mode (native support in `node-sql-parser`).

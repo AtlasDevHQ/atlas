@@ -105,6 +105,16 @@ SOQL is not SQL. The agent receives these hints to write valid SOQL:
 - Date literals: `YESTERDAY`, `TODAY`, `LAST_WEEK`, `THIS_MONTH`, `LAST_N_DAYS:n`, etc.
 - No wildcards in field lists -- always list specific fields (no `SELECT *`)
 
+## Profiling & semantic layer
+
+Salesforce profiles into a semantic layer (entities mapped to SObjects, plus metrics and glossary) the same way SQL datasources do. Since v0.0.16 profiling rides connection resolution — if Atlas can connect to the datasource, it can profile it — and Salesforce uses the shared plugin profiler contract (`listObjects` / `profile`), including over MCP. Entry points:
+
+- **In-product wizard** — connect via OAuth and profile from **Admin → Connections**. Because Salesforce is OAuth-managed, it is created through its OAuth install flow (not the MCP `create_datasource` tool).
+- **CLI** — `bun run atlas -- init` (and `diff`) against a configured Salesforce datasource.
+- **MCP** — the `profile_datasource` tool, to profile directly from an MCP client.
+
+See the [semantic layer wizard](/guides/semantic-layer-wizard) for the full flow.
+
 ## Validation
 
 Salesforce uses a custom SOQL validation pipeline instead of the standard `node-sql-parser`-based SQL validation:

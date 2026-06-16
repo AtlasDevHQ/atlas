@@ -60,6 +60,16 @@ The following hints are injected into the agent's system prompt so it writes val
 - Do not add `FORMAT` clauses -- the adapter handles output format automatically
 - ClickHouse is column-oriented -- avoid `SELECT *` on wide tables
 
+## Profiling & semantic layer
+
+ClickHouse profiles into a semantic layer (entities, metrics, glossary) the same way Postgres and MySQL do. Since v0.0.16 profiling rides connection resolution — if Atlas can connect to the datasource, it can profile it — and ClickHouse uses the shared plugin profiler contract (`listObjects` / `profile`). Three entry points share one profiler:
+
+- **In-product wizard** — add and profile the connection from **Admin → Connections** (no terminal needed).
+- **CLI** — `bun run atlas -- init` (and `diff`) against a named ClickHouse datasource from `atlas.config.ts` (`--connection <name>`) or a `clickhouse://` `ATLAS_DATASOURCE_URL`.
+- **MCP** — the `profile_datasource` tool, to profile directly from an MCP client.
+
+See the [semantic layer wizard](/guides/semantic-layer-wizard) for the full flow.
+
 ## Validation
 
 In addition to the standard SQL validation pipeline (regex guard + AST parse + table whitelist), the plugin blocks ClickHouse-specific admin commands: `SYSTEM`, `KILL`, `ATTACH`, `DETACH`, `RENAME`, `EXCHANGE`, `SHOW`, `DESCRIBE`, `EXPLAIN`, and `USE`. The AST parser uses PostgreSQL mode (the closest available match in `node-sql-parser`).

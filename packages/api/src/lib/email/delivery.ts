@@ -541,12 +541,17 @@ export function computeExpiresAt(ttlMs: number | undefined): Date | null {
  * unchanged (no cycle with email-outbox, which the flusher's dispatcher
  * wires back to `sendEmail`).
  *
+ * @returns `true` only when a row was actually committed to `email_outbox`;
+ *   `false` when the send was lost (no internal DB, or the enqueue itself
+ *   threw). Callers that gate once-per-X bookkeeping on durability MUST key
+ *   off this outcome, not off {@link shouldEnqueueFailedSend} (which is an
+ *   *intent* predicate that says nothing about whether the row landed).
  * @internal — exported for testing.
  */
 export async function enqueueFailedTransactionalEmail(
   message: EmailMessage,
   opts: TransactionalEmailOptions,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const { hasInternalDB, internalQuery } = await import("@atlas/api/lib/db/internal");
     if (!hasInternalDB()) {
@@ -554,7 +559,7 @@ export async function enqueueFailedTransactionalEmail(
         { to: message.to, emailType: opts.emailType },
         "Failed transactional email NOT enqueued — no internal DB configured for the durable outbox; send is lost",
       );
-      return;
+      return false;
     }
     const { enqueue } = await import("@atlas/api/lib/email-outbox");
     const expiresAt = computeExpiresAt(opts.ttlMs);
@@ -566,6 +571,7 @@ export async function enqueueFailedTransactionalEmail(
       { to: message.to, emailType: opts.emailType, outboxId },
       "Transactional email send failed — enqueued to email_outbox for durable retry",
     );
+    return true;
   } catch (err) {
     // Never rethrow — a failure to even queue the row must not break the
     // enumeration-safe 200. Loud error so the lost send is observable.
@@ -577,13 +583,27 @@ export async function enqueueFailedTransactionalEmail(
       },
       "Failed to enqueue transactional email to the outbox — send is lost",
     );
+    return false;
   }
 }
 
 /** Injection seam for {@link sendTransactionalEmail} — test-only. */
 export interface TransactionalEmailDeps {
   send?: (message: EmailMessage, orgId?: string) => Promise<DeliveryResult>;
-  enqueueFailed?: (message: EmailMessage, opts: TransactionalEmailOptions) => Promise<void>;
+  /** Returns whether a row was actually committed to the outbox (see {@link enqueueFailedTransactionalEmail}). */
+  enqueueFailed?: (message: EmailMessage, opts: TransactionalEmailOptions) => Promise<boolean>;
+}
+
+/**
+ * {@link sendTransactionalEmail}'s result, widened with a `durable` outcome:
+ * was this send safely persisted (delivered now, OR committed to `email_outbox`
+ * for retry), or was it lost (no transport, or the outbox enqueue itself
+ * failed)? Auth callers (enumeration-safe, fire-and-forget) can ignore it; a
+ * caller that suppresses future retries on a successful dispatch (e.g. dunning's
+ * once-per-customer dedup record) MUST gate that bookkeeping on `durable`.
+ */
+export interface TransactionalEmailResult extends DeliveryResult {
+  durable: boolean;
 }
 
 /**
@@ -602,15 +622,16 @@ export interface TransactionalEmailDeps {
  * dispatcher also re-sends via raw `sendEmail`, so a re-send failure
  * does NOT re-enqueue (no duplication loop).
  *
- * Enumeration safety (F-09): never throws and always returns the
- * original `DeliveryResult`. The caller's response stays 200 whether the
- * send succeeded, failed-then-queued, or failed-then-couldn't-queue.
+ * Enumeration safety (F-09): never throws and always returns the original
+ * {@link DeliveryResult}, widened with a `durable` flag. The caller's response
+ * stays 200 whether the send succeeded, failed-then-queued, or
+ * failed-then-couldn't-queue.
  */
 export async function sendTransactionalEmail(
   message: EmailMessage,
   opts: TransactionalEmailOptions,
   deps: TransactionalEmailDeps = {},
-): Promise<DeliveryResult> {
+): Promise<TransactionalEmailResult> {
   const send = deps.send ?? sendEmail;
   const enqueueFailed = deps.enqueueFailed ?? enqueueFailedTransactionalEmail;
   // Enforce the F-09 never-throw contract LOCALLY rather than depending on
@@ -628,12 +649,18 @@ export async function sendTransactionalEmail(
     );
     result = { success: false, provider: "log", error };
   }
+  // Track whether the failed send was ACTUALLY persisted to the outbox — not
+  // merely that it *should* have been (`shouldEnqueueFailedSend` is an intent
+  // predicate). A caller gating retry-suppression on dispatch (dunning's dedup
+  // record) needs the real outcome, or it would suppress a lost send.
+  let enqueued = false;
   if (shouldEnqueueFailedSend(result)) {
     try {
-      await enqueueFailed(message, opts);
+      enqueued = await enqueueFailed(message, opts);
     } catch (err) {
       // `enqueueFailed` already swallows; this is defense-in-depth so a
       // future refactor that drops its try/catch can't break the 200.
+      // `enqueued` stays false — a throw means the row did NOT land.
       log.error(
         {
           to: message.to,
@@ -644,7 +671,7 @@ export async function sendTransactionalEmail(
       );
     }
   }
-  return result;
+  return { ...result, durable: result.success || enqueued };
 }
 
 /**

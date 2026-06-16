@@ -63,30 +63,39 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 //
 // Dunning routes through the DURABLE wrapper `sendTransactionalEmail` (#3680),
 // which on a REAL transport failure enqueues the notice to `email_outbox` for
-// retry. This faithful stand-in mirrors that contract: it returns the
-// configured `DeliveryResult` and, when `shouldEnqueueFailedSend` is true,
-// records an outbox enqueue — so the dunning durability + dedup behaviour is
-// exercised without reaching the real outbox machinery (its own enqueue is
-// covered by delivery.test.ts).
+// retry and reports the actual outcome via `result.durable` (delivered now OR
+// row committed). This faithful stand-in mirrors that contract — including the
+// failure mode the dunning dedup hinges on: a real-transport failure whose
+// outbox enqueue ITSELF fails (`mockEnqueueSucceeds = false`) is NOT durable,
+// so dunning must leave it unrecorded and retryable. Exercises the dunning
+// durability + dedup behaviour without reaching the real outbox machinery (its
+// own enqueue is covered by delivery.test.ts).
 
 type Result = { success: boolean; provider: string; error?: string };
+type TxResult = Result & { durable: boolean };
 type Msg = { to: string; subject: string; html: string };
 type Opts = { emailType: string; orgId?: string };
 
 let mockDeliveryResult: Result = { success: true, provider: "log" };
+// Whether a REAL transport failure's outbox enqueue lands (the real wrapper's
+// enqueue can no-op on a missing DB or throw). Default true = enqueue succeeds.
+let mockEnqueueSucceeds = true;
 const enqueuedOutbox: Array<{ to: string; emailType: string }> = [];
 
 // Mirror of delivery.ts: only a REAL transport (provider !== "log") failure is
-// durably enqueued; a log-provider failure has nowhere to deliver.
+// eligible for a durable enqueue; a log-provider failure has nowhere to deliver.
 const realShouldEnqueue = (r: Result): boolean => !r.success && r.provider !== "log";
 
-const mockSendTransactional: Mock<(msg: Msg, opts: Opts) => Promise<Result>> = mock(
+const mockSendTransactional: Mock<(msg: Msg, opts: Opts) => Promise<TxResult>> = mock(
   (msg: Msg, opts: Opts) => {
     const result = mockDeliveryResult;
-    if (realShouldEnqueue(result)) {
+    let enqueued = false;
+    if (realShouldEnqueue(result) && mockEnqueueSucceeds) {
       enqueuedOutbox.push({ to: msg.to, emailType: opts.emailType });
+      enqueued = true;
     }
-    return Promise.resolve(result);
+    // `durable` mirrors the real wrapper: delivered now OR row actually committed.
+    return Promise.resolve({ ...result, durable: result.success || enqueued });
   },
 );
 
@@ -100,7 +109,6 @@ const mockSendEmail: Mock<(msg: Msg, orgId?: string) => Promise<Result>> = mock(
 mock.module("../delivery", () => ({
   sendEmail: mockSendEmail,
   sendTransactionalEmail: mockSendTransactional,
-  shouldEnqueueFailedSend: realShouldEnqueue,
 }));
 
 // --- Mock logger ---
@@ -141,6 +149,7 @@ beforeEach(() => {
   recordedDeletes.length = 0;
   sentSteps.clear();
   enqueuedOutbox.length = 0;
+  mockEnqueueSucceeds = true;
   mockDeliveryResult = { success: true, provider: "log" };
   mockInternalQuery.mockClear();
   mockSendTransactional.mockClear();
@@ -256,6 +265,52 @@ describe("dispatchDunningEmail", () => {
       expect(mockSendTransactional).toHaveBeenCalledTimes(1);
       expect(enqueuedOutbox).toHaveLength(1);
       expect(recordedInserts).toHaveLength(1);
+    }));
+
+  it("does NOT record a lost send when the outbox enqueue itself fails — stays retryable (#3680)", () =>
+    withProdEmailEnv(async () => {
+      mockRecipients = [{ user_id: "u1", email: "owner@example.com" }];
+      // A REAL transport failed AND the outbox enqueue could not persist the
+      // row (DB blip / pool exhaustion / schema drift). The send is genuinely
+      // lost — `result.durable` is false — so recording the dedup step here
+      // would permanently suppress the customer's payment-failure notice.
+      mockDeliveryResult = { success: false, provider: "resend", error: "Resend 503" };
+      mockEnqueueSucceeds = false;
+
+      const sent = await dispatchDunningEmail("org-1", "dunning_past_due");
+
+      expect(sent).toBe(0);
+      expect(enqueuedOutbox).toHaveLength(0);
+      // Not recorded — the (user_id, step) guard stays open for redelivery.
+      expect(recordedInserts).toHaveLength(0);
+
+      // Stripe redelivers the same event: because nothing was recorded, the
+      // dispatcher retries the send rather than silently dropping it forever.
+      const retry = await dispatchDunningEmail("org-1", "dunning_past_due");
+      expect(mockSendTransactional).toHaveBeenCalledTimes(2);
+      expect(retry).toBe(0);
+    }));
+
+  it("isolates a per-recipient failure — a lost send for one owner does not drop the rest (#3680)", () =>
+    withProdEmailEnv(async () => {
+      mockRecipients = [
+        { user_id: "u1", email: "owner@example.com" },
+        { user_id: "u2", email: "admin@example.com" },
+      ];
+      // First recipient's send throws mid-loop; the second must still go out.
+      mockSendTransactional.mockImplementationOnce(() =>
+        Promise.reject(new Error("transport blew up")),
+      );
+
+      const sent = await dispatchDunningEmail("org-1", "dunning_past_due");
+
+      // Loop continued: the second recipient was attempted and delivered.
+      expect(mockSendTransactional).toHaveBeenCalledTimes(2);
+      // Only the durable (delivered) recipient is counted and recorded; the
+      // thrown one is neither counted nor recorded (retryable on redelivery).
+      expect(sent).toBe(1);
+      expect(recordedInserts).toHaveLength(1);
+      expect(recordedInserts[0]?.[0]).toBe("u2");
     }));
 
   it("never throws — a DB failure is swallowed and logged", () =>

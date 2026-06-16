@@ -23,7 +23,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { isOnboardingEmailEnabled, getBrandingForOrg, getBaseUrl } from "./engine";
 import { renderDunningEmail } from "./templates";
-import { sendTransactionalEmail, shouldEnqueueFailedSend } from "./delivery";
+import { sendTransactionalEmail } from "./delivery";
 import {
   DUNNING_DELINQUENCY_STEPS,
   type DunningEmailStep,
@@ -77,9 +77,10 @@ async function alreadySent(userId: string, step: DunningEmailStep): Promise<bool
  *
  * @param orgId - The Atlas organization the delinquent subscription belongs to.
  * @param step  - Which dunning rung to send.
- * @returns the number of emails durably dispatched — delivered now OR enqueued
- *   to `email_outbox` for retry (0 when disabled, no recipients, already sent,
- *   or a no-transport failure that couldn't be queued). Never throws.
+ * @returns the number of emails durably dispatched — delivered now OR confirmed
+ *   committed to `email_outbox` for retry (0 when disabled, no recipients,
+ *   already sent, or a lost send: no transport configured, or the outbox
+ *   enqueue itself failed). Never throws.
  */
 export async function dispatchDunningEmail(
   orgId: string,
@@ -116,13 +117,17 @@ export async function dispatchDunningEmail(
           { emailType: step, orgId },
         );
 
-        // Record the dedup step at DISPATCH time — as soon as the send was
-        // delivered OR durably enqueued — so the (user_id, step) guard fires on
-        // Stripe's redelivery and a deferred send is recorded exactly once (no
-        // double-send, no missed record). A log-provider failure (no transport
-        // configured) is neither delivered nor queued, so we intentionally do
-        // NOT record it; a later attempt can still retry.
-        if (result.success || shouldEnqueueFailedSend(result)) {
+        // Record the dedup step at DISPATCH time — but ONLY when the send was
+        // actually durable: delivered now, OR confirmed committed to
+        // email_outbox (`result.durable`, the real enqueue outcome — NOT the
+        // `shouldEnqueueFailedSend` intent predicate). Recording on durability
+        // makes the (user_id, step) guard fire on Stripe's redelivery and a
+        // deferred send recorded exactly once (no double-send, no missed
+        // record). A send that was lost — no transport configured, or the
+        // outbox enqueue itself failed — is intentionally NOT recorded, so the
+        // next redelivery still retries it rather than the customer silently
+        // never learning their card failed.
+        if (result.durable) {
           await recordDunningEmail(recipient.user_id, orgId, step);
           sent++;
           log.info(
@@ -140,7 +145,7 @@ export async function dispatchDunningEmail(
         } else {
           log.error(
             { orgId, userId: recipient.user_id, step, error: result.error },
-            "Dunning email delivery failed and could not be enqueued (no transport) — not recorded",
+            "Dunning email not durably dispatched (no transport, or outbox enqueue failed) — not recorded; will retry on Stripe redelivery",
           );
         }
       } catch (err) {

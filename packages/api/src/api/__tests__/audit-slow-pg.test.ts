@@ -158,6 +158,10 @@ describeIfPg("/analytics/frequent + /users avg duration filter (real Postgres, #
     });
     await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
     await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+    // buildUserStatsQuerySql LEFT JOINs "user" (email lookup). That table is
+    // created by a Better-Auth-managed migration, which the skip-list above
+    // excludes — so stub a minimal one for the JOIN to resolve.
+    await pool.query(`CREATE TABLE IF NOT EXISTS "user" (id text PRIMARY KEY, email text)`);
   }, PG_TIMEOUT_MS);
 
   afterAll(async () => {

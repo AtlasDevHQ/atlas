@@ -43,8 +43,14 @@ interface StatusRow {
 describeIfPg("promote/decay DB helpers (real Postgres, #3636)", () => {
   let pool: Pool;
   const schemaName = `promote_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  // promoteLearnedPatterns / demoteLearnedPatterns / getPromoteDecayCandidates
+  // gate on hasInternalDB() === !!process.env.DATABASE_URL (unlike the latency
+  // helpers, which don't), so point DATABASE_URL at the test DB for the run.
+  let origDbUrl: string | undefined;
 
   beforeAll(async () => {
+    origDbUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = TEST_DB_URL;
     pool = new Pool({ connectionString: TEST_DB_URL });
     pool.on("connect", (client) => {
       void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
@@ -58,6 +64,8 @@ describeIfPg("promote/decay DB helpers (real Postgres, #3636)", () => {
   }, PG_TIMEOUT_MS);
 
   afterAll(async () => {
+    if (origDbUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = origDbUrl;
     if (!pool) return;
     _resetPool(null);
     await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);

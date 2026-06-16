@@ -83,6 +83,8 @@ mock.module("@atlas/api/lib/semantic", () => ({
 // Learned-patterns loader — also toggleable so the per-branch tests
 // can pin "patterns fails alone" and "whitelist fails alone" cases.
 mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
+  buildRetrievalQuery: () => "revenue by region",
+  getRetrievalTurns: () => 3,
   buildLearnedPatternsSection: async () => {
     if (semanticState.patternsThrows) {
       throw new Error("simulated pool exhaustion (learned patterns)");

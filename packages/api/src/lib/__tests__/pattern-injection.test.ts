@@ -11,7 +11,7 @@ let mockApprovedPatterns: Array<{
   confidence: number;
 }> = [];
 
-let mockConfigLearn: { confidenceThreshold: number } | undefined = {
+let mockConfigLearn: { confidenceThreshold: number; retrievalTurns?: number } | undefined = {
   confidenceThreshold: 0.7,
 };
 
@@ -90,10 +90,18 @@ mock.module("@atlas/api/lib/logger", () => ({
 const {
   getRelevantPatterns,
   buildLearnedPatternsSection,
+  buildRetrievalQuery,
+  getRetrievalTurns,
   extractKeywords,
   invalidatePatternCache,
   _resetPatternCache,
+  DEFAULT_RETRIEVAL_TURNS,
 } = await import("@atlas/api/lib/learn/pattern-cache");
+
+/** Build a minimal user/assistant UI message for retrieval-query tests. */
+function msg(role: "user" | "assistant", text: string) {
+  return { id: `${role}-${text.slice(0, 8)}`, role, parts: [{ type: "text" as const, text }] };
+}
 
 describe("extractKeywords", () => {
   test("extracts meaningful words, excludes stop words", () => {
@@ -126,6 +134,154 @@ describe("extractKeywords", () => {
     const kw = extractKeywords("total_revenue company_name");
     expect(kw.has("total_revenue")).toBe(true);
     expect(kw.has("company_name")).toBe(true);
+  });
+});
+
+describe("buildRetrievalQuery", () => {
+  test("uses the last user message when it carries keywords", () => {
+    const query = buildRetrievalQuery([
+      msg("user", "What is total revenue by company?"),
+    ]);
+    expect(query).toBe("What is total revenue by company?");
+  });
+
+  test("merges the last N user turns, skipping assistant turns", () => {
+    const query = buildRetrievalQuery(
+      [
+        msg("user", "Show revenue by company"),
+        msg("assistant", "Here is the revenue breakdown"),
+        msg("user", "now break that down by region"),
+      ],
+      3,
+    );
+    expect(query).toBe("Show revenue by company now break that down by region");
+  });
+
+  test("a keyword-less follow-up still surfaces prior-turn keywords", () => {
+    // "now break that down by region" alone yields no keywords after
+    // stop-word filtering — the earlier turn's keywords must carry through.
+    const followUpOnly = extractKeywords("now break that down by region");
+    expect(followUpOnly.has("revenue")).toBe(false);
+    expect(followUpOnly.has("company")).toBe(false);
+
+    const query = buildRetrievalQuery([
+      msg("user", "What is total revenue by company?"),
+      msg("assistant", "$1.2M across 40 companies"),
+      msg("user", "now break that down by region"),
+    ]);
+    const keywords = extractKeywords(query);
+    expect(keywords.has("revenue")).toBe(true);
+    expect(keywords.has("company")).toBe(true);
+    expect(keywords.has("region")).toBe(true);
+  });
+
+  test("respects the N bound — only the last N user turns are included", () => {
+    const query = buildRetrievalQuery(
+      [
+        msg("user", "alpha keyword"),
+        msg("user", "bravo keyword"),
+        msg("user", "charlie keyword"),
+      ],
+      2,
+    );
+    expect(query).toBe("bravo keyword charlie keyword");
+    expect(query).not.toContain("alpha");
+  });
+
+  test("empty user turns do not consume the turn budget", () => {
+    const query = buildRetrievalQuery(
+      [
+        msg("user", "revenue by company"),
+        { role: "user", parts: [] },
+        msg("user", "by region"),
+      ],
+      2,
+    );
+    expect(query).toBe("revenue by company by region");
+  });
+
+  test("clamps non-positive and non-finite N to 1", () => {
+    const messages = [msg("user", "first turn"), msg("user", "second turn")];
+    expect(buildRetrievalQuery(messages, 0)).toBe("second turn");
+    expect(buildRetrievalQuery(messages, -5)).toBe("second turn");
+    expect(buildRetrievalQuery(messages, Number.NaN)).toBe("second turn");
+  });
+
+  test("returns empty string when there is no user text", () => {
+    expect(buildRetrievalQuery([])).toBe("");
+    expect(buildRetrievalQuery([msg("assistant", "hello there")])).toBe("");
+  });
+
+  test("default N is the documented constant and surfaces multi-turn context", () => {
+    expect(DEFAULT_RETRIEVAL_TURNS).toBe(3);
+    const query = buildRetrievalQuery([
+      msg("user", "revenue by company"),
+      msg("user", "filter to 2025"),
+      msg("user", "now by region"),
+    ]);
+    expect(query).toBe("revenue by company filter to 2025 now by region");
+  });
+});
+
+describe("getRetrievalTurns", () => {
+  beforeEach(() => {
+    mockConfigLearn = { confidenceThreshold: 0.7 };
+  });
+
+  test("falls back to the default when config omits retrievalTurns", () => {
+    expect(getRetrievalTurns()).toBe(DEFAULT_RETRIEVAL_TURNS);
+  });
+
+  test("uses a configured retrievalTurns value", () => {
+    mockConfigLearn = { confidenceThreshold: 0.7, retrievalTurns: 5 };
+    expect(getRetrievalTurns()).toBe(5);
+  });
+
+  test("ignores an invalid retrievalTurns value", () => {
+    mockConfigLearn = { confidenceThreshold: 0.7, retrievalTurns: 0 };
+    expect(getRetrievalTurns()).toBe(DEFAULT_RETRIEVAL_TURNS);
+  });
+});
+
+describe("multi-turn retrieval surfaces patterns for keyword-less follow-ups", () => {
+  beforeEach(() => {
+    _resetPatternCache();
+    mockApprovedPatterns = [];
+    mockConfigLearn = { confidenceThreshold: 0.7 };
+    mockGetApprovedPatternsError = null;
+  });
+
+  test("query assembled from prior turns matches a pattern the follow-up alone would miss", async () => {
+    mockApprovedPatterns = [
+      {
+        id: "1",
+        org_id: null,
+        pattern_sql: "SELECT company, SUM(revenue) FROM companies GROUP BY company",
+        description: "Company revenue totals",
+        source_entity: "companies",
+        confidence: 0.9,
+      },
+    ];
+
+    const messages = [
+      msg("user", "What is total revenue by company?"),
+      msg("assistant", "$1.2M across 40 companies"),
+      msg("user", "now break that down by month"),
+    ];
+
+    // The follow-up on its own carries no keyword that overlaps the pattern
+    // ("month"/"break" miss the company-revenue pattern), so it surfaces
+    // nothing — this is the bug #3632 fixes.
+    const followUpResults = await getRelevantPatterns(null, "now break that down by month");
+    expect(followUpResults.length).toBe(0);
+
+    // Assembled across turns, the pattern is found.
+    const multiTurnResults = await getRelevantPatterns(
+      null,
+      buildRetrievalQuery(messages),
+    );
+    expect(multiTurnResults.length).toBe(1);
+    expect(multiTurnResults[0].sourceEntity).toBe("companies");
   });
 });
 

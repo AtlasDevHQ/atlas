@@ -23,7 +23,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { isOnboardingEmailEnabled, getBrandingForOrg, getBaseUrl } from "./engine";
 import { renderDunningEmail } from "./templates";
-import { sendEmail } from "./delivery";
+import { sendTransactionalEmail } from "./delivery";
 import {
   DUNNING_DELINQUENCY_STEPS,
   type DunningEmailStep,
@@ -77,8 +77,10 @@ async function alreadySent(userId: string, step: DunningEmailStep): Promise<bool
  *
  * @param orgId - The Atlas organization the delinquent subscription belongs to.
  * @param step  - Which dunning rung to send.
- * @returns the number of emails actually sent (0 when disabled, no recipients,
- *   or already sent). Never throws.
+ * @returns the number of emails durably dispatched — delivered now OR confirmed
+ *   committed to `email_outbox` for retry (0 when disabled, no recipients,
+ *   already sent, or a lost send: no transport configured, or the outbox
+ *   enqueue itself failed). Never throws.
  */
 export async function dispatchDunningEmail(
   orgId: string,
@@ -106,22 +108,44 @@ export async function dispatchDunningEmail(
       try {
         if (await alreadySent(recipient.user_id, step)) continue;
 
-        const result = await sendEmail(
+        // Durable send (#3680): sendTransactionalEmail enqueues the rendered
+        // notice to email_outbox when a REAL transport fails its in-process
+        // retries, so a transient provider outage no longer permanently drops
+        // the dunning email — the Scheduler-backed flusher re-sends it later.
+        const result = await sendTransactionalEmail(
           { to: recipient.email, subject: rendered.subject, html: rendered.html },
-          orgId,
+          { emailType: step, orgId },
         );
 
-        if (result.success) {
+        // Record the dedup step at DISPATCH time — but ONLY when the send was
+        // actually durable: delivered now, OR confirmed committed to
+        // email_outbox (`result.durable`, the real enqueue outcome — NOT the
+        // `shouldEnqueueFailedSend` intent predicate). Recording on durability
+        // makes the (user_id, step) guard fire on Stripe's redelivery and a
+        // deferred send recorded exactly once (no double-send, no missed
+        // record). A send that was lost — no transport configured, or the
+        // outbox enqueue itself failed — is intentionally NOT recorded, so the
+        // next redelivery still retries it rather than the customer silently
+        // never learning their card failed.
+        if (result.durable) {
           await recordDunningEmail(recipient.user_id, orgId, step);
           sent++;
           log.info(
-            { orgId, userId: recipient.user_id, step, provider: result.provider },
-            "Dunning email sent",
+            {
+              orgId,
+              userId: recipient.user_id,
+              step,
+              provider: result.provider,
+              deferred: !result.success,
+            },
+            result.success
+              ? "Dunning email sent"
+              : "Dunning email transport failed — enqueued to email_outbox for durable retry",
           );
         } else {
           log.error(
             { orgId, userId: recipient.user_id, step, error: result.error },
-            "Dunning email delivery failed",
+            "Dunning email not durably dispatched (no transport, or outbox enqueue failed) — not recorded; will retry on Stripe redelivery",
           );
         }
       } catch (err) {

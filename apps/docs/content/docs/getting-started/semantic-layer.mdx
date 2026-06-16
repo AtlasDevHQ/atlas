@@ -137,6 +137,8 @@ cross_source_joins:                   # Optional: joins to other datasources
 | `virtual` | boolean | No | Marks computed columns (not raw DB columns) |
 | `semantic_type` | string | No | Auto-detected pattern: `currency`, `percentage`, `email`, `url`, `phone`, `timestamp`. Guides measure inference and agent descriptions |
 | `sample_values` | array | No | Example values to guide the agent |
+| `unique_count` | integer | No | Auto-profiled distinct-value count (cardinality). Surfaced to the agent (`~N distinct`) so it can tell high-cardinality keys from low-cardinality enums when planning filters and `GROUP BY` |
+| `null_count` | integer | No | Auto-profiled count of NULLs in the column. Omitted entirely when zero, so its absence reads as "no nulls". Helps the agent decide when a `WHERE … IS NOT NULL` guard matters |
 | `indexed` | boolean | No | Auto-profiled: the column is backed by a database index. Surfaced to the agent so it prefers indexed columns for filters |
 | `index_type` | string | No | Auto-profiled access method of the column's index: `btree`, `gin`, `gist`, `brin`, `hash` |
 | `filter_hint` | string | No | Auto-profiled warning emitted when a column is indexed only as a *trailing* member of a composite B-tree — filtering on it alone is not sargable. Names the composite index and the leading column to constrain alongside it |

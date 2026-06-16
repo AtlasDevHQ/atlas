@@ -26,7 +26,7 @@ Kicked off 2026-06-16 from PRD [#3617](https://github.com/AtlasDevHQ/atlas/issue
 
 Shipped ahead of kickoff: A-0 sargability prompt + MySQL date-filter fix (#3629 → #3692), B-0 latency/staleness migration (#3631 → #3693), and the cross-tenant leak fixes #3610/#3611 (#3690) that unblock B-2.
 
-Slices (all shipped — milestone code-complete; anchor PRD [#3617](https://github.com/AtlasDevHQ/atlas/issues/3617) pending `/closeout`):
+Slices (all shipped — **closed out 2026-06-16**: GH milestone #67 + anchor PRD [#3617](https://github.com/AtlasDevHQ/atlas/issues/3617) closed, docs verified. Prod tag + changelog entry + History move pending `/release`):
 - [x] **A-1** — surface `unique_count`/`null_count` cardinality through the semantic index ([#3630](https://github.com/AtlasDevHQ/atlas/issues/3630) → [#3697](https://github.com/AtlasDevHQ/atlas/pull/3697))
 - [x] **A-2** — index harvest (PG + MySQL) → `IndexProfile` → YAML → composite-aware prompt hints ([#3634](https://github.com/AtlasDevHQ/atlas/issues/3634) → [#3716](https://github.com/AtlasDevHQ/atlas/pull/3716))
 - [x] **B-1** — thread `durationMs` into the proposer → rolling average in `incrementPatternCount` ([#3635](https://github.com/AtlasDevHQ/atlas/issues/3635) → [#3715](https://github.com/AtlasDevHQ/atlas/pull/3715))

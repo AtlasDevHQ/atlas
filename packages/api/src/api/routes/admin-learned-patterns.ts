@@ -81,6 +81,96 @@ function orgFilter(
 
 const VALID_STATUSES = new Set<string>(LEARNED_PATTERN_STATUSES);
 
+/**
+ * Apply a `semantic_amendment` learned-pattern row's YAML side-effect.
+ *
+ * Approving a `semantic_amendment` row must rewrite the entity YAML on disk and
+ * the entity row — the same path the dedicated review endpoint
+ * (`/admin/semantic/improve/amendments/:id/review`) runs. Both the single-PATCH
+ * and bulk-approve handlers call this BEFORE persisting `status='approved'`, so
+ * a failed apply never leaves an approved-but-unapplied row whose YAML stays
+ * stale until restart (#3613).
+ *
+ * The stored `amendment_payload` is the full envelope
+ * (`{ entityName, amendmentType, amendment, rationale, category, … }`); the YAML
+ * mutation consumes the inner `amendment` object, not the envelope — so the
+ * reconstructed {@link AnalysisResult} carries `payload.amendment`, never
+ * `payload` itself.
+ *
+ * @throws when the payload is missing/malformed or the YAML apply fails. An
+ *   `AmbiguousEntityError` (a name shared across Connection groups) propagates
+ *   so the route layer maps it to 409 with the conflicting groups.
+ */
+async function applyAmendmentRow(
+  row: Record<string, unknown>,
+  orgId: string | null,
+  requestId: string,
+): Promise<void> {
+  const rawPayload = row.amendment_payload;
+  let payload: Record<string, unknown> | null = null;
+  if (typeof rawPayload === "string") {
+    try {
+      const parsed: unknown = JSON.parse(rawPayload);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        payload = parsed as Record<string, unknown>;
+      }
+    } catch (err) {
+      throw new Error(
+        `Corrupt amendment_payload JSON for semantic amendment ${String(row.id)}: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
+  } else if (rawPayload && typeof rawPayload === "object" && !Array.isArray(rawPayload)) {
+    payload = rawPayload as Record<string, unknown>;
+  }
+
+  if (!payload) {
+    throw new Error(
+      `Semantic amendment ${String(row.id)} has no amendment_payload — cannot apply its YAML change.`,
+    );
+  }
+
+  const innerAmendment = payload.amendment;
+  if (!innerAmendment || typeof innerAmendment !== "object" || Array.isArray(innerAmendment)) {
+    throw new Error(
+      `Semantic amendment ${String(row.id)} payload is missing a valid \`amendment\` object — cannot apply its YAML change.`,
+    );
+  }
+
+  const { applyAmendmentToEntity } = await import("@atlas/api/lib/semantic/expert/apply");
+  const { ANALYSIS_CATEGORIES } = await import("@atlas/api/lib/semantic/expert/types");
+  const { AMENDMENT_TYPES } = await import("@useatlas/types");
+
+  const rawCategory = String(payload.category ?? "coverage_gaps");
+  const rawAmendmentType = String(payload.amendmentType ?? "update_description");
+
+  await applyAmendmentToEntity(
+    orgId,
+    {
+      entityName: String(row.source_entity),
+      // Recover the Connection group the amendment was analyzed against so the
+      // apply targets that group's row, not the default scope or a 409 (#3284).
+      // A NULL column means the default (flat) group — map it to the explicit
+      // `"default"` label so the lookup is scoped to NULL rather than running
+      // the unscoped ambiguity check.
+      group: (row.connection_group_id as string | null) ?? "default",
+      category: (ANALYSIS_CATEGORIES as readonly string[]).includes(rawCategory)
+        ? (rawCategory as (typeof ANALYSIS_CATEGORIES)[number])
+        : "coverage_gaps",
+      amendmentType: (AMENDMENT_TYPES as readonly string[]).includes(rawAmendmentType)
+        ? (rawAmendmentType as (typeof AMENDMENT_TYPES)[number])
+        : "update_description",
+      amendment: innerAmendment as Record<string, unknown>,
+      rationale: typeof payload.rationale === "string" ? payload.rationale : "",
+      confidence: 0,
+      impact: 0,
+      score: 0,
+      staleness: 0,
+    },
+    requestId,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
@@ -445,6 +535,7 @@ adminLearnedPatterns.openapi(getPatternRoute, async (c) => {
 
 adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
     const { orgId, user } = yield* AuthContext;
 
     const { id } = c.req.valid("param");
@@ -455,6 +546,17 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
     const org = orgFilter(orgId, checkParams, checkParams.length + 1);
     const existing = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams);
     if (existing.length === 0) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
+
+    // Approving a semantic_amendment must rewrite the entity YAML BEFORE the
+    // status flips to approved — apply first so a failed apply (incl. an
+    // AmbiguousEntityError → 409) aborts the request and never leaves an
+    // approved-but-unapplied row (#3613).
+    if (status === "approved" && existing[0].type === "semantic_amendment") {
+      yield* Effect.tryPromise({
+        try: () => applyAmendmentRow(existing[0], orgId ?? null, requestId),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+    }
 
     const setClauses: string[] = ["updated_at = now()"];
     const updateParams: unknown[] = [];
@@ -544,8 +646,17 @@ adminLearnedPatterns.openapi(bulkStatusRoute, async (c) => {
         try: async () => {
           const checkParams: unknown[] = [id];
           const org = orgFilter(orgId, checkParams, checkParams.length + 1);
-          const existing = await internalQuery<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams);
+          const existing = await internalQuery<Record<string, unknown>>(`SELECT id, type, source_entity, amendment_payload, connection_group_id FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams);
           if (existing.length === 0) return "not_found" as const;
+
+          // Approving a semantic_amendment must rewrite the entity YAML BEFORE
+          // the status flips to approved — otherwise the row reads "approved"
+          // while the on-disk YAML + in-memory layer stay stale until restart
+          // (#3613). Apply first; a failed apply throws, is recorded per-id in
+          // `errors`, and the status update never runs.
+          if (status === "approved" && existing[0].type === "semantic_amendment") {
+            await applyAmendmentRow(existing[0], orgId ?? null, requestId);
+          }
 
           const updateParams: unknown[] = [status, user?.id ?? null, id];
           const updateOrg = orgFilter(orgId, updateParams, updateParams.length + 1);

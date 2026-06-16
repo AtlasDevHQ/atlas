@@ -55,6 +55,8 @@ export interface ProfileLogger {
   info(obj: Record<string, unknown>, msg: string): void;
   warn(obj: Record<string, unknown>, msg: string): void;
   error(obj: Record<string, unknown>, msg: string): void;
+  /** Optional — pino has it; a minimal injected logger may not. Called via `?.`. */
+  debug?(obj: Record<string, unknown>, msg: string): void;
 }
 
 const defaultLog: ProfileLogger = createLogger("profiler");
@@ -385,12 +387,23 @@ function normalizeIndexType(amname: string | null | undefined): IndexType {
  *
  * Returns ONLY the catalog facts; the leading-vs-trailing sargability marker is
  * derived later in `analyzeTableProfiles`, not here.
+ *
+ * `serverVersionNum` (from `SHOW server_version_num`) selects the key-column
+ * count: `indnkeyatts` (PG 11+, excludes INCLUDE/covering columns so they aren't
+ * mistaken for sargable members) when available, else `indnatts` — older servers
+ * have no INCLUDE feature, so `indnatts` equals the key count there. A 0/unknown
+ * version falls back to the portable `indnatts`, so harvest never throws on the
+ * column reference (it would otherwise be lost to the fail-soft catch).
  */
 async function queryPostgresIndexes(
   pool: import("pg").Pool,
   tableName: string,
-  schema: string = "public"
+  schema: string = "public",
+  serverVersionNum: number = 0
 ): Promise<IndexProfile[]> {
+  // `indnkeyatts` only exists on PG 11+; reference it only when we know we're on
+  // 11+. The value is a controlled internal constant, never user input.
+  const keyCountCol = serverVersionNum >= 110000 ? "ix.indnkeyatts" : "ix.indnatts";
   const result = await pool.query(
     `
     SELECT
@@ -400,10 +413,10 @@ async function queryPostgresIndexes(
       ix.indisprimary AS is_primary,
       (ix.indpred IS NOT NULL) AS is_partial,
       pg_get_expr(ix.indpred, ix.indrelid) AS predicate,
-      ix.indnkeyatts AS key_count,
+      ${keyCountCol} AS key_count,
       ARRAY(
         SELECT pg_get_indexdef(ix.indexrelid, k + 1, true)
-        FROM generate_series(0, ix.indnkeyatts - 1) AS k
+        FROM generate_series(0, ${keyCountCol} - 1) AS k
       ) AS key_defs
     FROM pg_index ix
     JOIN pg_class ic ON ic.oid = ix.indexrelid
@@ -452,6 +465,22 @@ export async function profilePostgres({
   try {
   const profiles: TableProfile[] = [];
   const errors: ProfileError[] = [];
+
+  // Detect the server version once so the per-table index harvest can pick
+  // `indnkeyatts` (PG 11+) vs the portable `indnatts` (#3634). Fail-soft: an
+  // unknown version (0) falls back to `indnatts`, which exists on every server.
+  let pgServerVersionNum = 0;
+  try {
+    const verRes = await pool.query(`SHOW server_version_num`);
+    const verVal = (verRes.rows[0] as { server_version_num?: string } | undefined)?.server_version_num;
+    pgServerVersionNum = Number.parseInt(verVal ?? "0", 10) || 0;
+  } catch (verErr) {
+    if (isFatalConnectionError(verErr)) throw verErr;
+    log.warn(
+      { err: verErr instanceof Error ? verErr.message : String(verErr) },
+      "Could not read server_version_num — index harvest falls back to indnatts"
+    );
+  }
 
   let allObjects: DatabaseObject[];
   if (prefetchedObjects) {
@@ -548,7 +577,7 @@ export async function profilePostgres({
           log.warn({ err: fkErr instanceof Error ? fkErr.message : String(fkErr), table: table_name }, "Could not read FK constraints");
         }
         try {
-          indexes = await queryPostgresIndexes(pool, table_name, schema);
+          indexes = await queryPostgresIndexes(pool, table_name, schema, pgServerVersionNum);
         } catch (idxErr) {
           if (isFatalConnectionError(idxErr)) throw idxErr;
           // Fail soft: index metadata is an optimization hint, never required to
@@ -827,6 +856,7 @@ function mysqlIndexType(indexType: string | null | undefined): IndexType {
 async function queryMySQLIndexes(
   pool: { execute: (sql: string, params?: unknown[]) => Promise<[unknown[], unknown]> },
   tableName: string,
+  log: ProfileLogger = defaultLog,
 ): Promise<IndexProfile[]> {
   const [rows] = await pool.execute(
     `SELECT INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE, INDEX_TYPE
@@ -839,15 +869,21 @@ async function queryMySQLIndexes(
   // Group ordered rows into one IndexProfile per INDEX_NAME, preserving the
   // first-seen index order (rows already ordered by INDEX_NAME, SEQ_IN_INDEX).
   const grouped = new Map<string, IndexProfile>();
+  let skippedExpressionParts = 0;
   for (const r of rows as {
     INDEX_NAME: string;
     COLUMN_NAME: string | null;
     NON_UNIQUE: number;
     INDEX_TYPE: string | null;
   }[]) {
-    // Expression/functional index parts report a null COLUMN_NAME in older
-    // MySQL; skip them rather than emit an empty member.
-    if (r.COLUMN_NAME == null) continue;
+    // Expression/functional index parts report a null COLUMN_NAME (MySQL 8.0.13+
+    // functional key parts); skip them rather than emit an empty member. A wholly
+    // functional index thus drops out of indexes[] — trace the count so the
+    // omission is visible rather than silent.
+    if (r.COLUMN_NAME == null) {
+      skippedExpressionParts++;
+      continue;
+    }
     let idx = grouped.get(r.INDEX_NAME);
     if (!idx) {
       idx = {
@@ -862,6 +898,12 @@ async function queryMySQLIndexes(
       grouped.set(r.INDEX_NAME, idx);
     }
     idx.columns.push(r.COLUMN_NAME);
+  }
+  if (skippedExpressionParts > 0) {
+    log.debug?.(
+      { table: tableName, skippedExpressionParts },
+      "Skipped functional/expression index key parts (null COLUMN_NAME) during MySQL index harvest"
+    );
   }
   return [...grouped.values()];
 }
@@ -940,7 +982,7 @@ export async function profileMySQL({
             log.warn({ err: fkErr instanceof Error ? fkErr.message : String(fkErr), table: table_name }, "Could not read FK constraints");
           }
           try {
-            indexes = await queryMySQLIndexes(pool, table_name);
+            indexes = await queryMySQLIndexes(pool, table_name, log);
           } catch (idxErr) {
             if (isFatalConnectionError(idxErr)) throw idxErr;
             // Fail soft: index metadata is an optimization hint (#3634).

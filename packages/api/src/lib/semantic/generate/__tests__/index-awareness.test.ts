@@ -196,6 +196,9 @@ describe("generateEntityYAML — index awareness emission", () => {
     const dims = entity.dimensions as Record<string, unknown>[];
     const created = dims.find((d) => d.name === "created_at")!;
     expect(created.indexed).toBe(true);
+    // A trailing composite member has no single-column access path, so no
+    // index_type is advertised — the filter_hint carries the composite nuance.
+    expect(created.index_type).toBeUndefined();
     expect(typeof created.filter_hint).toBe("string");
     expect(created.filter_hint as string).toContain("tenant_id");
     expect(created.filter_hint as string).toContain("events_tenant_created_idx");

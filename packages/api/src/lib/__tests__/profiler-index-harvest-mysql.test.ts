@@ -28,7 +28,7 @@ if (!TEST_MYSQL_URL) {
 }
 
 const MYSQL_TEST_TIMEOUT_MS = 30_000;
-const TABLE = `idx_events_${Date.now()}`;
+const TABLE = `idx_events_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
 
 describeIfMySQL("profileMySQL — index harvest (live MySQL, #3634)", () => {
   let profiles: TableProfile[];

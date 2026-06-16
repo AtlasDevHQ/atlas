@@ -174,7 +174,6 @@ indexes:
   - name: events_active_idx
     columns: [status]
     type: btree
-    unique: false
     predicate: deleted_at IS NULL      # partial index — only covers matching rows
 ```
 

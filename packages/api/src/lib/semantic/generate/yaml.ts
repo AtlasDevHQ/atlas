@@ -28,9 +28,17 @@ import type { ColumnProfile, IndexProfile } from "@useatlas/types";
  * Prefers the type of an index this column LEADS (that's the one a filter on the
  * column can actually use); falls back to any index that contains it. Returns
  * undefined when the column isn't indexed.
+ *
+ * A column flagged `trailing` is only ever a non-first member of a btree
+ * composite (a member of any non-btree index makes it `leading` — those are
+ * position-independent). It has no single-column access path, so we DON'T
+ * advertise an access method: reporting `btree` from the containing composite
+ * would imply `WHERE col = ?` alone is sargable when it isn't. The `filter_hint`
+ * carries the composite nuance instead.
  */
 function dimensionIndexType(col: ColumnProfile, indexes: IndexProfile[]): string | undefined {
   if (!col.indexed) return undefined;
+  if (col.index_position === "trailing") return undefined;
   const leadingIdx = indexes.find((ix) => ix.columns[0] === col.name);
   if (leadingIdx) return leadingIdx.index_type;
   const containingIdx = indexes.find((ix) => ix.columns.includes(col.name));

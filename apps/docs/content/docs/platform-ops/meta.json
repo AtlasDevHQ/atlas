@@ -4,6 +4,7 @@
   "icon": "Server",
   "pages": [
     "platform-admin",
+    "saas-environment-variables",
     "observability",
     "custom-domains",
     "sla-monitoring",

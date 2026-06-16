@@ -1,0 +1,104 @@
+---
+title: SaaS Environment Variables
+description: The minimal, canonical set of deploy-time environment variables a hosted Atlas region requires — and what to change at runtime instead.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+This is the **operator-facing** environment-variable reference for running Atlas
+as a hosted SaaS region (`app.useatlas.dev` and its EU / APAC / staging peers).
+It is deliberately short. The full knob list lives in
+[Environment Variables](/reference/environment-variables) — that page is the
+self-hosted kitchen sink; this page is the SaaS floor.
+
+<Callout type="info" title="Env is the exception, not the default">
+  On hosted Atlas, **environment variables are reserved for two things only**:
+  secrets, and inputs the process needs *before* the database exists. Everything
+  else — limits, tuning, providers, integrations, branding — is changed at
+  runtime through the **Admin console**, with no redeploy. If you find yourself
+  reaching for a Railway env change to alter behavior, check
+  [Workspace Settings](/guides/workspace-settings) and the Platform settings
+  surfaces first. See [the SaaS-first env principle](#why-the-list-is-short).
+</Callout>
+
+## The deploy-time floor
+
+These are the only variables that must be set per API service. They map 1:1 to
+the SaaS boot contract enforced in `packages/api/src/lib/effect/saas-env.ts`
+(`SAAS_ENV_KEYS`) and the boot guards in `saas-guards.ts` — the API **refuses to
+boot** if a required one is missing or malformed, rather than degrading silently.
+
+### Secrets (per region)
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | Internal Postgres (auth, audit, settings, billing). Per region. |
+| `ATLAS_REGION_US_DB_URL` / `ATLAS_REGION_EU_DB_URL` / `ATLAS_REGION_APAC_DB_URL` | Region-scoped internal DBs for residency routing. |
+| `ATLAS_DATASOURCE_URL` | Default analytics datasource (customer datasources are added per-workspace in the Admin console, encrypted at rest). |
+| `ATLAS_ENCRYPTION_KEYS` | At-rest credential encryption keyset (`v1:<base64>`). **Do not** lean on `BETTER_AUTH_SECRET` for this on SaaS. |
+| `BETTER_AUTH_SECRET` | Session signing (≥32 chars). |
+| `AI_GATEWAY_API_KEY` | LLM provider key for the SaaS gateway default. (Or the key for whatever `ATLAS_PROVIDER` resolves to.) |
+| `RESEND_API_KEY` | Platform transactional email (DPA-gated: SaaS platform email must be Resend). |
+| `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` / `SLACK_SIGNING_SECRET` / `SLACK_ENCRYPTION_KEY` | Atlas's own Slack app credentials. All four required when the Slack catalog row is enabled — a missing one silently drops the adapter (the 2026-05 incident `ChatAdapterEnvGuardLive` now boot-blocks). |
+
+Stripe (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`), Turnstile
+(`TURNSTILE_SECRET_KEY`), Twenty (`TWENTY_API_KEY`), and the Vercel sandbox token
+(`VERCEL_TOKEN`) are also secrets and stay in env — but their **non-secret
+companions** (Stripe price IDs, Vercel team/project IDs, Twenty base URL) should
+not; see the [audit](#why-the-list-is-short).
+
+### Pre-database boot inputs (per instance)
+
+| Variable | Purpose |
+|---|---|
+| `ATLAS_API_REGION` | This instance's region identity (`us` / `eu` / `apac` / `staging`). Genuinely per-service. |
+| `BETTER_AUTH_URL` | Better Auth base URL — read inside the library's plugin init before settings load. |
+| `BETTER_AUTH_TRUSTED_ORIGINS` | Anchors verification / password-reset redirects to the web origin. |
+| `ATLAS_DEPLOY_ENV` | Deployment shape (`production` / `staging` / `development`). Drives the [env-profile](/reference/environment-variables) table — one switch, not a dozen per-env flags. |
+
+### Boot-guard / immutable inputs
+
+These are read at boot and locked from runtime mutation on SaaS
+(`SAAS_IMMUTABLE_KEYS` in `lib/settings.ts`) because a boot guard depends on
+them — changing them *is* a deploy:
+
+| Variable | Why it's deploy-time |
+|---|---|
+| `ATLAS_RATE_LIMIT_RPM` | `RateLimitGuardLive` refuses to boot a region without a positive value (DDoS floor). Hot-reload would re-open the hole. |
+| `ATLAS_DEPLOY_MODE` *(see audit)* | Deploy mode can't change at runtime. **Already set by `atlas.config.ts` (`deployMode: "saas"`) — the env var is redundant.** |
+| `ATLAS_EMAIL_PROVIDER` | DPA guard runs at boot; hot-reload would bypass it. (Changed via Admin → Email provider, takes effect next boot.) |
+
+## What you change at runtime instead
+
+Roughly 40 settings are **already runtime-controllable** through the settings
+registry (`lib/settings.ts`) — the env var, if any, is only a fallback. Precedence
+is `workspace DB override > platform DB override > env var > default`, and SaaS
+hot-reloads within ~30s (no redeploy). Edit these in the **Admin console**, not in
+Railway:
+
+- **Query limits** — row limit, query timeout, delivery max rows
+- **Rate limiting** — per-user / chat / admin RPM (the base RPM floor excepted)
+- **Agent** — max steps, conversation step cap, provider, model, log level
+- **Security** — RLS column/claim, table whitelist, CORS origin, allowed email domains, SCIM policy
+- **Sessions** — idle / absolute timeout
+- **Sandbox** — backend (via Admin → Sandbox, incl. BYOC), URL
+- **Intelligence** — semantic-expert scheduler + auto-approve
+- **Appearance** — brand color
+- **Email** — provider + from address (keys via Admin → Email provider)
+
+Platform-scoped settings require `platform_admin`; workspace-scoped settings are
+editable by workspace admins (filtered by `saasVisible` / `saasWritable` on SaaS).
+
+## Why the list is short
+
+The guiding principle for hosted Atlas:
+
+> **A SaaS operator or workspace admin should never have to deploy to change
+> configuration. Env vars are for secrets and pre-database boot inputs only;
+> everything else is a runtime-controllable setting.**
+
+The gap between this page and the full
+[Environment Variables](/reference/environment-variables) reference is the
+migration backlog — env vars that *should* be runtime settings but aren't yet.
+The audit and tracked work live in
+`docs/development/saas-env-audit.md` in the repo.

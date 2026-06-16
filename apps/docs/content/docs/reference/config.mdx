@@ -368,6 +368,7 @@ Configure how the offline learning loop (`atlas learn`) promotes discovered quer
 export default defineConfig({
   learn: {
     confidenceThreshold: 0.7,  // default: 0.7
+    retrievalTurns: 3,         // default: 3
   },
 });
 ```
@@ -375,10 +376,12 @@ export default defineConfig({
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `confidenceThreshold` | `number` | `0.7` | Minimum confidence score (0–1) for a learned pattern to be eligible for auto-promotion. Lower values promote more aggressively; higher values require stronger evidence from the audit log |
+| `retrievalTurns` | `number` | `3` | Number of trailing user turns assembled into the learned-pattern retrieval query. Widening the window lets a keyword-less follow-up ("now break that down by region") still match patterns via the keywords of earlier turns |
 
 **Env var equivalent:**
 ```bash
 ATLAS_LEARN_CONFIDENCE_THRESHOLD=0.7
+ATLAS_LEARN_RETRIEVAL_TURNS=3
 ```
 
 ---
@@ -1039,6 +1042,7 @@ export default defineConfig({
   // Dynamic learning (offline audit log analysis)
   learn: {
     confidenceThreshold: 0.7,
+    retrievalTurns: 3,
   },
 
   // Enterprise features (commercial license, /ee directory)

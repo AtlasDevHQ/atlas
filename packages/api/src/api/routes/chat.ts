@@ -1344,6 +1344,10 @@ chat.openapi(chatRoute, async (c) => {
               user: authResult.user,
               atlasMode,
               agentOrigin: "chat",
+              // #3615 — web-app chat is human-initiated; stamp the audit
+              // discriminator so audit_log.actor_kind = 'human' for every
+              // SQL the agent runs on this turn.
+              actor: { kind: "human" },
               ...(effectiveConnectionId !== undefined && {
                 connectionId: effectiveConnectionId,
               }),

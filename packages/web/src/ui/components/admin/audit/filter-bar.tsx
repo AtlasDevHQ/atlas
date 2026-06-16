@@ -26,10 +26,10 @@ import {
 } from "@/components/ui/select";
 
 /**
- * Canonical actor-kind values surfaced in the dropdown. Only `"mcp"`
- * is currently populated by a writer (see `audit_log.actor_kind`);
- * the others are reserved for future writer paths (chat, scheduler)
- * to opt into without a UI change.
+ * Canonical actor-kind values surfaced in the dropdown. All four are now
+ * populated by writers (#3615, see `audit_log.actor_kind`): web chat /
+ * `/api/v1/query` write `human`, the scheduler writes `scheduler`, the MCP
+ * dispatchers write `mcp`, and any other agent-loop SQL defaults to `agent`.
  */
 export const ACTOR_KIND_OPTIONS = [
   { value: "human", label: "Human" },

@@ -191,6 +191,10 @@ export async function executeScheduledTask(
     // scheduler from a broad rule, narrow that rule's origin.)
     agentQueryEffect(task.question, requestId, taskId, timeoutMs, {
       actor,
+      // #3615 — scheduled runs execute outside any route-level
+      // `withRequestContext`, so stamp the audit discriminator explicitly;
+      // executeSQL audit rows then record actor_kind='scheduler'.
+      actorKind: "scheduler",
       agentOrigin: "scheduler",
       ...(resolvedConnectionId ? { connectionId: resolvedConnectionId } : {}),
       ...(task.connectionGroupId ? { connectionGroupId: task.connectionGroupId } : {}),

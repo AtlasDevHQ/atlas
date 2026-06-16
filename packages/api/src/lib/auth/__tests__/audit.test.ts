@@ -81,7 +81,7 @@ describe("logQueryAudit()", () => {
       null, // tables_accessed
       null, // columns_accessed
       null, // org_id
-      null, // actor_kind (#2067)
+      "agent", // actor_kind — #3615: agent-loop SQL with no specific actor defaults to "agent"
       null, // client_id (#2067)
       null, // tool_name (#2067)
       null, // parent_audit_id (#2519)
@@ -134,6 +134,24 @@ describe("logQueryAudit()", () => {
     expect(params[15]).toBe("claude-desktop"); // client_id
     expect(params[16]).toBe("executeSQL");     // tool_name
   });
+
+  it.each([
+    ["human", "human"],
+    ["scheduler", "scheduler"],
+  ] as const)(
+    "persists actor_kind=%s from the request context (#3615)",
+    (kind, expected) => {
+      enableInternalDB();
+      withRequestContext({ requestId: "req-x", actor: { kind } }, () => {
+        logQueryAudit({ sql: "SELECT 1", durationMs: 1, rowCount: 1, success: true });
+      });
+      expect(queryCalls).toHaveLength(1);
+      const params = queryCalls[0].params!;
+      expect(params[14]).toBe(expected); // actor_kind
+      expect(params[15]).toBeNull();     // client_id — only mcp carries it
+      expect(params[16]).toBeNull();     // tool_name — only mcp carries it
+    },
+  );
 
   it("does not insert when internal DB is not available", () => {
     delete process.env.DATABASE_URL;

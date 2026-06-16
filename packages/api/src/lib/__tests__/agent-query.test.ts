@@ -16,7 +16,9 @@
 
 import { describe, it, expect, mock } from "bun:test";
 
-const observedContexts: { requestId?: string; user?: { id: string; activeOrganizationId?: string } | undefined }[] = [];
+import type { RequestActor } from "@atlas/api/lib/logger";
+
+const observedContexts: { requestId?: string; user?: { id: string; activeOrganizationId?: string } | undefined; actor?: RequestActor | undefined }[] = [];
 
 mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mock(async () => {
@@ -25,6 +27,7 @@ mock.module("@atlas/api/lib/agent", () => ({
     observedContexts.push({
       ...(ctx?.requestId !== undefined ? { requestId: ctx.requestId } : {}),
       ...(ctx?.user !== undefined ? { user: { id: ctx.user.id, ...(ctx.user.activeOrganizationId !== undefined ? { activeOrganizationId: ctx.user.activeOrganizationId } : {}) } } : {}),
+      ...(ctx?.actor !== undefined ? { actor: ctx.actor } : {}),
     });
     return {
       text: Promise.resolve("done"),
@@ -78,6 +81,35 @@ describe("executeAgentQuery actor binding", () => {
     expect(observedContexts).toHaveLength(1);
     expect(observedContexts[0].user?.id).toBe("user-parent");
     expect(observedContexts[0].user?.activeOrganizationId).toBe("org-parent");
+  });
+
+  it("#3615: stamps the explicit actorKind (scheduler) onto RequestContext for the agent run", async () => {
+    observedContexts.length = 0;
+    const actor = createAtlasUser("owner-1", "managed", "owner-1@example.com", {
+      activeOrganizationId: "org-sched",
+    });
+    await executeAgentQuery("nightly report", "req-sched", { actor, actorKind: "scheduler" });
+    expect(observedContexts).toHaveLength(1);
+    expect(observedContexts[0].actor).toEqual({ kind: "scheduler" });
+  });
+
+  it("#3615: propagates an inherited actor (human) when no actorKind is passed", async () => {
+    observedContexts.length = 0;
+    await withRequestContext(
+      { requestId: "outer", actor: { kind: "human" } },
+      async () => {
+        await executeAgentQuery("API form of chat", "inner-req");
+      },
+    );
+    expect(observedContexts).toHaveLength(1);
+    expect(observedContexts[0].actor).toEqual({ kind: "human" });
+  });
+
+  it("#3615: leaves actor unset when neither option nor parent context provides one (audit defaults to 'agent')", async () => {
+    observedContexts.length = 0;
+    await executeAgentQuery("bare agent run", "req-bare");
+    expect(observedContexts).toHaveLength(1);
+    expect(observedContexts[0].actor).toBeUndefined();
   });
 
   it("F-54/F-55: surfaces pendingApproval from tool results so callers can fail-loud", async () => {

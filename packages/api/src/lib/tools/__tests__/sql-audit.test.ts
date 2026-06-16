@@ -10,6 +10,7 @@
 import { describe, expect, it, beforeEach, afterEach, mock, type Mock } from "bun:test";
 import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
 import { createConnectionMock } from "@atlas/api/testing/connection";
+import { withRequestContext, type RequestActor } from "@atlas/api/lib/logger";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyResult = any;
@@ -109,6 +110,10 @@ function extractAuditParams(params: unknown[]) {
     targetHost: params[10] as string | null,
     tablesAccessed: params[11] as string | null,
     columnsAccessed: params[12] as string | null,
+    orgId: params[13] as string | null,
+    actorKind: params[14] as string | null,
+    clientId: params[15] as string | null,
+    toolName: params[16] as string | null,
   };
 }
 
@@ -282,5 +287,59 @@ describe("executeSQL audit logging", () => {
     // Validation failures don't have classification data
     expect(audit.tablesAccessed).toBeNull();
     expect(audit.columnsAccessed).toBeNull();
+  });
+
+  // #3615 — actor_kind must reflect the entry path that initiated the SQL.
+  // Each entry path establishes a `RequestContext.actor` before the agent
+  // loop runs executeSQL; this exercises the audit write site under the
+  // context each path produces and asserts the recorded actor_kind.
+  describe("actor_kind by entry path (#3615)", () => {
+    const execWithActor = (sql: string, actor: RequestActor | undefined) =>
+      withRequestContext(
+        { requestId: "audit-test", ...(actor ? { actor } : {}) },
+        () => exec(sql),
+      );
+
+    it("defaults to 'agent' for an agent-loop query with no specific actor", async () => {
+      // The bare agent loop (chat platforms, proactive, admin tooling) does
+      // not stamp a more-specific actor — executeSQL is only ever reached
+      // from an agent loop, so the row is an agent run.
+      await execWithActor("SELECT id FROM companies", undefined);
+
+      const inserts = getAuditInserts();
+      expect(inserts).toHaveLength(1);
+      expect(extractAuditParams(inserts[0].params!).actorKind).toBe("agent");
+    });
+
+    it("records 'human' for web-app / API human-initiated queries", async () => {
+      await execWithActor("SELECT id FROM companies", { kind: "human" });
+
+      const inserts = getAuditInserts();
+      expect(inserts).toHaveLength(1);
+      expect(extractAuditParams(inserts[0].params!).actorKind).toBe("human");
+    });
+
+    it("records 'scheduler' for scheduled-task queries", async () => {
+      await execWithActor("SELECT id FROM companies", { kind: "scheduler" });
+
+      const inserts = getAuditInserts();
+      expect(inserts).toHaveLength(1);
+      expect(extractAuditParams(inserts[0].params!).actorKind).toBe("scheduler");
+    });
+
+    it("records 'mcp' (no regression) and threads client_id / tool_name", async () => {
+      await execWithActor("SELECT id FROM companies", {
+        kind: "mcp",
+        clientId: "claude-desktop",
+        toolName: "executeSQL",
+      });
+
+      const inserts = getAuditInserts();
+      expect(inserts).toHaveLength(1);
+      const audit = extractAuditParams(inserts[0].params!);
+      expect(audit.actorKind).toBe("mcp");
+      expect(audit.clientId).toBe("claude-desktop");
+      expect(audit.toolName).toBe("executeSQL");
+    });
   });
 });

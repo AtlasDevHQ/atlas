@@ -17,10 +17,11 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 
 /**
  * Discriminator on who initiated the request, threaded through audit_log
- * via #2067. Only `mcp` is wired today; `human` / `agent` / `scheduler`
- * are reserved for future writer paths to opt into without a schema
- * change. Rows that never set `actor` write NULL and stay invisible to
- * actor-scoped filters.
+ * via #2067. All four kinds are wired (#3615): web chat / `/api/v1/query`
+ * stamp `human`, the scheduler stamps `scheduler`, the MCP dispatchers stamp
+ * `mcp`, and `logQueryAudit` defaults any agent-loop SQL with no more-specific
+ * actor to `agent` (the only `executeSQL` writer is the agent loop). Rows are
+ * therefore never NULL for actor-scoped filters.
  *
  * Modeled as a discriminated union so `clientId` / `toolName` are only
  * reachable on the `mcp` branch — the type system enforces the

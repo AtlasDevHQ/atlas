@@ -2357,10 +2357,16 @@ authed.openapi(suggestCardsRoute, async (c) => {
       return Effect.succeed("");
     }));
 
-    // Optionally load learned patterns for extra context
+    // Optionally load learned patterns for extra context. Scope to the
+    // dashboard's connection group (#3611) — dashboards are group-scoped
+    // (migration 0066) and cards share a group, so use the first card's group.
+    // Without this the suggestion path would only ever see default-scope
+    // (connection_group_id IS NULL) patterns once getApprovedPatterns filters
+    // by group.
+    const dashboardGroupId = dash.data.cards[0]?.connectionGroupId ?? null;
     const { buildLearnedPatternsSection } = yield* Effect.promise(() => import("@atlas/api/lib/learn/pattern-cache"));
     const patternsSection = yield* Effect.tryPromise({
-      try: () => buildLearnedPatternsSection(orgId ?? null, "dashboard suggestions"),
+      try: () => buildLearnedPatternsSection(orgId ?? null, "dashboard suggestions", dashboardGroupId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.catchAll((err) => {
       log.warn({ err: err.message, orgId, dashboardId: id }, "Failed to load learned patterns for suggestions — proceeding without patterns");

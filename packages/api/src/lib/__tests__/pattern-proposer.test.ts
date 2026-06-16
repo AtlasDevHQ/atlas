@@ -6,7 +6,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { _resetPool, type InternalPool } from "../db/internal";
-import { withRequestContext } from "../logger";
+import { withRequestContext, getRequestContext } from "../logger";
 import { createAtlasUser } from "../auth/types";
 import { _resetYamlPatternCache, _setYamlPatternCache, normalizeSQL } from "../learn/pattern-analyzer";
 import { _analyzeAndPropose, proposePatternIfNovel, type PatternProposalInput } from "../learn/pattern-proposer";
@@ -144,6 +144,32 @@ describe("pattern-proposer", () => {
     const insertCall = queryCalls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
     expect(insertCall).toBeDefined();
     expect(insertCall!.params?.[0]).toBe("org-456");
+  });
+
+  test("captured org survives after the ALS context has unwound (#3610)", async () => {
+    setResults({ rows: [] });
+
+    // Reproduce the real timing: the sql.ts call site captures orgId
+    // synchronously WHILE the request context is live, then the detached
+    // proposal runs AFTER that context has exited. The pre-fix code read ALS
+    // inside the detached promise → undefined → org_id = NULL.
+    let capturedOrgId: string | undefined;
+    const user = createAtlasUser("user-1", "simple-key", "Test User", {
+      activeOrganizationId: "org-live-then-gone",
+    });
+    await withRequestContext({ requestId: "req-1", user }, async () => {
+      capturedOrgId = getRequestContext()?.user?.activeOrganizationId;
+    });
+
+    // Context is now unwound — assert it really is gone before proceeding.
+    expect(getRequestContext()).toBeFalsy();
+
+    await _analyzeAndPropose({ ...defaultInput, orgId: capturedOrgId });
+
+    const insertCall = queryCalls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(insertCall).toBeDefined();
+    expect(insertCall!.params?.[0]).toBe("org-live-then-gone");
+    expect(insertCall!.params?.[0]).not.toBeNull();
   });
 
   test("ignores ALS request context entirely — only the input orgId is used (#3610)", async () => {

@@ -76,7 +76,7 @@ async function getCachedPatterns(
     return patterns;
   } catch (err) {
     log.warn(
-      { orgId, err: err instanceof Error ? err.message : String(err) },
+      { orgId, connectionGroupId, err: err instanceof Error ? err.message : String(err) },
       "Failed to load approved patterns (table may not exist yet) — not caching",
     );
     return [];

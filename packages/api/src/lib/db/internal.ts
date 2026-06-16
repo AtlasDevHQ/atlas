@@ -1193,11 +1193,13 @@ function isPgError(err: unknown): err is Error & { code: string } {
  * Find a learned pattern by exact normalized SQL match, scoped to the given
  * org AND connection group.
  *
- * Uniqueness is `(org_id, connection_group_id, normalised_sql)` (#3611): the
- * SAME normalised SQL learned against a different connection group (e.g.
- * `us-prod` vs `eu-prod`) is a DISTINCT pattern — different schema, different
- * tables, potentially different dialect — so it must not collide. A NULL group
- * (the default flat `entities/` scope) is matched with `IS NULL`, not `=`.
+ * The dedup key is `(org_id, connection_group_id, normalised_sql)` (#3611) —
+ * enforced application-side here (read-then-insert in `_analyzeAndPropose`),
+ * NOT by a DB unique constraint. The SAME normalised SQL learned against a
+ * different connection group (e.g. `us-prod` vs `eu-prod`) is a DISTINCT pattern
+ * — different schema, different tables, potentially different dialect — so it
+ * must not collide. A NULL group (the default flat `entities/` scope) is matched
+ * with `IS NULL`, not `=`.
  *
  * Returns the pattern's id, confidence, and repetition count, or null if not found.
  */

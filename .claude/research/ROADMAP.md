@@ -32,7 +32,7 @@ Open slices:
 - [ ] **B-1** — thread `durationMs` into the proposer → rolling average in `incrementPatternCount` ([#3635](https://github.com/AtlasDevHQ/atlas/issues/3635))
 - [ ] **B-2** — perf-weighted scoring + nightly auto-promote/decay fiber ([#3636](https://github.com/AtlasDevHQ/atlas/issues/3636))
 - [x] **B-3** — multi-turn question context for pattern retrieval ([#3632](https://github.com/AtlasDevHQ/atlas/issues/3632) → [#3698](https://github.com/AtlasDevHQ/atlas/pull/3698))
-- [ ] **B-4** — feed favorites + approved suggestions into agent context ([#3633](https://github.com/AtlasDevHQ/atlas/issues/3633))
+- [x] **B-4** — feed favorites + approved suggestions into agent context ([#3633](https://github.com/AtlasDevHQ/atlas/issues/3633) → [#3714](https://github.com/AtlasDevHQ/atlas/pull/3714))
 
 Related learned-pattern bugs folded in: cache-not-invalidated-on-approve ([#3612](https://github.com/AtlasDevHQ/atlas/issues/3612)), bulk-approve skips amendment YAML rewrite ([#3613](https://github.com/AtlasDevHQ/atlas/issues/3613)), dedup cache no TTL ([#3614](https://github.com/AtlasDevHQ/atlas/issues/3614)), `actor_kind` always NULL ([#3615](https://github.com/AtlasDevHQ/atlas/issues/3615)), `duration_ms=0` skews slow-query analytics ([#3616](https://github.com/AtlasDevHQ/atlas/issues/3616)).
 

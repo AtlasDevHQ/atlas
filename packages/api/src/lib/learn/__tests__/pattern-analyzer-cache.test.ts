@@ -20,6 +20,7 @@ import {
   normalizeSQL,
 } from "../pattern-analyzer";
 import { invalidateSemanticIndex } from "@atlas/api/lib/semantic/search";
+import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { _analyzeAndPropose, type PatternProposalInput } from "../pattern-proposer";
 import { _resetPool, type InternalPool } from "../../db/internal";
 
@@ -90,6 +91,21 @@ describe("YAML pattern cache TTL + invalidation (#3614)", () => {
     const after = getYamlPatterns();
     expect(after.has(normalizeSQL(PATTERN_A_SQL))).toBe(true);
     expect(after.has(normalizeSQL(PATTERN_B_SQL))).toBe(true);
+  });
+
+  test("the real semantic-layer reset path (_resetWhitelists) cascades to the YAML cache", () => {
+    writeAccountsEntity([PATTERN_A_SQL]);
+    getYamlPatterns(); // populate cache
+
+    writeAccountsEntity([PATTERN_A_SQL, PATTERN_B_SQL]);
+
+    // _resetWhitelists() is the broad "semantic layer changed" reset fanned out
+    // from admin entity-edit routes; it calls invalidateSemanticIndex(), which
+    // must in turn drop the derived YAML pattern cache. Exercising it here
+    // proves the whole wiring, not just the invalidateSemanticIndex leaf.
+    _resetWhitelists();
+
+    expect(getYamlPatterns().has(normalizeSQL(PATTERN_B_SQL))).toBe(true);
   });
 
   test("invalidateYamlPatternCache forces a re-read on the next call", () => {

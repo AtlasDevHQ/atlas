@@ -196,15 +196,15 @@ function loadPatternsFromDir(dir: string, out: Set<string>): void {
 // ── YAML pattern cache ─────────────────────────────────────────────
 
 /**
- * TTL for the YAML pattern cache. Bounded by the semantic-layer reload
- * interval so an admin edit to an entity's `query_patterns` can never go
- * unseen for longer than the rest of the semantic layer (#3614). Matches the
- * approved-pattern cache TTL in `pattern-cache.ts`.
+ * TTL for the YAML pattern cache (#3614). Matches the approved-pattern cache
+ * TTL in `pattern-cache.ts`.
  *
- * This is a backstop: the cache is also actively invalidated when the semantic
- * index is rebuilt (see `invalidateYamlPatternCache` wired into
- * `invalidateSemanticIndex`), so edits are usually reflected immediately. The
- * TTL guarantees an upper bound even on paths that don't fire that hook.
+ * Primary invalidation is event-driven: the cache is dropped whenever the
+ * semantic index is invalidated (see `invalidateYamlPatternCache` wired into
+ * `invalidateSemanticIndex`), so an admin edit to an entity's `query_patterns`
+ * is reflected immediately. The TTL is a backstop that bounds how long a stale
+ * cache can live on any path that doesn't fire that hook — without it the cache
+ * lived for the whole process and kept re-proposing already-authored patterns.
  */
 const YAML_PATTERN_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 

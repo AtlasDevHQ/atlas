@@ -67,25 +67,46 @@ describeIfPg("per-pattern latency rolling average (real Postgres, #3635)", () =>
     await pool.query("DELETE FROM learned_patterns");
   });
 
-  /** Read back the single learned pattern for a given SQL string. */
-  async function readPattern(patternSql: string): Promise<PatternRow> {
+  /** Read back the learned pattern for a SQL string, or null if not yet present. */
+  async function rowOrNull(patternSql: string): Promise<PatternRow | null> {
     const res = await pool.query<PatternRow>(
       `SELECT id, avg_duration_ms, last_seen_at, repetition_count
        FROM learned_patterns WHERE pattern_sql = $1 LIMIT 1`,
       [patternSql],
     );
-    expect(res.rows).toHaveLength(1);
-    return res.rows[0];
+    return res.rows[0] ?? null;
   }
 
   /**
-   * insertLearnedPattern / incrementPatternCount are fire-and-forget (no
-   * awaitable handle). They issue a single internalExecute against the pool;
-   * a short settle lets the detached promise land before we read back.
+   * insertLearnedPattern / incrementPatternCount are fire-and-forget (they
+   * return void — no awaitable handle), so we can't await the detached write.
+   * Rather than a fixed sleep (which can flake on a loaded runner if the
+   * detached promise lands late), poll the row until the write has demonstrably
+   * landed, then assert against it.
    */
-  async function settle(): Promise<void> {
-    await new Promise((r) => setTimeout(r, 50));
+  async function poll(
+    patternSql: string,
+    predicate: (row: PatternRow) => boolean,
+    timeoutMs = 5000,
+  ): Promise<PatternRow> {
+    const deadline = Date.now() + timeoutMs;
+    let last: PatternRow | null = null;
+    while (Date.now() < deadline) {
+      last = await rowOrNull(patternSql);
+      if (last && predicate(last)) return last;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    // Surface whatever we last saw so the caller's assertions give a clear diff.
+    expect(last).not.toBeNull();
+    return last!;
   }
+
+  /** Wait until the pattern row exists (i.e. the insert landed). */
+  const waitForRow = (patternSql: string): Promise<PatternRow> => poll(patternSql, () => true);
+
+  /** Wait until repetition_count reaches `count` (i.e. a specific increment landed). */
+  const waitForCount = (patternSql: string, count: number): Promise<PatternRow> =>
+    poll(patternSql, (r) => r.repetition_count === count);
 
   it(
     "seeds avg_duration_ms + last_seen_at from the first observation",
@@ -100,9 +121,8 @@ describeIfPg("per-pattern latency rolling average (real Postgres, #3635)", () =>
         proposedBy: "agent",
         durationMs: 300,
       });
-      await settle();
 
-      const row = await readPattern(sql);
+      const row = await waitForRow(sql);
       expect(row.avg_duration_ms).toBe(300);
       expect(row.last_seen_at).not.toBeNull();
       expect(row.repetition_count).toBe(1);
@@ -123,9 +143,8 @@ describeIfPg("per-pattern latency rolling average (real Postgres, #3635)", () =>
         proposedBy: "agent",
         // no durationMs
       });
-      await settle();
 
-      const row = await readPattern(sql);
+      const row = await waitForRow(sql);
       expect(row.avg_duration_ms).toBeNull();
       expect(row.last_seen_at).toBeNull();
     },
@@ -151,8 +170,7 @@ describeIfPg("per-pattern latency rolling average (real Postgres, #3635)", () =>
         proposedBy: "agent",
         durationMs: 100,
       });
-      await settle();
-      let row = await readPattern(sql);
+      let row = await waitForRow(sql);
       expect(row.avg_duration_ms).toBe(100);
       const seededSeenAt = row.last_seen_at;
       expect(seededSeenAt).not.toBeNull();
@@ -163,13 +181,12 @@ describeIfPg("per-pattern latency rolling average (real Postgres, #3635)", () =>
         { d: 400, expected: 250, count: 4 },
       ]) {
         incrementPatternCount(row.id, `fp-${d}`, d);
-        await settle();
-        row = await readPattern(sql);
-        expect(row.repetition_count).toBe(count);
+        row = await waitForCount(sql, count);
         expect(row.avg_duration_ms).toBeCloseTo(expected, 6);
       }
 
-      // last_seen_at advanced past the seed timestamp.
+      // last_seen_at advanced to at least the seed timestamp (seed + increment
+      // can land in the same millisecond, so equality is allowed — `>=`).
       expect(row.last_seen_at).not.toBeNull();
       expect(row.last_seen_at!.getTime()).toBeGreaterThanOrEqual(seededSeenAt!.getTime());
     },
@@ -189,16 +206,13 @@ describeIfPg("per-pattern latency rolling average (real Postgres, #3635)", () =>
         proposedBy: "agent",
         durationMs: 500,
       });
-      await settle();
-      let row = await readPattern(sql);
+      let row = await waitForRow(sql);
       const seenAtBefore = row.last_seen_at;
       expect(row.avg_duration_ms).toBe(500);
 
       // Bump the repetition without a measurement — latency columns frozen.
       incrementPatternCount(row.id, "fp2");
-      await settle();
-      row = await readPattern(sql);
-      expect(row.repetition_count).toBe(2);
+      row = await waitForCount(sql, 2);
       expect(row.avg_duration_ms).toBe(500);
       expect(row.last_seen_at!.getTime()).toBe(seenAtBefore!.getTime());
     },
@@ -218,15 +232,13 @@ describeIfPg("per-pattern latency rolling average (real Postgres, #3635)", () =>
         proposedBy: "agent",
         // seeded NULL
       });
-      await settle();
-      let row = await readPattern(sql);
+      let row = await waitForRow(sql);
       expect(row.avg_duration_ms).toBeNull();
 
       // First real measurement on the duplicate path seeds the average directly
       // (avg IS NULL branch) rather than averaging against NULL.
       incrementPatternCount(row.id, "fp2", 800);
-      await settle();
-      row = await readPattern(sql);
+      row = await waitForCount(sql, 2);
       expect(row.avg_duration_ms).toBe(800);
       expect(row.last_seen_at).not.toBeNull();
     },

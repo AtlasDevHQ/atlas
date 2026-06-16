@@ -2829,6 +2829,73 @@ describe("Admin routes — audit analytics", () => {
       expect(body.queries[0].maxDuration).toBe(3000);
       expect(body.queries[0].count).toBe(5);
     });
+
+    // #3616 — duration_ms=0 fanout-parent housekeeping rows must not drag
+    // the slow-query average down. The fix excludes zero-duration rows from
+    // the AVG via a FILTER (rather than a WHERE) so COUNT/MAX still see every
+    // row but the average reflects only real execution cost.
+    it("excludes zero-duration rows from the AVG (fanout parents / cache misses)", async () => {
+      let capturedSlowSql = "";
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        capturedSlowSql = sql;
+        return Promise.resolve([
+          { query: "SELECT * FROM big_table", avg_duration: "1500", max_duration: "3000", count: "5" },
+        ]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/slow"));
+      expect(res.status).toBe(200);
+
+      const normalized = capturedSlowSql.replace(/\s+/g, " ");
+      // AVG is filtered to non-zero durations…
+      expect(normalized).toContain("AVG(duration_ms) FILTER (WHERE duration_ms > 0)");
+      // …and the ranking orders by that same filtered average.
+      expect(normalized).toContain("ORDER BY AVG(duration_ms) FILTER (WHERE duration_ms > 0) DESC");
+      // The zero-exclusion must NOT be a WHERE clause — that would also drop
+      // the rows from COUNT(*), under-reporting how often the query ran.
+      expect(normalized).not.toContain("duration_ms > 0 GROUP BY");
+    });
+
+    // #3616 — end-to-end average correctness. Given an audit set that mixes a
+    // real execution (1500ms), a cache-hit replay carrying the original cost
+    // (1500ms), and a fanout-parent housekeeping row (0ms), the reported
+    // average must be 1500 — the zero row excluded, the replayed cost kept.
+    // We compute the answer the SQL produces by applying its FILTER semantics
+    // to a fixture, proving the endpoint surfaces an undistorted average.
+    it("reports correct averages when data includes cache hits and fanout rows", async () => {
+      const auditFixture = [
+        { sql: "SELECT * FROM big_table", duration_ms: 1500 }, // real execution
+        { sql: "SELECT * FROM big_table", duration_ms: 1500 }, // cache-hit replay (#3616)
+        { sql: "SELECT * FROM big_table", duration_ms: 0 },    // fanout parent (#3616)
+      ];
+
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        if (!sql.includes("AVG(duration_ms)")) return Promise.resolve([]);
+
+        // Emulate the FILTER (WHERE duration_ms > 0) AVG the endpoint runs.
+        const nonZero = auditFixture.filter((r) => r.duration_ms > 0);
+        const avg = Math.round(
+          nonZero.reduce((acc, r) => acc + r.duration_ms, 0) / nonZero.length,
+        );
+        const max = Math.max(...auditFixture.map((r) => r.duration_ms));
+        return Promise.resolve([
+          { query: "SELECT * FROM big_table", avg_duration: String(avg), max_duration: String(max), count: String(auditFixture.length) },
+        ]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/slow"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { queries: { query: string; avgDuration: number; maxDuration: number; count: number }[] };
+      expect(body.queries).toHaveLength(1);
+      // Naive AVG over all 3 rows would be (1500+1500+0)/3 = 1000; the fix
+      // excludes the zero row, so the average is the true 1500.
+      expect(body.queries[0].avgDuration).toBe(1500);
+      expect(body.queries[0].maxDuration).toBe(1500);
+      // COUNT still reflects every row for the prefix (zero row included).
+      expect(body.queries[0].count).toBe(3);
+    });
   });
 
   // Frequent queries

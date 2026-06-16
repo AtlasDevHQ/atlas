@@ -7,6 +7,15 @@ export interface CacheEntry {
   rows: Record<string, unknown>[];
   cachedAt: number;
   ttl: number;
+  /**
+   * Wall-clock duration (ms) of the ORIGINAL execution that populated this
+   * entry. Replayed onto the cache-hit `audit_log` row's `duration_ms` so
+   * cache hits carry the query's real cost instead of `0` — otherwise the
+   * zero-duration hit rows drag down every hot query's average in
+   * `/analytics/slow` (#3616). Optional so external/legacy backends (Redis,
+   * pre-#3616 entries) that omit it degrade to `0` rather than crashing.
+   */
+  executionMs?: number;
 }
 
 export interface CacheStats {

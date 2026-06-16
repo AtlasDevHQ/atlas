@@ -1235,6 +1235,9 @@ function executeAndAuditEffect(opts: {
               getCache().set(cacheKey, {
                 columns: result.columns, rows: result.rows,
                 cachedAt: Date.now(), ttl: getDefaultTtl(),
+                // #3616 — stamp the real execution cost so the cache-hit
+                // audit row replays it instead of logging duration_ms=0.
+                executionMs: durationMs,
               });
             } catch (cacheErr) {
               log.error({ err: cacheErr, connectionId: connId }, "Cache write failed — result not cached");
@@ -1934,7 +1937,12 @@ async function executeSqlForConnection({
           const cached = getCache().get(cacheKey);
           if (cached) {
             logQueryAudit({
-              sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: cached.rows.length,
+              // #3616 — replay the original execution duration persisted on
+              // the cache entry so this hit carries the query's real cost,
+              // not duration_ms=0. Falls back to 0 only for legacy/external
+              // entries written before executionMs was stamped.
+              sql: normalizedSql.slice(0, 2000), durationMs: cached.executionMs ?? 0,
+              rowCount: cached.rows.length,
               success: true, sourceId: connId, sourceType: dbType, targetHost,
               parentAuditId,
             });
@@ -2146,6 +2154,16 @@ async function executeSqlFanout(args: {
     // `source_id IN (<connection ids>)`. The children carry the real
     // connection ids; the group dimension is recoverable by JOINing
     // children's `source_id` back to `connections.group_id`.
+    //
+    // #3616 — the parent stays at duration_ms=0 deliberately: it is pure
+    // linkage housekeeping written BEFORE any shard runs (its id must exist
+    // for the children's FK), so it has no execution cost of its own. The
+    // real per-shard durations live on the child rows (and the merged
+    // total wall-clock rides `executionMs` in the returned result). 0 is the
+    // sentinel that `/analytics/slow` filters out of its AVG so these
+    // housekeeping rows never distort slow-query rankings. Do NOT stamp the
+    // total here — children already contribute their durations to the
+    // aggregate, so a non-zero parent would double-count the same SQL prefix.
     logQueryAudit({
       id: parentAuditId,
       sql: sql.slice(0, 2000),

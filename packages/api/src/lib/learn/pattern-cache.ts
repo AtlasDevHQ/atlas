@@ -9,6 +9,7 @@
 import { getApprovedPatterns, type ApprovedPatternRow } from "@atlas/api/lib/db/internal";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { createLogger } from "@atlas/api/lib/logger";
+import { renderPattern } from "./pattern-format";
 
 const log = createLogger("pattern-cache");
 
@@ -397,25 +398,6 @@ export async function getRelevantPatterns(
 }
 
 /**
- * Format a pattern's average latency as a compact, injectable suffix, e.g.
- * ` (avg ~123ms)`. Returns `""` for unmeasured latency so a never-observed
- * pattern doesn't claim a fabricated speed. Exported so the org-knowledge
- * builder renders latency identically. PRD #3617 B-2 — surfacing this lets the
- * agent weigh a pattern's cost when choosing which to reuse.
- */
-export function formatAvgLatency(avgDurationMs: number | null): string {
-  if (avgDurationMs === null || !Number.isFinite(avgDurationMs) || avgDurationMs < 0) return "";
-  return ` (avg ~${Math.round(avgDurationMs)}ms)`;
-}
-
-/** Sanitize text for safe prompt injection — truncate and strip markdown headings. */
-function sanitizeForPrompt(text: string, maxLen: number): string {
-  let safe = text.replace(/^#{1,6}\s/gm, "").replace(/\n/g, " ");
-  if (safe.length > maxLen) safe = safe.slice(0, maxLen - 3) + "...";
-  return safe;
-}
-
-/**
  * Build the learned patterns section for the system prompt.
  * Returns empty string if no relevant patterns found.
  */
@@ -429,13 +411,7 @@ export async function buildLearnedPatternsSection(
     const patterns = await getRelevantPatterns(orgId, question, connectionGroupId, maxPatterns);
     if (patterns.length === 0) return "";
 
-    const lines = patterns.map((p) => {
-      const entity = p.sourceEntity ? `[${p.sourceEntity}]` : "[general]";
-      const desc = sanitizeForPrompt(p.description ?? "Query pattern", 200);
-      const sql = sanitizeForPrompt(p.patternSql, 500);
-      const latency = formatAvgLatency(p.avgDurationMs);
-      return `- ${entity}: ${desc}${latency}\n  SQL: ${sql}`;
-    });
+    const lines = patterns.map(renderPattern);
 
     return [
       "## Previously successful query patterns (organizational knowledge)",

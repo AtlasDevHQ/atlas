@@ -24,7 +24,8 @@ import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getPopularSuggestions } from "@atlas/api/lib/db/internal";
 import { listFavorites } from "@atlas/api/lib/starter-prompts/favorite-store";
-import { getRelevantPatterns, formatAvgLatency, type RelevantPattern } from "./pattern-cache";
+import { getRelevantPatterns, type RelevantPattern } from "./pattern-cache";
+import { renderPattern, sanitizeForPrompt } from "./pattern-format";
 
 const log = createLogger("org-knowledge-section");
 
@@ -59,19 +60,10 @@ export interface OrgKnowledgeInput {
 const DEFAULT_MAX_FAVORITES = 5;
 const DEFAULT_MAX_SUGGESTIONS = 5;
 
-/** Sanitize free text for safe prompt injection — collapse newlines, strip
- *  markdown headings (so injected text can't forge a new section), truncate.
- *  Kept local so the pure module pulls in no DB/settings deps. */
-function sanitize(text: string, maxLen: number): string {
-  let safe = text.replace(/^#{1,6}\s/gm, "").replace(/\s*\n+\s*/g, " ").trim();
-  if (safe.length > maxLen) safe = safe.slice(0, maxLen - 3) + "...";
-  return safe;
-}
-
 /** Non-empty, sanitized one-liners from a list of text-bearing rows. */
 function bulletLines(texts: readonly string[], maxItems: number, maxLen: number): string[] {
   return texts
-    .map((t) => sanitize(t, maxLen))
+    .map((t) => sanitizeForPrompt(t, maxLen))
     .filter((t) => t.length > 0)
     .slice(0, maxItems);
 }
@@ -90,15 +82,10 @@ export function buildOrgKnowledgeSection(input: OrgKnowledgeInput): string {
   const subsections: string[] = [];
 
   if (input.patterns.length > 0) {
-    const lines = input.patterns.map((p) => {
-      const entity = p.sourceEntity ? `[${p.sourceEntity}]` : "[general]";
-      const desc = sanitize(p.description ?? "Query pattern", 200);
-      const sql = sanitize(p.patternSql, 500);
-      // Surface the pattern's measured average latency (PRD #3617 B-2) so the
-      // agent can weigh cost; "" when never observed.
-      const latency = formatAvgLatency(p.avgDurationMs);
-      return `- ${entity}: ${desc}${latency}\n  SQL: ${sql}`;
-    });
+    // Each bullet surfaces the pattern's measured average latency (PRD #3617
+    // B-2, via renderPattern) so the agent can weigh cost; "" when never
+    // observed.
+    const lines = input.patterns.map(renderPattern);
     subsections.push(
       [
         "### Previously successful query patterns",

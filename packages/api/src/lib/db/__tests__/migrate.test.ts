@@ -158,8 +158,10 @@ describe("runMigrations", () => {
     //   Plus 0136 (mcp_action_policy.status DEFAULT 'blocked'→'allowed', #3578) = 137.
     //   Plus 0137 (learned_patterns + query_suggestions latency/staleness
     //   columns, PRD #3617 B-0, #3631) = 138.
-    //   Plus 0138 (learned_patterns.auto_promoted flag, PRD #3617 B-2, #3636) = 139.
-    expect(count).toBe(139);
+    //   Plus 0138 (semantic_profile_status durable partial-profile marker,
+    //   #3682) = 139.
+    //   Plus 0139 (learned_patterns.auto_promoted flag, PRD #3617 B-2, #3636) = 140.
+    expect(count).toBe(140);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -326,7 +328,8 @@ describe("runMigrations", () => {
         "0135_approval_rule_type_datasource.sql",
         "0136_mcp_action_policy_default_allowed.sql",
         "0137_learning_tables_performance_columns.sql",
-        "0138_learned_patterns_auto_promoted.sql",
+        "0138_semantic_profile_status.sql",
+        "0139_learned_patterns_auto_promoted.sql",
       ],
     });
 

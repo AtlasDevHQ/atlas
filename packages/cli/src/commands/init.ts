@@ -641,8 +641,20 @@ async function profileDatasource(
           `Use --force to continue anyway.`,
       );
     }
+    // Sub-threshold partial profile (#3682): the failed tables are SILENTLY
+    // absent from the generated layer unless we say so plainly. Make the
+    // consequence unmissable — the agent will not be able to query them.
+    const notQueryable = profilingErrors.map((e) => e.table);
+    const namePreview = notQueryable.slice(0, 10).join(", ");
     console.warn(
-      `Continuing with ${profiles.length} successfully profiled tables.\n`,
+      `\n⚠  ${profilingErrors.length} of ${totalAttempted} table(s) are NOT queryable — ` +
+        `they failed introspection and are EXCLUDED from the generated semantic layer:\n` +
+        `     ${namePreview}${notQueryable.length > 10 ? `, … (+${notQueryable.length - 10} more)` : ""}\n` +
+        `   Fix the underlying access (often a per-table permission gap) and re-run ` +
+        `\`atlas init\` to include them.`,
+    );
+    console.warn(
+      `Continuing with ${profiles.length} successfully profiled table(s).\n`,
     );
   }
 

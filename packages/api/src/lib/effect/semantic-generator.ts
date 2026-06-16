@@ -55,7 +55,9 @@ import {
 import { registerPluginEntities, invalidateOrgWhitelist } from "@atlas/api/lib/semantic/whitelist";
 import {
   bulkUpsertEntities,
+  upsertProfileStatus,
   type SemanticEntityType,
+  type ProfileStatusInput,
 } from "@atlas/api/lib/semantic/entities";
 import { safeSemanticRowName } from "@atlas/api/lib/semantic/shapes";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -210,6 +212,17 @@ export type EntityUpsertFn = (
   }>,
 ) => Promise<number>;
 
+/**
+ * The durable partial-profile recorder {@link SemanticGeneratorShape.persist}
+ * delegates to. Matches {@link upsertProfileStatus} so the live path uses it
+ * verbatim; tests inject a fake to assert the marker without an internal DB.
+ */
+export type ProfileStatusRecordFn = (
+  orgId: string,
+  connectionGroupId: string | null,
+  input: ProfileStatusInput,
+) => Promise<void>;
+
 /** Inputs for {@link SemanticGeneratorShape.persist}. */
 export interface PersistSemanticLayerOptions {
   /** Workspace the generated rows belong to. */
@@ -226,10 +239,25 @@ export interface PersistSemanticLayerOptions {
   /** Generated metric artifacts (omitted profiles produce none). */
   metrics?: ReadonlyArray<GeneratedArtifact>;
   /**
+   * Durable partial-profile marker (#3682). When supplied, persist records a
+   * `semantic_profile_status` row so a sub-threshold partial profile (some
+   * tables failed introspection but stayed below the abort threshold, so the
+   * layer persisted with those tables ABSENT) is durably marked incomplete —
+   * surviving a restart and readable by the publish flow. Recorded on EVERY
+   * profile, so an empty `failedTables` writes `partial = false` and clears a
+   * prior partial marker. Omit to skip the marker entirely (back-compat).
+   */
+  profileStatus?: ProfileStatusInput;
+  /**
    * Upsert override for tests. Defaults to {@link bulkUpsertEntities} — the
    * content-mode-aware draft upsert the wizard `/save` + import endpoint use.
    */
   upsert?: EntityUpsertFn;
+  /**
+   * Partial-profile recorder override for tests. Defaults to
+   * {@link upsertProfileStatus}. Only consulted when `profileStatus` is set.
+   */
+  recordStatus?: ProfileStatusRecordFn;
 }
 
 /** Outcome of {@link SemanticGeneratorShape.persist}. */
@@ -238,6 +266,17 @@ export interface PersistSemanticLayerResult {
   entitiesPersisted: number;
   /** Metric rows successfully persisted (as drafts). */
   metricsPersisted: number;
+  /**
+   * Whether the persisted layer is INCOMPLETE — some tables failed introspection
+   * and are absent. Derived from `profileStatus.failedTables`. NOTE the asymmetry:
+   * `false` means "verified complete" OR "not assessed" (no `profileStatus` was
+   * supplied) — it is NOT a guarantee of completeness. Every real call site
+   * supplies `profileStatus`, so in practice `false` ⇒ complete; a caller that
+   * needs to distinguish "complete" from "unknown" must check whether it passed
+   * `profileStatus`. Lets callers surface the partial state without re-deriving
+   * it from `errors[]`.
+   */
+  partial: boolean;
 }
 
 /** Outcome of {@link SemanticGeneratorShape.profileAndGenerate}. */
@@ -595,17 +634,55 @@ function persistImpl(
     // cross-surface contract; this just makes the SAME process see them now.
     invalidateOrgWhitelist(opts.orgId);
 
+    // #3682 — record the durable partial-profile marker. This is the deeper,
+    // restart-surviving signal behind the transient MCP `incomplete` flag: a
+    // sub-threshold partial layer persists with the failed tables ABSENT, so the
+    // marker is what makes the incompleteness visible to the publish flow later
+    // (and in a different process than the one that profiled). Recorded on EVERY
+    // profile so a clean re-profile writes `partial = false` and clears it.
+    //
+    // Advisory: the entities ARE already persisted (and queryable) at this point,
+    // so a marker-write failure must NOT fail the whole persist and report the
+    // layer un-generated. We log it loudly (never silently swallowed) and carry
+    // on — the worst case is a degraded layer that isn't flagged, not a lost one.
+    const partial = (opts.profileStatus?.failedTables.length ?? 0) > 0;
+    if (opts.profileStatus !== undefined) {
+      const record = opts.recordStatus ?? upsertProfileStatus;
+      const status = opts.profileStatus;
+      yield* Effect.tryPromise({
+        try: () => record(opts.orgId, opts.connectionGroupId, status),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.error(
+            {
+              orgId: opts.orgId,
+              connectionGroupId: opts.connectionGroupId,
+              failedCount: status.failedTables.length,
+              err: err.message,
+            },
+            "Failed to record durable partial-profile marker — entities persisted, " +
+              "marker skipped. The layer is queryable but its partial state may not " +
+              "surface to the publish flow until the next profile.",
+          );
+          return Effect.void;
+        }),
+      );
+    }
+
     log.info(
       {
         orgId: opts.orgId,
         connectionGroupId: opts.connectionGroupId,
         entitiesPersisted,
         metricsPersisted,
+        partial,
+        failedCount: opts.profileStatus?.failedTables.length ?? 0,
       },
       "Persisted generated semantic layer to the org store as drafts",
     );
 
-    return { entitiesPersisted, metricsPersisted } satisfies PersistSemanticLayerResult;
+    return { entitiesPersisted, metricsPersisted, partial } satisfies PersistSemanticLayerResult;
   });
 }
 

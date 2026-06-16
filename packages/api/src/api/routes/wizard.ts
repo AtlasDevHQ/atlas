@@ -28,6 +28,7 @@ import { _resetWhitelists, invalidateOrgWhitelist } from "@atlas/api/lib/semanti
 import {
   bulkUpsertEntities,
   resolveGroupIdForConnection,
+  upsertProfileStatus,
 } from "@atlas/api/lib/semantic/entities";
 import { syncEntityToDisk } from "@atlas/api/lib/semantic/sync";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -237,6 +238,14 @@ const SaveRequestSchema = z.object({
   // wizard frontend, which never sends `profiles`; defaults to "postgres".
   dbType: z.string().optional(),
   profiles: z.array(TableProfileSchema).optional(),
+  // #3682 — the per-table profiling failures the `/generate` step returned, plus
+  // the total tables ATTEMPTED. Forwarded by the wizard so a sub-threshold
+  // partial profile is durably marked incomplete (`semantic_profile_status`),
+  // visible to the publish flow. Optional: a client that omits them skips the
+  // marker (no behaviour change). An empty `failedTables` records completeness,
+  // which CLEARS a prior partial marker after a clean re-profile.
+  failedTables: z.array(z.object({ table: z.string(), error: z.string() })).optional(),
+  totalTables: z.number().int().nonnegative().optional(),
 });
 
 const SaveResponseSchema = z.object({
@@ -1101,6 +1110,32 @@ wizard.openapi(saveRoute, async (c) => {
           }, 500);
         }
         invalidateOrgWhitelist(orgId);
+
+        // #3682 — record the durable partial-profile marker when the wizard
+        // forwarded the `/generate` failures. The wizard path persists via
+        // `bulkUpsertEntities` (not `SemanticGenerator.persist`), so it writes
+        // the marker here directly. Best-effort: the entities ARE persisted, so
+        // a marker-write failure must not fail the save — log and continue.
+        if (body.failedTables !== undefined) {
+          const failedTables = body.failedTables;
+          yield* Effect.tryPromise({
+            try: () =>
+              upsertProfileStatus(orgId, connectionGroupId, {
+                totalTables: body.totalTables ?? entities.length + failedTables.length,
+                failedTables,
+              }),
+            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+          }).pipe(
+            Effect.catchAll((err) => {
+              log.error(
+                { err: err.message, requestId, orgId, connectionId, failedCount: failedTables.length },
+                "Wizard save: failed to record durable partial-profile marker — " +
+                  "entities persisted, marker skipped",
+              );
+              return Effect.void;
+            }),
+          );
+        }
       }
 
       // Disk writes happen after DB success. Output dir is org-scoped and

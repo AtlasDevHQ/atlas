@@ -29,6 +29,7 @@ import {
   SemanticGeneratorLive,
   createSemanticGeneratorTestLayer,
   type DatasourceProfiler,
+  type ProfileStatusRecordFn,
 } from "../semantic-generator";
 import {
   getWhitelistedTables,
@@ -350,7 +351,7 @@ describe("SemanticGenerator.persist", () => {
         });
       }),
     );
-    expect(result).toEqual({ entitiesPersisted: 2, metricsPersisted: 1 });
+    expect(result).toEqual({ entitiesPersisted: 2, metricsPersisted: 1, partial: false });
     // Two upsert calls: one for entities, one for metrics — both scoped to the
     // group and typed correctly.
     expect(upsert.calls).toHaveLength(2);
@@ -378,7 +379,7 @@ describe("SemanticGenerator.persist", () => {
         });
       }),
     );
-    expect(result).toEqual({ entitiesPersisted: 1, metricsPersisted: 0 });
+    expect(result).toEqual({ entitiesPersisted: 1, metricsPersisted: 0, partial: false });
     expect(upsert.calls).toHaveLength(1); // entities only
     expect(upsert.calls[0].rows[0].connectionGroupId).toBeNull();
   });
@@ -428,6 +429,139 @@ describe("SemanticGenerator.persist", () => {
       expect(json).toContain("persist_error");
       expect(json).toContain("DB pool exhausted");
     }
+  });
+
+  // ── #3682 — durable partial-profile marker ─────────────────────────
+  // A sub-threshold partial profile (some tables failed introspection but
+  // stayed under the 20% abort threshold) persists with those tables ABSENT.
+  // The durable marker is what makes the incompleteness survive a restart and
+  // become visible to the publish flow — not just the transient `errors[]`.
+
+  type StatusCall = {
+    orgId: string;
+    connectionGroupId: string | null;
+    input: { totalTables: number; failedTables: ReadonlyArray<{ table: string; error: string }> };
+  };
+
+  /** A `upsertProfileStatus`-shaped fake that records its calls. */
+  function fakeRecordStatus(
+    behavior?: () => void,
+  ): ProfileStatusRecordFn & { calls: StatusCall[] } {
+    const fn = Object.assign(
+      (orgId: string, connectionGroupId: string | null, input: StatusCall["input"]) => {
+        fn.calls.push({ orgId, connectionGroupId, input });
+        if (behavior) behavior();
+        return Promise.resolve();
+      },
+      { calls: [] as StatusCall[] },
+    );
+    return fn;
+  }
+
+  it("records a durable partial marker when 1 of 10 tables failed", async () => {
+    const recordStatus = fakeRecordStatus();
+    const result = await run(
+      Effect.gen(function* () {
+        const svc = yield* SemanticGenerator;
+        return yield* svc.persist({
+          orgId: "org_partial",
+          connectionGroupId: "g_prod",
+          // 9 tables generated; 1 failed → 10 attempted, sub-threshold partial.
+          entities: Array.from({ length: 9 }, (_, i) => ({
+            table: `t${i}`,
+            fileName: `t${i}.yml`,
+            yaml: `table: t${i}`,
+          })),
+          profileStatus: {
+            totalTables: 10,
+            failedTables: [{ table: "locked_table", error: "permission denied" }],
+          },
+          upsert: fakeUpsert(),
+          recordStatus,
+        });
+      }),
+    );
+
+    // The persisted layer is flagged incomplete...
+    expect(result.partial).toBe(true);
+    expect(result.entitiesPersisted).toBe(9);
+    // ...and the durable marker was written with the failed table and the
+    // attempted total — the signal that survives restart / reaches publish.
+    expect(recordStatus.calls).toHaveLength(1);
+    const call = recordStatus.calls[0];
+    expect(call.orgId).toBe("org_partial");
+    expect(call.connectionGroupId).toBe("g_prod");
+    expect(call.input.totalTables).toBe(10);
+    expect(call.input.failedTables).toEqual([
+      { table: "locked_table", error: "permission denied" },
+    ]);
+  });
+
+  it("records a complete marker (partial=false) when no tables failed — clears a prior partial", async () => {
+    const recordStatus = fakeRecordStatus();
+    const result = await run(
+      Effect.gen(function* () {
+        const svc = yield* SemanticGenerator;
+        return yield* svc.persist({
+          orgId: "org_clean",
+          connectionGroupId: null,
+          entities: [{ table: "orders", fileName: "orders.yml", yaml: "table: orders" }],
+          profileStatus: { totalTables: 1, failedTables: [] },
+          upsert: fakeUpsert(),
+          recordStatus,
+        });
+      }),
+    );
+    expect(result.partial).toBe(false);
+    // Still recorded — an empty failedTables write is what CLEARS a stale
+    // partial marker after a fixed-permission re-profile.
+    expect(recordStatus.calls).toHaveLength(1);
+    expect(recordStatus.calls[0].input.failedTables).toEqual([]);
+  });
+
+  it("does not record any marker when profileStatus is omitted (back-compat)", async () => {
+    const recordStatus = fakeRecordStatus();
+    const result = await run(
+      Effect.gen(function* () {
+        const svc = yield* SemanticGenerator;
+        return yield* svc.persist({
+          orgId: "org_nostatus",
+          connectionGroupId: null,
+          entities: [{ table: "orders", fileName: "orders.yml", yaml: "table: orders" }],
+          upsert: fakeUpsert(),
+          recordStatus,
+        });
+      }),
+    );
+    expect(result.partial).toBe(false);
+    expect(recordStatus.calls).toHaveLength(0);
+  });
+
+  it("does NOT fail the persist when the marker write throws (entities already landed)", async () => {
+    const recordStatus = fakeRecordStatus(() => {
+      throw new Error("status table unavailable");
+    });
+    // The recorder throws synchronously inside the thunk → routed to the error
+    // channel → caught + logged, persist still succeeds (the layer is queryable).
+    const result = await run(
+      Effect.gen(function* () {
+        const svc = yield* SemanticGenerator;
+        return yield* svc.persist({
+          orgId: "org_marker_fail",
+          connectionGroupId: null,
+          entities: [{ table: "orders", fileName: "orders.yml", yaml: "table: orders" }],
+          profileStatus: {
+            totalTables: 2,
+            failedTables: [{ table: "x", error: "boom" }],
+          },
+          upsert: fakeUpsert(),
+          recordStatus,
+        });
+      }),
+    );
+    expect(result.entitiesPersisted).toBe(1);
+    expect(result.partial).toBe(true);
+    expect(recordStatus.calls).toHaveLength(1);
   });
 });
 

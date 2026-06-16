@@ -114,6 +114,8 @@ mock.module("@atlas/api/lib/settings", () => ({
 // cascade-ordering / COMMIT. Other entity helpers stay as no-ops because
 // this test file doesn't exercise them.
 mock.module("@atlas/api/lib/semantic/entities", () => ({
+  upsertProfileStatus: mock(() => Promise.resolve()),
+  listIncompleteProfileLayers: mock(() => Promise.resolve([])),
   listEntityRows: mock(() => Promise.resolve([])),
   listEntities: mock(() => Promise.resolve([])),
   getEntity: mock(() => Promise.resolve(null)),

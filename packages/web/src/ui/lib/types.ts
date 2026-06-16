@@ -63,6 +63,7 @@ export type {
   PromptIndustry,
   QuerySuggestion,
   ObjectType,
+  ProfileError,
   WizardEntityColumn,
   WizardEnrichResult,
   WizardEntityResult,

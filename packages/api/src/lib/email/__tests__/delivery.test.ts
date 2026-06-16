@@ -427,6 +427,7 @@ describe("sendTransactionalEmail", () => {
         send: async () => ({ success: false, provider: "resend", error: "503" }),
         enqueueFailed: async (_m, o) => {
           captured.push({ emailType: o.emailType, ttlMs: o.ttlMs });
+          return true;
         },
       },
     );
@@ -441,11 +442,13 @@ describe("sendTransactionalEmail", () => {
         send: async () => {
           throw new Error("sendEmail blew up unexpectedly");
         },
-        enqueueFailed: async () => {},
+        enqueueFailed: async () => false,
       },
     );
     expect(result.success).toBe(false);
     expect(result.provider).toBe("log");
+    // A thrown send becomes a log-provider failure — nowhere to queue, so lost.
+    expect(result.durable).toBe(false);
   });
 
   it("returns the send result and does NOT enqueue on success", async () => {
@@ -457,10 +460,12 @@ describe("sendTransactionalEmail", () => {
         send: async () => ({ success: true, provider: "resend", messageId: "m1" }),
         enqueueFailed: async () => {
           enqueued++;
+          return true;
         },
       },
     );
     expect(result.success).toBe(true);
+    expect(result.durable).toBe(true);
     expect(enqueued).toBe(0);
   });
 
@@ -473,27 +478,46 @@ describe("sendTransactionalEmail", () => {
         send: async () => ({ success: false, provider: "resend", error: "Resend 503" }),
         enqueueFailed: async (m, o) => {
           enqueuedWith.push({ to: m.to, emailType: o.emailType });
+          return true;
         },
       },
     );
-    // Caller still sees the original failed result (it stays 200-safe).
+    // Caller still sees the original failed result (it stays 200-safe)...
     expect(result.success).toBe(false);
+    // ...but the row landed, so the send is durable (committed for retry).
+    expect(result.durable).toBe(true);
     expect(enqueuedWith).toEqual([{ to: "user@example.com", emailType: "password-reset" }]);
+  });
+
+  it("reports a non-durable result when a real-transport failure cannot be enqueued", async () => {
+    const result = await sendTransactionalEmail(
+      MSG,
+      { emailType: "password-reset", orgId: "org-1" },
+      {
+        send: async () => ({ success: false, provider: "resend", error: "Resend 503" }),
+        // The outbox enqueue itself fails (no DB / DB blip) — the row did not land.
+        enqueueFailed: async () => false,
+      },
+    );
+    expect(result.success).toBe(false);
+    expect(result.durable).toBe(false);
   });
 
   it("does NOT enqueue when no transport is configured (provider=log)", async () => {
     let enqueued = 0;
-    await sendTransactionalEmail(
+    const result = await sendTransactionalEmail(
       MSG,
       { emailType: "password-reset" },
       {
         send: async () => ({ success: false, provider: "log", error: "no backend" }),
         enqueueFailed: async () => {
           enqueued++;
+          return true;
         },
       },
     );
     expect(enqueued).toBe(0);
+    expect(result.durable).toBe(false);
   });
 
   it("never throws even if enqueue throws — preserves the enumeration-safe 200 (F-09)", async () => {
@@ -510,16 +534,19 @@ describe("sendTransactionalEmail", () => {
     // Resolved (not rejected) with the original result.
     expect(result.success).toBe(false);
     expect(result.provider).toBe("resend");
+    // The enqueue threw, so the row did not land — not durable.
+    expect(result.durable).toBe(false);
   });
 });
 
 describe("enqueueFailedTransactionalEmail", () => {
-  it("does not throw and skips enqueue when no internal DB is configured", async () => {
+  it("does not throw and returns false (skips enqueue) when no internal DB is configured", async () => {
     // No DATABASE_URL in the unit-test env → hasInternalDB() is false →
-    // the function warns and returns rather than throwing. This pins the
-    // F-09 no-throw contract on the real (non-injected) path.
+    // the function warns and returns false rather than throwing. This pins the
+    // F-09 no-throw contract AND the "row did not land" signal on the real
+    // (non-injected) path.
     await expect(
       enqueueFailedTransactionalEmail(MSG, { emailType: "password-reset" }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
   });
 });

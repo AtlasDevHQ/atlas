@@ -1,4 +1,4 @@
--- 0138 — `auto_promoted` flag on learned_patterns (PRD #3617 B-2, #3636).
+-- 0139 — `auto_promoted` flag on learned_patterns (PRD #3617 B-2, #3636).
 --
 -- The nightly auto-promote/decay job (lib/learn/promote-decay-scheduler.ts)
 -- flips qualifying `query_pattern` rows from pending → approved without a human

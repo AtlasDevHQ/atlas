@@ -1225,6 +1225,15 @@ export async function profileLiveDatasource(opts: {
         connectionGroupId: conn.connectionGroupId,
         entities: result.entities,
         metrics: result.metrics,
+        // #3682 — durably mark the persisted layer incomplete when tables failed
+        // introspection below the abort threshold (so the layer landed with them
+        // ABSENT). `totalTables` is everything ATTEMPTED (profiled + failed);
+        // `failedTables` is already DSN-scrubbed by `profileImpl`. Recorded even
+        // when empty so a clean re-profile clears a prior partial marker.
+        profileStatus: {
+          totalTables: result.profiles.length + result.errors.length,
+          failedTables: result.errors,
+        },
       });
       gen.registerWhitelist(opts.connectionId, result.entities);
       return { result, persisted };

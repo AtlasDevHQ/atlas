@@ -150,6 +150,8 @@ mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
 }));
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
+  upsertProfileStatus: mock(() => Promise.resolve()),
+  listIncompleteProfileLayers: mock(() => Promise.resolve([])),
   listEntityRows: mock(() => Promise.resolve([])),
   listEntitiesWithOverlay: mock(() => Promise.resolve([])),
   listEntities: mock(() => Promise.resolve([])),

@@ -63,10 +63,13 @@ The headline of the principle. Candidates, by area:
 - **Stripe price IDs** (`STRIPE_{STARTER,PRO,BUSINESS}{,_ANNUAL}_PRICE_ID`, 6
   vars) — non-secret; boot-blocks via `BillingConfigInvalidError`. Operator should
   set pricing in Admin without a deploy. Only the secret key + webhook secret stay env.
-- **Rate-limit / abuse tuning** — `ATLAS_RATE_LIMIT_RPM_CHAT`, `_ADMIN`, the
-  `ATLAS_ABUSE_*` family, `ATLAS_CONTACT_RATE_LIMIT_RPM`, `ATLAS_DEMO_RATE_LIMIT_RPM`.
-  (Base `ATLAS_RATE_LIMIT_RPM` stays immutable — DDoS floor.) Relates to #3687.
-- **OAuth / token TTLs** — `ATLAS_OAUTH_*_TTL_SECONDS`, MCP session caps.
+- **Rate-limit / abuse tuning** — the per-user / chat / admin RPM trio
+  (`ATLAS_RATE_LIMIT_RPM`, `_RPM_CHAT`, `_RPM_ADMIN`) is **already** in the registry
+  (`_RPM` itself is immutable on SaaS — DDoS floor). The remaining env-only knobs to
+  promote are `ATLAS_CONTACT_RATE_LIMIT_RPM`, `ATLAS_DEMO_RATE_LIMIT_RPM`,
+  `ATLAS_DEMO_MAX_STEPS`, and the `ATLAS_ABUSE_*` family. Relates to #3687.
+- **OAuth / token TTLs** — `ATLAS_OAUTH_*_TTL_SECONDS`, MCP session caps
+  (`ATLAS_MCP_MAX_SESSIONS` is already env-profile-centralized, not registry).
 - **Operator integration credentials** — Slack/Discord/Teams/Telegram/WhatsApp/
   gchat/Jira/Linear/GitHub-App/Salesforce env creds read at boot. Today **adding a
   chat platform or action target to a region requires a Railway deploy**. These
@@ -79,9 +82,10 @@ The headline of the principle. Candidates, by area:
 For things that genuinely can't be runtime (boot-ordering) but are constant
 across regions:
 - `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` (keep `VERCEL_TOKEN` in env).
-- Per-region origins (`ATLAS_PUBLIC_API_URL`, `ATLAS_CORS_ORIGIN`, `ATLAS_RPID`)
-  derived from `ATLAS_API_REGION` + the `residency.regions[].apiUrl` map instead of
-  stamped per service.
+- Per-region origins (`ATLAS_PUBLIC_API_URL`, `ATLAS_RPID`, and
+  `ATLAS_CORS_ORIGIN` — note the last is *already* a platform registry setting,
+  `requiresRestart`, env as fallback) derived from `ATLAS_API_REGION` + the
+  `residency.regions[].apiUrl` map instead of stamped per service.
 
 ### Tier 3 — Delete redundant env vars
 Already covered by `atlas.config.ts`, no behavior change to drop from SaaS env:
@@ -106,6 +110,26 @@ knobs never got promoted into the registry. Closing that gap makes hosted Atlas
 configurable from the Admin console, reserves deploys for actual code changes, and
 leaves self-host exactly as flexible as it is now (the env var remains the
 fallback at the bottom of the precedence chain).
+
+## Completeness review (2026-06-16)
+
+A repo-wide `process.env` sweep (246 distinct vars) against `.env.example`, the
+settings registry, and `SAAS_ENV_KEYS` produced two corrections and one new gap:
+
+- **Already runtime-controllable** (do not "promote" — they're registry settings
+  today): `ATLAS_RATE_LIMIT_RPM_CHAT`, `ATLAS_RATE_LIMIT_RPM_ADMIN`,
+  `ATLAS_CORS_ORIGIN`. The registry holds ~39 settings total; reconcile any future
+  Tier-1 candidate against `SETTINGS_REGISTRY` in `lib/settings.ts` before filing.
+- **Undocumented env vars (9)** read in code but absent from `.env.example` — most
+  notably the **SSRF-class security flag `ATLAS_WEBHOOK_ALLOW_INTERNAL_CALLBACKS`**
+  (the webhook twin of the documented `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS` — must be
+  documented as *never-on-SaaS*), and **`GCHAT_PROJECT_NUMBER` / `GCHAT_PUBSUB_AUDIENCE`**,
+  read by the Google Chat adapter that already ships in the SaaS catalog. Also
+  `ATLAS_WEBHOOK_REPLAY_LEGACY`, `WEBHOOK_SECRET`, `WEBHOOK_SIGNING_SECRET`,
+  `E2B_API_KEY`, `DAYTONA_API_KEY`, `OBSIDIAN_API_KEY`, `AWS_SESSION_TOKEN`, plus an
+  `ES_API_KEY` vs documented `ATLAS_ES_API_KEY` naming split. Tracked separately.
+- **`ATLAS_REGION_{US,EU,APAC}_DB_URL`** are in `SAAS_ENV_KEYS` but not in
+  `.env.example` (the new operator reference does cover them).
 
 ## Tracked work
 

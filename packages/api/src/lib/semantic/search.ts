@@ -36,6 +36,16 @@ interface EntityDimension {
   sample_values?: unknown[];
   primary_key?: boolean;
   virtual?: boolean;
+  /**
+   * Profiler cardinality stats, mirrored from the entity YAML the profiler
+   * emits (`generate/yaml.ts`). Surfaced to the agent by {@link formatEntity}
+   * so it can pick high-selectivity filter columns and judge when
+   * `COUNT(DISTINCT …)` is cheap (#3630). Both are spread untyped from
+   * `yaml.load`, so consumers type-narrow with `typeof … === "number"` before
+   * formatting rather than trusting the static type.
+   */
+  unique_count?: number;
+  null_count?: number;
 }
 
 interface EntityMeasure {
@@ -59,7 +69,7 @@ interface EntityQueryPattern {
   sql?: string;
 }
 
-interface ParsedEntity {
+export interface ParsedEntity {
   name?: string;
   table: string;
   type?: string;
@@ -292,7 +302,36 @@ export function buildSemanticIndex(semanticRoot: string): string {
 
 // --- Formatters ---
 
-function formatEntity(
+/**
+ * Build the per-dimension cardinality fragments the agent uses to pick
+ * high-selectivity filters and judge `COUNT(DISTINCT …)` cost (#3630).
+ *
+ * Returns an ordered fragment list (never a joined string) so callers control
+ * spacing per mode, and so slice A-2 (#3634) can append an index marker
+ * (e.g. `"indexed"`) without reshaping the formatters. Empty when the
+ * dimension carries no profiled stats.
+ *
+ * `unique_count` / `null_count` are spread untyped from `yaml.load`, so each is
+ * narrowed with `typeof … === "number"` here rather than trusting the static
+ * type. `null_count` is omitted entirely by the profiler when zero, so an
+ * explicit `0` (or a finite count) is the only thing worth surfacing; we report
+ * the absolute count rather than a percentage because the per-dimension stats
+ * carry no row total to divide by.
+ */
+function cardinalityFragments(dim: EntityDimension): string[] {
+  const fragments: string[] = [];
+  if (typeof dim.unique_count === "number" && dim.unique_count >= 0) {
+    fragments.push(`~${dim.unique_count} distinct`);
+  }
+  if (typeof dim.null_count === "number" && dim.null_count >= 0) {
+    fragments.push(dim.null_count === 0 ? "no nulls" : `${dim.null_count} null`);
+  }
+  return fragments;
+}
+
+// Exported for unit testing the cardinality markers (#3630) as a pure
+// function over in-memory entity objects, without touching the YAML loader.
+export function formatEntity(
   entity: ParsedEntity,
   full: boolean,
   catalog: ParsedCatalog | null,
@@ -343,7 +382,9 @@ function formatEntity(
           const type = dim.type ?? "unknown";
           const pk = dim.primary_key ? " PK" : "";
           const desc = dim.description ? ` — ${dim.description}` : "";
-          lines.push(`  - ${name} (${type}${pk})${desc}`);
+          const card = cardinalityFragments(dim);
+          const cardSuffix = card.length > 0 ? `, ${card.join(", ")}` : "";
+          lines.push(`  - ${name} (${type}${pk}${cardSuffix})${desc}`);
         }
       }
 
@@ -400,6 +441,27 @@ function formatEntity(
     const parts: string[] = [`${colCount} columns`];
     if (pks.length > 0)
       parts.push(`PK: ${pks.map((p) => p.name ?? p.sql).join(", ")}`);
+
+    // Compact cardinality form: distinct counts for profiled real columns, so
+    // the agent can still spot high-selectivity filters in large layers without
+    // the full per-column listing (#3630). Capped so a wide table can't blow up
+    // the summary line.
+    const cardCols = dims
+      .filter(
+        (d) =>
+          !d.virtual &&
+          typeof d.unique_count === "number" &&
+          d.unique_count >= 0,
+      )
+      .map((d) => `${d.name ?? d.sql ?? "?"}(~${d.unique_count})`);
+    if (cardCols.length > 0) {
+      const CARD_CAP = 8;
+      const shown = cardCols.slice(0, CARD_CAP).join(", ");
+      const overflow =
+        cardCols.length > CARD_CAP ? `, +${cardCols.length - CARD_CAP} more` : "";
+      parts.push(`cardinality: ${shown}${overflow}`);
+    }
+
     if (measureCount > 0) parts.push(`${measureCount} measures`);
     if (joinCount > 0)
       parts.push(

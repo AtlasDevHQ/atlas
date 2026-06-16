@@ -33,6 +33,15 @@ export interface PatternProposalInput {
    * deduped away.
    */
   connectionGroupId: string | null | undefined;
+  /**
+   * Wall-clock execution time (ms) of the query that produced this proposal
+   * (#3635, PRD #3617 B-1). Computed at the `sql.ts` execution path for audit
+   * /SLA and threaded here to give every learned pattern a sense of how fast it
+   * runs. Seeds `avg_duration_ms` on insert and feeds the rolling average on
+   * each repeat observation. Optional: omitted (or `undefined`) leaves the
+   * latency columns untouched so callers without a measurement don't reset them.
+   */
+  durationMs?: number | null | undefined;
 }
 
 /**
@@ -55,7 +64,7 @@ export function proposePatternIfNovel(input: PatternProposalInput): void {
  * @internal
  */
 export async function _analyzeAndPropose(input: PatternProposalInput): Promise<void> {
-  const { sql, dialect, connectionId, orgId, connectionGroupId } = input;
+  const { sql, dialect, connectionId, orgId, connectionGroupId, durationMs } = input;
 
   // 1. Normalize SQL for dedup
   const normalized = normalizeSQL(sql);
@@ -75,8 +84,9 @@ export async function _analyzeAndPropose(input: PatternProposalInput): Promise<v
 
   const existing = await findPatternBySQL(orgId, connectionGroupId, normalized);
   if (existing) {
-    // Duplicate — bump count and confidence, append source fingerprint
-    incrementPatternCount(existing.id, fingerprint);
+    // Duplicate — bump count and confidence, append source fingerprint, and
+    // fold this execution's latency into the pattern's rolling average (#3635).
+    incrementPatternCount(existing.id, fingerprint, durationMs);
     log.debug(
       { patternId: existing.id, newCount: existing.repetitionCount + 1 },
       "Incremented repetition count for existing learned pattern",
@@ -95,6 +105,8 @@ export async function _analyzeAndPropose(input: PatternProposalInput): Promise<v
     sourceEntity: info?.primaryTable ?? "unknown",
     sourceQueries: [fingerprint],
     proposedBy: "agent",
+    // First observation seeds the rolling average (#3635).
+    durationMs,
   });
 
   log.debug(

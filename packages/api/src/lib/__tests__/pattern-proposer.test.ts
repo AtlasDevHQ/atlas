@@ -328,7 +328,7 @@ describe("pattern-proposer", () => {
     const updateCall = queryCalls.find((c) => c.sql.includes("UPDATE learned_patterns SET"));
     expect(updateCall).toBeDefined();
     // Should include the fingerprint as a JSONB array
-    expect(updateCall!.params?.length).toBe(2); // [id, jsonbEntry]
+    expect(updateCall!.params?.length).toBe(3); // [id, jsonbEntry, observation] (#3635)
     const jsonbEntry = updateCall!.params![1] as string;
     const parsed = JSON.parse(jsonbEntry);
     expect(Array.isArray(parsed)).toBe(true);
@@ -412,9 +412,70 @@ describe("pattern-proposer", () => {
 
     const updateCall = queryCalls.find((c) => c.sql.includes("UPDATE learned_patterns SET"));
     expect(updateCall).toBeDefined();
-    // Simple update: only id param, no JSONB append
-    expect(updateCall!.params?.length).toBe(1);
+    // No fingerprint → no JSONB append; params are [id, observation] (#3635).
+    expect(updateCall!.params?.length).toBe(2);
     expect(updateCall!.params?.[0]).toBe("pat-abc");
     expect(updateCall!.sql).not.toContain("source_queries");
+  });
+
+  // ── Per-pattern latency (#3635, PRD #3617 B-1) ─────────────────────
+
+  test("durationMs threads through to insert seeding avg_duration_ms + last_seen_at", async () => {
+    setResults({ rows: [] });
+
+    await _analyzeAndPropose({ ...defaultInput, durationMs: 1234 });
+
+    const insertCall = queryCalls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(insertCall).toBeDefined();
+    // Seeds avg_duration_ms (the last bound param) and stamps last_seen_at.
+    expect(insertCall!.sql).toContain("avg_duration_ms");
+    expect(insertCall!.sql).toContain("last_seen_at");
+    expect(insertCall!.params?.[7]).toBe(1234);
+  });
+
+  test("insert leaves latency NULL when durationMs is absent", async () => {
+    setResults({ rows: [] });
+
+    await _analyzeAndPropose(defaultInput); // no durationMs
+
+    const insertCall = queryCalls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(insertCall).toBeDefined();
+    // Absent observation → seed param is NULL (column stays "not yet observed").
+    expect(insertCall!.params?.[7]).toBeNull();
+  });
+
+  test("insert ignores a negative/NaN duration (seeds NULL)", async () => {
+    setResults({ rows: [] });
+
+    await _analyzeAndPropose({ ...defaultInput, durationMs: -5 });
+
+    const insertCall = queryCalls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(insertCall!.params?.[7]).toBeNull();
+  });
+
+  test("durationMs threads through to incrementPatternCount on a duplicate", async () => {
+    setResults({ rows: [{ id: "pat-dup", confidence: 0.5, repetition_count: 3 }] });
+
+    await _analyzeAndPropose({ ...defaultInput, durationMs: 900 });
+
+    const updateCall = queryCalls.find((c) => c.sql.includes("UPDATE learned_patterns SET"));
+    expect(updateCall).toBeDefined();
+    // Rolling-average + last_seen_at maintenance is present in the SQL.
+    expect(updateCall!.sql).toContain("avg_duration_ms");
+    expect(updateCall!.sql).toContain("last_seen_at");
+    // params: [id, jsonbFingerprint, observation]
+    expect(updateCall!.params?.length).toBe(3);
+    expect(updateCall!.params?.[2]).toBe(900);
+  });
+
+  test("incrementPatternCount with fingerprint but no duration passes a NULL observation", () => {
+    enableInternalDB();
+
+    incrementPatternCount("pat-xyz", "abc123");
+
+    const updateCall = queryCalls.find((c) => c.sql.includes("UPDATE learned_patterns SET"));
+    expect(updateCall).toBeDefined();
+    expect(updateCall!.params?.length).toBe(3);
+    expect(updateCall!.params?.[2]).toBeNull();
   });
 });

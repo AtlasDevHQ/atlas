@@ -106,6 +106,16 @@ const SYSTEM_PROMPT_SUFFIX = `## Rules
 - If you cannot answer a question with the available data, say so clearly
 - Be concise but thorough in your interpretations
 
+## Writing Performant SQL (Sargability)
+Write filters that let the database use its indexes. A predicate is "sargable" when the optimizer can use an index for it; wrapping a column in a function or arithmetic usually disables the index and forces a full scan.
+- **Prefer filtering and joining on indexed columns.** Keep the indexed column bare on one side of the comparison — compare it against a literal or parameter, not against an expression of the same column.
+- **Never wrap an indexed column in a function inside a \`WHERE\` (or \`JOIN\`) predicate.** For example, do NOT write \`WHERE YEAR(created_at) = 2024\`, \`WHERE date_trunc('year', created_at) = '2024-01-01'\`, or \`WHERE LOWER(email) = 'x@y.com'\` against a plainly-indexed column — each forces a full scan.
+- **Rewrite date filters as half-open ranges** on the bare column instead of extracting parts of it:
+  - Instead of \`WHERE YEAR(created_at) = 2024\`, write \`WHERE created_at >= '2024-01-01' AND created_at < '2025-01-01'\`.
+  - Instead of \`WHERE MONTH(created_at) = 3 AND YEAR(created_at) = 2024\`, write \`WHERE created_at >= '2024-03-01' AND created_at < '2024-04-01'\`.
+  - Use \`< next-period-start\` (a half-open upper bound) rather than \`<= last-day\` so the range is correct for both dates and timestamps.
+- Function-wrapped expressions are fine for **projection and grouping** (e.g. \`SELECT date_trunc('month', created_at) AS month ... GROUP BY 1\`) — the sargability concern is specifically about **filter and join predicates** on indexed columns.
+
 ## Follow-up Questions
 When the user asks a follow-up question:
 - Reference previous query results — don't re-explore the semantic layer if you already know the schema
@@ -145,8 +155,8 @@ const MYSQL_DIALECT_GUIDE = `
 
 ## SQL Dialect: MySQL
 This database uses MySQL. Key differences from PostgreSQL:
-- Use \`YEAR(col)\` and \`MONTH(col)\` (preferred) or \`EXTRACT(YEAR FROM col)\` — both work
-- Use \`DATE_FORMAT(col, '%Y-%m')\` instead of \`TO_CHAR(col, 'YYYY-MM')\`
+- For **projecting or grouping** by a date part, use \`YEAR(col)\` / \`MONTH(col)\` (or \`EXTRACT(YEAR FROM col)\`) and \`DATE_FORMAT(col, '%Y-%m')\` (instead of \`TO_CHAR(col, 'YYYY-MM')\`) — e.g. \`SELECT DATE_FORMAT(created_at, '%Y-%m') AS month ... GROUP BY 1\`
+- For **filtering** an indexed date column, do NOT wrap it: \`WHERE YEAR(col) = 2024\` or \`WHERE DATE_FORMAT(col, '%Y-%m') = '2024-03'\` forces a full table scan. Use a half-open range on the bare column instead — \`WHERE col >= '2024-01-01' AND col < '2025-01-01'\` (year) or \`WHERE col >= '2024-03-01' AND col < '2024-04-01'\` (month). See the Sargability rules above
 - Use \`IFNULL(col, default)\` or \`COALESCE(col, default)\` — both work
 - Use backtick quoting for identifiers: \`\\\`column\\\`\` instead of \`"column"\`
 - Use \`CONCAT(a, b)\` for string concatenation — \`||\` is logical OR in MySQL

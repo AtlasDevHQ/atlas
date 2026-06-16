@@ -187,6 +187,10 @@ export interface ResolveOrgKnowledgeParams {
 export async function resolveOrgKnowledgeSection(
   params: ResolveOrgKnowledgeParams,
 ): Promise<string> {
+  // Patterns first and on its own: its throw must propagate so the caller's
+  // `learned_patterns_unavailable` warning path stays intact. The two
+  // best-effort tiers below are independent of it and of each other, so they
+  // run concurrently rather than as a waterfall.
   const patterns = await getRelevantPatterns(
     params.orgId,
     params.question,
@@ -194,46 +198,10 @@ export async function resolveOrgKnowledgeSection(
     params.maxPatterns,
   );
 
-  // Favorites — best-effort, only with a user+org context.
-  let favorites: OrgKnowledgeFavorite[] = [];
-  if (params.userId && params.orgId) {
-    try {
-      const rows = await listFavorites(params.userId, params.orgId);
-      favorites = rows.map((r) => ({ text: r.text }));
-    } catch (err) {
-      log.warn(
-        {
-          err: err instanceof Error ? err.message : String(err),
-          userId: params.userId,
-          orgId: params.orgId,
-          requestId: params.requestId,
-        },
-        "Failed to load favorites for org-knowledge block — continuing without favorites",
-      );
-    }
-  }
-
-  // Popular approved suggestions — best-effort, only with an org context.
-  let suggestions: OrgKnowledgeSuggestion[] = [];
-  if (params.orgId) {
-    try {
-      const rows = await getPopularSuggestions(
-        params.orgId,
-        params.maxSuggestions ?? DEFAULT_SUGGESTION_FETCH,
-        params.mode,
-      );
-      suggestions = rows.map((r) => ({ description: r.description }));
-    } catch (err) {
-      log.warn(
-        {
-          err: err instanceof Error ? err.message : String(err),
-          orgId: params.orgId,
-          requestId: params.requestId,
-        },
-        "Failed to load popular suggestions for org-knowledge block — continuing without suggestions",
-      );
-    }
-  }
+  const [favorites, suggestions] = await Promise.all([
+    loadFavorites(params),
+    loadSuggestions(params),
+  ]);
 
   return buildOrgKnowledgeSection({
     patterns,
@@ -242,4 +210,53 @@ export async function resolveOrgKnowledgeSection(
     maxFavorites: params.maxFavorites,
     maxSuggestions: params.maxSuggestions,
   });
+}
+
+/** Best-effort favorites tier — scoped `(user_id, org_id)`. A read failure is
+ *  logged and degrades to an empty tier rather than failing the whole block. */
+async function loadFavorites(
+  params: ResolveOrgKnowledgeParams,
+): Promise<OrgKnowledgeFavorite[]> {
+  if (!params.userId || !params.orgId) return [];
+  try {
+    const rows = await listFavorites(params.userId, params.orgId);
+    return rows.map((r) => ({ text: r.text }));
+  } catch (err) {
+    log.warn(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        userId: params.userId,
+        orgId: params.orgId,
+        requestId: params.requestId,
+      },
+      "Failed to load favorites for org-knowledge block — continuing without favorites",
+    );
+    return [];
+  }
+}
+
+/** Best-effort suggestions tier — scoped by org, approved + published only. A
+ *  read failure is logged and degrades to an empty tier. */
+async function loadSuggestions(
+  params: ResolveOrgKnowledgeParams,
+): Promise<OrgKnowledgeSuggestion[]> {
+  if (!params.orgId) return [];
+  try {
+    const rows = await getPopularSuggestions(
+      params.orgId,
+      params.maxSuggestions ?? DEFAULT_SUGGESTION_FETCH,
+      params.mode,
+    );
+    return rows.map((r) => ({ description: r.description }));
+  } catch (err) {
+    log.warn(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        orgId: params.orgId,
+        requestId: params.requestId,
+      },
+      "Failed to load popular suggestions for org-knowledge block — continuing without suggestions",
+    );
+    return [];
+  }
 }

@@ -39,20 +39,43 @@ let patternRows: PatRow[] = [];
 
 // --- Mocks (all named exports) ---
 
-// internalQuery is routed by SQL text so the real `listFavorites` resolver
-// runs against an in-memory table that honors the (user_id, org_id) WHERE
-// predicate exactly like Postgres would — the scoping under test.
+// internalQuery is the single Postgres-emulation chokepoint, routed by SQL
+// text. Both the real `listFavorites` resolver (separate, unmocked module) and
+// the `getPopularSuggestions` stub route through it, so the WHERE predicates
+// under test — favorites' (user_id, org_id) and suggestions' org + approval +
+// mode-driven status clause — are honored exactly like Postgres would.
+async function mockInternalQuery(sql: string, paramsArg?: unknown[]) {
+  const params = paramsArg ?? [];
+  if (sql.includes("user_favorite_prompts")) {
+    const [userId, orgId] = params as [string, string];
+    return favoriteRows.filter((r) => r.user_id === userId && r.org_id === orgId);
+  }
+  if (sql.includes("query_suggestions")) {
+    // Interpret the real resolver's SQL: org scope (or IS NULL), the approval
+    // gate, and the mode-driven status clause — `published` only unless the
+    // SQL opted developer-mode drafts in.
+    const orgIsNull = sql.includes("org_id IS NULL");
+    const allowDraft = sql.includes("'draft'");
+    const limit = Number(params[params.length - 1] ?? 10);
+    return suggestionRows
+      .filter((s) => {
+        if (orgIsNull ? s.org_id !== null : s.org_id !== params[0]) return false;
+        if (sql.includes("approval_status = 'approved'") && s.approval_status !== "approved") {
+          return false;
+        }
+        return allowDraft
+          ? s.status === "published" || s.status === "draft"
+          : s.status === "published";
+      })
+      .slice(0, limit);
+  }
+  return [];
+}
+
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   getInternalDB: () => ({ query: async () => ({ rows: [] }), end: async () => {}, on: () => {} }),
-  internalQuery: async (sql: string, paramsArg?: unknown[]) => {
-    const params = paramsArg ?? [];
-    if (sql.includes("user_favorite_prompts")) {
-      const [userId, orgId] = params as [string, string];
-      return favoriteRows.filter((r) => r.user_id === userId && r.org_id === orgId);
-    }
-    return [];
-  },
+  internalQuery: mockInternalQuery,
   internalExecute: () => {},
   _resetPool: () => {},
   _resetCircuitBreaker: () => {},
@@ -71,16 +94,27 @@ mock.module("@atlas/api/lib/db/internal", () => ({
         (p.org_id === orgId || p.org_id === null) &&
         (p.connection_group_id === (connectionGroupId ?? null) || p.connection_group_id === null),
     ),
-  // Popular-suggestion resolver — scoped by org, approved + published only.
-  getPopularSuggestions: async (orgId: string | null, limit = 10) =>
-    suggestionRows
-      .filter(
-        (s) =>
-          s.org_id === orgId &&
-          s.approval_status === "approved" &&
-          s.status === "published",
-      )
-      .slice(0, limit),
+  // Popular-suggestion resolver — mirrors the real impl: builds the same SQL
+  // (org scope + approval gate + mode-driven status clause) and routes through
+  // `internalQuery`, so the predicate lives in the chokepoint above rather than
+  // being reimplemented here. Honors `mode` so a developer-mode caller would
+  // see drafts exactly as Postgres would.
+  getPopularSuggestions: async (
+    orgId: string | null,
+    limit = 10,
+    mode: "published" | "developer" = "published",
+  ) => {
+    const orgClause = orgId != null ? "org_id = $1" : "org_id IS NULL";
+    const statusClause =
+      mode === "developer"
+        ? "query_suggestions.status IN ('published', 'draft')"
+        : "query_suggestions.status = 'published'";
+    const params = orgId != null ? [orgId, limit] : [limit];
+    return mockInternalQuery(
+      `SELECT * FROM query_suggestions WHERE ${orgClause} AND approval_status = 'approved' AND ${statusClause} ORDER BY score DESC LIMIT $${params.length}`,
+      params,
+    );
+  },
   upsertSuggestion: async () => "created",
   getSuggestionsByTables: async () => [],
   incrementSuggestionClick: () => {},
@@ -321,6 +355,33 @@ describe("resolveOrgKnowledgeSection (scoping)", () => {
 
     expect(section).toContain("Approved question");
     expect(section).not.toContain("Pending question");
+  });
+
+  test("developer mode surfaces approved drafts that published mode hides", async () => {
+    suggestionRows = [
+      { id: "s-draft", org_id: "org-a", description: "Queued approved draft", approval_status: "approved", status: "draft" },
+      { id: "s-published", org_id: "org-a", description: "Live published question", approval_status: "approved", status: "published" },
+    ];
+
+    const published = await resolveOrgKnowledgeSection({
+      orgId: "org-a",
+      userId: "user-a",
+      connectionGroupId: null,
+      mode: "published",
+      question: "show me revenue",
+    });
+    expect(published).toContain("Live published question");
+    expect(published).not.toContain("Queued approved draft");
+
+    const developer = await resolveOrgKnowledgeSection({
+      orgId: "org-a",
+      userId: "user-a",
+      connectionGroupId: null,
+      mode: "developer",
+      question: "show me revenue",
+    });
+    expect(developer).toContain("Live published question");
+    expect(developer).toContain("Queued approved draft");
   });
 
   test("returns empty string when the org has no signals", async () => {

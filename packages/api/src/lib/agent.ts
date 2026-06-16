@@ -961,6 +961,10 @@ export async function runAgent({
               // follow-up ("now break that down by region") still matches
               // patterns via the keywords of earlier turns.
               const question = buildRetrievalQuery(messages, getRetrievalTurns(orgId ?? null));
+              // No early return on an empty `question` (#3633): only pattern
+              // retrieval is keyword-scored, and `getRelevantPatterns` already
+              // yields [] when there are no keywords. Favorites/suggestions are
+              // question-independent, so we always resolve the block.
               // #3611 — scope retrieval to the active connection group so a
               // `us-prod` session is never primed with `eu-prod`'s patterns.
               // Favorites/suggestions are scoped by org (and user) inside their

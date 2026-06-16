@@ -62,6 +62,11 @@ mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   _resetPatternCache: () => {},
 }));
 
+// #3633 — agent.ts assembles the org-knowledge block via this module.
+mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
+  resolveOrgKnowledgeSection: async () => "",
+}));
+
 const { buildSystemParam } = await import("@atlas/api/lib/agent");
 
 describe("appendDialectHints", () => {

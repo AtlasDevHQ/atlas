@@ -42,7 +42,8 @@ import { getSetting } from "./settings";
 import { hasInternalDB, internalExecute } from "./db/internal";
 import { loadGroupRoutingContext } from "./env-routing/lookup";
 import { logUsageEvent } from "./metering";
-import { buildLearnedPatternsSection, buildRetrievalQuery, getRetrievalTurns } from "./learn/pattern-cache";
+import { buildRetrievalQuery, getRetrievalTurns } from "./learn/pattern-cache";
+import { resolveOrgKnowledgeSection } from "./learn/org-knowledge-section";
 import { dispatchMutableHook } from "./plugins/hooks";
 import { plugins } from "./plugins/registry";
 import {
@@ -949,7 +950,9 @@ export async function runAgent({
             }),
           )
         : Effect.succeed(undefined),
-      // Learned patterns
+      // Organizational knowledge — learned patterns + user favorites +
+      // approved popular suggestions (#3633). All three are intent signals;
+      // before #3633 only learned patterns reached the agent.
       hasInternalDB()
         ? Effect.tryPromise({
             try: async () => {
@@ -958,14 +961,22 @@ export async function runAgent({
               // follow-up ("now break that down by region") still matches
               // patterns via the keywords of earlier turns.
               const question = buildRetrievalQuery(messages, getRetrievalTurns(orgId ?? null));
-              if (!question) return undefined;
+              // No early return on an empty `question` (#3633): only pattern
+              // retrieval is keyword-scored, and `getRelevantPatterns` already
+              // yields [] when there are no keywords. Favorites/suggestions are
+              // question-independent, so we always resolve the block.
               // #3611 — scope retrieval to the active connection group so a
               // `us-prod` session is never primed with `eu-prod`'s patterns.
-              const section = await buildLearnedPatternsSection(
-                orgId ?? null,
+              // Favorites/suggestions are scoped by org (and user) inside their
+              // resolvers, so cross-tenant leakage is structurally impossible.
+              const section = await resolveOrgKnowledgeSection({
+                orgId: orgId ?? null,
+                userId,
+                connectionGroupId: connectionGroupId ?? null,
+                mode: atlasMode,
                 question,
-                connectionGroupId ?? null,
-              );
+                requestId: reqCtx?.requestId,
+              });
               return section || undefined;
             },
             catch: normalizeError,

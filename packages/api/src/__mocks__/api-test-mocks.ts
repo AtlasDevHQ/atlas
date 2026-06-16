@@ -597,6 +597,14 @@ export function createApiTestMocks(
     _resetPatternCache: () => {},
   }));
 
+  // #3633 — agent.ts assembles the org-knowledge block (learned patterns +
+  // favorites + approved suggestions) via this module. Stubbed here too so
+  // shared-harness runAgent tests don't execute the real orchestrator's
+  // resolvers; the dedicated org-knowledge-section.test.ts covers it directly.
+  mock.module("@atlas/api/lib/learn/org-knowledge-section", () => ({
+    resolveOrgKnowledgeSection: async () => "",
+  }));
+
   // ── Plugins ───────────────────────────────────────────────────
 
   mock.module("@atlas/api/lib/plugins/registry", () => ({

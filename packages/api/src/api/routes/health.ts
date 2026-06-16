@@ -23,6 +23,7 @@ import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { getSetting } from "@atlas/api/lib/settings";
 import { getApiRegion, getMisroutedCount } from "@atlas/api/lib/residency/misrouting";
 import { getConfig } from "@atlas/api/lib/config";
+import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import type { PluginStatus } from "@atlas/api/lib/plugins/registry";
 
 // Canonical plugin lifecycle states for the /health wire format. The
@@ -157,6 +158,55 @@ function findDiagnostic(
   ...codes: DiagnosticError["code"][]
 ): DiagnosticError | undefined {
   return diagnostics.find((d) => codes.includes(d.code));
+}
+
+// Roles that may see the full per-source fleet breakdown. Mirrors adminAuth's
+// role gate in api/routes/middleware.ts (#3685).
+const OPERATOR_ROLES = new Set<string>(["admin", "owner", "platform_admin"]);
+
+/**
+ * Whether the request carries an operator signal authorizing the full
+ * per-source fleet breakdown on /health (#3685).
+ *
+ * Reuses the existing auth dispatcher — the SAME signal the admin health
+ * dashboard sends (session cookie, managed mode) and self-hosted operators send
+ * (`ATLAS_API_KEY` bearer, simple-key) — rather than inventing a new one:
+ *   - mode "none" (local-dev / self-hosted no-auth) is an implicit operator,
+ *     matching adminAuth's treatment.
+ *   - an authenticated admin/owner/platform_admin (managed or simple-key) is an
+ *     operator.
+ * Anyone else (no credentials, expired session, non-admin member) is anonymous.
+ *
+ * `authenticateRequest` normalizes validator failures to an unauthenticated
+ * result rather than throwing, but we still wrap defensively and fail CLOSED to
+ * anonymous: a public health probe must never leak the fleet because the auth
+ * layer errored.
+ */
+async function isOperatorHealthRequest(req: Request): Promise<boolean> {
+  try {
+    const auth = await authenticateRequest(req);
+    if (!auth.authenticated) return false;
+    if (auth.mode === "none") return true;
+    return !!auth.user.role && OPERATOR_ROLES.has(auth.user.role);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Operator-signal check failed on /health — treating caller as anonymous",
+    );
+    return false;
+  }
+}
+
+/**
+ * The region's own datasource view of a per-source health map — the single
+ * `default` entry, or `undefined` when this region has no `default` registered.
+ * Strips the cross-region fleet from the anonymous /health response (#3685)
+ * while leaving the operator view untouched.
+ */
+function ownRegionSources<T>(
+  all: Record<string, T>,
+): Record<string, T> | undefined {
+  return "default" in all ? { default: all.default } : undefined;
 }
 
 const HealthErrorSchema = z.object({
@@ -485,6 +535,22 @@ health.openapi(healthRoute, async (c) => {
       plugins: pluginsComponent,
     };
 
+    // #3685 — gate the per-source fleet breakdown. `sourcesSection` above
+    // enumerates EVERY registered datasource (in the US region that's the whole
+    // multi-region fleet — us-prod, eu-prod, apac-prod, __demo__, default) with
+    // per-DB latencies. That breakdown is reconnaissance surface for an
+    // unauthenticated caller, so only operators receive it. Anonymous callers
+    // get the aggregate `status` plus the region's own datasource (`default`) —
+    // the shape EU/APAC already return. The status-promotion aggregation above
+    // (lines computing sourceStatuses) still considers every source regardless
+    // of who's asking, so the 503-on-unhealthy-source contract is unchanged.
+    const isOperator = await isOperatorHealthRequest(c.req.raw);
+    const visibleSources = sourcesSection
+      ? isOperator
+        ? sourcesSection
+        : ownRegionSources(sourcesSection)
+      : undefined;
+
     // Brand color for frontend theming (public, no auth required)
     const brandColor = getSetting("ATLAS_BRAND_COLOR");
 
@@ -555,7 +621,7 @@ health.openapi(healthRoute, async (c) => {
               : ("single-workspace" as const),
         },
       },
-      ...(sourcesSection ? { sources: sourcesSection } : {}),
+      ...(visibleSources ? { sources: visibleSources } : {}),
     };
 
     // Health response is built dynamically with many conditional fields — TypeScript

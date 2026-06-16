@@ -27,15 +27,27 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
-/** Canonical cache key — `"__global__"` for null orgId, prefixed to avoid collision. */
-function cacheKey(orgId: string | null): string {
+/** Org segment of a cache key — `"__global__"` for null orgId, prefixed to
+ *  avoid collision. */
+function orgKeyPart(orgId: string | null): string {
   return orgId === null ? "__global__" : `org:${orgId}`;
 }
 
-/** Get approved patterns for an org, hitting cache first.
+/** Canonical cache key — scoped by org AND connection group (#3611) so a
+ *  `us-prod` agent session never serves a `eu-prod` group's cached patterns.
+ *  `"__nogroup__"` represents the default (flat `entities/`) scope. */
+function cacheKey(orgId: string | null, connectionGroupId: string | null): string {
+  const groupPart = connectionGroupId === null ? "__nogroup__" : `group:${connectionGroupId}`;
+  return `${orgKeyPart(orgId)}::${groupPart}`;
+}
+
+/** Get approved patterns for an org + connection group, hitting cache first.
  *  DB failures are logged and return [] without being cached. */
-async function getCachedPatterns(orgId: string | null): Promise<ApprovedPatternRow[]> {
-  const key = cacheKey(orgId);
+async function getCachedPatterns(
+  orgId: string | null,
+  connectionGroupId: string | null,
+): Promise<ApprovedPatternRow[]> {
+  const key = cacheKey(orgId, connectionGroupId);
   const entry = cache.get(key);
 
   if (entry && Date.now() < entry.expiresAt) {
@@ -44,7 +56,7 @@ async function getCachedPatterns(orgId: string | null): Promise<ApprovedPatternR
   }
 
   try {
-    const patterns = await getApprovedPatterns(orgId);
+    const patterns = await getApprovedPatterns(orgId, connectionGroupId);
 
     // Evict oldest entry if cache is at capacity
     if (cache.size >= MAX_ENTRIES) {
@@ -64,16 +76,24 @@ async function getCachedPatterns(orgId: string | null): Promise<ApprovedPatternR
     return patterns;
   } catch (err) {
     log.warn(
-      { orgId, err: err instanceof Error ? err.message : String(err) },
+      { orgId, connectionGroupId, err: err instanceof Error ? err.message : String(err) },
       "Failed to load approved patterns (table may not exist yet) — not caching",
     );
     return [];
   }
 }
 
-/** Invalidate the pattern cache for a specific org. */
+/**
+ * Invalidate the pattern cache for a specific org, across ALL of its connection
+ * groups. The admin approve/reject path (`admin-learned-patterns.ts`) operates
+ * at org granularity and doesn't know which group a reviewed pattern belongs
+ * to, so a single call must clear every group-scoped entry for the org (#3611).
+ */
 export function invalidatePatternCache(orgId: string | null): void {
-  cache.delete(cacheKey(orgId));
+  const prefix = `${orgKeyPart(orgId)}::`;
+  for (const key of cache.keys()) {
+    if (key.startsWith(prefix)) cache.delete(key);
+  }
 }
 
 /** Reset entire cache. For testing only. */
@@ -155,15 +175,19 @@ export interface RelevantPattern {
  *
  * @param orgId - Organization ID (null for global).
  * @param question - The user's question to match against.
+ * @param connectionGroupId - Active connection group (null for the default
+ *   flat scope). Scopes retrieval so one group's patterns never leak into
+ *   another group's agent session (#3611).
  * @param maxPatterns - Maximum patterns to return (default 10).
  */
 export async function getRelevantPatterns(
   orgId: string | null,
   question: string,
+  connectionGroupId: string | null = null,
   maxPatterns: number = DEFAULT_MAX_PATTERNS,
 ): Promise<RelevantPattern[]> {
   const threshold = getConfig()?.learn?.confidenceThreshold ?? 0.7;
-  const allPatterns = await getCachedPatterns(orgId);
+  const allPatterns = await getCachedPatterns(orgId, connectionGroupId);
 
   // Filter by confidence threshold
   const aboveThreshold = allPatterns.filter((p) => p.confidence >= threshold);
@@ -200,10 +224,11 @@ function sanitizeForPrompt(text: string, maxLen: number): string {
 export async function buildLearnedPatternsSection(
   orgId: string | null,
   question: string,
+  connectionGroupId: string | null = null,
   maxPatterns?: number,
 ): Promise<string> {
   try {
-    const patterns = await getRelevantPatterns(orgId, question, maxPatterns);
+    const patterns = await getRelevantPatterns(orgId, question, connectionGroupId, maxPatterns);
     if (patterns.length === 0) return "";
 
     const lines = patterns.map((p) => {

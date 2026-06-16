@@ -1269,9 +1269,21 @@ function executeAndAuditEffect(opts: {
             );
           }
 
-          // Pattern learning (fire-and-forget)
+          // Pattern learning (fire-and-forget). Capture org + connection group
+          // SYNCHRONOUSLY here (#3610/#3611): `proposePatternIfNovel` spawns a
+          // detached promise that runs AFTER this request's ALS context has
+          // unwound. Reading the context inside that promise would resolve the
+          // org to `undefined` → `org_id = NULL` (the global-scope sentinel),
+          // leaking one org's patterns into every org, and would drop the
+          // connection group so identical SQL from a different group collides.
+          // We use the auth org (`activeOrganizationId`), NOT the pooling-gated
+          // `orgId`, which is `undefined` when org-pooling is off. The masking
+          // block below reads the same live context the same way.
+          const learnReqCtx = getRequestContext();
           proposePatternIfNovel({
             sql: querySql, dialect: parserDatabase(dbType, connId), connectionId: connId,
+            orgId: learnReqCtx?.user?.activeOrganizationId,
+            connectionGroupId: learnReqCtx?.connectionGroupId,
           });
 
           // PII masking (fails open) — via `MaskingPolicy` Tag (#2566)

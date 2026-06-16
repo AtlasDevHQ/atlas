@@ -17,6 +17,12 @@ let mockConfigLearn: { confidenceThreshold: number } | undefined = {
 
 let mockGetApprovedPatternsError: Error | null = null;
 
+// #3611 — record retrieval calls + allow per-group result sets so tests can
+// assert that each connection group sees only its own patterns and that the
+// active group is threaded all the way to the DB layer.
+let getApprovedPatternsCalls: Array<{ orgId: string | null; connectionGroupId: string | null | undefined }> = [];
+let mockPatternsByGroup: Map<string | null, typeof mockApprovedPatterns> | null = null;
+
 // --- Mocks (all named exports) ---
 
 mock.module("@atlas/api/lib/db/internal", () => ({
@@ -34,8 +40,10 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   encryptSecret: (v: string) => v,
   decryptSecret: (v: string) => v,
   isPlaintextUrl: () => true,
-  getApprovedPatterns: async () => {
+  getApprovedPatterns: async (orgId: string | null, connectionGroupId?: string | null) => {
+    getApprovedPatternsCalls.push({ orgId, connectionGroupId });
     if (mockGetApprovedPatternsError) throw mockGetApprovedPatternsError;
+    if (mockPatternsByGroup) return mockPatternsByGroup.get(connectionGroupId ?? null) ?? [];
     return mockApprovedPatterns;
   },
   upsertSuggestion: mock(() => Promise.resolve("created")),
@@ -198,7 +206,7 @@ describe("getRelevantPatterns", () => {
       confidence: 0.9,
     }));
 
-    const results = await getRelevantPatterns(null, "Show me revenue", 5);
+    const results = await getRelevantPatterns(null, "Show me revenue", null, 5);
     expect(results.length).toBe(5);
   });
 
@@ -418,6 +426,98 @@ describe("pattern cache invalidation", () => {
     // Next call should succeed — failure was NOT cached
     const afterFix = await getRelevantPatterns(null, "What is the revenue?");
     expect(afterFix.length).toBe(1);
+  });
+});
+
+describe("connection-group scoping (#3611)", () => {
+  beforeEach(() => {
+    _resetPatternCache();
+    mockApprovedPatterns = [];
+    mockPatternsByGroup = null;
+    getApprovedPatternsCalls = [];
+    mockConfigLearn = { confidenceThreshold: 0.7 };
+    mockGetApprovedPatternsError = null;
+  });
+
+  test("threads the active connection group through to the DB layer", async () => {
+    await getRelevantPatterns("org-1", "What is the revenue?", "us-prod");
+
+    expect(getApprovedPatternsCalls).toHaveLength(1);
+    expect(getApprovedPatternsCalls[0]).toEqual({ orgId: "org-1", connectionGroupId: "us-prod" });
+  });
+
+  test("each agent session sees only its own group's patterns", async () => {
+    // Same org, two groups, disjoint pattern libraries.
+    mockPatternsByGroup = new Map([
+      [
+        "us-prod",
+        [
+          {
+            id: "us-1",
+            org_id: "org-1",
+            pattern_sql: "SELECT SUM(revenue) FROM us_companies",
+            description: "US revenue",
+            source_entity: "us_companies",
+            confidence: 0.9,
+          },
+        ],
+      ],
+      [
+        "eu-prod",
+        [
+          {
+            id: "eu-1",
+            org_id: "org-1",
+            pattern_sql: "SELECT SUM(revenue) FROM eu_companies",
+            description: "EU revenue",
+            source_entity: "eu_companies",
+            confidence: 0.9,
+          },
+        ],
+      ],
+    ]);
+
+    const us = await getRelevantPatterns("org-1", "What is the revenue?", "us-prod");
+    const eu = await getRelevantPatterns("org-1", "What is the revenue?", "eu-prod");
+
+    expect(us.map((p) => p.patternSql)).toEqual(["SELECT SUM(revenue) FROM us_companies"]);
+    expect(eu.map((p) => p.patternSql)).toEqual(["SELECT SUM(revenue) FROM eu_companies"]);
+    // No cross-group bleed: the us-prod session never sees the eu pattern.
+    expect(us.some((p) => p.patternSql.includes("eu_companies"))).toBe(false);
+  });
+
+  test("cache is partitioned per group — distinct groups each hit the DB", async () => {
+    mockPatternsByGroup = new Map([
+      ["us-prod", []],
+      ["eu-prod", []],
+    ]);
+
+    await getRelevantPatterns("org-1", "revenue", "us-prod");
+    await getRelevantPatterns("org-1", "revenue", "us-prod"); // cached — no new DB call
+    await getRelevantPatterns("org-1", "revenue", "eu-prod"); // different group — DB call
+
+    const groupsFetched = getApprovedPatternsCalls.map((c) => c.connectionGroupId);
+    expect(groupsFetched).toEqual(["us-prod", "eu-prod"]);
+  });
+
+  test("org-scoped invalidation clears every group entry for that org", async () => {
+    mockPatternsByGroup = new Map([
+      ["us-prod", [{ id: "u", org_id: "org-1", pattern_sql: "SELECT revenue FROM t", description: "d", source_entity: "t", confidence: 0.9 }]],
+      ["eu-prod", [{ id: "e", org_id: "org-1", pattern_sql: "SELECT revenue FROM t", description: "d", source_entity: "t", confidence: 0.9 }]],
+    ]);
+
+    // Warm both group caches for org-1.
+    await getRelevantPatterns("org-1", "revenue", "us-prod");
+    await getRelevantPatterns("org-1", "revenue", "eu-prod");
+    const callsAfterWarm = getApprovedPatternsCalls.length;
+
+    // Admin approve/reject invalidates at org granularity (no group known).
+    invalidatePatternCache("org-1");
+
+    // Both groups must re-fetch — neither served a stale cache entry.
+    await getRelevantPatterns("org-1", "revenue", "us-prod");
+    await getRelevantPatterns("org-1", "revenue", "eu-prod");
+    expect(getApprovedPatternsCalls.length).toBe(callsAfterWarm + 2);
   });
 });
 

@@ -6,7 +6,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { _resetPool, type InternalPool } from "../db/internal";
-import { withRequestContext } from "../logger";
+import { withRequestContext, getRequestContext } from "../logger";
 import { createAtlasUser } from "../auth/types";
 import { _resetYamlPatternCache, _setYamlPatternCache, normalizeSQL } from "../learn/pattern-analyzer";
 import { _analyzeAndPropose, proposePatternIfNovel, type PatternProposalInput } from "../learn/pattern-proposer";
@@ -50,6 +50,8 @@ const defaultInput: PatternProposalInput = {
   sql: "SELECT name, email FROM users WHERE status = 'active' ORDER BY created_at DESC",
   dialect: "PostgresQL",
   connectionId: "default",
+  orgId: undefined,
+  connectionGroupId: undefined,
 };
 
 // ---------------------------------------------------------------------------
@@ -126,16 +128,12 @@ describe("pattern-proposer", () => {
 
   // ── Org-scoping ────────────────────────────────────────────────────
 
-  test("uses orgId from request context when available", async () => {
+  test("uses orgId from the explicit input param, not ALS (#3610)", async () => {
     setResults({ rows: [] });
 
-    const user = createAtlasUser("user-1", "simple-key", "Test User", {
-      activeOrganizationId: "org-456",
-    });
-
-    await withRequestContext({ requestId: "test-req", user }, async () => {
-      await _analyzeAndPropose(defaultInput);
-    });
+    // orgId is threaded explicitly — captured synchronously at the sql.ts call
+    // site. _analyzeAndPropose must NOT read ALS.
+    await _analyzeAndPropose({ ...defaultInput, orgId: "org-456" });
 
     // findPatternBySQL should use org_id = $2
     const selectCall = queryCalls[0];
@@ -148,14 +146,112 @@ describe("pattern-proposer", () => {
     expect(insertCall!.params?.[0]).toBe("org-456");
   });
 
-  test("uses org_id IS NULL when no org context", async () => {
+  test("captured org survives after the ALS context has unwound (#3610)", async () => {
     setResults({ rows: [] });
 
-    // No withRequestContext → getRequestContext() returns undefined
-    await _analyzeAndPropose(defaultInput);
+    // Reproduce the real timing: the sql.ts call site captures orgId
+    // synchronously WHILE the request context is live, then the detached
+    // proposal runs AFTER that context has exited. The pre-fix code read ALS
+    // inside the detached promise → undefined → org_id = NULL.
+    let capturedOrgId: string | undefined;
+    const user = createAtlasUser("user-1", "simple-key", "Test User", {
+      activeOrganizationId: "org-live-then-gone",
+    });
+    await withRequestContext({ requestId: "req-1", user }, async () => {
+      capturedOrgId = getRequestContext()?.user?.activeOrganizationId;
+    });
+
+    // Context is now unwound — assert it really is gone before proceeding.
+    expect(getRequestContext()).toBeFalsy();
+
+    await _analyzeAndPropose({ ...defaultInput, orgId: capturedOrgId });
+
+    const insertCall = queryCalls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(insertCall).toBeDefined();
+    expect(insertCall!.params?.[0]).toBe("org-live-then-gone");
+    expect(insertCall!.params?.[0]).not.toBeNull();
+  });
+
+  test("ignores ALS request context entirely — only the input orgId is used (#3610)", async () => {
+    setResults({ rows: [] });
+
+    // A live request context with a DIFFERENT org must NOT influence the
+    // proposal: the detached path is decoupled from ALS. The input orgId wins.
+    const user = createAtlasUser("user-1", "simple-key", "Test User", {
+      activeOrganizationId: "als-org-should-be-ignored",
+    });
+
+    await withRequestContext({ requestId: "test-req", user }, async () => {
+      await _analyzeAndPropose({ ...defaultInput, orgId: "org-from-input" });
+    });
+
+    const insertCall = queryCalls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(insertCall).toBeDefined();
+    expect(insertCall!.params?.[0]).toBe("org-from-input");
+  });
+
+  test("uses org_id IS NULL when input orgId is undefined", async () => {
+    setResults({ rows: [] });
+
+    await _analyzeAndPropose({ ...defaultInput, orgId: undefined });
 
     const selectCall = queryCalls[0];
     expect(selectCall.sql).toContain("org_id IS NULL");
+  });
+
+  // ── Connection-group scoping (#3611) ───────────────────────────────
+
+  test("scopes lookup + insert to the connection group", async () => {
+    setResults({ rows: [] });
+
+    await _analyzeAndPropose({
+      ...defaultInput,
+      orgId: "org-1",
+      connectionGroupId: "us-prod",
+    });
+
+    // findPatternBySQL uniqueness is (org_id, connection_group_id, sql)
+    const selectCall = queryCalls[0];
+    expect(selectCall.sql).toContain("org_id = $2");
+    expect(selectCall.sql).toContain("connection_group_id = $3");
+    expect(selectCall.params).toContain("us-prod");
+
+    // INSERT stores connection_group_id (last positional param)
+    const insertCall = queryCalls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(insertCall).toBeDefined();
+    expect(insertCall!.sql).toContain("connection_group_id");
+    expect(insertCall!.params?.[6]).toBe("us-prod");
+  });
+
+  test("connection_group_id IS NULL when group is undefined (default scope)", async () => {
+    setResults({ rows: [] });
+
+    await _analyzeAndPropose({ ...defaultInput, orgId: "org-1", connectionGroupId: undefined });
+
+    const selectCall = queryCalls[0];
+    expect(selectCall.sql).toContain("connection_group_id IS NULL");
+
+    const insertCall = queryCalls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(insertCall!.params?.[6]).toBeNull();
+  });
+
+  test("two groups with identical SQL produce two independent rows (#3611)", async () => {
+    // Each group's findPatternBySQL is scoped to its own group, so neither
+    // finds the other → both insert. Four pool.query calls: SELECT_A, INSERT_A,
+    // SELECT_B, INSERT_B (internalExecute also goes through the mock pool).
+    setResults({ rows: [] }, { rows: [] }, { rows: [] }, { rows: [] });
+
+    const sameSql = { ...defaultInput, orgId: "org-1" };
+    await _analyzeAndPropose({ ...sameSql, connectionGroupId: "group-a" });
+    await _analyzeAndPropose({ ...sameSql, connectionGroupId: "group-b" });
+
+    const inserts = queryCalls.filter((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(inserts).toHaveLength(2);
+    expect(inserts[0].params?.[6]).toBe("group-a");
+    expect(inserts[1].params?.[6]).toBe("group-b");
+    // Both rows belong to the same org but are distinct per group.
+    expect(inserts[0].params?.[0]).toBe("org-1");
+    expect(inserts[1].params?.[0]).toBe("org-1");
   });
 
   // ── Fire-and-forget safety ─────────────────────────────────────────
@@ -175,6 +271,8 @@ describe("pattern-proposer", () => {
       sql: "SELECT 1",
       dialect: "PostgresQL",
       connectionId: "default",
+      orgId: undefined,
+      connectionGroupId: undefined,
     };
 
     await _analyzeAndPropose(shortInput);
@@ -192,6 +290,8 @@ describe("pattern-proposer", () => {
       sql: "SELECT status, COUNT(*) FROM orders GROUP BY status",
       dialect: "PostgresQL",
       connectionId: "warehouse",
+      orgId: undefined,
+      connectionGroupId: undefined,
     };
 
     await _analyzeAndPropose(input);
@@ -246,6 +346,26 @@ describe("pattern-proposer", () => {
     expect(queryCalls.length).toBe(0);
   });
 
+  test("fire-and-forget insert carries the captured org_id with no ALS context (#3610)", async () => {
+    setResults({ rows: [] });
+
+    // Simulate the real call path: org captured synchronously at the call site,
+    // then the proposal runs detached with NO live request context (ALS already
+    // unwound). The pre-fix code read ALS inside the detached promise → NULL.
+    proposePatternIfNovel({ ...defaultInput, orgId: "org-tenant-a", connectionGroupId: "us-prod" });
+
+    // Let the detached fire-and-forget promise settle.
+    await new Promise((r) => setTimeout(r, 50));
+
+    const insertCall = queryCalls.find((c) => c.sql.includes("INSERT INTO learned_patterns"));
+    expect(insertCall).toBeDefined();
+    // org_id is the captured tenant, NOT null — no cross-org leak.
+    expect(insertCall!.params?.[0]).toBe("org-tenant-a");
+    expect(insertCall!.params?.[0]).not.toBeNull();
+    // connection_group_id is preserved through the detached path too.
+    expect(insertCall!.params?.[6]).toBe("us-prod");
+  });
+
   test("proposePatternIfNovel swallows errors without throwing", async () => {
     queryThrow = new Error("DB connection exploded");
 
@@ -273,6 +393,8 @@ describe("pattern-proposer", () => {
       sql: "SELECT plan, SUM(monthly_value) AS total_mrr, COUNT(*) AS account_count FROM accounts WHERE status = 'Premium' GROUP BY plan ORDER BY total_mrr DESC",
       dialect: "PostgresQL",
       connectionId: "default",
+      orgId: undefined,
+      connectionGroupId: undefined,
     };
 
     await _analyzeAndPropose(input);

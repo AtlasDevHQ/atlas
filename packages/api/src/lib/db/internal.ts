@@ -1190,24 +1190,43 @@ function isPgError(err: unknown): err is Error & { code: string } {
 // ── Learned pattern helpers ─────────────────────────────────────────
 
 /**
- * Find a learned pattern by exact normalized SQL match for the given org.
+ * Find a learned pattern by exact normalized SQL match, scoped to the given
+ * org AND connection group.
+ *
+ * The dedup key is `(org_id, connection_group_id, normalised_sql)` (#3611) —
+ * enforced application-side here (read-then-insert in `_analyzeAndPropose`),
+ * NOT by a DB unique constraint. The SAME normalised SQL learned against a
+ * different connection group (e.g. `us-prod` vs `eu-prod`) is a DISTINCT pattern
+ * — different schema, different tables, potentially different dialect — so it
+ * must not collide. A NULL group (the default flat `entities/` scope) is matched
+ * with `IS NULL`, not `=`.
+ *
  * Returns the pattern's id, confidence, and repetition count, or null if not found.
  */
 export async function findPatternBySQL(
   orgId: string | null | undefined,
+  connectionGroupId: string | null | undefined,
   patternSql: string,
 ): Promise<{ id: string; confidence: number; repetitionCount: number } | null> {
   const params: unknown[] = [patternSql];
   let orgClause: string;
   if (orgId) {
     params.push(orgId);
-    orgClause = `org_id = $2`;
+    orgClause = `org_id = $${params.length}`;
   } else {
     orgClause = `org_id IS NULL`;
   }
 
+  let groupClause: string;
+  if (connectionGroupId) {
+    params.push(connectionGroupId);
+    groupClause = `connection_group_id = $${params.length}`;
+  } else {
+    groupClause = `connection_group_id IS NULL`;
+  }
+
   const rows = await internalQuery<{ id: string; confidence: number; repetition_count: number }>(
-    `SELECT id, confidence, repetition_count FROM learned_patterns WHERE pattern_sql = $1 AND ${orgClause} LIMIT 1`,
+    `SELECT id, confidence, repetition_count FROM learned_patterns WHERE pattern_sql = $1 AND ${orgClause} AND ${groupClause} LIMIT 1`,
     params,
   );
 
@@ -1225,6 +1244,13 @@ export async function findPatternBySQL(
  */
 export function insertLearnedPattern(pattern: {
   orgId: string | null | undefined;
+  /**
+   * Connection group the pattern was learned against (#3611). NULL/omitted =
+   * the default (flat `entities/`) scope. Stored on every row so retrieval
+   * (`getApprovedPatterns`) and dedup (`findPatternBySQL`) can keep one group's
+   * patterns from leaking into another group's agent context.
+   */
+  connectionGroupId?: string | null | undefined;
   patternSql: string;
   description: string;
   sourceEntity: string;
@@ -1232,8 +1258,8 @@ export function insertLearnedPattern(pattern: {
   proposedBy: string;
 }): void {
   internalExecute(
-    `INSERT INTO learned_patterns (org_id, pattern_sql, description, source_entity, source_queries, confidence, repetition_count, status, proposed_by)
-     VALUES ($1, $2, $3, $4, $5, 0.1, 1, 'pending', $6)`,
+    `INSERT INTO learned_patterns (org_id, pattern_sql, description, source_entity, source_queries, confidence, repetition_count, status, proposed_by, connection_group_id)
+     VALUES ($1, $2, $3, $4, $5, 0.1, 1, 'pending', $6, $7)`,
     [
       pattern.orgId ?? null,
       pattern.patternSql,
@@ -1241,6 +1267,7 @@ export function insertLearnedPattern(pattern: {
       pattern.sourceEntity,
       JSON.stringify(pattern.sourceQueries),
       pattern.proposedBy,
+      pattern.connectionGroupId ?? null,
     ],
   );
 }
@@ -1524,6 +1551,9 @@ export function incrementPatternCount(id: string, sourceFingerprint?: string): v
 export interface ApprovedPatternRow {
   id: string;
   org_id: string | null;
+  /** Connection group the pattern was learned against (#3611). NULL = the
+   *  default (flat `entities/`) scope. */
+  connection_group_id: string | null;
   pattern_sql: string;
   description: string | null;
   source_entity: string | null;
@@ -1556,25 +1586,48 @@ export interface QuerySuggestionRow {
 }
 
 /**
- * Fetch approved learned patterns, scoped to an org (or global when orgId is null).
- * Ordered by confidence DESC, capped at 100 rows.
+ * Fetch approved learned patterns, scoped to an org (or global when orgId is
+ * null) AND a connection group (#3611).
+ *
+ * Group scoping mirrors the org rule: a pattern is in scope when its
+ * `connection_group_id` matches the active group OR is NULL (the default flat
+ * `entities/` scope, shared across groups the same way `org_id IS NULL` is
+ * shared across orgs). When `connectionGroupId` is null/omitted the active
+ * scope IS the default group, so only `connection_group_id IS NULL` rows match
+ * — this keeps `us-prod` patterns out of a `eu-prod` agent session and
+ * vice-versa. Ordered by confidence DESC, capped at 100 rows.
  */
-export async function getApprovedPatterns(orgId: string | null): Promise<ApprovedPatternRow[]> {
+export async function getApprovedPatterns(
+  orgId: string | null,
+  connectionGroupId?: string | null,
+): Promise<ApprovedPatternRow[]> {
   if (!hasInternalDB()) return [];
 
+  const params: unknown[] = [];
+
+  let orgClause: string;
+  if (orgId) {
+    params.push(orgId);
+    orgClause = `(org_id = $${params.length} OR org_id IS NULL)`;
+  } else {
+    orgClause = `org_id IS NULL`;
+  }
+
+  let groupClause: string;
+  if (connectionGroupId) {
+    params.push(connectionGroupId);
+    groupClause = `(connection_group_id = $${params.length} OR connection_group_id IS NULL)`;
+  } else {
+    groupClause = `connection_group_id IS NULL`;
+  }
+
   return internalQuery<ApprovedPatternRow>(
-    orgId
-      ? `SELECT id, org_id, pattern_sql, description, source_entity, confidence
-         FROM learned_patterns
-         WHERE status = 'approved' AND (org_id = $1 OR org_id IS NULL)
-         ORDER BY confidence DESC
-         LIMIT 100`
-      : `SELECT id, org_id, pattern_sql, description, source_entity, confidence
-         FROM learned_patterns
-         WHERE status = 'approved' AND org_id IS NULL
-         ORDER BY confidence DESC
-         LIMIT 100`,
-    orgId ? [orgId] : [],
+    `SELECT id, org_id, connection_group_id, pattern_sql, description, source_entity, confidence
+     FROM learned_patterns
+     WHERE status = 'approved' AND ${orgClause} AND ${groupClause}
+     ORDER BY confidence DESC
+     LIMIT 100`,
+    params,
   );
 }
 

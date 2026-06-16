@@ -19,7 +19,47 @@ import {
 } from "@useatlas/schemas/semantic-entity-yaml";
 import { mapSQLType, isViewLike, singularize, entityName } from "../../profiler-utils";
 import { suggestMeasureType, describeMeasure } from "../../profiler-patterns";
-import { isView, isMatView, mapSalesforceFieldType } from "./analyze";
+import { isView, isMatView, mapSalesforceFieldType, isCompositeOrPartialIndex } from "./analyze";
+import type { ColumnProfile, IndexProfile } from "@useatlas/types";
+
+/**
+ * Pick the index-access-method to report for a single dimension (#3634).
+ *
+ * Prefers the type of an index this column LEADS (that's the one a filter on the
+ * column can actually use); falls back to any index that contains it. Returns
+ * undefined when the column isn't indexed.
+ *
+ * A column flagged `trailing` is only ever a non-first member of a btree
+ * composite (a member of any non-btree index makes it `leading` — those are
+ * position-independent). It has no single-column access path, so we DON'T
+ * advertise an access method: reporting `btree` from the containing composite
+ * would imply `WHERE col = ?` alone is sargable when it isn't. The `filter_hint`
+ * carries the composite nuance instead.
+ */
+function dimensionIndexType(col: ColumnProfile, indexes: IndexProfile[]): string | undefined {
+  if (!col.indexed) return undefined;
+  if (col.index_position === "trailing") return undefined;
+  const leadingIdx = indexes.find((ix) => ix.columns[0] === col.name);
+  if (leadingIdx) return leadingIdx.index_type;
+  const containingIdx = indexes.find((ix) => ix.columns.includes(col.name));
+  return containingIdx?.index_type;
+}
+
+/**
+ * Build the human-readable `filter_hint` for a column that is indexed but NOT
+ * independently sargable (a trailing btree member). Names the composite index
+ * and its leading column so the agent knows what to also constrain (#3634).
+ */
+function trailingFilterHint(col: ColumnProfile, indexes: IndexProfile[]): string | undefined {
+  if (col.index_position !== "trailing") return undefined;
+  // Find a composite btree where this column is a non-leading member.
+  const composite = indexes.find(
+    (ix) => ix.index_type === "btree" && ix.columns.length > 1 && ix.columns.indexOf(col.name) > 0
+  );
+  if (!composite) return undefined;
+  const leadCol = composite.columns[0];
+  return `Indexed only as a trailing member of composite index ${composite.name} (${composite.columns.join(", ")}); filtering on ${col.name} alone is not sargable — also filter on ${leadCol} to use the index.`;
+}
 
 /**
  * Decide the `table:` / `FROM` qualifier for a profiled table.
@@ -76,6 +116,20 @@ export function generateEntityYAML(
     if (col.unique_count !== null) dim.unique_count = col.unique_count;
     if (col.null_count !== null && col.null_count > 0)
       dim.null_count = col.null_count;
+
+    // Index awareness (#3634): per-dimension `indexed` + `index_type`, and a
+    // `filter_hint` for columns that are indexed but not independently sargable
+    // (trailing members of a composite btree). Derived flags come from
+    // analyzeTableProfiles; columns profiled before index harvesting have
+    // `indexed === undefined` and emit nothing.
+    if (col.indexed) {
+      dim.indexed = true;
+      const idxType = dimensionIndexType(col, profile.indexes ?? []);
+      if (idxType) dim.index_type = idxType;
+      const hint = trailingFilterHint(col, profile.indexes ?? []);
+      if (hint) dim.filter_hint = hint;
+    }
+
     if (col.sample_values.length > 0) {
       dim.sample_values = col.is_enum_like
         ? col.sample_values
@@ -431,6 +485,24 @@ export function generateEntityYAML(
     entity.partition_strategy = profile.partition_info.strategy;
     entity.partition_key = profile.partition_info.key;
   }
+
+  // Entity-level indexes[] (#3634): only composite/partial indexes — single-
+  // column indexes are already surfaced per-dimension via `indexed`. Composite
+  // order is load-bearing (leading-prefix sargability) and partial predicates
+  // tell the agent the index only covers a subset of rows.
+  const surfacedIndexes = (profile.indexes ?? [])
+    .filter(isCompositeOrPartialIndex)
+    .map((ix) => {
+      const entry: Record<string, unknown> = {
+        name: ix.name,
+        columns: ix.columns,
+        type: ix.index_type,
+      };
+      if (ix.is_unique) entry.unique = true;
+      if (ix.is_partial && ix.predicate) entry.predicate = ix.predicate;
+      return entry;
+    });
+  if (surfacedIndexes.length > 0) entity.indexes = surfacedIndexes;
 
   if (measures.length > 0) entity[ENTITY_YAML_KEYS.measures] = measures;
   if (joins.length > 0) entity[ENTITY_YAML_KEYS.joins] = joins;

@@ -11,7 +11,7 @@
  * re-exports these for backward compatibility.
  */
 
-import type { TableProfile, ForeignKey } from "@useatlas/types";
+import type { TableProfile, ForeignKey, IndexProfile } from "@useatlas/types";
 import { isViewLike, pluralize, singularize } from "../../profiler-utils";
 import {
   inferSemanticTypes,
@@ -190,6 +190,98 @@ export function detectDenormalizedTables(profiles: TableProfile[]): void {
   }
 }
 
+/**
+ * Derive per-column sargability flags from harvested indexes (#3634).
+ *
+ * Sets `col.indexed` + `col.index_position` on each column from the table's
+ * `indexes[]`. This is the leading-vs-trailing rule the agent relies on:
+ *
+ *  - A column is **leading** (independently sargable) if it is the FIRST member
+ *    of any index, OR a member at any position of a NON-btree index — GIN/BRIN/
+ *    GiST/hash don't depend on column order, so each member is usable on its own.
+ *  - A column that appears in indexes ONLY as a non-first member of a composite
+ *    BTREE is **trailing**: `WHERE trailing_col = ?` can't use an `(a, b)` index
+ *    without also constraining `a`.
+ *
+ * Expression-index members (e.g. `lower(email)`) are matched against the bare
+ * column name they wrap so the underlying column is still considered indexed
+ * when it appears as a clear leading expression part; non-matching expression
+ * members simply don't flag any `ColumnProfile`. Index members are compared to
+ * column names case-insensitively and with surrounding double-quotes stripped,
+ * since Postgres renders quoted identifiers verbatim.
+ *
+ * Mutates the passed profiles in place (called on the fresh clones built by
+ * `analyzeTableProfiles`, never on caller-owned input). Exported for unit tests.
+ */
+export function deriveColumnIndexFlags(profiles: TableProfile[]): void {
+  for (const profile of profiles) {
+    const indexes = profile.indexes ?? [];
+    if (indexes.length === 0) continue;
+
+    // For each column name, track whether it is ever a leading member and
+    // whether it is ever any kind of member at all.
+    const leading = new Set<string>();
+    const member = new Set<string>();
+
+    for (const idx of indexes) {
+      for (const [position, rawMember] of idx.columns.entries()) {
+        const colName = matchIndexMemberToColumn(rawMember, profile);
+        if (!colName) continue;
+        member.add(colName);
+        // First member of ANY index, or any member of a non-btree index, is
+        // independently sargable.
+        if (position === 0 || idx.index_type !== "btree") {
+          leading.add(colName);
+        }
+      }
+    }
+
+    for (const col of profile.columns) {
+      if (!member.has(col.name)) continue;
+      col.indexed = true;
+      col.index_position = leading.has(col.name) ? "leading" : "trailing";
+    }
+  }
+}
+
+/**
+ * Resolve an index member (a column name OR a rendered expression) to one of the
+ * table's column names, or null if it maps to no single column. Used by
+ * {@link deriveColumnIndexFlags} so expression indexes still flag the column
+ * they wrap when it appears unambiguously.
+ */
+function matchIndexMemberToColumn(rawMember: string, profile: TableProfile): string | null {
+  const unquoted = stripIdentifierQuotes(rawMember.trim());
+  const direct = profile.columns.find((c) => c.name === unquoted);
+  if (direct) return direct.name;
+
+  // Expression member (e.g. `lower(email)`, `(email)::text`): flag the column
+  // only when EXACTLY one column name appears as a whole word in the expression,
+  // so a multi-column expression doesn't mis-attribute sargability.
+  const matches = profile.columns.filter((c) =>
+    new RegExp(`(^|[^A-Za-z0-9_])${escapeRegExp(c.name)}([^A-Za-z0-9_]|$)`).test(unquoted)
+  );
+  return matches.length === 1 ? matches[0].name : null;
+}
+
+function stripIdentifierQuotes(s: string): string {
+  return s.startsWith('"') && s.endsWith('"') && s.length >= 2 ? s.slice(1, -1) : s;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * True when an index is worth surfacing as an entity-level `indexes[]` entry:
+ * composite (multi-column) or partial. Single-column non-partial indexes are
+ * already conveyed by the per-dimension `indexed` flag, so they're omitted to
+ * keep the YAML compact (#3634).
+ */
+export function isCompositeOrPartialIndex(idx: IndexProfile): boolean {
+  return idx.columns.length > 1 || idx.is_partial;
+}
+
 export function analyzeTableProfiles(profiles: readonly TableProfile[]): TableProfile[] {
   // Create fresh copies with reset analysis fields (no mutation of input).
   // Deep-clone foreign_keys and partition_info to fully isolate from input.
@@ -199,7 +291,15 @@ export function analyzeTableProfiles(profiles: readonly TableProfile[]): TablePr
     inferred_foreign_keys: [],
     profiler_notes: [],
     table_flags: { possibly_abandoned: false, possibly_denormalized: false },
-    columns: p.columns.map((col) => ({ ...col, profiler_notes: [] })),
+    // Strip any stale derived index flags on the clone; deriveColumnIndexFlags
+    // sets them fresh from the harvested indexes[] below.
+    columns: p.columns.map((col) => {
+      const { indexed: _indexed, index_position: _pos, ...rest } = col;
+      return { ...rest, profiler_notes: [] };
+    }),
+    indexes: p.indexes
+      ? p.indexes.map((idx) => ({ ...idx, columns: [...idx.columns] }))
+      : undefined,
     partition_info: p.partition_info
       ? { ...p.partition_info, children: [...p.partition_info.children] }
       : undefined,
@@ -211,6 +311,7 @@ export function analyzeTableProfiles(profiles: readonly TableProfile[]): TablePr
   detectAbandonedTables(analyzed);
   detectEnumInconsistency(analyzed);
   detectDenormalizedTables(analyzed);
+  deriveColumnIndexFlags(analyzed);
 
   return analyzed;
 }

@@ -21,6 +21,30 @@ export type ForeignKeySource = (typeof FK_SOURCES)[number];
 export const PARTITION_STRATEGIES = ["range", "list", "hash"] as const;
 export type PartitionStrategy = (typeof PARTITION_STRATEGIES)[number];
 
+/**
+ * Index access methods we surface to the agent. PostgreSQL exposes these via
+ * `pg_am.amname`; MySQL effectively only has `btree` (and `fulltext`/`spatial`,
+ * mapped to `gin`/`gist` respectively for a uniform vocabulary). `other` is the
+ * catch-all so an unrecognized access method never drops the index entirely.
+ */
+export const INDEX_TYPES = ["btree", "gin", "gist", "brin", "hash", "other"] as const;
+export type IndexType = (typeof INDEX_TYPES)[number];
+
+/**
+ * Marks how a column participates in indexes, for sargability hints (#3634).
+ *
+ * - `leading`  — the column is independently sargable: it is the first column
+ *   of at least one index, OR a member of a non-btree index (GIN/BRIN/etc. do
+ *   not depend on column position). The agent can filter on it cheaply.
+ * - `trailing` — the column appears in indexes ONLY as a non-first member of a
+ *   composite btree. A trailing btree column is NOT independently sargable: an
+ *   index on `(a, b)` does not accelerate `WHERE b = ?` without `a`.
+ *
+ * Derived during profile analysis (`analyzeTableProfiles`), never harvested.
+ */
+export const INDEX_POSITIONS = ["leading", "trailing"] as const;
+export type IndexPosition = (typeof INDEX_POSITIONS)[number];
+
 /** Semantic types inferred from column names, sample values, and SQL types. */
 export const SEMANTIC_TYPES = [
   "currency",
@@ -68,7 +92,46 @@ export interface ColumnProfile {
   fk_target_column: string | null;
   is_enum_like: boolean;
   semantic_type?: SemanticType;
+  /**
+   * Whether the column participates in any index. Derived during profile
+   * analysis from {@link TableProfile.indexes} (#3634), not harvested per-column.
+   * Absent on profiles produced before index harvesting (treat as unknown).
+   */
+  indexed?: boolean;
+  /**
+   * Sargability marker derived alongside {@link indexed}. Present only when
+   * `indexed` is true; see {@link IndexPosition}. A `trailing` column is indexed
+   * but not independently sargable.
+   */
+  index_position?: IndexPosition;
   profiler_notes: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Index profile
+// ---------------------------------------------------------------------------
+
+/**
+ * A single index harvested from the database catalog (#3634).
+ *
+ * `columns` is the ORDERED list of index members — for a composite btree the
+ * order is load-bearing (only the leading prefix is independently sargable).
+ * Expression-index members are rendered as their definition text (e.g.
+ * `lower(email)`) rather than a bare column name, so they survive into the YAML
+ * even though they don't map to a single `ColumnProfile`.
+ *
+ * `predicate` is the partial-index WHERE text (PostgreSQL only; null when the
+ * index is not partial). MySQL has no partial indexes, so MySQL-harvested
+ * indexes always carry `is_partial: false` and `predicate: null`.
+ */
+export interface IndexProfile {
+  name: string;
+  columns: string[];
+  index_type: IndexType;
+  is_unique: boolean;
+  is_primary: boolean;
+  is_partial: boolean;
+  predicate: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +165,13 @@ export interface TableProfile {
   primary_key_columns: string[];
   foreign_keys: ForeignKey[];
   inferred_foreign_keys: ForeignKey[];
+  /**
+   * Indexes harvested from the catalog (#3634). Empty when the table has no
+   * (non-implicit) indexes, when the object is a view/matview, or when the
+   * harvest query failed soft (a warning is logged, profiling continues).
+   * Optional so profiles produced before index harvesting still type-check.
+   */
+  indexes?: IndexProfile[];
   profiler_notes: string[];
   table_flags: TableFlags;
   matview_populated?: boolean;

@@ -46,6 +46,31 @@ interface EntityDimension {
    */
   unique_count?: number;
   null_count?: number;
+  /**
+   * Index awareness mirrored from the entity YAML the profiler emits
+   * (`generate/yaml.ts`, #3634). `indexed` marks the dimension as backed by an
+   * index; `index_type` is the access method (btree/gin/…); `filter_hint`
+   * carries the composite-trailing warning for columns that are indexed but not
+   * independently sargable. All three are spread untyped from `yaml.load`, so
+   * {@link formatEntity} type-narrows before formatting.
+   */
+  indexed?: boolean;
+  index_type?: string;
+  filter_hint?: string;
+}
+
+/**
+ * Entity-level composite/partial index, mirrored from the YAML `indexes[]`
+ * block the profiler emits for composite or partial indexes (#3634). Surfaced
+ * by {@link formatEntity} so the agent knows the leading-prefix order and any
+ * partial predicate. Spread untyped from `yaml.load`; consumers narrow.
+ */
+interface EntityIndex {
+  name?: string;
+  columns?: unknown;
+  type?: string;
+  unique?: boolean;
+  predicate?: string;
 }
 
 interface EntityMeasure {
@@ -80,6 +105,7 @@ export interface ParsedEntity {
   measures?: EntityMeasure[];
   joins?: EntityJoin[];
   query_patterns?: EntityQueryPattern[];
+  indexes?: EntityIndex[];
 }
 
 interface ParsedMetric {
@@ -326,7 +352,50 @@ function cardinalityFragments(dim: EntityDimension): string[] {
   if (typeof dim.null_count === "number" && dim.null_count >= 0) {
     fragments.push(dim.null_count === 0 ? "no nulls" : `${dim.null_count} null`);
   }
+  // Index marker (#3634, building on the A-1 fragment pipeline). A `trailing`
+  // dimension carries a `filter_hint`, so we mark it "indexed (composite)" to
+  // warn the agent that filtering it alone is not sargable; an independently
+  // sargable column reads as "indexed" (with its access method when non-btree).
+  if (dim.indexed === true) {
+    const type =
+      typeof dim.index_type === "string" && dim.index_type && dim.index_type !== "btree"
+        ? ` ${dim.index_type}`
+        : "";
+    if (typeof dim.filter_hint === "string" && dim.filter_hint.length > 0) {
+      fragments.push(`indexed${type} (composite — not sargable alone)`);
+    } else {
+      fragments.push(`indexed${type}`);
+    }
+  }
   return fragments;
+}
+
+/**
+ * Format the entity-level composite/partial indexes block (#3634). Emits the
+ * leading-prefix order (so the agent knows which prefix is sargable) and any
+ * partial-index predicate. `columns` is spread untyped from `yaml.load`, so it
+ * is narrowed to a string list before joining. Returns an empty array when the
+ * entity has no surfaced indexes.
+ */
+function indexLines(indexes: EntityIndex[] | undefined): string[] {
+  if (!Array.isArray(indexes) || indexes.length === 0) return [];
+  const lines: string[] = ["Indexes (leading column is sargable; trailing members need the leading column too):"];
+  for (const ix of indexes) {
+    const cols = Array.isArray(ix.columns)
+      ? ix.columns.filter((c): c is string => typeof c === "string" && c.length > 0)
+      : [];
+    if (cols.length === 0) continue;
+    const name = typeof ix.name === "string" ? ix.name : "index";
+    const type = typeof ix.type === "string" && ix.type ? ` ${ix.type}` : "";
+    const unique = ix.unique === true ? " unique" : "";
+    const partial =
+      typeof ix.predicate === "string" && ix.predicate.length > 0
+        ? ` WHERE ${ix.predicate} (partial — only covers matching rows)`
+        : "";
+    lines.push(`  - ${name}: (${cols.join(", ")})${type}${unique}${partial}`);
+  }
+  // If every index had an unusable column list, drop the header too.
+  return lines.length > 1 ? lines : [];
 }
 
 // Exported for unit testing the cardinality markers (#3630) as a pure
@@ -421,6 +490,10 @@ export function formatEntity(
       }
     }
 
+    // Composite/partial indexes (#3634) — surfaced after joins so the agent
+    // sees sargable prefixes and partial predicates alongside the columns.
+    for (const line of indexLines(entity.indexes)) lines.push(line);
+
     // Query patterns (just names — agent can explore for full SQL)
     if (entity.query_patterns && entity.query_patterns.length > 0) {
       const patternNames = entity.query_patterns
@@ -467,6 +540,16 @@ export function formatEntity(
       parts.push(
         `joins: ${(entity.joins ?? []).map((j) => j.target_entity).join(", ")}`,
       );
+    // Compact composite/partial index summary (#3634) — list the leading column
+    // of each so the agent still sees sargable prefixes in large layers.
+    const idxLeads = (entity.indexes ?? [])
+      .map((ix) =>
+        Array.isArray(ix.columns) && typeof ix.columns[0] === "string"
+          ? (ix.columns[0] as string)
+          : null,
+      )
+      .filter((c): c is string => !!c);
+    if (idxLeads.length > 0) parts.push(`indexes lead: ${[...new Set(idxLeads)].join(", ")}`);
     lines.push(parts.join(" | "));
   }
 
@@ -534,6 +617,7 @@ function loadEntities(semanticRoot: string): ParsedEntity[] {
         measures: Array.isArray(raw.measures) ? (raw.measures as EntityMeasure[]) : undefined,
         joins: Array.isArray(raw.joins) ? (raw.joins as EntityJoin[]) : undefined,
         query_patterns: Array.isArray(raw.query_patterns) ? (raw.query_patterns as EntityQueryPattern[]) : undefined,
+        indexes: Array.isArray(raw.indexes) ? (raw.indexes as EntityIndex[]) : undefined,
       };
     });
 }

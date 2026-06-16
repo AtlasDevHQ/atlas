@@ -60,6 +60,8 @@ dimensions:
     type: string
     description: Current order status
     sample_values: [pending, shipped, delivered, cancelled]
+    indexed: true                       # auto-profiled — backed by an index
+    index_type: btree
 
   - name: order_month
     sql: "DATE_TRUNC('month', created_at)"
@@ -106,6 +108,11 @@ query_patterns:
       GROUP BY 1
       ORDER BY 1
 
+indexes:                              # auto-profiled composite / partial indexes
+  - name: orders_customer_status_idx
+    columns: [customer_id, status]
+    type: btree
+
 use_cases:
   - Revenue analysis and forecasting
   - Order fulfillment tracking
@@ -130,6 +137,11 @@ cross_source_joins:                   # Optional: joins to other datasources
 | `virtual` | boolean | No | Marks computed columns (not raw DB columns) |
 | `semantic_type` | string | No | Auto-detected pattern: `currency`, `percentage`, `email`, `url`, `phone`, `timestamp`. Guides measure inference and agent descriptions |
 | `sample_values` | array | No | Example values to guide the agent |
+| `indexed` | boolean | No | Auto-profiled: the column is backed by a database index. Surfaced to the agent so it prefers indexed columns for filters |
+| `index_type` | string | No | Auto-profiled access method of the column's index: `btree`, `gin`, `gist`, `brin`, `hash` |
+| `filter_hint` | string | No | Auto-profiled warning emitted when a column is indexed only as a *trailing* member of a composite B-tree — filtering on it alone is not sargable. Names the composite index and the leading column to constrain alongside it |
+
+> **Index awareness.** The profiler (`atlas init` / the wizard) harvests index metadata from the database catalog and stamps `indexed` / `index_type` / `filter_hint` onto dimensions, plus an entity-level [`indexes[]`](#index-fields) block for composite and partial indexes. These are hints — they never restrict which columns the agent may query.
 
 ### Measure Fields
 
@@ -149,6 +161,29 @@ cross_source_joins:                   # Optional: joins to other datasources
 | `join_columns.from` | string | Yes | Local foreign key column |
 | `join_columns.to` | string | Yes | Target primary key column |
 | `description` | string | No | Human-readable relationship description |
+
+### Index Fields
+
+Entity-level `indexes[]` is auto-profiled for **composite** (multi-column) and **partial** indexes — single-column indexes are conveyed by the per-dimension `indexed` flag instead. Column order is load-bearing: only the leading prefix of a composite B-tree is independently sargable.
+
+```yaml
+indexes:
+  - name: events_tenant_created_idx
+    columns: [tenant_id, created_at]   # leading column (tenant_id) is sargable; created_at needs tenant_id too
+    type: btree
+  - name: events_active_idx
+    columns: [status]
+    type: btree
+    predicate: deleted_at IS NULL      # partial index — only covers matching rows
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Index name from the database catalog |
+| `columns` | array | Yes | Ordered index members. Composite order matters; expression-index members render as their definition text (e.g. `lower(email)`) |
+| `type` | string | Yes | Access method: `btree`, `gin`, `gist`, `brin`, `hash` |
+| `unique` | boolean | No | Present (`true`) for unique indexes |
+| `predicate` | string | No | Partial-index `WHERE` clause (PostgreSQL only) — the index only covers rows matching this predicate |
 
 ### Entity Types
 

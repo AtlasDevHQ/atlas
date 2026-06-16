@@ -442,7 +442,12 @@ export function formatEntity(
     // the full per-column listing (#3630). Capped so a wide table can't blow up
     // the summary line.
     const cardCols = dims
-      .filter((d) => !d.virtual && typeof d.unique_count === "number")
+      .filter(
+        (d) =>
+          !d.virtual &&
+          typeof d.unique_count === "number" &&
+          d.unique_count >= 0,
+      )
       .map((d) => `${d.name ?? d.sql ?? "?"}(~${d.unique_count})`);
     if (cardCols.length > 0) {
       const CARD_CAP = 8;

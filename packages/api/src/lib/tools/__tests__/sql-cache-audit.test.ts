@@ -68,12 +68,17 @@ mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
 
 // Cache mock — ENABLED, returning whatever `cachedEntry` is set to. A null
 // entry is a miss (executes); a populated entry is a hit (short-circuits).
+// `cacheSets` captures every write so the miss path's `executionMs` stamp is
+// assertable (the WRITE side of #3616, not just the replay).
 let cachedEntry: CacheEntry | null = null;
+let cacheSets: Array<{ key: string; entry: CacheEntry }> = [];
 
 mock.module("@atlas/api/lib/cache/index", () => ({
   getCache: () => ({
     get: () => cachedEntry,
-    set: () => {},
+    set: (key: string, entry: CacheEntry) => {
+      cacheSets.push({ key, entry });
+    },
     stats: () => ({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 }),
   }),
   buildCacheKey: () => "mock-key",
@@ -115,6 +120,7 @@ describe("executeSQL cache-hit audit duration (#3616)", () => {
 
   beforeEach(() => {
     auditInserts = [];
+    cacheSets = [];
     cachedEntry = null;
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/atlas";
@@ -183,5 +189,38 @@ describe("executeSQL cache-hit audit duration (#3616)", () => {
     const inserts = getAuditInserts();
     expect(inserts).toHaveLength(1);
     expect(extractAuditParams(inserts[0].params!).durationMs).toBe(0);
+  });
+
+  // The WRITE half of #3616: a cache MISS must persist the real execution
+  // duration onto the entry it writes, so a later hit has a real cost to
+  // replay. The replay tests above hand-fabricate `executionMs`; this one
+  // proves the production write path (`getCache().set(..., { executionMs })`)
+  // actually stamps it, wired to the measured duration rather than a constant.
+  it("stamps the original execution duration onto the cache entry at write time", async () => {
+    cachedEntry = null; // miss → executes against the datasource and writes cache
+    // A small delay makes the measured duration reliably > 0, so a regression
+    // that hardcodes `executionMs: 0` (rather than the real cost) is caught.
+    queryFn = mock(async () => {
+      await new Promise((r) => setTimeout(r, 15));
+      return { columns: ["id", "name"], rows: [{ id: 1, name: "Acme" }] };
+    });
+
+    const result = await exec("SELECT id, name FROM companies");
+    expect(result.success).toBe(true);
+    expect(result.cached).toBe(false);
+
+    // Exactly one entry written, carrying a real (non-zero) execution cost.
+    // `?? 0` keeps the type a plain number; the `> 0` assertion then fails if
+    // the field was actually undefined (i.e. never stamped), so the fallback
+    // can't mask a regression.
+    expect(cacheSets).toHaveLength(1);
+    const stamped = cacheSets[0].entry.executionMs ?? 0;
+    expect(stamped).toBeGreaterThan(0);
+
+    // …and it equals the duration logged on the same execution's audit row,
+    // proving the stamp is wired to the real measured duration, not a literal.
+    const inserts = getAuditInserts();
+    expect(inserts).toHaveLength(1);
+    expect(extractAuditParams(inserts[0].params!).durationMs).toBe(stamped);
   });
 });

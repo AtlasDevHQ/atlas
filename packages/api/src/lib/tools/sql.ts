@@ -1936,16 +1936,28 @@ async function executeSqlForConnection({
           cacheKey = buildCacheKey(normalizedSql, connId, cacheOrgId, claims);
           const cached = getCache().get(cacheKey);
           if (cached) {
-            logQueryAudit({
-              // #3616 — replay the original execution duration persisted on
-              // the cache entry so this hit carries the query's real cost,
-              // not duration_ms=0. Falls back to 0 only for legacy/external
-              // entries written before executionMs was stamped.
-              sql: normalizedSql.slice(0, 2000), durationMs: cached.executionMs ?? 0,
-              rowCount: cached.rows.length,
-              success: true, sourceId: connId, sourceType: dbType, targetHost,
-              parentAuditId,
-            });
+            // Wrapped locally (mirrors the live-path audit at ~1248) so an
+            // audit-write failure on a hit doesn't fall through to the outer
+            // catch — that catch mislabels any throw here as "Cache read
+            // failed" and needlessly re-executes the query, silently defeating
+            // the cache. A failed audit log should not cost us the cache hit.
+            try {
+              logQueryAudit({
+                // #3616 — replay the original execution duration persisted on
+                // the cache entry so this hit carries the query's real cost,
+                // not duration_ms=0. Falls back to 0 only for legacy/external
+                // entries written before executionMs was stamped.
+                sql: normalizedSql.slice(0, 2000), durationMs: cached.executionMs ?? 0,
+                rowCount: cached.rows.length,
+                success: true, sourceId: connId, sourceType: dbType, targetHost,
+                parentAuditId,
+              });
+            } catch (auditErr) {
+              log.warn(
+                { err: auditErr instanceof Error ? auditErr.message : String(auditErr), connectionId: connId },
+                "Failed to write cache-hit query audit log",
+              );
+            }
             // Apply PII masking to cached results (same as live query path)
             const cacheResponse = yield* Effect.tryPromise({
               try: async () => {
@@ -1986,6 +1998,11 @@ async function executeSqlForConnection({
                   columns: cached.columns, rows: cachedRows,
                   truncated: cachedTruncated, cached: true,
                   maskingApplied: cachedMaskingApplied,
+                  // Cost of *serving this hit* (~0, no DB round-trip) — NOT the
+                  // original execution cost. The query's real duration is
+                  // replayed onto the audit row above via `cached.executionMs`;
+                  // this response field intentionally reports the cache-serve
+                  // cost (#3616 naming: two distinct "executionMs" meanings).
                   executionMs: 0,
                 };
               },

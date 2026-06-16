@@ -2852,36 +2852,31 @@ describe("Admin routes — audit analytics", () => {
       expect(normalized).toContain("AVG(duration_ms) FILTER (WHERE duration_ms > 0)");
       // …and the ranking orders by that same filtered average.
       expect(normalized).toContain("ORDER BY AVG(duration_ms) FILTER (WHERE duration_ms > 0) DESC");
-      // The zero-exclusion must NOT be a WHERE clause — that would also drop
-      // the rows from COUNT(*), under-reporting how often the query ran.
-      expect(normalized).not.toContain("duration_ms > 0 GROUP BY");
+      // Every `duration_ms > 0` predicate must live inside a FILTER, never a
+      // bare WHERE — a WHERE would also drop the rows from COUNT(*),
+      // under-reporting how often the query ran. Asserting the counts match
+      // is robust to whitespace/clause-ordering, unlike a single substring.
+      const totalPredicates = normalized.match(/duration_ms > 0/g)?.length ?? 0;
+      const filteredPredicates = normalized.match(/FILTER \(WHERE duration_ms > 0\)/g)?.length ?? 0;
+      expect(totalPredicates).toBeGreaterThan(0);
+      expect(filteredPredicates).toBe(totalPredicates);
     });
 
-    // #3616 — end-to-end average correctness. Given an audit set that mixes a
-    // real execution (1500ms), a cache-hit replay carrying the original cost
-    // (1500ms), and a fanout-parent housekeeping row (0ms), the reported
-    // average must be 1500 — the zero row excluded, the replayed cost kept.
-    // We compute the answer the SQL produces by applying its FILTER semantics
-    // to a fixture, proving the endpoint surfaces an undistorted average.
-    it("reports correct averages when data includes cache hits and fanout rows", async () => {
-      const auditFixture = [
-        { sql: "SELECT * FROM big_table", duration_ms: 1500 }, // real execution
-        { sql: "SELECT * FROM big_table", duration_ms: 1500 }, // cache-hit replay (#3616)
-        { sql: "SELECT * FROM big_table", duration_ms: 0 },    // fanout parent (#3616)
-      ];
-
+    // #3616 — response plumbing: the endpoint must map each aggregate column
+    // (avg/max/count) to the right wire field and parse the string values the
+    // pg driver returns. Distinct numbers (avg≠max≠count) catch a column-swap.
+    // NOTE: the FILTER/COALESCE/NULLS-LAST *SQL semantics* (that the average
+    // actually excludes zero rows) are verified against real Postgres in
+    // `audit-slow-pg.test.ts` — a mocked query layer can't exercise them, so
+    // this test deliberately does NOT re-derive the average in JS.
+    it("maps avg/max/count aggregate columns onto the response shape", async () => {
       mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("ip_allowlist")) return Promise.resolve([]);
         if (!sql.includes("AVG(duration_ms)")) return Promise.resolve([]);
-
-        // Emulate the FILTER (WHERE duration_ms > 0) AVG the endpoint runs.
-        const nonZero = auditFixture.filter((r) => r.duration_ms > 0);
-        const avg = Math.round(
-          nonZero.reduce((acc, r) => acc + r.duration_ms, 0) / nonZero.length,
-        );
-        const max = Math.max(...auditFixture.map((r) => r.duration_ms));
+        // Postgres returns numeric aggregates as strings; distinct values so a
+        // mis-mapping (e.g. avg↔max) would surface as a wrong field.
         return Promise.resolve([
-          { query: "SELECT * FROM big_table", avg_duration: String(avg), max_duration: String(max), count: String(auditFixture.length) },
+          { query: "SELECT * FROM big_table", avg_duration: "2250", max_duration: "3000", count: "3" },
         ]);
       });
 
@@ -2889,11 +2884,9 @@ describe("Admin routes — audit analytics", () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as { queries: { query: string; avgDuration: number; maxDuration: number; count: number }[] };
       expect(body.queries).toHaveLength(1);
-      // Naive AVG over all 3 rows would be (1500+1500+0)/3 = 1000; the fix
-      // excludes the zero row, so the average is the true 1500.
-      expect(body.queries[0].avgDuration).toBe(1500);
-      expect(body.queries[0].maxDuration).toBe(1500);
-      // COUNT still reflects every row for the prefix (zero row included).
+      expect(body.queries[0].query).toBe("SELECT * FROM big_table");
+      expect(body.queries[0].avgDuration).toBe(2250);
+      expect(body.queries[0].maxDuration).toBe(3000);
       expect(body.queries[0].count).toBe(3);
     });
   });

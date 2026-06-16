@@ -22,7 +22,7 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ### `v0.0.17` — Performance-aware Atlas
 
-Kicked off 2026-06-16 from PRD [#3617](https://github.com/AtlasDevHQ/atlas/issues/3617) (GitHub milestone pending creation). Makes query performance a first-class signal in the two subsystems that drive the agent — an index/cardinality-aware semantic layer (Workstream A) and perf-weighted, better-connected learned patterns (Workstream B). Both are core/AGPL, reading a `duration_ms` Atlas already records.
+Kicked off 2026-06-16 from PRD [#3617](https://github.com/AtlasDevHQ/atlas/issues/3617) ([milestone #67](https://github.com/AtlasDevHQ/atlas/milestone/67), 16 issues). Makes query performance a first-class signal in the two subsystems that drive the agent — an index/cardinality-aware semantic layer (Workstream A) and perf-weighted, better-connected learned patterns (Workstream B). Both are core/AGPL, reading a `duration_ms` Atlas already records.
 
 Shipped ahead of kickoff: A-0 sargability prompt + MySQL date-filter fix (#3629 → #3692), B-0 latency/staleness migration (#3631 → #3693), and the cross-tenant leak fixes #3610/#3611 (#3690) that unblock B-2.
 

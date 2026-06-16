@@ -253,7 +253,7 @@ ATLAS_API_KEY_ROLE=member
 | `ATLAS_ALLOW_FIRST_SIGNUP_ADMIN` | `false` | Opt-in fallback: when `ATLAS_ADMIN_EMAIL` is unset and no admin user exists, the first signup is promoted to `platform_admin`. Accepts `true`/`1`/`yes`/`on` (case-insensitive). **Do not enable in production** — any unauthenticated visitor could race the operator and claim admin with a single signup |
 | `ATLAS_REQUIRE_EMAIL_VERIFICATION` | profile default — `true` in `production`, `false` in `staging`/`development` | Require email verification on signup. When unset, the default comes from the [`ATLAS_DEPLOY_ENV`](#runtime) profile; setting it explicitly overrides the profile. Setting `false` re-enables Better Auth's `USER_ALREADY_EXISTS` signup error (an email-enumeration oracle) and is only acceptable for self-hosted single-tenant deployments without an email provider |
 | `ATLAS_MFA_ISSUER` | `Atlas` | Issuer label shown in TOTP authenticator apps (Google Authenticator, 1Password, etc.) when users enroll an MFA device |
-| `ATLAS_RPID` | `app.useatlas.dev` | WebAuthn relying-party ID used during passkey enrollment and assertion. Set explicitly to the production hostname when self-hosting under a custom domain — mismatched RP IDs reject every authenticator response |
+| `ATLAS_RPID` | derived from web origin | WebAuthn relying-party ID used during passkey enrollment and assertion. Resolution precedence: explicit `ATLAS_RPID` → the host of the configured web origin (`ATLAS_CORS_ORIGIN` / `BETTER_AUTH_TRUSTED_ORIGINS`) → the legacy default `app.useatlas.dev` when no origin is configured. Set explicitly to the production hostname when self-hosting under a custom domain — a mismatched RP ID (not equal to, or a parent of, the origin host) fails boot loudly, and IP-literal hosts disable passkeys |
 | `ATLAS_RPNAME` | `Atlas` | Human-readable relying-party name shown to users in passkey enrollment prompts |
 
 <Callout type="warn">
@@ -406,7 +406,7 @@ Actor binding for the [MCP server](/guides/mcp). The transport runs in one of tw
 | `ATLAS_MCP_USER_ID` | — | MCP actor binding (#1858) — Atlas user ID the MCP transport should act as. Set **both** `ATLAS_MCP_USER_ID` and `ATLAS_MCP_ORG_ID` for governed transport (approval rules + audit apply to MCP queries). Leaving both unset selects trusted transport with a synthetic `system:mcp` actor — only safe when no approval rules exist |
 | `ATLAS_MCP_ORG_ID` | — | MCP actor binding — org ID the bound user acts under. The MCP server fails to boot when approval rules exist and the binding is missing, or when only one of the two vars is set |
 | `ATLAS_MCP_MAX_SESSIONS` | `100` | Max concurrent hosted-MCP sessions per API instance. Counts both registered sessions and in-flight initializations. Hitting the cap returns `503 too_many_sessions`. Sessions are in-process; Railway does not support sticky session routing, so each api region runs `numReplicas: 1` (see [#2069](https://github.com/AtlasDevHQ/atlas/issues/2069) for the rationale and [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) for the durable-session-store path that lifts the cap). The [hosted MCP performance profile](/architecture/mcp-performance) documents the bottleneck order (session cap → datasource pool → API CPU → OAuth verify → SQL validation), tuning recipes for raising the cap, and reproducible k6 scripts at [`eval/load-tests/mcp/`](https://github.com/AtlasDevHQ/atlas/tree/main/eval/load-tests/mcp) for measuring against your own deployment |
-| `ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS` | `auto` | Tri-state gate (`auto` / `always` / `never`) for exposing the 20 NovaMart canonical eval questions ([#2076](https://github.com/AtlasDevHQ/atlas/issues/2076)) as `canonical-{slug}` `prompts/list` entries on the hosted MCP endpoint. `auto` exposes them only on the `__demo__` workspace (default — discoverable in the demo, hidden in customer prompt lists). `always` forces exposure for every workspace. `never` fails closed. The Settings → AI Agents → MCP Prompts preview block reflects this gate live |
+| `ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS` | `auto` | Tri-state gate (`auto` / `always` / `never`) for exposing the 20 NovaMart canonical eval questions ([#2076](https://github.com/AtlasDevHQ/atlas/issues/2076)) as `canonical-{slug}` `prompts/list` entries on the hosted MCP endpoint. `auto` (default) exposes them when the workspace has a published `__demo__` connection **or** `ATLAS_DEMO_INDUSTRY` is set — discoverable in the demo, hidden in customer prompt lists. `always` forces exposure for every workspace regardless of dataset. `never` fails closed. The Settings → AI Agents → MCP Prompts preview block reflects this gate live |
 | `ATLAS_MCP_RATE_LIMIT_FAIL_CLOSED` | `false` | Fail-closed gate for MCP rate-limit infrastructure errors. When `true`, a rate-limit-store outage (Redis down, internal DB unreachable) causes MCP requests to be rejected rather than allowed through. SaaS regions opt in; self-hosted defaults to fail-open so a transient infra blip doesn't block agent access |
 | `ATLAS_MCP_RATE_LIMIT_MAX_KEYS` | (oauth-client clamp default) | Maximum cardinality of distinct rate-limit keys retained per workspace before LRU eviction. Bounds memory usage on workspaces with many short-lived OAuth clients. Clamped to a minimum at startup |
 | `ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS` | `1800000` (30m) | Idle timeout for hosted-MCP sessions. The sweep evicts sessions whose `lastSeenAt` is older than this. Floored at `60000` (1m) — values below the floor log a warning and fall back to the default. Test-only overrides set this below the floor in-process. Source: `packages/mcp/src/hosted.ts` |
@@ -607,6 +607,7 @@ Scheduled task execution. Can also be configured via [`atlas.config.ts`](/refere
 | `ATLAS_SCHEDULER_MAX_CONCURRENT` | `5` | Max concurrent task executions per tick |
 | `ATLAS_SCHEDULER_TIMEOUT` | `60000` | Per-task timeout in milliseconds |
 | `ATLAS_SCHEDULER_TICK_INTERVAL` | `60` | Tick interval in seconds |
+| `ATLAS_DELIVERY_MAX_ROWS` | `50` | Max rows per dataset embedded in a scheduled-delivery report (distinct from `ATLAS_ROW_LIMIT`, the SQL execution cap). Clamped to the range `1–10000`; invalid values fall back to the default. Overridable per-workspace via Settings. Source: `packages/api/src/lib/scheduler/shape-result.ts` |
 | `ATLAS_BYOT_DORMANCY_DAYS` | `30` | Workspace-inactivity window (whole days) before the BYOT model-catalog refresh cycle skips a dormant workspace. Only an explicit `0` disables the dormancy gate (falls back to the TTL-only query); any other invalid value falls back to `30`. Source: `packages/api/src/lib/scheduler/byot-catalog-refresh.ts` |
 | `ATLAS_ORPHAN_TASK_RECONCILE` | `false` | Set `=true` to enable the **destructive** orphan-task sweep — auto-deletes plugin `scheduled_tasks` left behind by a failed uninstall. Default is measure-only: the orphan count is always observed (span + `log.warn`); only the deletion is gated. Source: `packages/api/src/lib/scheduler/orphan-task-reconcile.ts` |
 
@@ -844,6 +845,23 @@ The generic [OpenAPI (REST) datasource](/plugins/datasources/openapi-generic) is
 
 ---
 
+## Elasticsearch / OpenSearch Datasource
+
+Credentials for the Elasticsearch / OpenSearch datasource when profiling from the CLI (`atlas init` / `diff`) on a self-hosted deployment. On the hosted platform these are entered through **Admin → Connections** and encrypted at rest instead. The endpoint comes from the `elasticsearch://` / `opensearch://` `ATLAS_DATASOURCE_URL` (or `ATLAS_ES_CLOUD_ID`); credentials are **never** carried in the URL. Pick one auth mode — precedence is **SigV4 → HTTP Basic → API key**. See the [Elasticsearch datasource guide](/plugins/datasources/elasticsearch).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_ES_CLOUD_ID` | — | Elastic Cloud ID (`<name>:<base64>`) — an endpoint alternative to the `elasticsearch://` URL |
+| `ATLAS_ES_API_KEY` | — | Base64 API key (API-key auth mode) |
+| `ATLAS_ES_USERNAME` | — | HTTP Basic username (requires `ATLAS_ES_PASSWORD`) |
+| `ATLAS_ES_PASSWORD` | — | HTTP Basic password (requires `ATLAS_ES_USERNAME`) |
+| `ATLAS_ES_AWS_REGION` | — | Selects AWS SigV4 auth (Amazon OpenSearch Service); signing keys come from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (+ optional `AWS_SESSION_TOKEN`) |
+| `ATLAS_ES_AWS_SERVICE` | `es` | SigV4 service code; set `aoss` for OpenSearch Serverless |
+| `ATLAS_ES_ENGINE` | from URL scheme | Explicit engine override: `elasticsearch` or `opensearch`. Wins over the URL scheme |
+| `ATLAS_ES_TERMINATE_AFTER` | `100000` | Per-shard document cap for query/aggregation requests. Set `0` to disable. Source: `plugins/elasticsearch/src/dsl.ts` |
+
+---
+
 ## Stripe Billing
 
 Stripe billing integration for SaaS deployments. Self-hosted deployments do not need these — the self-hosted experience has no billing or usage limits.
@@ -980,6 +998,11 @@ Destructive operator-CLI subcommands gated by explicit env confirmation. None of
 | `PORT` | `3001` | HTTP port for the standalone Hono API server. Most platforms (Railway, Vercel) set this automatically |
 | `ATLAS_DEPLOY_ENV` | `production` | Deployment-shape discriminator for the env-profile module (`packages/api/src/lib/env-profile.ts`). One of `production`, `staging`, `development`. Unset or unrecognized → `production`. Selects a typed table of non-secret runtime defaults so a deploy shape can be switched with one var instead of many. Currently drives the defaults for `ATLAS_REQUIRE_EMAIL_VERIFICATION` and `ATLAS_ONBOARDING_EMAILS_ENABLED` (both `true` under `production`, `false` under `staging`/`development`) — each individual env var still overrides the profile default when set explicitly |
 | `ATLAS_MIGRATION_RETRIES` | `5` | Number of retry attempts for internal database migrations at startup. Retries use exponential backoff. Set `0` to disable retries (useful in tests) |
+| `ATLAS_COOKIE_PREFIX` | `ATLAS_DEPLOY_ENV` profile | Session-cookie name prefix (`advanced.cookiePrefix`). A non-empty value wins over the `ATLAS_DEPLOY_ENV` profile default. Distinct prefixes keep prod and staging sessions isolated when multiple Atlas environments share one parent domain. **Must equal** the web service's `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX` |
+| `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX` | `atlas` | Session-cookie name prefix the **web** proxy reads. Must match the API's `ATLAS_COOKIE_PREFIX`. Set per env when several Atlas envs share a parent domain (e.g. `atlas-staging`); use `atlas-dev` for local dev |
+| `ATLAS_PUBLIC_WEB_URL` | — | Public base URL of the web app, used to build the "link your Atlas account" CTA in proactive chat DMs. Set to the user-facing origin (e.g. `https://app.useatlas.dev`) |
+| `ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS` | `15000` (15s) | TTL for the plugin health-check cache. Bounds how often the registry re-runs plugin health probes. Invalid values fall back to the default. Source: `packages/api/src/lib/plugins/registry.ts` |
+| `ATLAS_DASHBOARD_EXPORT_TIMEOUT_MS` | `60000` (60s) | Overall render timeout for headless dashboard screenshot/export. Clamped to the range `5000–180000`; non-numeric values fall back to the default. Source: `packages/api/src/lib/dashboard-screenshot.ts` |
 
 ---
 
@@ -991,7 +1014,6 @@ Destructive operator-CLI subcommands gated by explicit env confirmation. None of
 | `ATLAS_DASHBOARD_DRAFTS_ENABLED` | `true` | Per-user dashboard drafts. When enabled, admin mutations to a bound dashboard write to the caller's draft and the **Publish** flow promotes them via an atomic three-way merge against the persisted baseline. Set to the literal string `false` to fall back to the direct-write model — draft fetch returns `503` and the chat-bound editor degrades to a read-only viewer. See [Dashboards → Chat as editor](/guides/dashboards#chat-as-editor) |
 | `ATLAS_INTERNAL_SCREENSHOT_COOKIE` | — | Service cookie value used by the `screenshotDashboard` vision tool (#2367). The headless Chromium worker calls back into `/admin/dashboards/:id/screenshot` and must authenticate as the requesting user; without this cookie the screenshot request is rejected and the agent falls back to its last-good description. Set this on **both** the API and web services when running behind a reverse proxy. See [Dashboards → Chat as editor](/guides/dashboards#chat-as-editor) |
 | `ATLAS_WEB_BASE_URL` | `http://localhost:3000` | Base URL of the Next.js web app used by `screenshotDashboard` to construct the screenshot target URL (`${ATLAS_WEB_BASE_URL}/dashboards/:id`). Set to the production web origin when self-hosting (e.g. `https://atlas.acme.com`) so the headless Chromium worker hits the right host |
-| `ATLAS_DASHBOARD_EXPORT_TIMEOUT_MS` | `60000` | Overall render timeout (ms) for the headless dashboard export/screenshot worker. Clamped to the range `5000`–`180000`; out-of-range or unparseable values fall back to the default. Raise it for dashboards with many heavy panels that exceed 60s to render |
 
 ---
 
@@ -1021,7 +1043,8 @@ The sub-processor publisher fetches Atlas's authoritative sub-processor list (th
 |----------|---------|-------------|
 | `ATLAS_LOG_LEVEL` | `info` | Pino log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OpenTelemetry collector endpoint (e.g. `http://localhost:4318`). When set, the API server (`atlas-api`) and web frontend (`atlas`) emit distributed trace spans for HTTP requests, agent steps, SQL queries, and explore commands |
-| `ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS` | `15000` | TTL (ms) for the cached plugin-liveness results that feed the `plugins` component of `/api/health`. Clamped to `0`–`300000`; out-of-range or unparseable values fall back to the default with a warning. `0` disables caching so every health hit re-probes each plugin upstream |
+| `OTEL_EXPORTER_OTLP_HEADERS` | — | Auth/header(s) your collector requires, in W3C Baggage format (percent-encode spaces, e.g. `authorization=Bearer%20<token>`). Most hosted collectors are non-functional without this. Set per-service in production |
+| `OTEL_SERVICE_NAME` | `atlas-api` | Overrides the `service.name` resource attribute reported on emitted spans |
 
 See [Observability](/platform-ops/observability) for the full setup guide.
 

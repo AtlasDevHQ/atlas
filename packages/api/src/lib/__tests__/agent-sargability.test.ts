@@ -87,6 +87,14 @@ describe("sargability guidance (shared suffix — covers PostgreSQL)", () => {
     expect(content).toContain("created_at >= '2024-01-01' AND created_at < '2025-01-01'");
   });
 
+  test("warns against the spec's explicitly-named anti-patterns (LOWER on a plain index, date_trunc on an indexed timestamp)", () => {
+    const content = assembledPrompt();
+    // Spec #3629 body: "avoid `LOWER(col) = …` on a plain index"
+    expect(content).toContain("LOWER(email) = 'x@y.com'");
+    // Spec #3629 criterion: "prefer date ranges over `YEAR()`/`date_trunc` on indexed timestamps"
+    expect(content).toContain("date_trunc");
+  });
+
   test("scopes the concern to filter/join predicates, allowing functions for projection/grouping", () => {
     const content = assembledPrompt();
     expect(content).toMatch(/projection and grouping/i);

@@ -83,11 +83,12 @@ export function getPromoteDecaySchedulerIntervalMs(): number {
   return hours * 60 * 60 * 1000;
 }
 
-/** Parse a platform-scoped numeric setting, falling back to `fallback` on a
- *  missing / non-finite / out-of-range value (a typo can't silently widen a
- *  gate). `min` is the inclusive lower bound the value must clear. */
-function numericSetting(key: string, fallback: number, min: number): number {
-  const raw = getSetting(key);
+/** Parse a raw setting value, falling back to `fallback` on a missing /
+ *  non-finite / out-of-range value (a typo can't silently widen a gate). `min`
+ *  is the inclusive lower bound the value must clear. The caller reads the key
+ *  with a literal `getSetting("KEY")` so the registry-reader guard (#3382) can
+ *  see each key's reader. */
+function parseNumeric(raw: string | undefined, fallback: number, min: number): number {
   if (raw === undefined) return fallback;
   const parsed = parseFloat(raw);
   return Number.isFinite(parsed) && parsed >= min ? parsed : fallback;
@@ -104,24 +105,24 @@ function numericSetting(key: string, fallback: number, min: number): number {
  * knob.
  */
 export function resolvePromoteDecayThresholds(): PromoteDecayThresholds {
-  const decayUnseenDays = numericSetting(
-    "ATLAS_LEARN_DECAY_UNSEEN_DAYS",
+  const decayUnseenDays = parseNumeric(
+    getSetting("ATLAS_LEARN_DECAY_UNSEEN_DAYS"),
     DEFAULT_DECAY_UNSEEN_DAYS,
     1,
   );
   return {
-    confidenceThreshold: numericSetting(
-      "ATLAS_LEARN_CONFIDENCE_THRESHOLD",
+    confidenceThreshold: parseNumeric(
+      getSetting("ATLAS_LEARN_CONFIDENCE_THRESHOLD"),
       DEFAULT_PROMOTE_CONFIDENCE,
       0,
     ),
-    minRepetitions: numericSetting(
-      "ATLAS_LEARN_PROMOTE_MIN_REPETITIONS",
+    minRepetitions: parseNumeric(
+      getSetting("ATLAS_LEARN_PROMOTE_MIN_REPETITIONS"),
       DEFAULT_PROMOTE_MIN_REPETITIONS,
       1,
     ),
-    latencyBudgetMs: numericSetting(
-      "ATLAS_LEARN_LATENCY_BUDGET_MS",
+    latencyBudgetMs: parseNumeric(
+      getSetting("ATLAS_LEARN_LATENCY_BUDGET_MS"),
       DEFAULT_LATENCY_BUDGET_MS,
       1,
     ),

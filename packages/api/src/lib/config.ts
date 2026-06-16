@@ -578,6 +578,13 @@ const AtlasConfigSchema = z.object({
   learn: z.object({
     /** Minimum confidence score for a pattern to be eligible for auto-promotion. Default: 0.7. */
     confidenceThreshold: z.number().min(0).max(1).default(0.7),
+    /**
+     * Number of trailing user turns assembled into the learned-pattern
+     * retrieval query (#3632). Widening the window lets a keyword-less
+     * follow-up ("now break that down by region") still match patterns via
+     * the keywords of earlier turns. Default: 3.
+     */
+    retrievalTurns: z.number().int().positive().default(3),
   }).optional(),
 
   /**
@@ -720,7 +727,7 @@ export interface ResolvedConfig {
   /** Query result cache configuration. */
   cache?: { enabled: boolean; ttl: number; maxSize: number };
   /** Dynamic learning configuration. */
-  learn?: { confidenceThreshold: number };
+  learn?: { confidenceThreshold: number; retrievalTurns?: number };
   /** Adaptive starter prompt configuration. */
   starterPrompts?: { coldWindowDays: number; autoPromoteClicks: number; maxFavorites: number };
   /** Enterprise feature gating. */
@@ -947,9 +954,11 @@ export function configFromEnv(): ResolvedConfig {
     // Learn config from env vars
     ...((() => {
       const threshold = parseFloat(process.env.ATLAS_LEARN_CONFIDENCE_THRESHOLD ?? "");
+      const turns = parseInt(process.env.ATLAS_LEARN_RETRIEVAL_TURNS ?? "", 10);
       return {
         learn: {
           confidenceThreshold: Number.isFinite(threshold) && threshold >= 0 && threshold <= 1 ? threshold : 0.7,
+          retrievalTurns: Number.isInteger(turns) && turns > 0 ? turns : 3,
         },
       };
     })()),

@@ -127,6 +127,81 @@ const STOP_WORDS = new Set([
   "index", "values", "set", "into", "not", "exists", "if", "and", "or",
 ]);
 
+// ---------------------------------------------------------------------------
+// Retrieval-query assembly
+// ---------------------------------------------------------------------------
+
+/** Default number of trailing user turns assembled into the retrieval query. */
+export const DEFAULT_RETRIEVAL_TURNS = 3;
+
+/**
+ * Minimal structural shape of a conversation message needed to assemble the
+ * retrieval query. Compatible with the AI SDK's `UIMessage` so callers can
+ * pass `messages` straight through, but decoupled from it so the helper stays
+ * pure and trivially testable.
+ */
+export interface RetrievalQueryMessage {
+  readonly role: string;
+  readonly parts?: ReadonlyArray<{ readonly type: string; readonly text?: string }>;
+}
+
+/** Concatenate the text parts of a single message into one string. */
+function messageText(message: RetrievalQueryMessage): string {
+  return (message.parts ?? [])
+    .filter((p): p is { type: "text"; text: string } => p.type === "text" && typeof p.text === "string")
+    .map((p) => p.text)
+    .join(" ")
+    .trim();
+}
+
+/**
+ * Assemble the learned-pattern retrieval query from the last N user turns.
+ *
+ * Keying retrieval off only the final user message means a keyword-less
+ * follow-up ("now break that down by region") collapses to nothing after
+ * stop-word filtering and matches no patterns. Concatenating the last N
+ * text-bearing user turns carries the entity/measure keywords from earlier in
+ * the thread into the query so the follow-up still surfaces relevant patterns
+ * (#3632).
+ *
+ * Pure: depends only on its inputs. Does not change scoring or injection
+ * format — it only widens the query string fed to {@link getRelevantPatterns}.
+ *
+ * @param messages - Conversation messages in chronological order.
+ * @param maxTurns - Maximum trailing text-bearing user turns to include
+ *   (default {@link DEFAULT_RETRIEVAL_TURNS}). Non-positive or non-finite
+ *   values clamp to 1.
+ * @returns The assembled query, oldest→newest, or `""` when no user text.
+ */
+export function buildRetrievalQuery(
+  messages: readonly RetrievalQueryMessage[],
+  maxTurns: number = DEFAULT_RETRIEVAL_TURNS,
+): string {
+  const turns = Number.isFinite(maxTurns) ? Math.max(1, Math.floor(maxTurns)) : 1;
+
+  // Walk backwards collecting text from user turns until we have `turns` of
+  // them (empty user turns don't consume budget — they'd add no keywords).
+  const collected: string[] = [];
+  for (let i = messages.length - 1; i >= 0 && collected.length < turns; i--) {
+    const message = messages[i];
+    if (message.role !== "user") continue;
+    const text = messageText(message);
+    if (text) collected.push(text);
+  }
+
+  // Reverse to chronological order; order is irrelevant to keyword extraction
+  // but keeps the query readable in logs.
+  return collected.reverse().join(" ").trim();
+}
+
+/** Resolve the configured retrieval-turn count, falling back to the default. */
+export function getRetrievalTurns(): number {
+  const configured = getConfig()?.learn?.retrievalTurns;
+  return typeof configured === "number" && Number.isFinite(configured) && configured >= 1
+    ? Math.floor(configured)
+    : DEFAULT_RETRIEVAL_TURNS;
+}
+
 /** Extract meaningful keywords from a text string. */
 export function extractKeywords(text: string): Set<string> {
   const words = text

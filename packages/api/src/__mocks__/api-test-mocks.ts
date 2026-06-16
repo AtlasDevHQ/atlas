@@ -590,6 +590,8 @@ export function createApiTestMocks(
   mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
     buildLearnedPatternsSection: async () => "",
     getRelevantPatterns: async () => [],
+    buildRetrievalQuery: () => "",
+    getRetrievalTurns: () => 3,
     invalidatePatternCache: () => {},
     extractKeywords: () => new Set(),
     _resetPatternCache: () => {},

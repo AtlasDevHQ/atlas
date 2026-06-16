@@ -42,7 +42,7 @@ import { getSetting } from "./settings";
 import { hasInternalDB, internalExecute } from "./db/internal";
 import { loadGroupRoutingContext } from "./env-routing/lookup";
 import { logUsageEvent } from "./metering";
-import { buildLearnedPatternsSection } from "./learn/pattern-cache";
+import { buildLearnedPatternsSection, buildRetrievalQuery, getRetrievalTurns } from "./learn/pattern-cache";
 import { dispatchMutableHook } from "./plugins/hooks";
 import { plugins } from "./plugins/registry";
 import {
@@ -953,11 +953,11 @@ export async function runAgent({
       hasInternalDB()
         ? Effect.tryPromise({
             try: async () => {
-              const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
-              const question = lastUserMsg?.parts
-                ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
-                .map((p) => p.text)
-                .join(" ") ?? "";
+              // #3632 — assemble the retrieval query from the last N user
+              // turns, not just the final message, so a keyword-less
+              // follow-up ("now break that down by region") still matches
+              // patterns via the keywords of earlier turns.
+              const question = buildRetrievalQuery(messages, getRetrievalTurns());
               if (!question) return undefined;
               // #3611 — scope retrieval to the active connection group so a
               // `us-prod` session is never primed with `eu-prod`'s patterns.

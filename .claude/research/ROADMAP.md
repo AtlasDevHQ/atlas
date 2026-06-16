@@ -20,7 +20,23 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
-No tag milestone is currently kicked off — `v0.0.16` shipped 2026-06-15 (see [History](#history)). The next tag firms up as work begins; candidates live under [Planned tags](#planned-tags).
+### `v0.0.17` — Performance-aware Atlas
+
+Kicked off 2026-06-16 from PRD [#3617](https://github.com/AtlasDevHQ/atlas/issues/3617) (GitHub milestone pending creation). Makes query performance a first-class signal in the two subsystems that drive the agent — an index/cardinality-aware semantic layer (Workstream A) and perf-weighted, better-connected learned patterns (Workstream B). Both are core/AGPL, reading a `duration_ms` Atlas already records.
+
+Shipped ahead of kickoff: A-0 sargability prompt + MySQL date-filter fix (#3629 → #3692), B-0 latency/staleness migration (#3631 → #3693), and the cross-tenant leak fixes #3610/#3611 (#3690) that unblock B-2.
+
+Open slices:
+- [ ] **A-1** — surface `unique_count`/`null_count` cardinality through the semantic index ([#3630](https://github.com/AtlasDevHQ/atlas/issues/3630))
+- [ ] **A-2** — index harvest (PG + MySQL) → `IndexProfile` → YAML → composite-aware prompt hints ([#3634](https://github.com/AtlasDevHQ/atlas/issues/3634))
+- [ ] **B-1** — thread `durationMs` into the proposer → rolling average in `incrementPatternCount` ([#3635](https://github.com/AtlasDevHQ/atlas/issues/3635))
+- [ ] **B-2** — perf-weighted scoring + nightly auto-promote/decay fiber ([#3636](https://github.com/AtlasDevHQ/atlas/issues/3636))
+- [ ] **B-3** — multi-turn question context for pattern retrieval ([#3632](https://github.com/AtlasDevHQ/atlas/issues/3632))
+- [ ] **B-4** — feed favorites + approved suggestions into agent context ([#3633](https://github.com/AtlasDevHQ/atlas/issues/3633))
+
+Related learned-pattern bugs folded in: cache-not-invalidated-on-approve ([#3612](https://github.com/AtlasDevHQ/atlas/issues/3612)), bulk-approve skips amendment YAML rewrite ([#3613](https://github.com/AtlasDevHQ/atlas/issues/3613)), dedup cache no TTL ([#3614](https://github.com/AtlasDevHQ/atlas/issues/3614)), `actor_kind` always NULL ([#3615](https://github.com/AtlasDevHQ/atlas/issues/3615)), `duration_ms=0` skews slow-query analytics ([#3616](https://github.com/AtlasDevHQ/atlas/issues/3616)).
+
+Banked separately toward a later tag: the post-v0.0.16 prod-readiness audit follow-ups (#3679–#3687, under [Planned tags](#planned-tags)) and the www/docs accuracy sweeps (#3677/#3678).
 
 The **Staging environment** track ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) continues in parallel, independent of the tag train — code-complete; only the HITL OAuth/Railway provisioning slices (#2900–#2918) remain, needing operator action (detail under [Planned tags](#planned-tags)).
 
@@ -31,6 +47,8 @@ The **Staging environment** track ([milestone #57](https://github.com/AtlasDevHQ
 Lightweight forward-look. Conviction firms as work begins.
 
 - **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md). All code slices have landed (clamp wiring, `api-staging` config, misrouting coverage, smoke workflow, operator runbook #2899, and the review-surfaced hardening cluster #3095/#2984/#3088/#3096/#3097 via #3100); the staging services are live and green. Remaining: only the HITL OAuth/Railway provisioning slices (#2900–#2918), which need operator action.
+
+- **Prod-readiness follow-ups** ([#3679](https://github.com/AtlasDevHQ/atlas/issues/3679)–#3687) — deferred findings from the post-v0.0.16 audit (#3688): Stripe-teardown outbox, dunning durability, uninstall-orphan teardown, profiler partial-marker, `/use-demo` atomicity, OTel spans, health-endpoint reshape, migration-0133 expand-contract.
 
 - **`v0.1.0` — Public launch** ([#2919](https://github.com/AtlasDevHQ/atlas/issues/2919)) — the July 2026 launch event; first minor out of the `v0.0.x` train. Points at the banked changelog accumulated under `v0.0.x` (release-process plumbing, REST datasources, staging live). Tracked outside the tag train until the bundle firms up.
 

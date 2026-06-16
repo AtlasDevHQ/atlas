@@ -318,11 +318,13 @@ export function registerDatasourceTools(
       };
     }
     // Defense-in-depth: a non-spec-compliant client could `accept` with a
-    // required field left blank (elicitMaskedForm drops empty values), which
-    // would otherwise surface as a confusing pre-flight "could not reach"
-    // error. Reject with an actionable, field-named message instead.
+    // required field left blank, which would otherwise surface as a confusing
+    // pre-flight "could not reach" error. Reject with an actionable,
+    // field-named message instead.
     const values = elicited.values;
-    const missing = fields.filter((f) => f.required && !(f.key in values)).map((f) => f.label);
+    const missing = fields
+      .filter((f) => f.required && (!(f.key in values) || values[f.key].trim().length === 0))
+      .map((f) => f.label);
     if (missing.length > 0) {
       return {
         ok: false,

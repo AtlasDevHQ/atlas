@@ -883,6 +883,22 @@ describe("create_datasource", () => {
     expect(mockProvision).not.toHaveBeenCalled();
   });
 
+  it("#3608 — a required field present as an empty string is rejected before provisioning", async () => {
+    elicitOutcome = { action: "accept", values: { url: "" } };
+    const client = await createTestClient();
+
+    const res = await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "postgres", install_id: "new-pg" },
+    });
+
+    expect(res.isError).toBe(true);
+    const err = parseAtlasMcpToolError(getContentText(res.content));
+    expect(err?.code).toBe("validation_failed");
+    expect(err?.message).toContain("Connection URL");
+    expect(mockProvision).not.toHaveBeenCalled();
+  });
+
   it("an elicitation failure (unsupported client) → validation_failed, no leak", async () => {
     elicitThrows = true;
     const client = await createTestClient();

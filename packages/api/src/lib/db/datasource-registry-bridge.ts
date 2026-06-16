@@ -202,6 +202,13 @@ export async function probePluginDatasourceConnection(
   // slow-but-eternal query that NEVER settles can't leak a pool.
   const probeRun = (async () => {
     built = (await createFromConfig(decryptedConfig)) as ProbeableConnection;
+    if (timedOut) {
+      if (!closedByTimeout) {
+        closedByTimeout = true;
+        await built.close().catch(() => {});
+      }
+      return;
+    }
     // Prefer the connection's native liveness check (ES/OpenSearch `ping`); fall
     // back to `SELECT 1` for SQL-only adapters that expose no `ping`.
     if (typeof built.ping === "function") {

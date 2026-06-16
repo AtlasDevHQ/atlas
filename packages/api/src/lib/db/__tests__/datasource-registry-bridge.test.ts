@@ -538,6 +538,29 @@ describe("probePluginDatasourceConnection (#3547)", () => {
     expect(closed).toBe(true);
   });
 
+  it("#3608 — closes a late-built connection even when its probe never settles", async () => {
+    let closed = false;
+    const conn = {
+      query: () => new Promise<unknown>(() => {}),
+      close: async () => { closed = true; },
+    };
+    fakeDatasourcePlugins = [
+      {
+        types: ["datasource"],
+        connection: {
+          dbType: "clickhouse",
+          createFromConfig: () => new Promise((resolve) => setTimeout(() => resolve(conn), 60)),
+        },
+      },
+    ];
+
+    const out = await bridge.probePluginDatasourceConnection("clickhouse", { url: "clickhouse://slow/db" }, 20);
+    expect(out.ok).toBe(false);
+
+    await new Promise((r) => setTimeout(r, 80));
+    expect(closed).toBe(true);
+  });
+
   it("#3580 — closes an eagerly-built connection whose probe query NEVER settles (infinite hang = pool leak)", async () => {
     // Adapter pattern that triggers the bug: createFromConfig resolves
     // immediately (eager-connect on build), but the probe query returns a

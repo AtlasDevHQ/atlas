@@ -631,6 +631,74 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_LEARN_RETRIEVAL_TURNS",
     scope: "workspace",
   },
+  // Workspace-scoped + hot-reloaded: read per-request via getSettingAuto in
+  // perf-weighted retrieval. The nightly auto-promote job reads the SAME key at
+  // platform scope (no orgId) for its latency gate, so a workspace override
+  // affects only retrieval down-weighting, not promotion.
+  {
+    key: "ATLAS_LEARN_LATENCY_BUDGET_MS",
+    section: "Dynamic Learning",
+    label: "Pattern Latency Budget (ms)",
+    description:
+      "Patterns whose average execution time stays at or under this budget rank normally in retrieval; slower patterns are down-weighted (never excluded). Also the default latency ceiling for nightly auto-promotion.",
+    type: "number",
+    default: "5000",
+    envVar: "ATLAS_LEARN_LATENCY_BUDGET_MS",
+    scope: "workspace",
+  },
+  // Nightly auto-promote/decay job (#3636). The enable + interval pair is a
+  // single process-global fiber forked once at boot (makeSchedulerLive), so
+  // they are PLATFORM-scoped + requiresRestart — mirrors the expert scheduler.
+  // The gate knobs below are read once per tick (no orgId), hence platform too.
+  {
+    key: "ATLAS_LEARN_PROMOTE_DECAY_ENABLED",
+    section: "Dynamic Learning",
+    label: "Auto-Promote / Decay Job",
+    description:
+      "Enable the nightly job that auto-promotes high-confidence, fast, frequently-seen learned patterns and demotes stale auto-promoted ones. Human approvals are never demoted; semantic amendments are never auto-promoted.",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_LEARN_PROMOTE_DECAY_ENABLED",
+    requiresRestart: true,
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS",
+    section: "Dynamic Learning",
+    label: "Auto-Promote / Decay Interval",
+    description: "Hours between nightly auto-promote/decay runs.",
+    type: "number",
+    default: "24",
+    envVar: "ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS",
+    requiresRestart: true,
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_LEARN_PROMOTE_MIN_REPETITIONS",
+    section: "Dynamic Learning",
+    label: "Auto-Promote Min Repetitions",
+    description:
+      "Minimum times a pending pattern must have been seen before the nightly job will auto-promote it (alongside the confidence threshold and latency budget).",
+    type: "number",
+    default: "5",
+    envVar: "ATLAS_LEARN_PROMOTE_MIN_REPETITIONS",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_LEARN_DECAY_UNSEEN_DAYS",
+    section: "Dynamic Learning",
+    label: "Pattern Decay Window (days)",
+    description:
+      "An auto-promoted pattern unseen for longer than this many days is demoted back to pending so the injected set stays fresh. Human-approved patterns are never auto-demoted.",
+    type: "number",
+    default: "30",
+    envVar: "ATLAS_LEARN_DECAY_UNSEEN_DAYS",
+    scope: "platform",
+    saasVisible: false,
+  },
 ];
 
 // ---------------------------------------------------------------------------

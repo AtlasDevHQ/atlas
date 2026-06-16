@@ -64,6 +64,11 @@ function toLearnedPattern(row: Record<string, unknown>): LearnedPattern {
           }
         })()
       : null,
+    autoPromoted: Boolean(row.auto_promoted),
+    avgDurationMs:
+      row.avg_duration_ms === null || row.avg_duration_ms === undefined
+        ? null
+        : Number(row.avg_duration_ms),
   };
 }
 
@@ -133,6 +138,8 @@ const LearnedPatternSchema = z.object({
   reviewedAt: z.string().nullable(),
   type: z.enum(["query_pattern", "semantic_amendment"]),
   amendmentPayload: z.record(z.string(), z.unknown()).nullable(),
+  autoPromoted: z.boolean(),
+  avgDurationMs: z.number().nullable(),
 });
 
 const ListResponseSchema = createListResponseSchema("patterns", LearnedPatternSchema, {

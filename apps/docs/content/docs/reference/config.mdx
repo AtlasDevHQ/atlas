@@ -364,16 +364,28 @@ The cache is automatically flushed on config reload. Manual flush is available v
 
 Tuning for how learned query patterns are retrieved and promoted into agent context.
 
-These are **runtime settings**, not `atlas.config.ts` fields: they resolve as `workspace override > platform override > env var > default`, so each workspace can tune them from **Admin → Settings** with no redeploy (hot-reloaded in SaaS). Set the env var for a self-host default.
+The first three are **workspace-scoped runtime settings**, not `atlas.config.ts` fields: they resolve as `workspace override > platform override > env var > default`, so each workspace can tune them from **Admin → Settings** with no redeploy (hot-reloaded in SaaS). Set the env var for a self-host default. The nightly auto-promote/decay knobs are **platform-scoped** (the job is one process-global fiber) — enable/interval changes require a restart, and the gate is read once per run.
 
-| Setting | Env var | Default | Description |
-|---------|---------|---------|-------------|
-| Pattern Confidence Threshold | `ATLAS_LEARN_CONFIDENCE_THRESHOLD` | `0.7` | Minimum confidence score (0–1) for a learned pattern to be eligible for retrieval/auto-promotion. Lower values promote more aggressively; higher values require stronger evidence from the audit log |
-| Pattern Retrieval Turns | `ATLAS_LEARN_RETRIEVAL_TURNS` | `3` | Number of trailing user turns assembled into the learned-pattern retrieval query. Widening the window lets a keyword-less follow-up ("now break that down by region") still match patterns via the keywords of earlier turns |
+| Setting | Env var | Scope | Default | Description |
+|---------|---------|-------|---------|-------------|
+| Pattern Confidence Threshold | `ATLAS_LEARN_CONFIDENCE_THRESHOLD` | Workspace | `0.7` | Minimum confidence score (0–1) for a learned pattern to be eligible for retrieval/auto-promotion. Lower values promote more aggressively; higher values require stronger evidence |
+| Pattern Retrieval Turns | `ATLAS_LEARN_RETRIEVAL_TURNS` | Workspace | `3` | Number of trailing user turns assembled into the learned-pattern retrieval query. Widening the window lets a keyword-less follow-up ("now break that down by region") still match patterns via the keywords of earlier turns |
+| Pattern Latency Budget (ms) | `ATLAS_LEARN_LATENCY_BUDGET_MS` | Workspace | `5000` | Patterns at or under this average execution time rank normally; slower patterns are down-weighted in retrieval (never excluded). Also the auto-promotion latency ceiling |
+| Auto-Promote / Decay Job | `ATLAS_LEARN_PROMOTE_DECAY_ENABLED` | Platform (restart) | `false` | Enable the nightly job that auto-promotes qualifying pending patterns and demotes stale auto-promoted ones |
+| Auto-Promote / Decay Interval | `ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS` | Platform (restart) | `24` | Hours between auto-promote/decay runs |
+| Auto-Promote Min Repetitions | `ATLAS_LEARN_PROMOTE_MIN_REPETITIONS` | Platform | `5` | Minimum times a pending pattern must be seen before auto-promotion |
+| Pattern Decay Window (days) | `ATLAS_LEARN_DECAY_UNSEEN_DAYS` | Platform | `30` | An auto-promoted pattern unseen this long is demoted to pending. Human approvals are never auto-demoted |
+
+See [Learned query patterns](/guides/semantic-expert#learned-query-patterns) for how performance-weighting and the nightly job work together.
 
 ```bash
 ATLAS_LEARN_CONFIDENCE_THRESHOLD=0.7
 ATLAS_LEARN_RETRIEVAL_TURNS=3
+ATLAS_LEARN_LATENCY_BUDGET_MS=5000
+ATLAS_LEARN_PROMOTE_DECAY_ENABLED=false
+ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS=24
+ATLAS_LEARN_PROMOTE_MIN_REPETITIONS=5
+ATLAS_LEARN_DECAY_UNSEEN_DAYS=30
 ```
 
 ---

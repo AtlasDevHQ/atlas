@@ -75,6 +75,7 @@ mock.module("@atlas/api/lib/audit", async () => {
 // Stub YAML apply so the approved branch does not touch the filesystem.
 mock.module("@atlas/api/lib/semantic/expert/apply", () => ({
   applyAmendmentToEntity: mock(async () => undefined),
+  applyAmendmentFromPayload: mock(async () => undefined),
 }));
 
 // Seed `createSession` to return one proposal so /proposals/0/(approve|reject)

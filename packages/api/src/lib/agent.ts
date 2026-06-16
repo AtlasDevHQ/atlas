@@ -949,7 +949,13 @@ export async function runAgent({
                 .map((p) => p.text)
                 .join(" ") ?? "";
               if (!question) return undefined;
-              const section = await buildLearnedPatternsSection(orgId ?? null, question);
+              // #3611 — scope retrieval to the active connection group so a
+              // `us-prod` session is never primed with `eu-prod`'s patterns.
+              const section = await buildLearnedPatternsSection(
+                orgId ?? null,
+                question,
+                connectionGroupId ?? null,
+              );
               return section || undefined;
             },
             catch: normalizeError,

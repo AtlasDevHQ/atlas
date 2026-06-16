@@ -322,10 +322,16 @@ curl -X POST https://your-atlas.com/api/chat \
 
 ### Health endpoint
 
-The `/api/health` endpoint reports the status of each registered datasource:
+The `/api/health` endpoint reports the status of each registered datasource. The
+full per-source breakdown — every datasource id and its latency — is only
+returned to **operators**: an authenticated admin/owner/platform_admin session
+(the same signal the admin health dashboard uses), a request carrying the
+`ATLAS_API_KEY` bearer token, or local-dev/self-hosted no-auth mode.
 
 ```bash
-curl http://localhost:3001/api/health
+# Operator request (admin session cookie or API key) — full breakdown:
+curl http://localhost:3001/api/health \
+  -H "Authorization: Bearer $ATLAS_API_KEY"
 ```
 
 ```json
@@ -341,6 +347,33 @@ curl http://localhost:3001/api/health
   }
 }
 ```
+
+Anonymous callers (e.g. uptime monitors) get the aggregate `status` and only the
+region's own datasource (`default`) — never the rest of the fleet's ids or
+latencies. This keeps the response a stable monitoring target without exposing
+cross-region topology:
+
+```bash
+# Anonymous request — aggregate status + own datasource only:
+curl http://localhost:3001/api/health
+```
+
+```json
+{
+  "status": "ok",
+  "checks": {
+    "datasource": { "status": "ok" }
+  },
+  "sources": {
+    "default": { "dbType": "postgres", "status": "healthy" }
+  }
+}
+```
+
+The aggregate `status` (and the 503-on-unhealthy contract) always reflects
+**every** registered source regardless of who is asking — a degraded or
+unhealthy non-`default` source still degrades or fails the overall status for
+anonymous callers; it just isn't enumerated in their `sources` breakdown.
 
 ---
 

@@ -17,6 +17,23 @@ import {
 } from "bun:test";
 import type { ConnectionMetadata, HealthCheckResult } from "@atlas/api/lib/db/connection";
 import { createConnectionMock } from "@atlas/api/testing/connection";
+import type { AuthResult } from "@atlas/api/lib/auth/types";
+
+/**
+ * Build an authenticated managed/simple-key AuthResult for the gating tests.
+ * Constructed inline (not via createAtlasUser) so the test doesn't pull the
+ * `@useatlas/types/auth` value export into the test module graph.
+ */
+function authedAs(
+  mode: "managed" | "simple-key",
+  role: "admin" | "owner" | "platform_admin" | "member",
+): AuthResult {
+  return {
+    authenticated: true,
+    mode,
+    user: { id: `user-${role}`, mode, label: `${role}@example.com`, role },
+  };
+}
 
 // --- Mocks ---
 
@@ -140,14 +157,26 @@ mock.module("@atlas/api/lib/conversations", () => ({
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
+// #3685 — the health route reads an operator signal via authenticateRequest to
+// gate the full per-source fleet breakdown. Default to local-dev no-auth
+// (mode "none" = implicit operator) so the existing source/plugin tests keep
+// seeing the full breakdown; the gating tests below flip this per-scenario.
+const OPERATOR_NONE_AUTH: AuthResult = {
+  authenticated: true,
+  mode: "none",
+  user: undefined,
+};
+const ANON_AUTH: AuthResult = {
+  authenticated: false,
+  mode: "managed",
+  status: 401,
+  error: "Not signed in",
+};
+let authenticateRequestImpl: () => Promise<AuthResult> = () =>
+  Promise.resolve(OPERATOR_NONE_AUTH);
+
 mock.module("@atlas/api/lib/auth/middleware", () => ({
-  authenticateRequest: mock(() =>
-    Promise.resolve({
-      authenticated: true as const,
-      mode: "none" as const,
-      user: undefined,
-    }),
-  ),
+  authenticateRequest: mock(() => authenticateRequestImpl()),
   checkRateLimit: mock(() => ({ allowed: true })),
   getClientIP: mock(() => null),
 }));
@@ -720,5 +749,178 @@ describe("GET /api/health — plugin component", () => {
     expect(message ?? "").not.toContain("postgres://");
     // A generic operator-facing string is the contract.
     expect(message).toBeDefined();
+  });
+});
+
+// #3685 — the US region's /api/health enumerated the entire multi-region fleet
+// (us-prod, eu-prod, apac-prod, __demo__, default) with per-DB latencies to
+// anonymous callers; EU/APAC exposed only `default`. The full per-source
+// breakdown is recon surface, so it's now gated behind an operator signal
+// (admin session / API key / local-dev no-auth). Anonymous callers see only the
+// aggregate `status` + the region's own datasource (`default`). The overall
+// status-promotion aggregation (and the 503-on-unhealthy contract) is unchanged
+// — it still considers every source regardless of who's asking.
+describe("GET /api/health — per-source fleet visibility gating (#3685)", () => {
+  const origDatasource = process.env.ATLAS_DATASOURCE_URL;
+  const origDatabaseUrl = process.env.DATABASE_URL;
+
+  // Mirrors the multi-region US registry that triggered #3685: the region's own
+  // datasource ("default") plus the full cross-region fleet.
+  function fleet(
+    overrides: Record<string, HealthCheckResult> = {},
+  ): ConnectionMetadata[] {
+    const checkedAt = new Date("2026-01-15T12:00:00Z");
+    const mk = (
+      status: HealthCheckResult["status"],
+      latencyMs: number,
+    ): HealthCheckResult => ({ status, latencyMs, checkedAt });
+    const ids: Record<string, HealthCheckResult> = {
+      default: mk("healthy", 3),
+      "us-prod": mk("healthy", 4),
+      "eu-prod": mk("healthy", 80),
+      "apac-prod": mk("healthy", 120),
+      __demo__: mk("healthy", 2),
+      ...overrides,
+    };
+    return Object.entries(ids).map(([id, health]) => ({
+      id,
+      dbType: "postgres",
+      health,
+    }));
+  }
+
+  beforeEach(() => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    delete process.env.DATABASE_URL;
+    connMetadata = [];
+    mockValidateEnvironment.mockReset();
+    mockValidateEnvironment.mockResolvedValue([]);
+    mockGetStartupWarnings.mockReset();
+    mockGetStartupWarnings.mockReturnValue([]);
+    authenticateRequestImpl = () => Promise.resolve(OPERATOR_NONE_AUTH);
+  });
+
+  afterEach(() => {
+    if (origDatasource !== undefined) process.env.ATLAS_DATASOURCE_URL = origDatasource;
+    else delete process.env.ATLAS_DATASOURCE_URL;
+    if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
+    else delete process.env.DATABASE_URL;
+    authenticateRequestImpl = () => Promise.resolve(OPERATOR_NONE_AUTH);
+  });
+
+  it("anonymous callers see only the region's own datasource (default), not the fleet", async () => {
+    connMetadata = fleet();
+    authenticateRequestImpl = () => Promise.resolve(ANON_AUTH);
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    const sources = body.sources as Record<string, unknown>;
+
+    // Only the region's own datasource — no cross-region ids/latencies.
+    expect(Object.keys(sources)).toEqual(["default"]);
+    expect(sources["us-prod"]).toBeUndefined();
+    expect(sources["eu-prod"]).toBeUndefined();
+    expect(sources["apac-prod"]).toBeUndefined();
+    expect(sources["__demo__"]).toBeUndefined();
+    // No other region's id (and therefore latency) appears anywhere in the section.
+    const serialized = JSON.stringify(sources);
+    expect(serialized).not.toContain("us-prod");
+    expect(serialized).not.toContain("eu-prod");
+    expect(serialized).not.toContain("apac-prod");
+    expect(serialized).not.toContain("__demo__");
+  });
+
+  it("operator (admin session) sees the full fleet breakdown", async () => {
+    connMetadata = fleet();
+    authenticateRequestImpl = () => Promise.resolve(authedAs("managed", "admin"));
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const sources = body.sources as Record<string, unknown>;
+
+    expect(Object.keys(sources).sort()).toEqual([
+      "__demo__",
+      "apac-prod",
+      "default",
+      "eu-prod",
+      "us-prod",
+    ]);
+  });
+
+  it("operator via simple-key (admin role) sees the full fleet breakdown", async () => {
+    connMetadata = fleet();
+    authenticateRequestImpl = () => Promise.resolve(authedAs("simple-key", "admin"));
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const sources = body.sources as Record<string, unknown>;
+    expect(Object.keys(sources)).toContain("eu-prod");
+  });
+
+  it("authenticated non-admin (member) is treated as anonymous for the breakdown", async () => {
+    connMetadata = fleet();
+    authenticateRequestImpl = () => Promise.resolve(authedAs("managed", "member"));
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const sources = body.sources as Record<string, unknown>;
+    expect(Object.keys(sources)).toEqual(["default"]);
+  });
+
+  it("overall status promotion stays intact for anonymous callers — a degraded non-default source still degrades the aggregate without being enumerated", async () => {
+    connMetadata = fleet({
+      "eu-prod": {
+        status: "degraded",
+        latencyMs: 5000,
+        message: "High latency",
+        checkedAt: new Date(),
+      },
+    });
+    authenticateRequestImpl = () => Promise.resolve(ANON_AUTH);
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    // Aggregate reflects the fleet (eu-prod degraded) ...
+    expect(body.status).toBe("degraded");
+    // ... but the breakdown does not enumerate the degraded region.
+    const sources = body.sources as Record<string, unknown>;
+    expect(Object.keys(sources)).toEqual(["default"]);
+  });
+
+  it("503-on-unhealthy-source contract holds for anonymous callers without enumerating the fleet", async () => {
+    connMetadata = fleet({
+      "eu-prod": {
+        status: "unhealthy",
+        latencyMs: 5000,
+        message: "timeout",
+        checkedAt: new Date(),
+      },
+    });
+    authenticateRequestImpl = () => Promise.resolve(ANON_AUTH);
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("error");
+    const sources = body.sources as Record<string, unknown>;
+    expect(Object.keys(sources)).toEqual(["default"]);
+  });
+
+  it("anonymous callers with no default source get no sources section even when the fleet is non-empty", async () => {
+    // A region whose registry has only cross-region entries (no own "default").
+    connMetadata = [
+      {
+        id: "eu-prod",
+        dbType: "postgres",
+        health: { status: "healthy", latencyMs: 80, checkedAt: new Date() },
+      },
+    ];
+    authenticateRequestImpl = () => Promise.resolve(ANON_AUTH);
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.sources).toBeUndefined();
   });
 });

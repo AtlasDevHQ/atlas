@@ -16,6 +16,7 @@ import * as yaml from "js-yaml";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSemanticRoot as getDefaultSemanticRoot } from "./files";
 import { scanEntities, resolveEntityGroup, readGroupField, getGroupDirs } from "./scanner";
+import { invalidateYamlPatternCache } from "@atlas/api/lib/learn/pattern-analyzer";
 
 const log = createLogger("semantic-index");
 
@@ -154,10 +155,14 @@ export function getIndexedEntityCount(): number {
   return _cachedEntityCount;
 }
 
-/** Clear the cached index (called on semantic layer changes). */
+/** Clear the cached index (called on semantic layer changes). Also drops the
+ *  learned-pattern dedup cache, which is derived from the same entity YAMLs'
+ *  `query_patterns` — otherwise a freshly-added pattern would keep being
+ *  proposed as "novel" until that cache's TTL expires (#3614). */
 export function invalidateSemanticIndex(): void {
   _cachedIndex = null;
   _cachedEntityCount = 0;
+  invalidateYamlPatternCache();
 }
 
 export interface SemanticIndexStats {

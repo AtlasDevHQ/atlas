@@ -195,22 +195,55 @@ function loadPatternsFromDir(dir: string, out: Set<string>): void {
 
 // ── YAML pattern cache ─────────────────────────────────────────────
 
-let _yamlPatternCache: Set<string> | null = null;
+/**
+ * TTL for the YAML pattern cache. Bounded by the semantic-layer reload
+ * interval so an admin edit to an entity's `query_patterns` can never go
+ * unseen for longer than the rest of the semantic layer (#3614). Matches the
+ * approved-pattern cache TTL in `pattern-cache.ts`.
+ *
+ * This is a backstop: the cache is also actively invalidated when the semantic
+ * index is rebuilt (see `invalidateYamlPatternCache` wired into
+ * `invalidateSemanticIndex`), so edits are usually reflected immediately. The
+ * TTL guarantees an upper bound even on paths that don't fire that hook.
+ */
+const YAML_PATTERN_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+interface YamlPatternCacheEntry {
+  patterns: Set<string>;
+  expiresAt: number;
+}
+
+let _yamlPatternCache: YamlPatternCacheEntry | null = null;
 
 /** Get YAML patterns. When semanticRoot is provided, reads directly from disk
  * (bypasses cache). Otherwise, lazily loads from the default semantic directory
- * and caches for subsequent calls. Empty results are not cached so subsequent
- * calls retry the load. */
+ * and caches for subsequent calls until the TTL expires or the cache is
+ * invalidated. Empty results are not cached so subsequent calls retry the
+ * load. */
 export function getYamlPatterns(semanticRoot?: string): Set<string> {
   if (semanticRoot) return loadYamlQueryPatterns(semanticRoot);
-  if (!_yamlPatternCache) {
-    const loaded = loadYamlQueryPatterns();
-    if (loaded.size > 0) {
-      _yamlPatternCache = loaded;
-    }
-    return loaded;
+  if (_yamlPatternCache && Date.now() < _yamlPatternCache.expiresAt) {
+    return _yamlPatternCache.patterns;
   }
-  return _yamlPatternCache;
+  const loaded = loadYamlQueryPatterns();
+  if (loaded.size > 0) {
+    _yamlPatternCache = { patterns: loaded, expiresAt: Date.now() + YAML_PATTERN_CACHE_TTL_MS };
+  } else {
+    // Don't cache empty results — a transient read failure or not-yet-synced
+    // semantic root shouldn't pin an empty set for the whole TTL window.
+    _yamlPatternCache = null;
+  }
+  return loaded;
+}
+
+/**
+ * Invalidate the YAML pattern cache so the next `getYamlPatterns()` re-reads
+ * from disk. Wired into `invalidateSemanticIndex()` so an admin edit to an
+ * entity's `query_patterns` is reflected immediately rather than waiting out
+ * the TTL (#3614).
+ */
+export function invalidateYamlPatternCache(): void {
+  _yamlPatternCache = null;
 }
 
 /** Clear the YAML pattern cache. For testing. */
@@ -220,5 +253,5 @@ export function _resetYamlPatternCache(): void {
 
 /** Pre-populate the YAML pattern cache. For testing. */
 export function _setYamlPatternCache(patterns: Set<string>): void {
-  _yamlPatternCache = patterns;
+  _yamlPatternCache = { patterns, expiresAt: Date.now() + YAML_PATTERN_CACHE_TTL_MS };
 }

@@ -17,6 +17,8 @@ export {
   FK_SOURCES,
   PARTITION_STRATEGIES,
   SEMANTIC_TYPES,
+  INDEX_TYPES,
+  INDEX_POSITIONS,
 } from "@useatlas/types";
 export type {
   ObjectType,
@@ -31,6 +33,9 @@ export type {
   TableProfile,
   ProfileError,
   ProfilingResult,
+  IndexProfile,
+  IndexType,
+  IndexPosition,
 } from "@useatlas/types";
 
 // Also import locally for use within this module's function signatures.
@@ -41,6 +46,8 @@ import type {
   TableProfile,
   ProfileError,
   ProfilingResult,
+  IndexProfile,
+  IndexType,
 } from "@useatlas/types";
 
 /** Minimal structured logger interface — compatible with pino's (obj, msg) calling convention. */
@@ -347,6 +354,90 @@ async function queryForeignKeys(
   }));
 }
 
+/** Map a PostgreSQL `pg_am.amname` (or MySQL pseudo-type) to our index vocabulary. */
+function normalizeIndexType(amname: string | null | undefined): IndexType {
+  switch ((amname ?? "").toLowerCase()) {
+    case "btree":
+      return "btree";
+    case "gin":
+      return "gin";
+    case "gist":
+    case "spgist":
+      return "gist";
+    case "brin":
+      return "brin";
+    case "hash":
+      return "hash";
+    default:
+      return "other";
+  }
+}
+
+/**
+ * Harvest index metadata for one Postgres table (#3634).
+ *
+ * Keyed by `regclass` so it works for any schema-qualified table. Each index's
+ * member columns are rendered one-by-one via `pg_get_indexdef(indexrelid, n,
+ * true)` so composite ORDER survives and expression-index members (e.g.
+ * `lower(email)`) come back as their definition text rather than vanishing —
+ * `pg_index.indkey` would render expression members as `0`. Partial-index
+ * predicates come from `pg_get_expr(indpred, indrelid)`.
+ *
+ * Returns ONLY the catalog facts; the leading-vs-trailing sargability marker is
+ * derived later in `analyzeTableProfiles`, not here.
+ */
+async function queryPostgresIndexes(
+  pool: import("pg").Pool,
+  tableName: string,
+  schema: string = "public"
+): Promise<IndexProfile[]> {
+  const result = await pool.query(
+    `
+    SELECT
+      ic.relname AS index_name,
+      am.amname AS index_type,
+      ix.indisunique AS is_unique,
+      ix.indisprimary AS is_primary,
+      (ix.indpred IS NOT NULL) AS is_partial,
+      pg_get_expr(ix.indpred, ix.indrelid) AS predicate,
+      ix.indnkeyatts AS key_count,
+      ARRAY(
+        SELECT pg_get_indexdef(ix.indexrelid, k + 1, true)
+        FROM generate_series(0, ix.indnkeyatts - 1) AS k
+      ) AS key_defs
+    FROM pg_index ix
+    JOIN pg_class ic ON ic.oid = ix.indexrelid
+    JOIN pg_am am ON am.oid = ic.relam
+    WHERE ix.indrelid = $1::regclass
+      AND ix.indislive
+    ORDER BY ic.relname
+    `,
+    [pgTableRef(tableName, schema)]
+  );
+
+  return result.rows.map(
+    (r: {
+      index_name: string;
+      index_type: string | null;
+      is_unique: boolean;
+      is_primary: boolean;
+      is_partial: boolean;
+      predicate: string | null;
+      key_defs: string[];
+    }) => ({
+      name: r.index_name,
+      // key_defs is already ordered (generate_series 0..n-1); each entry is the
+      // rendered column or expression text for that index position.
+      columns: (r.key_defs ?? []).map((d) => d.trim()).filter((d) => d.length > 0),
+      index_type: normalizeIndexType(r.index_type),
+      is_unique: r.is_unique,
+      is_primary: r.is_primary,
+      is_partial: r.is_partial,
+      predicate: r.is_partial ? r.predicate : null,
+    })
+  );
+}
+
 export async function profilePostgres({
   url,
   schema = "public",
@@ -442,6 +533,7 @@ export async function profilePostgres({
 
       let primaryKeyColumns: string[] = [];
       let foreignKeys: ForeignKey[] = [];
+      let indexes: IndexProfile[] = [];
       if (objectType === "table") {
         try {
           primaryKeyColumns = await queryPrimaryKeys(pool, table_name, schema);
@@ -454,6 +546,14 @@ export async function profilePostgres({
         } catch (fkErr) {
           if (isFatalConnectionError(fkErr)) throw fkErr;
           log.warn({ err: fkErr instanceof Error ? fkErr.message : String(fkErr), table: table_name }, "Could not read FK constraints");
+        }
+        try {
+          indexes = await queryPostgresIndexes(pool, table_name, schema);
+        } catch (idxErr) {
+          if (isFatalConnectionError(idxErr)) throw idxErr;
+          // Fail soft: index metadata is an optimization hint, never required to
+          // profile the table — warn and continue (#3634).
+          log.warn({ err: idxErr instanceof Error ? idxErr.message : String(idxErr), table: table_name }, "Could not read index metadata");
         }
       }
 
@@ -564,6 +664,7 @@ export async function profilePostgres({
         primary_key_columns: primaryKeyColumns,
         foreign_keys: foreignKeys,
         inferred_foreign_keys: [],
+        indexes,
         profiler_notes: [],
         table_flags: { possibly_abandoned: false, possibly_denormalized: false },
         ...(matview_populated !== undefined ? { matview_populated } : {}),
@@ -693,6 +794,78 @@ async function queryMySQLForeignKeys(
   }));
 }
 
+/**
+ * Map a MySQL `information_schema.STATISTICS.INDEX_TYPE` to our vocabulary
+ * (#3634). MySQL has no partial indexes, so harvested indexes never carry a
+ * predicate. FULLTEXT/SPATIAL map onto gin/gist so the agent sees a consistent
+ * "non-btree, position-independent" signal.
+ */
+function mysqlIndexType(indexType: string | null | undefined): IndexType {
+  switch ((indexType ?? "").toUpperCase()) {
+    case "BTREE":
+      return "btree";
+    case "HASH":
+      return "hash";
+    case "FULLTEXT":
+      return "gin";
+    case "SPATIAL":
+      return "gist";
+    default:
+      return "other";
+  }
+}
+
+/**
+ * Harvest index metadata for one MySQL table (#3634).
+ *
+ * `information_schema.STATISTICS` returns one row per (index, column); we group
+ * by `INDEX_NAME` and order members by `SEQ_IN_INDEX` so composite order
+ * survives. `NON_UNIQUE = 0` means unique; the implicit `PRIMARY` index is
+ * flagged `is_primary`. MySQL has no partial indexes (`is_partial: false`,
+ * `predicate: null`).
+ */
+async function queryMySQLIndexes(
+  pool: { execute: (sql: string, params?: unknown[]) => Promise<[unknown[], unknown]> },
+  tableName: string,
+): Promise<IndexProfile[]> {
+  const [rows] = await pool.execute(
+    `SELECT INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE, INDEX_TYPE
+     FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+     ORDER BY INDEX_NAME, SEQ_IN_INDEX`,
+    [tableName]
+  );
+
+  // Group ordered rows into one IndexProfile per INDEX_NAME, preserving the
+  // first-seen index order (rows already ordered by INDEX_NAME, SEQ_IN_INDEX).
+  const grouped = new Map<string, IndexProfile>();
+  for (const r of rows as {
+    INDEX_NAME: string;
+    COLUMN_NAME: string | null;
+    NON_UNIQUE: number;
+    INDEX_TYPE: string | null;
+  }[]) {
+    // Expression/functional index parts report a null COLUMN_NAME in older
+    // MySQL; skip them rather than emit an empty member.
+    if (r.COLUMN_NAME == null) continue;
+    let idx = grouped.get(r.INDEX_NAME);
+    if (!idx) {
+      idx = {
+        name: r.INDEX_NAME,
+        columns: [],
+        index_type: mysqlIndexType(r.INDEX_TYPE),
+        is_unique: Number(r.NON_UNIQUE) === 0,
+        is_primary: r.INDEX_NAME === "PRIMARY",
+        is_partial: false,
+        predicate: null,
+      };
+      grouped.set(r.INDEX_NAME, idx);
+    }
+    idx.columns.push(r.COLUMN_NAME);
+  }
+  return [...grouped.values()];
+}
+
 export async function profileMySQL({
   url,
   selectedTables: filterTables,
@@ -752,6 +925,7 @@ export async function profileMySQL({
 
         let primaryKeyColumns: string[] = [];
         let foreignKeys: ForeignKey[] = [];
+        let indexes: IndexProfile[] = [];
         if (objectType === "table") {
           try {
             primaryKeyColumns = await queryMySQLPrimaryKeys(pool, table_name);
@@ -764,6 +938,13 @@ export async function profileMySQL({
           } catch (fkErr) {
             if (isFatalConnectionError(fkErr)) throw fkErr;
             log.warn({ err: fkErr instanceof Error ? fkErr.message : String(fkErr), table: table_name }, "Could not read FK constraints");
+          }
+          try {
+            indexes = await queryMySQLIndexes(pool, table_name);
+          } catch (idxErr) {
+            if (isFatalConnectionError(idxErr)) throw idxErr;
+            // Fail soft: index metadata is an optimization hint (#3634).
+            log.warn({ err: idxErr instanceof Error ? idxErr.message : String(idxErr), table: table_name }, "Could not read index metadata");
           }
         }
 
@@ -858,6 +1039,7 @@ export async function profileMySQL({
           primary_key_columns: primaryKeyColumns,
           foreign_keys: foreignKeys,
           inferred_foreign_keys: [],
+          indexes,
           profiler_notes: [],
           table_flags: { possibly_abandoned: false, possibly_denormalized: false },
         });

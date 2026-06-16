@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   Database,
@@ -12,6 +12,7 @@ import {
   Plus,
   Trash2,
   AlertCircle,
+  AlertTriangle,
 } from "lucide-react";
 import {
   Dialog,
@@ -25,7 +26,27 @@ import { Button } from "@/components/ui/button";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
+import type { ProfileError } from "@/ui/lib/types";
 import { relativeOrNull } from "./pending-changes-pill";
+
+/**
+ * A semantic layer that was profiled INCOMPLETELY — some tables failed
+ * introspection below the abort threshold, so the published layer is missing
+ * them (#3682). Mirrors `warnings.incompleteLayers[]` in the `/api/v1/admin/publish`
+ * response. Surfaced after a publish so an admin sees the degraded state rather
+ * than an unconditional success.
+ */
+interface IncompleteLayer {
+  readonly connectionGroupId: string | null;
+  readonly totalTables: number;
+  readonly failedCount: number;
+  readonly failedTables: ReadonlyArray<ProfileError>;
+}
+
+/** Parsed `/api/v1/admin/publish` response — only the field this modal reads. */
+interface PublishResponseData {
+  readonly warnings?: { readonly incompleteLayers: ReadonlyArray<IncompleteLayer> };
+}
 
 interface DraftRow {
   readonly id: string;
@@ -67,22 +88,41 @@ export function PublishModal({
     { enabled: open },
   );
 
-  const { mutate, saving, error: publishError, reset } = useAdminMutation<unknown>({
+  const { mutate, saving, error: publishError, reset } = useAdminMutation<PublishResponseData>({
     path: "/api/v1/admin/publish",
     method: "POST",
   });
 
-  // Reset error state whenever the modal opens — a previous failed attempt
+  // Layers the publish just promoted that are profiled INCOMPLETELY (#3682).
+  // Non-empty keeps the modal open with a warning instead of a silent success.
+  const [incompleteLayers, setIncompleteLayers] = useState<ReadonlyArray<IncompleteLayer>>([]);
+
+  // Reset error + warning state whenever the modal opens — a previous attempt
   // shouldn't leave a banner showing the next time the admin opens the modal.
   useEffect(() => {
-    if (open) reset();
+    if (open) {
+      reset();
+      setIncompleteLayers([]);
+    }
   }, [open, reset]);
 
   async function handlePublish() {
     const result = await mutate({ body: {} });
     if (result.ok) {
-      toast.success("Published successfully");
-      onOpenChange(false);
+      // The publish committed. If any promoted layer is incomplete, keep the
+      // modal open and show the durable warning the API returned (#3682) — an
+      // unconditional "Published successfully" would hide that some tables are
+      // now live but NOT queryable. Otherwise close as before.
+      const layers = result.data?.warnings?.incompleteLayers ?? [];
+      if (layers.length > 0) {
+        setIncompleteLayers(layers);
+        toast.warning(
+          `Published, but ${layers.length === 1 ? "a layer is" : `${layers.length} layers are`} incomplete`,
+        );
+      } else {
+        toast.success("Published successfully");
+        onOpenChange(false);
+      }
     }
     // On failure, leave modal open — the banner below surfaces the error.
   }
@@ -150,29 +190,90 @@ export function PublishModal({
           </div>
         )}
 
+        {incompleteLayers.length > 0 && (
+          <IncompleteLayersBanner layers={incompleteLayers} />
+        )}
+
         <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={saving}
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={handlePublish}
-            disabled={saving || loading || total === 0}
-          >
-            {saving ? (
-              <>
-                <Loader2 className="mr-2 size-4 animate-spin" /> Publishing…
-              </>
-            ) : (
-              <>Publish all{total > 0 ? ` (${total})` : ""}</>
-            )}
-          </Button>
+          {incompleteLayers.length > 0 ? (
+            // Publish already committed; collapse the footer to a single
+            // acknowledge action so the warning above is read before closing.
+            <Button onClick={() => onOpenChange(false)}>Done</Button>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                disabled={saving}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handlePublish}
+                disabled={saving || loading || total === 0}
+              >
+                {saving ? (
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" /> Publishing…
+                  </>
+                ) : (
+                  <>Publish all{total > 0 ? ` (${total})` : ""}</>
+                )}
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Warns that the publish promoted one or more INCOMPLETE semantic layers —
+ * tables that failed introspection are now live but NOT queryable (#3682). Read
+ * from the durable `semantic_profile_status` marker, so it surfaces even when the
+ * layer was profiled in a different process (web `/chat` vs a stdio MCP server).
+ */
+function IncompleteLayersBanner({
+  layers,
+}: {
+  layers: ReadonlyArray<IncompleteLayer>;
+}) {
+  return (
+    <div
+      role="alert"
+      className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+    >
+      <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <div className="min-w-0 space-y-1">
+        <p className="font-medium">
+          Published, but {layers.length === 1 ? "a layer is" : `${layers.length} layers are`}{" "}
+          incomplete
+        </p>
+        <p className="opacity-90">
+          Some tables failed introspection (often a permission gap) and are excluded from the
+          live semantic layer — the agent can&apos;t query them. Fix access and re-profile to
+          include them.
+        </p>
+        <ul className="space-y-1">
+          {layers.map((layer) => (
+            <li key={layer.connectionGroupId ?? "__default__"}>
+              <span className="font-medium">
+                {layer.connectionGroupId ?? "default"}
+              </span>{" "}
+              — {layer.failedCount} of {layer.totalTables} not queryable:
+              <span className="font-mono text-[11px] opacity-80">
+                {" "}
+                {layer.failedTables.slice(0, 5).map((t) => t.table).join(", ")}
+                {layer.failedTables.length > 5
+                  ? `, … (+${layer.failedTables.length - 5} more)`
+                  : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
   );
 }
 

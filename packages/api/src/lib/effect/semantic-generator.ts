@@ -268,9 +268,13 @@ export interface PersistSemanticLayerResult {
   metricsPersisted: number;
   /**
    * Whether the persisted layer is INCOMPLETE — some tables failed introspection
-   * and are absent. Derived from `profileStatus.failedTables`; `false` when no
-   * `profileStatus` was supplied. Lets callers surface the partial state without
-   * re-deriving it from `errors[]`.
+   * and are absent. Derived from `profileStatus.failedTables`. NOTE the asymmetry:
+   * `false` means "verified complete" OR "not assessed" (no `profileStatus` was
+   * supplied) — it is NOT a guarantee of completeness. Every real call site
+   * supplies `profileStatus`, so in practice `false` ⇒ complete; a caller that
+   * needs to distinguish "complete" from "unknown" must check whether it passed
+   * `profileStatus`. Lets callers surface the partial state without re-deriving
+   * it from `errors[]`.
    */
   partial: boolean;
 }

@@ -37,6 +37,10 @@ interface MockClient {
 }
 
 let clientQueries: ClientQuery[] = [];
+// #3682 — drives `listIncompleteProfileLayers` per-test. Default: no partial
+// layers (the common case). Tests reassign it to return a partial layer or to
+// reject, exercising the post-commit warning + best-effort read paths.
+let incompleteLayersHandler: () => Promise<unknown[]> = async () => [];
 let clientReleased = false;
 // Captures the argument passed to `client.release(err?)`. node-postgres
 // destroys the socket when this is truthy — asserted for issue #1471.
@@ -119,7 +123,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   // #3682 — durable partial-profile marker helpers. The publish route reads
   // `listIncompleteProfileLayers` post-commit; default to no partial layers.
   upsertProfileStatus: mock(() => Promise.resolve()),
-  listIncompleteProfileLayers: mock(() => Promise.resolve([])),
+  listIncompleteProfileLayers: mock(() => incompleteLayersHandler()),
   resolveGroupIdForConnection: mock(() => Promise.resolve(null)),
   upsertDraftEntity: mock(() => Promise.resolve()),
   upsertTombstone: mock(() => Promise.resolve()),
@@ -208,6 +212,7 @@ function resetClient(): void {
   queryHandler = async () => ({ rows: [] });
   demoIndustryFixture = null;
   throwOnGet = null;
+  incompleteLayersHandler = async () => [];
 }
 
 afterAll(() => {
@@ -901,5 +906,91 @@ describe("POST /api/v1/admin/publish — starter prompts phase (#1478)", () => {
     const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
     expect(sqls.includes("ROLLBACK")).toBe(true);
     expect(sqls.includes("COMMIT")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Durable partial-profile warning (#3682)
+//
+// The publish reads `listIncompleteProfileLayers` AFTER commit and surfaces
+// `warnings.incompleteLayers` so an admin who just promoted a silently-partial
+// layer sees the degraded state instead of an unconditional success. These
+// tests pin the user-visible contract: the warning is present when a layer is
+// partial, the key is OMITTED on a clean publish, and a post-commit read
+// failure must NOT turn an already-committed publish into a 500.
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/admin/publish — partial-profile warning (#3682)", () => {
+  beforeEach(() => {
+    mocks.hasInternalDB = true;
+    mocks.mockInternalQuery.mockReset();
+    mocks.mockInternalQuery.mockResolvedValue([]);
+    resetClient();
+    mocks.setOrgAdmin("org-alpha");
+  });
+
+  it("surfaces warnings.incompleteLayers when a promoted layer is partial", async () => {
+    incompleteLayersHandler = async () => [
+      {
+        connectionGroupId: "g_prod",
+        totalTables: 10,
+        failedCount: 1,
+        failedTables: [{ table: "locked", error: "permission denied" }],
+        profiledAt: "2026-06-16T00:00:00.000Z",
+      },
+    ];
+
+    const res = await app.fetch(publishReq());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      warnings?: {
+        incompleteLayers: Array<{
+          connectionGroupId: string | null;
+          totalTables: number;
+          failedCount: number;
+          failedTables: Array<{ table: string; error: string }>;
+        }>;
+      };
+    };
+
+    expect(body.warnings?.incompleteLayers).toHaveLength(1);
+    const layer = body.warnings!.incompleteLayers[0]!;
+    expect(layer.connectionGroupId).toBe("g_prod");
+    expect(layer.totalTables).toBe(10);
+    expect(layer.failedCount).toBe(1);
+    expect(layer.failedTables).toEqual([{ table: "locked", error: "permission denied" }]);
+
+    // The warning is post-commit — the publish itself still succeeded.
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("COMMIT")).toBe(true);
+    expect(sqls.includes("ROLLBACK")).toBe(false);
+  });
+
+  it("omits the warnings key entirely on a clean publish (no partial layers)", async () => {
+    // resetClient() leaves incompleteLayersHandler returning [].
+    const res = await app.fetch(publishReq());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    // Schema marks `warnings` optional and the route spreads `{}` when empty —
+    // assert the key is absent, not `{ incompleteLayers: [] }`, since the web
+    // client branches on its presence.
+    expect("warnings" in body).toBe(false);
+  });
+
+  it("does NOT 500 a committed publish when the marker read throws — warning omitted", async () => {
+    incompleteLayersHandler = async () => {
+      throw new Error("status table unavailable");
+    };
+
+    const res = await app.fetch(publishReq());
+    // The publish already committed; a post-commit read failure is best-effort
+    // and must be swallowed (logged) rather than failing the whole request.
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect("warnings" in body).toBe(false);
+
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("COMMIT")).toBe(true);
+    expect(sqls.includes("ROLLBACK")).toBe(false);
   });
 });

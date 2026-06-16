@@ -517,10 +517,14 @@ export const semanticProfileStatus = pgTable(
     // (org_id, COALESCE(connection_group_id, '__default__')) and is managed by
     // raw SQL in migration 0138. Drizzle can't represent the COALESCE expression
     // index, so this non-unique approximation carries the SAME NAME
-    // (`uq_semantic_profile_status_org_group`) as the real index purely to
-    // suppress drift — mirrors the `semantic_entities` 0063 pattern. The
-    // `ON CONFLICT` target in `upsertProfileStatus` keys on the expression, NOT
-    // this stub.
+    // (`uq_semantic_profile_status_org_group`) as the real index so the next
+    // `drizzle-kit generate` sees a name match and does NOT emit a spurious
+    // DROP/CREATE INDEX for it — mirrors the `semantic_entities` 0063 pattern.
+    // (Note: `check-schema-drift.sh` only diffs TABLE presence, not indexes, so
+    // the table mirror above is what keeps THAT guard green — the same-name stub
+    // is purely for drizzle-kit's index diff.) Never use Drizzle's query builder
+    // for ON CONFLICT on this table: the real target is the expression index and
+    // only exists in raw SQL — `upsertProfileStatus` keys on it, NOT this stub.
     index("uq_semantic_profile_status_org_group").on(t.orgId, t.connectionGroupId),
     // Real partial index from 0138 — the publish-flow read filters on `partial`.
     index("idx_semantic_profile_status_org_partial").on(t.orgId).where(sql`partial`),

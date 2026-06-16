@@ -1624,6 +1624,12 @@ export async function upsertProfileStatus(
   // `withGroupScope`).
   const groupId = connectionGroupId == null || connectionGroupId === "" ? null : connectionGroupId;
   const failedCount = input.failedTables.length;
+  // `totalTables` is "attempted" (profiled + failed), so it can never be fewer
+  // than the failures we're recording. The wizard path forwards a CLIENT-supplied
+  // count (validated only `nonnegative()` at the route boundary), so clamp at the
+  // write boundary to keep `failed_count > total_tables` — a nonsensical
+  // "N of M failed" with N > M — unrepresentable for every caller (#3682).
+  const totalTables = Math.max(input.totalTables, failedCount);
   await internalQuery(
     `INSERT INTO semantic_profile_status
        (org_id, connection_group_id, total_tables, failed_count, failed_tables, partial)
@@ -1638,7 +1644,7 @@ export async function upsertProfileStatus(
     [
       orgId,
       groupId,
-      input.totalTables,
+      totalTables,
       failedCount,
       JSON.stringify(input.failedTables.map((t) => ({ table: t.table, error: t.error }))),
       failedCount > 0,
@@ -1652,7 +1658,7 @@ export interface IncompleteProfileLayer {
   readonly connectionGroupId: string | null;
   readonly totalTables: number;
   readonly failedCount: number;
-  readonly failedTables: ProfileStatusFailedTable[];
+  readonly failedTables: ReadonlyArray<ProfileStatusFailedTable>;
   /** ISO-8601 timestamp of the profile that produced this marker. */
   readonly profiledAt: string | null;
 }
@@ -1665,7 +1671,16 @@ export interface IncompleteProfileLayer {
 export async function listIncompleteProfileLayers(
   orgId: string,
 ): Promise<IncompleteProfileLayer[]> {
-  if (!hasInternalDB()) return [];
+  if (!hasInternalDB()) {
+    // Not silent: a caller that needs a hard guarantee (rather than "no DB ⇒
+    // assume nothing partial") should gate on `hasInternalDB()` itself. Log so
+    // the "couldn't check because no DB" branch is visible, not a quiet [].
+    log.warn(
+      { orgId },
+      "listIncompleteProfileLayers: no internal DB — returning [] (partial-profile markers are unreadable without a DB)",
+    );
+    return [];
+  }
   const rows = await internalQuery<{
     connection_group_id: string | null;
     total_tables: number;
@@ -1679,13 +1694,27 @@ export async function listIncompleteProfileLayers(
       ORDER BY connection_group_id NULLS FIRST`,
     [orgId],
   );
-  return rows.map((r) => ({
-    connectionGroupId: r.connection_group_id ?? null,
-    totalTables: Number(r.total_tables),
-    failedCount: Number(r.failed_count),
-    failedTables: normalizeFailedTables(r.failed_tables),
-    profiledAt: profiledAtToIso(r.profiled_at),
-  }));
+  return rows.map((r) => {
+    const failedCount = Number(r.failed_count);
+    const failedTables = normalizeFailedTables(r.failed_tables);
+    // `failed_tables` is written by `upsertProfileStatus` from a typed, scrubbed
+    // shape, so a mismatch with the denormalised `failed_count` means the JSONB
+    // payload was corrupted or written out-of-band — surface it rather than
+    // silently rendering "N tables failed" with fewer than N named.
+    if (failedTables.length !== failedCount) {
+      log.warn(
+        { orgId, connectionGroupId: r.connection_group_id, failedCount, recovered: failedTables.length },
+        "Partial-profile marker: failed_count disagrees with the failed_tables payload — possible corruption",
+      );
+    }
+    return {
+      connectionGroupId: r.connection_group_id ?? null,
+      totalTables: Number(r.total_tables),
+      failedCount,
+      failedTables,
+      profiledAt: profiledAtToIso(r.profiled_at),
+    };
+  });
 }
 
 /** Coerce a jsonb `failed_tables` value (pg returns it parsed) to the typed shape. */

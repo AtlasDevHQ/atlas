@@ -44,6 +44,7 @@ import {
 import { cn } from "@/lib/utils";
 import type {
   ConnectionInfo,
+  ProfileError,
   WizardTableEntry,
   WizardEntityResult,
   WizardEnrichResult,
@@ -112,16 +113,13 @@ function ErrorBanner({ error }: { error: WizardError }) {
   );
 }
 
-/** A table that failed introspection during profiling (#3682). */
-type ProfilingError = { table: string; error: string };
-
 /**
  * Warn that some tables could NOT be profiled and will be ABSENT from the saved
  * semantic layer — the agent won't be able to query them (#3682). The `/generate`
  * step returns these below the fatal threshold; surfacing them here makes the
  * partial state unmissable before the user saves and publishes.
  */
-function PartialProfileBanner({ errors }: { errors: ProfilingError[] }) {
+function PartialProfileBanner({ errors }: { errors: ProfileError[] }) {
   if (errors.length === 0) return null;
   const preview = errors.slice(0, 5);
   return (
@@ -649,8 +647,8 @@ function StepReview({
   onBack: () => void;
   entities: WizardEntityResult[];
   setEntities: Dispatch<SetStateAction<WizardEntityResult[]>>;
-  profilingErrors: ProfilingError[];
-  setProfilingErrors: Dispatch<SetStateAction<ProfilingError[]>>;
+  profilingErrors: ProfileError[];
+  setProfilingErrors: Dispatch<SetStateAction<ProfileError[]>>;
   ignored: Set<string>;
   setIgnored: Dispatch<SetStateAction<Set<string>>>;
   saving: boolean;
@@ -699,7 +697,7 @@ function StepReview({
         // #3682 — capture the sub-threshold per-table failures so the review
         // step warns about them and the save forwards them as the durable
         // partial-profile marker.
-        setProfilingErrors((data.errors ?? []) as ProfilingError[]);
+        setProfilingErrors((data.errors ?? []) as ProfileError[]);
         const yamlMap: Record<string, string> = {};
         for (const entity of generated) yamlMap[entity.tableName] = entity.yaml;
         setEditingYaml(yamlMap);
@@ -1427,7 +1425,7 @@ export default function WizardPage() {
   const [entities, setEntities] = useState<WizardEntityResult[]>([]);
   // #3682 — sub-threshold per-table profiling failures from `/generate`; lifted
   // so the save step can forward them as the durable partial-profile marker.
-  const [profilingErrors, setProfilingErrors] = useState<ProfilingError[]>([]);
+  const [profilingErrors, setProfilingErrors] = useState<ProfileError[]>([]);
   // Tables excluded from enrichment AND from the final save (§ D). Pre-seeded in
   // StepReview from the profiler's possibly-abandoned signal; user-adjustable.
   const [ignored, setIgnored] = useState<Set<string>>(new Set());

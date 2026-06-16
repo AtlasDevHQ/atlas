@@ -58,8 +58,10 @@ CREATE TABLE IF NOT EXISTS semantic_profile_status (
 -- NULL-scope (default-group) row unique just like the `semantic_entities`
 -- partial indexes (migration 0063). Drizzle can't represent an expression index,
 -- so this is managed here in raw SQL and mirrored by a NON-unique placeholder
--- index in `db/schema.ts` purely to suppress drift — see the note there. The
--- `ON CONFLICT` target in `upsertProfileStatus` matches this expression exactly.
+-- index in `db/schema.ts` (same name) so `drizzle-kit generate` doesn't emit a
+-- spurious DROP/CREATE INDEX — see the note there. (check-schema-drift.sh only
+-- checks table presence, not indexes.) The `ON CONFLICT` target in
+-- `upsertProfileStatus` matches this expression exactly.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_semantic_profile_status_org_group
   ON semantic_profile_status (org_id, COALESCE(connection_group_id, '__default__'));
 

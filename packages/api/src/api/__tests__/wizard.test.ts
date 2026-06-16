@@ -121,6 +121,15 @@ const mockBulkUpsertEntities: Mock<(
   entities: Array<{ entityType: string; name: string; yamlContent: string; connectionId?: string; connectionGroupId?: string | null }>,
 ) => Promise<number>> = mock(async (_orgId, entities) => entities.length);
 
+// #3682 — durable partial-profile marker write the wizard `/save` makes when the
+// client forwards `failedTables`. A module-level spy so tests can assert the
+// call args and drive a rejection (best-effort path).
+const mockUpsertProfileStatus: Mock<(
+  orgId: string,
+  connectionGroupId: string | null | undefined,
+  input: { totalTables: number; failedTables: Array<{ table: string; error: string }> },
+) => Promise<void>> = mock(async () => {});
+
 // Connection → Connection group resolver (#3234). The wizard scopes saved
 // entities by group: the default/unknown connection → NULL default group
 // (flat root), a non-default connection → its group (group-of-one stand-in
@@ -130,7 +139,7 @@ const mockResolveGroupId: Mock<(orgId: string, connectionId?: string | null) => 
 );
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
-  upsertProfileStatus: mock(() => Promise.resolve()),
+  upsertProfileStatus: mockUpsertProfileStatus,
   listIncompleteProfileLayers: mock(() => Promise.resolve([])),
   // Constants the wizard route imports statically
   DEMO_CONNECTION_ID: "__demo__",
@@ -1662,6 +1671,86 @@ describe("POST /api/v1/wizard/save", () => {
       entityType: "metric",
       name: "orders",
       connectionGroupId: "warehouse",
+    });
+  });
+
+  // ── #3682 — durable partial-profile marker on the wizard /save path ──
+  // The wizard persists via bulkUpsertEntities (not SemanticGenerator.persist),
+  // so it writes the marker directly when the client forwards the `/generate`
+  // failures. These pin the second acceptance criterion (wizard-path persistence).
+  describe("durable partial-profile marker (#3682)", () => {
+    beforeEach(() => {
+      mockUpsertProfileStatus.mockReset();
+      mockUpsertProfileStatus.mockImplementation(async () => {});
+      // Pin the resolver — an earlier test pins it to a constant group and
+      // never restores, so re-establish the default scope mapping here.
+      mockResolveGroupId.mockReset();
+      mockResolveGroupId.mockImplementation(async (_orgId, connectionId) =>
+        !connectionId || connectionId === "default" ? null : connectionId,
+      );
+    });
+
+    it("writes the marker with the forwarded failures + attempted total", async () => {
+      const res = await postJson("/api/v1/wizard/save", {
+        connectionId: "warehouse",
+        entities: [
+          { tableName: "users", yaml: "table: users\n" },
+          { tableName: "orders", yaml: "table: orders\n" },
+        ],
+        failedTables: [{ table: "locked", error: "permission denied" }],
+        totalTables: 3,
+      });
+      expect(res.status).toBe(201);
+
+      expect(mockUpsertProfileStatus).toHaveBeenCalledTimes(1);
+      const [orgIdArg, groupArg, inputArg] = mockUpsertProfileStatus.mock.calls[0];
+      expect(orgIdArg).toBe("org-1");
+      // Scoped by the resolved connection group (#3234), not the raw connectionId.
+      expect(groupArg).toBe("warehouse");
+      expect(inputArg.totalTables).toBe(3);
+      expect(inputArg.failedTables).toEqual([
+        { table: "locked", error: "permission denied" },
+      ]);
+    });
+
+    it("records completeness (empty failedTables) — clears a prior partial marker", async () => {
+      const res = await postJson("/api/v1/wizard/save", {
+        connectionId: "default",
+        entities: [{ tableName: "users", yaml: "table: users\n" }],
+        failedTables: [],
+        totalTables: 1,
+      });
+      expect(res.status).toBe(201);
+      // An empty failedTables write is what CLEARS a stale partial marker, so
+      // the marker is still written (not skipped).
+      expect(mockUpsertProfileStatus).toHaveBeenCalledTimes(1);
+      const [, groupArg, inputArg] = mockUpsertProfileStatus.mock.calls[0];
+      expect(groupArg).toBeNull(); // default group
+      expect(inputArg.failedTables).toEqual([]);
+    });
+
+    it("does not write the marker when failedTables is omitted (back-compat)", async () => {
+      const res = await postJson("/api/v1/wizard/save", {
+        connectionId: "warehouse",
+        entities: [{ tableName: "users", yaml: "table: users\n" }],
+      });
+      expect(res.status).toBe(201);
+      expect(mockUpsertProfileStatus).not.toHaveBeenCalled();
+    });
+
+    it("still returns 201 when the marker write throws (best-effort)", async () => {
+      mockUpsertProfileStatus.mockImplementationOnce(async () => {
+        throw new Error("status table unavailable");
+      });
+      const res = await postJson("/api/v1/wizard/save", {
+        connectionId: "warehouse",
+        entities: [{ tableName: "users", yaml: "table: users\n" }],
+        failedTables: [{ table: "locked", error: "permission denied" }],
+        totalTables: 2,
+      });
+      // Entities ARE persisted — a marker-write failure must not fail the save.
+      expect(res.status).toBe(201);
+      expect(mockUpsertProfileStatus).toHaveBeenCalledTimes(1);
     });
   });
 });

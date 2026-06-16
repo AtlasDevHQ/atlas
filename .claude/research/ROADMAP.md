@@ -27,11 +27,11 @@ Kicked off 2026-06-16 from PRD [#3617](https://github.com/AtlasDevHQ/atlas/issue
 Shipped ahead of kickoff: A-0 sargability prompt + MySQL date-filter fix (#3629 → #3692), B-0 latency/staleness migration (#3631 → #3693), and the cross-tenant leak fixes #3610/#3611 (#3690) that unblock B-2.
 
 Open slices:
-- [ ] **A-1** — surface `unique_count`/`null_count` cardinality through the semantic index ([#3630](https://github.com/AtlasDevHQ/atlas/issues/3630))
+- [x] **A-1** — surface `unique_count`/`null_count` cardinality through the semantic index ([#3630](https://github.com/AtlasDevHQ/atlas/issues/3630) → [#3697](https://github.com/AtlasDevHQ/atlas/pull/3697))
 - [ ] **A-2** — index harvest (PG + MySQL) → `IndexProfile` → YAML → composite-aware prompt hints ([#3634](https://github.com/AtlasDevHQ/atlas/issues/3634))
 - [ ] **B-1** — thread `durationMs` into the proposer → rolling average in `incrementPatternCount` ([#3635](https://github.com/AtlasDevHQ/atlas/issues/3635))
 - [ ] **B-2** — perf-weighted scoring + nightly auto-promote/decay fiber ([#3636](https://github.com/AtlasDevHQ/atlas/issues/3636))
-- [ ] **B-3** — multi-turn question context for pattern retrieval ([#3632](https://github.com/AtlasDevHQ/atlas/issues/3632))
+- [x] **B-3** — multi-turn question context for pattern retrieval ([#3632](https://github.com/AtlasDevHQ/atlas/issues/3632) → [#3698](https://github.com/AtlasDevHQ/atlas/pull/3698))
 - [ ] **B-4** — feed favorites + approved suggestions into agent context ([#3633](https://github.com/AtlasDevHQ/atlas/issues/3633))
 
 Related learned-pattern bugs folded in: cache-not-invalidated-on-approve ([#3612](https://github.com/AtlasDevHQ/atlas/issues/3612)), bulk-approve skips amendment YAML rewrite ([#3613](https://github.com/AtlasDevHQ/atlas/issues/3613)), dedup cache no TTL ([#3614](https://github.com/AtlasDevHQ/atlas/issues/3614)), `actor_kind` always NULL ([#3615](https://github.com/AtlasDevHQ/atlas/issues/3615)), `duration_ms=0` skews slow-query analytics ([#3616](https://github.com/AtlasDevHQ/atlas/issues/3616)).

@@ -604,6 +604,33 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "platform",
     saasVisible: false,
   },
+
+  // Dynamic Learning — retrieval-time tuning for learned query patterns.
+  // Workspace-scoped + hot-reloaded (read per-request via getSettingAuto), so
+  // a tenant can tune them from Admin → Settings with no redeploy. The env var
+  // is just the self-host fallback tier.
+  {
+    key: "ATLAS_LEARN_CONFIDENCE_THRESHOLD",
+    section: "Dynamic Learning",
+    label: "Pattern Confidence Threshold",
+    description:
+      "Minimum confidence score (0–1) for a learned pattern to be eligible for retrieval/auto-promotion. Lower promotes more aggressively; higher requires stronger evidence.",
+    type: "number",
+    default: "0.7",
+    envVar: "ATLAS_LEARN_CONFIDENCE_THRESHOLD",
+    scope: "workspace",
+  },
+  {
+    key: "ATLAS_LEARN_RETRIEVAL_TURNS",
+    section: "Dynamic Learning",
+    label: "Pattern Retrieval Turns",
+    description:
+      "Number of trailing user turns assembled into the learned-pattern retrieval query. Widening the window lets a keyword-less follow-up (\"now break that down by region\") still match patterns via the keywords of earlier turns.",
+    type: "number",
+    default: "3",
+    envVar: "ATLAS_LEARN_RETRIEVAL_TURNS",
+    scope: "workspace",
+  },
 ];
 
 // ---------------------------------------------------------------------------

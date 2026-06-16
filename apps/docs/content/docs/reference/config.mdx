@@ -362,23 +362,15 @@ The cache is automatically flushed on config reload. Manual flush is available v
 
 ## Dynamic Learning
 
-Configure how the offline learning loop (`atlas learn`) promotes discovered query patterns into the semantic layer.
+Tuning for how learned query patterns are retrieved and promoted into agent context.
 
-```typescript
-export default defineConfig({
-  learn: {
-    confidenceThreshold: 0.7,  // default: 0.7
-    retrievalTurns: 3,         // default: 3
-  },
-});
-```
+These are **runtime settings**, not `atlas.config.ts` fields: they resolve as `workspace override > platform override > env var > default`, so each workspace can tune them from **Admin → Settings** with no redeploy (hot-reloaded in SaaS). Set the env var for a self-host default.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `confidenceThreshold` | `number` | `0.7` | Minimum confidence score (0–1) for a learned pattern to be eligible for auto-promotion. Lower values promote more aggressively; higher values require stronger evidence from the audit log |
-| `retrievalTurns` | `number` | `3` | Number of trailing user turns assembled into the learned-pattern retrieval query. Widening the window lets a keyword-less follow-up ("now break that down by region") still match patterns via the keywords of earlier turns |
+| Setting | Env var | Default | Description |
+|---------|---------|---------|-------------|
+| Pattern Confidence Threshold | `ATLAS_LEARN_CONFIDENCE_THRESHOLD` | `0.7` | Minimum confidence score (0–1) for a learned pattern to be eligible for retrieval/auto-promotion. Lower values promote more aggressively; higher values require stronger evidence from the audit log |
+| Pattern Retrieval Turns | `ATLAS_LEARN_RETRIEVAL_TURNS` | `3` | Number of trailing user turns assembled into the learned-pattern retrieval query. Widening the window lets a keyword-less follow-up ("now break that down by region") still match patterns via the keywords of earlier turns |
 
-**Env var equivalent:**
 ```bash
 ATLAS_LEARN_CONFIDENCE_THRESHOLD=0.7
 ATLAS_LEARN_RETRIEVAL_TURNS=3
@@ -1039,11 +1031,8 @@ export default defineConfig({
     enabled: true,
   },
 
-  // Dynamic learning (offline audit log analysis)
-  learn: {
-    confidenceThreshold: 0.7,
-    retrievalTurns: 3,
-  },
+  // Dynamic learning knobs are runtime settings, not config fields — see the
+  // "Dynamic Learning" section above (Admin → Settings or ATLAS_LEARN_* env vars).
 
   // Enterprise features (commercial license, /ee directory)
   enterprise: {

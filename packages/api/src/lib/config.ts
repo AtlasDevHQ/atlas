@@ -572,22 +572,6 @@ const AtlasConfigSchema = z.object({
   }).optional(),
 
   /**
-   * Dynamic learning configuration. Controls how learned query patterns
-   * are promoted and injected into agent context.
-   */
-  learn: z.object({
-    /** Minimum confidence score for a pattern to be eligible for auto-promotion. Default: 0.7. */
-    confidenceThreshold: z.number().min(0).max(1).default(0.7),
-    /**
-     * Number of trailing user turns assembled into the learned-pattern
-     * retrieval query (#3632). Widening the window lets a keyword-less
-     * follow-up ("now break that down by region") still match patterns via
-     * the keywords of earlier turns. Default: 3.
-     */
-    retrievalTurns: z.number().int().positive().default(3),
-  }).optional(),
-
-  /**
    * Adaptive starter prompt configuration. Controls the empty-chat grid
    * served by the resolver behind `GET /api/v1/starter-prompts`.
    */
@@ -726,8 +710,6 @@ export interface ResolvedConfig {
   pool?: { perOrg?: { maxConnections: number; idleTimeoutMs: number; maxOrgs: number; warmupProbes: number; drainThreshold: number } };
   /** Query result cache configuration. */
   cache?: { enabled: boolean; ttl: number; maxSize: number };
-  /** Dynamic learning configuration. */
-  learn?: { confidenceThreshold: number; retrievalTurns?: number };
   /** Adaptive starter prompt configuration. */
   starterPrompts?: { coldWindowDays: number; autoPromoteClicks: number; maxFavorites: number };
   /** Enterprise feature gating. */
@@ -948,17 +930,6 @@ export function configFromEnv(): ResolvedConfig {
           enabled,
           ttl: Number.isFinite(ttl) && ttl > 0 ? ttl : 300_000,
           maxSize: Number.isFinite(maxSize) && maxSize > 0 ? maxSize : 1000,
-        },
-      };
-    })()),
-    // Learn config from env vars
-    ...((() => {
-      const threshold = parseFloat(process.env.ATLAS_LEARN_CONFIDENCE_THRESHOLD ?? "");
-      const turns = parseInt(process.env.ATLAS_LEARN_RETRIEVAL_TURNS ?? "", 10);
-      return {
-        learn: {
-          confidenceThreshold: Number.isFinite(threshold) && threshold >= 0 && threshold <= 1 ? threshold : 0.7,
-          retrievalTurns: Number.isInteger(turns) && turns > 0 ? turns : 3,
         },
       };
     })()),
@@ -1336,7 +1307,6 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.semanticIndex ? { semanticIndex: config.semanticIndex } : {}),
     ...(config.pool ? { pool: config.pool } : {}),
     ...(config.cache ? { cache: config.cache } : {}),
-    ...(config.learn ? { learn: config.learn } : {}),
     ...(config.starterPrompts ? { starterPrompts: config.starterPrompts } : {}),
     ...(config.enterprise ? { enterprise: config.enterprise } : {}),
     ...(config.residency ? { residency: config.residency } : {}),

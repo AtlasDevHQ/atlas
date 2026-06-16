@@ -7,7 +7,7 @@
  */
 
 import { getApprovedPatterns, type ApprovedPatternRow } from "@atlas/api/lib/db/internal";
-import { getConfig } from "@atlas/api/lib/config";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("pattern-cache");
@@ -194,12 +194,31 @@ export function buildRetrievalQuery(
   return collected.reverse().join(" ").trim();
 }
 
-/** Resolve the configured retrieval-turn count, falling back to the default. */
-export function getRetrievalTurns(): number {
-  const configured = getConfig()?.learn?.retrievalTurns;
-  return typeof configured === "number" && Number.isFinite(configured) && configured >= 1
-    ? Math.floor(configured)
-    : DEFAULT_RETRIEVAL_TURNS;
+/**
+ * Resolve the retrieval-turn count for an org, falling back to the default.
+ *
+ * Read from the settings registry (`getSettingAuto`) so the value is tunable
+ * per-workspace at runtime via Admin → Settings and hot-reloaded in SaaS —
+ * `workspace override > platform override > env var > default`. The env var is
+ * only the self-host fallback tier.
+ */
+export function getRetrievalTurns(orgId?: string | null): number {
+  const raw = getSettingAuto("ATLAS_LEARN_RETRIEVAL_TURNS", orgId ?? undefined);
+  const parsed = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : DEFAULT_RETRIEVAL_TURNS;
+}
+
+/** Default minimum confidence for a learned pattern to be eligible. */
+const DEFAULT_CONFIDENCE_THRESHOLD = 0.7;
+
+/**
+ * Resolve the pattern confidence threshold for an org, falling back to the
+ * default. Workspace-scoped settings-registry read (see {@link getRetrievalTurns}).
+ */
+export function getConfidenceThreshold(orgId?: string | null): number {
+  const raw = getSettingAuto("ATLAS_LEARN_CONFIDENCE_THRESHOLD", orgId ?? undefined);
+  const parsed = raw === undefined ? Number.NaN : Number.parseFloat(raw);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : DEFAULT_CONFIDENCE_THRESHOLD;
 }
 
 /** Extract meaningful keywords from a text string. */
@@ -261,7 +280,7 @@ export async function getRelevantPatterns(
   connectionGroupId: string | null = null,
   maxPatterns: number = DEFAULT_MAX_PATTERNS,
 ): Promise<RelevantPattern[]> {
-  const threshold = getConfig()?.learn?.confidenceThreshold ?? 0.7;
+  const threshold = getConfidenceThreshold(orgId);
   const allPatterns = await getCachedPatterns(orgId, connectionGroupId);
 
   // Filter by confidence threshold

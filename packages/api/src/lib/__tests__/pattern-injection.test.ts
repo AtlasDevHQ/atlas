@@ -72,6 +72,30 @@ mock.module("@atlas/api/lib/config", () => ({
   _setConfigForTest: () => {},
 }));
 
+// pattern-cache reads the learn knobs from the settings registry (workspace
+// override > platform override > env var > default). Drive them from the same
+// `mockConfigLearn` object the tests already mutate.
+mock.module("@atlas/api/lib/settings", () => {
+  const settingValue = (key: string): string | undefined => {
+    if (key === "ATLAS_LEARN_CONFIDENCE_THRESHOLD") {
+      return mockConfigLearn?.confidenceThreshold === undefined
+        ? undefined
+        : String(mockConfigLearn.confidenceThreshold);
+    }
+    if (key === "ATLAS_LEARN_RETRIEVAL_TURNS") {
+      return mockConfigLearn?.retrievalTurns === undefined
+        ? undefined
+        : String(mockConfigLearn.retrievalTurns);
+    }
+    return undefined;
+  };
+  return {
+    getSetting: (key: string) => settingValue(key),
+    getSettingAuto: (key: string) => settingValue(key),
+    getSettingLive: async (key: string) => settingValue(key),
+  };
+});
+
 mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock(),
 );

@@ -1201,13 +1201,16 @@ function isPgError(err: unknown): err is Error & { code: string } {
  * must not collide. A NULL group (the default flat `entities/` scope) is matched
  * with `IS NULL`, not `=`.
  *
- * Returns the pattern's id, confidence, and repetition count, or null if not found.
+ * Returns the pattern's id, confidence, repetition count, and status, or null
+ * if not found. `status` lets the caller honour a prior admin reject: a rejected
+ * row is matched (so dedup still suppresses a duplicate insert) but the proposer
+ * must NOT bump it, otherwise repeat traffic silently erodes the reject (#3636).
  */
 export async function findPatternBySQL(
   orgId: string | null | undefined,
   connectionGroupId: string | null | undefined,
   patternSql: string,
-): Promise<{ id: string; confidence: number; repetitionCount: number } | null> {
+): Promise<{ id: string; confidence: number; repetitionCount: number; status: string } | null> {
   const params: unknown[] = [patternSql];
   let orgClause: string;
   if (orgId) {
@@ -1225,8 +1228,8 @@ export async function findPatternBySQL(
     groupClause = `connection_group_id IS NULL`;
   }
 
-  const rows = await internalQuery<{ id: string; confidence: number; repetition_count: number }>(
-    `SELECT id, confidence, repetition_count FROM learned_patterns WHERE pattern_sql = $1 AND ${orgClause} AND ${groupClause} LIMIT 1`,
+  const rows = await internalQuery<{ id: string; confidence: number; repetition_count: number; status: string }>(
+    `SELECT id, confidence, repetition_count, status FROM learned_patterns WHERE pattern_sql = $1 AND ${orgClause} AND ${groupClause} LIMIT 1`,
     params,
   );
 
@@ -1236,6 +1239,7 @@ export async function findPatternBySQL(
     id: row.id,
     confidence: row.confidence,
     repetitionCount: row.repetition_count,
+    status: row.status,
   };
 }
 
@@ -1541,6 +1545,10 @@ export async function reviewSemanticAmendment(
  * A first-ever observation (`avg_duration_ms IS NULL`) seeds directly to `d`. A
  * missing/invalid measurement leaves both latency columns untouched.
  *
+ * Never mutates a `rejected` row (`AND status <> 'rejected'`): the proposer
+ * already skips rejected matches, but this is the durable backstop so no caller
+ * can resurrect an admin-rejected pattern by bumping its confidence (#3636).
+ *
  * Fire-and-forget — errors are logged, never thrown.
  */
 export function incrementPatternCount(
@@ -1573,7 +1581,7 @@ export function incrementPatternCount(
           ELSE source_queries || $2::jsonb
         END,
         updated_at = now()
-      WHERE id = $1`,
+      WHERE id = $1 AND status <> 'rejected'`,
       [id, newEntry, observation],
     );
   } else {
@@ -1582,7 +1590,7 @@ export function incrementPatternCount(
         repetition_count = repetition_count + 1,
         confidence = LEAST(1.0, confidence + 0.1),${latencyAssignments.replaceAll("$LAT", "$2")}
         updated_at = now()
-      WHERE id = $1`,
+      WHERE id = $1 AND status <> 'rejected'`,
       [id, observation],
     );
   }

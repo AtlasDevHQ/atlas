@@ -170,4 +170,64 @@ describe("applyAmendment", () => {
     applyAmendment(baseEntity, result);
     expect(baseEntity).toEqual(original);
   });
+
+  // ── Idempotency / re-apply (#3636 review) ──────────────────────────
+  // The add_* handlers must not produce duplicate entries when the same
+  // amendment is approved twice, and must converge (last-write-wins on
+  // identity) when an updated version of the same-named entry is approved.
+
+  it("re-applying the same add_dimension does not duplicate it", () => {
+    const result = makeResult("orders", "add_dimension", {
+      name: "total_cents", sql: "total_cents", type: "number",
+    });
+    const once = applyAmendment(baseEntity, result);
+    const twice = applyAmendment(once, result);
+    const dims = twice.dimensions as Array<Record<string, unknown>>;
+    expect(dims).toHaveLength(3); // not 4
+    expect(dims.filter((d) => d.name === "total_cents")).toHaveLength(1);
+  });
+
+  it("re-applying an updated add_dimension replaces the prior entry (last-write-wins)", () => {
+    const v1 = applyAmendment(baseEntity, makeResult("orders", "add_dimension", {
+      name: "total_cents", sql: "total_cents", type: "number",
+    }));
+    const v2 = applyAmendment(v1, makeResult("orders", "add_dimension", {
+      name: "total_cents", sql: "amount_cents", type: "number", description: "fixed",
+    }));
+    const dims = v2.dimensions as Array<Record<string, unknown>>;
+    expect(dims.filter((d) => d.name === "total_cents")).toHaveLength(1);
+    const target = dims.find((d) => d.name === "total_cents")!;
+    expect(target.sql).toBe("amount_cents");
+    expect(target.description).toBe("fixed");
+  });
+
+  it("re-applying the same add_join (by target_entity) does not duplicate it", () => {
+    const result = makeResult("orders", "add_join", {
+      target_entity: "customers", relationship: "many_to_one",
+    });
+    const twice = applyAmendment(applyAmendment(baseEntity, result), result);
+    const joins = twice.joins as Array<Record<string, unknown>>;
+    expect(joins.filter((j) => j.target_entity === "customers")).toHaveLength(1);
+  });
+
+  it("re-applying the same add_virtual_dimension does not duplicate it", () => {
+    const result = makeResult("orders", "add_virtual_dimension", {
+      name: "revenue_bucket", sql: "CASE WHEN total_cents > 10000 THEN 'high' ELSE 'low' END", type: "string",
+    });
+    const twice = applyAmendment(applyAmendment(baseEntity, result), result);
+    const dims = twice.dimensions as Array<Record<string, unknown>>;
+    const matches = dims.filter((d) => d.name === "revenue_bucket");
+    expect(matches).toHaveLength(1);
+    expect(matches[0].virtual).toBe(true);
+  });
+
+  it("appends when the entry has no identity value (cannot dedup)", () => {
+    // A query_pattern with no `name` can't be deduped — appending twice is
+    // the documented fallback, not a silent drop.
+    const result = makeResult("orders", "add_query_pattern", {
+      description: "top orders", sql: "SELECT * FROM orders LIMIT 10",
+    });
+    const twice = applyAmendment(applyAmendment(baseEntity, result), result);
+    expect(twice.query_patterns as unknown[]).toHaveLength(2);
+  });
 });

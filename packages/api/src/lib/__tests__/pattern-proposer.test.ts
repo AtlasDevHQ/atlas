@@ -90,7 +90,7 @@ describe("pattern-proposer", () => {
     // First query: findPatternBySQL SELECT
     expect(queryCalls.length).toBeGreaterThanOrEqual(1);
     const selectCall = queryCalls[0];
-    expect(selectCall.sql).toContain("SELECT id, confidence, repetition_count FROM learned_patterns");
+    expect(selectCall.sql).toContain("SELECT id, confidence, repetition_count, status FROM learned_patterns");
     expect(selectCall.params?.[0]).toBeTypeOf("string"); // normalized SQL
 
     // Second query: insertLearnedPattern INSERT (fire-and-forget via internalExecute)
@@ -124,6 +124,32 @@ describe("pattern-proposer", () => {
     expect(updateCall!.sql).toContain("repetition_count = repetition_count + 1");
     expect(updateCall!.sql).toContain("LEAST(1.0, confidence + 0.1)");
     expect(updateCall!.params?.[0]).toBe("existing-123");
+  });
+
+  test("leaves a REJECTED match frozen — no bump, no duplicate insert (#3636)", async () => {
+    // findPatternBySQL returns a match whose status is 'rejected'. Repeat
+    // traffic must neither bump it nor insert a fresh pending duplicate.
+    setResults({
+      rows: [
+        { id: "rejected-1", confidence: 0.9, repetition_count: 12, status: "rejected" },
+      ],
+    });
+
+    await _analyzeAndPropose(defaultInput);
+
+    // Only the findPatternBySQL SELECT ran — no UPDATE, no INSERT.
+    expect(queryCalls.length).toBe(1);
+    expect(queryCalls[0].sql).toContain("SELECT id, confidence, repetition_count, status");
+    expect(queryCalls.find((c) => c.sql.includes("UPDATE learned_patterns SET"))).toBeUndefined();
+    expect(queryCalls.find((c) => c.sql.includes("INSERT INTO learned_patterns"))).toBeUndefined();
+  });
+
+  test("incrementPatternCount UPDATE never touches a rejected row (backstop #3636)", () => {
+    enableInternalDB();
+    incrementPatternCount("pat-rej", "fp-1", 100);
+    const updateCall = queryCalls.find((c) => c.sql.includes("UPDATE learned_patterns SET"));
+    expect(updateCall).toBeDefined();
+    expect(updateCall!.sql).toContain("status <> 'rejected'");
   });
 
   // ── Org-scoping ────────────────────────────────────────────────────

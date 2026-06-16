@@ -239,6 +239,43 @@ const ADD_AMENDMENT_KEYS: Record<string, string> = {
   add_query_pattern: "query_patterns",
 };
 
+/**
+ * Identity field per entity-array key, used to make re-applying an amendment
+ * idempotent. Dimensions/measures/query-patterns are keyed by `name`; joins by
+ * their `target_entity`.
+ */
+const ADD_AMENDMENT_IDENTITY: Record<string, string> = {
+  dimensions: "name",
+  measures: "name",
+  joins: "target_entity",
+  query_patterns: "name",
+};
+
+/**
+ * Append `entry` to the `arrayKey` array, or REPLACE an existing element with
+ * the same identity (last-write-wins) so re-approving the same amendment — or
+ * approving an updated version of it — converges instead of pushing a duplicate
+ * dimension/measure/join. The `add_*` handlers previously used a blind push, so
+ * a second approval of the same name silently produced two identical entries.
+ * When the entry carries no identity value we can't dedup it, so we append.
+ */
+function upsertByIdentity(
+  arr: Record<string, unknown>[],
+  arrayKey: string,
+  entry: Record<string, unknown>,
+): void {
+  const idField = ADD_AMENDMENT_IDENTITY[arrayKey];
+  const idVal = idField ? entry[idField] : undefined;
+  if (idVal !== undefined && idVal !== null) {
+    const idx = arr.findIndex((e) => e[idField] === idVal);
+    if (idx >= 0) {
+      arr[idx] = entry;
+      return;
+    }
+  }
+  arr.push(entry);
+}
+
 /** Apply an amendment to a parsed entity object. Returns a new object. */
 export function applyAmendment(
   entity: Record<string, unknown>,
@@ -247,11 +284,12 @@ export function applyAmendment(
   const updated = structuredClone(entity);
   const amendment = result.amendment;
 
-  // Handle the four simple "push to array" amendment types
+  // Handle the four simple "push to array" amendment types. Idempotent: a
+  // re-approval of the same name replaces rather than duplicates.
   const arrayKey = ADD_AMENDMENT_KEYS[result.amendmentType];
   if (arrayKey) {
     const arr = (updated[arrayKey] ?? []) as Record<string, unknown>[];
-    arr.push(amendment);
+    upsertByIdentity(arr, arrayKey, amendment);
     updated[arrayKey] = arr;
     return updated;
   }
@@ -289,7 +327,7 @@ export function applyAmendment(
     }
     case "add_virtual_dimension": {
       const dims = (updated.dimensions ?? []) as Record<string, unknown>[];
-      dims.push({ ...amendment, virtual: true });
+      upsertByIdentity(dims, "dimensions", { ...amendment, virtual: true });
       updated.dimensions = dims;
       break;
     }

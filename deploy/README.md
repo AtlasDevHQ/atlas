@@ -56,9 +56,9 @@ Each service points to its `railway.json` via the Railway dashboard. Key env var
 - `ATLAS_PROVIDER` / `ANTHROPIC_API_KEY` — LLM provider
 - `DATABASE_URL` — Atlas internal Postgres (auth, audit)
 - `ATLAS_DATASOURCE_URL` — Analytics datasource
-- `ATLAS_CORS_ORIGIN=https://app.useatlas.dev`
+- `ATLAS_CORS_ORIGIN` — No longer stamped: its default derives from `ATLAS_API_REGION` + the `residency.regions[].apiUrl` map (#3706), and it's a runtime registry setting (Admin → Security). Set explicitly only to override.
 - `BETTER_AUTH_SECRET` — min 32 chars
-- `BETTER_AUTH_TRUSTED_ORIGINS=https://app.useatlas.dev`
+- `BETTER_AUTH_TRUSTED_ORIGINS=https://app.useatlas.dev` — Read before config in Better Auth init, so it stays env. Also the web origin `getWebOrigin()` reads first (anchors the passkey rpID + CORS default).
 - `ATLAS_SANDBOX_URL` — Internal sidecar URL
 - `ATLAS_API_REGION` — Region identity for this instance (e.g. `us-east`). Required for multi-region deployments. Each regional API service (api, api-eu, api-apac) must set this so the health endpoint reports its region and misrouting detection works correctly
 

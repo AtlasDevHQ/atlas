@@ -1024,6 +1024,15 @@ export default defineConfig({
   // providerRuntimeAvailability is the live source of truth.
   sandbox: {
     priority: ["vercel-sandbox"],
+    // Off-Vercel (Railway) auth needs the Vercel account identity. The team +
+    // project IDs are NOT secret and are constant across regions, so they live
+    // here rather than stamped as VERCEL_TEAM_ID / VERCEL_PROJECT_ID on each
+    // regional service (#3706). Only VERCEL_TOKEN stays in env (per-service
+    // secret). The env vars still override these when set.
+    vercel: {
+      teamId: "team_jW0mE8T4T5Uodzkz7WlVowNi",
+      projectId: "prj_mIgFJiT56FOffyZ1fxRgFwhgWksI",
+    },
   },
 
   // ── Connection Pool ─────────────────────────────────────────────

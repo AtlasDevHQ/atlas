@@ -185,6 +185,20 @@ const SandboxConfigSchema = z.object({
       { message: "sandbox.priority must not contain duplicate backend names" },
     )
     .optional(),
+
+  /**
+   * Vercel Sandbox account identity for off-Vercel deploys (e.g. Railway).
+   * The team and project IDs are NOT secret (only `VERCEL_TOKEN` is) and are
+   * constant across regions, so they belong in config rather than stamped as
+   * `VERCEL_TEAM_ID` / `VERCEL_PROJECT_ID` on every regional service (#3706).
+   * The env vars still override when set, so self-hosted operators can point a
+   * deploy at their own Vercel account without editing config. The token stays
+   * in env on every path. On the Vercel platform these are unused (OIDC auth).
+   */
+  vercel: z.object({
+    teamId: z.string().min(1),
+    projectId: z.string().min(1),
+  }).optional(),
 });
 
 export type SandboxConfig = z.infer<typeof SandboxConfigSchema>;

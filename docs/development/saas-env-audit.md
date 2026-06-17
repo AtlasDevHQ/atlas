@@ -78,14 +78,20 @@ The headline of the principle. Candidates, by area:
 - **Observability** — `OTEL_EXPORTER_OTLP_{ENDPOINT,HEADERS}` (today a per-service
   footgun: shared scope silently drops telemetry).
 
-### Tier 2 — Move non-secret constants into `atlas.config.ts` (still a deploy, but maintained once)
+### Tier 2 — Move non-secret constants into `atlas.config.ts` ✅ shipped (#3706)
 For things that genuinely can't be runtime (boot-ordering) but are constant
-across regions:
-- `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` (keep `VERCEL_TOKEN` in env).
-- Per-region origins (`ATLAS_PUBLIC_API_URL`, `ATLAS_RPID`, and
-  `ATLAS_CORS_ORIGIN` — note the last is *already* a platform registry setting,
-  `requiresRestart`, env as fallback) derived from `ATLAS_API_REGION` + the
-  `residency.regions[].apiUrl` map instead of stamped per service.
+across regions. No behavior change across us/eu/apac/staging — explicit env
+still overrides every derivation.
+- `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` → `sandbox.vercel` in `atlas.config.ts`
+  (`vercelSandboxAccess()` reads config, env overrides). `VERCEL_TOKEN` stays env.
+- `ATLAS_PUBLIC_API_URL` → derived from `ATLAS_API_REGION` +
+  `residency.regions[].apiUrl` (`resolvePublicApiUrl()`); the region's `apiUrl`
+  is exactly the API host, so OAuth redirect URIs are unchanged.
+- `ATLAS_RPID` + the `ATLAS_CORS_ORIGIN` *default* → derived from the same region
+  web origin (`getWebOrigin()` gains a region fallback; the API host's first DNS
+  label is swapped `api` → `app`, folding `api-eu` / `api-apac` onto the single
+  `app.useatlas.dev` web service). `ATLAS_CORS_ORIGIN` stays a registry setting —
+  not re-introduced as an env var.
 
 ### Tier 3 — Delete redundant env vars ✅ shipped (#3702)
 Already covered by `atlas.config.ts`, no behavior change to drop from SaaS env. The two

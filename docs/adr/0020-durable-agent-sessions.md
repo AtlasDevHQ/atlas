@@ -1,0 +1,75 @@
+# Durable agent sessions: native step-boundary checkpoints, not Vercel Workflow
+
+Atlas's agent loop is request/response. `runAgent` (`packages/api/src/lib/agent.ts`) is a single `streamText` call with `stopWhen: stepCountIs(getAgentMaxSteps())` (default 25, max 100) and hard timeouts (`totalMs: 180_000`, `stepMs: 30_000`). The conversation *transcript* is persisted by the chat route (`conversations` / `messages`), but the *in-flight turn* is not: if the process dies — deploy, crash, serverless timeout, OOM — the half-finished turn is lost and the user re-asks from their last message, re-paying for every tool call and model step already done. And there is no way to **pause** a turn for a human decision ("approve this query against prod") and resume it later: the existing `/ee` `ApprovalGate` gates *before* a tool executes, synchronously, inside the live request — it cannot suspend a turn that is three steps deep and give the compute back.
+
+This is the one capability a serious agent framework treats as table stakes (Vercel's Eve makes every turn a checkpointed Workflow that can park indefinitely without compute) and the clearest gap in Atlas's loop. This ADR records how Atlas closes it **without** taking a hard dependency on Vercel — because deploy-anywhere and the optional internal DB are product invariants, not negotiable.
+
+## Decision — own the step loop, checkpoint at step boundaries, on our own runtime
+
+1. **Build durability natively on the Effect runtime; do not adopt Vercel Workflow.** A `DurableSession` service (`Context.Tag("DurableSession")`, `lib/effect/services.ts`) persists a turn's evolving state to the **internal Postgres** at each agent step boundary. Vercel Workflow is the reference design, not the dependency — binding durability to Vercel Functions would break Docker/Railway/self-host, which is the whole point of Atlas's positioning (ADR-0008, CLAUDE.md deploy-anywhere). We already have the substrate: an internal DB, the `internalExecute` circuit breaker, Effect lifecycle, and Drizzle migrations.
+
+2. **The checkpoint is the turn's message transcript plus a status, keyed by `(conversation_id, run_id)`.** A *run* is one user turn. After each step we snapshot the accumulated `ModelMessage[]` (assistant text, tool calls, tool results) as JSONB. Resume = re-enter `streamText` with the stored transcript: completed tool calls are already in the messages array, so the model **continues** rather than re-executing them. We checkpoint the transcript, not raw model deltas — replaying a half-streamed token is meaningless; replaying from the last completed step is exact and cheap.
+
+3. **The checkpoint seam is `onStepFinish`.** `streamText` already exposes `prepareStep` / `onStepFinish` / `onFinish` (`agent.ts:1274–1362`). `onStepFinish` fires after every completed step with the step's messages; that is where we write the checkpoint (status `running`), reusing the same fire-and-forget `internalExecute` path that already persists `token_usage` and audit. `onFinish` flips status to `done`. A turn that dies between steps leaves its last `running` checkpoint; a resume picks it up.
+
+4. **Approval-park inverts control of the gated step, the AI-SDK-native way.** A tool that needs human sign-off is defined *without* a synchronous `execute` for the gated path: it emits a `needs-approval` tool call and the step finishes there. `onStepFinish` writes the checkpoint with status `parked` and the handler **returns** — releasing the request and all compute. The turn now lives only as a row. When the decision lands (through the existing `ApprovalGate` / EE approval queue, keyed on `origin`), the resolver appends the tool result to the transcript and triggers a **resume**, which re-enters `streamText` from the parked checkpoint. Parking costs a row, not a held connection or a spinning function — the same economics as Eve's Workflow park, achieved without Workflow.
+
+5. **Resume is a first-class endpoint, surfaced over the existing stream protocol.** `POST /api/v1/chat/:conversationId/resume` (and the equivalent MCP/chat-plugin path) re-hydrates the latest non-terminal checkpoint and streams via the same `createUIMessageStreamResponse` UI-message protocol the chat route already returns. The client reattaches with `conversationId` + `runId` exactly as Eve reattaches with `continuationToken` + `x-eve-session-id`; we already set `x-conversation-id`, so we add `x-run-id`. No new wire format — durability rides the stream we have.
+
+## Invariants
+
+- **Durability degrades gracefully to today's behavior when there is no internal DB.** `hasInternalDB()` already gates `token_usage`. If a minimal self-host has no internal Postgres, `DurableSession` is a no-op (a `NoopDurableSessionLayer`, the same pattern as the EE Noop layers) and the loop behaves exactly as it does now — ephemeral, non-resumable. The internal DB stays *optional*; durability is an enhancement, never a new hard requirement. Self-hosters who want it provision `DATABASE_URL`; nothing else changes.
+
+- **Checkpointing never disrupts the stream.** Like the `token_usage` insert in `onFinish`, every checkpoint write is wrapped so a persistence failure logs (`log.warn`, type-narrowed) and the turn continues to completion in-memory. A degraded checkpoint store costs resumability, never the current answer. Fail-soft on the durability path, never fail-closed.
+
+- **Resume is idempotent and budget-aware.** A run carries a monotonic `step_index`; resuming from index *n* never replays steps `≤ n`. Resumed steps continue to count against the existing F-77 per-conversation `total_steps` cap and `reserveConversationBudget` — a parked-and-resumed turn cannot launder its way past the step ceiling. One run resumes to one live stream at a time; a second concurrent resume of the same `run_id` is rejected (a `resuming` lease column), so a double-attach can't fork the turn.
+
+- **Parked turns respect tenancy and security exactly as live turns do.** A resume re-binds `RequestContext` + `AuthContext` from the stored actor and re-resolves the connection, whitelist, and RLS filters *fresh at resume time* — never from the checkpoint. Authorization and table-whitelist are live decisions (mirroring ADR-0016's "RBAC resolved live, never from a token claim"): if the user lost access to a datasource while the turn was parked, the resume fails closed. The checkpoint stores *what the agent was doing*, never *what it was allowed to do*.
+
+- **SaaS-first configuration.** The knobs — checkpoint retention, max park duration, whether durability is on — live in the settings registry (`workspace > platform > env > default`, hot-reload), not new env vars. The only env input is the boot fact of whether an internal DB exists, which we already read. (CLAUDE.md SaaS-env contract.)
+
+## Schema
+
+One new table, mirrored in `schema.ts` in the same PR (`check-schema-drift.sh`), added under expand/contract discipline (`db/migrations/README.md`):
+
+```
+agent_runs
+  id              uuid pk
+  conversation_id uuid  → conversations(id) ON DELETE CASCADE
+  org_id          text  (tenancy, indexed)
+  status          text  CHECK (status IN ('running','parked','done','failed'))  default 'running'
+  step_index      int   not null default 0
+  transcript      jsonb not null            -- accumulated ModelMessage[] as of step_index
+  parked_reason   text                      -- e.g. approval queue id, null unless status='parked'
+  resuming_lease  timestamptz               -- single-resumer guard
+  created_at / updated_at
+  index (conversation_id), index (org_id), partial index where status IN ('running','parked')
+```
+
+`agent_runs` is content-mode-exempt (it is execution state, not user-surfaced content) with a schema comment saying so. Retention: a scheduler fiber (the `Scheduler` already forks ~12) sweeps terminal runs past the retention window and fails `parked` runs past `max_park_duration`, mirroring the existing OAuth-state / share-token sweeps.
+
+## Phasing (each independently shippable, tracer-bullet)
+
+1. **Checkpoint-only, no resume.** Write `agent_runs` from `onStepFinish`/`onFinish` behind a settings flag. Pure observability + the persistence seam; zero behavior change. Validates the write path and cost.
+2. **Crash-resume.** Add the resume endpoint + re-entry. A turn killed mid-flight resumes from its last `running` checkpoint. No approval semantics yet.
+3. **Approval-park.** Wire the gated-tool suspend → `parked` checkpoint → return, and the `ApprovalGate` resolution → resume. This is the headline capability and depends on 1+2 being solid.
+4. **Surface it.** `x-run-id`, client reattach, and the UI affordance for "this turn is waiting on approval / was interrupted — resume".
+
+## Related primitives (deliberately out of scope, tracked separately)
+
+Durable sessions are the foundation of a "long-running turn" bundle; two adjacent primitives ride on top and are filed as their own follow-ons rather than widened into this ADR:
+
+- **Context compaction.** A turn that parks for hours or resumes across days will blow the context window. Eve auto-summarizes earlier turns past a fill threshold (optionally on a cheaper model). Atlas today only caps steps and conversation budget, then forces a new conversation. Once turns can live long enough to need it, compaction becomes the natural companion — but it is independently shippable and is not a precondition for checkpoint/resume, so it gets its own issue.
+- **Durable agent memory.** A per-session, crash-surviving working-memory slot (Eve's `defineState`) is distinct from the message transcript: it's where the agent stashes derived state ("the user means EU revenue, the prod replica is lagging") that should outlast a resume without re-deriving. `agent_runs.transcript` is the right *storage* substrate, but the *programming model* (a typed handle tools can read/write) is a separate design. Out of scope here; tracked alongside.
+
+The discipline mirrors the rest of the repo: one ADR records one decision (checkpoint/resume/park), and the bundle ships as independent tracer-bullet slices.
+
+## Considered and rejected
+
+- **Adopt the Vercel Workflow SDK (Eve's substrate).** Rejected. The open-source SDK could in principle run off-Vercel, but the supported, durable path is Vercel Functions end-to-end, and taking it on would either bind Atlas to Vercel or force us to self-operate an undocumented Workflow runtime — strictly more operational surface than checkpoint rows in the Postgres we already run. Deploy-anywhere wins. We borrow Eve's *model* (checkpoint at step boundaries, park without compute), not its *runtime*.
+- **Make the internal DB mandatory so every deploy is durable.** Rejected — the internal DB is optional by design (`hasInternalDB()`), and minimal self-host is a supported shape. Durability is opt-in via provisioning, with a Noop layer otherwise.
+- **Checkpoint every token / every model delta.** Rejected. Replaying a partial token stream is meaningless and the write volume is absurd. Step boundaries are the only consistent, replayable cut points — a completed step is a clean transcript state.
+- **Re-run the whole turn from the user's last message on failure (status quo).** Rejected as the *target*, kept as the *fallback*. Re-running re-pays for every completed model step and tool call and re-executes side-effecting tools — unacceptable for long analyses, and unsafe once a turn has run a write-class action tool.
+- **Hold the request open and `await` the human decision for approval-park (synchronous HITL).** Rejected. That is exactly today's `ApprovalGate` limitation — it ties up a connection/function for the duration of a human's coffee break and dies on any deploy. The point of park is to release compute and live as a row.
+- **A durable FIFO queue of pending user messages per session.** Rejected (and notably, Eve itself declines to maintain one). A run is one turn; concurrency control is the single-resumer lease, not a message queue. Multi-turn ordering stays the chat route's job, as it is now.
+- **In-memory checkpoint cache only (no DB).** Rejected — survives nothing. The entire value is surviving process death.

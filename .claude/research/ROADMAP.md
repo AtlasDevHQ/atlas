@@ -36,7 +36,7 @@ Slices (all shipped — **closed out 2026-06-16**: GH milestone #67 + anchor PRD
 
 Related learned-pattern bugs folded in: cache-not-invalidated-on-approve ([#3612](https://github.com/AtlasDevHQ/atlas/issues/3612)), bulk-approve skips amendment YAML rewrite ([#3613](https://github.com/AtlasDevHQ/atlas/issues/3613)), dedup cache no TTL ([#3614](https://github.com/AtlasDevHQ/atlas/issues/3614)), `actor_kind` always NULL ([#3615](https://github.com/AtlasDevHQ/atlas/issues/3615)), `duration_ms=0` skews slow-query analytics ([#3616](https://github.com/AtlasDevHQ/atlas/issues/3616)).
 
-Pre-tag review-findings fixes (8-agent `v0.0.16..HEAD` pass) landed via [#3724](https://github.com/AtlasDevHQ/atlas/pull/3724) — rejected-pattern resurrection, amendment re-apply dedup, `/health` operator-gate, plus real-PG promote/decay + index-harvest coverage. Four deferred learn-subsystem refactors ([#3720](https://github.com/AtlasDevHQ/atlas/issues/3720)–#3723) moved to Architecture Backlog.
+Pre-tag review-findings fixes (8-agent `v0.0.16..HEAD` pass) landed via [#3724](https://github.com/AtlasDevHQ/atlas/pull/3724) — rejected-pattern resurrection, amendment re-apply dedup, `/health` operator-gate, plus real-PG promote/decay + index-harvest coverage. Four deferred learn-subsystem refactors ([#3720](https://github.com/AtlasDevHQ/atlas/issues/3720)–#3723) moved to Architecture Backlog; two have since shipped (#3720 → #3726, #3723 → #3725), two remain (#3721, #3722).
 
 Banked separately toward a later tag: the post-v0.0.16 prod-readiness audit follow-ups (#3679–#3687, under [Planned tags](#planned-tags)) and the www/docs accuracy sweeps (#3677/#3678).
 

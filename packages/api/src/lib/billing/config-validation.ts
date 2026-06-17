@@ -13,7 +13,10 @@
  *   1. **Missing monthly price IDs.** `getStripePlans()` (`plans.ts`) silently
  *      omits a tier whose monthly `STRIPE_{STARTER,PRO,BUSINESS}_PRICE_ID` is
  *      unset — the plan never appears in checkout and the region looks healthy.
- *      {@link findMissingMonthlyPriceIdEnvVars} names the absent vars.
+ *      {@link findMissingMonthlyPriceIds} (settings-aware, #3703) /
+ *      {@link findMissingMonthlyPriceIdEnvVars} (pure env) name the absent
+ *      keys. Since #3703 these are operator-actionable boot WARNINGS, not boot
+ *      crashes — the price IDs are runtime-editable platform settings.
  *
  *   2. **Secret-key mode.** `sk_test_…` vs `sk_live_…` is the only test/live
  *      signal available locally — a Stripe *price* ID (`price_…`) carries no
@@ -43,6 +46,27 @@ export const ANNUAL_PRICE_ID_ENV_VARS = [
 ] as const;
 
 export type MonthlyPriceIdEnvVar = (typeof MONTHLY_PRICE_ID_ENV_VARS)[number];
+
+/**
+ * Return the subset of {@link MONTHLY_PRICE_ID_ENV_VARS} that resolve to a
+ * missing (undefined or empty-string) value through `resolve` (#3703).
+ *
+ * Price IDs are now platform-scoped SETTINGS (registry-backed, env-fallback,
+ * hot-reloadable) rather than env-only, so the boot guard resolves them via
+ * `getSettingAuto` instead of reading `process.env` directly — a price set
+ * only in the Admin console must NOT register as missing. This is the
+ * settings-aware sibling of {@link findMissingMonthlyPriceIdEnvVars}: same
+ * empty-string-counts-as-missing semantics, but the lookup is injected so the
+ * function stays pure and unit-testable with a stub resolver.
+ */
+export function findMissingMonthlyPriceIds(
+  resolve: (settingKey: MonthlyPriceIdEnvVar) => string | undefined,
+): MonthlyPriceIdEnvVar[] {
+  return MONTHLY_PRICE_ID_ENV_VARS.filter((key) => {
+    const value = resolve(key);
+    return value === undefined || value === "";
+  });
+}
 
 /**
  * Stripe secret-key mode, derived from the `sk_test_` / `sk_live_` prefix.

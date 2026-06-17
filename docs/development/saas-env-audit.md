@@ -61,8 +61,11 @@ the genuine secrets of Stripe/Turnstile/Twenty/Vercel.
 The headline of the principle. Candidates, by area:
 
 - **Stripe price IDs** (`STRIPE_{STARTER,PRO,BUSINESS}{,_ANNUAL}_PRICE_ID`, 6
-  vars) — non-secret; boot-blocks via `BillingConfigInvalidError`. Operator should
-  set pricing in Admin without a deploy. Only the secret key + webhook secret stay env.
+  vars) — ✅ **done (#3703).** Promoted to platform-scoped, hot-reloadable
+  settings (env is now only a fallback tier); `getStripePlans()` /
+  `resolvePlanTierFromPriceId()` read them via `getSettingAuto` per checkout, and
+  `BillingConfigGuardLive` warns (no longer boot-blocks) on a missing price ID.
+  Only the secret key + webhook secret stay env.
 - **Rate-limit / abuse tuning** — the per-user / chat / admin RPM trio
   (`ATLAS_RATE_LIMIT_RPM`, `_RPM_CHAT`, `_RPM_ADMIN`) is **already** in the registry
   (`_RPM` itself is immutable on SaaS — DDoS floor). The remaining env-only knobs to

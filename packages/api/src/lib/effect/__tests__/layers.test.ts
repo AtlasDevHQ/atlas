@@ -891,31 +891,31 @@ describe("buildAppLayer", () => {
   // real-DB-URL workaround for marginal additional coverage beyond the
   // existing unit-level guard tests.
 
-  // #3435 — canary that `billingConfigGuardLayer` is actually wired into
-  // `Layer.mergeAll(...)`. Uses the PURE fail-fast path (missing monthly
-  // price ID) so it never reaches the network price-resolution branch — no
-  // Stripe SDK / mock needed. STRIPE_SECRET_KEY must be set (the guard gates
-  // on it) with at least one tier's price ID absent.
-  test("buildAppLayer wires BillingConfigGuardLive — missing price ID fails the layer in SaaS", async () => {
+  // #3435 + #3703 — canary that `billingConfigGuardLayer` is actually wired
+  // into `Layer.mergeAll(...)`. Uses the env-only fail-fast path (missing
+  // STRIPE_WEBHOOK_SECRET) so it never reaches the network price-resolution
+  // branch — no Stripe SDK / mock needed. Since #3703 a missing PRICE ID is a
+  // warn (not a boot crash), so the webhook-secret gap is the remaining
+  // pure fail-fast trigger. STRIPE_SECRET_KEY must be set (the guard gates on it).
+  test("buildAppLayer wires BillingConfigGuardLive — missing webhook secret fails the layer in SaaS", async () => {
     const savedDb = process.env.DATABASE_URL;
     const savedKeys = process.env.ATLAS_ENCRYPTION_KEYS;
     const savedRpm = process.env.ATLAS_RATE_LIMIT_RPM;
     const savedProvider = process.env.ATLAS_PROVIDER;
     const savedStripeKey = process.env.STRIPE_SECRET_KEY;
-    const savedStarter = process.env.STRIPE_STARTER_PRICE_ID;
-    const savedPro = process.env.STRIPE_PRO_PRICE_ID;
-    const savedBusiness = process.env.STRIPE_BUSINESS_PRICE_ID;
+    const savedWebhook = process.env.STRIPE_WEBHOOK_SECRET;
+    const savedResend = process.env.RESEND_API_KEY;
     // Satisfy the sibling SaaS guards so the cause carries exclusively the
-    // billing error.
+    // billing error. RESEND_API_KEY satisfies DpaGuardLive, which (like the
+    // billing guard since #3703) is Settings-gated and would otherwise race it.
     process.env.DATABASE_URL = "postgresql://localhost:5432/wiring-test";
     process.env.ATLAS_ENCRYPTION_KEYS = "v1:wiring-regression-test-key-32-bytes-long-aaa";
     process.env.ATLAS_RATE_LIMIT_RPM = "300";
     process.env.ATLAS_PROVIDER = "ollama"; // keyless provider
+    process.env.RESEND_API_KEY = "re_wiring_test";
     process.env.STRIPE_SECRET_KEY = "sk_test_wiring";
-    // All price IDs absent → fail-fast before any network call.
-    delete process.env.STRIPE_STARTER_PRICE_ID;
-    delete process.env.STRIPE_PRO_PRICE_ID;
-    delete process.env.STRIPE_BUSINESS_PRICE_ID;
+    // Webhook secret absent → env-only fail-fast before any network call.
+    delete process.env.STRIPE_WEBHOOK_SECRET;
 
     try {
       const config = { deployMode: "saas" } as Parameters<typeof buildAppLayer>[0];
@@ -938,9 +938,8 @@ describe("buildAppLayer", () => {
       restore("ATLAS_RATE_LIMIT_RPM", savedRpm);
       restore("ATLAS_PROVIDER", savedProvider);
       restore("STRIPE_SECRET_KEY", savedStripeKey);
-      restore("STRIPE_STARTER_PRICE_ID", savedStarter);
-      restore("STRIPE_PRO_PRICE_ID", savedPro);
-      restore("STRIPE_BUSINESS_PRICE_ID", savedBusiness);
+      restore("STRIPE_WEBHOOK_SECRET", savedWebhook);
+      restore("RESEND_API_KEY", savedResend);
     }
   });
 });

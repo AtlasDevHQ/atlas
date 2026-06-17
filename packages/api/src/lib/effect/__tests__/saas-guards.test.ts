@@ -41,8 +41,21 @@ mock.module("@atlas/api/lib/logger", () => ({
 // Individual tests set it (and reset to undefined in `finally`) to exercise the
 // settings-only-misconfig path. Full export surface mocked per mock-all-exports.
 let mockSettingProvider: string | undefined;
+// Optional per-key settings override consulted before the env fallback. Lets the
+// BillingConfigGuardLive tests (#3703) exercise the settings-backed price path
+// (a price set only in the registry, not in env). Cleared per billing test.
+let mockSettingOverrides: Record<string, string> = {};
 mock.module("@atlas/api/lib/settings", () => ({
-  getSettingAuto: (key: string) => (key === "ATLAS_PROVIDER" ? mockSettingProvider : undefined),
+  // Mirror the real `getSetting` tier chain closely enough for the guards:
+  // explicit test override → ATLAS_PROVIDER stub → env fallback. The price-ID
+  // settings are platform-scoped with an env fallback tier, so falling through
+  // to `process.env` keeps the env-driven `withBillingEnv` setup authoritative
+  // while still honoring an injected settings override.
+  getSettingAuto: (key: string) => {
+    if (key in mockSettingOverrides) return mockSettingOverrides[key];
+    if (key === "ATLAS_PROVIDER") return mockSettingProvider;
+    return process.env[key];
+  },
   getSetting: () => undefined,
   getSettingLive: async () => undefined,
   setSetting: async () => {},
@@ -1571,12 +1584,14 @@ function withBillingEnv<T>(
   }
   mockStripePrices = {};
   mockStripeClientNull = false;
+  mockSettingOverrides = {};
   for (const [k, v] of Object.entries(vars)) process.env[k] = v;
   return run().finally(() => {
     for (const key of BILLING_ENV_KEYS) {
       if (saved[key] !== undefined) process.env[key] = saved[key];
       else delete process.env[key];
     }
+    mockSettingOverrides = {};
   });
 }
 
@@ -1585,7 +1600,9 @@ function runBillingGuard(deployMode: string) {
     Effect.void.pipe(
       Effect.provide(
         BillingConfigGuardLive.pipe(
-          Layer.provide(makeTestConfigLayer({ deployMode })),
+          // BillingConfigGuardLive depends on Config + Settings (#3703) — the
+          // Settings edge sequences it after loadSettings warms the cache.
+          Layer.provide(Layer.merge(makeTestConfigLayer({ deployMode }), makeTestSettingsLayer())),
         ),
       ),
     ),
@@ -1613,24 +1630,51 @@ describe("BillingConfigGuardLive", () => {
     });
   });
 
-  test("fails boot in SaaS when a monthly price ID is missing", async () => {
+  test("does NOT fail boot in SaaS when a monthly price ID is missing (warn, not crash — #3703)", async () => {
+    // Price IDs are runtime-editable platform settings since #3703 — a missing
+    // one is a loud, operator-actionable WARNING (logged), never a boot crash,
+    // so the operator can set it from Admin → Settings without a redeploy.
     await withBillingEnv(
       {
         STRIPE_SECRET_KEY: "sk_test_abc",
+        STRIPE_WEBHOOK_SECRET: "whsec_test",
         STRIPE_STARTER_PRICE_ID: "price_starter",
         STRIPE_BUSINESS_PRICE_ID: "price_business",
         // STRIPE_PRO_PRICE_ID deliberately absent
       },
       async () => {
+        mockStripePrices = {
+          price_starter: { livemode: false },
+          price_business: { livemode: false },
+        };
         const exit = await runBillingGuard("saas");
-        expect(Exit.isFailure(exit)).toBe(true);
-        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
-        expect(failure).toBeInstanceOf(BillingConfigInvalidError);
-        const e = failure as TBillingConfigInvalidError;
-        expect(e._tag).toBe("BillingConfigInvalidError");
-        expect(e.missingPriceIdEnvVars).toEqual(["STRIPE_PRO_PRICE_ID"]);
-        expect(e.keyMode).toBe("test");
-        expect(e.message).toContain("#3435");
+        expect(Exit.isSuccess(exit)).toBe(true);
+      },
+    );
+  });
+
+  test("resolves a price ID from settings even when its env var is absent (#3703)", async () => {
+    // Only the env-fallback tier sets starter/business; the pro price exists
+    // ONLY as a platform settings override. The guard must see it via
+    // getSettingAuto and NOT warn it as missing — proving settings-backed
+    // resolution. With all three resolvable and consistent, boot succeeds.
+    await withBillingEnv(
+      {
+        STRIPE_SECRET_KEY: "sk_test_abc",
+        STRIPE_WEBHOOK_SECRET: "whsec_test",
+        STRIPE_STARTER_PRICE_ID: "price_starter",
+        STRIPE_BUSINESS_PRICE_ID: "price_business",
+        // STRIPE_PRO_PRICE_ID absent from env — supplied via settings below
+      },
+      async () => {
+        mockSettingOverrides = { STRIPE_PRO_PRICE_ID: "price_pro_from_settings" };
+        mockStripePrices = {
+          price_starter: { livemode: false },
+          price_business: { livemode: false },
+          price_pro_from_settings: { livemode: false },
+        };
+        const exit = await runBillingGuard("saas");
+        expect(Exit.isSuccess(exit)).toBe(true);
       },
     );
   });

@@ -330,24 +330,28 @@ export class MigrationsRequiredError extends Data.TaggedError("MigrationsRequire
 }> {}
 
 /**
- * SaaS region booted with `STRIPE_SECRET_KEY` set but one or more paid-tier
- * monthly `STRIPE_{STARTER,PRO,BUSINESS}_PRICE_ID` env vars unset/empty, OR a
- * secret key whose mode prefix isn't a standard `sk_test_` / `sk_live_`
- * (#3435). Both are pure, network-free misconfigs caught at boot:
+ * SaaS region booted with `STRIPE_SECRET_KEY` set but a genuine env-level
+ * billing misconfig: a missing `STRIPE_WEBHOOK_SECRET`, OR a secret key whose
+ * mode prefix isn't a standard `sk_test_` / `sk_live_` (#3435). Both are pure,
+ * network-free misconfigs of env-only inputs caught at boot:
  *
- *   - A missing monthly price ID silently omits that tier from
- *     `getStripePlans()` — the plan never appears in checkout, the region looks
- *     healthy, and a customer who wanted that tier simply can't buy it.
+ *   - A missing webhook secret makes `auth/server.ts` decline to mount the
+ *     `@better-auth/stripe` plugin (it logs and continues), so checkout, the
+ *     billing portal, and webhook plan-sync are all dead while boot stays green.
  *   - A non-standard key shape (`rk_…` restricted, `pk_…` publishable paste, a
  *     typo) means we can't pin the test/live mode the price-resolution warn
  *     path compares against, and a restricted key may lack `prices.retrieve`
  *     scope outright.
  *
- * `missingPriceIdEnvVars` lists the absent monthly vars (empty when the failure
- * is solely the key shape) and `keyMode` carries the detected mode so the
- * boot-failure log is operator-actionable without re-parsing `message`. The key
- * itself is NEVER placed on the error or in the message — only its mode
- * classification. Self-hosted, and SaaS-without-Stripe, never construct this.
+ * Since #3703 a MISSING PRICE ID no longer constructs this error: price IDs are
+ * runtime-editable platform settings (registry-backed, env-fallback), so an
+ * absent one is an operator-actionable boot WARNING (`BillingConfigGuardLive`
+ * logs it), never a boot crash. `missingPriceIdEnvVars` therefore is always
+ * empty on this error today; it is retained for shape stability and possible
+ * future reuse. `keyMode` carries the detected mode so the boot-failure log is
+ * operator-actionable without re-parsing `message`. The key itself is NEVER
+ * placed on the error or in the message — only its mode classification.
+ * Self-hosted, and SaaS-without-Stripe, never construct this.
  */
 export class BillingConfigInvalidError extends Data.TaggedError("BillingConfigInvalidError")<{
   readonly message: string;
@@ -1133,31 +1137,39 @@ export const ChatAdapterEnvGuardLive: Layer.Layer<never, ChatAdapterEnvMissingEr
  *   3. (Companion fix, not here) `GET /api/v1/billing` reporting a missing
  *      `subscription` table as `subscription: null` — addressed in `billing.ts`.
  *
- * **warn vs fail-fast decision (#3435).** Two pure, network-free checks
- * FAIL-FAST (CLAUDE.md "prefer errors over silent fallbacks"):
- *   - any missing monthly price ID, and
+ * **warn vs fail-fast decision (#3435 + #3703).** The remaining pure,
+ * network-free FAIL-FAST checks are both on env-only inputs:
+ *   - a missing `STRIPE_WEBHOOK_SECRET` (genuine secret, env-only), and
  *   - a secret key whose mode prefix isn't a standard `sk_test_` / `sk_live_`.
+ * A MISSING PRICE ID is NO LONGER fail-fast (#3703): price IDs are now
+ * runtime-editable platform settings, so a boot crash would prevent an operator
+ * from ever fixing pricing without a redeploy — the exact footgun this train of
+ * issues exists to remove. Instead, prices are resolved through `getSettingAuto`
+ * (settings → env → default) and any still-missing monthly tier is a loud,
+ * operator-actionable `log.error` WARNING that does not wedge boot.
  * The "do these price IDs exist in the account, and does each price's
- * `livemode` match the key mode?" check is a network call, so it is a loud
- * `log.error` (with a per-price breakdown) but NEVER fails boot — a transient
- * Stripe outage or rate-limit at deploy time must not wedge a region. The
- * mismatch it detects is still operator-actionable from the log, and the
- * webhook-sync no-op it guards against is itself retryable.
+ * `livemode` match the key mode?" check is a network call, so it is likewise a
+ * loud `log.error` (with a per-price breakdown) but NEVER fails boot — a
+ * transient Stripe outage or rate-limit at deploy time must not wedge a region.
  *
  * Gate: `deployMode === "saas"` AND `STRIPE_SECRET_KEY` present. Self-hosted is
  * untouched (no Stripe), and a SaaS region that hasn't turned on billing yet
  * (no `STRIPE_SECRET_KEY`) boots silently — matching the existing conditional
  * mount of the billing routes and the `@better-auth/stripe` plugin.
  *
- * The Stripe SDK + `config-validation` SSOT are lazy-imported (same wall-off
- * pattern as `EncryptionKeyGuardLive`) so this module stays free of the `stripe`
- * static graph. The network resolution is wrapped so an SDK/import rejection
- * becomes a warn, not a boot-killing defect.
+ * Depends on `Settings` (like `DpaGuardLive` / `ProactiveProviderKeyGuardLive`):
+ * the `yield* Settings` edge sequences it after `loadSettings()` warms the
+ * in-process cache so `getSettingAuto` sees platform DB overrides rather than
+ * falling back to env. The Stripe SDK + `config-validation` SSOT + `settings`
+ * are lazy-imported (same wall-off pattern as `EncryptionKeyGuardLive`) so this
+ * module stays free of the `stripe` static graph. The network resolution is
+ * wrapped so an SDK/import rejection becomes a warn, not a boot-killing defect.
  */
-export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidError, Config> = Layer.effectDiscard(
+export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidError, Config | Settings> = Layer.effectDiscard(
   Effect.gen(function* () {
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
+    yield* Settings; // sequence after loadSettings warms the in-process cache
 
     // Gate on Stripe being configured at all. A SaaS region can legitimately
     // run pre-billing (no STRIPE_SECRET_KEY) — the billing routes and the
@@ -1175,7 +1187,7 @@ export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidErro
       !process.env.STRIPE_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET.length === 0;
 
     const {
-      findMissingMonthlyPriceIdEnvVars,
+      findMissingMonthlyPriceIds,
       detectStripeKeyMode,
       isPriceModeConsistent,
       MONTHLY_PRICE_ID_ENV_VARS,
@@ -1185,21 +1197,19 @@ export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidErro
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     }).pipe(Effect.orDie);
 
-    // ── Pure check 1: monthly price-ID presence (fail-fast) ──────────────
-    const missingPriceIdEnvVars = findMissingMonthlyPriceIdEnvVars();
+    const { getSettingAuto } = yield* Effect.tryPromise({
+      try: () => import("@atlas/api/lib/settings"),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.orDie);
+
     const keyMode = detectStripeKeyMode(secretKey);
 
-    // ── Pure check 2: secret-key mode shape (fail-fast) ──────────────────
-    // Collected with the price-ID result so a region missing both gets one
-    // boot-failure log naming both, rather than fixing one then re-failing.
-    if (missingPriceIdEnvVars.length > 0 || keyMode === "unknown" || webhookSecretMissing) {
+    // ── Fail-fast check: env-only misconfigs (webhook secret + key shape) ──
+    // Collected together so a region missing both gets one boot-failure log
+    // naming both, rather than fixing one then re-failing. Missing price IDs
+    // are NO LONGER fail-fast (#3703) — they are warned about below.
+    if (keyMode === "unknown" || webhookSecretMissing) {
       const parts: string[] = [];
-      if (missingPriceIdEnvVars.length > 0) {
-        parts.push(
-          `missing required monthly price ID env var(s): [${missingPriceIdEnvVars.join(", ")}] — ` +
-            `getStripePlans() silently omits each absent tier from checkout`,
-        );
-      }
       if (webhookSecretMissing) {
         parts.push(
           `STRIPE_WEBHOOK_SECRET is unset — the @better-auth/stripe plugin declines to mount ` +
@@ -1216,7 +1226,7 @@ export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidErro
       }
       return yield* Effect.fail(
         new BillingConfigInvalidError({
-          missingPriceIdEnvVars,
+          missingPriceIdEnvVars: [],
           keyMode,
           message:
             `SaaS region booted with STRIPE_SECRET_KEY set but the billing config is invalid: ` +
@@ -1226,18 +1236,38 @@ export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidErro
       );
     }
 
+    // ── Settings-presence WARN: monthly price IDs (#3703) ────────────────
+    // Resolve each monthly price through the settings registry (settings → env
+    // → default). A still-missing tier is silently omitted from checkout by
+    // `getStripePlans()`, so surface it as a loud, operator-actionable warning
+    // — but never crash boot, because the fix is a runtime Admin → Settings
+    // edit, not a redeploy.
+    const missingMonthlyPriceIds = findMissingMonthlyPriceIds((key) => getSettingAuto(key));
+    if (missingMonthlyPriceIds.length > 0) {
+      log.error(
+        {
+          missingMonthlyPriceIds,
+          event: "billing_config.price_missing",
+        },
+        `Stripe billing is enabled but ${missingMonthlyPriceIds.length} monthly price ID(s) are ` +
+          `unset after settings resolution: [${missingMonthlyPriceIds.join(", ")}]. getStripePlans() ` +
+          `silently omits each absent tier from checkout, so customers can't buy it. Set the price ` +
+          `ID(s) in Admin → Settings (Billing) — no redeploy needed. See ${BILLING_CONFIG_ISSUE_REF}.`,
+      );
+    }
+
     // ── Network check: price existence + livemode↔key-mode (loud WARN) ───
     // A transient Stripe error here must NOT crash boot, so everything below
     // resolves to a logged warning. We resolve every CONFIGURED price ID
-    // (monthly — guaranteed present by the fail-fast above — plus any annual
-    // vars the operator set) and check each price's livemode against keyMode.
+    // (monthly + annual) through settings and check each price's livemode
+    // against keyMode.
     const configuredPriceVars = [
       ...MONTHLY_PRICE_ID_ENV_VARS,
       ...ANNUAL_PRICE_ID_ENV_VARS,
     ]
       .map((envVar): { envVar: string; priceId: string | undefined } => ({
         envVar,
-        priceId: process.env[envVar],
+        priceId: getSettingAuto(envVar),
       }))
       .filter((p): p is { envVar: string; priceId: string } => Boolean(p.priceId));
 

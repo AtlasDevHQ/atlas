@@ -2996,14 +2996,19 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   // only on `Config` and reads env directly, so it runs in parallel with
   // the migration + sync layers alongside the other env-checking guards.
   const chatAdapterEnvGuardLayer = ChatAdapterEnvGuardLive.pipe(Layer.provide(configLayer));
-  // #3435 — billing config validation. Gated on `deployMode === "saas"` AND
-  // `STRIPE_SECRET_KEY` present, so self-hosted and pre-billing SaaS are inert.
-  // Fails boot on the two pure misconfigs (missing monthly price ID, non-standard
-  // key mode) and loudly warns (never crashes) on the network price-resolution /
-  // livemode-mismatch check. `Config`-only; lazy-imports the Stripe SDK + the
-  // config-validation SSOT inside its Effect body so it runs as an env-checking
-  // peer of the migration + sync layers.
-  const billingConfigGuardLayer = BillingConfigGuardLive.pipe(Layer.provide(configLayer));
+  // #3435 + #3703 — billing config validation. Gated on `deployMode === "saas"`
+  // AND `STRIPE_SECRET_KEY` present, so self-hosted and pre-billing SaaS are
+  // inert. Fails boot on the two env-only misconfigs (missing webhook secret,
+  // non-standard key mode) and loudly warns (never crashes) on a missing price
+  // ID (now a runtime-editable platform setting, #3703) and on the network
+  // price-resolution / livemode-mismatch check. Depends on `Config` + `Settings`
+  // (like `DpaGuardLive`): the `Settings` edge sequences it after
+  // `loadSettings()` warms the cache so `getSettingAuto` sees price-ID overrides
+  // rather than falling back to env. Lazy-imports the Stripe SDK + the
+  // config-validation SSOT + settings inside its Effect body.
+  const billingConfigGuardLayer = BillingConfigGuardLive.pipe(
+    Layer.provide(Layer.merge(configLayer, settingsLayer)),
+  );
   // #1988 C7 + C8 — region routing claim and stale plugin config checks.
   // Both depend only on `Config`. PluginConfigGuardLive lazy-imports the
   // plugin registry + InternalDB inside its Effect body so it can run as

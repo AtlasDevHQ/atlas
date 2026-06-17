@@ -12,6 +12,7 @@ import {
   MONTHLY_PRICE_ID_ENV_VARS,
   ANNUAL_PRICE_ID_ENV_VARS,
   findMissingMonthlyPriceIdEnvVars,
+  findMissingMonthlyPriceIds,
   detectStripeKeyMode,
   isPriceModeConsistent,
 } from "@atlas/api/lib/billing/config-validation";
@@ -80,6 +81,42 @@ describe("billing/config-validation", () => {
           // every annual var deliberately absent
         }),
       ).toEqual([]);
+    });
+  });
+
+  describe("findMissingMonthlyPriceIds (settings-aware, #3703)", () => {
+    it("returns all three when the resolver finds nothing", () => {
+      expect(findMissingMonthlyPriceIds(() => undefined)).toEqual([
+        "STRIPE_STARTER_PRICE_ID",
+        "STRIPE_PRO_PRICE_ID",
+        "STRIPE_BUSINESS_PRICE_ID",
+      ]);
+    });
+
+    it("returns empty when the resolver supplies all three", () => {
+      const store: Record<string, string> = {
+        STRIPE_STARTER_PRICE_ID: "price_a",
+        STRIPE_PRO_PRICE_ID: "price_b",
+        STRIPE_BUSINESS_PRICE_ID: "price_c",
+      };
+      expect(findMissingMonthlyPriceIds((k) => store[k])).toEqual([]);
+    });
+
+    it("flags only the tier the resolver leaves unset (e.g. settings supply the rest)", () => {
+      const store: Record<string, string> = {
+        STRIPE_STARTER_PRICE_ID: "price_a",
+        STRIPE_BUSINESS_PRICE_ID: "price_c",
+      };
+      expect(findMissingMonthlyPriceIds((k) => store[k])).toEqual(["STRIPE_PRO_PRICE_ID"]);
+    });
+
+    it("treats an empty string from the resolver as missing", () => {
+      const store: Record<string, string> = {
+        STRIPE_STARTER_PRICE_ID: "",
+        STRIPE_PRO_PRICE_ID: "price_b",
+        STRIPE_BUSINESS_PRICE_ID: "price_c",
+      };
+      expect(findMissingMonthlyPriceIds((k) => store[k])).toEqual(["STRIPE_STARTER_PRICE_ID"]);
     });
   });
 

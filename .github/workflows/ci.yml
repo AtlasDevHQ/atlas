@@ -116,6 +116,9 @@ jobs:
       - name: Check settings-registry reader presence (#3382)
         run: bash scripts/check-settings-readers.sh
 
+      - name: Check SaaS env reference ↔ SAAS_ENV_KEYS drift (#3707)
+        run: bash scripts/check-saas-env-doc.sh
+
   lint:
     name: lint
     runs-on: ubuntu-latest

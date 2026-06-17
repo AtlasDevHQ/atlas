@@ -21,6 +21,7 @@ import { encryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/s
 const log = createLogger("auth-migrate");
 
 let _migrated = false;
+let _bootMigrated = false;
 let _migrationError: string | null = null;
 
 /** Return the last migration error message, or null if migrations succeeded (or haven't run). */
@@ -29,35 +30,35 @@ export function getMigrationError(): string | null {
 }
 
 /**
- * Run Better Auth table migrations (user, session, account, etc.)
- * if managed auth mode is active and DATABASE_URL is configured.
+ * Schema-only boot migrations: Better Auth tables, THEN Atlas internal
+ * migrations (#1472 ordering). Separately idempotent (`_bootMigrated`) and
+ * exported so the server entry point can run it BEFORE plugin `initialize()`
+ * (#3741).
  *
- * Safe to call multiple times — only runs once (idempotent guard).
- * Also runs the internal DB migration (audit_log table).
+ * Why early: a plugin's `initialize()` can read a core table created by these
+ * migrations — e.g. the chat adapter's operator-credential resolver reads
+ * `operator_integration_credentials` (migration 0140) via #3704's
+ * `resolveAdapterEnv`. The Effect Layer DAG's `MigrationLive` runs migrations
+ * LATER, so without an early call a first-deploy boot races: plugin init hits a
+ * not-yet-created table and aborts (one-shot, no retry). `MigrationLive` (via
+ * `migrateAuthTables`) remains the idempotent backstop that still provides the
+ * `Migration` Tag for the boot guards.
  *
- * Boot ordering (managed auth, with internal DB):
- *   1. Better Auth migrations — create `organization`, `user`, `session`, etc.
- *   2. Atlas internal DB migrations — can ALTER `organization` (e.g. 0027) now
- *      that Better Auth has created it.
- *   3. Load plugin settings, abuse state.
- *   4. Bootstrap admin, seed dev user, backfill password-change flag.
- *
- * Step 1 must precede step 2 — see #1472. In non-managed mode step 1 is
- * skipped; the Atlas migration runner independently skips org-dependent
- * files based on `detectAuthMode()`, so 0027 is not attempted without
- * Better Auth having created the table.
+ * Scope is deliberately schema-only — plugin-settings load, abuse-state
+ * restore, and admin bootstrap/seed stay in `migrateAuthTables` so their
+ * ordering relative to plugin wiring is unchanged.
  */
-export async function migrateAuthTables(): Promise<void> {
-  if (_migrated) return;
+export async function runBootMigrations(): Promise<void> {
+  if (_bootMigrated) return;
+  _bootMigrated = true;
 
   const authMode = detectAuthMode();
-  let auth: Awaited<ReturnType<typeof getAuthInstanceLazy>> | null = null;
 
   // 1. Better Auth migrations — must run BEFORE Atlas internal migrations so
   //    that Atlas's organization-table ALTERs (e.g. 0027) find the table.
   if (authMode === "managed" && hasInternalDB()) {
     try {
-      auth = await getAuthInstanceLazy();
+      const auth = await getAuthInstanceLazy();
       const ctx = await auth.$context;
       await ctx.runMigrations();
       log.info("Better Auth migration complete");
@@ -97,6 +98,38 @@ export async function migrateAuthTables(): Promise<void> {
       _migrationError = "Connected to the internal database but migration failed. Check database permissions (CREATE TABLE, CREATE INDEX).";
       // Don't block server start — audit will fall back to pino-only
     }
+  }
+}
+
+/**
+ * Full boot migration + bootstrap sequence — runs once at server boot.
+ *
+ * Safe to call multiple times — only runs once (idempotent guard). Delegates
+ * schema migration to `runBootMigrations()`; when the server entry point has
+ * already run that before plugin init (#3741), the delegated call is a no-op.
+ *
+ * Boot ordering (managed auth, with internal DB):
+ *   1. Better Auth migrations — create `organization`, `user`, `session`, etc.
+ *   2. Atlas internal DB migrations — can ALTER `organization` (e.g. 0027) now
+ *      that Better Auth has created it.   (1 + 2 via `runBootMigrations`)
+ *   3. Load plugin settings, abuse state.
+ *   4. Bootstrap admin, seed dev user, backfill password-change flag.
+ *
+ * Step 1 must precede step 2 — see #1472. In non-managed mode step 1 is
+ * skipped; the Atlas migration runner independently skips org-dependent
+ * files based on `detectAuthMode()`, so 0027 is not attempted without
+ * Better Auth having created the table.
+ */
+export async function migrateAuthTables(): Promise<void> {
+  if (_migrated) return;
+
+  // 1 + 2 — schema migrations. Idempotent: a no-op if the server entry point
+  // already ran them before plugin init (#3741).
+  await runBootMigrations();
+
+  // 3. Load post-migration DB state. Kept here (not in `runBootMigrations`) so
+  //    its ordering relative to plugin wiring is unchanged.
+  if (hasInternalDB()) {
 
     // Load plugin settings (enabled/disabled state from DB)
     try {
@@ -116,10 +149,23 @@ export async function migrateAuthTables(): Promise<void> {
     }
   }
 
-  // 4. Bootstrap + seed (managed mode only — needs Better Auth `user` table).
-  //    Each phase has its own internal try/catch; the wrappers here catch
-  //    unexpected programming errors (e.g. API surface drift) so a failure in
-  //    one phase doesn't skip the next.
+  // 4. Bootstrap + seed (managed mode only — needs the Better Auth `user`
+  //    table, created in step 1 by `runBootMigrations`). Re-acquire the auth
+  //    instance here since the schema-migration step now owns it;
+  //    `getAuthInstance` returns the same cached singleton, so this is cheap and
+  //    does NOT re-run migrations. Each phase has its own internal try/catch;
+  //    the wrappers here catch unexpected programming errors (e.g. API surface
+  //    drift) so a failure in one phase doesn't skip the next.
+  const auth =
+    detectAuthMode() === "managed" && hasInternalDB()
+      ? await getAuthInstanceLazy().catch((err) => {
+          log.error(
+            { err: err instanceof Error ? err.message : String(err) },
+            "Could not acquire auth instance for bootstrap/seed — admin bootstrap and dev seed skipped",
+          );
+          return null;
+        })
+      : null;
   if (auth) {
     try {
       await bootstrapAdminUser();
@@ -428,5 +474,6 @@ async function backfillPasswordChangeFlag(): Promise<void> {
 /** Reset migration state. For testing only. */
 export function resetMigrationState(): void {
   _migrated = false;
+  _bootMigrated = false;
   _migrationError = null;
 }

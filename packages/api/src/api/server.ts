@@ -155,6 +155,23 @@ if (config.plugins?.length) {
     config: config as unknown as Record<string, unknown>,
   };
 
+  // #3741 — run CORE schema migrations before any plugin initialize(). A
+  // plugin's init can read a core table created by migrations: the chat
+  // adapter's operator-credential resolver reads `operator_integration_credentials`
+  // (migration 0140) via #3704's `resolveAdapterEnv`. The Effect Layer DAG's
+  // `MigrationLive` (in `buildAppLayer`, below) runs these migrations LATER, so
+  // without this a first-deploy boot races: plugin init hits the not-yet-created
+  // table and aborts (one-shot, no retry), taking the adapter down until a
+  // restart. `runBootMigrations` is idempotent (`_bootMigrated` guard), so
+  // `MigrationLive` (via `migrateAuthTables`) is a no-op backstop that still
+  // provides the `Migration` Tag for the boot guards. Schema-only — the
+  // settings/abuse/bootstrap steps stay in `migrateAuthTables` at their existing
+  // point in the DAG, so nothing else reorders relative to plugin wiring.
+  if (hasInternalDB()) {
+    const { runBootMigrations } = await import("@atlas/api/lib/auth/migrate");
+    await runBootMigrations();
+  }
+
   // Run plugin schema migrations before initialize()
   const pluginsWithSchema = plugins.getAll().filter((p) => p.schema != null);
   if (pluginsWithSchema.length > 0) {

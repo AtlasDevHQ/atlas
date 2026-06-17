@@ -100,6 +100,21 @@ export async function resolveOperatorAdapterEnv(
     try {
       bundle = (await readOperatorCredentials(spec.platform)) as Record<string, string> | null;
     } catch (err) {
+      // #3741 — a not-yet-migrated table (first boot before migration 0140
+      // applies) is benign: there are no operator rows to read yet, so fall
+      // through to the env fallback exactly as an empty table would. This stays
+      // NARROW — only Postgres `undefined_table` (SQLSTATE 42P01). The boot
+      // entry point now runs `runBootMigrations()` before plugin init so this
+      // should not trigger in practice; it is graceful-degradation defense so a
+      // future boot-ordering regression degrades to env-only rather than taking
+      // the adapter down.
+      if (isUndefinedTableError(err)) {
+        log.warn(
+          { platform: spec.platform },
+          "operator_integration_credentials not yet migrated — using env fallback for this platform (expected only on a first boot before migration 0140 applies)",
+        );
+        continue;
+      }
       // A decrypt/corruption failure must not silently drop the platform to
       // env-only (that would mask a broken rotation). Log loudly and rethrow
       // so the refresh/boot path surfaces it rather than booting degraded.
@@ -116,6 +131,22 @@ export async function resolveOperatorAdapterEnv(
     }
   }
   return overlay;
+}
+
+/**
+ * True when `err` is Postgres `undefined_table` (SQLSTATE 42P01) — the
+ * `operator_integration_credentials` table does not exist yet. Distinguishes
+ * the benign first-boot "migration 0140 hasn't applied" race (#3741) from a
+ * real read failure (decrypt/corruption), which must still propagate. Matches
+ * on the driver-stable SQLSTATE code, with a message fallback for any wrapper
+ * that drops `.code`.
+ */
+function isUndefinedTableError(err: unknown): boolean {
+  if (err && typeof err === "object" && "code" in err) {
+    if ((err as { code?: unknown }).code === "42P01") return true;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return /relation .* does not exist/i.test(msg);
 }
 
 /**

@@ -20,17 +20,30 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { getSetting } from "@atlas/api/lib/settings";
-import { DEFAULT_LATENCY_BUDGET_MS } from "@atlas/api/lib/learn/pattern-cache";
 // Type-only import — erased at compile time, so it does NOT eagerly load
 // db/internal and the dynamic import + mock seam in runPromoteDecayTick stays
 // intact. Reusing the row type keeps `toCandidate` from drifting from the SQL.
 import type { PromoteDecayCandidateRow } from "@atlas/api/lib/db/internal";
 import {
   decidePromoteDecay,
-  type PromoteDecayThresholds,
   type PromoteDecayCandidate,
 } from "@atlas/api/lib/learn/promote-decay";
+import {
+  isPromoteDecaySchedulerEnabled,
+  getPromoteDecaySchedulerIntervalMs,
+  getPromoteDecayThresholds,
+  DEFAULT_PROMOTE_DECAY_INTERVAL_MS,
+} from "@atlas/api/lib/learn/learn-settings";
+
+// The ATLAS_LEARN_* reads moved to the single learn-settings resolver (#3722).
+// Re-export them from this module's public surface so layers.ts (the boot
+// fiber) and the scheduler test keep importing them from here unchanged.
+export {
+  isPromoteDecaySchedulerEnabled,
+  getPromoteDecaySchedulerIntervalMs,
+  getPromoteDecayThresholds as resolvePromoteDecayThresholds,
+  DEFAULT_PROMOTE_DECAY_INTERVAL_MS,
+};
 
 const log = createLogger("promote-decay-scheduler");
 
@@ -38,14 +51,6 @@ const log = createLogger("promote-decay-scheduler");
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
-
-/** Default interval: 24 hours. */
-export const DEFAULT_PROMOTE_DECAY_INTERVAL_MS = 24 * 60 * 60 * 1000;
-
-/** Gate defaults (mirror the registry defaults in lib/settings.ts). */
-const DEFAULT_PROMOTE_CONFIDENCE = 0.7;
-const DEFAULT_PROMOTE_MIN_REPETITIONS = 5;
-const DEFAULT_DECAY_UNSEEN_DAYS = 30;
 
 /** Upper bound on rows evaluated per tick — a runaway-table backstop. The
  *  scheduler logs when the cap is hit so a silently-truncated tick is visible. */
@@ -57,82 +62,6 @@ export interface PromoteDecayTickResult {
   promoted: number;
   demoted: number;
   errors: number;
-}
-
-/**
- * Whether the nightly promote/decay job is enabled.
- *
- * Platform-scoped (like the expert scheduler): a single process-global fiber
- * forked once at boot by `makeSchedulerLive`, so there is no per-workspace
- * tick. Resolved via `getSetting()` so a platform DB override (admin settings
- * page) beats the env var (platform DB override > env > default). Consumed once
- * at boot — changes require a restart (`requiresRestart` in the registry).
- */
-export function isPromoteDecaySchedulerEnabled(): boolean {
-  const v = getSetting("ATLAS_LEARN_PROMOTE_DECAY_ENABLED");
-  return v === "true" || v === "1";
-}
-
-/**
- * Tick interval in milliseconds.
- *
- * Resolves `ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS` through `getSetting()`
- * (platform DB override > env > default 24). Platform-scoped and boot-consumed —
- * see {@link isPromoteDecaySchedulerEnabled}.
- */
-export function getPromoteDecaySchedulerIntervalMs(): number {
-  const raw = getSetting("ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS");
-  if (!raw) return DEFAULT_PROMOTE_DECAY_INTERVAL_MS;
-  const hours = parseFloat(raw);
-  if (!Number.isFinite(hours) || hours <= 0) return DEFAULT_PROMOTE_DECAY_INTERVAL_MS;
-  return hours * 60 * 60 * 1000;
-}
-
-/** Parse a raw setting value, falling back to `fallback` on a missing /
- *  non-finite / out-of-range value (a typo can't silently widen a gate). `min`
- *  is the inclusive lower bound the value must clear. The caller reads the key
- *  with a literal `getSetting("KEY")` so the registry-reader guard (#3382) can
- *  see each key's reader. */
-function parseNumeric(raw: string | undefined, fallback: number, min: number): number {
-  if (raw === undefined) return fallback;
-  const parsed = parseFloat(raw);
-  return Number.isFinite(parsed) && parsed >= min ? parsed : fallback;
-}
-
-/**
- * Resolve the promote/decay gate from the settings registry at platform scope.
- *
- * Read once per tick (no orgId), so these are platform-level values — a
- * workspace override of `ATLAS_LEARN_LATENCY_BUDGET_MS` affects only
- * retrieval-time down-weighting, not the promotion gate. The confidence
- * threshold reuses the same `ATLAS_LEARN_CONFIDENCE_THRESHOLD` key that gates
- * retrieval, so "eligible to inject" and "eligible to auto-promote" share one
- * knob.
- */
-export function resolvePromoteDecayThresholds(): PromoteDecayThresholds {
-  const decayUnseenDays = parseNumeric(
-    getSetting("ATLAS_LEARN_DECAY_UNSEEN_DAYS"),
-    DEFAULT_DECAY_UNSEEN_DAYS,
-    1,
-  );
-  return {
-    confidenceThreshold: parseNumeric(
-      getSetting("ATLAS_LEARN_CONFIDENCE_THRESHOLD"),
-      DEFAULT_PROMOTE_CONFIDENCE,
-      0,
-    ),
-    minRepetitions: parseNumeric(
-      getSetting("ATLAS_LEARN_PROMOTE_MIN_REPETITIONS"),
-      DEFAULT_PROMOTE_MIN_REPETITIONS,
-      1,
-    ),
-    latencyBudgetMs: parseNumeric(
-      getSetting("ATLAS_LEARN_LATENCY_BUDGET_MS"),
-      DEFAULT_LATENCY_BUDGET_MS,
-      1,
-    ),
-    decayUnseenMs: decayUnseenDays * 24 * 60 * 60 * 1000,
-  };
 }
 
 /** Project a DB candidate row (snake_case) onto the pure-decision input shape
@@ -195,7 +124,7 @@ export async function runPromoteDecayTick(): Promise<PromoteDecayTickResult> {
       return result;
     }
 
-    const thresholds = resolvePromoteDecayThresholds();
+    const thresholds = getPromoteDecayThresholds();
     const { promote, demote } = decidePromoteDecay(
       candidates.map(toCandidate),
       thresholds,

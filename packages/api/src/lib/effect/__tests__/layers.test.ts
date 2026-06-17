@@ -30,6 +30,7 @@ import {
   type SettingsShape,
 } from "../layers";
 import { MigrationsRequiredError } from "../saas-guards";
+import { createPluginTestLayer } from "../services";
 import { createInternalDBTestLayer } from "@atlas/api/lib/db/internal";
 import { DpaInconsistencyError } from "@atlas/api/lib/email/dpa-guard";
 
@@ -142,9 +143,12 @@ describe("ConnectionsHydrateLive", () => {
   ) {
     const layer = makeConnectionsHydrateLive(load).pipe(
       Layer.provide(
-        Layer.merge(
+        Layer.mergeAll(
           createInternalDBTestLayer({ available: gates.available }),
           makeTestMigrationLayer({ migrated: gates.migrated }),
+          // #3743 — ConnectionsHydrate now also depends on PluginRegistry as an
+          // ordering barrier (datasource plugins must be registered first).
+          createPluginTestLayer({}),
         ),
       ),
     );

@@ -6,6 +6,7 @@ import { _setAuthInstance } from "@atlas/api/lib/auth/server";
 import {
   migrateAuthTables,
   runBootMigrations,
+  runPostMigrationBootstrap,
   resetMigrationState,
   getMigrationError,
   resolveSeedAdminPassword,
@@ -650,6 +651,43 @@ describe("runBootMigrations", () => {
 
     // migrateAuthTables ran its step 3/4 (settings, abuse, bootstrap/seed) but
     // did NOT re-run the schema migration — Better Auth migrated exactly once.
+    expect(getMigrationCount()).toBe(1);
+  });
+});
+
+describe("runPostMigrationBootstrap (#3743 split)", () => {
+  it("is idempotent — a second call runs no further queries", async () => {
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    const { pool, queries } = createTrackingPool();
+    _resetPool(pool);
+
+    await runPostMigrationBootstrap();
+    const afterFirst = queries.length;
+    await runPostMigrationBootstrap();
+
+    expect(queries.length).toBe(afterFirst);
+  });
+
+  it("split boot paths make a later migrateAuthTables() a full no-op (DAG parity)", async () => {
+    // Mirrors the #3743 boot DAG: `MigrationLive` runs `runBootMigrations()`
+    // (schema), `AuthBootstrapLive` runs `runPostMigrationBootstrap()`
+    // (post-schema). The composed `migrateAuthTables()` backstop must re-run
+    // NOTHING — schema migrated exactly once, no duplicate bootstrap queries.
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    process.env.BETTER_AUTH_SECRET = "a".repeat(32);
+    const { pool, queries } = createTrackingPool();
+    _resetPool(pool);
+    const { instance, getMigrationCount } = createTrackingAuth();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial auth mock
+    _setAuthInstance(instance as any);
+
+    await runBootMigrations();
+    await runPostMigrationBootstrap();
+    const afterSplit = queries.length;
+
+    await migrateAuthTables();
+
+    expect(queries.length).toBe(afterSplit);
     expect(getMigrationCount()).toBe(1);
   });
 });

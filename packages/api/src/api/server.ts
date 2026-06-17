@@ -23,26 +23,9 @@ import { initializeConfig } from "@atlas/api/lib/config";
 import { connections } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTablesStrict } from "@atlas/api/lib/semantic";
 import { closeInternalDB } from "@atlas/api/lib/db/internal";
-import {
-  plugins,
-  type PluginContextLike,
-} from "@atlas/api/lib/plugins/registry";
-import {
-  wireDatasourcePlugins,
-  wireActionPlugins,
-  wireInteractionPlugins,
-  wireContextPlugins,
-} from "@atlas/api/lib/plugins/wiring";
-import {
-  wireMcpToolPlugins,
-  pluginMcpToolRegistry,
-} from "@atlas/api/lib/plugins/mcp-tools";
-import {
-  setPluginTools,
-  setContextFragments,
-  setDialectHints,
-} from "@atlas/api/lib/plugins/tools";
+import { type PluginContextLike } from "@atlas/api/lib/plugins/registry";
 import { buildAppLayer } from "@atlas/api/lib/effect/layers";
+import type { PluginWiringConfig } from "@atlas/api/lib/effect/services";
 
 const log = createLogger("server");
 
@@ -73,42 +56,27 @@ const config = await initializeConfig().catch((err) => {
   process.exit(1);
 });
 
-// Register, initialize, and wire plugins (only when config contains plugins).
+// Build the plugin-wiring INPUTS the Layer DAG needs (only when config contains
+// plugins). #3743 — registration / plugin-schema-migration / initialize / wiring
+// (datasources, actions + tool-shadow check, MCP tools, context, interactions,
+// cache backend) and the post-wiring `loadPluginSettings`/bootstrap + pool warmup
+// now ALL run INSIDE the DAG via `makeWiredPluginRegistryLive` + `AuthBootstrapLive`
+// + `PoolWarmupLive`. The wired layer depends on `Migration` (and `ConnectionRegistry`)
+// at the TYPE LEVEL, so a plugin `initialize()` can never run before core migrations
+// — the #3741 race is now unrepresentable, not just avoided by call placement.
+// This block only constructs the context object + tool registry the DAG consumes.
+let pluginWiring: PluginWiringConfig | undefined;
 if (config.plugins?.length) {
-  let registrationFailed = false;
-  for (const raw of config.plugins) {
-    try {
-      plugins.register(raw as Parameters<typeof plugins.register>[0]);
-    } catch (err) {
-      log.error(
-        { err: err instanceof Error ? err : new Error(String(err)) },
-        "Plugin registration failed",
-      );
-      registrationFailed = true;
-    }
-  }
-
-  if (registrationFailed) {
-    log.error(
-      "Aborting startup — one or more plugins failed to register. Fix your atlas.config.ts plugins array.",
-    );
-    process.exit(1);
-  }
-
-  // Build plugin context — gives plugins typed access to Atlas internals
   const { connections } = await import("@atlas/api/lib/db/connection");
-  const {
-    ToolRegistry,
-    defaultRegistry,
-    buildRegistry,
-    INTENTIONAL_TOOL_SHADOWS,
-    TOOL_SHADOW_REMEDIATIONS,
-  } = await import("@atlas/api/lib/tools/registry");
+  const { ToolRegistry } = await import("@atlas/api/lib/tools/registry");
   const { hasInternalDB, internalQuery, getInternalDB } = await import(
     "@atlas/api/lib/db/internal"
   );
   const { getLogger } = await import("@atlas/api/lib/logger");
 
+  // The plugin tool registry is shared between `context.tools.register` (plugins
+  // register tools during `initialize`) and the wired layer's action wiring +
+  // tool-shadow check — pass the SAME instance to both via `pluginWiring`.
   const pluginToolRegistry = new ToolRegistry();
 
   const pluginContext: PluginContextLike = {
@@ -155,214 +123,48 @@ if (config.plugins?.length) {
     config: config as unknown as Record<string, unknown>,
   };
 
-  // #3741 — run CORE schema migrations before any plugin initialize(). A
-  // plugin's init can read a core table created by migrations: the chat
-  // adapter's operator-credential resolver reads `operator_integration_credentials`
-  // (migration 0140) via #3704's `resolveAdapterEnv`. The Effect Layer DAG's
-  // `MigrationLive` (in `buildAppLayer`, below) runs these migrations LATER, so
-  // without this a first-deploy boot races: plugin init hits the not-yet-created
-  // table and aborts (one-shot, no retry), taking the adapter down until a
-  // restart. `runBootMigrations` is idempotent (`_bootMigrated` guard), so
-  // `MigrationLive` (via `migrateAuthTables`) is a no-op backstop that still
-  // provides the `Migration` Tag for the boot guards. Schema-only — the
-  // settings/abuse/bootstrap steps stay in `migrateAuthTables` at their existing
-  // point in the DAG, so nothing else reorders relative to plugin wiring.
-  if (hasInternalDB()) {
-    const { runBootMigrations } = await import("@atlas/api/lib/auth/migrate");
-    await runBootMigrations();
-  }
-
-  // Run plugin schema migrations before initialize()
-  const pluginsWithSchema = plugins.getAll().filter((p) => p.schema != null);
-  if (pluginsWithSchema.length > 0) {
-    if (hasInternalDB()) {
-      try {
-        const { runPluginMigrations } = await import(
-          "@atlas/api/lib/plugins/migrate"
-        );
-        const migrationResult = await runPluginMigrations(
-          getInternalDB(),
-          plugins.getAll(),
-        );
-        if (migrationResult.applied.length > 0) {
-          log.info(
-            { applied: migrationResult.applied },
-            "Plugin schema migrations applied",
-          );
-        }
-      } catch (err) {
+  pluginWiring = {
+    plugins: config.plugins as unknown as PluginWiringConfig["plugins"],
+    context: pluginContext,
+    app: app as unknown as PluginWiringConfig["app"],
+    toolRegistry: pluginToolRegistry,
+    // Plugin schema migrations — run by the wired layer BEFORE initialize() so
+    // plugins can use their tables. FATAL on failure (the wired layer fails the
+    // Layer → server exits), preserving the prior imperative `process.exit(1)`.
+    runMigrations: async (allPlugins) => {
+      const pluginsWithSchema = allPlugins.filter((p) => p.schema != null);
+      if (pluginsWithSchema.length === 0) return;
+      if (!hasInternalDB()) {
         log.error(
-          { err: err instanceof Error ? err : new Error(String(err)) },
-          "Plugin schema migration failed — aborting startup",
+          { plugins: pluginsWithSchema.map((p) => p.id) },
+          "Plugins declare schema but DATABASE_URL is not set — plugin tables will not be created",
         );
-        process.exit(1);
+        return;
       }
-    } else {
-      log.error(
-        { plugins: pluginsWithSchema.map((p) => p.id) },
-        "Plugins declare schema but DATABASE_URL is not set — plugin tables will not be created",
+      const { runPluginMigrations } = await import(
+        "@atlas/api/lib/plugins/migrate"
       );
-    }
-  }
-
-  const { succeeded, failed } = await plugins.initializeAll(pluginContext);
-  if (failed.length > 0) {
-    log.error(
-      { succeeded, failed },
-      `Plugin initialization completed with ${failed.length} failure(s)`,
-    );
-  } else {
-    log.info({ succeeded }, "All plugins initialized successfully");
-  }
-
-  const dsResult = await wireDatasourcePlugins(plugins);
-  if (dsResult.failed.length > 0) {
-    log.error(
-      { failed: dsResult.failed },
-      "Some datasource plugins failed to wire",
-    );
-  }
-  if (dsResult.entityFailures.length > 0) {
-    log.error(
-      { entityFailures: dsResult.entityFailures },
-      "Some plugin entities failed to load",
-    );
-  }
-  if (dsResult.dialectHints.length > 0) {
-    setDialectHints(dsResult.dialectHints);
-  }
-
-  const actionResult = await wireActionPlugins(plugins, pluginToolRegistry);
-  if (actionResult.failed.length > 0) {
-    log.error(
-      { failed: actionResult.failed },
-      "Some action plugins failed to wire",
-    );
-  }
-
-  if (pluginToolRegistry.size > 0) {
-    // #3326 — a plugin tool that reuses a core tool's name is silently
-    // shadowed: the chat route merges with `ToolRegistry.merge(base, plugin)`
-    // and the base (core/action) entry wins, so the plugin tool never
-    // executes. Known instance: static-url `querySalesforce` (plugin) vs the
-    // OAuth `querySalesforce` (core, gated on SALESFORCE_CLIENT_ID/SECRET) —
-    // in single-tenant self-host the OAuth tool returns `no_workspace` on
-    // every call, making static Salesforce unqueryable. The configurations
-    // are meant to be mutually exclusive, so surface the conflict loudly at
-    // boot instead of resolving it. Per-name remediation copy and the
-    // intentional-overlap allowlist live next to the registration sites in
-    // tools/registry.ts.
-    //
-    // The base mirrors what chat.ts actually merges against: the action-
-    // augmented registry when ATLAS_ACTIONS_ENABLED, else defaultRegistry —
-    // so action-tool collisions (e.g. a plugin reusing an action name) are
-    // covered too.
-    let shadowBase = defaultRegistry;
-    if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
-      try {
-        const { registry } = await buildRegistry({ includeActions: true });
-        shadowBase = registry;
-      } catch (err) {
-        // Non-fatal here — chat.ts handles (and reports) the same failure per
-        // request; the shadow check just degrades to the core-tool base.
-        log.warn(
-          { err: err instanceof Error ? err.message : String(err) },
-          "Tool-shadow check: buildRegistry failed — checking against core tools only",
-        );
-      }
-    }
-    for (const name of ToolRegistry.shadowedNames(shadowBase, pluginToolRegistry)) {
-      if (INTENTIONAL_TOOL_SHADOWS.has(name)) continue;
-      const remediation = TOOL_SHADOW_REMEDIATIONS[name];
-      log.error(
-        { tool: name },
-        `Plugin tool "${name}" is shadowed by a core tool with the same name — the core tool takes precedence and the plugin tool will never run.${remediation ? ` ${remediation}` : ""}`,
-      );
-    }
-    pluginToolRegistry.freeze();
-    setPluginTools(pluginToolRegistry);
-  }
-
-  // #2078 — collect plugin MCP tools into the global registry. The MCP
-  // server reads from the same singleton at boot via
-  // `packages/mcp/src/plugin-tools.ts`, so when the SSE / hosted MCP
-  // server runs in the same process as the Hono API the wiring is
-  // shared. Stdio MCP boots `createAtlasMcpServer` separately and does
-  // its own wiring there. Failures don't abort the API server.
-  const mcpToolResult = wireMcpToolPlugins(plugins, pluginMcpToolRegistry);
-  if (mcpToolResult.failed.length > 0) {
-    log.error(
-      { failed: mcpToolResult.failed },
-      "Some plugin MCP tools failed to register",
-    );
-  }
-  if (mcpToolResult.wired.length > 0) {
-    log.info(
-      { count: mcpToolResult.wired.length },
-      `Plugin MCP tools registered (${mcpToolResult.wired.length})`,
-    );
-  }
-
-  const ctxResult = await wireContextPlugins(plugins);
-  if (ctxResult.failed.length > 0) {
-    log.error(
-      { failed: ctxResult.failed },
-      "Some context plugins failed to load",
-    );
-  }
-  if (ctxResult.fragments.length > 0) {
-    setContextFragments(ctxResult.fragments);
-  }
-
-  const intResult = await wireInteractionPlugins(plugins, app);
-  if (intResult.failed.length > 0) {
-    log.error(
-      { failed: intResult.failed },
-      "Some interaction plugins failed to wire",
-    );
-  }
-
-  // Wire plugin cache backend if any plugin provides one
-  for (const plugin of plugins.getAll()) {
-    if (plugin.cacheBackend) {
-      try {
-        const { setCacheBackend } = await import(
-          "@atlas/api/lib/cache/index"
-        );
-        setCacheBackend(
-          plugin.cacheBackend as import("@atlas/api/lib/cache/index").CacheBackend,
-        );
+      // Spread to a mutable array — `runPluginMigrations` takes `PluginLike[]`
+      // and the wired layer hands us a `ReadonlyArray`.
+      const migrationResult = await runPluginMigrations(getInternalDB(), [...allPlugins]);
+      if (migrationResult.applied.length > 0) {
         log.info(
-          { pluginId: plugin.id },
-          "Plugin-provided cache backend registered",
-        );
-      } catch (err) {
-        log.error(
-          {
-            err: err instanceof Error ? err.message : String(err),
-            pluginId: plugin.id,
-          },
-          "Failed to wire plugin cache backend — falling back to in-memory LRU",
+          { applied: migrationResult.applied },
+          "Plugin schema migrations applied",
         );
       }
-      break;
-    }
-  }
+    },
+  };
 }
 
-// Pre-warm connection pools after all datasources (config + plugins) are registered.
-await connections.warmup().catch((err) => {
-  log.error(
-    { err: err instanceof Error ? err.message : String(err) },
-    "Pool warmup failed — datasource may be unreachable",
-  );
-});
-
 // ── Effect Layer DAG (P6) ───────────────────────────────────────────
-// Remaining startup steps (telemetry, migrations, semantic sync, settings,
-// schedulers) run as an Effect Layer DAG. Shutdown is automatic via Scope.
+// All startup steps — telemetry, CORE migrations, plugin register/init/wire,
+// connections hydrate, post-migration bootstrap, pool warmup, semantic sync,
+// settings, schedulers, boot guards — run as an Effect Layer DAG. The type-level
+// dependency edges enforce ordering (notably Migration → plugin init). Shutdown
+// is automatic via Scope finalizers (plugin teardown included).
 
-const appLayer = buildAppLayer(config);
+const appLayer = buildAppLayer(config, pluginWiring);
 const runtime = ManagedRuntime.make(appLayer);
 
 // Eagerly boot the Layer DAG — startup errors surface here, not on first request.
@@ -401,37 +203,33 @@ async function shutdown(signal: string) {
     );
   }
 
-  // Dispose the Effect runtime — tears down schedulers, telemetry via finalizers
+  // Dispose the Effect runtime — tears down schedulers, telemetry AND plugin
+  // lifecycle via finalizers. #3743 — plugin `teardownAll()` is now the wired
+  // PluginRegistry layer's scope finalizer (no longer an imperative call here).
+  // The 10s timeout that previously guarded the imperative plugin teardown now
+  // guards the whole disposal so a hung plugin teardown can't wedge shutdown.
+  const disposeTimeout = setTimeout(() => {
+    log.error(
+      "Runtime disposal (incl. plugin teardown) timed out after 10s — forcing exit",
+    );
+    process.exit(1);
+  }, 10_000);
+  disposeTimeout.unref();
   try {
     await runtime.dispose();
+    log.info("Effect runtime disposed (schedulers, plugins, telemetry torn down)");
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err) },
       "Effect runtime disposal failed",
     );
+  } finally {
+    clearTimeout(disposeTimeout);
   }
 
-  // Teardown plugin lifecycle (still imperative pending full P5 wiring integration)
-  if (config.plugins?.length) {
-    const timeout = setTimeout(() => {
-      log.error("Plugin teardown timed out after 10s — forcing exit");
-      process.exit(1);
-    }, 10_000);
-    timeout.unref();
-    try {
-      await plugins.teardownAll();
-      log.info("Plugin teardown complete");
-    } catch (err) {
-      log.error(
-        { err: err instanceof Error ? err : new Error(String(err)) },
-        "Unexpected error during plugin teardown",
-      );
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  // Imperative singleton cleanup
+  // Imperative singleton cleanup. The global `connections` registry is
+  // lifecycle-unmanaged by the DAG (#3743 — `manageLifecycle: false`), so its
+  // shutdown stays here.
   try {
     await connections.shutdown();
   } catch (err) {

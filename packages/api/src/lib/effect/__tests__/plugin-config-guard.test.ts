@@ -54,6 +54,7 @@ const {
   PluginConfigCheckFailedError,
 } = await import("../saas-guards");
 const { Config } = await import("../layers");
+const { createPluginTestLayer } = await import("../services");
 
 function makeTestConfigLayer(
   config: Record<string, unknown> = {},
@@ -61,6 +62,13 @@ function makeTestConfigLayer(
   return Layer.succeed(Config, {
     config: config as unknown as ConfigShape["config"],
   });
+}
+
+// #3743 — PluginConfigGuardLive now also depends on PluginRegistry (ordering
+// barrier so it validates against a registered registry). Provide an empty
+// plugin test layer alongside Config; the guard only `yield*`s the Tag.
+function guardDeps(config: Record<string, unknown> = {}) {
+  return Layer.merge(makeTestConfigLayer(config), createPluginTestLayer({}));
 }
 
 const ENV_KEYS = ["ATLAS_DEPLOY_MODE", "ATLAS_STRICT_PLUGIN_SECRETS"] as const;
@@ -115,7 +123,7 @@ describe("PluginConfigGuardLive", () => {
         Effect.void.pipe(
           Effect.provide(
             PluginConfigGuardLive.pipe(
-              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+              Layer.provide(guardDeps({ deployMode: "saas" })),
             ),
           ),
         ),
@@ -136,7 +144,7 @@ describe("PluginConfigGuardLive", () => {
         Effect.void.pipe(
           Effect.provide(
             PluginConfigGuardLive.pipe(
-              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+              Layer.provide(guardDeps({ deployMode: "saas" })),
             ),
           ),
         ),
@@ -159,7 +167,7 @@ describe("PluginConfigGuardLive", () => {
         Effect.void.pipe(
           Effect.provide(
             PluginConfigGuardLive.pipe(
-              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+              Layer.provide(guardDeps({ deployMode: "saas" })),
             ),
           ),
         ),
@@ -180,7 +188,7 @@ describe("PluginConfigGuardLive", () => {
         Effect.void.pipe(
           Effect.provide(
             PluginConfigGuardLive.pipe(
-              Layer.provide(makeTestConfigLayer({ deployMode: "self-hosted" })),
+              Layer.provide(guardDeps({ deployMode: "self-hosted" })),
             ),
           ),
         ),
@@ -202,7 +210,7 @@ describe("PluginConfigGuardLive", () => {
         Effect.void.pipe(
           Effect.provide(
             PluginConfigGuardLive.pipe(
-              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+              Layer.provide(guardDeps({ deployMode: "saas" })),
             ),
           ),
         ),
@@ -222,7 +230,7 @@ describe("PluginConfigGuardLive", () => {
         Effect.void.pipe(
           Effect.provide(
             PluginConfigGuardLive.pipe(
-              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+              Layer.provide(guardDeps({ deployMode: "saas" })),
             ),
           ),
         ),
@@ -255,7 +263,7 @@ describe("PluginConfigGuardLive", () => {
         Effect.void.pipe(
           Effect.provide(
             PluginConfigGuardLive.pipe(
-              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+              Layer.provide(guardDeps({ deployMode: "saas" })),
             ),
           ),
         ),

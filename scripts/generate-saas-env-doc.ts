@@ -83,7 +83,7 @@ const KEY_META: Record<SaasEnvKey, KeyMeta> = {
   AI_GATEWAY_API_KEY: {
     category: "LLM provider",
     purpose:
-      "Vercel AI Gateway key for the SaaS gateway default. `ProviderKeyGuardLive` (or the key whatever `ATLAS_PROVIDER` resolves to requires).",
+      "Vercel AI Gateway key for the SaaS gateway default. `ProviderKeyGuardLive` requires it (or whichever provider key `ATLAS_PROVIDER` resolves to).",
   },
   ATLAS_API_REGION: {
     category: "Region routing",
@@ -176,6 +176,18 @@ function assertMetaExhaustive(): void {
         `Update KEY_META in scripts/generate-saas-env-doc.ts.`,
     );
   }
+
+  // A literal `|` in a cell would silently break the markdown table render
+  // rather than error. Reject it here so the failure is loud, not visual.
+  const piped = SAAS_ENV_KEYS.filter(
+    (k) => KEY_META[k].category.includes("|") || KEY_META[k].purpose.includes("|"),
+  );
+  if (piped.length > 0) {
+    throw new Error(
+      `KEY_META contains an unescaped \`|\` (breaks the markdown table) for: ` +
+        `${piped.join(", ")}. Remove or escape it in scripts/generate-saas-env-doc.ts.`,
+    );
+  }
 }
 
 /** Render the markdown table, one row per SSOT key in SSOT order. */
@@ -189,6 +201,12 @@ function renderTable(): string {
 }
 
 function main(): void {
+  // `--check` verifies the generated block is current without writing, and
+  // without consulting git — so it ignores in-progress edits to the curated
+  // prose *outside* the markers (which the generator leaves untouched and
+  // which `git status` would otherwise flag as spurious drift).
+  const checkOnly = process.argv.includes("--check");
+
   assertMetaExhaustive();
 
   const source = readFileSync(DOC_PATH, "utf8");
@@ -206,16 +224,24 @@ function main(): void {
   const block = `${MARKER_START}\n\n${renderTable()}\n\n${MARKER_END}`;
   const next = `${before}${block}${after}`;
 
-  if (next !== source) {
-    writeFileSync(DOC_PATH, next);
-    process.stdout.write(
-      `generate-saas-env-doc: regenerated SaaS env table (${SAAS_ENV_KEYS.length} keys).\n`,
-    );
-  } else {
+  if (next === source) {
     process.stdout.write(
       `generate-saas-env-doc: SaaS env table already up to date (${SAAS_ENV_KEYS.length} keys).\n`,
     );
+    return;
   }
+
+  if (checkOnly) {
+    throw new Error(
+      `SaaS env table is out of date — the generated block in ${DOC_PATH} ` +
+        `does not match SAAS_ENV_KEYS/KEY_META. Run \`bun scripts/generate-saas-env-doc.ts\` and commit.`,
+    );
+  }
+
+  writeFileSync(DOC_PATH, next);
+  process.stdout.write(
+    `generate-saas-env-doc: regenerated SaaS env table (${SAAS_ENV_KEYS.length} keys).\n`,
+  );
 }
 
 try {

@@ -48,7 +48,7 @@ context (which are secrets, which are derived, what changes at runtime).
 | `BETTER_AUTH_SECRET` | Encryption & session secrets | Better Auth session-signing secret (≥32 chars). |
 | `ATLAS_RATE_LIMIT_RPM` | Rate limiting | Base requests-per-minute floor. `RateLimitGuardLive` refuses to boot a region without a positive value. |
 | `ATLAS_PROVIDER` | LLM provider | Selects the LLM provider. Unset → `getDefaultProvider()` (`gateway` on SaaS). |
-| `AI_GATEWAY_API_KEY` | LLM provider | Vercel AI Gateway key for the SaaS gateway default. `ProviderKeyGuardLive` (or the key whatever `ATLAS_PROVIDER` resolves to requires). |
+| `AI_GATEWAY_API_KEY` | LLM provider | Vercel AI Gateway key for the SaaS gateway default. `ProviderKeyGuardLive` requires it (or whichever provider key `ATLAS_PROVIDER` resolves to). |
 | `ATLAS_API_REGION` | Region routing | This instance's region identity (`us` / `eu` / `apac` / `staging`). `RegionGuardLive`. |
 | `ATLAS_REGION_US_DB_URL` | Region routing | US region internal Postgres URL for residency routing. |
 | `ATLAS_REGION_EU_DB_URL` | Region routing | EU region internal Postgres URL for residency routing. |

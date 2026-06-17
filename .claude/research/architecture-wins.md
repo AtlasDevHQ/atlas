@@ -2686,3 +2686,24 @@ The implementation survey narrowed the candidate's "16 pages" to the surfaces th
 - Zero behavior change to profiling output, wizard responses, or CLI output for any dbType — this is pure home-collapse + scaffolding deletion.
 
 **Category:** Convergence of N parallel resolution paths onto one — the deepening past #95's "one capability model" to "one resolution path," with the collapse locked in by an enforcement test that fails closed on any attempt to re-grow a second home.
+
+## 97. The learn retrieval module split along its three real seams — pure ranking, cache store, settings resolver — so each tests in isolation (#3721, #3722)
+
+**Date:** 2026-06-17
+**Issue:** #3721, #3722 (deferred from v0.0.17 "Performance-aware Atlas" into the Architecture Backlog)
+**PR:** #3727
+
+**Problem:** `lib/learn/pattern-cache.ts` was a 429-line kitchen sink behind a *wide* (not deep) interface: it co-located five unrelated concerns — the TTL/LRU cache store, keyword extraction, perf-weighted ranking math, `ATLAS_LEARN_*` settings resolution, and retrieval-query assembly. The cost showed up in tests: exercising a *pure* helper like `rankPatterns` or `perfWeight` required `mock.module()` on three modules (`db/internal`, `settings`, `logger`), purely because the file imported db/settings/logger at the top alongside the math. Separately, the seven `ATLAS_LEARN_*` knobs were read at scattered call sites across `pattern-cache.ts` (workspace scope, `getSettingAuto`) and `promote-decay-scheduler.ts` (platform scope, `getSetting`), with defaults and the workspace-vs-platform scope policy duplicated in both files and a cross-module constant import (`DEFAULT_LATENCY_BUDGET_MS`) just to share a value.
+
+**Solution:** Split along the real seams, with a stable public barrel so no consumer churns:
+- `learn-settings.ts` (#3722) — the single reader for every `ATLAS_LEARN_*` key: all literal one-line `getSetting`/`getSettingAuto` calls, all defaults, and **one** consolidated doc comment stating which knob is read at which scope and *why* — including the two intentionally dual-scoped keys (`CONFIDENCE_THRESHOLD`, `LATENCY_BUDGET_MS`), kept dual-scope by design after review confirmed it intentional, not collapsed.
+- `pattern-ranking.ts` (#3721) — **pure**: `extractKeywords`/`scorePattern`/`perfWeight`/`rankPatterns`, zero db/settings/logger imports (only a type-only `ApprovedPatternRow`, erased at compile time).
+- `pattern-cache-store.ts` (#3721) — the TTL/LRU store + `getCachedPatterns` + `invalidatePatternCache`; eviction policy now isolated from ranking.
+- `pattern-cache.ts` — slimmed to the retrieval composition (`buildRetrievalQuery`, `getRelevantPatterns`, `buildLearnedPatternsSection`) **plus a public barrel** re-exporting the prior surface, so `agent.ts`, `admin-learned-patterns.ts`, `org-knowledge-section.ts`, and the ~20 test mocks keep importing from `pattern-cache` unchanged. `promote-decay-scheduler.ts` likewise delegates to the resolver and re-exports its prior names for `layers.ts` + its test.
+
+**Impact:**
+- `pattern-ranking.test.ts` dropped all three `mock.module()` stubs and imports the pure module directly — the testability win, made concrete (3 mocked modules → 0, runtime 58ms → 23ms). Changing the cache eviction policy now touches no ranking code, and vice versa.
+- All `ATLAS_LEARN_*` reads live in one module; the scope policy + dual-scope rationale are stated once, and the cross-module constant import is gone. The literal one-line read shape keeps the `#3382` reader guard green (46 keys).
+- The barrel made it a **zero-behavior-change** refactor: every consumer and test mock binds to the same `pattern-cache` symbols. `/review`, `/code-review` (high effort, recall-biased), and `/security-review` all found no correctness or security issues; the only findings were minor cleanup (a speculative dead `getLearnRetrievalSettings` bundle and a stale test-mock field), applied before merge.
+
+**Category:** A wide module split along its concern seams into a pure core + an I/O store + a settings resolver, with a public barrel preserving the import surface so the deepening is internal and the diff stays behavior-preserving — the kind of split whose payoff is read directly off the test file (mocks deleted, not added).

@@ -75,16 +75,6 @@ const DEFAULT_DECAY_UNSEEN_DAYS = 30;
 // Workspace-scoped retrieval knobs
 // ---------------------------------------------------------------------------
 
-/** Resolved per-workspace retrieval tuning. */
-export interface LearnRetrievalSettings {
-  /** Trailing user turns assembled into the retrieval query (≥ 1). */
-  retrievalTurns: number;
-  /** Minimum confidence for a pattern to be eligible (0–1). */
-  confidenceThreshold: number;
-  /** Latency budget (ms) above which patterns are down-weighted (> 0). */
-  latencyBudgetMs: number;
-}
-
 /**
  * Resolve the retrieval-turn count for an org, falling back to the default.
  * Workspace-scoped settings-registry read (see module scope policy).
@@ -115,15 +105,6 @@ export function getLatencyBudgetMs(orgId?: string | null): number {
   const raw = getSettingAuto("ATLAS_LEARN_LATENCY_BUDGET_MS", orgId ?? undefined);
   const parsed = raw === undefined ? Number.NaN : Number.parseFloat(raw);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_LATENCY_BUDGET_MS;
-}
-
-/** Resolve all workspace-scoped retrieval knobs for an org in one call. */
-export function getLearnRetrievalSettings(orgId?: string | null): LearnRetrievalSettings {
-  return {
-    retrievalTurns: getRetrievalTurns(orgId),
-    confidenceThreshold: getConfidenceThreshold(orgId),
-    latencyBudgetMs: getLatencyBudgetMs(orgId),
-  };
 }
 
 // ---------------------------------------------------------------------------

@@ -45,9 +45,11 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   setWorkspaceRegion: mock(async () => {}),
 }));
 
-// pattern-cache is real except its cache invalidation, which we observe.
+// The scheduler only touches pattern-cache via a dynamic import of
+// invalidatePatternCache (in runPromoteDecayTick), which we observe here. It no
+// longer reads any default constant from pattern-cache (those moved to
+// learn-settings, #3722), so this mock stubs only the invalidation hook.
 mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
-  DEFAULT_LATENCY_BUDGET_MS: 5000,
   invalidatePatternCache: (orgId: string | null) => {
     invalidatedOrgs.push(orgId);
   },

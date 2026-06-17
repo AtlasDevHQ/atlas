@@ -258,11 +258,14 @@ export function computeTokenBudget(tier: PlanTier, seatCount: number): number {
  * of the seat item (double billing).
  *
  * Price IDs resolve via `getSettingAuto` (#3703) — platform-scoped settings
- * registry with `workspace > platform > env > default` precedence and SaaS
- * hot-reload. The env var is the self-host / boot fallback tier. Because this
- * is read PER-CHECKOUT (the `@better-auth/stripe` plugin is handed this
- * function, not its return value), a pricing change set from Admin → Settings
- * takes effect without a redeploy.
+ * registry. These keys are `scope: "platform"` and read with no orgId, so the
+ * effective precedence is `platform DB override > env > default` (the workspace
+ * tier is unreachable for platform-scoped reads). The env var is the self-host
+ * / boot fallback tier. `getSettingAuto` is a synchronous read of the in-process
+ * settings cache (kept fresh by writes + the SaaS refresh tick); because the
+ * `@better-auth/stripe` plugin is handed this FUNCTION (not its return value),
+ * plans are re-resolved on each subscription operation, so a pricing change set
+ * from Admin → Settings takes effect without a redeploy.
  *
  * NOTE (#3435/#3703): each tier below is conditionally pushed only when its
  * monthly price ID resolves, so a missing one SILENTLY OMITS that tier from

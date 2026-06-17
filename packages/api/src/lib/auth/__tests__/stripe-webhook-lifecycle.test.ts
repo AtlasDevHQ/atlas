@@ -356,6 +356,37 @@ describe("buildStripePluginOptions — org-scoped configuration (#3416)", () => 
       expect(typeof options.subscription.authorizeReference).toBe("function");
     }
   });
+
+  // #3703 — pin the hot-reload contract: `plans` must be the resolver FUNCTION,
+  // not an eager array snapshot. A revert to `plans: getStripePlans()` would
+  // restore the redeploy-required footgun, and only this assertion would catch
+  // it (every other test exercises behavior, not the handoff shape).
+  it("hands the plugin the plans resolver FUNCTION, re-resolved per call (#3703)", () => {
+    const options = buildStripePluginOptions({
+      stripeClient: makeStripeClient(),
+      webhookSecret: "whsec_test",
+    });
+    expect(options.subscription?.enabled).toBe(true);
+    if (!options.subscription?.enabled) throw new Error("subscription disabled");
+    const plans = options.subscription.plans;
+    expect(typeof plans).toBe("function");
+    if (typeof plans !== "function") throw new Error("plans is not a function");
+
+    // Re-resolution proof: the resolver reads price IDs live (via getSettingAuto
+    // → env fallback here), so mutating the source between calls changes the
+    // output — a snapshot array could not. Restore the env after.
+    const saved = process.env.STRIPE_STARTER_PRICE_ID;
+    try {
+      const first = plans() as Array<{ name: string; priceId: string }>;
+      expect(first.find((p) => p.name === "starter")?.priceId).toBe(STARTER_PRICE);
+      process.env.STRIPE_STARTER_PRICE_ID = "price_starter_rotated";
+      const second = plans() as Array<{ name: string; priceId: string }>;
+      expect(second.find((p) => p.name === "starter")?.priceId).toBe("price_starter_rotated");
+    } finally {
+      if (saved === undefined) delete process.env.STRIPE_STARTER_PRICE_ID;
+      else process.env.STRIPE_STARTER_PRICE_ID = saved;
+    }
+  });
 });
 
 // ── getCheckoutSessionParams — user-scoped checkout guard ───────────

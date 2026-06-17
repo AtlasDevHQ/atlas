@@ -16,20 +16,25 @@
 import { describe, test, expect, mock } from "bun:test";
 import { Effect, Exit, Layer } from "effect";
 
-// Logger no-op mock — keeps these tests quiet (and isolated from any
-// real logger configuration the test runner has set up). All log calls
-// inside `saas-guards.ts` are observational; nothing in this file
-// asserts log content (the deploy-mode-warning emission test moved to
-// `lib/__tests__/config-deploy-mode-warning.test.ts` when the helper
-// was inlined into `lib/config.ts`).
+// Logger mock — keeps these tests quiet (and isolated from any real logger
+// configuration the test runner has set up) while CAPTURING `log.error` calls.
+// Most log calls inside `saas-guards.ts` are observational, but the warn-vs-
+// crash contract (#3703) hinges on a missing price ID emitting an operator-
+// actionable `log.error` — the BillingConfigGuardLive tests below assert that
+// log fired (event + missing-key payload). `capturedLogErrors` records every
+// `log.error(obj, msg)`; `withBillingEnv` resets it per billing test.
+let capturedLogErrors: Array<{ obj: unknown; msg: unknown }> = [];
+const recordError = (obj: unknown, msg?: unknown) => {
+  capturedLogErrors.push({ obj, msg });
+};
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
-    error: () => {},
+    error: recordError,
     warn: () => {},
     info: () => {},
     debug: () => {},
   }),
-  getLogger: () => ({ error: () => {}, warn: () => {}, info: () => {}, debug: () => {}, level: "info" }),
+  getLogger: () => ({ error: recordError, warn: () => {}, info: () => {}, debug: () => {}, level: "info" }),
   setLogLevel: () => true,
   getRequestContext: () => undefined,
 }));
@@ -1585,6 +1590,7 @@ function withBillingEnv<T>(
   mockStripePrices = {};
   mockStripeClientNull = false;
   mockSettingOverrides = {};
+  capturedLogErrors = [];
   for (const [k, v] of Object.entries(vars)) process.env[k] = v;
   return run().finally(() => {
     for (const key of BILLING_ENV_KEYS) {
@@ -1649,6 +1655,18 @@ describe("BillingConfigGuardLive", () => {
         };
         const exit = await runBillingGuard("saas");
         expect(Exit.isSuccess(exit)).toBe(true);
+        // The warn-not-crash contract IS the change (#3703): a missing monthly
+        // price ID must emit a loud, operator-actionable log.error naming the
+        // event + the absent key. Asserting boot success alone would let a
+        // regression that silently drops the warn block pass — this pins the
+        // emission, which is the whole justification for downgrading the crash.
+        const priceMissingLog = capturedLogErrors.find(
+          (e) => (e.obj as { event?: string } | undefined)?.event === "billing_config.price_missing",
+        );
+        expect(priceMissingLog).toBeDefined();
+        expect(
+          (priceMissingLog?.obj as { missingMonthlyPriceIds?: string[] } | undefined)?.missingMonthlyPriceIds,
+        ).toEqual(["STRIPE_PRO_PRICE_ID"]);
       },
     );
   });
@@ -1675,6 +1693,13 @@ describe("BillingConfigGuardLive", () => {
         };
         const exit = await runBillingGuard("saas");
         expect(Exit.isSuccess(exit)).toBe(true);
+        // Negative half of the contract: pro is resolvable via settings, so the
+        // guard must NOT warn it as missing — proving the warn keys off the
+        // settings-resolved value, not the env var.
+        const priceMissingLog = capturedLogErrors.find(
+          (e) => (e.obj as { event?: string } | undefined)?.event === "billing_config.price_missing",
+        );
+        expect(priceMissingLog).toBeUndefined();
       },
     );
   });

@@ -39,7 +39,7 @@ const ROWS: ReadonlyArray<Row> = [
   {
     feature: "Chat-platform reach",
     atlas:
-      "Slack-native — answers questions in opt-in channels with a reaction-first tracer, fail-closed kill switch (Enterprise tier)",
+      "Slack-native — answers questions in opt-in channels with a reaction-first tracer, fail-closed kill switch (paid plans)",
     bi: "Web app only — context-switch out of Slack",
     textToSql: "Web app only",
   },

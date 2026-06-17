@@ -13,6 +13,16 @@ describe("foldRollingMean", () => {
     expect(foldRollingMean(null, 0, 0)).toBe(0);
   });
 
+  it("seed fold is the identity on the sample (refactor invariant for the INSERT path)", () => {
+    // `insertLearnedPattern` rewired its seed to `foldRollingMean(null, 0, x)`.
+    // That is a no-op extraction iff the seed fold returns `x` unchanged for
+    // every input (and `null` for the unmeasured case) — pin it so the INSERT
+    // path can never silently change shape under this function.
+    for (const x of [0, 1, 42, 999.5, null]) {
+      expect(foldRollingMean(null, 0, x)).toBe(x);
+    }
+  });
+
   it("folds the n-th observation as an incremental rolling mean", () => {
     // avg=100 over 1 observation, fold a 200ms sample → (100*1 + 200)/2 = 150.
     expect(foldRollingMean(100, 1, 200)).toBe(150);

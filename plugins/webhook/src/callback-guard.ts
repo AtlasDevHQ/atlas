@@ -21,7 +21,9 @@
  *
  * Operator opt-out for self-hosted internal callbacks:
  * `ATLAS_WEBHOOK_ALLOW_INTERNAL_CALLBACKS=true` (http allowed, range checks
- * skipped — deliberate, auditable escape hatch).
+ * skipped — deliberate, auditable escape hatch). The guard is fail-closed by
+ * default; this flag is the direct twin of `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS`
+ * and carries the same posture: SELF-HOSTED ONLY — NEVER set it on SaaS.
  */
 
 import net from "node:net";

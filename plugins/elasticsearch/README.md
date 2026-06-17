@@ -41,7 +41,7 @@ export default defineConfig({
       // Elastic Cloud is HTTPS by default. Append `?ssl=false` for a plaintext
       // local cluster, e.g. `elasticsearch://localhost:9200?ssl=false`.
       url: "elasticsearch://my-deployment.es.us-east-1.aws.found.io:9243",
-      apiKey: process.env.ES_API_KEY!,
+      apiKey: process.env.ATLAS_ES_API_KEY!,
     }),
   ],
 });
@@ -95,13 +95,13 @@ picks by a documented **precedence: AWS SigV4 → HTTP Basic → API key.**
 
 ```typescript
 // API key
-elasticsearchPlugin({ url: "elasticsearch://host:9243", apiKey: process.env.ES_API_KEY! });
+elasticsearchPlugin({ url: "elasticsearch://host:9243", apiKey: process.env.ATLAS_ES_API_KEY! });
 
 // HTTP Basic
 elasticsearchPlugin({
   url: "elasticsearch://logs.internal:9200?ssl=false",
-  username: process.env.ES_USER!,
-  password: process.env.ES_PASSWORD!,
+  username: process.env.ATLAS_ES_USERNAME!,
+  password: process.env.ATLAS_ES_PASSWORD!,
 });
 
 // AWS SigV4 (Amazon OpenSearch Service) — explicit keys, or the ambient AWS env chain
@@ -113,7 +113,7 @@ elasticsearchPlugin({
 });
 
 // Elastic Cloud ID + API key (or Basic)
-elasticsearchPlugin({ cloudId: process.env.ES_CLOUD_ID!, apiKey: process.env.ES_API_KEY! });
+elasticsearchPlugin({ cloudId: process.env.ATLAS_ES_CLOUD_ID!, apiKey: process.env.ATLAS_ES_API_KEY! });
 ```
 
 AWS SigV4 signs every health/query request fresh (Signature Version 4) with the

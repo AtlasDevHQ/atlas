@@ -21,12 +21,21 @@
  * read site lives outside `effect/`.
  */
 
-/** Every env var the SaaS-mode boot contract reads. */
+/**
+ * Every env var the SaaS-mode boot contract reads.
+ *
+ * `ATLAS_DEPLOY_MODE` and `ATLAS_ENTERPRISE_ENABLED` are intentionally
+ * NOT in this contract (#3702): on SaaS, `deploy/api/atlas.config.ts`
+ * sets `deployMode: "saas"` and `enterprise.enabled: true`, and both
+ * resolution paths consult the config file first (`applyDeployMode`'s
+ * `process.env.ATLAS_DEPLOY_MODE ?? configFileValue`;
+ * `isEnterpriseEnabled*`'s `config.enterprise?.enabled` before env). So
+ * a SaaS region boots correctly with both unset. `EnterpriseGuardLive`
+ * still inspects the raw `process.env.ATLAS_DEPLOY_MODE` directly to
+ * catch the self-host footgun (env requests saas, no `@atlas/ee`) — that
+ * is a misconfiguration probe, not a SaaS-required input.
+ */
 export interface SaasEnv {
-  // Deploy mode + enterprise (EnterpriseGuardLive)
-  readonly ATLAS_DEPLOY_MODE: string | undefined;
-  readonly ATLAS_ENTERPRISE_ENABLED: string | undefined;
-
   // Internal DB (InternalDbGuardLive, MigrationGuardLive short-circuit)
   readonly DATABASE_URL: string | undefined;
 
@@ -114,8 +123,6 @@ export interface SaasEnv {
  * (clearing every SaaS env var between cases).
  */
 export const SAAS_ENV_KEYS = [
-  "ATLAS_DEPLOY_MODE",
-  "ATLAS_ENTERPRISE_ENABLED",
   "DATABASE_URL",
   "ATLAS_DATASOURCE_URL",
   "ATLAS_ENCRYPTION_KEYS",
@@ -153,8 +160,6 @@ void _exhaustive;
 /** Read `process.env` (or an injected env object) into a typed `SaasEnv`. */
 export function readSaasEnv(env: NodeJS.ProcessEnv = process.env): SaasEnv {
   return {
-    ATLAS_DEPLOY_MODE: env.ATLAS_DEPLOY_MODE,
-    ATLAS_ENTERPRISE_ENABLED: env.ATLAS_ENTERPRISE_ENABLED,
     DATABASE_URL: env.DATABASE_URL,
     ATLAS_DATASOURCE_URL: env.ATLAS_DATASOURCE_URL,
     ATLAS_ENCRYPTION_KEYS: env.ATLAS_ENCRYPTION_KEYS,
@@ -222,8 +227,6 @@ export function makeBootSmokeFixture(
   const databaseUrl =
     opts.databaseUrl ?? "postgresql://atlas:atlas@127.0.0.1:5432/atlas";
   const fixture: SaasEnv = {
-    ATLAS_DEPLOY_MODE: "saas",
-    ATLAS_ENTERPRISE_ENABLED: "true",
     DATABASE_URL: databaseUrl,
     ATLAS_DATASOURCE_URL: databaseUrl,
     ATLAS_ENCRYPTION_KEYS: "v1:ci-fixture-key-not-a-secret-do-not-use-in-prod",

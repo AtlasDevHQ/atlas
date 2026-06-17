@@ -37,8 +37,6 @@ describe("SAAS_ENV_KEYS", () => {
     // missing key is a compile error here. The runtime check then
     // confirms SAAS_ENV_KEYS lists each one.
     const exhaustive: SaasEnv = {
-      ATLAS_DEPLOY_MODE: undefined,
-      ATLAS_ENTERPRISE_ENABLED: undefined,
       DATABASE_URL: undefined,
       ATLAS_DATASOURCE_URL: undefined,
       ATLAS_ENCRYPTION_KEYS: undefined,
@@ -75,10 +73,10 @@ describe("SAAS_ENV_KEYS", () => {
 describe("readSaasEnv", () => {
   test("reads from a custom env object when provided", () => {
     const env = readSaasEnv({
-      ATLAS_DEPLOY_MODE: "saas",
+      ATLAS_API_REGION: "us",
       DATABASE_URL: "postgresql://x/y",
     } as NodeJS.ProcessEnv);
-    expect(env.ATLAS_DEPLOY_MODE).toBe("saas");
+    expect(env.ATLAS_API_REGION).toBe("us");
     expect(env.DATABASE_URL).toBe("postgresql://x/y");
     expect(env.RESEND_API_KEY).toBeUndefined();
   });
@@ -90,8 +88,9 @@ describe("makeBootSmokeFixture", () => {
     // Each of these is read by a guard that fails boot when missing or
     // misshapen. If any is dropped from the fixture, the boot-smoke
     // gate can't pass.
-    expect(fixture.ATLAS_DEPLOY_MODE).toBe("saas");
-    expect(fixture.ATLAS_ENTERPRISE_ENABLED).toBe("true");
+    // ATLAS_DEPLOY_MODE / ATLAS_ENTERPRISE_ENABLED are intentionally NOT in the
+    // fixture (#3702) — SaaS resolves both from atlas.config.ts, so the boot
+    // gate proves the region boots green with them unset.
     expect(fixture.DATABASE_URL).toMatch(/^postgresql:\/\//);
     expect(fixture.ATLAS_DATASOURCE_URL).toMatch(/^postgresql:\/\//);
     expect(fixture.ATLAS_ENCRYPTION_KEYS).toMatch(/^v1:/);

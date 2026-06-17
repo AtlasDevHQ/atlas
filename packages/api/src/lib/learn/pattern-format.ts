@@ -1,11 +1,17 @@
 /**
  * Learned-pattern prompt-rendering seam (#3720).
  *
- * The agent's org-knowledge block ({@link ../learn/org-knowledge-section}) and
- * the dashboard-suggestions path (`buildLearnedPatternsSection` in
+ * The agent's org-knowledge block ({@link ./org-knowledge-section}) and the
+ * dashboard-suggestions path (`buildLearnedPatternsSection` in
  * {@link ./pattern-cache}) both inject learned patterns into an LLM prompt.
- * Historically each carried byte-identical render + sanitize logic; this module
- * is the single home for both so the two consumers can never drift.
+ * Historically each carried near-duplicate render + sanitize logic that had
+ * drifted in whitespace handling: pattern-cache collapsed only bare `\n` and
+ * did not trim, while org-knowledge collapsed whitespace-wrapped newline runs
+ * and trimmed. This module unifies both on the stricter org-knowledge variant
+ * (collapse `\s*\n+\s*` → single space, then trim), so the two consumers can
+ * never drift again. That unification tightens whitespace collapsing on the
+ * pattern-cache path's multi-line input — the only behavior change; emitted
+ * prompt text is otherwise identical.
  *
  * PURE: no DB, no I/O, no settings — trivially unit-testable.
  *

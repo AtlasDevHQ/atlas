@@ -800,6 +800,25 @@ describe("importFromDisk", () => {
     expect(result.imported).toBe(1);
     expect(result.dbFailures).toBe(0);
   });
+
+  it("propagates (does not swallow) a bulkUpsertEntities throw on the transactional path, and still invalidates the whitelist (#3683)", async () => {
+    const orgId = testOrgId();
+    await syncEntityToDisk(orgId, "users", "entity", "table: users\n");
+
+    // On the transactional path (`exec` supplied) `bulkUpsertEntities` re-throws
+    // on the first row failure so the enclosing seed transaction rolls back —
+    // `importFromDisk` must surface that rejection rather than returning a
+    // partial `{ imported: 0, dbFailures: N }` result the caller mistakes for a
+    // tolerated partial. The `finally` whitelist invalidation must still run.
+    mockInvalidateOrgWhitelist.mockClear();
+    mockBulkUpsertEntities.mockImplementationOnce(() =>
+      Promise.reject(new Error("upsert rejected — transaction aborted")),
+    );
+
+    const exec = async <T extends Record<string, unknown>>(): Promise<T[]> => [] as T[];
+    await expect(importFromDisk(orgId, { exec })).rejects.toThrow("upsert rejected");
+    expect(mockInvalidateOrgWhitelist).toHaveBeenCalledWith(orgId);
+  });
 });
 
 // ---------------------------------------------------------------------------

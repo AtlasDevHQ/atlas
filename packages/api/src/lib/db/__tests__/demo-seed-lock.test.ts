@@ -32,7 +32,7 @@ interface RecordedQuery {
 }
 
 /** A fake pool that records every query its single client receives. */
-function makeRecordingPool(opts: { failLock?: boolean } = {}): {
+function makeRecordingPool(opts: { failLock?: boolean; failRollback?: boolean } = {}): {
   pool: InternalPool;
   queries: RecordedQuery[];
   releases: Array<Error | undefined>;
@@ -46,6 +46,9 @@ function makeRecordingPool(opts: { failLock?: boolean } = {}): {
       queries.push({ sql, params });
       if (opts.failLock && sql.includes("pg_advisory_xact_lock")) {
         throw new Error("simulated lock acquisition failure");
+      }
+      if (opts.failRollback && sql === "ROLLBACK") {
+        throw new Error("simulated ROLLBACK failure — dirty socket");
       }
       return { rows: [] as Record<string, unknown>[] };
     },
@@ -134,6 +137,31 @@ describe("withDemoSeedLock — lock + transaction mechanics (#3683)", () => {
     // Rollback succeeded, so the client is released cleanly (no destroy arg).
     expect(releases).toHaveLength(1);
     expect(releases[0]).toBeUndefined();
+  });
+
+  it("destroys the client (passes the rollback error to release) when ROLLBACK itself fails — and still re-throws the original error", async () => {
+    // The poison-the-client safety path: if ROLLBACK rejects, the connection's
+    // socket is dirty and must NOT return to the pool. `withDemoSeedLock` passes
+    // the rollback error to `client.release(err)` (node-pg destroys rather than
+    // recycles), while still re-throwing the ORIGINAL callback error — the
+    // rollback failure is logged, never masks what actually went wrong.
+    const { pool, queries, releases } = makeRecordingPool({ failRollback: true });
+    _resetPool(pool as unknown as InternalPool, null);
+
+    const boom = new Error("phase-3 published flip failed");
+    await expect(
+      withDemoSeedLock("org-1", async (tx) => {
+        await tx.query("INSERT INTO semantic_entities");
+        throw boom;
+      }),
+    ).rejects.toBe(boom); // original error propagates, not the ROLLBACK failure
+
+    expect(queries.some((q) => q.sql === "ROLLBACK")).toBe(true);
+    expect(queries.some((q) => q.sql === "COMMIT")).toBe(false);
+    // Client destroyed: release got the rollback error, not undefined.
+    expect(releases).toHaveLength(1);
+    expect(releases[0]).toBeInstanceOf(Error);
+    expect(releases[0]?.message).toContain("simulated ROLLBACK failure");
   });
 
   it("propagates a lock-acquisition failure — never runs the seed unserialized", async () => {

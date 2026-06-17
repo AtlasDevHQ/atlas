@@ -817,9 +817,14 @@ onboarding.openapi(
             );
           }
           if (importResult.imported === 0) {
-            // Scan found entities but the first upsert failed (and rolled the
-            // batch back). A connection without entities is the exact partial
-            // state we're preventing.
+            // Defensive: unreachable on the transactional path — a first-row
+            // upsert failure re-throws out of `bulkUpsertEntities` (rolling the
+            // batch back), so `importFromDisk` never returns `imported: 0` with
+            // `total > 0` here; that case is caught by the generic rollback
+            // branch below. Kept because a connection without entities is the
+            // exact partial state we're preventing, so if the executor contract
+            // ever changes to return a 0 count instead of throwing, this still
+            // fails the seed (#3683).
             throw new DemoSeedFailure(
               "import_failed",
               "Failed to import the demo semantic layer. Retry in a moment.",
@@ -856,6 +861,7 @@ onboarding.openapi(
           }
 
           return {
+            ok: true as const,
             entitiesImported: importResult.imported,
             skipped: importResult.skipped,
           };
@@ -865,6 +871,7 @@ onboarding.openapi(
         if (err instanceof DemoSeedFailure) {
           log.error({ code: err.code, requestId, orgId }, "Demo seed aborted — transaction rolled back");
           return Effect.succeed({
+            ok: false as const,
             failure: { code: err.code, message: err.httpMessage } as const,
           });
         }
@@ -873,6 +880,7 @@ onboarding.openapi(
         // so no partial phase-2/phase-3 state is committed.
         log.error({ err: err.message, requestId, orgId, semanticDir }, "Demo seed transaction failed — rolled back");
         return Effect.succeed({
+          ok: false as const,
           failure: {
             code: "import_failed",
             message: "Failed to import the demo semantic layer. No queryable demo state was committed — retry in a moment.",
@@ -880,7 +888,7 @@ onboarding.openapi(
         });
       }));
 
-      if ("failure" in seedOutcome) {
+      if (!seedOutcome.ok) {
         return c.json({ error: seedOutcome.failure.code, message: seedOutcome.failure.message, requestId }, 500);
       }
 

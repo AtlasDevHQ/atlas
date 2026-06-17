@@ -64,6 +64,12 @@ export const INTEGRATION_TABLES: ReadonlyArray<IntegrationTable> = [
   // 0098 — Twenty CRM per-workspace credentials. `workspace_id` is
   // unique on its own (one Twenty install per workspace).
   { table: "twenty_integrations",   pk: "id",              encrypted: "api_key_encrypted",           keyVersionColumn: "api_key_key_version" },
+  // 0140 (#3704) — OPERATOR-tier integration app credentials (Atlas's own
+  // app registrations, set/rotated via Admin without a redeploy). One row
+  // per `platform` slug; the table still keys on a single uuid `id` so the
+  // rotation / audit scripts walk it generically (single-PK assumption
+  // preserved). The encrypted blob is a JSON `{ <ENV_VAR>: <value> }` map.
+  { table: "operator_integration_credentials", pk: "id",   encrypted: "credentials_encrypted",        keyVersionColumn: "credentials_key_version" },
 ] as const;
 
 /**

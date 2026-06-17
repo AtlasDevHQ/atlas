@@ -1679,6 +1679,28 @@ export const integrationCredentials = pgTable(
   ],
 );
 
+// operator_integration_credentials (0140, #3704) — OPERATOR-tier (platform)
+// integration app credentials, set + rotated from the Admin console without
+// a redeploy, encrypted at rest. One row per platform slug (the app
+// registration is operator-shared; no per-workspace dimension). Deliberately
+// separate from the workspace-tier `integration_credentials` above — see
+// lib/integrations/operator-credentials/ for the isolation seam. Env stays
+// the self-host fallback (resolver precedence: DB row → env → unset).
+export const operatorIntegrationCredentials = pgTable(
+  "operator_integration_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    platform: text("platform").notNull(),
+    credentialsEncrypted: text("credentials_encrypted").notNull(),
+    credentialsKeyVersion: integer("credentials_key_version"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("idx_operator_integration_credentials_platform").on(t.platform),
+  ],
+);
+
 // ---------------------------------------------------------------------------
 // Dashboards
 // ---------------------------------------------------------------------------

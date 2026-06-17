@@ -1081,19 +1081,16 @@ export const ChatAdapterEnvGuardLive: Layer.Layer<never, ChatAdapterEnvMissingEr
       // builder, every key the builder needs must be present."
       if (!requiredEnv) continue;
 
-      // Read each key directly from `process.env` so the contract
-      // honors the builder map's single source of truth. Going through
-      // `readSaasEnv()` would silently treat any key not statically
-      // enumerated in `SaasEnv` as undefined — a future adapter adding
-      // a new `requiredEnv` entry would then fail boot for a properly-
-      // configured operator until they also touched `saas-env.ts`,
-      // which would break the "builder is the source of truth" claim.
-      // The runtime AdapterRegistry reads `process.env` for the same
-      // reason; matching it keeps the parity check load-bearing.
-      const missingEnv = requiredEnv.filter((key) => {
-        const value = process.env[key];
-        return value === undefined || value === "";
-      });
+      // Presence check is "operator-credential DB row OR env" (#3704).
+      // The builder's `requiredEnv` stays the single source of truth for
+      // WHICH keys must be present (passed straight through to the resolver
+      // helper); the operator credential resolver decides whether each is
+      // satisfied by a row set via Admin or by the env fallback. When the
+      // slug isn't a managed operator platform, or no internal DB exists
+      // (self-host stateless), the helper collapses to the original
+      // env-only check — so this remains a faithful superset of the
+      // pre-#3704 guard, never a looser one.
+      const missingEnv = yield* importGetMissingOperatorEnv(entry.slug, requiredEnv);
 
       if (missingEnv.length > 0) {
         return yield* Effect.fail(
@@ -1102,18 +1099,42 @@ export const ChatAdapterEnvGuardLive: Layer.Layer<never, ChatAdapterEnvMissingEr
             missingEnv,
             message:
               `SaaS region booted with catalog entry slug="${entry.slug}" (type=chat, ` +
-              `install_model=oauth, enabled=true) but the adapter builder's required env ` +
-              `vars are missing: [${missingEnv.join(", ")}]. Without them the AdapterRegistry ` +
-              `silently drops the adapter — the api would boot, proactive chat would register, ` +
-              `and every health signal would stay green while no chat event ever lands. Set ` +
-              `the missing env var(s) on every region's api service before booting. ` +
-              `See ${CHAT_ADAPTER_ISSUE_REF}.`,
+              `install_model=oauth, enabled=true) but the adapter builder's required ` +
+              `credentials are missing from BOTH the operator-credentials store (Admin → ` +
+              `Operator Integrations) and the environment: [${missingEnv.join(", ")}]. ` +
+              `Without them the AdapterRegistry silently drops the adapter — the api would ` +
+              `boot, proactive chat would register, and every health signal would stay green ` +
+              `while no chat event ever lands. Set the missing credential(s) via the Admin ` +
+              `console or env on every region's api service before booting. ` +
+              `See ${CHAT_ADAPTER_ISSUE_REF} / #3704.`,
           }),
         );
       }
     }
   }),
 );
+
+/**
+ * Lazy-import the operator-credentials resolver helper. Same wall-off
+ * rationale as the chat accessor import above — keeps the operator
+ * credential store's static graph (internalQuery, secret-encryption) out of
+ * `saas-guards.ts`. A rejected import is promoted to a defect via
+ * `Effect.orDie`: the resolver is core and always loadable at boot, so a
+ * rejection means the api can't run anyway, and silently skipping would
+ * reopen the silent-degradation hole this guard exists to close.
+ */
+function importGetMissingOperatorEnv(
+  catalogSlug: string,
+  requiredKeys: readonly string[],
+): Effect.Effect<string[]> {
+  return Effect.tryPromise({
+    try: async () => {
+      const mod = await import("@atlas/api/lib/integrations/operator-credentials/resolver");
+      return mod.getMissingOperatorEnvForCatalogSlug(catalogSlug, requiredKeys);
+    },
+    catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+  }).pipe(Effect.orDie);
+}
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  BillingConfigGuardLive (#3435)

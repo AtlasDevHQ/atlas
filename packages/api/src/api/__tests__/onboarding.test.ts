@@ -72,6 +72,14 @@ const mockHasInternalDB: Mock<() => boolean> = mock(() => true);
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>> = mock(
   async () => [{ id: "default" }],
 );
+// Fake `withDemoSeedLock` (#3683): synchronously runs the seed callback with a
+// `tx.query` bound to `mockInternalQuery`, so the in-transaction phase-3 upsert
+// lands on the same spy and a throwing callback rejects (matching the real
+// rollback path) without a Postgres connection.
+const mockWithDemoSeedLock = mock(
+  (_orgId: string, fn: (tx: { query: typeof mockInternalQuery }) => Promise<unknown>): Promise<unknown> =>
+    fn({ query: mockInternalQuery }),
+);
 const mockEncryptUrl: Mock<(url: string) => string> = mock((url: string) => `encrypted:${url}`);
 
 mock.module("@atlas/api/lib/db/internal", () => ({
@@ -79,6 +87,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: () => ({ query: async () => ({ rows: [] }) }),
   internalQuery: mockInternalQuery,
   queryEffect: makeQueryEffectMock(mockInternalQuery),
+  // The /use-demo seed (#3683) runs phases 2+3 inside `withDemoSeedLock`. The
+  // fake invokes the callback with a `tx.query` bound to `mockInternalQuery`, so
+  // the in-transaction `workspace_plugins` upsert is recorded on the same spy
+  // existing assertions read. (Real lock/transaction mechanics — BEGIN, the
+  // advisory lock, ROLLBACK — are covered in `demo-seed-lock.test.ts`.)
+  withDemoSeedLock: mockWithDemoSeedLock,
   internalExecute: () => {},
   encryptSecret: mockEncryptUrl,
   decryptSecret: (url: string) => url,
@@ -106,8 +120,8 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
-const mockImportFromDisk: Mock<(orgId: string, options?: { connectionId?: string; sourceDir?: string }) => Promise<{ imported: number; skipped: number; errors: unknown[]; total: number }>> = mock(
-  async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }),
+const mockImportFromDisk: Mock<(orgId: string, options?: { connectionId?: string; sourceDir?: string; exec?: unknown }) => Promise<{ imported: number; skipped: number; errors: unknown[]; total: number; dbFailures: number }>> = mock(
+  async () => ({ imported: 5, skipped: 0, errors: [], total: 5, dbFailures: 0 }),
 );
 
 mock.module("@atlas/api/lib/semantic/sync", () => ({
@@ -660,13 +674,15 @@ describe("POST /api/v1/onboarding/use-demo", () => {
       }
       return [{ id: "__demo__" }];
     });
+    mockWithDemoSeedLock.mockClear();
+    mockWithDemoSeedLock.mockImplementation((_orgId, fn) => fn({ query: mockInternalQuery }));
     mockEncryptUrl.mockClear();
     mockEncryptUrl.mockImplementation((url: string) => `encrypted:${url}`);
     mockRegister.mockClear();
     mockUnregister.mockClear();
     mockHas.mockImplementation(() => true);
     mockImportFromDisk.mockClear();
-    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5, dbFailures: 0 }));
     mockSetSetting.mockClear();
     mockLogInfo.mockClear();
     mockLogWarn.mockClear();
@@ -1015,7 +1031,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     expect(res.status).toBe(500);
     const data = await json(res);
     expect(data.error).toBe("import_failed");
-    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5, dbFailures: 0 }));
   });
 
   it("ATOMICITY: import failure leaves no connection row committed", async () => {
@@ -1040,7 +1056,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     );
     expect(connectionInsert).toBeUndefined();
     expect(mockRegister).not.toHaveBeenCalled();
-    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5, dbFailures: 0 }));
   });
 
   it("ATOMICITY: import returning zero imports out of N total fails before writing connection", async () => {
@@ -1052,6 +1068,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
       skipped: 13,
       errors: [{ file: "users.yml", reason: "broken yaml" }],
       total: 13,
+      dbFailures: 13,
     }));
     const res = await request("/api/v1/onboarding/use-demo", {
       method: "POST",
@@ -1066,7 +1083,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
       (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO workspace_plugins"),
     );
     expect(connectionInsert).toBeUndefined();
-    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5, dbFailures: 0 }));
   });
 
   it("ATOMICITY: bundled YAML scan returning zero entities fails before writing connection (dharma-class)", async () => {
@@ -1087,6 +1104,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
       skipped: 0,
       errors: [],
       total: 0,
+      dbFailures: 0,
     }));
     const res = await request("/api/v1/onboarding/use-demo", {
       method: "POST",
@@ -1105,7 +1123,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     // Settings/prompt seeding must NOT have run either — those are
     // post-commit decorations and shouldn't fire on a failed install.
     expect(mockSetSetting).not.toHaveBeenCalled();
-    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5, dbFailures: 0 }));
   });
 
   it("ATOMICITY: missing bundled YAML fails before writing connection", async () => {
@@ -1138,7 +1156,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     let counter = 0;
     mockImportFromDisk.mockImplementation(async () => {
       importInvocationOrder = ++counter;
-      return { imported: 13, skipped: 0, errors: [], total: 13 };
+      return { imported: 13, skipped: 0, errors: [], total: 13, dbFailures: 0 };
     });
     const baseImpl = mockInternalQuery.getMockImplementation();
     mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
@@ -1160,7 +1178,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     expect(importInvocationOrder).toBeLessThan(connectionInsertOrder);
 
     if (baseImpl) mockInternalQuery.mockImplementation(baseImpl);
-    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5, dbFailures: 0 }));
   });
 
   it("PARTIAL: imported > 0 && imported < total still commits the connection (lenient contract)", async () => {
@@ -1172,6 +1190,10 @@ describe("POST /api/v1/onboarding/use-demo", () => {
       skipped: 5,
       errors: [{ file: "broken.yml", reason: "yaml parse" }],
       total: 13,
+      // The gap here is YAML-parse skips, not DB write failures — the lenient
+      // contract still commits. A `dbFailures > 0` gap is the fatal case,
+      // covered separately (#3683).
+      dbFailures: 0,
     }));
     const res = await request("/api/v1/onboarding/use-demo", {
       method: "POST",
@@ -1186,7 +1208,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
       (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO workspace_plugins"),
     );
     expect(connectionInsert).toBeDefined();
-    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5, dbFailures: 0 }));
   });
 
   it("RACE: idempotent UPSERT — ON CONFLICT DO UPDATE returns the install_id even on re-run (#2304)", async () => {
@@ -1248,7 +1270,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     });
     expect(firstRes.status).toBe(500);
 
-    mockImportFromDisk.mockImplementation(async () => ({ imported: 13, skipped: 0, errors: [], total: 13 }));
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 13, skipped: 0, errors: [], total: 13, dbFailures: 0 }));
     const secondRes = await request("/api/v1/onboarding/use-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1258,6 +1280,93 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     const data = await json(secondRes);
     expect(data.connectionId).toBe("__demo__");
     expect(data.entitiesImported).toBe(13);
+  });
+
+  it("MUTUAL EXCLUSION: runs phases 2+3 inside a single per-workspace withDemoSeedLock transaction (#3683)", async () => {
+    // The seed must be serialized + atomic per workspace: the import (phase 2)
+    // and the workspace_plugins published flip (phase 3) both run inside one
+    // `withDemoSeedLock(orgId, …)` transaction. Assert the lock wraps the seed,
+    // is keyed on the caller's org, and that the entity import runs on the
+    // transaction-bound executor (not a stray pooled connection).
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(201);
+
+    expect(mockWithDemoSeedLock).toHaveBeenCalledTimes(1);
+    expect(mockWithDemoSeedLock.mock.calls[0][0]).toBe("org-1");
+
+    // importFromDisk received the transaction-bound executor so its upserts
+    // commit (or roll back) with the phase-3 flip.
+    const importCall = mockImportFromDisk.mock.calls.at(-1);
+    expect(importCall?.[1]).toMatchObject({ connectionId: "__demo__" });
+    expect(typeof importCall?.[1]?.exec).toBe("function");
+
+    // The published flip landed inside the locked section (recorded on the
+    // tx-bound spy).
+    const flip = mockInternalQuery.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO workspace_plugins"),
+    );
+    expect(flip).toBeDefined();
+  });
+
+  it("PARTIAL SEED: a sub-total DB import (dbFailures > 0) fails the request instead of 201'ing (#3683)", async () => {
+    // The MEDIUM finding: a 7-of-13 seed where the missing rows are DB write
+    // failures used to return a clean 201. It must now hard-fail before the
+    // published flip so no half-seeded workspace is committed.
+    mockImportFromDisk.mockImplementation(async () => ({
+      imported: 7,
+      skipped: 6,
+      errors: [],
+      total: 13,
+      dbFailures: 6,
+    }));
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("import_failed");
+
+    // The published flip and the post-commit decorations never ran.
+    const flip = mockInternalQuery.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO workspace_plugins"),
+    );
+    expect(flip).toBeUndefined();
+    expect(mockSetSetting).not.toHaveBeenCalled();
+    expect(mockRegister).not.toHaveBeenCalled();
+  });
+
+  it("ATOMICITY: a phase-3 published-flip failure rolls back the whole seed (#3683)", async () => {
+    // A DB error on the workspace_plugins flip (inside the locked transaction)
+    // must propagate so the transaction rolls back — the phase-2 entity import
+    // can't be left committed without the published install that makes it
+    // visible. The error surfaces as a 500, and no post-commit decoration runs.
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === "string" && sql.includes("FROM plugin_catalog") && sql.includes("demo-postgres")) {
+        return [{ id: "cat_demo_postgres" }];
+      }
+      if (typeof sql === "string" && sql.includes("INSERT INTO workspace_plugins")) {
+        throw new Error("deadlock detected");
+      }
+      return [{ id: "__demo__" }];
+    });
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("import_failed");
+    expect(data.requestId).toBeDefined();
+    // Post-commit decorations must not run on a rolled-back seed.
+    expect(mockSetSetting).not.toHaveBeenCalled();
+    expect(mockRegister).not.toHaveBeenCalled();
   });
 
   it("returns 500 with requestId when encryption fails", async () => {

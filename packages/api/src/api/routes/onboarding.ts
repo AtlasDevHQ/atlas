@@ -22,7 +22,7 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
 import { isAuthEmailDeliveryConfigured } from "@atlas/api/lib/email/delivery";
-import { hasInternalDB, internalQuery, queryEffect, encryptSecret } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, queryEffect, encryptSecret, withDemoSeedLock } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { importFromDisk } from "@atlas/api/lib/semantic/sync";
@@ -625,6 +625,24 @@ onboarding.openapi(
 // POST /use-demo — connect workspace to the default datasource + import semantic layer
 // ---------------------------------------------------------------------------
 
+/**
+ * Sentinel for a /use-demo seed step that must abort the locked transaction
+ * (rolling it back) AND map to a specific HTTP error envelope. Thrown inside the
+ * {@link withDemoSeedLock} callback so the failure rolls back phases 2+3
+ * together; caught once outside, where `code` + `httpMessage` select the 500
+ * response shape. Keeps the rollback trigger and the response shape in one place
+ * (#3683).
+ */
+class DemoSeedFailure extends Error {
+  constructor(
+    readonly code: string,
+    readonly httpMessage: string,
+  ) {
+    super(httpMessage);
+    this.name = "DemoSeedFailure";
+  }
+}
+
 onboarding.openapi(
   useDemoRoute,
   async (c) => {
@@ -731,85 +749,11 @@ onboarding.openapi(
         return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);
       }
 
-      // ---------------------------------------------------------------
-      // Phase 2 — import demo semantic entities. Post-0096 cutover
-      // (#2744 / ADR-0007) there's no longer a pre-created
-      // `connection_groups` row to anchor the entities against; the
-      // per-workspace demo install (auto-created by `loadSavedConnections`
-      // / 0096 step 3) typically has no `config.group_id`, so the
-      // entities import with `connection_group_id = NULL` and the
-      // visibility join's `connection_group_id IS NULL` branch keeps
-      // them visible. The phase-3 connection upsert below remains the
-      // commit point that flips the demo install to `status='published'`.
-      // ---------------------------------------------------------------
-
-      const importResult = yield* Effect.tryPromise({
-        try: () => importFromDisk(orgId, { sourceDir: semanticDir, connectionId: DEMO_CONNECTION_ID }),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      }).pipe(Effect.catchAll((err) => {
-        log.error({ err: err.message, requestId, semanticDir }, "Demo semantic layer import failed");
-        return Effect.succeed(null);
-      }));
-
-      if (importResult === null) {
-        return c.json({
-          error: "import_failed",
-          message: "Failed to import the demo semantic layer. No queryable demo state was committed — retry in a moment.",
-          requestId,
-        }, 500);
-      }
-      if (importResult.total === 0) {
-        // Scan returned zero candidates — the bundled YAML isn't on the
-        // API container even though `getDemoSemanticDir()` resolved a path
-        // (e.g., the directory exists but is empty). This is a deploy-time
-        // misconfiguration, not user error. Older /use-demo absorbed this
-        // case silently: it set `ATLAS_DEMO_INDUSTRY`, committed the
-        // connection, and 201'd a workspace with no queryable semantic
-        // layer. Fail loudly so the install is all-or-nothing.
-        log.error(
-          { orgId, requestId, semanticDir },
-          "Demo semantic import scan returned zero entities — bundled YAML missing on this server",
-        );
-        return c.json({
-          error: "demo_not_available",
-          message: "The canonical demo semantic layer is missing on this server. Contact the platform administrator.",
-          requestId,
-        }, 500);
-      }
-      if (importResult.imported === 0) {
-        // Scan found entities but every row failed the upsert. Treat as
-        // a hard failure — a connection without entities is the exact
-        // partial state we're trying to prevent.
-        log.error(
-          { orgId, requestId, total: importResult.total, errors: importResult.errors },
-          "Demo semantic import found entities but persisted zero",
-        );
-        return c.json({
-          error: "import_failed",
-          message: "Failed to import the demo semantic layer. Retry in a moment.",
-          requestId,
-        }, 500);
-      }
-
-      const entitiesImported = importResult.imported;
-      log.info(
-        { orgId, imported: importResult.imported, skipped: importResult.skipped, requestId },
-        "Imported demo semantic layer",
-      );
-
-      // ---------------------------------------------------------------
-      // Phase 3 — commit point. Once the per-workspace demo install is
-      // flipped to `status='published'`, the entities imported in phase
-      // 2 become visible to the agent and the semantic page.
-      //
-      // Post-0096 cutover (#2744 / ADR-0007) every workspace owns its
-      // own `__demo__` install row (auto-created at boot via
-      // `loadSavedConnections` / 0096 step 3). Onboarding simply
-      // upserts the row's config + status for THIS workspace; the
-      // shared-singleton `__global__` model is gone. Workspaces that
-      // already onboarded will hit ON CONFLICT and the row is updated
-      // in place with the latest demo URL.
-      // ---------------------------------------------------------------
+      // Resolve the demo catalog row up front (a read, kept off the locked
+      // transaction). Post-0096 cutover (#2744 / ADR-0007) every workspace owns
+      // its own `__demo__` install row (auto-created at boot via
+      // `loadSavedConnections` / 0096 step 3); onboarding upserts that row's
+      // config + status for THIS workspace.
       const demoLabel = DEMO_LABEL;
       const demoCatalogRows = yield* Effect.tryPromise({
         try: () => internalQuery<{ id: string }>(
@@ -829,40 +773,137 @@ onboarding.openapi(
         description: `${demoLabel} — demo ${dbType} datasource`,
         db_type: dbType,
       });
-      const upsertResult = yield* Effect.tryPromise({
-        try: () => internalQuery<{ id: string }>(
-          `INSERT INTO workspace_plugins
-             (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at, status)
-           VALUES ($1, $2, $3, $4, 'datasource', $5::jsonb, true, NOW(), 'published')
-           ON CONFLICT (workspace_id, catalog_id, install_id)
-             DO UPDATE SET config = EXCLUDED.config, status = 'published', updated_at = NOW()
-           RETURNING install_id AS id`,
-          [`cn_${orgId}_${id}`, orgId, demoCatalogRows[0].id, id, demoConfigJson],
-        ),
+
+      // ---------------------------------------------------------------
+      // Phases 2+3 — atomic, mutually-exclusive seed (#3683).
+      //
+      // `withDemoSeedLock` opens ONE transaction holding a per-workspace
+      // advisory lock and hands a `tx.query` runner. Both the semantic-entity
+      // import (phase 2) and the `workspace_plugins` published flip (phase 3)
+      // run on that single connection, so:
+      //   • Atomicity — a blip / pool exhaustion / process kill between the two
+      //     phases rolls the whole seed back; draft `semantic_entities` are
+      //     never committed without the published install that makes them
+      //     visible (the orphaned-partial-demo state this fixes).
+      //   • Mutual exclusion — concurrent same-`orgId` POSTs serialize on the
+      //     advisory lock instead of interleaving `ON CONFLICT DO UPDATE`
+      //     upserts on the same rows, which deadlock → intermittent 500s.
+      //
+      // Post-0096 the per-workspace demo install typically has no
+      // `config.group_id`, so entities import with `connection_group_id = NULL`
+      // and the visibility join's `IS NULL` branch keeps them visible. A
+      // `DemoSeedFailure` thrown inside the callback rolls back and selects the
+      // HTTP envelope; any other throw (raw DB error, deadlock) rolls back too
+      // and maps to a generic `import_failed`.
+      // ---------------------------------------------------------------
+      const seedOutcome = yield* Effect.tryPromise({
+        try: () => withDemoSeedLock(orgId, async (tx) => {
+          // Phase 2 — import demo semantic entities on the transaction
+          // connection so they commit (or roll back) with phase 3.
+          const importResult = await importFromDisk(orgId, {
+            sourceDir: semanticDir,
+            connectionId: DEMO_CONNECTION_ID,
+            exec: tx.query,
+          });
+
+          if (importResult.total === 0) {
+            // Scan returned zero candidates — the bundled YAML isn't on the API
+            // container even though `getDemoSemanticDir()` resolved a path. A
+            // deploy-time misconfiguration, not user error. Fail loudly so the
+            // install stays all-or-nothing.
+            throw new DemoSeedFailure(
+              "demo_not_available",
+              "The canonical demo semantic layer is missing on this server. Contact the platform administrator.",
+            );
+          }
+          if (importResult.imported === 0) {
+            // Defensive: unreachable on the transactional path — a first-row
+            // upsert failure re-throws out of `bulkUpsertEntities` (rolling the
+            // batch back), so `importFromDisk` never returns `imported: 0` with
+            // `total > 0` here; that case is caught by the generic rollback
+            // branch below. Kept because a connection without entities is the
+            // exact partial state we're preventing, so if the executor contract
+            // ever changes to return a 0 count instead of throwing, this still
+            // fails the seed (#3683).
+            throw new DemoSeedFailure(
+              "import_failed",
+              "Failed to import the demo semantic layer. Retry in a moment.",
+            );
+          }
+          if (importResult.dbFailures > 0) {
+            // Defensive: on the transactional path `bulkUpsertEntities` throws
+            // on the first failure (so `dbFailures` is 0 here), but if a future
+            // change re-enables partial tolerance this stops a partial seed from
+            // 201'ing as a clean success (#3683).
+            throw new DemoSeedFailure(
+              "import_failed",
+              "Failed to import the full demo semantic layer. Retry in a moment.",
+            );
+          }
+
+          // Phase 3 — commit point: flip THIS workspace's `__demo__` install to
+          // `status='published'`, making the phase-2 entities visible. Already
+          // onboarded workspaces hit ON CONFLICT and the row updates in place.
+          const upsertRows = await tx.query<{ id: string }>(
+            `INSERT INTO workspace_plugins
+               (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at, status)
+             VALUES ($1, $2, $3, $4, 'datasource', $5::jsonb, true, NOW(), 'published')
+             ON CONFLICT (workspace_id, catalog_id, install_id)
+               DO UPDATE SET config = EXCLUDED.config, status = 'published', updated_at = NOW()
+             RETURNING install_id AS id`,
+            [`cn_${orgId}_${id}`, orgId, demoCatalogRows[0].id, id, demoConfigJson],
+          );
+          if (upsertRows.length === 0) {
+            throw new DemoSeedFailure(
+              "internal_error",
+              "Demo connection write did not confirm. Retry the request — the operation is idempotent.",
+            );
+          }
+
+          return {
+            ok: true as const,
+            entitiesImported: importResult.imported,
+            skipped: importResult.skipped,
+          };
+        }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
-        log.error({ err: err.message, requestId }, "Failed to persist demo connection");
-        return Effect.succeed(null);
+        if (err instanceof DemoSeedFailure) {
+          log.error({ code: err.code, requestId, orgId }, "Demo seed aborted — transaction rolled back");
+          return Effect.succeed({
+            ok: false as const,
+            failure: { code: err.code, message: err.httpMessage } as const,
+          });
+        }
+        // Any other throw — a raw DB error from the import or the published flip,
+        // a deadlock, pool exhaustion. The transaction has already rolled back,
+        // so no partial phase-2/phase-3 state is committed.
+        log.error({ err: err.message, requestId, orgId, semanticDir }, "Demo seed transaction failed — rolled back");
+        return Effect.succeed({
+          ok: false as const,
+          failure: {
+            code: "import_failed",
+            message: "Failed to import the demo semantic layer. No queryable demo state was committed — retry in a moment.",
+          } as const,
+        });
       }));
 
-      if (upsertResult === null) {
-        return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
+      if (!seedOutcome.ok) {
+        return c.json({ error: seedOutcome.failure.code, message: seedOutcome.failure.message, requestId }, 500);
       }
-      if (upsertResult.length === 0) {
-        log.error({ connectionId: id, orgId, requestId }, "Demo connection upsert returned 0 rows");
-        return c.json({
-          error: "internal_error",
-          message: "Demo connection write may have succeeded but the database did not confirm. Retry the request — the operation is idempotent.",
-          requestId,
-        }, 500);
-      }
+
+      const entitiesImported = seedOutcome.entitiesImported;
+      log.info(
+        { orgId, imported: seedOutcome.entitiesImported, skipped: seedOutcome.skipped, requestId },
+        "Imported demo semantic layer",
+      );
 
       // Skip re-registration if the in-memory pool already has this id —
       // concurrent onboarders would otherwise needlessly drain and recreate
-      // the pool. The DB-level race (two onboarders racing to commit) is
-      // resolved by the `(workspace_id, catalog_id, install_id)` unique index
-      // backing the `ON CONFLICT DO UPDATE` above — last write wins on the same
-      // demo config, so no duplicate rows result.
+      // the pool. The DB-level race is resolved by the per-workspace advisory
+      // lock + the `(workspace_id, catalog_id, install_id)` unique index backing
+      // the `ON CONFLICT DO UPDATE` above — last write wins on the same demo
+      // config, so no duplicate rows result.
       try {
         if (!connections.has(id)) {
           connections.register(id, { url, description: `${demoLabel} — demo ${dbType} datasource` });

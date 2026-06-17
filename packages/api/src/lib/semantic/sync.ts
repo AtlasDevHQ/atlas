@@ -582,6 +582,16 @@ interface ImportResult {
   skipped: number;
   errors: ImportError[];
   total: number;
+  /**
+   * Entities that passed YAML validation but failed the DB upsert
+   * (`entities.length - imported`). Distinct from `skipped`, which also folds in
+   * benign YAML-parse errors and lower-precedence duplicate drops. Callers that
+   * require an all-or-nothing import (the /use-demo seed, #3683) treat
+   * `dbFailures > 0` as a hard failure instead of a clean partial. On the
+   * transactional path this is always 0 — the first failure rolls the batch
+   * back before `importFromDisk` returns.
+   */
+  dbFailures: number;
 }
 
 /**
@@ -614,7 +624,18 @@ type CollectedEntity = {
  */
 export async function importFromDisk(
   orgId: string,
-  options?: { connectionId?: string; sourceDir?: string },
+  options?: {
+    connectionId?: string;
+    sourceDir?: string;
+    /**
+     * Transaction-bound executor (from {@link withDemoSeedLock}) that threads
+     * every entity upsert onto a single transaction connection so the import
+     * commits atomically with the caller's other writes (the /use-demo seed,
+     * #3683). Omit for the standalone pooled path (admin import, auth migrate),
+     * where partial imports are tolerated and counted via `dbFailures`.
+     */
+    exec?: import("@atlas/api/lib/db/internal").InternalQueryExecutor;
+  },
 ): Promise<ImportResult> {
   const { bulkUpsertEntities } = await import("@atlas/api/lib/semantic/entities");
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
@@ -665,12 +686,15 @@ export async function importFromDisk(
   const total = entities.length + errors.length + duplicateSkips;
 
   if (entities.length === 0) {
-    return { imported: 0, skipped: errors.length + duplicateSkips, errors, total };
+    return { imported: 0, skipped: errors.length + duplicateSkips, errors, total, dbFailures: 0 };
   }
 
   let imported: number;
   try {
-    imported = await bulkUpsertEntities(orgId, entities);
+    // On the transactional path (`options.exec` set) this throws on the first
+    // row failure so the enclosing transaction rolls back — `dbFailures` below
+    // is then unreachable and always 0 on the value that does return (#3683).
+    imported = await bulkUpsertEntities(orgId, entities, options?.exec);
   } finally {
     // Always invalidate — partial writes may have occurred
     invalidateOrgWhitelist(orgId);
@@ -695,6 +719,7 @@ export async function importFromDisk(
     skipped,
     errors,
     total,
+    dbFailures,
   };
 }
 

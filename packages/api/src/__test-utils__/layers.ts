@@ -119,6 +119,7 @@ export function createPluginRegistryTestLayer(
       initializeAll: (ctx) => impl.initializeAll(ctx),
       healthCheckAll: () => impl.healthCheckAll(),
       teardownAll: () => impl.teardownAll(),
+      refresh: (id) => impl.refresh(id),
       get: (id) => impl.get(id),
       getStatus: (id) => impl.getStatus(id),
       getByType: (type) => impl.getByType(type),

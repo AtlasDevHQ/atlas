@@ -344,6 +344,45 @@ function catalogHasTeamsStaticBot(
   );
 }
 
+/**
+ * Resolve the env-shaped object the AdapterRegistry builds from (#3704).
+ *
+ * Without `config.resolveAdapterEnv` (self-host default) this is just
+ * `process.env` — behavior is unchanged. With it, the host's operator-tier
+ * overlay (Admin-set, DB-backed credentials) is merged on top of
+ * `process.env` so the overlay WINS while unresolved keys fall through to env
+ * (env stays the fallback). Only non-empty string overlay values override —
+ * `undefined`/`""` never clobber an env value.
+ *
+ * A throwing resolver propagates: it signals a decrypt/corruption failure in
+ * the host, which must fail the (re)build loudly rather than silently boot
+ * with env-only credentials (the silent-degradation class #2673 / the boot
+ * guard exist to prevent). `initialize()`'s try/catch cleans up the partially
+ * connected state adapter on the way out.
+ */
+// Exported for unit testing the operator-credential overlay precedence
+// (#3704). Not part of the plugin's public surface — internal helper.
+export async function resolveAdapterBuildEnv(
+  config: ChatPluginConfig,
+  logger: PluginLogger,
+): Promise<NodeJS.ProcessEnv> {
+  if (!config.resolveAdapterEnv) return process.env;
+  const overlay = await config.resolveAdapterEnv();
+  const merged: NodeJS.ProcessEnv = { ...process.env };
+  let applied = 0;
+  for (const [key, value] of Object.entries(overlay)) {
+    if (typeof value === "string" && value.length > 0) {
+      merged[key] = value;
+      applied += 1;
+    }
+  }
+  logger.debug?.(
+    { overlayKeys: Object.keys(overlay).length, applied },
+    "Resolved operator-tier adapter credential overlay (DB-backed values override env)",
+  );
+  return merged;
+}
+
 function buildChatPlugin(
   config: ChatPluginConfig,
 ): AtlasInteractionPlugin<ChatPluginConfig> {
@@ -755,14 +794,24 @@ function buildChatPlugin(
 
       // Build chat-platform adapters via the catalog-driven
       // AdapterRegistry (#2650 slice 2). The registry reads per-Platform
-      // credentials from `process.env`, logs errors on missing creds /
+      // credentials from an env-shaped object, logs errors on missing creds /
       // warns on non-OAuth entries, and returns the adapters map plus diagnostic
       // slug lists. The diagnostics let `healthCheck` surface actionable
       // error messages.
+      //
+      // Operator credentials (#3704): when the host wires `resolveAdapterEnv`,
+      // its overlay (Admin-set, DB-backed operator credentials) is merged ON
+      // TOP OF `process.env` so it wins, while unresolved keys fall through to
+      // env (the self-host fallback). `undefined` overlay values are stripped
+      // first so they never clobber a real env value. Re-reading the resolver
+      // here on every `initialize()` is what makes the runtime rebuild seam
+      // (`PluginRegistry.refresh` → teardown + initialize) pick up rotated
+      // credentials with no process restart.
       try {
+        const adapterEnv = await resolveAdapterBuildEnv(config, ctx.logger);
         const registry = buildChatAdapterRegistry({
           catalog: (config.catalog ?? []) as ReadonlyArray<ChatCatalogEntry>,
-          env: process.env,
+          env: adapterEnv,
           logger: ctx.logger,
         });
         slackAdapterInstance = registry.adapters.slack ?? null;

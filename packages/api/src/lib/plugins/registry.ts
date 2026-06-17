@@ -155,6 +155,10 @@ export class PluginRegistry {
   private entries: PluginEntry[] = [];
   private idSet = new Set<string>();
   private initialized = false;
+  // Captured at `initializeAll` so a single plugin can be torn down and
+  // re-initialized at runtime (`refresh`) with the same Atlas context —
+  // the operator-credential rebuild seam (#3704). Null until init has run.
+  private lastInitContext: PluginContextLike | null = null;
 
   // ── Cached plugin liveness for /health (#3201) ─────────────────────────
   // The public, unauthenticated `/health` route calls `healthCheckAllCached`
@@ -195,6 +199,7 @@ export class PluginRegistry {
       throw new Error("Plugins already initialized — initializeAll() cannot be called twice");
     }
     this.initialized = true;
+    this.lastInitContext = ctx;
 
     const succeeded: string[] = [];
     const failed: string[] = [];
@@ -338,6 +343,98 @@ export class PluginRegistry {
     }
   }
 
+  /**
+   * Tear down and re-initialize a SINGLE plugin in place, reusing the Atlas
+   * context captured at `initializeAll` (#3704 — the operator-credential
+   * rebuild seam). This is the runtime "pick up rotated credentials with no
+   * process restart" path: a plugin whose `initialize()` re-reads its
+   * credential source (e.g. the chat plugin's `resolveAdapterEnv`) rebuilds
+   * against the new values.
+   *
+   * Safe for the chat plugin specifically: its `teardown()` shuts down the
+   * bridge + state adapter and resets its `initialized` flag, and its
+   * `initialize()` rebuilds the bridge, the Chat SDK instance, and the webhook
+   * handlers (the once-mounted routes read the live `bridge` closure), then
+   * re-registers the proactive listener via the rebuilt bridge. The old Chat
+   * SDK instance is shut down in `teardown()` before the rebuild.
+   *
+   * Returns a discriminated `{ ok }` result: `{ ok: true }` on success, or
+   * `{ ok: false; reason }` on failure (so a caller narrowing on `ok` always
+   * has a `reason`). A teardown error is logged but does not abort the re-init
+   * (best-effort, mirrors `teardownAll`); an initialize error leaves the plugin
+   * marked `unhealthy` and is surfaced. Never throws — callers (the Admin
+   * route) map the result to an HTTP body.
+   */
+  async refresh(id: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const entry = this.entries.find((e) => e.plugin.id === id);
+    if (!entry) {
+      return { ok: false, reason: `Plugin "${id}" is not registered` };
+    }
+    if (!this.lastInitContext) {
+      return { ok: false, reason: "Plugins have not been initialized yet — cannot refresh" };
+    }
+    const ctx = this.lastInitContext;
+
+    return withSpan(
+      "atlas.plugin.refresh",
+      { "atlas.plugin_id": id },
+      async () => {
+        // Best-effort teardown — a failure here is logged, not fatal, so a
+        // partially-broken old instance can't wedge the re-init.
+        if (entry.plugin.teardown) {
+          try {
+            await entry.plugin.teardown();
+          } catch (err) {
+            log.error(
+              { pluginId: id, err: err instanceof Error ? err : new Error(String(err)) },
+              "Plugin teardown failed during refresh — continuing to re-initialize",
+            );
+          }
+        }
+
+        if (!entry.plugin.initialize) {
+          entry.status = "healthy";
+          return { ok: true };
+        }
+
+        entry.status = "initializing";
+        try {
+          const pluginCtx = {
+            ...ctx,
+            logger:
+              typeof (ctx.logger as Record<string, unknown>)?.child === "function"
+                ? (ctx.logger as { child(bindings: Record<string, unknown>): unknown }).child({
+                    pluginId: id,
+                  })
+                : ctx.logger,
+          };
+          await entry.plugin.initialize(pluginCtx as PluginContextLike);
+          entry.status = "healthy";
+          // A successful re-init invalidates the cached /health snapshot so
+          // the next probe reflects the rebuilt plugin rather than a stale
+          // pre-refresh result.
+          this.healthSnapshot = null;
+          log.info({ pluginId: id }, "Plugin refreshed (teardown + re-initialize)");
+          return { ok: true };
+        } catch (err) {
+          entry.status = "unhealthy";
+          // Invalidate the cached /health snapshot on failure too: a
+          // re-init that threw (e.g. a decrypt/corruption failure on a
+          // rotated credential) leaves the plugin dead, and a stale
+          // pre-refresh snapshot could otherwise keep reporting it healthy
+          // to the public `/health` route for up to the TTL window.
+          this.healthSnapshot = null;
+          const reason = err instanceof Error ? err.message : String(err);
+          log.error(
+            { pluginId: id, err: err instanceof Error ? err : new Error(String(err)) },
+            "Plugin re-initialization failed during refresh",
+          );
+          return { ok: false, reason };
+        }
+      },
+    );
+  }
+
   get(id: string): PluginLike | undefined {
     return this.entries.find((e) => e.plugin.id === id)?.plugin;
   }
@@ -427,6 +524,7 @@ export class PluginRegistry {
     this.entries = [];
     this.idSet.clear();
     this.initialized = false;
+    this.lastInitContext = null;
     this.healthSnapshot = null;
     this.healthSnapshotInFlight = null;
   }

@@ -76,6 +76,7 @@ import { WorkspaceInstallGate } from "./packages/api/src/lib/integrations/instal
 // factory returns a plain async function — no `effect` import
 // surfaces here, so the relative-import constraint stays satisfied.
 import { createChatPluginExecuteQuery } from "./packages/api/src/lib/chat-plugin/executeQuery";
+import { resolveOperatorAdapterEnv } from "./packages/api/src/lib/integrations/operator-credentials/resolver";
 
 // Dedicated runtime for the proactive classifier + answer adapters.
 // Built inside the workspace by `getProactiveAiRuntime()` so this file
@@ -875,6 +876,15 @@ export default defineConfig({
       // key shape, and :lock: pending-approval flow that slack.ts's
       // legacy app_mention / thread-followup branches used to own.
       executeQuery: createChatPluginExecuteQuery(),
+      // Operator-tier credential resolution (#3704). Overlays Admin-set,
+      // DB-backed operator credentials (e.g. Slack `SLACK_CLIENT_ID` /
+      // `_SECRET` / `_SIGNING_SECRET` / `_ENCRYPTION_KEY`) on top of env, so
+      // a platform admin can rotate them from the console without a redeploy.
+      // The plugin re-reads this on every `initialize()`, so
+      // `PluginRegistry.refresh("chat-interaction")` picks up rotations with
+      // no process restart. Precedence: DB row → env → unset (env stays the
+      // self-host fallback). See `lib/integrations/operator-credentials/`.
+      resolveAdapterEnv: () => resolveOperatorAdapterEnv(),
       // ── Proactive listener wiring (#2607) ─────────────────────────
       // Wires every callback the proactive listener consumes to host
       // helpers under `packages/api/src/lib/proactive/`. After this

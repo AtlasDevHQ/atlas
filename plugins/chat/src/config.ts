@@ -493,12 +493,36 @@ export interface ChatPluginConfig {
    * along as `enabled: false` placeholders; their install handlers
    * land in 1.5.3.
    *
-   * Per-Platform credentials come from `process.env` (per CONTEXT.md
-   * "Operator vs Customer") — the plugin reads them inside
-   * `buildChatAdapterRegistry`. This config object intentionally does
-   * NOT carry credentials.
+   * Per-Platform OPERATOR credentials come from `process.env` by default
+   * (per CONTEXT.md "Operator vs Customer") — the plugin reads them inside
+   * `buildChatAdapterRegistry`. When `resolveAdapterEnv` is provided (#3704),
+   * its overlay takes precedence over env so operator credentials set via the
+   * Admin console are picked up at (re)build time. This config object still
+   * intentionally carries NO raw credential values — only the optional
+   * resolver callback.
    */
   catalog?: ReadonlyArray<ChatCatalogEntryInput>;
+
+  /**
+   * Optional async resolver for operator-tier adapter credentials (#3704).
+   *
+   * Returns an env-shaped overlay (`{ <ENV_VAR_NAME>: value | undefined }`)
+   * that the plugin merges ON TOP OF `process.env` before building the
+   * adapter registry, so the existing env-reading adapter builders pick up
+   * Admin-set, DB-backed operator credentials with no per-builder change.
+   * `undefined` values are dropped before merging, so an unresolved key
+   * never clobbers its env fallback (env stays the fallback for self-host).
+   *
+   * Resolution + precedence (DB row → env → unset) lives entirely in the
+   * host (`@atlas/api`'s operator-credentials resolver) — the chat plugin
+   * stays free of `@atlas/api` imports and of any DB/secret dependency.
+   *
+   * Called on every `initialize()`, so re-initializing the plugin (the
+   * runtime "rebuild" seam — `PluginRegistry.refresh`) re-reads credentials
+   * with no process restart. Omitted on self-host → pure env behavior,
+   * unchanged.
+   */
+  resolveAdapterEnv?: () => Promise<Record<string, string | undefined>>;
 
   /** State backend configuration. Default: { backend: "memory" } */
   state?: StateConfig;
@@ -1040,6 +1064,13 @@ export const ChatConfigSchema = z.object({
   proactive: ProactiveConfigSchema,
   executeQueryStream: zCallback<NonNullable<ChatPluginConfig["executeQueryStream"]>>(
     "executeQueryStream must be a function",
+  ).optional(),
+  // #3704 — operator-tier credential resolver overlay. Optional async
+  // callback; the host (`@atlas/api`) wires it to the operator-credentials
+  // resolver. Must be in this `.strict()` schema or config load rejects the
+  // key and boot crashes before HTTP binds (caught by Boot Smoke).
+  resolveAdapterEnv: zCallback<NonNullable<ChatPluginConfig["resolveAdapterEnv"]>>(
+    "resolveAdapterEnv must be a function returning Promise<Record<string, string | undefined>>",
   ).optional(),
 }).strict().refine(
   (c) => {

@@ -347,6 +347,13 @@ export interface PluginRegistryShape {
     Map<string, PluginHealthResult & { status: PluginStatus }>
   >;
   teardownAll(): Promise<void>;
+  /**
+   * Tear down + re-initialize a single plugin in place, reusing the context
+   * captured at `initializeAll` (#3704 — operator-credential rebuild seam).
+   * Never throws; returns a discriminated `{ ok: true }` / `{ ok: false;
+   * reason }` result for the caller to map (failure always carries a reason).
+   */
+  refresh(id: string): Promise<{ ok: true } | { ok: false; reason: string }>;
 
   // --- Query ---
   get(id: string): PluginLike | undefined;
@@ -441,6 +448,7 @@ function buildPluginService(impl: PluginRegistryClass) {
       initializeAll: (ctx) => impl.initializeAll(ctx),
       healthCheckAll: () => impl.healthCheckAll(),
       teardownAll: () => impl.teardownAll(),
+      refresh: (id) => impl.refresh(id),
       get: (id) => impl.get(id),
       getStatus: (id) => impl.getStatus(id),
       getByType: (type) => impl.getByType(type),

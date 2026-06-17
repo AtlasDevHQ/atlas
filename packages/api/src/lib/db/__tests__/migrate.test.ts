@@ -161,7 +161,8 @@ describe("runMigrations", () => {
     //   Plus 0138 (semantic_profile_status durable partial-profile marker,
     //   #3682) = 139.
     //   Plus 0139 (learned_patterns.auto_promoted flag, PRD #3617 B-2, #3636) = 140.
-    expect(count).toBe(140);
+    //   Plus 0140 (operator_integration_credentials, operator-tier app creds, #3704) = 141.
+    expect(count).toBe(141);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -330,6 +331,7 @@ describe("runMigrations", () => {
         "0137_learning_tables_performance_columns.sql",
         "0138_semantic_profile_status.sql",
         "0139_learned_patterns_auto_promoted.sql",
+        "0140_operator_integration_credentials.sql",
       ],
     });
 

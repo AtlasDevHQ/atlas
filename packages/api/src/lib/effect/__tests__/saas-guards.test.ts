@@ -138,7 +138,7 @@ const {
   BillingConfigGuardLive,
   BillingConfigInvalidError,
 } = await import("../saas-guards");
-const { Config, Settings } = await import("../layers");
+const { Config, Migration, Settings } = await import("../layers");
 const { _resetEncryptionKeyCache } = await import("@atlas/api/lib/db/encryption-keys");
 
 // ── Test helpers ────────────────────────────────────────────────────
@@ -157,6 +157,16 @@ function makeTestConfigLayer(
 function makeTestSettingsLayer(): Layer.Layer<TSettings> {
   return Layer.succeed(Settings, { loaded: 0 } satisfies SettingsShape);
 }
+
+// #3704 — `ChatAdapterEnvGuardLive` now yields `Migration` as an ordering
+// barrier (its presence check reads `operator_integration_credentials`, which
+// migration 0140 creates). Provide a stub so `yield* Migration` resolves;
+// these tests run with no internal DB (clean env), so the guard collapses to
+// the env-only check regardless of the `migrated` value. Pre-satisfying
+// Migration here leaves each test providing only the Config layer, unchanged.
+const ChatGuardWithMigration = ChatAdapterEnvGuardLive.pipe(
+  Layer.provide(Layer.succeed(Migration, { migrated: true })),
+);
 
 // Source of truth lives in `effect/saas-env.ts :: SAAS_ENV_KEYS` (#2226).
 // Consume it directly so a new SaaS-contract field automatically gets
@@ -1245,7 +1255,7 @@ describe("ChatAdapterEnvGuardLive", () => {
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
           Effect.provide(
-            ChatAdapterEnvGuardLive.pipe(
+            ChatGuardWithMigration.pipe(
               Layer.provide(makeTestConfigLayer({
                 deployMode: "saas",
                 catalog: [
@@ -1282,7 +1292,7 @@ describe("ChatAdapterEnvGuardLive", () => {
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
           Effect.provide(
-            ChatAdapterEnvGuardLive.pipe(
+            ChatGuardWithMigration.pipe(
               Layer.provide(makeTestConfigLayer({
                 deployMode: "saas",
                 catalog: [
@@ -1315,7 +1325,7 @@ describe("ChatAdapterEnvGuardLive", () => {
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
           Effect.provide(
-            ChatAdapterEnvGuardLive.pipe(
+            ChatGuardWithMigration.pipe(
               Layer.provide(makeTestConfigLayer({
                 deployMode: "saas",
                 catalog: [
@@ -1345,7 +1355,7 @@ describe("ChatAdapterEnvGuardLive", () => {
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
           Effect.provide(
-            ChatAdapterEnvGuardLive.pipe(
+            ChatGuardWithMigration.pipe(
               Layer.provide(makeTestConfigLayer({
                 deployMode: "saas",
                 catalog: [
@@ -1372,7 +1382,7 @@ describe("ChatAdapterEnvGuardLive", () => {
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
           Effect.provide(
-            ChatAdapterEnvGuardLive.pipe(
+            ChatGuardWithMigration.pipe(
               Layer.provide(makeTestConfigLayer({
                 deployMode: "saas",
                 catalog: [
@@ -1398,7 +1408,7 @@ describe("ChatAdapterEnvGuardLive", () => {
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
           Effect.provide(
-            ChatAdapterEnvGuardLive.pipe(
+            ChatGuardWithMigration.pipe(
               Layer.provide(makeTestConfigLayer({
                 deployMode: "saas",
                 catalog: [
@@ -1424,7 +1434,7 @@ describe("ChatAdapterEnvGuardLive", () => {
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
           Effect.provide(
-            ChatAdapterEnvGuardLive.pipe(
+            ChatGuardWithMigration.pipe(
               Layer.provide(makeTestConfigLayer({
                 deployMode: "saas",
                 catalog: [
@@ -1450,7 +1460,7 @@ describe("ChatAdapterEnvGuardLive", () => {
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
           Effect.provide(
-            ChatAdapterEnvGuardLive.pipe(
+            ChatGuardWithMigration.pipe(
               Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
             ),
           ),
@@ -1465,7 +1475,7 @@ describe("ChatAdapterEnvGuardLive", () => {
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
           Effect.provide(
-            ChatAdapterEnvGuardLive.pipe(
+            ChatGuardWithMigration.pipe(
               Layer.provide(makeTestConfigLayer({
                 deployMode: "saas",
                 catalog: [
@@ -1492,7 +1502,7 @@ describe("ChatAdapterEnvGuardLive", () => {
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
           Effect.provide(
-            ChatAdapterEnvGuardLive.pipe(
+            ChatGuardWithMigration.pipe(
               Layer.provide(makeTestConfigLayer({
                 deployMode: "self-hosted",
                 catalog: [
@@ -1525,7 +1535,7 @@ describe("ChatAdapterEnvGuardLive", () => {
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
           Effect.provide(
-            ChatAdapterEnvGuardLive.pipe(
+            ChatGuardWithMigration.pipe(
               Layer.provide(makeTestConfigLayer({
                 deployMode: "saas",
                 catalog: [

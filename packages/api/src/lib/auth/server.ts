@@ -1997,7 +1997,13 @@ export function buildStripePluginOptions(deps: {
     },
     subscription: {
       enabled: true,
-      plans: getStripePlans(),
+      // Pass the resolver FUNCTION (not its return value) so the plugin
+      // re-resolves plans on each subscription operation — price IDs are
+      // hot-reloadable platform settings (#3703), so a pricing change from
+      // Admin → Settings takes effect without a redeploy / process restart.
+      // The function ref (not an eager array) is the durable contract here;
+      // pinned by the buildStripePluginOptions test.
+      plans: getStripePlans,
       // Required for org-referenced subscription actions: the plugin 400s
       // org-scoped calls without it (AUTHORIZE_REFERENCE_REQUIRED). Role
       // policy (admin/owner for money-moving actions, member for list)

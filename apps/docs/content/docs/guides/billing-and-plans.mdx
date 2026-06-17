@@ -222,17 +222,33 @@ If a Stripe call fails during one of these actions, the operation still complete
 On [app.useatlas.dev](https://app.useatlas.dev), Stripe is pre-configured. Skip this section — manage your subscription from **Admin > Billing** instead.
 </Callout>
 
-Set these environment variables to enable billing:
+Set these two environment variables to enable billing — they are the only
+Stripe **secrets**, so they stay in env:
 
 | Variable | Description |
 |----------|-------------|
 | `STRIPE_SECRET_KEY` | Stripe secret key (test or live). Enables billing routes when set |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret for verifying events |
+
+The six per-tier **Price IDs** are non-secret constants and live in the
+settings registry under **Admin → Settings → Billing** (platform admins only).
+They are runtime-editable and hot-reloadable — a pricing change takes effect
+without a redeploy ([#3703](https://github.com/AtlasDevHQ/atlas/issues/3703)).
+The matching environment variables still work as a fallback when no settings
+override is present:
+
+| Setting / env fallback | Description |
+|----------|-------------|
 | `STRIPE_STARTER_PRICE_ID` | Price ID for the Starter plan (monthly) |
 | `STRIPE_STARTER_ANNUAL_PRICE_ID` | Price ID for the Starter plan (annual) |
 | `STRIPE_PRO_PRICE_ID` | Price ID for the Pro plan (monthly) |
 | `STRIPE_PRO_ANNUAL_PRICE_ID` | Price ID for the Pro plan (annual) |
-| `STRIPE_BUSINESS_PRICE_ID` | Price ID for the Business plan |
+| `STRIPE_BUSINESS_PRICE_ID` | Price ID for the Business plan (monthly) |
+| `STRIPE_BUSINESS_ANNUAL_PRICE_ID` | Price ID for the Business plan (annual) |
+
+A missing monthly Price ID silently omits that tier from checkout, so it is
+surfaced as an operator-actionable warning in the boot log (not a boot
+failure). Set the missing ID from **Admin → Settings → Billing**.
 
 When `STRIPE_SECRET_KEY` is set:
 
@@ -284,7 +300,7 @@ To run Atlas without any billing:
 ### Plan not syncing after payment
 
 - The `customer.subscription.updated` webhook updates the workspace tier and invalidates the plan cache — changes take effect on the next request
-- If the webhook is arriving but the plan isn't updating, check that `resolvePlanTierFromPriceId()` can map your Stripe price IDs to Atlas tiers — verify the `STRIPE_*_PRICE_ID` environment variables match your Stripe dashboard
+- If the webhook is arriving but the plan isn't updating, check that `resolvePlanTierFromPriceId()` can map your Stripe price IDs to Atlas tiers — verify the Price IDs in **Admin → Settings → Billing** (or their `STRIPE_*_PRICE_ID` env fallback) match your Stripe dashboard
 - Call `GET /api/v1/billing` to check the current billing status for the workspace
 
 ### Workspace suspended after payment failure

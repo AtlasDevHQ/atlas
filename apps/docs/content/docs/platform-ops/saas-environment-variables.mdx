@@ -101,6 +101,7 @@ Railway:
 - **Intelligence** — semantic-expert scheduler + auto-approve
 - **Appearance** — brand color
 - **Email** — provider + from address (keys via Admin → Email provider)
+- **Billing** — the six Stripe per-tier Price IDs (only `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` stay env)
 
 Platform-scoped settings require `platform_admin`; workspace-scoped settings are
 editable by workspace admins (filtered by `saasVisible` / `saasWritable` on SaaS).

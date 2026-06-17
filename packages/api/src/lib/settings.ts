@@ -605,6 +605,80 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
+  // Stripe Billing — the six paid-tier price IDs (#3703). These are
+  // NON-SECRET Stripe constants (the genuine secrets — STRIPE_SECRET_KEY,
+  // STRIPE_WEBHOOK_SECRET — stay env-only and are never registry-backed).
+  // Platform-scoped + hot-reloadable: `getStripePlans()` / `resolvePlanTier
+  // FromPriceId()` read them per-checkout via `getSettingAuto`, so an
+  // operator can change pricing from Admin → Settings without a redeploy.
+  // The env var is the self-host / boot fallback tier. `saasVisible: false`
+  // keeps them off the generic workspace-admin settings page (pricing is a
+  // platform-operator concern, not a per-tenant knob); platform admins always
+  // see all settings. The monthly IDs are required for their tier to appear in
+  // checkout — a missing one surfaces as an operator-actionable boot WARNING
+  // (no longer a boot crash; see `BillingConfigGuardLive`). The annual IDs are
+  // optional discount levers.
+  {
+    key: "STRIPE_STARTER_PRICE_ID",
+    section: "Billing",
+    label: "Starter Price ID (monthly)",
+    description: "Stripe Price ID for the Starter plan (monthly, $29/seat). Required for the Starter tier to appear in checkout.",
+    type: "string",
+    envVar: "STRIPE_STARTER_PRICE_ID",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "STRIPE_STARTER_ANNUAL_PRICE_ID",
+    section: "Billing",
+    label: "Starter Price ID (annual)",
+    description: "Stripe Price ID for the Starter plan (annual). Optional discount lever.",
+    type: "string",
+    envVar: "STRIPE_STARTER_ANNUAL_PRICE_ID",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "STRIPE_PRO_PRICE_ID",
+    section: "Billing",
+    label: "Pro Price ID (monthly)",
+    description: "Stripe Price ID for the Pro plan (monthly, $59/seat). Required for the Pro tier to appear in checkout.",
+    type: "string",
+    envVar: "STRIPE_PRO_PRICE_ID",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "STRIPE_PRO_ANNUAL_PRICE_ID",
+    section: "Billing",
+    label: "Pro Price ID (annual)",
+    description: "Stripe Price ID for the Pro plan (annual). Optional discount lever.",
+    type: "string",
+    envVar: "STRIPE_PRO_ANNUAL_PRICE_ID",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "STRIPE_BUSINESS_PRICE_ID",
+    section: "Billing",
+    label: "Business Price ID (monthly)",
+    description: "Stripe Price ID for the Business plan (monthly, $99/seat). Required for the Business tier to appear in checkout.",
+    type: "string",
+    envVar: "STRIPE_BUSINESS_PRICE_ID",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "STRIPE_BUSINESS_ANNUAL_PRICE_ID",
+    section: "Billing",
+    label: "Business Price ID (annual)",
+    description: "Stripe Price ID for the Business plan (annual). Optional discount lever.",
+    type: "string",
+    envVar: "STRIPE_BUSINESS_ANNUAL_PRICE_ID",
+    scope: "platform",
+    saasVisible: false,
+  },
+
   // Dynamic Learning — retrieval-time tuning for learned query patterns.
   // Workspace-scoped + hot-reloaded (read per-request via getSettingAuto), so
   // a tenant can tune them from Admin → Settings with no redeploy. The env var

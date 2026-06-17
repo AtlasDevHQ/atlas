@@ -12,6 +12,7 @@
  */
 
 import type { PlanTier } from "@atlas/api/lib/db/internal";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -256,13 +257,24 @@ export function computeTokenBudget(tier: PlanTier, seatCount: number): number {
  * pinned by plans.test.ts — a drift would re-add a base line item on top
  * of the seat item (double billing).
  *
- * NOTE (#3435): each tier below is conditionally pushed only when its monthly
- * `STRIPE_*_PRICE_ID` is set, so a missing one SILENTLY OMITS that tier from
+ * Price IDs resolve via `getSettingAuto` (#3703) — platform-scoped settings
+ * registry. These keys are `scope: "platform"` and read with no orgId, so the
+ * effective precedence is `platform DB override > env > default` (the workspace
+ * tier is unreachable for platform-scoped reads). The env var is the self-host
+ * / boot fallback tier. `getSettingAuto` is a synchronous read of the in-process
+ * settings cache (kept fresh by writes + the SaaS refresh tick); because the
+ * `@better-auth/stripe` plugin is handed this FUNCTION (not its return value),
+ * plans are re-resolved on each subscription operation, so a pricing change set
+ * from Admin → Settings takes effect without a redeploy.
+ *
+ * NOTE (#3435/#3703): each tier below is conditionally pushed only when its
+ * monthly price ID resolves, so a missing one SILENTLY OMITS that tier from
  * checkout. This function deliberately stays silent (it has many legitimate
  * callers that don't want boot noise); the loud check lives at boot in
- * `BillingConfigGuardLive` (`lib/effect/saas-guards.ts`), which fails a SaaS
- * boot when any required monthly price ID is absent. The required-var SSOT
- * is `MONTHLY_PRICE_ID_ENV_VARS` in `lib/billing/config-validation.ts`.
+ * `BillingConfigGuardLive` (`lib/effect/saas-guards.ts`), which WARNS (no
+ * longer crashes) a SaaS boot when any required monthly price ID is absent
+ * after settings resolution. The required-key SSOT is
+ * `MONTHLY_PRICE_ID_ENV_VARS` in `lib/billing/config-validation.ts`.
  */
 export function getStripePlans(): Array<{
   name: string;
@@ -281,13 +293,13 @@ export function getStripePlans(): Array<{
     freeTrial?: { days: number };
   }> = [];
 
-  const starterPriceId = process.env.STRIPE_STARTER_PRICE_ID;
+  const starterPriceId = getSettingAuto("STRIPE_STARTER_PRICE_ID");
   if (starterPriceId) {
     plans.push({
       name: "starter",
       priceId: starterPriceId,
       seatPriceId: starterPriceId,
-      annualDiscountPriceId: process.env.STRIPE_STARTER_ANNUAL_PRICE_ID,
+      annualDiscountPriceId: getSettingAuto("STRIPE_STARTER_ANNUAL_PRICE_ID"),
       limits: {
         tokenBudgetPerSeat: PLANS.starter.limits.tokenBudgetPerSeat,
         seats: PLANS.starter.limits.maxSeats,
@@ -298,13 +310,13 @@ export function getStripePlans(): Array<{
     });
   }
 
-  const proPriceId = process.env.STRIPE_PRO_PRICE_ID;
+  const proPriceId = getSettingAuto("STRIPE_PRO_PRICE_ID");
   if (proPriceId) {
     plans.push({
       name: "pro",
       priceId: proPriceId,
       seatPriceId: proPriceId,
-      annualDiscountPriceId: process.env.STRIPE_PRO_ANNUAL_PRICE_ID,
+      annualDiscountPriceId: getSettingAuto("STRIPE_PRO_ANNUAL_PRICE_ID"),
       limits: {
         tokenBudgetPerSeat: PLANS.pro.limits.tokenBudgetPerSeat,
         seats: PLANS.pro.limits.maxSeats,
@@ -315,13 +327,13 @@ export function getStripePlans(): Array<{
     });
   }
 
-  const businessPriceId = process.env.STRIPE_BUSINESS_PRICE_ID;
+  const businessPriceId = getSettingAuto("STRIPE_BUSINESS_PRICE_ID");
   if (businessPriceId) {
     plans.push({
       name: "business",
       priceId: businessPriceId,
       seatPriceId: businessPriceId,
-      annualDiscountPriceId: process.env.STRIPE_BUSINESS_ANNUAL_PRICE_ID,
+      annualDiscountPriceId: getSettingAuto("STRIPE_BUSINESS_ANNUAL_PRICE_ID"),
       limits: {
         tokenBudgetPerSeat: PLANS.business.limits.tokenBudgetPerSeat,
         seats: PLANS.business.limits.maxSeats,
@@ -338,16 +350,17 @@ export function getStripePlans(): Array<{
 /**
  * Resolve a Stripe price ID back to an Atlas PlanTier.
  *
- * Checks both monthly and annual price IDs from environment variables.
+ * Checks both monthly and annual price IDs, resolved via `getSettingAuto`
+ * (#3703) — platform settings with env fallback, hot-reloadable in SaaS.
  * Returns null if the price ID doesn't match any configured plan.
  */
 export function resolvePlanTierFromPriceId(priceId: string): PlanTier | null {
-  const starterPriceId = process.env.STRIPE_STARTER_PRICE_ID;
-  const starterAnnualPriceId = process.env.STRIPE_STARTER_ANNUAL_PRICE_ID;
-  const proPriceId = process.env.STRIPE_PRO_PRICE_ID;
-  const proAnnualPriceId = process.env.STRIPE_PRO_ANNUAL_PRICE_ID;
-  const businessPriceId = process.env.STRIPE_BUSINESS_PRICE_ID;
-  const businessAnnualPriceId = process.env.STRIPE_BUSINESS_ANNUAL_PRICE_ID;
+  const starterPriceId = getSettingAuto("STRIPE_STARTER_PRICE_ID");
+  const starterAnnualPriceId = getSettingAuto("STRIPE_STARTER_ANNUAL_PRICE_ID");
+  const proPriceId = getSettingAuto("STRIPE_PRO_PRICE_ID");
+  const proAnnualPriceId = getSettingAuto("STRIPE_PRO_ANNUAL_PRICE_ID");
+  const businessPriceId = getSettingAuto("STRIPE_BUSINESS_PRICE_ID");
+  const businessAnnualPriceId = getSettingAuto("STRIPE_BUSINESS_ANNUAL_PRICE_ID");
 
   if (starterPriceId && (priceId === starterPriceId || (starterAnnualPriceId && priceId === starterAnnualPriceId))) {
     return "starter";

@@ -87,14 +87,20 @@ across regions:
   `requiresRestart`, env as fallback) derived from `ATLAS_API_REGION` + the
   `residency.regions[].apiUrl` map instead of stamped per service.
 
-### Tier 3 — Delete redundant env vars
-Already covered by `atlas.config.ts`, no behavior change to drop from SaaS env:
+### Tier 3 — Delete redundant env vars ✅ shipped (#3702)
+Already covered by `atlas.config.ts`, no behavior change to drop from SaaS env. The two
+boot-contract vars (`ATLAS_DEPLOY_MODE`, `ATLAS_ENTERPRISE_ENABLED`) left
+`SAAS_ENV_KEYS`/the boot-smoke fixture (which now proves a region boots green with them
+unset, relying on `atlas.config.ts`); `TWENTY_BASE_URL` was never part of the typed boot
+contract and is dropped from the Railway services only:
 - `ATLAS_DEPLOY_MODE=saas` — config sets `deployMode: "saas"`; `config.ts` reads
-  `process.env.ATLAS_DEPLOY_MODE ?? configFileValue`.
+  `process.env.ATLAS_DEPLOY_MODE ?? configFileValue`. `EnterpriseGuardLive` now reads
+  the raw `process.env` directly (footgun probe, not a SaaS-required input).
 - `ATLAS_ENTERPRISE_ENABLED=true` — `isEnterpriseEnabledLocal` reads
-  `config.enterprise?.enabled` first; config sets `enterprise.enabled: true`.
-  (Verify no pre-config read path needs it.)
-- `TWENTY_BASE_URL` — its default already *is* the SaaS hostname.
+  `config.enterprise?.enabled` first; config sets `enterprise.enabled: true`. Confirmed
+  no pre-config read path needs it.
+- `TWENTY_BASE_URL` — its default already *is* the SaaS hostname (`crm.useatlas.dev`).
+  Never in `SAAS_ENV_KEYS`/the boot-smoke fixture — a Railway-only var removal.
 
 ### Tier 4 — Documentation hygiene
 - `.env.example` (718 lines) stays the self-host reference, but should be clearly

@@ -146,7 +146,16 @@ function makeTestSettingsLayer(): Layer.Layer<TSettings> {
 // prior process could let a later "succeeds when …" assertion pass for
 // the wrong reason.
 const { SAAS_ENV_KEYS } = await import("../saas-env");
-const GUARD_ENV_KEYS = SAAS_ENV_KEYS;
+// `ATLAS_DEPLOY_MODE` / `ATLAS_ENTERPRISE_ENABLED` left the SaaS boot
+// contract in #3702 (atlas.config.ts covers them), but `EnterpriseGuardLive`
+// still inspects the raw `process.env.ATLAS_DEPLOY_MODE` and several cases
+// below set it — so they must still be cleaned between cases to keep the
+// "succeeds when …" assertions from passing for the wrong reason.
+const GUARD_ENV_KEYS = [
+  ...SAAS_ENV_KEYS,
+  "ATLAS_DEPLOY_MODE",
+  "ATLAS_ENTERPRISE_ENABLED",
+] as const;
 
 function withCleanEnv<T>(run: () => Promise<T>): Promise<T> {
   const saved: Record<string, string | undefined> = {};

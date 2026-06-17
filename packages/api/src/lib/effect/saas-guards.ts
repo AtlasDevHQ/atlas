@@ -365,8 +365,13 @@ export class BillingConfigInvalidError extends Data.TaggedError("BillingConfigIn
  * is unambiguous operator intent — config-file and `auto` can fall
  * through to `self-hosted` quietly.
  */
-function explicitSaasFromEnv(env: SaasEnv): boolean {
-  return env.ATLAS_DEPLOY_MODE === "saas";
+function explicitSaasFromEnv(): boolean {
+  // Read raw `process.env` directly — `ATLAS_DEPLOY_MODE` is deliberately not
+  // part of the `SaasEnv` boot contract (#3702; SaaS resolves it from
+  // `atlas.config.ts`). This guard inspects the operator's raw env intent to
+  // catch the self-host footgun (env requests saas, no `@atlas/ee`), which is
+  // independent of the SaaS-required input set.
+  return process.env.ATLAS_DEPLOY_MODE === "saas";
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -390,9 +395,8 @@ function explicitSaasFromEnv(env: SaasEnv): boolean {
 export const EnterpriseGuardLive: Layer.Layer<never, EnterpriseRequiredError, Config> = Layer.effectDiscard(
   Effect.gen(function* () {
     const { config } = yield* Config;
-    const env = readSaasEnv();
 
-    const requestedSaas = explicitSaasFromEnv(env);
+    const requestedSaas = explicitSaasFromEnv();
     const resolvedSaas = config.deployMode === "saas";
 
     if (requestedSaas && !resolvedSaas) {

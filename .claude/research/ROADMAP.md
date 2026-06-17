@@ -20,13 +20,15 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
-### `v0.0.17` — Performance-aware Atlas
+### `v0.0.17` — Performance-aware Atlas + SaaS-first env-var reduction
+
+This tag bundles **two milestones**: Performance-aware Atlas ([#67](https://github.com/AtlasDevHQ/atlas/milestone/67), code-complete) and SaaS-first env-var reduction ([#69](https://github.com/AtlasDevHQ/atlas/milestone/69), in progress — folded in 2026-06-17 ahead of the tag).
 
 Kicked off 2026-06-16 from PRD [#3617](https://github.com/AtlasDevHQ/atlas/issues/3617) ([milestone #67](https://github.com/AtlasDevHQ/atlas/milestone/67), 16 issues). Makes query performance a first-class signal in the two subsystems that drive the agent — an index/cardinality-aware semantic layer (Workstream A) and perf-weighted, better-connected learned patterns (Workstream B). Both are core/AGPL, reading a `duration_ms` Atlas already records.
 
 Shipped ahead of kickoff: A-0 sargability prompt + MySQL date-filter fix (#3629 → #3692), B-0 latency/staleness migration (#3631 → #3693), and the cross-tenant leak fixes #3610/#3611 (#3690) that unblock B-2.
 
-Slices (all shipped — **closed out 2026-06-16**: GH milestone #67 + anchor PRD [#3617](https://github.com/AtlasDevHQ/atlas/issues/3617) closed, docs verified. Prod tag + changelog entry + History move pending `/release`):
+Workstream A/B slices (all shipped — **closed out 2026-06-16**: GH milestone #67 + anchor PRD [#3617](https://github.com/AtlasDevHQ/atlas/issues/3617) closed, docs verified). Prod tag now pending the bundled env-var work below + `/release`:
 - [x] **A-1** — surface `unique_count`/`null_count` cardinality through the semantic index ([#3630](https://github.com/AtlasDevHQ/atlas/issues/3630) → [#3697](https://github.com/AtlasDevHQ/atlas/pull/3697))
 - [x] **A-2** — index harvest (PG + MySQL) → `IndexProfile` → YAML → composite-aware prompt hints ([#3634](https://github.com/AtlasDevHQ/atlas/issues/3634) → [#3716](https://github.com/AtlasDevHQ/atlas/pull/3716))
 - [x] **B-1** — thread `durationMs` into the proposer → rolling average in `incrementPatternCount` ([#3635](https://github.com/AtlasDevHQ/atlas/issues/3635) → [#3715](https://github.com/AtlasDevHQ/atlas/pull/3715))
@@ -37,6 +39,15 @@ Slices (all shipped — **closed out 2026-06-16**: GH milestone #67 + anchor PRD
 Related learned-pattern bugs folded in: cache-not-invalidated-on-approve ([#3612](https://github.com/AtlasDevHQ/atlas/issues/3612)), bulk-approve skips amendment YAML rewrite ([#3613](https://github.com/AtlasDevHQ/atlas/issues/3613)), dedup cache no TTL ([#3614](https://github.com/AtlasDevHQ/atlas/issues/3614)), `actor_kind` always NULL ([#3615](https://github.com/AtlasDevHQ/atlas/issues/3615)), `duration_ms=0` skews slow-query analytics ([#3616](https://github.com/AtlasDevHQ/atlas/issues/3616)).
 
 Pre-tag review-findings fixes (8-agent `v0.0.16..HEAD` pass) landed via [#3724](https://github.com/AtlasDevHQ/atlas/pull/3724) — rejected-pattern resurrection, amendment re-apply dedup, `/health` operator-gate, plus real-PG promote/decay + index-harvest coverage. Four deferred learn-subsystem refactors ([#3720](https://github.com/AtlasDevHQ/atlas/issues/3720)–#3723) moved to Architecture Backlog, all now shipped (#3720 → #3726, #3723 → #3725, #3721+#3722 → #3727); the retrieval-module split is recorded as arch-win #97.
+
+**Bundled in — SaaS-first env-var reduction** ([milestone #69](https://github.com/AtlasDevHQ/atlas/milestone/69), umbrella [#3701](https://github.com/AtlasDevHQ/atlas/issues/3701)): make config runtime-controllable so a SaaS operator never redeploys to change it — env reserved for secrets + pre-DB boot inputs. Follows the SaaS-env audit (`docs/development/saas-env-audit.md`). Tier-ordered slices, independently grabbable:
+- [ ] **#3702** (Tier 3) — drop 3 redundant SaaS env vars already covered by `atlas.config.ts` ([#3702](https://github.com/AtlasDevHQ/atlas/issues/3702))
+- [ ] **#3703** (Tier 1) — Stripe price IDs → platform settings (8 env vars → 2) ([#3703](https://github.com/AtlasDevHQ/atlas/issues/3703))
+- [ ] **#3704** (Tier 1) — operator integration credentials via Admin instead of boot env ([#3704](https://github.com/AtlasDevHQ/atlas/issues/3704))
+- [ ] **#3705** (Tier 1) — tuning knobs (abuse/TTL/OTEL) → settings registry ([#3705](https://github.com/AtlasDevHQ/atlas/issues/3705))
+- [ ] **#3706** (Tier 2) — non-secret deploy constants → `atlas.config.ts` + derive per-region origins ([#3706](https://github.com/AtlasDevHQ/atlas/issues/3706))
+- [ ] **#3707** (Tier 4) — split `.env.example` + auto-generate the SaaS env reference ([#3707](https://github.com/AtlasDevHQ/atlas/issues/3707))
+- [ ] **#3710** (Tier 4) — document undocumented env vars (SSRF flag + gchat adapter vars) ([#3710](https://github.com/AtlasDevHQ/atlas/issues/3710))
 
 Banked separately toward a later tag: the post-v0.0.16 prod-readiness audit follow-ups (#3679–#3687, under [Planned tags](#planned-tags)) and the www/docs accuracy sweeps (#3677/#3678).
 
@@ -53,8 +64,6 @@ Lightweight forward-look. Conviction firms as work begins.
 - **Prod-readiness follow-ups** ([#3679](https://github.com/AtlasDevHQ/atlas/issues/3679)–#3687) — deferred findings from the post-v0.0.16 audit (#3688). Shipped: health-endpoint reshape (#3685 → #3691), dunning durability (#3680 → #3717), profiler partial-marker (#3682 → #3719). Remaining: Stripe-teardown outbox (#3679), uninstall-orphan teardown (#3681), `/use-demo` atomicity (#3683), OTel spans (#3684), migration-0133 expand-contract (#3686), operational verifications (#3687).
 
 - **`v0.0.18` — Self-serve MCP Trial Signup** ([milestone #68](https://github.com/AtlasDevHQ/atlas/milestone/68), PRD [#3646](https://github.com/AtlasDevHQ/atlas/issues/3646)) — origin-tagged trial provisioning over MCP: `start_trial` spins up a metered trial workspace + connect URL, business-email-only signup, claim-gated metering, an unclaimed-grace reaper, and MCP_SIGNUP CRM lead source. Not yet begun (7 issues, all `ready-for-agent`).
-
-- **SaaS-first env-var reduction** ([milestone #69](https://github.com/AtlasDevHQ/atlas/milestone/69), parent [#3701](https://github.com/AtlasDevHQ/atlas/issues/3701)) — make config runtime-controllable: promote tuning knobs, Stripe price IDs, and operator integration creds out of boot-time env into the settings registry; env reserved for secrets + pre-DB boot inputs. Follows the SaaS-env audit (#3709). Not yet begun (8 issues).
 
 - **`v0.1.0` — Public launch** ([#2919](https://github.com/AtlasDevHQ/atlas/issues/2919)) — the July 2026 launch event; first minor out of the `v0.0.x` train. Points at the banked changelog accumulated under `v0.0.x` (release-process plumbing, REST datasources, staging live). Tracked outside the tag train until the bundle firms up.
 

@@ -33,6 +33,7 @@
 
 import { createHash } from "node:crypto";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getDashboard } from "@atlas/api/lib/dashboards";
 import { resolveDashboardParameterValues } from "@atlas/api/lib/dashboard-parameters";
@@ -619,7 +620,8 @@ const EXPORT_TIMEOUT_MAX_MS = 180_000;
 const EXPORT_TIMEOUT_SENTINEL = "atlas_export_timed_out";
 
 function getExportTimeoutMs(): number {
-  const raw = process.env.ATLAS_DASHBOARD_EXPORT_TIMEOUT_MS;
+  // Platform-scoped settings registry (#3705): DB override > env > default.
+  const raw = getSettingAuto("ATLAS_DASHBOARD_EXPORT_TIMEOUT_MS");
   if (!raw) return EXPORT_TIMEOUT_DEFAULT_MS;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return EXPORT_TIMEOUT_DEFAULT_MS;

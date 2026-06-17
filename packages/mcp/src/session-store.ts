@@ -48,6 +48,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { resolveMcpMaxSessions } from "@atlas/api/lib/env-profile";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 import { trackResponseStreamLifetime } from "./stream-liveness.js";
 
 const log = createLogger("mcp-session-store");
@@ -175,7 +176,10 @@ export function sessionIdleTimeoutMs(): number {
     // is unreachable in production — the setter would have thrown at startup.
     return _idleTimeoutOverrideMs;
   }
-  const raw = process.env.ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS;
+  // Platform-scoped settings registry (#3705): DB override > env > default.
+  // The hosted MCP transport mounts on the per-region API server, which runs
+  // the SettingsLive refresh fiber, so this re-reads per sweep and hot-reloads.
+  const raw = getSettingAuto("ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS");
   if (!raw) return DEFAULT_SESSION_IDLE_TIMEOUT_MS;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed < MIN_SESSION_IDLE_TIMEOUT_MS) {
@@ -206,7 +210,8 @@ export function sessionIdleTimeoutMs(): number {
 const DEFAULT_MAX_HELD_STREAM_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 export function maxHeldStreamAgeMs(): number {
-  const raw = process.env.ATLAS_MCP_MAX_HELD_STREAM_AGE_MS;
+  // Platform-scoped settings registry (#3705): DB override > env > default.
+  const raw = getSettingAuto("ATLAS_MCP_MAX_HELD_STREAM_AGE_MS");
   if (!raw) return DEFAULT_MAX_HELD_STREAM_AGE_MS;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed < 0) {

@@ -36,6 +36,8 @@
  * single-region case, which is the production hot path today.
  */
 
+import { getSettingAuto } from "@atlas/api/lib/settings";
+
 const WINDOW_MS = 60_000;
 export { WINDOW_MS };
 
@@ -144,7 +146,8 @@ const buckets = new Map<string, BucketEntry[]>();
 const DEFAULT_LIMITS_CACHE_MAX_KEYS = 10_000;
 
 function resolveLimitsCacheMaxKeys(): number {
-  const raw = process.env.ATLAS_MCP_RATE_LIMIT_MAX_KEYS;
+  // Platform-scoped settings registry (#3705): DB override > env > default.
+  const raw = getSettingAuto("ATLAS_MCP_RATE_LIMIT_MAX_KEYS");
   if (raw === undefined) return DEFAULT_LIMITS_CACHE_MAX_KEYS;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_LIMITS_CACHE_MAX_KEYS;

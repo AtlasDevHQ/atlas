@@ -7,6 +7,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 import { withSpan } from "@atlas/api/lib/tracing";
 
 const log = createLogger("plugins");
@@ -39,7 +40,8 @@ let lastWarnedHealthTtl: string | undefined;
  * caching (every call re-probes upstream).
  */
 export function getPluginHealthCacheTtlMs(): number {
-  const raw = process.env.ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS;
+  // Platform-scoped settings registry (#3705): DB override > env > default.
+  const raw = getSettingAuto("ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS");
   if (raw === undefined || raw === "") return DEFAULT_PLUGIN_HEALTH_CACHE_TTL_MS;
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 0 || n > MAX_PLUGIN_HEALTH_CACHE_TTL_MS) {

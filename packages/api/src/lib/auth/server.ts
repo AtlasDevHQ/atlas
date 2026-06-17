@@ -32,6 +32,7 @@ import {
 } from "@atlas/api/lib/auth/oauth-claims";
 import { listUserWorkspaceIds } from "@atlas/api/lib/auth/oauth-workspace-grants";
 import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit";
+import { getSettingOverride } from "@atlas/api/lib/settings";
 import Stripe from "stripe";
 import { getInternalDB, getWorkspaceDetails, hasInternalDB, internalQuery, isPlanOverrideActive, updateWorkspacePlanTier, updateWorkspaceStatus, withStripeSubscriptionLock, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -1372,12 +1373,21 @@ function resolveTtlSeconds(raw: string | undefined, fallback: number): number {
   return parsed;
 }
 
+// Platform settings registry (#3705): a platform DB override wins over the
+// injected `env` (which stays the boot/fallback tier), then the default.
+// `getSettingOverride` reads ONLY the DB tier — using `getSettingAuto` here
+// would read the live `process.env` and shadow the synthetic `env` the unit
+// tests inject. Both TTLs are baked into the Better Auth instance at boot
+// (`accessTokenExpiresIn` / `refreshTokenExpiresIn`), so the registry entries
+// carry `requiresRestart: true` — a change takes effect on the next restart.
 export function resolveAccessTokenTtlSeconds(env: NodeJS.ProcessEnv): number {
-  return resolveTtlSeconds(env.ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS, DEFAULT_ACCESS_TOKEN_TTL_SECONDS);
+  const override = getSettingOverride("ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS");
+  return resolveTtlSeconds(override ?? env.ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS, DEFAULT_ACCESS_TOKEN_TTL_SECONDS);
 }
 
 export function resolveRefreshTokenTtlSeconds(env: NodeJS.ProcessEnv): number {
-  return resolveTtlSeconds(env.ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS, DEFAULT_REFRESH_TOKEN_TTL_SECONDS);
+  const override = getSettingOverride("ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS");
+  return resolveTtlSeconds(override ?? env.ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS, DEFAULT_REFRESH_TOKEN_TTL_SECONDS);
 }
 
 /**

@@ -12,6 +12,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { SaasCrm } from "@atlas/api/lib/effect/services";
 import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 
 const log = createLogger("demo");
 
@@ -32,7 +33,8 @@ let lastWarnedDemoMaxSteps: string | undefined;
 
 /** Max agent steps for demo sessions. Default 10. */
 export function getDemoMaxSteps(): number {
-  const raw = process.env.ATLAS_DEMO_MAX_STEPS ?? String(DEMO_DEFAULT_MAX_STEPS);
+  // Platform-scoped settings registry (#3705): DB override > env > default.
+  const raw = getSettingAuto("ATLAS_DEMO_MAX_STEPS") ?? String(DEMO_DEFAULT_MAX_STEPS);
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 1 || n > 100) {
     if (raw !== lastWarnedDemoMaxSteps) {
@@ -48,7 +50,8 @@ let lastWarnedDemoRpm: string | undefined;
 
 /** Requests per minute for demo users. Default 10. 0 = disabled. */
 export function getDemoRpmLimit(): number {
-  const raw = process.env.ATLAS_DEMO_RATE_LIMIT_RPM ?? String(DEMO_DEFAULT_RPM);
+  // Platform-scoped settings registry (#3705): DB override > env > default.
+  const raw = getSettingAuto("ATLAS_DEMO_RATE_LIMIT_RPM") ?? String(DEMO_DEFAULT_RPM);
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) {
     if (raw !== lastWarnedDemoRpm) {

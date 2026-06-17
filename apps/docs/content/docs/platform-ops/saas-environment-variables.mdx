@@ -86,19 +86,26 @@ them — changing them *is* a deploy:
 
 ## What you change at runtime instead
 
-Roughly 40 settings are **already runtime-controllable** through the settings
+Roughly 55 settings are **already runtime-controllable** through the settings
 registry (`lib/settings.ts`) — the env var, if any, is only a fallback. Precedence
 is `workspace DB override > platform DB override > env var > default`, and SaaS
 hot-reloads within ~30s (no redeploy). Edit these in the **Admin console**, not in
 Railway:
 
 - **Query limits** — row limit, query timeout, delivery max rows
-- **Rate limiting** — per-user / chat / admin RPM (the base RPM floor excepted)
+- **Rate limiting** — per-user / chat / admin RPM (the base RPM floor excepted), contact-form RPM
+- **Demo** — demo RPM + demo agent max steps
+- **Abuse prevention** — query-rate / window / error-rate / unique-tables / throttle-delay / escalation-cooldown thresholds
 - **Agent** — max steps, conversation step cap, provider, model, log level
 - **Security** — RLS column/claim, table whitelist, CORS origin, allowed email domains, SCIM policy
 - **Sessions** — idle / absolute timeout
+- **OAuth** — access / refresh token TTLs (restart-applied), install state-token TTL
+- **Model catalog** — BYOT catalog cache TTL
+- **MCP** — session idle timeout, max held-stream age, rate-limit cache max keys
+- **Dashboards** — export render timeout
 - **Sandbox** — backend (via Admin → Sandbox, incl. BYOC), URL
 - **Intelligence** — semantic-expert scheduler + auto-approve
+- **Observability** — plugin-health cache TTL (the OTEL exporter endpoint/headers stay env — they are read before the settings DB loads)
 - **Appearance** — brand color
 - **Email** — provider + from address (keys via Admin → Email provider)
 - **Billing** — the six Stripe per-tier Price IDs (only `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` stay env)

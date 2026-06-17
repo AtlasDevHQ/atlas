@@ -66,20 +66,42 @@ The headline of the principle. Candidates, by area:
   `resolvePlanTierFromPriceId()` read them via `getSettingAuto` per checkout, and
   `BillingConfigGuardLive` warns (no longer boot-blocks) on a missing price ID.
   Only the secret key + webhook secret stay env.
-- **Rate-limit / abuse tuning** — the per-user / chat / admin RPM trio
-  (`ATLAS_RATE_LIMIT_RPM`, `_RPM_CHAT`, `_RPM_ADMIN`) is **already** in the registry
-  (`_RPM` itself is immutable on SaaS — DDoS floor). The remaining env-only knobs to
-  promote are `ATLAS_CONTACT_RATE_LIMIT_RPM`, `ATLAS_DEMO_RATE_LIMIT_RPM`,
-  `ATLAS_DEMO_MAX_STEPS`, and the `ATLAS_ABUSE_*` family. Relates to #3687.
-- **OAuth / token TTLs** — `ATLAS_OAUTH_*_TTL_SECONDS`, MCP session caps
-  (`ATLAS_MCP_MAX_SESSIONS` is already env-profile-centralized, not registry).
+- **Rate-limit / abuse tuning** — ✅ **done (#3705).** The per-user / chat / admin RPM trio
+  (`ATLAS_RATE_LIMIT_RPM`, `_RPM_CHAT`, `_RPM_ADMIN`) was **already** in the registry
+  (`_RPM` itself is immutable on SaaS — DDoS floor). #3705 promoted the remaining env-only
+  knobs to platform-scoped, hot-reloadable settings (env is now only a fallback tier):
+  `ATLAS_CONTACT_RATE_LIMIT_RPM`, `ATLAS_DEMO_RATE_LIMIT_RPM`, `ATLAS_DEMO_MAX_STEPS`, and
+  the `ATLAS_ABUSE_*` family (`getContactRpmLimit` / `getDemoRpmLimit` / `getDemoMaxSteps` /
+  `getAbuseConfig` read via `getSettingAuto` per request/event). Platform scope is
+  load-bearing — a tenant must never weaken the abuse thresholds that defend the region
+  against it. Relates to #3687.
+- **OAuth / token TTLs** — ✅ **done (#3705).** `ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS` /
+  `ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS` are platform-scoped `requiresRestart` settings
+  (baked into the Better Auth instance at boot; the resolvers prefer a DB override over the
+  injected env via `getSettingOverride`). `ATLAS_OAUTH_STATE_TTL_SECONDS` (the install-flow
+  state token — the issue mis-named it `*_STATE_TOKEN_TTL_SECONDS`) is hot-reloadable
+  (read per-mint). The MCP knobs `ATLAS_BYOT_CATALOG_TTL_MS`, `ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS`,
+  `ATLAS_MCP_MAX_HELD_STREAM_AGE_MS`, and `ATLAS_MCP_RATE_LIMIT_MAX_KEYS` are likewise
+  platform-scoped + hot-reloadable (the hosted MCP transport mounts on the per-region API
+  server, which runs the settings-refresh fiber). `ATLAS_MCP_MAX_SESSIONS` stays
+  env-profile-centralized (not registry).
 - **Operator integration credentials** — Slack/Discord/Teams/Telegram/WhatsApp/
   gchat/Jira/Linear/GitHub-App/Salesforce env creds read at boot. Today **adding a
   chat platform or action target to a region requires a Railway deploy**. These
   should be operator-settable (encrypted) via an Admin → Platform Integrations
   surface, the same way *workspace* plugin creds already work.
-- **Observability** — `OTEL_EXPORTER_OTLP_{ENDPOINT,HEADERS}` (today a per-service
-  footgun: shared scope silently drops telemetry).
+- **Observability** — `OTEL_EXPORTER_OTLP_{ENDPOINT,HEADERS}` — ⚠️ **consciously LEFT as env
+  (#3705).** Evaluated for promotion and deliberately kept env-only: `TelemetryLive` is the
+  *first* layer in `buildAppLayer` (so it can trace the rest of boot) and has no dependency
+  edge to `SettingsLive`, so the settings DB cache is provably cold at telemetry init on
+  every boot — a DB-backed OTEL value could never apply at boot, even after a restart, and a
+  silently-ignored override is worse than an env var (CLAUDE.md: "prefer errors over silent
+  fallbacks"; the OTel SDK also reads `OTEL_EXPORTER_OTLP_HEADERS` directly from the process
+  env). This is exactly the documented carve-out for "the process needs the value before the
+  internal DB exists." The per-service footgun (shared scope silently drops telemetry) is
+  better solved by setting it once as a region-constant via shared platform config, not the
+  runtime registry. `ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS` (plugin-liveness cache) *was* promoted
+  — it is read per health-probe, not at boot.
 
 ### Tier 2 — Move non-secret constants into `atlas.config.ts` ✅ shipped (#3706)
 For things that genuinely can't be runtime (boot-ordering) but are constant
@@ -160,7 +182,9 @@ children rather than new issues:
   (`lib/dashboard-screenshot.ts`), `ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS`
   (`lib/plugins/registry.ts`), `ATLAS_MCP_MAX_HELD_STREAM_AGE_MS`
   (`packages/mcp/src/session-store.ts`). None are in the registry or boot-ordering-dependent,
-  so they're Tier-1 promote candidates (added to #3705) and Tier-4 doc gaps (added to #3710).
+  so they were Tier-1 promote candidates (added to #3705) and Tier-4 doc gaps (added to #3710).
+  ✅ **All three promoted in #3705** — platform-scoped, hot-reloadable settings read per
+  export / per probe / per sweep; env stays the fallback tier.
 - **Two registry-backed learn knobs landed after the audit** (#3636) —
   `ATLAS_LEARN_PROMOTE_DECAY_ENABLED` / `ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS`.
   These are correctly registry-backed (`settings.ts:654/667`) so the principle held;

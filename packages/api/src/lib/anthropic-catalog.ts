@@ -27,6 +27,7 @@ import {
   storeToDB,
 } from "./byot-catalog-store";
 import { createLogger } from "./logger";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 
 const log = createLogger("anthropic-catalog");
 
@@ -94,7 +95,8 @@ const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<CacheEntry>>();
 
 function ttlMs(): number {
-  const raw = process.env.ATLAS_BYOT_CATALOG_TTL_MS;
+  // Platform-scoped settings registry (#3705): DB override > env > default.
+  const raw = getSettingAuto("ATLAS_BYOT_CATALOG_TTL_MS");
   if (!raw) return DEFAULT_TTL_MS;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TTL_MS;

@@ -16,6 +16,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { abuseEscalations } from "@atlas/api/lib/metrics";
 import { hasInternalDB, internalExecute, internalQuery } from "@atlas/api/lib/db/internal";
 import { isLoadTestWorkspace } from "@atlas/api/lib/auth/load-test-allowlist";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 import {
   ABUSE_LEVELS,
   ABUSE_TRIGGERS,
@@ -112,15 +113,21 @@ function coerceAbuseEnums(
 // Configuration — env var thresholds
 // ---------------------------------------------------------------------------
 
+// Thresholds resolve through the platform settings registry (#3705): a
+// platform DB override wins, env is the fallback tier, registry default last.
+// `getSettingAuto` is read per query-event via `getAbuseConfig`, so an
+// operator can retune abuse defense from Admin without a redeploy. Platform
+// scope is load-bearing — a tenant must never tune the thresholds that defend
+// the region against it.
 function envInt(key: string, fallback: number): number {
-  const raw = process.env[key];
+  const raw = getSettingAuto(key);
   if (!raw) return fallback;
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
 function envFloat(key: string, fallback: number): number {
-  const raw = process.env[key];
+  const raw = getSettingAuto(key);
   if (!raw) return fallback;
   const n = parseFloat(raw);
   return Number.isFinite(n) && n > 0 ? n : fallback;
@@ -159,7 +166,7 @@ export function getAbuseConfig(): AbuseThresholdConfig {
  * truncating to `0` and reopening the fast-walk path.
  */
 function envIntAllowZero(key: string, fallback: number): number {
-  const raw = process.env[key];
+  const raw = getSettingAuto(key);
   if (raw === undefined || raw === "") return fallback;
   const n = Number(raw);
   return Number.isInteger(n) && n >= 0 ? n : fallback;

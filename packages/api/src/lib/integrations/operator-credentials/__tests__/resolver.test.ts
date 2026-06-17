@@ -80,6 +80,39 @@ describe("resolveOperatorAdapterEnv", () => {
       /auth tag mismatch/,
     );
   });
+
+  // #3741 — a not-yet-migrated table (first boot before migration 0140) is
+  // benign: degrade to env-fallback instead of taking the adapter down.
+  it("tolerates a missing table (pg 42P01) and degrades to env-fallback", async () => {
+    const undefinedTable = Object.assign(
+      new Error('relation "operator_integration_credentials" does not exist'),
+      { code: "42P01" },
+    );
+    mockRead.mockRejectedValue(undefinedTable);
+    const overlay = await resolveOperatorAdapterEnv(OPERATOR_PLATFORMS);
+    // No throw; empty overlay → callers fall through to env exactly as an
+    // empty table would.
+    expect(overlay).toEqual({});
+  });
+
+  it("tolerates a missing table identified by message alone (no .code)", async () => {
+    mockRead.mockRejectedValue(
+      new Error('relation "operator_integration_credentials" does not exist'),
+    );
+    const overlay = await resolveOperatorAdapterEnv(OPERATOR_PLATFORMS);
+    expect(overlay).toEqual({});
+  });
+
+  it("still propagates a decrypt failure even after the missing-table carve-out", async () => {
+    // A wrapped payload-validation error carries no 42P01 code and does not
+    // match the relation-missing message → must still rethrow.
+    mockRead.mockRejectedValue(
+      new Error("operator_integration_credentials payload validation failed for platform=slack"),
+    );
+    await expect(resolveOperatorAdapterEnv(OPERATOR_PLATFORMS)).rejects.toThrow(
+      /payload validation failed/,
+    );
+  });
 });
 
 describe("resolveOperatorFieldValue", () => {

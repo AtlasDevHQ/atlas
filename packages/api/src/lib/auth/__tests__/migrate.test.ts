@@ -5,6 +5,7 @@ import { _resetPool } from "@atlas/api/lib/db/internal";
 import { _setAuthInstance } from "@atlas/api/lib/auth/server";
 import {
   migrateAuthTables,
+  runBootMigrations,
   resetMigrationState,
   getMigrationError,
   resolveSeedAdminPassword,
@@ -581,6 +582,77 @@ describe("migrateAuthTables", () => {
 // ---------------------------------------------------------------------------
 // Seed admin password resolution (#3334 — no default credential in production)
 // ---------------------------------------------------------------------------
+
+// #3741 — schema migrations must be runnable BEFORE plugin init, separately
+// from the bootstrap/seed steps, and the two call sites must not double-run.
+describe("runBootMigrations", () => {
+  it("runs the internal schema migrations when DATABASE_URL is set", async () => {
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    const { pool, queries } = createTrackingPool();
+    _resetPool(pool);
+
+    await runBootMigrations();
+
+    // Versioned migration runner ran (advisory lock + baseline SQL).
+    expect(queries[0]).toContain("pg_advisory_lock");
+    expect(queries.find((q) => q.includes("CREATE TABLE IF NOT EXISTS audit_log"))).toBeDefined();
+  });
+
+  it("runs Better Auth migration before the internal migration", async () => {
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    process.env.BETTER_AUTH_SECRET = "a".repeat(32);
+    let authMigratedAtQueryCount = -1;
+    const { pool, queries } = createTrackingPool();
+    _resetPool(pool);
+    const { instance } = createTrackingAuth({
+      onMigrate: () => {
+        authMigratedAtQueryCount = queries.length;
+      },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial auth mock
+    _setAuthInstance(instance as any);
+
+    await runBootMigrations();
+
+    // Better Auth migrated before any internal-migration query landed (#1472).
+    expect(authMigratedAtQueryCount).toBe(0);
+  });
+
+  it("is idempotent — a second call runs no further queries", async () => {
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    const { pool, queries } = createTrackingPool();
+    _resetPool(pool);
+
+    await runBootMigrations();
+    const afterFirst = queries.length;
+    await runBootMigrations();
+
+    expect(queries.length).toBe(afterFirst);
+  });
+
+  it("makes a later migrateAuthTables() migration a no-op backstop (early-call + backstop)", async () => {
+    // Mirrors the server boot path: server.ts runs runBootMigrations() before
+    // plugin init; MigrationLive later calls migrateAuthTables(). The schema
+    // migration must run exactly once across both.
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    process.env.BETTER_AUTH_SECRET = "a".repeat(32);
+    const { pool, queries } = createTrackingPool();
+    _resetPool(pool);
+    const { instance, getMigrationCount } = createTrackingAuth();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial auth mock
+    _setAuthInstance(instance as any);
+
+    await runBootMigrations();
+    const afterEarlyCall = queries.length;
+    expect(afterEarlyCall).toBeGreaterThan(0);
+
+    await migrateAuthTables();
+
+    // migrateAuthTables ran its step 3/4 (settings, abuse, bootstrap/seed) but
+    // did NOT re-run the schema migration — Better Auth migrated exactly once.
+    expect(getMigrationCount()).toBe(1);
+  });
+});
 
 describe("resolveSeedAdminPassword", () => {
   const SEED_ENV_VARS = ["NODE_ENV", "ATLAS_DEPLOY_MODE"] as const;

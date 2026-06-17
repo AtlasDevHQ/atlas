@@ -1355,6 +1355,13 @@ export function resolveAllowUnauthDcr(env: NodeJS.ProcessEnv): boolean {
  * operators rarely need to change these — the override exists so a
  * Playwright spec can mint a 30-second JWT instead of waiting an hour.
  */
+// Keep these in sync with the registry `default` for
+// ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS / ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS
+// in lib/settings.ts (#3705). The resolvers below read via `getSettingOverride`
+// (DB-override-only tier), so the registry's own `default` is NOT consulted at
+// resolution time — these constants are the live default. If they drift, the
+// value shown in the Admin console (registry default) and the value actually
+// baked into the auth instance (these) diverge.
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 3600;
 const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
 

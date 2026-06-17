@@ -912,6 +912,11 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
   // Access/refresh TTLs are baked into the Better Auth instance at boot
   // (`requiresRestart`); the install state-token TTL is read per-mint and is
   // hot-reloadable.
+  //
+  // NB: the access/refresh resolvers in lib/auth/server.ts read via
+  // `getSettingOverride` (DB-override-only tier), so the `default` values below
+  // are display-only — the live default is `DEFAULT_{ACCESS,REFRESH}_TOKEN_TTL_SECONDS`
+  // in that file. Keep the two in sync (3600 / 2592000).
   {
     key: "ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS",
     section: "OAuth",

@@ -126,14 +126,18 @@ settings registry, and `SAAS_ENV_KEYS` produced two corrections and one new gap:
   today): `ATLAS_RATE_LIMIT_RPM_CHAT`, `ATLAS_RATE_LIMIT_RPM_ADMIN`,
   `ATLAS_CORS_ORIGIN`. The registry holds ~39 settings total; reconcile any future
   Tier-1 candidate against `SETTINGS_REGISTRY` in `lib/settings.ts` before filing.
-- **Undocumented env vars (9)** read in code but absent from `.env.example` — most
-  notably the **SSRF-class security flag `ATLAS_WEBHOOK_ALLOW_INTERNAL_CALLBACKS`**
-  (the webhook twin of the documented `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS` — must be
-  documented as *never-on-SaaS*), and **`GCHAT_PROJECT_NUMBER` / `GCHAT_PUBSUB_AUDIENCE`**,
-  read by the Google Chat adapter that already ships in the SaaS catalog. Also
-  `ATLAS_WEBHOOK_REPLAY_LEGACY`, `WEBHOOK_SECRET`, `WEBHOOK_SIGNING_SECRET`,
-  `E2B_API_KEY`, `DAYTONA_API_KEY`, `OBSIDIAN_API_KEY`, `AWS_SESSION_TOKEN`, plus an
-  `ES_API_KEY` vs documented `ATLAS_ES_API_KEY` naming split. Tracked separately.
+- **Undocumented env vars (re-baselined to 15 on 2026-06-17 — the headline "9"
+  under-counted the list below, which already enumerated 10 vars, and predates
+  findings 8 & 9 added during the milestone review)** read in code but absent from
+  `.env.example` — most notably the **SSRF-class security flag
+  `ATLAS_WEBHOOK_ALLOW_INTERNAL_CALLBACKS`** (the webhook twin of the documented
+  `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS` — must be documented as *never-on-SaaS*), and
+  **`GCHAT_PROJECT_NUMBER` / `GCHAT_PUBSUB_AUDIENCE`**, read by the Google Chat adapter
+  that already ships in the SaaS catalog. Also `ATLAS_WEBHOOK_REPLAY_LEGACY`,
+  `WEBHOOK_SECRET`, `WEBHOOK_SIGNING_SECRET`, `E2B_API_KEY`, `DAYTONA_API_KEY`,
+  `OBSIDIAN_API_KEY`, `AWS_SESSION_TOKEN`, plus an `ES_API_KEY` vs documented
+  `ATLAS_ES_API_KEY` naming split. All documented (and the ES naming reconciled to
+  `ATLAS_ES_API_KEY`) in #3710.
 - **`ATLAS_REGION_{US,EU,APAC}_DB_URL`** are in `SAAS_ENV_KEYS` but not in
   `.env.example` (the new operator reference does cover them).
 
@@ -156,7 +160,14 @@ children rather than new issues:
 
 No new chat-platform or datasource integration landed since the audit, so #3704's
 operator-credential scope is unchanged. The "9 undocumented" count in #3710 is
-re-baselined to include findings 8 & 9.
+re-baselined to **15** to include findings 8 & 9 (the original headline under-counted
+the 2026-06-16 list, which already named 10 vars): the 10 from the 2026-06-16 sweep
+(`ATLAS_WEBHOOK_ALLOW_INTERNAL_CALLBACKS`, `GCHAT_PROJECT_NUMBER`, `GCHAT_PUBSUB_AUDIENCE`,
+`ATLAS_WEBHOOK_REPLAY_LEGACY`, `WEBHOOK_SECRET`, `WEBHOOK_SIGNING_SECRET`, `E2B_API_KEY`,
+`DAYTONA_API_KEY`, `OBSIDIAN_API_KEY`, `AWS_SESSION_TOKEN`) + finding 8's three tuning
+knobs + finding 9's two learn knobs. The `ATLAS_ES_API_KEY` naming split (a reconcile,
+not a new doc) and the three `ATLAS_REGION_*_DB_URL` boot-contract vars (their own
+2026-06-16 bullet) are tracked alongside but counted separately. All closed in #3710.
 
 ## Tracked work
 

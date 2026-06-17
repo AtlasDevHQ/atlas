@@ -21,7 +21,7 @@
  *   plugins: [
  *     elasticsearchPlugin({
  *       url: "elasticsearch://my-deployment.es.io:9243",
- *       apiKey: process.env.ES_API_KEY!,
+ *       apiKey: process.env.ATLAS_ES_API_KEY!,
  *     }),
  *   ],
  * });

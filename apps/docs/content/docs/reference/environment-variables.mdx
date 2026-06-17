@@ -44,6 +44,7 @@ LLM provider and model configuration.
 | `OPENAI_API_KEY` | — | API key for `openai` provider |
 | `AWS_ACCESS_KEY_ID` | — | AWS access key ID for `bedrock` provider |
 | `AWS_SECRET_ACCESS_KEY` | — | AWS secret access key for `bedrock` provider |
+| `AWS_SESSION_TOKEN` | — | AWS session token for temporary (STS) credentials. Optional — only needed when the `bedrock` provider or the Elasticsearch AWS SigV4 path (`ATLAS_ES_AWS_REGION`) authenticates with short-lived credentials |
 | `AWS_REGION` | — | AWS region for `bedrock` provider (e.g. `us-east-1`) |
 | `AI_GATEWAY_API_KEY` | — | API key for `gateway` provider (Vercel AI Gateway) |
 | `ATLAS_BYOT_CATALOG_TTL_MS` | (provider default) | TTL in milliseconds for the cached model catalog when using `anthropic`, `openai`, or `bedrock` BYOT mode. Atlas calls each provider's catalog endpoint and caches the result in the internal database (L2) per workspace; raising the TTL reduces upstream catalog calls at the cost of slower discovery of newly-published models |
@@ -138,6 +139,8 @@ OPENAI_COMPATIBLE_BASE_URL=http://localhost:8000/v1  # Required
 
 **Demo data fallback chain:** When `ATLAS_DEMO_DATA=true` and `ATLAS_DATASOURCE_URL` is not set, Atlas resolves the analytics datasource by checking `DATABASE_URL_UNPOOLED` first, then `DATABASE_URL`. This lets a single Postgres instance (e.g. Neon on Vercel) serve as both the analytics datasource and Atlas's internal database.
 
+> **SaaS multi-region only:** `ATLAS_REGION_US_DB_URL`, `ATLAS_REGION_EU_DB_URL`, and `ATLAS_REGION_APAC_DB_URL` are part of the SaaS boot contract (`SAAS_ENV_KEYS` in `packages/api/src/lib/effect/saas-env.ts`) — the per-region internal Postgres URLs the data-residency router targets. Self-hosted single-region deploys use `DATABASE_URL` only and never set these. See the [SaaS environment variables reference](/platform-ops/saas-environment-variables).
+
 <Tabs items={["Local development", "Production (separate DBs)", "Vercel (shared DB)"]}>
 <Tab value="Local development">
 ```bash
@@ -170,6 +173,7 @@ ATLAS_DEMO_DATA=true
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_AGENT_MAX_STEPS` | `25` | Maximum tool-call steps per agent run. Range: 1–100. Increase for complex multi-step queries; decrease to limit token spend |
+| `ATLAS_DASHBOARD_EXPORT_TIMEOUT_MS` | `60000` (60s) | Overall wall-clock budget for a headless dashboard PDF/PNG export. Clamped to `[5000, 180000]`; a lower override degrades to a documented **partial** capture rather than a 504. Source: `packages/api/src/lib/dashboard-screenshot.ts` |
 | `ATLAS_EXPERT_SCHEDULER_ENABLED` | `false` | Enable periodic semantic layer analysis. When true, the expert engine runs on a schedule and proposes improvements automatically |
 | `ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS` | `24` | Hours between scheduled expert analysis runs |
 | `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` | _(disabled)_ | Auto-approve proposals with confidence ≥ this value and an eligible amendment type (e.g. `0.9`). Leave empty to require manual review for all proposals |
@@ -410,6 +414,7 @@ Actor binding for the [MCP server](/guides/mcp). The transport runs in one of tw
 | `ATLAS_MCP_RATE_LIMIT_FAIL_CLOSED` | `false` | Fail-closed gate for MCP rate-limit infrastructure errors. When `true`, a rate-limit-store outage (Redis down, internal DB unreachable) causes MCP requests to be rejected rather than allowed through. SaaS regions opt in; self-hosted defaults to fail-open so a transient infra blip doesn't block agent access |
 | `ATLAS_MCP_RATE_LIMIT_MAX_KEYS` | (oauth-client clamp default) | Maximum cardinality of distinct rate-limit keys retained per workspace before LRU eviction. Bounds memory usage on workspaces with many short-lived OAuth clients. Clamped to a minimum at startup |
 | `ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS` | `1800000` (30m) | Idle timeout for hosted-MCP sessions. The sweep evicts sessions whose `lastSeenAt` is older than this. Floored at `60000` (1m) — values below the floor log a warning and fall back to the default. Test-only overrides set this below the floor in-process. Source: `packages/mcp/src/hosted.ts` |
+| `ATLAS_MCP_MAX_HELD_STREAM_AGE_MS` | `7200000` (2h) | Max age a long-held GET stream may stay open before the sweep reclaims its session under cap-pressure, bounding resource exhaustion by a hung client. No floor — set `0` to disable age-based reclaim; negative/malformed falls back to the default. Source: `packages/mcp/src/session-store.ts` |
 | `ATLAS_CANONICAL_QUESTIONS_PATH` | (bundled `eval/canonical-questions/questions.yml`) | Override path to the bundled NovaMart canonical-questions YAML used by the hosted MCP prompt server. Set when the `eval/` directory has been relocated; an empty string throws at startup (very likely a template error). Source: `packages/mcp/src/prompts/canonical.ts` |
 | `ATLAS_DEFAULT_WORKSPACE` | — | Framework-boundary workspace selector bridged into hosted MCP via the `X-Atlas-Default-Workspace` header. Honored only by `multi`-scope clients when the operator's MCP wrapper sets the header from this env var; no MCP client framework auto-bridges it as of May 2026 (see `packages/mcp/src/hosted.ts` for the header contract). Source: `packages/mcp/src/hosted.ts` |
 
@@ -477,6 +482,8 @@ Explore tool isolation backends (also used by `executePython` when nsjail is act
 | `ATLAS_NSJAIL_MEMORY_LIMIT` | explore: `256`, python: `512` | nsjail per-command memory limit in MB. **Defaults differ per backend**: explore uses 256 MB, Python uses 512 MB (data-science workloads need more headroom). Setting this env var overrides both backends with the same value |
 | `ATLAS_SANDBOX_PRIORITY` | — | Comma-separated backend priority order (e.g. `sidecar,nsjail,just-bash`). Valid values: `vercel-sandbox`, `nsjail`, `sidecar`, `just-bash`. Plugin backends always take highest priority. See [Configuration](/reference/config#sandbox) |
 | `ATLAS_SANDBOX_BACKEND` | — | SaaS admin-facing selector for the workspace's sandbox backend: `vercel-sandbox`, `sidecar`, `e2b-sandbox`, `daytona-sandbox`, `railway-sandbox`, or a plugin ID (legacy bare provider keys like `e2b` are normalized to their backend IDs on read). Set via the Settings UI in the hosted product; self-hosted operators typically use `ATLAS_SANDBOX_PRIORITY` instead |
+| `E2B_API_KEY` | — | API key for the [E2B](/plugins/sandboxes/e2b) BYOC sandbox runtime. **Not auto-read** — pass it explicitly to the plugin config: `e2bSandboxPlugin({ apiKey: process.env.E2B_API_KEY! })`. The variable name is a convention |
+| `DAYTONA_API_KEY` | — | API key for the [Daytona](/plugins/sandboxes/daytona) BYOC sandbox runtime. **Not auto-read** — pass it explicitly: `daytonaSandboxPlugin({ apiKey: process.env.DAYTONA_API_KEY! })`. The variable name is a convention |
 
 <Tabs items={["Docker Compose (dev)", "Production sidecar", "nsjail (self-hosted)"]}>
 <Tab value="Docker Compose (dev)">
@@ -765,6 +772,8 @@ Google Chat static-bot install (`/api/v1/integrations/gchat/install`), backed by
 |----------|---------|-------------|
 | `GCHAT_SERVICE_ACCOUNT_JSON` | — | Google service-account credentials JSON (parsed at boot) used for the Pub/Sub round-trip and the chat adapter. Required (with `GCHAT_PUBSUB_TOPIC`) to register the Google Chat static-bot install handler |
 | `GCHAT_PUBSUB_TOPIC` | — | Fully-qualified Pub/Sub topic name the Google Chat adapter publishes to. Pair with `GCHAT_SERVICE_ACCOUNT_JSON` |
+| `GCHAT_PROJECT_NUMBER` | — | GCP project number used to verify JWTs on **direct** Google Chat HTTP webhooks (#3350). Set at least one of this / `GCHAT_PUBSUB_AUDIENCE` to accept verified inbound HTTP traffic — with **both** unset the HTTP webhook is rejected (fail-closed). The Pub/Sub push path the adapter binds at boot is unaffected. Source: `plugins/chat/src/index.ts` |
+| `GCHAT_PUBSUB_AUDIENCE` | — | Expected JWT audience used to verify JWTs on **Pub/Sub push** delivery (#3350). See `GCHAT_PROJECT_NUMBER` for the fail-closed gate. Source: `plugins/chat/src/index.ts` |
 
 ---
 
@@ -850,6 +859,19 @@ The generic [OpenAPI (REST) datasource](/plugins/datasources/openapi-generic) is
 | `ATLAS_OPENAPI_REDISCOVER_INTERVAL_HOURS` | `1` | Wake cadence (hours) of the per-install auto re-discovery loop — it re-probes each installed OpenAPI datasource whose per-install `spec_refresh_interval` has elapsed and refreshes its snapshot + drift diff. This is the loop wake cadence, **not** the per-install interval; keep it at or below the smallest per-install interval you set. Source: `packages/api/src/lib/scheduler/openapi-install-rediscover.ts` |
 
 > Credentials are encrypted at rest in `workspace_plugins.config`. The slice-1 `ATLAS_OPENAPI_TWENTY*` / `ATLAS_OPENAPI_REPRESENTATION` env shortcuts have been **retired** — install, representation, and the write allowlist are all per-install config. See the [OpenAPI datasource guide](/plugins/datasources/openapi-generic).
+
+---
+
+## Webhook Plugin
+
+The webhook action/publisher plugins (`plugins/webhook`, `plugins/webhook-action`). The two signing secrets are **not auto-read** — you pass them explicitly to the plugin config in `atlas.config.ts` (`webhookPlugin({ secret: process.env.WEBHOOK_SECRET! })`), so the variable names are a convention.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WEBHOOK_SECRET` | — | HMAC signing secret for the inbound webhook plugin (`plugins/webhook`). Operator-chosen name passed to the plugin's `secret` config field |
+| `WEBHOOK_SIGNING_SECRET` | — | HMAC signing secret for the webhook-action plugin (`plugins/webhook-action`). Operator-chosen name passed to the plugin's `signing_secret` config field |
+| `ATLAS_WEBHOOK_ALLOW_INTERNAL_CALLBACKS` | `false` | SSRF egress guard opt-out for async webhook **callbacks** — the direct twin of [`ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS`](#openapi-datasources). The per-request `callbackUrl` is a request-body-controlled fetch target, so by default it is resolved and blocked from reaching private/loopback/link-local/CGNAT IPs and internal hostnames (e.g. cloud metadata at `169.254.169.254`), HTTPS-only, redirects never followed. Set `=true` only on **self-hosted** to deliver to an internal/dev callback — **never set on SaaS**. Source: `plugins/webhook/src/callback-guard.ts` |
+| `ATLAS_WEBHOOK_REPLAY_LEGACY` | `false` | Migration-only soft-fail for the replay-protection wire change (#3347). When `=true`, inbound webhooks **missing** the `X-Webhook-Timestamp` header are accepted (with a warn) instead of rejected, so an upstream sender can be upgraded without downtime. Leave at the default (strict timestamp/HMAC replay protection) once senders are upgraded. Source: `plugins/webhook/src/routes.ts` |
 
 ---
 
@@ -1019,6 +1041,7 @@ Destructive operator-CLI subcommands gated by explicit env confirmation. None of
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_SETTINGS_REFRESH_INTERVAL` | `30000` | Hot-reload interval for settings in milliseconds (default: 30s). Controls how often the API re-reads workspace-level settings from the database. Set to `0` to disable periodic refresh |
+| `ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS` | `15000` (15s) | TTL for the plugin-liveness health cache. `0` disables caching (every call re-probes upstream). Max accepted value `300000` (5m); values above the max or unparseable fall back to the default with a warn. Source: `packages/api/src/lib/plugins/registry.ts` |
 | `ATLAS_DASHBOARD_DRAFTS_ENABLED` | `true` | Per-user dashboard drafts. When enabled, admin mutations to a bound dashboard write to the caller's draft and the **Publish** flow promotes them via an atomic three-way merge against the persisted baseline. Set to the literal string `false` to fall back to the direct-write model — draft fetch returns `503` and the chat-bound editor degrades to a read-only viewer. See [Dashboards → Chat as editor](/guides/dashboards#chat-as-editor) |
 | `ATLAS_INTERNAL_SCREENSHOT_COOKIE` | — | Service cookie value used by the `screenshotDashboard` vision tool (#2367). The headless Chromium worker calls back into `/admin/dashboards/:id/screenshot` and must authenticate as the requesting user; without this cookie the screenshot request is rejected and the agent falls back to its last-good description. Set this on **both** the API and web services when running behind a reverse proxy. See [Dashboards → Chat as editor](/guides/dashboards#chat-as-editor) |
 | `ATLAS_WEB_BASE_URL` | `http://localhost:3000` | Base URL of the Next.js web app used by `screenshotDashboard` to construct the screenshot target URL (`${ATLAS_WEB_BASE_URL}/dashboards/:id`). Set to the production web origin when self-hosting (e.g. `https://atlas.acme.com`) so the headless Chromium worker hits the right host |

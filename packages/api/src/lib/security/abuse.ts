@@ -16,6 +16,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { abuseEscalations } from "@atlas/api/lib/metrics";
 import { hasInternalDB, internalExecute, internalQuery } from "@atlas/api/lib/db/internal";
 import { isLoadTestWorkspace } from "@atlas/api/lib/auth/load-test-allowlist";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 import {
   ABUSE_LEVELS,
   ABUSE_TRIGGERS,
@@ -112,15 +113,20 @@ function coerceAbuseEnums(
 // Configuration — env var thresholds
 // ---------------------------------------------------------------------------
 
-function envInt(key: string, fallback: number): number {
-  const raw = process.env[key];
+// Thresholds resolve through the platform settings registry (#3705): a
+// platform DB override wins, env is the fallback tier, registry default last.
+// `getAbuseConfig` reads each via `getSettingAuto` per query-event with the key
+// as a literal (so the parity-contract reader check sees it), then hands the
+// raw value to a pure parser. An operator can retune abuse defense from Admin
+// without a redeploy. Platform scope is load-bearing — a tenant must never tune
+// the thresholds that defend the region against it.
+function parsePosInt(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-function envFloat(key: string, fallback: number): number {
-  const raw = process.env[key];
+function parsePosFloat(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
   const n = parseFloat(raw);
   return Number.isFinite(n) && n > 0 ? n : fallback;
@@ -128,25 +134,26 @@ function envFloat(key: string, fallback: number): number {
 
 export function getAbuseConfig(): AbuseThresholdConfig {
   return {
-    queryRateLimit: envInt("ATLAS_ABUSE_QUERY_RATE", 200),
-    queryRateWindowSeconds: envInt("ATLAS_ABUSE_WINDOW_SECONDS", 300),
-    // Env-var value is already a 0–1 fraction (e.g. ATLAS_ABUSE_ERROR_RATE=0.5);
+    queryRateLimit: parsePosInt(getSettingAuto("ATLAS_ABUSE_QUERY_RATE"), 200),
+    queryRateWindowSeconds: parsePosInt(getSettingAuto("ATLAS_ABUSE_WINDOW_SECONDS"), 300),
+    // Value is already a 0–1 fraction (e.g. ATLAS_ABUSE_ERROR_RATE=0.5);
     // `asRatio` brands it so the cross-scale guard in `checkThresholds` +
     // detail-panel comparisons type-checks (#1685).
-    errorRateThreshold: asRatio(envFloat("ATLAS_ABUSE_ERROR_RATE", 0.5)),
-    uniqueTablesLimit: envInt("ATLAS_ABUSE_UNIQUE_TABLES", 50),
-    throttleDelayMs: envInt("ATLAS_ABUSE_THROTTLE_DELAY_MS", 2000),
-    // `envInt` rejects `≤ 0` and falls back to the default, so the only way
+    errorRateThreshold: asRatio(parsePosFloat(getSettingAuto("ATLAS_ABUSE_ERROR_RATE"), 0.5)),
+    uniqueTablesLimit: parsePosInt(getSettingAuto("ATLAS_ABUSE_UNIQUE_TABLES"), 50),
+    throttleDelayMs: parsePosInt(getSettingAuto("ATLAS_ABUSE_THROTTLE_DELAY_MS"), 2000),
+    // `parsePosInt` rejects `≤ 0` and falls back to the default, so the only way
     // to bypass the cooldown (e.g. for the abuse engine's own unit tests)
-    // is `envIntAllowZero` below — a deliberate two-helper split so a typo
-    // in a SaaS env file (`ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS=0`)
+    // is `parseNonNegInt` below — a deliberate two-helper split so a typo
+    // in a SaaS env file / setting (`ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS=0`)
     // doesn't silently turn the dwell-time guard off in prod.
-    escalationCooldownMs: envIntAllowZero("ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS", 60) * 1000,
+    escalationCooldownMs:
+      parseNonNegInt(getSettingAuto("ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS"), 60) * 1000,
   };
 }
 
 /**
- * Variant of `envInt` that accepts `0` as a valid value. Only the
+ * Variant of `parsePosInt` that accepts `0` as a valid value. Only the
  * escalation cooldown is allowed to be disabled this way — explicit opt-in
  * for the abuse engine's own unit tests, where the ladder behaviour is
  * exercised in a tight loop. Production deployments must set a positive
@@ -158,8 +165,7 @@ export function getAbuseConfig(): AbuseThresholdConfig {
  * like `"0.5"` or `"0s"` fall back to the default instead of silently
  * truncating to `0` and reopening the fast-walk path.
  */
-function envIntAllowZero(key: string, fallback: number): number {
-  const raw = process.env[key];
+function parseNonNegInt(raw: string | undefined, fallback: number): number {
   if (raw === undefined || raw === "") return fallback;
   const n = Number(raw);
   return Number.isInteger(n) && n >= 0 ? n : fallback;

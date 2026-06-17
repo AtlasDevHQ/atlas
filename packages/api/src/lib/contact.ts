@@ -11,6 +11,7 @@
  */
 
 import { createLogger } from "./logger";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 
 const log = createLogger("contact");
 
@@ -21,7 +22,8 @@ let lastWarnedRpm: string | undefined;
 
 /** Requests per minute per IP. Default 5. 0 = disabled. */
 export function getContactRpmLimit(): number {
-  const raw = process.env.ATLAS_CONTACT_RATE_LIMIT_RPM ?? String(CONTACT_DEFAULT_RPM);
+  // Platform-scoped settings registry (#3705): DB override > env > default.
+  const raw = getSettingAuto("ATLAS_CONTACT_RATE_LIMIT_RPM") ?? String(CONTACT_DEFAULT_RPM);
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) {
     if (raw !== lastWarnedRpm) {

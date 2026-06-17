@@ -773,6 +773,272 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "platform",
     saasVisible: false,
   },
+
+  // ───────────────────────────────────────────────────────────────────────
+  // SaaS tuning knobs promoted from env-only (#3705, Tier 1 of #3701).
+  //
+  // All platform-scoped + `saasVisible: false`: these are operator/region
+  // infra knobs (public-surface rate limits, abuse-defense thresholds, cache
+  // TTLs, OAuth token lifetimes), not per-tenant product settings — a tenant
+  // must never be able to weaken their own abuse thresholds or the contact /
+  // demo rate limits. `getSettingsForAdmin` only returns workspace-scoped keys
+  // to workspace admins, so platform scope already keeps these off the tenant
+  // settings page; `saasVisible: false` makes the operator-only intent explicit
+  // (matches the RLS / deploy-mode / Stripe precedent above).
+  //
+  // The env var stays the fallback tier in every case (precedence:
+  // platform DB override > env > registry default). Knobs read per-request /
+  // per-event through `getSettingAuto` are hot-reloadable (no `requiresRestart`);
+  // knobs consumed once at boot carry an honest `requiresRestart` hint.
+  // (`OTEL_EXPORTER_OTLP_*` was evaluated and consciously LEFT as env — see
+  // docs/development/saas-env-audit.md: telemetry inits before the settings
+  // cache warms, so a DB-backed value could never apply at boot.)
+  // ───────────────────────────────────────────────────────────────────────
+
+  // Rate Limiting (continued) — public-surface limiters. Hot-reloadable:
+  // `getContactRpmLimit()` reads per request.
+  {
+    key: "ATLAS_CONTACT_RATE_LIMIT_RPM",
+    section: "Rate Limiting",
+    label: "Contact Form Rate Limit (RPM)",
+    description:
+      "Max contact-form submissions per minute per IP (0 = disabled). Tighter than the chat limit — a real visitor submits a handful per minute; 30+ is abuse.",
+    type: "number",
+    default: "5",
+    envVar: "ATLAS_CONTACT_RATE_LIMIT_RPM",
+    scope: "platform",
+    saasVisible: false,
+  },
+
+  // Demo (continued) — public email-gated demo. Hot-reloadable:
+  // `getDemoRpmLimit()` / `getDemoMaxSteps()` read per request.
+  {
+    key: "ATLAS_DEMO_RATE_LIMIT_RPM",
+    section: "Demo",
+    label: "Demo Rate Limit (RPM)",
+    description: "Max requests per minute per demo user (0 = disabled).",
+    type: "number",
+    default: "10",
+    envVar: "ATLAS_DEMO_RATE_LIMIT_RPM",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_DEMO_MAX_STEPS",
+    section: "Demo",
+    label: "Demo Agent Max Steps",
+    description: "Maximum tool-call steps per demo agent run (1–100).",
+    type: "number",
+    default: "10",
+    envVar: "ATLAS_DEMO_MAX_STEPS",
+    scope: "platform",
+    saasVisible: false,
+  },
+
+  // Abuse Prevention — anomaly-detection thresholds (lib/security/abuse.ts).
+  // Hot-reloadable: `getAbuseConfig()` reads per query-event. Platform-only and
+  // hidden from tenants by design — a workspace must not tune the thresholds
+  // that defend the region against it.
+  {
+    key: "ATLAS_ABUSE_QUERY_RATE",
+    section: "Abuse Prevention",
+    label: "Query Rate Limit",
+    description: "Queries per workspace within the window before escalation triggers.",
+    type: "number",
+    default: "200",
+    envVar: "ATLAS_ABUSE_QUERY_RATE",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_ABUSE_WINDOW_SECONDS",
+    section: "Abuse Prevention",
+    label: "Detection Window (seconds)",
+    description: "Sliding-window length (seconds) over which abuse counters accumulate.",
+    type: "number",
+    default: "300",
+    envVar: "ATLAS_ABUSE_WINDOW_SECONDS",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_ABUSE_ERROR_RATE",
+    section: "Abuse Prevention",
+    label: "Error Rate Threshold",
+    description:
+      "Failure ratio (0–1, e.g. 0.5 = 50%) above which a workspace with ≥10 queries in the window escalates.",
+    type: "number",
+    default: "0.5",
+    envVar: "ATLAS_ABUSE_ERROR_RATE",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_ABUSE_UNIQUE_TABLES",
+    section: "Abuse Prevention",
+    label: "Unique Tables Limit",
+    description: "Distinct tables a workspace may touch within the window before escalation triggers.",
+    type: "number",
+    default: "50",
+    envVar: "ATLAS_ABUSE_UNIQUE_TABLES",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_ABUSE_THROTTLE_DELAY_MS",
+    section: "Abuse Prevention",
+    label: "Throttle Delay (ms)",
+    description: "Injected per-request delay (ms) while a workspace sits at the 'throttled' level.",
+    type: "number",
+    default: "2000",
+    envVar: "ATLAS_ABUSE_THROTTLE_DELAY_MS",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS",
+    section: "Abuse Prevention",
+    label: "Escalation Cooldown (seconds)",
+    description:
+      "Dwell time (seconds) required at a level before the ladder advances to the next one. 0 disables the cooldown (test-only — a stray 0 in prod reopens the fast-walk regression, so a non-integer falls back to the default).",
+    type: "number",
+    default: "60",
+    envVar: "ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS",
+    scope: "platform",
+    saasVisible: false,
+  },
+
+  // OAuth — token lifetimes for the MCP OAuth 2.1 provider + install state.
+  // Access/refresh TTLs are baked into the Better Auth instance at boot
+  // (`requiresRestart`); the install state-token TTL is read per-mint and is
+  // hot-reloadable.
+  //
+  // NB: the access/refresh resolvers in lib/auth/server.ts read via
+  // `getSettingOverride` (DB-override-only tier), so the `default` values below
+  // are display-only — the live default is `DEFAULT_{ACCESS,REFRESH}_TOKEN_TTL_SECONDS`
+  // in that file. Keep the two in sync (3600 / 2592000).
+  {
+    key: "ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS",
+    section: "OAuth",
+    label: "Access Token TTL (seconds)",
+    description: "Lifetime of OAuth 2.1 access tokens (default 1 hour). Baked into the auth instance at boot.",
+    type: "number",
+    default: "3600",
+    envVar: "ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS",
+    requiresRestart: true,
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS",
+    section: "OAuth",
+    label: "Refresh Token TTL (seconds)",
+    description: "Lifetime of OAuth 2.1 refresh tokens (default 30 days). Baked into the auth instance at boot.",
+    type: "number",
+    default: "2592000",
+    envVar: "ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS",
+    requiresRestart: true,
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    // The issue named this `ATLAS_OAUTH_STATE_TOKEN_TTL_SECONDS`; the actual
+    // env var is `ATLAS_OAUTH_STATE_TTL_SECONDS` (integration-install OAuth
+    // state token, lib/integrations/install/oauth-state-token.ts). Read
+    // per-mint, so hot-reloadable. Clamped to [60, 3600] by the consumer.
+    key: "ATLAS_OAUTH_STATE_TTL_SECONDS",
+    section: "OAuth",
+    label: "Install State Token TTL (seconds)",
+    description: "Lifetime of integration-install OAuth state tokens (default 600, clamped to 60–3600).",
+    type: "number",
+    default: "600",
+    envVar: "ATLAS_OAUTH_STATE_TTL_SECONDS",
+    scope: "platform",
+    saasVisible: false,
+  },
+
+  // Model Catalog — TTL of the BYOT provider model-list cache (Anthropic /
+  // OpenAI / Bedrock). Hot-reloadable: `ttlMs()` reads per cache check.
+  {
+    key: "ATLAS_BYOT_CATALOG_TTL_MS",
+    section: "Model Catalog",
+    label: "Catalog Cache TTL (ms)",
+    description: "How long fetched provider model catalogs are cached before re-fetch (default 6 hours).",
+    type: "number",
+    default: "21600000",
+    envVar: "ATLAS_BYOT_CATALOG_TTL_MS",
+    scope: "platform",
+    saasVisible: false,
+  },
+
+  // MCP (continued) — hosted session-store + rate-limit caps. Hot-reloadable:
+  // the hosted MCP transport mounts on the per-region API server (which runs
+  // the SettingsLive refresh fiber) and re-reads these per sweep / per insert.
+  {
+    key: "ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS",
+    section: "MCP",
+    label: "Session Idle Timeout (ms)",
+    description: "Idle time before an MCP session is reaped (default 30 min, 1-minute floor).",
+    type: "number",
+    default: "1800000",
+    envVar: "ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_MCP_MAX_HELD_STREAM_AGE_MS",
+    section: "MCP",
+    label: "Max Held Stream Age (ms)",
+    description:
+      "How long a held GET SSE notification stream may stay open before the sweep reclaims its session under cap pressure (default 2 hours; 0 disables age-based reclaim).",
+    type: "number",
+    default: "7200000",
+    envVar: "ATLAS_MCP_MAX_HELD_STREAM_AGE_MS",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_MCP_RATE_LIMIT_MAX_KEYS",
+    section: "MCP",
+    label: "Rate-Limit Cache Max Keys",
+    description:
+      "Soft cap on the per-client rate-limit cache map (default 10000; values below 100 are clamped to 100).",
+    type: "number",
+    default: "10000",
+    envVar: "ATLAS_MCP_RATE_LIMIT_MAX_KEYS",
+    scope: "platform",
+    saasVisible: false,
+  },
+
+  // Dashboards — dashboard PDF/PNG export render budget. Hot-reloadable:
+  // `getExportTimeoutMs()` reads per export. Clamped to [5s, 180s].
+  {
+    key: "ATLAS_DASHBOARD_EXPORT_TIMEOUT_MS",
+    section: "Dashboards",
+    label: "Export Render Timeout (ms)",
+    description: "Overall wall-clock budget for a dashboard export render (default 60000, clamped to 5000–180000).",
+    type: "number",
+    default: "60000",
+    envVar: "ATLAS_DASHBOARD_EXPORT_TIMEOUT_MS",
+    scope: "platform",
+    saasVisible: false,
+  },
+
+  // Observability — plugin-health probe cache TTL. Hot-reloadable:
+  // `getPluginHealthCacheTtlMs()` reads per health probe. (OTEL exporter
+  // endpoint/headers are intentionally NOT here — see the block header above.)
+  {
+    key: "ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS",
+    section: "Observability",
+    label: "Plugin Health Cache TTL (ms)",
+    description:
+      "How long plugin-liveness results are cached before re-probing (default 15000, 0 disables caching, max 300000).",
+    type: "number",
+    default: "15000",
+    envVar: "ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS",
+    scope: "platform",
+    saasVisible: false,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1045,6 +1311,26 @@ export function getSetting(key: string, orgId?: string): string | undefined {
 
   // Tier 4: registry default
   return def?.default;
+}
+
+/**
+ * Read ONLY the DB-override tier for a key (no env / default fallback).
+ *
+ * For boot-consumed knobs whose resolver already takes an injected `env`
+ * object (e.g. the OAuth token-TTL resolvers, which accept a synthetic env
+ * in unit tests): layering `getSettingOverride(key) ?? env.KEY` preserves the
+ * platform DB override > env > default precedence without `getSettingAuto`'s
+ * read of the live `process.env` shadowing the injected one. Returns the
+ * workspace override first for workspace-scoped keys when an orgId is given,
+ * else the platform override; `undefined` when no override is set.
+ */
+export function getSettingOverride(key: string, orgId?: string): string | undefined {
+  const def = SETTINGS_MAP.get(key);
+  if (orgId && def?.scope === "workspace") {
+    const wsOverride = _cache.get(cacheKey(key, orgId));
+    if (wsOverride) return wsOverride.value;
+  }
+  return _cache.get(cacheKey(key))?.value;
 }
 
 /**

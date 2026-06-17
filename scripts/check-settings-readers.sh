@@ -11,6 +11,9 @@
 #
 #   R1 — direct literal read:
 #          getSetting("KEY") / getSettingAuto("KEY") / getSettingLive("KEY")
+#          / getSettingOverride("KEY") (the DB-override-only tier, #3705 —
+#          used by boot-consumed resolvers that take an injected env and
+#          layer the override over it, e.g. the OAuth token-TTL resolvers).
 #   R2 — const-indirected read: a const is bound to the key literal
 #          (`const FOO_SETTING = "KEY"`) and that const is passed to
 #          getSetting/getSettingAuto/getSettingLive. This is the
@@ -195,7 +198,7 @@ while IFS='|' read -r key envvar scope; do
   fi
 
   # R1 — direct literal read.
-  if grep -qE "getSetting(Auto|Live)?\(\s*[\"']${key}[\"']" <<<"$EVIDENCE"; then
+  if grep -qE "getSetting(Auto|Live|Override)?\(\s*[\"']${key}[\"']" <<<"$EVIDENCE"; then
     R1_COUNT=$((R1_COUNT + 1))
     continue
   fi
@@ -205,7 +208,7 @@ while IFS='|' read -r key envvar scope; do
     | awk '{print $2}' | sort -u || true)
   FOUND_VIA_CONST=0
   for name in $CONST_NAMES; do
-    if grep -qE "getSetting(Auto|Live)?\(\s*${name}\b" <<<"$EVIDENCE"; then
+    if grep -qE "getSetting(Auto|Live|Override)?\(\s*${name}\b" <<<"$EVIDENCE"; then
       FOUND_VIA_CONST=1
       break
     fi

@@ -45,6 +45,7 @@
 
 import * as crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 
 const log = createLogger("integrations.install.oauth-state-token");
@@ -243,7 +244,8 @@ function resolveTtlSeconds(override: number | undefined): number {
     if (override >= 1 && Number.isFinite(override)) return Math.floor(override);
     return DEFAULT_TTL_SECONDS;
   }
-  const envRaw = process.env.ATLAS_OAUTH_STATE_TTL_SECONDS;
+  // Platform-scoped settings registry (#3705): DB override > env > default.
+  const envRaw = getSettingAuto("ATLAS_OAUTH_STATE_TTL_SECONDS");
   if (!envRaw) return DEFAULT_TTL_SECONDS;
   const parsed = Number.parseInt(envRaw, 10);
   if (!Number.isFinite(parsed) || parsed < MIN_TTL_SECONDS || parsed > MAX_TTL_SECONDS) {

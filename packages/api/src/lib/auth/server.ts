@@ -32,6 +32,7 @@ import {
 } from "@atlas/api/lib/auth/oauth-claims";
 import { listUserWorkspaceIds } from "@atlas/api/lib/auth/oauth-workspace-grants";
 import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit";
+import { getSettingOverride } from "@atlas/api/lib/settings";
 import Stripe from "stripe";
 import { getInternalDB, getWorkspaceDetails, hasInternalDB, internalQuery, isPlanOverrideActive, updateWorkspacePlanTier, updateWorkspaceStatus, withStripeSubscriptionLock, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -1354,6 +1355,13 @@ export function resolveAllowUnauthDcr(env: NodeJS.ProcessEnv): boolean {
  * operators rarely need to change these — the override exists so a
  * Playwright spec can mint a 30-second JWT instead of waiting an hour.
  */
+// Keep these in sync with the registry `default` for
+// ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS / ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS
+// in lib/settings.ts (#3705). The resolvers below read via `getSettingOverride`
+// (DB-override-only tier), so the registry's own `default` is NOT consulted at
+// resolution time — these constants are the live default. If they drift, the
+// value shown in the Admin console (registry default) and the value actually
+// baked into the auth instance (these) diverge.
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 3600;
 const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
 
@@ -1372,12 +1380,21 @@ function resolveTtlSeconds(raw: string | undefined, fallback: number): number {
   return parsed;
 }
 
+// Platform settings registry (#3705): a platform DB override wins over the
+// injected `env` (which stays the boot/fallback tier), then the default.
+// `getSettingOverride` reads ONLY the DB tier — using `getSettingAuto` here
+// would read the live `process.env` and shadow the synthetic `env` the unit
+// tests inject. Both TTLs are baked into the Better Auth instance at boot
+// (`accessTokenExpiresIn` / `refreshTokenExpiresIn`), so the registry entries
+// carry `requiresRestart: true` — a change takes effect on the next restart.
 export function resolveAccessTokenTtlSeconds(env: NodeJS.ProcessEnv): number {
-  return resolveTtlSeconds(env.ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS, DEFAULT_ACCESS_TOKEN_TTL_SECONDS);
+  const override = getSettingOverride("ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS");
+  return resolveTtlSeconds(override ?? env.ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS, DEFAULT_ACCESS_TOKEN_TTL_SECONDS);
 }
 
 export function resolveRefreshTokenTtlSeconds(env: NodeJS.ProcessEnv): number {
-  return resolveTtlSeconds(env.ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS, DEFAULT_REFRESH_TOKEN_TTL_SECONDS);
+  const override = getSettingOverride("ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS");
+  return resolveTtlSeconds(override ?? env.ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS, DEFAULT_REFRESH_TOKEN_TTL_SECONDS);
 }
 
 /**

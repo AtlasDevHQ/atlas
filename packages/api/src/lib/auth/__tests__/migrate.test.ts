@@ -384,6 +384,7 @@ describe("migrateAuthTables", () => {
             { name: "0137_learning_tables_performance_columns.sql" },
             { name: "0138_semantic_profile_status.sql" },
             { name: "0139_learned_patterns_auto_promoted.sql" },
+            { name: "0140_operator_integration_credentials.sql" },
           ],
         };
       }

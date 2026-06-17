@@ -131,6 +131,27 @@ settings registry, and `SAAS_ENV_KEYS` produced two corrections and one new gap:
 - **`ATLAS_REGION_{US,EU,APAC}_DB_URL`** are in `SAAS_ENV_KEYS` but not in
   `.env.example` (the new operator reference does cover them).
 
+## Milestone review (2026-06-17)
+
+A re-sweep during the env-var milestone review found the 2026-06-16 sweep
+("246 distinct vars") **under-counted**. Two corrections fold into existing
+children rather than new issues:
+
+- **Three env-only tuning knobs the sweep missed** — `ATLAS_DASHBOARD_EXPORT_TIMEOUT_MS`
+  (`lib/dashboard-screenshot.ts`), `ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS`
+  (`lib/plugins/registry.ts`), `ATLAS_MCP_MAX_HELD_STREAM_AGE_MS`
+  (`packages/mcp/src/session-store.ts`). None are in the registry or boot-ordering-dependent,
+  so they're Tier-1 promote candidates (added to #3705) and Tier-4 doc gaps (added to #3710).
+- **Two registry-backed learn knobs landed after the audit** (#3636) —
+  `ATLAS_LEARN_PROMOTE_DECAY_ENABLED` / `ATLAS_LEARN_PROMOTE_DECAY_INTERVAL_HOURS`.
+  These are correctly registry-backed (`settings.ts:654/667`) so the principle held;
+  they're only missing from `.env.example` (the sibling `ATLAS_LEARN_*` knobs are
+  documented there), so they're a Tier-4 doc gap (added to #3710).
+
+No new chat-platform or datasource integration landed since the audit, so #3704's
+operator-credential scope is unchanged. The "9 undocumented" count in #3710 is
+re-baselined to include findings 8 & 9.
+
 ## Tracked work
 
 See the umbrella issue and its children in `AtlasDevHQ/atlas` (search label

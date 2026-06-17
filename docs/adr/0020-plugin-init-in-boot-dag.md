@@ -15,7 +15,7 @@ An audit of every plugin's `initialize()` and the boot guards confirmed the chat
 
 ## Decision
 
-**Move plugin registration/init/wiring into the boot DAG as `makeWiredPluginRegistryLive`, gated at the TYPE LEVEL on the `Migration` Tag (and `ConnectionRegistry`). The compiler now guarantees core migrations run before any plugin `initialize()` — the race is unrepresentable, not merely avoided by call placement.**
+**Move plugin registration/init/wiring into the boot DAG as `makeWiredPluginRegistryLive`, gated at the TYPE LEVEL on the `Migration` Tag (and `ConnectionRegistry`). In the production boot DAG the compiler now guarantees core migrations run before any plugin `initialize()` — the race can no longer be reintroduced by moving an imperative call. (The stdio-MCP boot and the operator-credential `refresh()` path run plugin init outside this DAG; they remain covered by the resolver's `42P01` carve-out — see Consequences.)**
 
 Concretely:
 
@@ -27,7 +27,8 @@ Concretely:
 
 ## Consequences
 
-- The #3741 boot race is **unrepresentable**: `makeWiredPluginRegistryLive` cannot be constructed without a `Migration` dependency. A compile-time test (`@ts-expect-error`) pins this.
+- The #3741 boot race cannot be reintroduced in the production boot DAG: `makeWiredPluginRegistryLive` cannot be constructed without a `Migration` dependency. A compile-time test (`@ts-expect-error`) pins the type edge.
+- **The `Migration` Tag gates on outcome, not just ordering.** The wired layer reads `migration.error`: a core migration that was *attempted and failed* (half-applied schema) **fails the Layer fatally** so the supervisor restarts and retries migrations, rather than initializing plugins against a missing table and leaning on the resolver carve-out. `migrated: false` with **no** `error` (no `DATABASE_URL` — a stateless self-host boot) is a legitimate boot and proceeds to init. This mirrors `MigrationGuardLive`'s promote-soft-failure-to-fatal stance and makes the type-level edge back a real runtime guarantee in both deploy modes.
 - The #3744 defenses are reconsidered: the early `runBootMigrations()` call is **removed** (subsumed by the type-level edge — it lived inside the retired imperative block); the resolver's **`42P01` carve-out is kept** as defense-in-depth, because the stdio-MCP boot (`plugins/mcp-boot.ts`, a separate process) and the operator-credential `refresh()` path do not go through this DAG.
 - Plugin schema-migration failure stays **fatal** (the wired layer fails the Layer → server exits), matching the prior imperative `process.exit(1)`.
 - A plugin health-check fiber now runs at boot (the wired layer's `buildPluginService`) — previously unused; this is the intended P5 behavior.

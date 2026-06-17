@@ -607,15 +607,56 @@ export function makeWiredPluginRegistryLive(
       // Migration (core schema migrated) before any plugin initialize(). Both
       // are enforced at the type level — the Layer won't compile without them
       // in the provided context. `yield* Migration` is the load-bearing #3741
-      // edge (its value is unused; the dependency ordering is the point).
+      // edge: it both orders plugin init after core migrations AND gates on the
+      // outcome below.
       const connRegistry = yield* ConnectionRegistry;
-      yield* Migration;
+      const migration = yield* Migration;
+
+      // #3741 outcome gate: if core migrations were ATTEMPTED and FAILED
+      // (`error` set), the core schema is half-applied. A plugin `initialize()`
+      // that reads a migration-created table (e.g. the chat adapter's
+      // operator-credential resolver reads `operator_integration_credentials`,
+      // mig 0140) would run against a missing/partial table. Fail the Layer so
+      // boot aborts and the supervisor restarts (retrying migrations) rather
+      // than initializing plugins against a broken schema and relying on the
+      // resolver's `42P01` carve-out. `migrated: false` with NO `error` means
+      // "no DATABASE_URL" — a legitimate stateless self-host boot — so we gate
+      // on an actual migration failure, not on the bare `migrated` flag. This
+      // mirrors `MigrationGuardLive`'s promote-soft-failure-to-fatal stance.
+      if (migration.error !== undefined) {
+        pluginLog.error(
+          { err: migration.error },
+          "Core schema migrations failed — refusing to initialize plugins against a half-migrated database; aborting startup",
+        );
+        return yield* Effect.fail(
+          new Error(`Core schema migrations failed; plugin init aborted: ${migration.error}`),
+        );
+      }
 
       const impl = yield* createPluginImpl(createImpl);
 
       // --- Registration ---
+      // Aggregate failures (server.ts parity): register every plugin so a
+      // misconfigured `atlas.config.ts` surfaces ALL bad IDs in one boot, then
+      // fail the Layer with the actionable remediation message — rather than
+      // letting the first `register()` throw escape as an opaque Layer defect.
+      const registrationFailures: string[] = [];
       for (const plugin of config.plugins) {
-        impl.register(plugin);
+        try {
+          impl.register(plugin);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          pluginLog.error({ err: msg }, "Plugin registration failed");
+          registrationFailures.push(msg);
+        }
+      }
+      if (registrationFailures.length > 0) {
+        return yield* Effect.fail(
+          new Error(
+            `Aborting startup — ${registrationFailures.length} plugin(s) failed to register. ` +
+              `Fix your atlas.config.ts plugins array. Failures: ${registrationFailures.join("; ")}`,
+          ),
+        );
       }
 
       // --- Schema migrations (before initialize so plugins can use their tables) ---

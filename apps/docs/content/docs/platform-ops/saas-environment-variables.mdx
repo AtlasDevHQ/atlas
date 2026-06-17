@@ -44,8 +44,10 @@ boot** if a required one is missing or malformed, rather than degrading silently
 Stripe (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`), Turnstile
 (`TURNSTILE_SECRET_KEY`), Twenty (`TWENTY_API_KEY`), and the Vercel sandbox token
 (`VERCEL_TOKEN`) are also secrets and stay in env — but their **non-secret
-companions** (Stripe price IDs, Vercel team/project IDs, Twenty base URL) should
-not; see the [audit](#why-the-list-is-short).
+companions** do not. The Vercel team/project IDs (`VERCEL_TEAM_ID` /
+`VERCEL_PROJECT_ID`) are baked into `deploy/api/atlas.config.ts` under
+`sandbox.vercel` (#3706); only `VERCEL_TOKEN` remains env. See the
+[audit](#why-the-list-is-short) for the rest (Stripe price IDs, Twenty base URL).
 
 ### Pre-database boot inputs (per instance)
 
@@ -53,8 +55,21 @@ not; see the [audit](#why-the-list-is-short).
 |---|---|
 | `ATLAS_API_REGION` | This instance's region identity (`us` / `eu` / `apac` / `staging`). Genuinely per-service. |
 | `BETTER_AUTH_URL` | Better Auth base URL — read inside the library's plugin init before settings load. |
-| `BETTER_AUTH_TRUSTED_ORIGINS` | Anchors verification / password-reset redirects to the web origin. |
+| `BETTER_AUTH_TRUSTED_ORIGINS` | Anchors verification / password-reset redirects to the web origin. Also the first source `getWebOrigin()` reads, so it transitively anchors the passkey rpID and the CORS default (below). |
 | `ATLAS_DEPLOY_ENV` | Deployment shape (`production` / `staging` / `development`). Drives the [env-profile](/reference/environment-variables) table — one switch, not a dozen per-env flags. |
+
+### Derived per-region origins (no longer stamped)
+
+These were stamped on every regional API service; they are now **derived from
+`ATLAS_API_REGION` + the `residency.regions[].apiUrl` map** in
+`deploy/api/atlas.config.ts` (#3706). Set them explicitly only to override the
+derivation (e.g. a self-hosted custom domain) — an explicit env value always wins.
+
+| Variable | Derived value |
+|---|---|
+| `ATLAS_PUBLIC_API_URL` | The region's `apiUrl` (the API host — used to build OAuth install redirect URIs). `us` → `https://api.useatlas.dev`, `eu` → `https://api-eu.useatlas.dev`, `apac` → `https://api-apac.useatlas.dev`, `staging` → `https://api.staging.useatlas.dev`. |
+| `ATLAS_RPID` | The web origin's host (passkey rpID). Every prod region collapses onto the single `app.useatlas.dev` web service; `staging` → `app.staging.useatlas.dev`. Derived from the region's `apiUrl` with the `api` label swapped to `app`. |
+| `ATLAS_CORS_ORIGIN` | Already a [runtime setting](#what-you-change-at-runtime-instead); its **default** now derives the region's web origin (same value as the rpID host) instead of the wildcard. Stays a registry setting — do not re-add it as an env var. |
 
 ### Boot-guard / immutable inputs
 

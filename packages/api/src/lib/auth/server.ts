@@ -3291,12 +3291,20 @@ export function getAuthInstance(): AuthInstance {
 
   // Derive parent domain for cross-subdomain cookies — the longest dotted
   // suffix common to the API host (BETTER_AUTH_URL) and the canonical app
-  // origin. Only for cross-origin deploys (ATLAS_CORS_ORIGIN set); without it,
-  // cookies are host-scoped and won't be sent from the frontend subdomain.
-  // Use getWebOrigin() (the FIRST CORS entry — the app) rather than the whole
-  // allowlist, so an unrelated allowlisted origin can't veto the shared
-  // domain. See `deriveCookieDomain` for why the env-specific suffix matters.
-  const webOrigin = process.env.ATLAS_CORS_ORIGIN ? getWebOrigin() : null;
+  // origin. Only for cross-origin deploys (a web origin is resolvable); without
+  // it, cookies are host-scoped and won't be sent from the frontend subdomain.
+  // Use getWebOrigin() (the FIRST CORS entry, else BETTER_AUTH_TRUSTED_ORIGINS,
+  // else the region-derived origin — #3706) rather than the whole allowlist, so
+  // an unrelated allowlisted origin can't veto the shared domain, and so the
+  // domain still derives once SaaS stops stamping ATLAS_CORS_ORIGIN per service
+  // (BETTER_AUTH_TRUSTED_ORIGINS stays env, so getWebOrigin() still resolves).
+  // NB: this dropped the former `ATLAS_CORS_ORIGIN`-set gate. A self-hosted
+  // deploy that sets BETTER_AUTH_TRUSTED_ORIGINS but NOT ATLAS_CORS_ORIGIN now
+  // also derives a parent cookie domain (previously host-scoped) — the intended
+  // cross-subdomain behavior, and a no-op for single-origin deploys where the
+  // API host and app origin share no 2+ label suffix (cookieDomain stays
+  // undefined). See `deriveCookieDomain` for why the env-specific suffix matters.
+  const webOrigin = getWebOrigin();
   const cookieDomain = deriveCookieDomain(process.env.BETTER_AUTH_URL, webOrigin ?? undefined);
   // Fail loud on the silent footgun: a cross-origin deploy that yields no
   // shared domain — usually a malformed BETTER_AUTH_URL or an app origin that
@@ -3306,10 +3314,10 @@ export function getAuthInstance(): AuthInstance {
   if (process.env.BETTER_AUTH_URL && webOrigin && !cookieDomain) {
     log.warn(
       { authUrl: process.env.BETTER_AUTH_URL, webOrigin },
-      "Cross-origin deploy (ATLAS_CORS_ORIGIN set) but no shared cookie domain could be "
+      "Cross-origin deploy (web origin resolved) but no shared cookie domain could be "
         + "derived from the API host and the app origin — session cookies will be host-only "
         + "and won't reach the app subdomain. Verify BETTER_AUTH_URL and the first "
-        + "ATLAS_CORS_ORIGIN entry are valid URLs sharing a 2+ label suffix.",
+        + "ATLAS_CORS_ORIGIN / BETTER_AUTH_TRUSTED_ORIGINS entry are valid URLs sharing a 2+ label suffix.",
     );
   }
 

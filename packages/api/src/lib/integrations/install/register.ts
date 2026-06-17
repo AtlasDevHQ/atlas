@@ -17,6 +17,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { deriveRegionApiUrl } from "@atlas/api/lib/residency/origins";
 import {
   registerFormHandler,
   registerOAuthDatasourceHandler,
@@ -111,13 +112,19 @@ const log = createLogger("integrations.install.register");
  * host, mismatching the Slack App's registered redirect URI and surfacing
  * as `invalid_redirect_uri` on every install attempt.
  *
- * Returns `null` when unset — the caller logs and skips registration
- * rather than minting tokens with a half-formed redirect.
+ * When unset, the API host is derived from this instance's region +
+ * the `residency.regions[].apiUrl` map (#3706) so SaaS no longer stamps
+ * `ATLAS_PUBLIC_API_URL` per regional service. The derived value is exactly
+ * the region's `apiUrl` (the API host), so no redirect URI changes.
+ *
+ * Returns `null` when neither an explicit value nor a region is configured —
+ * the caller logs and skips registration rather than minting tokens with a
+ * half-formed redirect.
  */
 function resolvePublicApiUrl(): string | null {
   const explicit = process.env.ATLAS_PUBLIC_API_URL;
   if (explicit && explicit.length > 0) return explicit.replace(/\/+$/, "");
-  return null;
+  return deriveRegionApiUrl();
 }
 
 /**

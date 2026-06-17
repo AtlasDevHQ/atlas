@@ -13,6 +13,12 @@ mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
+let mockConfig: Record<string, unknown> | null = null;
+
+mock.module("@atlas/api/lib/config", () => ({
+  getConfig: () => mockConfig,
+}));
+
 const SANDBOX_ENV = [
   "ATLAS_RUNTIME",
   "VERCEL",
@@ -32,6 +38,7 @@ describe("Vercel sandbox detection", () => {
 
   beforeEach(() => {
     _warnCalls = 0;
+    mockConfig = null;
     for (const key of SANDBOX_ENV) {
       delete process.env[key];
     }
@@ -70,6 +77,46 @@ describe("Vercel sandbox detection", () => {
       expect(access?.token.reveal()).toBe("vercel-token");
       expect(String(access?.token)).toBe("[REDACTED]");
       expect(JSON.stringify(access)).not.toContain("vercel-token");
+    });
+
+    it("sources team + project IDs from atlas.config.ts when the env vars are unset (#3706)", async () => {
+      // Only the token is env; the non-secret IDs come from config.
+      process.env.VERCEL_TOKEN = "vercel-token";
+      mockConfig = {
+        sandbox: { vercel: { teamId: "team_cfg", projectId: "prj_cfg" } },
+      };
+
+      const { vercelSandboxAccess } = await detectModule();
+
+      const access = vercelSandboxAccess();
+      expect(access?.teamId).toBe("team_cfg");
+      expect(access?.projectId).toBe("prj_cfg");
+      expect(access?.token.reveal()).toBe("vercel-token");
+    });
+
+    it("lets the env vars override the config IDs", async () => {
+      process.env.VERCEL_TEAM_ID = "team_env";
+      process.env.VERCEL_PROJECT_ID = "prj_env";
+      process.env.VERCEL_TOKEN = "vercel-token";
+      mockConfig = {
+        sandbox: { vercel: { teamId: "team_cfg", projectId: "prj_cfg" } },
+      };
+
+      const { vercelSandboxAccess } = await detectModule();
+
+      const access = vercelSandboxAccess();
+      expect(access?.teamId).toBe("team_env");
+      expect(access?.projectId).toBe("prj_env");
+    });
+
+    it("returns undefined when config supplies IDs but the token (env-only) is missing", async () => {
+      mockConfig = {
+        sandbox: { vercel: { teamId: "team_cfg", projectId: "prj_cfg" } },
+      };
+
+      const { vercelSandboxAccess } = await detectModule();
+
+      expect(vercelSandboxAccess()).toBeUndefined();
     });
 
     it("records the partial-credentials warning only once", async () => {

@@ -6,6 +6,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { getConfig } from "@atlas/api/lib/config";
 
 const log = createLogger("sandbox-detect");
 
@@ -40,14 +41,21 @@ let _partialCredsWarned = false;
  * (e.g. Railway, Fly, bare metal). When unset, `@vercel/sandbox` falls back
  * to `VERCEL_OIDC_TOKEN` which is only present on the Vercel platform.
  *
- * Emits a one-time warn when some-but-not-all of the three vars are set —
+ * The team and project IDs resolve from env first, then from
+ * `sandbox.vercel` in `atlas.config.ts` (#3706 — they're not secret and are
+ * constant across regions, so SaaS bakes them into config rather than stamping
+ * `VERCEL_TEAM_ID` / `VERCEL_PROJECT_ID` per regional service). `VERCEL_TOKEN`
+ * is the only secret and stays env-only.
+ *
+ * Emits a one-time warn when some-but-not-all of the three values are set —
  * the most likely cause is a typo or empty Railway service variable, and
  * without the breadcrumb the operator only sees the generic "all backends
  * failed" message far downstream.
  */
 export function vercelSandboxAccess(): VercelSandboxAccess | undefined {
-  const teamId = process.env.VERCEL_TEAM_ID;
-  const projectId = process.env.VERCEL_PROJECT_ID;
+  const vercelConfig = getConfig()?.sandbox?.vercel;
+  const teamId = process.env.VERCEL_TEAM_ID || vercelConfig?.teamId;
+  const projectId = process.env.VERCEL_PROJECT_ID || vercelConfig?.projectId;
   const token = process.env.VERCEL_TOKEN;
   const allSet = !!(teamId && projectId && token);
   if (!allSet) {
@@ -60,7 +68,7 @@ export function vercelSandboxAccess(): VercelSandboxAccess | undefined {
           hasProjectId: !!projectId,
           hasToken: !!token,
         },
-        "Partial Vercel Sandbox credentials detected — all three of VERCEL_TEAM_ID / VERCEL_PROJECT_ID / VERCEL_TOKEN are required off-Vercel. Treating as unset.",
+        "Partial Vercel Sandbox credentials detected — a team ID + project ID (VERCEL_TEAM_ID / VERCEL_PROJECT_ID, or sandbox.vercel in atlas.config.ts) and VERCEL_TOKEN are all required off-Vercel. Treating as unset.",
       );
     }
     return undefined;

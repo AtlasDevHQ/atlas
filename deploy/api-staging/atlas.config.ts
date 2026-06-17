@@ -1021,6 +1021,14 @@ export default defineConfig({
   // backend that can't enforce multi-tenant boundaries.
   sandbox: {
     priority: ["vercel-sandbox"],
+    // Vercel account identity for off-Vercel (Railway) sandbox auth. Same
+    // non-secret team + project as prod — only VERCEL_TOKEN differs per env and
+    // stays in Railway. Baked here rather than stamped per service (#3706); the
+    // env vars still override when set.
+    vercel: {
+      teamId: "team_jW0mE8T4T5Uodzkz7WlVowNi",
+      projectId: "prj_mIgFJiT56FOffyZ1fxRgFwhgWksI",
+    },
   },
 
   // ── Connection Pool ─────────────────────────────────────────────

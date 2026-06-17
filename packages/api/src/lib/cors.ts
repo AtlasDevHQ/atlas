@@ -12,6 +12,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { getWebOrigin } from "@atlas/api/lib/web-origin";
 
 const log = createLogger("cors");
 
@@ -20,16 +21,30 @@ let corsSettingsWarnLogged = false;
 
 /**
  * Resolve the configured CORS origin. Reads from settings cache (so admin
- * changes take effect without restart) with a fallback to the boot-time env.
- * Defaults to `"*"` when unset — fine for API-key/BYOT auth (header-based).
+ * changes take effect without restart), then the boot-time env.
+ *
+ * When neither yields an explicit origin (the registry default is the wildcard
+ * `"*"`), the default is derived from this instance's region — `getWebOrigin()`
+ * resolves the app origin from `BETTER_AUTH_TRUSTED_ORIGINS` or the
+ * `residency.regions[].apiUrl` map (#3706), so SaaS no longer has to stamp
+ * `ATLAS_CORS_ORIGIN` per regional service. Self-hosted deploys configure no
+ * region, so `getWebOrigin()` returns `null` and the wildcard `"*"` stands —
+ * fine for API-key/BYOT auth (header-based, no credentialed cookies).
+ *
+ * An explicit non-wildcard value (env or a platform/workspace DB override)
+ * always wins; a literal `"*"` is treated as "no explicit origin" and falls
+ * through to the region derivation (a credentialed cookie deploy can't use the
+ * wildcard anyway — the CORS spec forbids it — so deriving the real origin is
+ * strictly more correct).
  */
 export function resolveCorsOrigin(): string {
+  let configured: string | undefined;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency at module load
     const { getSettingAuto } = require("@atlas/api/lib/settings") as {
       getSettingAuto: (key: string) => string | undefined;
     };
-    return getSettingAuto("ATLAS_CORS_ORIGIN") ?? bootCorsOrigin ?? "*";
+    configured = getSettingAuto("ATLAS_CORS_ORIGIN") ?? bootCorsOrigin;
   } catch (err) {
     if (!corsSettingsWarnLogged) {
       log.warn(
@@ -38,8 +53,11 @@ export function resolveCorsOrigin(): string {
       );
       corsSettingsWarnLogged = true;
     }
-    return bootCorsOrigin ?? "*";
+    configured = bootCorsOrigin;
   }
+
+  if (configured && configured !== "*") return configured;
+  return getWebOrigin() ?? configured ?? "*";
 }
 
 /**

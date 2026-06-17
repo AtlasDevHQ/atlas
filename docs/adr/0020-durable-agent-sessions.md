@@ -55,6 +55,15 @@ agent_runs
 3. **Approval-park.** Wire the gated-tool suspend → `parked` checkpoint → return, and the `ApprovalGate` resolution → resume. This is the headline capability and depends on 1+2 being solid.
 4. **Surface it.** `x-run-id`, client reattach, and the UI affordance for "this turn is waiting on approval / was interrupted — resume".
 
+## Related primitives (deliberately out of scope, tracked separately)
+
+Durable sessions are the foundation of a "long-running turn" bundle; two adjacent primitives ride on top and are filed as their own follow-ons rather than widened into this ADR:
+
+- **Context compaction.** A turn that parks for hours or resumes across days will blow the context window. Eve auto-summarizes earlier turns past a fill threshold (optionally on a cheaper model). Atlas today only caps steps and conversation budget, then forces a new conversation. Once turns can live long enough to need it, compaction becomes the natural companion — but it is independently shippable and is not a precondition for checkpoint/resume, so it gets its own issue.
+- **Durable agent memory.** A per-session, crash-surviving working-memory slot (Eve's `defineState`) is distinct from the message transcript: it's where the agent stashes derived state ("the user means EU revenue, the prod replica is lagging") that should outlast a resume without re-deriving. `agent_runs.transcript` is the right *storage* substrate, but the *programming model* (a typed handle tools can read/write) is a separate design. Out of scope here; tracked alongside.
+
+The discipline mirrors the rest of the repo: one ADR records one decision (checkpoint/resume/park), and the bundle ships as independent tracer-bullet slices.
+
 ## Considered and rejected
 
 - **Adopt the Vercel Workflow SDK (Eve's substrate).** Rejected. The open-source SDK could in principle run off-Vercel, but the supported, durable path is Vercel Functions end-to-end, and taking it on would either bind Atlas to Vercel or force us to self-operate an undocumented Workflow runtime — strictly more operational surface than checkpoint rows in the Postgres we already run. Deploy-anywhere wins. We borrow Eve's *model* (checkpoint at step boundaries, park without compute), not its *runtime*.

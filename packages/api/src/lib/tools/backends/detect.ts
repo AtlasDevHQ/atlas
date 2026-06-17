@@ -68,7 +68,7 @@ export function vercelSandboxAccess(): VercelSandboxAccess | undefined {
           hasProjectId: !!projectId,
           hasToken: !!token,
         },
-        "Partial Vercel Sandbox credentials detected — all three of VERCEL_TEAM_ID / VERCEL_PROJECT_ID / VERCEL_TOKEN are required off-Vercel. Treating as unset.",
+        "Partial Vercel Sandbox credentials detected — a team ID + project ID (VERCEL_TEAM_ID / VERCEL_PROJECT_ID, or sandbox.vercel in atlas.config.ts) and VERCEL_TOKEN are all required off-Vercel. Treating as unset.",
       );
     }
     return undefined;

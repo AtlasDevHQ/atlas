@@ -15,6 +15,11 @@ let mockConfig: Record<string, unknown> | null = null;
 
 mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfig,
+  configFromEnv: () => ({}),
+  loadConfig: async () => ({}),
+  defineConfig: (c: unknown) => c,
+  validateAndResolve: (r: unknown) => r,
+  _setConfigForTest: () => {},
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({

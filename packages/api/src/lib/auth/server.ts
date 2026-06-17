@@ -3298,7 +3298,12 @@ export function getAuthInstance(): AuthInstance {
   // an unrelated allowlisted origin can't veto the shared domain, and so the
   // domain still derives once SaaS stops stamping ATLAS_CORS_ORIGIN per service
   // (BETTER_AUTH_TRUSTED_ORIGINS stays env, so getWebOrigin() still resolves).
-  // See `deriveCookieDomain` for why the env-specific suffix matters.
+  // NB: this dropped the former `ATLAS_CORS_ORIGIN`-set gate. A self-hosted
+  // deploy that sets BETTER_AUTH_TRUSTED_ORIGINS but NOT ATLAS_CORS_ORIGIN now
+  // also derives a parent cookie domain (previously host-scoped) — the intended
+  // cross-subdomain behavior, and a no-op for single-origin deploys where the
+  // API host and app origin share no 2+ label suffix (cookieDomain stays
+  // undefined). See `deriveCookieDomain` for why the env-specific suffix matters.
   const webOrigin = getWebOrigin();
   const cookieDomain = deriveCookieDomain(process.env.BETTER_AUTH_URL, webOrigin ?? undefined);
   // Fail loud on the silent footgun: a cross-origin deploy that yields no

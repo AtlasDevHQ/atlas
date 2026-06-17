@@ -23,7 +23,7 @@
 
 import * as fs from "fs";
 import * as yaml from "js-yaml";
-import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
+import { internalQuery, hasInternalDB, type InternalQueryExecutor } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { Effect, Duration } from "effect";
 import { normalizeError, AmbiguousEntityError } from "@atlas/api/lib/effect/errors";
@@ -280,11 +280,15 @@ export async function upsertDraftEntity(
   name: string,
   yamlContent: string,
   connectionId?: string,
+  // Optional transaction-bound executor so a multi-entity import can commit
+  // atomically with its caller (the /use-demo seed, #3683). Defaults to the
+  // pooled `internalQuery` — one connection per call, the standalone path.
+  exec: InternalQueryExecutor = internalQuery,
 ): Promise<void> {
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
-  await internalQuery(
+  await exec(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
      VALUES ($1, $2, $3, $4, ${inlineConnectionGroupSql("$5", "$1")}, 'draft')
      ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn(GROUP_COLUMN)}) WHERE status = 'draft'
@@ -315,11 +319,13 @@ export async function upsertDraftEntityForGroup(
   name: string,
   yamlContent: string,
   connectionGroupId?: string | null,
+  // See {@link upsertDraftEntity} — optional transaction-bound executor (#3683).
+  exec: InternalQueryExecutor = internalQuery,
 ): Promise<void> {
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
-  await internalQuery(
+  await exec(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
      VALUES ($1, $2, $3, $4, $5, 'draft')
      ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn(GROUP_COLUMN)}) WHERE status = 'draft'
@@ -1531,21 +1537,34 @@ export async function restoreSingleConnection(
 
 /**
  * Bulk upsert entities for an org. Each entity is upserted individually —
- * failures are logged and skipped (partial imports are expected).
- * Used by the import endpoint.
+ * on the pooled default path, failures are logged and skipped (partial imports
+ * are expected). Used by the import endpoint.
  *
  * Imports stage as drafts (#2177) so the admin reviews them via the
  * pending-changes pill and publishes via `/api/v1/admin/publish`. The
  * published surface is untouched until that publish runs.
+ *
+ * Pass `exec` (a transaction-bound executor from {@link withDemoSeedLock}) to
+ * make the whole batch atomic with its caller (#3683). On that path the
+ * swallow-and-continue tolerance is OFF: the first row failure re-throws so the
+ * enclosing transaction rolls back all-or-nothing — Postgres has already aborted
+ * the transaction after the failed statement, so continuing would error every
+ * subsequent upsert anyway, with no partial commit to salvage.
  */
 export async function bulkUpsertEntities(
   orgId: string,
   entities: Array<{ entityType: SemanticEntityType; name: string; yamlContent: string; connectionId?: string; connectionGroupId?: string | null }>,
+  exec: InternalQueryExecutor = internalQuery,
 ): Promise<number> {
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
   if (entities.length === 0) return 0;
+
+  // A caller-supplied executor means the batch runs inside that caller's
+  // transaction — partial commits are not on the table, so a row failure must
+  // propagate rather than be counted as a skip.
+  const atomic = exec !== internalQuery;
 
   let upserted = 0;
   for (const e of entities) {
@@ -1554,9 +1573,9 @@ export async function bulkUpsertEntities(
       // carries its group directly; the flat default dir keeps resolving the
       // connection/install id through `inlineConnectionGroupSql` (#3245).
       if (e.connectionGroupId !== undefined) {
-        await upsertDraftEntityForGroup(orgId, e.entityType, e.name, e.yamlContent, e.connectionGroupId);
+        await upsertDraftEntityForGroup(orgId, e.entityType, e.name, e.yamlContent, e.connectionGroupId, exec);
       } else {
-        await upsertDraftEntity(orgId, e.entityType, e.name, e.yamlContent, e.connectionId);
+        await upsertDraftEntity(orgId, e.entityType, e.name, e.yamlContent, e.connectionId, exec);
       }
       upserted++;
     } catch (err) {
@@ -1568,8 +1587,9 @@ export async function bulkUpsertEntities(
       // such drift visible in any log aggregator.
       log.error(
         { orgId, entityType: e.entityType, name: e.name, err: err instanceof Error ? err.message : String(err), cause: err instanceof Error ? err.cause : undefined },
-        "Failed to upsert semantic entity — skipping",
+        atomic ? "Failed to upsert semantic entity — rolling back batch" : "Failed to upsert semantic entity — skipping",
       );
+      if (atomic) throw err;
     }
   }
   return upserted;

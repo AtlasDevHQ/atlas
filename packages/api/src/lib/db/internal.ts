@@ -2326,9 +2326,21 @@ export async function setWorkspaceRegion(
  */
 const LAST_ADMIN_LOCK_NAMESPACE = 3158;
 
+/**
+ * A parameterized-query runner. Structurally satisfied by {@link internalQuery}
+ * (pooled, one connection per call) and by the transaction-bound `tx.query`
+ * handed to {@link withWorkspaceAdminLock} / {@link withDemoSeedLock} callbacks.
+ * Lets a helper that normally runs on the pool be threaded onto a single
+ * transaction connection so a multi-statement sequence commits atomically.
+ */
+export type InternalQueryExecutor = <T extends Record<string, unknown>>(
+  sql: string,
+  params?: unknown[],
+) => Promise<T[]>;
+
 /** Query bound to the {@link withWorkspaceAdminLock} transaction connection. */
 export interface WorkspaceAdminLockTx {
-  query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+  query: InternalQueryExecutor;
 }
 
 /**
@@ -2438,6 +2450,87 @@ export async function withWorkspaceAdminLock<T>(
   fn: (tx: WorkspaceAdminLockTx) => Promise<T>,
 ): Promise<T> {
   return withWorkspaceAdminLocks([orgId], fn);
+}
+
+/**
+ * Numeric namespace for the per-workspace demo-seed advisory lock — the
+ * `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`. Distinct
+ * from the last-admin (`3158`), chat-install (`3001`), lead-outbox (`2870`) and
+ * Stripe webhook (`3445`) two-arg namespaces; pairwise distinct so a demo seed
+ * never serializes against an unrelated guard on the same workspace. Value is
+ * this guard's issue number (#3683).
+ */
+const DEMO_SEED_LOCK_NAMESPACE = 3683;
+
+/** Query bound to the {@link withDemoSeedLock} transaction connection. */
+export interface DemoSeedTx {
+  query: InternalQueryExecutor;
+}
+
+/**
+ * Run `fn` inside a single transaction holding a per-workspace advisory lock, so
+ * the `/use-demo` seed (semantic-entity import → `workspace_plugins` published
+ * flip) is BOTH mutually exclusive per workspace AND atomic (#3683).
+ *
+ * Atomicity: every write `fn` issues through `tx.query` runs on the one
+ * transaction connection, so a blip / pool exhaustion / process kill between the
+ * entity import and the published flip rolls the whole seed back — there is no
+ * window where draft `semantic_entities` are committed with no published
+ * datasource install (the orphaned-partial-demo state). Throwing anywhere in
+ * `fn` rolls back and re-throws so the caller surfaces a 5xx.
+ *
+ * Mutual exclusion: two concurrent same-`orgId` POSTs (double-click, two tabs,
+ * retry-while-pending) serialize on `pg_advisory_xact_lock(namespace,
+ * hashtext(orgId))` instead of interleaving `ON CONFLICT DO UPDATE` upserts on
+ * the same rows — which deadlock under Postgres row-lock ordering → intermittent
+ * 500s. The lock is transaction-scoped, released automatically on
+ * COMMIT/ROLLBACK. A cross-workspace `hashtext` collision only costs extra
+ * serialization, never correctness.
+ *
+ * `fn`'s writes MUST go through `tx.query` (the locked connection) to be in the
+ * transaction — a stray `internalQuery` lands on a different pooled connection,
+ * outside both the lock and the transaction. Uses the main internal pool (one
+ * dedicated connection per call) with the same manual BEGIN/COMMIT/ROLLBACK +
+ * destroy-on-failed-rollback mechanics as {@link withWorkspaceAdminLocks}; never
+ * nest another lock-holding pool checkout inside `fn` (the bounded-pool
+ * nested-checkout deadlock — see {@link withWorkspaceAdminLocks}). Caller must
+ * have already confirmed {@link hasInternalDB}.
+ */
+export async function withDemoSeedLock<T>(
+  orgId: string,
+  fn: (tx: DemoSeedTx) => Promise<T>,
+): Promise<T> {
+  const client = await getInternalDB().connect();
+  // Destroy the client on a failed ROLLBACK so a dirty socket doesn't poison
+  // the next borrower (matches withWorkspaceAdminLocks).
+  let rollbackErr: Error | null = null;
+  const tx: DemoSeedTx = {
+    query: async <R extends Record<string, unknown>>(sql: string, params?: unknown[]) => {
+      const res = await client.query(sql, params);
+      return res.rows as R[];
+    },
+  };
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [
+      DEMO_SEED_LOCK_NAMESPACE,
+      orgId,
+    ]);
+    const result = await fn(tx);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch((rbErr: unknown) => {
+      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+      log.warn(
+        { orgId, err: rollbackErr.message },
+        "ROLLBACK failed during withDemoSeedLock — client will be destroyed",
+      );
+    });
+    throw err;
+  } finally {
+    client.release(rollbackErr ?? undefined);
+  }
 }
 
 /**

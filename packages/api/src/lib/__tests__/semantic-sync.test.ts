@@ -774,6 +774,32 @@ describe("importFromDisk", () => {
     // The mock bulkUpsertEntities doesn't check connectionId,
     // but we verify it doesn't error
   });
+
+  it("surfaces dbFailures when bulkUpsertEntities persists fewer rows than scanned (#3683)", async () => {
+    const orgId = testOrgId();
+    await syncEntityToDisk(orgId, "users", "entity", "table: users\n");
+    await syncEntityToDisk(orgId, "orders", "entity", "table: orders\n");
+    await syncEntityToDisk(orgId, "events", "entity", "table: events\n");
+
+    // The MEDIUM finding (#3683): bulkUpsertEntities swallowed per-row failures
+    // and returned only a count, so a partial DB write looked clean. Simulate
+    // the DB rejecting one of the three valid rows and assert the gap surfaces.
+    mockBulkUpsertEntities.mockImplementationOnce(() => Promise.resolve(2));
+    const result = await importFromDisk(orgId);
+
+    expect(result.imported).toBe(2);
+    expect(result.dbFailures).toBe(1); // 3 scanned, 2 persisted
+  });
+
+  it("reports dbFailures: 0 when every scanned entity persists (#3683)", async () => {
+    const orgId = testOrgId();
+    await syncEntityToDisk(orgId, "users", "entity", "table: users\n");
+
+    const result = await importFromDisk(orgId);
+
+    expect(result.imported).toBe(1);
+    expect(result.dbFailures).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

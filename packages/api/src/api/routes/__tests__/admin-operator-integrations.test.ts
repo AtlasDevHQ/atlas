@@ -38,21 +38,25 @@ let storedBundle: Record<string, string> | null = null;
 let lastSaved: { platform: string; bundle: Record<string, string> } | null = null;
 let deleteCalled = false;
 
+// Named handles so individual tests can override behavior (e.g. force a save
+// to throw to exercise the failure-audit + 500 path).
+const saveSpy = mock(async (platform: string, bundle: Record<string, string>) => {
+  lastSaved = { platform, bundle: { ...bundle } };
+  storedBundle = { ...bundle };
+});
+const deleteSpy = mock(async () => {
+  deleteCalled = true;
+  const existed = storedBundle !== null;
+  storedBundle = null;
+  return existed;
+});
 mock.module("@atlas/api/lib/integrations/operator-credentials/store", () => ({
-  saveOperatorCredentials: mock(async (platform: string, bundle: Record<string, string>) => {
-    lastSaved = { platform, bundle: { ...bundle } };
-    storedBundle = { ...bundle };
-  }),
+  saveOperatorCredentials: saveSpy,
   readOperatorCredentials: mock(async () => (storedBundle ? { ...storedBundle } : null)),
   readOperatorCredentialRecord: mock(async () =>
     storedBundle ? { bundle: { ...storedBundle }, updatedAt: new Date("2026-06-17T00:00:00.000Z") } : null,
   ),
-  deleteOperatorCredentials: mock(async () => {
-    deleteCalled = true;
-    const existed = storedBundle !== null;
-    storedBundle = null;
-    return existed;
-  }),
+  deleteOperatorCredentials: deleteSpy,
 }));
 
 // Plugin registry — spy on the refresh-on-write seam.
@@ -113,6 +117,8 @@ beforeEach(() => {
   deleteCalled = false;
   auditRows.length = 0;
   refreshSpy.mockClear();
+  saveSpy.mockClear();
+  deleteSpy.mockClear();
 });
 
 afterEach(() => {
@@ -263,6 +269,33 @@ describe("PUT /:platform — merge + refresh + audit", () => {
     expect(body.refreshed).toBe(false);
     expect(body.refreshError).toBe("Plugin not registered");
   });
+
+  it("500s and logs a FAILURE audit row (no secret, no refresh) when the save throws", async () => {
+    storedBundle = null;
+    saveSpy.mockImplementationOnce(async () => {
+      throw new Error("encrypt failed: kms unreachable");
+    });
+    const res = await adminOperatorIntegrations.request("/slack", {
+      method: "PUT",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ fields: { SLACK_CLIENT_SECRET: SECRET } }),
+    });
+    expect(res.status).toBe(500);
+
+    // The failure is audited before the error propagates — with field NAMES
+    // and `hasSecret`, never the raw value.
+    const row = auditRows.find((r) => r.actionType === "operator_integration.update") as
+      | { status?: string; metadata?: Record<string, unknown> }
+      | undefined;
+    expect(row).toBeDefined();
+    expect(row!.status).toBe("failure");
+    expect(row!.metadata?.hasSecret).toBe(true);
+    expect(row!.metadata?.fieldsSet).toEqual(["SLACK_CLIENT_SECRET"]);
+    expect(JSON.stringify(row)).not.toContain(SECRET);
+
+    // A failed write must not pretend to refresh the running adapter.
+    expect(refreshSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe("DELETE /:platform — revert to env", () => {
@@ -292,5 +325,49 @@ describe("GET / — managed platform list", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { platforms: Array<{ platform: string; label: string }> };
     expect(body.platforms.some((p) => p.platform === "slack")).toBe(true);
+  });
+});
+
+// `hasInternalDB()` reads `process.env.DATABASE_URL` live, so unsetting it for
+// the scope of these tests drives the self-host (env-only) write guards. The
+// store stays mocked, so nothing connects either way.
+describe("internal DB absent — write guards return not_configured", () => {
+  let savedDbUrl: string | undefined;
+  beforeEach(() => {
+    savedDbUrl = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+  });
+  afterEach(() => {
+    if (savedDbUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = savedDbUrl;
+  });
+
+  it("PUT 404s `not_configured` and does not save or refresh", async () => {
+    const res = await adminOperatorIntegrations.request("/slack", {
+      method: "PUT",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ fields: { SLACK_CLIENT_ID: "A1" } }),
+    });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("not_configured");
+    expect(lastSaved).toBeNull();
+    expect(refreshSpy).not.toHaveBeenCalled();
+  });
+
+  it("DELETE 404s `not_configured` and does not delete or refresh", async () => {
+    const res = await adminOperatorIntegrations.request("/slack", { method: "DELETE" });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("not_configured");
+    expect(deleteCalled).toBe(false);
+    expect(refreshSpy).not.toHaveBeenCalled();
+  });
+
+  it("still distinguishes an unmanaged slug as 404 `not_found`, not `not_configured`", async () => {
+    const res = await adminOperatorIntegrations.request("/discord", { method: "DELETE" });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("not_found");
   });
 });

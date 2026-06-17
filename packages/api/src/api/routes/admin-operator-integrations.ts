@@ -40,6 +40,7 @@ import { plugins } from "@atlas/api/lib/plugins/registry";
 import {
   OPERATOR_PLATFORMS,
   getOperatorPlatform,
+  type OperatorPlatformSpec,
 } from "@atlas/api/lib/integrations/operator-credentials/platforms";
 import { getOperatorPlatformStatus } from "@atlas/api/lib/integrations/operator-credentials/resolver";
 import {
@@ -234,21 +235,42 @@ async function buildPlatformStatus(platform: string): Promise<PlatformStatusResp
 }
 
 /**
- * Rebuild the chat plugin so a credential write/delete is picked up at runtime
- * (no process restart). A refresh failure is NOT fatal — the credentials are
- * already persisted encrypted at rest and will apply on the next boot/refresh;
- * the route surfaces the reason as a warning rather than discarding the saved
- * write. Common non-fatal reasons: the plugin isn't registered (self-host
- * without chat), or it hasn't initialized yet.
+ * Rebuild the platform's runtime adapter so a credential write/delete is
+ * picked up without a process restart. Today every managed platform is a chat
+ * platform served by the `chat-interaction` plugin; a non-chat operator
+ * platform (an action target, `catalogSlug === null`) has no chat plugin to
+ * rebuild, so the refresh is skipped rather than firing a misleading no-op
+ * against the chat plugin — its runtime pickup is handled by its own seam when
+ * such a platform is added.
+ *
+ * A refresh failure is NOT fatal — the credentials are already persisted
+ * encrypted at rest and will apply on the next boot/refresh; the route surfaces
+ * the reason as a warning rather than discarding the saved write. Common
+ * non-fatal reasons: the plugin isn't registered (self-host without chat) or it
+ * hasn't initialized yet. The body is fully guarded (it never throws) so the
+ * caller's `Effect.promise` can't turn a refresh hiccup into a 500 on an
+ * already-persisted write.
  */
-async function refreshChatPlugin(): Promise<{ refreshed: boolean; refreshError?: string }> {
-  const result = await plugins.refresh(CHAT_PLUGIN_ID);
-  if (result.ok) return { refreshed: true };
-  log.warn(
-    { pluginId: CHAT_PLUGIN_ID, reason: result.reason },
-    "Operator credential write saved, but chat plugin refresh failed — change applies on next boot/refresh",
-  );
-  return { refreshed: false, refreshError: result.reason };
+async function refreshPluginForPlatform(
+  spec: OperatorPlatformSpec,
+): Promise<{ refreshed: boolean; refreshError?: string }> {
+  if (spec.catalogSlug === null) return { refreshed: false };
+  try {
+    const result = await plugins.refresh(CHAT_PLUGIN_ID);
+    if (result.ok) return { refreshed: true };
+    log.warn(
+      { pluginId: CHAT_PLUGIN_ID, reason: result.reason },
+      "Operator credential write saved, but chat plugin refresh failed — change applies on next boot/refresh",
+    );
+    return { refreshed: false, refreshError: result.reason };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    log.warn(
+      { pluginId: CHAT_PLUGIN_ID, reason },
+      "Operator credential write saved, but chat plugin refresh threw — change applies on next boot/refresh",
+    );
+    return { refreshed: false, refreshError: reason };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +381,7 @@ adminOperatorIntegrations.openapi(setRoute, async (c) => {
 
     // Rebuild the running chat plugin so the rotation applies without a
     // restart. Non-fatal on failure (creds are persisted) — surfaced below.
-    const refresh = yield* Effect.promise(() => refreshChatPlugin());
+    const refresh = yield* Effect.promise(() => refreshPluginForPlatform(spec));
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.operator_integration.update,
@@ -410,7 +432,7 @@ adminOperatorIntegrations.openapi(deleteRoute, async (c) => {
       ),
     );
 
-    const refresh = yield* Effect.promise(() => refreshChatPlugin());
+    const refresh = yield* Effect.promise(() => refreshPluginForPlatform(spec));
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.operator_integration.delete,

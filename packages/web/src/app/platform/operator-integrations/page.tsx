@@ -33,6 +33,11 @@ import {
   Loader2,
   Plug,
 } from "lucide-react";
+import {
+  buildCredentialPayload,
+  destructiveRotations,
+  hasAnyEdit,
+} from "./helpers";
 
 // ── Wire schemas (mirror admin-operator-integrations.ts) ─────────────
 
@@ -62,6 +67,7 @@ const StatusResponseSchema = z.object({
   refreshed: z.boolean().optional(),
   refreshError: z.string().optional(),
 });
+type StatusResponse = z.infer<typeof StatusResponseSchema>;
 
 const ListResponseSchema = z.object({
   platforms: z.array(
@@ -109,13 +115,14 @@ function PlatformCard({ platform }: { platform: string }) {
     { schema: StatusResponseSchema },
   );
 
-  const { mutate: saveMutate, saving, error: saveError, clearError: clearSaveError } = useAdminMutation({
-    path: `/api/v1/platform/operator-integrations/${platform}`,
-    method: "PUT",
-    invalidates: refetch,
-  });
+  const { mutate: saveMutate, saving, error: saveError, clearError: clearSaveError } =
+    useAdminMutation<StatusResponse>({
+      path: `/api/v1/platform/operator-integrations/${platform}`,
+      method: "PUT",
+      invalidates: refetch,
+    });
   const { mutate: deleteMutate, saving: deleting, error: deleteError, clearError: clearDeleteError } =
-    useAdminMutation({
+    useAdminMutation<StatusResponse>({
       path: `/api/v1/platform/operator-integrations/${platform}`,
       method: "DELETE",
       invalidates: refetch,
@@ -126,6 +133,11 @@ function PlatformCard({ platform }: { platform: string }) {
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [shown, setShown] = useState<Record<string, boolean>>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Refresh-failure warning surfaced from the LAST write's response. The
+  // `refreshError` only ever rides on the PUT/DELETE result (the GET status
+  // never carries it), so it must be captured from the mutation result here —
+  // reading it off the refetched GET `data` would always be undefined.
+  const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
 
   // Reset the draft only when the platform's stored identity changes (not on
   // every background refetch) so an in-flight edit isn't clobbered.
@@ -143,10 +155,8 @@ function PlatformCard({ platform }: { platform: string }) {
   const fields = status?.fields ?? [];
 
   // Which destructive fields is the admin about to rotate? (non-empty drafts)
-  const destructiveEdits = fields.filter(
-    (f) => f.destructiveRotation && (draft[f.envVar] ?? "").trim().length > 0,
-  );
-  const hasAnyEdit = fields.some((f) => (draft[f.envVar] ?? "").trim().length > 0);
+  const destructiveEdits = destructiveRotations(fields, draft);
+  const anyEdit = hasAnyEdit(fields, draft);
 
   function setField(envVar: string, value: string) {
     setDraft((prev) => ({ ...prev, [envVar]: value }));
@@ -155,14 +165,12 @@ function PlatformCard({ platform }: { platform: string }) {
   async function persist() {
     clearSaveError();
     clearDeleteError();
-    // Only send non-empty fields — blank = preserve.
-    const payload: Record<string, string> = {};
-    for (const f of fields) {
-      const v = (draft[f.envVar] ?? "").trim();
-      if (v.length > 0) payload[f.envVar] = draft[f.envVar];
-    }
+    // Only send non-empty fields — blank = preserve (mirrors the server merge).
+    const payload = buildCredentialPayload(fields, draft);
     const result = await saveMutate({ body: { fields: payload } });
     if (result.ok) {
+      // Surface the refresh outcome from the write response — not the GET.
+      setRefreshWarning(result.data?.refreshError ?? null);
       setDraft({});
       setShown({});
     }
@@ -179,7 +187,10 @@ function PlatformCard({ platform }: { platform: string }) {
   async function handleRemove() {
     clearSaveError();
     clearDeleteError();
-    await deleteMutate();
+    const result = await deleteMutate();
+    if (result.ok) {
+      setRefreshWarning(result.data?.refreshError ?? null);
+    }
   }
 
   return (
@@ -237,11 +248,11 @@ function PlatformCard({ platform }: { platform: string }) {
             />
           )}
 
-          {data?.refreshError && (
+          {refreshWarning && (
             <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-700">
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
               <span>
-                Credentials were saved, but the chat plugin did not rebuild ({data.refreshError}). The
+                Credentials were saved, but the chat plugin did not rebuild ({refreshWarning}). The
                 change will apply on the next restart.
               </span>
             </div>
@@ -318,7 +329,7 @@ function PlatformCard({ platform }: { platform: string }) {
                 Remove console credentials
               </Button>
             )}
-            <Button type="button" onClick={handleSave} disabled={saving || deleting || !hasAnyEdit}>
+            <Button type="button" onClick={handleSave} disabled={saving || deleting || !anyEdit}>
               {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
               Save credentials
             </Button>

@@ -59,10 +59,13 @@ export interface OperatorPlatformSpec {
 }
 
 /**
- * Slack — the pilot operator platform. The four fields are exactly the
+ * Slack — the pilot operator platform. The four fields must mirror the
  * `SLACK_BUILDER.requiredEnv` set from `@useatlas/chat`'s adapter registry,
  * so a fully-populated row lets the Slack adapter build with zero Slack env
- * vars set on the region.
+ * vars set on the region. The set is hand-copied across the package boundary;
+ * the parity is pinned by a drift test (`__tests__/platforms.test.ts`) against
+ * `getChatAdapterRequiredEnv("slack")` so an adapter-side change can't drift
+ * this silently.
  *
  * ⚠ `SLACK_ENCRYPTION_KEY` rotation is destructive: it is the AES-GCM key
  * the `@chat-adapter/slack` adapter uses to encrypt bot tokens stored in

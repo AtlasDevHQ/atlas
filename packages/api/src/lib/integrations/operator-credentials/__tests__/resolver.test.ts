@@ -28,8 +28,6 @@ import {
 } from "../resolver";
 import { OPERATOR_PLATFORMS } from "../platforms";
 
-const ENV: NodeJS.ProcessEnv = {};
-
 beforeEach(() => {
   mockRead.mockReset();
   mockRead.mockResolvedValue(null);
@@ -51,7 +49,7 @@ const slackEnvFull: NodeJS.ProcessEnv = {
 describe("resolveOperatorAdapterEnv", () => {
   it("returns DB values as the overlay (DB wins over env)", async () => {
     mockRead.mockResolvedValue({ SLACK_SIGNING_SECRET: "db-sign" });
-    const overlay = await resolveOperatorAdapterEnv(OPERATOR_PLATFORMS, slackEnvFull);
+    const overlay = await resolveOperatorAdapterEnv(OPERATOR_PLATFORMS);
     expect(overlay.SLACK_SIGNING_SECRET).toBe("db-sign");
     // Fields not in the DB row are NOT in the overlay (env passes through).
     expect(overlay.SLACK_CLIENT_ID).toBeUndefined();
@@ -59,26 +57,26 @@ describe("resolveOperatorAdapterEnv", () => {
 
   it("returns an empty overlay when no DB row exists (pure env fallback)", async () => {
     mockRead.mockResolvedValue(null);
-    const overlay = await resolveOperatorAdapterEnv(OPERATOR_PLATFORMS, slackEnvFull);
+    const overlay = await resolveOperatorAdapterEnv(OPERATOR_PLATFORMS);
     expect(overlay).toEqual({});
   });
 
   it("returns an empty overlay (no DB read) when no internal DB is configured", async () => {
     mockHasInternalDB.mockReturnValue(false);
-    const overlay = await resolveOperatorAdapterEnv(OPERATOR_PLATFORMS, slackEnvFull);
+    const overlay = await resolveOperatorAdapterEnv(OPERATOR_PLATFORMS);
     expect(overlay).toEqual({});
     expect(mockRead).not.toHaveBeenCalled();
   });
 
   it("ignores empty-string DB values (no clobber)", async () => {
     mockRead.mockResolvedValue({ SLACK_SIGNING_SECRET: "" });
-    const overlay = await resolveOperatorAdapterEnv(OPERATOR_PLATFORMS, slackEnvFull);
+    const overlay = await resolveOperatorAdapterEnv(OPERATOR_PLATFORMS);
     expect(overlay.SLACK_SIGNING_SECRET).toBeUndefined();
   });
 
   it("propagates a decrypt failure rather than degrading to env-only", async () => {
     mockRead.mockRejectedValue(new Error("auth tag mismatch"));
-    await expect(resolveOperatorAdapterEnv(OPERATOR_PLATFORMS, slackEnvFull)).rejects.toThrow(
+    await expect(resolveOperatorAdapterEnv(OPERATOR_PLATFORMS)).rejects.toThrow(
       /auth tag mismatch/,
     );
   });
@@ -179,5 +177,15 @@ describe("getMissingOperatorEnvForCatalogSlug (boot-guard helper)", () => {
     });
     expect(missing).toEqual([]);
     expect(mockRead).not.toHaveBeenCalled();
+  });
+
+  it("propagates a decrypt failure rather than masquerading as configured/missing", async () => {
+    // The boot guard wraps this in `Effect.orDie`, so a thrown read fails boot
+    // loud. It must NOT be swallowed into "[]" (configured) or "everything
+    // missing" — a broken rotation must never silently look fine.
+    mockRead.mockRejectedValue(new Error("auth tag mismatch"));
+    await expect(
+      getMissingOperatorEnvForCatalogSlug("slack", REQUIRED, slackEnvFull),
+    ).rejects.toThrow(/auth tag mismatch/);
   });
 });

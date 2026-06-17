@@ -2992,10 +2992,15 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     Layer.provide(Layer.merge(configLayer, settingsLayer)),
   );
   // #2672 — walks the chat catalog and fails boot when an oauth+enabled
-  // entry's adapter-builder requiredEnv keys are missing in SaaS. Depends
-  // only on `Config` and reads env directly, so it runs in parallel with
-  // the migration + sync layers alongside the other env-checking guards.
-  const chatAdapterEnvGuardLayer = ChatAdapterEnvGuardLive.pipe(Layer.provide(configLayer));
+  // entry's adapter-builder requiredEnv keys are missing in SaaS. Since #3704
+  // the presence check is "operator-credentials DB row OR env", so it reads
+  // `operator_integration_credentials` (created by migration 0140) — hence the
+  // `migrationLayer` edge (mirrors `MigrationGuardLive` below) so the table is
+  // guaranteed to exist before the guard queries it. Without it the guard could
+  // race migrations and crash a first-deploy boot on a missing relation.
+  const chatAdapterEnvGuardLayer = ChatAdapterEnvGuardLive.pipe(
+    Layer.provide(Layer.merge(configLayer, migrationLayer)),
+  );
   // #3435 + #3703 — billing config validation. Gated on `deployMode === "saas"`
   // AND `STRIPE_SECRET_KEY` present, so self-hosted and pre-billing SaaS are
   // inert. Fails boot on the two env-only misconfigs (missing webhook secret,

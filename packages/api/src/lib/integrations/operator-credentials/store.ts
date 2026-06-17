@@ -31,6 +31,7 @@
  * @see packages/api/src/lib/db/migrations/0140_operator_integration_credentials.sql
  */
 
+import { z } from "zod";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
   encryptSecret,
@@ -40,6 +41,19 @@ import {
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("integrations.operator-credentials.store");
+
+/**
+ * Validates the decrypted bundle at the trust boundary: a string→string map.
+ * `parseBundle` runs this on every read so a corrupt / hand-edited row whose
+ * plaintext decrypts cleanly but isn't `{ <ENV_VAR>: <string> }` (e.g. a
+ * numeric value, or a nested object) fails loudly rather than flowing
+ * downstream as a mistyped value the resolver's `typeof` guards then silently
+ * drop. Keeps the "decrypt/corruption fails loud, never degrade" contract.
+ */
+const OperatorCredentialBundleSchema: z.ZodType<Record<string, string>> = z.record(
+  z.string(),
+  z.string(),
+);
 
 /**
  * A decrypted operator credential bundle: a map of env-var name → value.
@@ -172,20 +186,20 @@ function parseBundle(platform: string, ciphertext: string): OperatorCredentialBu
   const plaintext = decryptSecret(ciphertext);
   try {
     const parsed = JSON.parse(plaintext) as unknown;
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("decrypted operator credential payload is not a JSON object");
-    }
-    return parsed as OperatorCredentialBundle;
+    // Validate the shape (string→string map), not just "is an object" — a
+    // mistyped value is corruption and must fail loud here, not silently get
+    // dropped by a downstream `typeof` guard.
+    return OperatorCredentialBundleSchema.parse(parsed);
   } catch (err) {
     // AES-GCM auth-tag verification makes "decrypted to garbage" highly
-    // unlikely; a parse failure on a row that decrypted cleanly is data
+    // unlikely; a parse/shape failure on a row that decrypted cleanly is data
     // corruption (or key-version drift producing wrong-but-plausible bytes).
     log.error(
       { platform, err: err instanceof Error ? err.message : String(err) },
-      "Decrypted operator_integration_credentials payload did not parse as a JSON object",
+      "Decrypted operator_integration_credentials payload did not parse as a string→string map",
     );
     throw new Error(
-      `operator_integration_credentials JSON.parse failed for platform=${platform}`,
+      `operator_integration_credentials payload validation failed for platform=${platform}`,
       { cause: err },
     );
   }

@@ -351,17 +351,19 @@ export class PluginRegistry {
    *
    * Safe for the chat plugin specifically: its `teardown()` shuts down the
    * bridge + state adapter and resets its `initialized` flag, and its
-   * `initialize()` rebuilds the bridge, the Chat SDK instance, the webhook
-   * handlers (the once-mounted routes read the live `bridge` closure), and
-   * re-registers the proactive listener — no dangling listeners (the old
-   * Chat instance's event loop is stopped and the instance is GC'd).
+   * `initialize()` rebuilds the bridge, the Chat SDK instance, and the webhook
+   * handlers (the once-mounted routes read the live `bridge` closure), then
+   * re-registers the proactive listener via the rebuilt bridge. The old Chat
+   * SDK instance is shut down in `teardown()` before the rebuild.
    *
-   * Returns `{ ok }` plus a failure reason. A teardown error is logged but
-   * does not abort the re-init (best-effort, mirrors `teardownAll`); an
-   * initialize error leaves the plugin marked `unhealthy` and is surfaced.
-   * Never throws — callers (the Admin route) map the result to an HTTP body.
+   * Returns a discriminated `{ ok }` result: `{ ok: true }` on success, or
+   * `{ ok: false; reason }` on failure (so a caller narrowing on `ok` always
+   * has a `reason`). A teardown error is logged but does not abort the re-init
+   * (best-effort, mirrors `teardownAll`); an initialize error leaves the plugin
+   * marked `unhealthy` and is surfaced. Never throws — callers (the Admin
+   * route) map the result to an HTTP body.
    */
-  async refresh(id: string): Promise<{ ok: boolean; reason?: string }> {
+  async refresh(id: string): Promise<{ ok: true } | { ok: false; reason: string }> {
     const entry = this.entries.find((e) => e.plugin.id === id);
     if (!entry) {
       return { ok: false, reason: `Plugin "${id}" is not registered` };
@@ -414,6 +416,12 @@ export class PluginRegistry {
           return { ok: true };
         } catch (err) {
           entry.status = "unhealthy";
+          // Invalidate the cached /health snapshot on failure too: a
+          // re-init that threw (e.g. a decrypt/corruption failure on a
+          // rotated credential) leaves the plugin dead, and a stale
+          // pre-refresh snapshot could otherwise keep reporting it healthy
+          // to the public `/health` route for up to the TTL window.
+          this.healthSnapshot = null;
           const reason = err instanceof Error ? err.message : String(err);
           log.error(
             { pluginId: id, err: err instanceof Error ? err : new Error(String(err)) },

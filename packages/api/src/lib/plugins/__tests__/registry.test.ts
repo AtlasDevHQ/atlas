@@ -456,15 +456,19 @@ describe("PluginRegistry", () => {
     test("returns ok:false (does not throw) for an unregistered plugin", async () => {
       await registry.initializeAll(minimalCtx);
       const result = await registry.refresh("nope");
-      expect(result.ok).toBe(false);
-      expect(result.reason).toContain("not registered");
+      expect(result).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining("not registered"),
+      });
     });
 
     test("returns ok:false when plugins were never initialized", async () => {
       registry.register(makePlugin({ id: "chat-interaction", initialize: async () => {} }));
       const result = await registry.refresh("chat-interaction");
-      expect(result.ok).toBe(false);
-      expect(result.reason).toContain("not been initialized");
+      expect(result).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining("not been initialized"),
+      });
     });
 
     test("a failing re-init marks the plugin unhealthy and reports the reason", async () => {
@@ -486,8 +490,10 @@ describe("PluginRegistry", () => {
 
       const result = await registry.refresh("chat-interaction");
 
-      expect(result.ok).toBe(false);
-      expect(result.reason).toContain("auth tag mismatch");
+      expect(result).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining("auth tag mismatch"),
+      });
       expect(registry.getStatus("chat-interaction")).toBe("unhealthy");
     });
 
@@ -511,6 +517,67 @@ describe("PluginRegistry", () => {
 
       expect(result.ok).toBe(true);
       expect(calls).toEqual(["init", "teardown", "init"]);
+    });
+
+    test("a successful refresh invalidates the cached /health snapshot", async () => {
+      const counter = { calls: 0 };
+      registry.register(
+        makePlugin({
+          id: "chat-interaction",
+          initialize: async () => {},
+          healthCheck: async () => {
+            counter.calls++;
+            return { healthy: true };
+          },
+        }),
+      );
+      await registry.initializeAll(minimalCtx);
+
+      // Prime the cache and confirm it holds within the TTL.
+      await registry.healthCheckAllCached(60_000);
+      await registry.healthCheckAllCached(60_000);
+      expect(counter.calls).toBe(1);
+
+      const result = await registry.refresh("chat-interaction");
+      expect(result.ok).toBe(true);
+
+      // The refresh cleared the snapshot, so the next cached call re-probes
+      // the rebuilt plugin even though the TTL has not elapsed.
+      await registry.healthCheckAllCached(60_000);
+      expect(counter.calls).toBe(2);
+    });
+
+    test("a failed refresh also invalidates the snapshot (no stale 'healthy')", async () => {
+      let first = true;
+      const counter = { calls: 0 };
+      registry.register(
+        makePlugin({
+          id: "chat-interaction",
+          initialize: async () => {
+            if (first) {
+              first = false;
+              return;
+            }
+            throw new Error("decrypt failed during rebuild");
+          },
+          healthCheck: async () => {
+            counter.calls++;
+            return { healthy: true };
+          },
+        }),
+      );
+      await registry.initializeAll(minimalCtx);
+
+      await registry.healthCheckAllCached(60_000);
+      expect(counter.calls).toBe(1);
+
+      const result = await registry.refresh("chat-interaction");
+      expect(result.ok).toBe(false);
+
+      // Even though the rebuild failed, a stale snapshot must not keep
+      // reporting the now-dead plugin as healthy — the next call re-probes.
+      await registry.healthCheckAllCached(60_000);
+      expect(counter.calls).toBe(2);
     });
   });
 

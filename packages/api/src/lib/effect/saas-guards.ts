@@ -87,7 +87,7 @@
 
 import { Data, Effect, Layer } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { Config, Settings } from "./layers";
+import { Config, Migration, Settings } from "./layers";
 import { readSaasEnv, type SaasEnv } from "./saas-env";
 
 const log = createLogger("effect:saas-guards");
@@ -1047,13 +1047,24 @@ export const PluginConfigGuardLive: Layer.Layer<never, PluginConfigStaleError | 
  * dying here surfaces the root cause at boot instead of letting a
  * downstream route 500 minutes later.
  */
-export const ChatAdapterEnvGuardLive: Layer.Layer<never, ChatAdapterEnvMissingError, Config> = Layer.effectDiscard(
+export const ChatAdapterEnvGuardLive: Layer.Layer<never, ChatAdapterEnvMissingError, Config | Migration> = Layer.effectDiscard(
   Effect.gen(function* () {
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
 
     const catalog = config.catalog ?? [];
     if (catalog.length === 0) return;
+
+    // Ordering barrier (#3704): the DB-or-env presence check below reads
+    // `operator_integration_credentials` (created by migration 0140) for any
+    // managed operator platform. Yielding `Migration` here forces this guard
+    // to construct AFTER `migrationLayer` so the table is guaranteed to exist
+    // — without this edge the guard runs in parallel with migrations and a
+    // first-deploy boot would throw `relation "operator_integration_credentials"
+    // does not exist`, which `importGetMissingOperatorEnv`'s `Effect.orDie`
+    // would promote to a boot crash. Pre-#3704 the guard read only env and had
+    // no DB dependency, so this edge is new with the operator-credential read.
+    yield* Migration;
 
     // Lazy-import the per-slug requiredEnv accessor from the chat
     // plugin. `Effect.tryPromise` routes a rejected import into the E
@@ -1122,6 +1133,14 @@ export const ChatAdapterEnvGuardLive: Layer.Layer<never, ChatAdapterEnvMissingEr
  * `Effect.orDie`: the resolver is core and always loadable at boot, so a
  * rejection means the api can't run anyway, and silently skipping would
  * reopen the silent-degradation hole this guard exists to close.
+ *
+ * Note `orDie` also covers the live `internalQuery` the resolver runs against
+ * `operator_integration_credentials` (decrypt/corruption or a DB error), not
+ * just the import — that is deliberate: a corrupt operator row SHOULD fail
+ * boot loudly rather than degrade to env-only. The guard's `Migration`
+ * dependency edge guarantees the table exists before this runs, so the only
+ * remaining die-able cause is a genuine read/decrypt failure that the operator
+ * must fix anyway.
  */
 function importGetMissingOperatorEnv(
   catalogSlug: string,

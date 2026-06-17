@@ -79,9 +79,11 @@ export function resolveOperatorFieldValue(
 
 /**
  * Build the env overlay for the chat adapter builders: for every managed
- * platform field, the DB-then-env resolved value. Only resolved (non-empty)
- * keys are included, so merging `{ ...process.env, ...overlay }` keeps DB
- * winning over env while never clobbering an env value with `undefined`.
+ * platform field present in the DB, its decrypted value. This overlay is
+ * intentionally DB-only — the caller merges it as `{ ...process.env,
+ * ...overlay }`, so DB wins over env while unset keys fall through to env. It
+ * therefore takes no `env` argument: env passthrough is the merge's job, not
+ * this function's.
  *
  * Reads the DB once per platform. When no internal DB is configured
  * (self-host stateless), returns `{}` immediately — env passes through
@@ -89,13 +91,12 @@ export function resolveOperatorFieldValue(
  */
 export async function resolveOperatorAdapterEnv(
   platforms: readonly OperatorPlatformSpec[] = OPERATOR_PLATFORMS,
-  env: NodeJS.ProcessEnv = process.env,
 ): Promise<Record<string, string>> {
   const overlay: Record<string, string> = {};
   if (!hasInternalDB()) return overlay;
 
   for (const spec of platforms) {
-    let bundle: Record<string, string> | null = null;
+    let bundle: Record<string, string> | null;
     try {
       bundle = (await readOperatorCredentials(spec.platform)) as Record<string, string> | null;
     } catch (err) {

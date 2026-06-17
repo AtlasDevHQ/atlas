@@ -118,7 +118,7 @@ describe("behavioral isolation", () => {
     const managedKeys = new Set(
       OPERATOR_PLATFORMS.flatMap((p) => p.fields.map((f) => f.envVar)),
     );
-    const overlay = await resolveOperatorAdapterEnv(OPERATOR_PLATFORMS, {});
+    const overlay = await resolveOperatorAdapterEnv(OPERATOR_PLATFORMS);
 
     for (const key of Object.keys(overlay)) {
       expect(managedKeys.has(key)).toBe(true);

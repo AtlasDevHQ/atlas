@@ -93,6 +93,17 @@ describe("saveOperatorCredentials", () => {
     const round = await store.readOperatorCredentials(PLATFORM);
     expect(round).toEqual({ SLACK_CLIENT_ID: "1234.5678" });
   });
+
+  it("rethrows (does not swallow) when the upsert query fails", async () => {
+    // A persistence failure must propagate so the Admin route surfaces a 500
+    // rather than reporting a successful rotation that wrote nothing.
+    mockInternalQuery.mockImplementationOnce(() =>
+      Promise.reject(new Error("connection terminated unexpectedly")),
+    );
+    await expect(store.saveOperatorCredentials(PLATFORM, BUNDLE)).rejects.toThrow(
+      /connection terminated/,
+    );
+  });
 });
 
 describe("readOperatorCredentials", () => {
@@ -131,6 +142,19 @@ describe("readOperatorCredentials", () => {
     );
 
     await expect(store.readOperatorCredentials(PLATFORM)).rejects.toThrow();
+  });
+
+  it("throws when the decrypted payload is not a string→string map (corruption)", async () => {
+    // A row that decrypts cleanly but carries a non-string value is corruption;
+    // it must fail loud at the trust boundary, not flow downstream mistyped.
+    const { encryptSecret } = await import("@atlas/api/lib/db/secret-encryption");
+    const badCiphertext = encryptSecret(JSON.stringify({ SLACK_CLIENT_ID: 1234 }));
+
+    mockInternalQuery.mockImplementationOnce(() =>
+      Promise.resolve([{ credentials_encrypted: badCiphertext, credentials_key_version: 1 }]),
+    );
+
+    await expect(store.readOperatorCredentials(PLATFORM)).rejects.toThrow(/validation failed/);
   });
 });
 

@@ -126,6 +126,7 @@ export const navGroups: NavGroup[] = [
       { href: "/platform/sla", label: "SLA Monitoring" },
       { href: "/platform/backups", label: "Backups" },
       { href: "/platform/crm-outbox", label: "CRM Outbox", saasOnly: true },
+      { href: "/platform/operator-integrations", label: "Operator Integrations" },
       { href: "/platform/residency", label: "Data Residency" },
       { href: "/platform/domains", label: "Custom Domains" },
       { href: "/platform/settings", label: "Settings" },

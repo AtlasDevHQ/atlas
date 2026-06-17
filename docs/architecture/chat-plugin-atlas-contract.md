@@ -68,6 +68,32 @@ These don't ride on `chat_cache` — Atlas owns the schema and the writers. They
 | `workspace_id` + `catalog_id` + `enabled` + `installed_at` | `lib/integrations/install/slack-oauth-handler.ts:SlackOAuthInstallHandler.handleCallback()` (INSERT … ON CONFLICT … DO UPDATE) | `lib/plugins/validation.ts:validateWorkspacePluginConfigs()` (boot validation); admin UI via `routes/admin-integrations.ts` | ✓ — unique index `idx_workspace_plugins_unique` plus the boot-time stale-config validator | ✓ verified |
 | `config` JSONB (`team_id`, `team_name`, `bot_user_id`, `scopes`, `app_id`) | same `handleCallback()` (`ON CONFLICT … DO UPDATE SET config = EXCLUDED.config`) | admin UI; `lib/plugins/validation.ts` parses against catalog schema at boot | ✓ — schema validation runs at boot; mismatches surface as warn rows | ✓ verified |
 
+### Operator credential overlay — `ChatPluginConfig.resolveAdapterEnv` (#3704, #3735)
+
+A host callback at the **top-level `chatPlugin({ ... })` config** boundary (not under
+`proactive`): the plugin builds its per-platform adapters from a `process.env`-shaped
+object, and `resolveAdapterEnv` lets Atlas overlay operator-tier credentials read from
+the encrypted `operator_integration_credentials` store on top of that env before each
+build/rebuild. This is what makes the operator app credentials (e.g. the Slack OAuth
+app's `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` / `SLACK_SIGNING_SECRET` /
+`SLACK_ENCRYPTION_KEY`) settable from the Admin console without a redeploy.
+
+| Boundary field | Host wiring | Atlas resolver | Refresh trigger | Precedence | Status |
+|---|---|---|---|---|---|
+| `ChatPluginConfig.resolveAdapterEnv` | wired in `deploy/api/atlas.config.ts` → `resolveOperatorAdapterEnv()` | `lib/integrations/operator-credentials/resolver.ts:resolveOperatorAdapterEnv()` (returns a DB-only overlay; the plugin merges it as `{ ...process.env, ...overlay }`, so DB wins and unset keys fall through to env) | `PluginRegistry.refresh("chat-interaction")` — teardown + re-init the chat plugin so a console write/rotation applies with no process restart (called by `routes/admin-operator-integrations.ts` on every `PUT`/`DELETE`) | **DB row → operator env var → unset**, per field (`resolveOperatorFieldValue`) | ✓ verified |
+
+**Boundary contract.** `resolveAdapterEnv` is **additive and host-optional**: the
+plugin works unchanged when it's absent (self-host reads adapter env straight from
+`process.env`). Atlas wires it only on the DB-backed deployments. The overlay is
+**DB-only** — env passthrough is the merge's job, not the resolver's — so a decrypt /
+corruption failure throws rather than silently dropping the platform to env-only (a
+broken rotation must surface, not boot degraded). The managed-platform field set lives
+in `operator-credentials/platforms.ts` (`OPERATOR_PLATFORMS`); each field's `envVar` is
+both the bundle storage key and the `process.env` key the adapter builder reads, so env
+stays the self-host fallback unchanged. ⚠ row to watch: any change to the shape of the
+overlay (e.g. nesting, or a non-string value) breaks the `{ ...process.env, ...overlay }`
+merge contract — the overlay must stay a flat `Record<string, string>`.
+
 ### Future platforms (post-1.5.2)
 
 `plugins/chat/src/adapter-registry.ts` keeps catalog rows for Teams, Discord, gchat, Telegram, GitHub, Linear, WhatsApp. Telegram (#2748) is the first to ship a real `StaticBotInstallHandler` — the keystone slice for the remaining Phase D platforms. Each platform that gains an install flow gets a new section in this table — one row per Atlas-extension field. Track:

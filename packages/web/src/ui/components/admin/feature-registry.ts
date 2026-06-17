@@ -49,6 +49,7 @@ export const FEATURE_NAMES = [
   "MCP Action Policy",
   "MCP Settings",
   "OAuth Clients",
+  "Operator Integrations",
   "Organizations",
   "PII Compliance",
   "Platform Admin",

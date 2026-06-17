@@ -89,7 +89,10 @@ The headline of the principle. Candidates, by area:
   gchat/Jira/Linear/GitHub-App/Salesforce env creds read at boot. Today **adding a
   chat platform or action target to a region requires a Railway deploy**. These
   should be operator-settable (encrypted) via an Admin → Platform Integrations
-  surface, the same way *workspace* plugin creds already work.
+  surface, the same way *workspace* plugin creds already work. **Backend seam
+  shipped (#3704); Slack Admin surface + docs shipped (#3735)** — see
+  [Operator integration credentials](#operator-integration-credentials-3704-3735)
+  below for precedence + the remaining-platforms checklist.
 - **Observability** — `OTEL_EXPORTER_OTLP_{ENDPOINT,HEADERS}` — ⚠️ **consciously LEFT as env
   (#3705).** Evaluated for promotion and deliberately kept env-only: `TelemetryLive` is the
   *first* layer in `buildAppLayer` (so it can trace the rest of boot) and has no dependency
@@ -201,6 +204,79 @@ the 2026-06-16 list, which already named 10 vars): the 10 from the 2026-06-16 sw
 knobs + finding 9's two learn knobs. The `ATLAS_ES_API_KEY` naming split (a reconcile,
 not a new doc) and the three `ATLAS_REGION_*_DB_URL` boot-contract vars (their own
 2026-06-16 bullet) are tracked alongside but counted separately. All closed in #3710.
+
+## Operator integration credentials (#3704, #3735)
+
+The operator/platform tier — Atlas's **own** integration app registrations,
+operator-shared across every workspace — moved off boot-time env onto an
+encrypted, Admin-settable store. This is the highest-leverage Tier-1 item against
+the "no deploy for a config change" principle.
+
+### What shipped
+
+- **#3704 (backend seam)** — `operator_integration_credentials` table (migration
+  0140, encrypted at rest, `INTEGRATION_TABLES` participant for F-47 rotation /
+  F-42 audit); `lib/integrations/operator-credentials/` (`store.ts`,
+  `platforms.ts` registry, `resolver.ts`); the boot guard `ChatAdapterEnvGuardLive`
+  converted from env-only to DB-or-env presence; the runtime rebuild seam
+  (`ChatPluginConfig.resolveAdapterEnv` + `PluginRegistry.refresh(pluginId)`,
+  wired in `deploy/api/atlas.config.ts`).
+- **#3735 (Slack Admin surface + docs)** — the platform-admin route
+  (`api/routes/admin-operator-integrations.ts`, mounted at
+  `/api/v1/platform/operator-integrations`, `platform_admin` + MFA) and the
+  **Admin → Platform → Operator Integrations** page.
+
+### Precedence
+
+Decided in one place (`operator-credentials/resolver.ts`), per field:
+
+```
+DB row (set in the Admin console) → operator env var → unset
+```
+
+A field set in the console wins; a blank field falls through to its env var; a
+field set in neither is unset. Self-host with no internal database resolves every
+field straight from env — unchanged. The resolver NEVER reads any workspace-tier
+store, and the workspace-tier resolver never reads this one — the isolation is
+structural and pinned by `__tests__/operator-credential-isolation.test.ts`.
+
+The masked status read (`getOperatorPlatformStatus`) reports per-field presence +
+source only; the route never echoes a secret value. Writes (`PUT`) merge non-empty
+fields over the stored bundle (blank = preserve), then call
+`plugins.refresh("chat-interaction")` so the rotation applies with no restart; the
+audit row records `hasSecret: true` + the env-var names written, never the raw
+value.
+
+### Remaining-platforms migration checklist
+
+`OPERATOR_PLATFORMS` in `lib/integrations/operator-credentials/platforms.ts` is the
+reusable one-entry seam — the resolver, boot guard, Admin route, and Admin page all
+iterate it with **no per-platform branches**. Adding a platform is one registry
+entry:
+
+1. **Add an `OperatorPlatformSpec` to `OPERATOR_PLATFORMS`.** Set `platform` (the
+   credential-table slug), `label`, and `catalogSlug` (the chat-catalog slug for a
+   chat platform, or `null` for a non-chat action target).
+2. **Enumerate the credential `fields`**, one per operator env var the adapter
+   builder reads. For each: `envVar` (the existing env-var name — it doubles as the
+   bundle storage key *and* the `process.env` key, so env stays the self-host
+   fallback unchanged), `label`, `hint`, `secret` (client IDs are not secret;
+   client/signing/encryption secrets are), `required` (must mirror the adapter
+   builder's `requiredEnv` set — the drift test below enforces this), and
+   `destructiveRotation: true` on any key whose rotation invalidates downstream
+   data (forces re-authorization; the Admin UI warns before such a write).
+3. **For a chat platform**, the `required` fields must equal
+   `getChatAdapterRequiredEnv(catalogSlug)` from `@useatlas/chat` — pinned by
+   `__tests__/platforms.test.ts` so an adapter-side `requiredEnv` change can't drift
+   the registry silently.
+4. **Nothing else changes.** The Admin page (`app/platform/operator-integrations/`)
+   renders every managed platform from the list endpoint; the route's `GET` / `PUT`
+   / `DELETE` are platform-agnostic. No new migration, route, or UI code.
+
+Pilot: **Slack** (`#3704`/`#3735`). Remaining chat platforms: **Discord, Teams,
+Telegram, WhatsApp, Google Chat**. Remaining action targets: **Jira, Linear,
+GitHub App, Salesforce** (set `catalogSlug: null`). Each is an independent,
+one-entry follow-up.
 
 ## Tracked work
 

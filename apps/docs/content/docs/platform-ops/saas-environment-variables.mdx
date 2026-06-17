@@ -150,6 +150,41 @@ Railway:
 Platform-scoped settings require `platform_admin`; workspace-scoped settings are
 editable by workspace admins (filtered by `saasVisible` / `saasWritable` on SaaS).
 
+### Operator integration credentials
+
+Atlas's **own** integration app registrations — the operator/platform tier, e.g.
+the Slack OAuth app's `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` /
+`SLACK_SIGNING_SECRET` / `SLACK_ENCRYPTION_KEY` — are set and rotated from
+**Admin → Platform → Operator Integrations** (`platform_admin` only), encrypted at
+rest in `operator_integration_credentials`. Rotating a secret (e.g. the Slack
+signing secret) no longer needs a Railway redeploy: the write rebuilds the chat
+plugin at runtime via `PluginRegistry.refresh("chat-interaction")`.
+
+These are distinct from the runtime *settings* above (they're secrets, not tuning
+knobs) and from *workspace* plugin credentials (a tenant's own install secrets, set
+via Admin → Connections/Integrations). Operator credentials are operator-shared
+across every workspace.
+
+**Precedence is `DB row (set in the console) → operator env var → unset`** —
+per field. A field set in the console wins; a field left blank in the console
+falls through to its env var; a field set in neither is unset. So:
+
+- **SaaS** — set them in the console; env can stay empty. Rotations are a console
+  action, not a deploy.
+- **Self-host** — leave the console empty and keep using the env vars exactly as
+  before; with no internal database every field resolves straight from env.
+
+⚠ Rotating **`SLACK_ENCRYPTION_KEY`** is destructive: it is the AES-256-GCM key the
+Slack adapter uses to encrypt stored bot tokens, so rotating it makes every
+installed workspace re-authorize Slack. The OAuth app credentials
+(`CLIENT_ID` / `CLIENT_SECRET` / `SIGNING_SECRET`) rotate non-destructively. The
+console warns before a destructive rotation.
+
+The pilot covers Slack; the remaining platforms (Discord, Teams, Telegram,
+WhatsApp, Google Chat, and the action targets Jira / Linear / GitHub App /
+Salesforce) follow one registry entry at a time — see the migration checklist in
+`docs/development/saas-env-audit.md`.
+
 ## Why the list is short
 
 The guiding principle for hosted Atlas:

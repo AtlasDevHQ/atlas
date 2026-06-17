@@ -67526,6 +67526,731 @@
         "operationId": "getPlatformNoisyNeighbors"
       }
     },
+    "/api/v1/platform/operator-integrations": {
+      "get": {
+        "tags": [
+          "Platform — Operator Integrations"
+        ],
+        "summary": "List managed operator integration platforms",
+        "description": "Platform admin only. Returns the managed operator-tier integration platforms (Atlas's own app registrations) with a configured/override summary. Never returns secret values.",
+        "responses": {
+          "200": {
+            "description": "Managed platforms",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "platforms": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "platform": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "configured": {
+                            "type": "boolean"
+                          },
+                          "hasDbOverride": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "platform",
+                          "label",
+                          "configured",
+                          "hasDbOverride"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "platforms"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getPlatformOperatorIntegrations"
+      }
+    },
+    "/api/v1/platform/operator-integrations/{platform}": {
+      "get": {
+        "tags": [
+          "Platform — Operator Integrations"
+        ],
+        "summary": "Get masked operator credential status for a platform",
+        "description": "Platform admin only. Returns per-field presence + source (db/env/unset) and the last-rotated timestamp. Secret values are masked — only presence is reported, never the raw value.",
+        "responses": {
+          "200": {
+            "description": "Masked platform status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "object",
+                      "properties": {
+                        "platform": {
+                          "type": "string",
+                          "description": "Operator-tier platform slug."
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "configured": {
+                          "type": "boolean",
+                          "description": "True ⇒ every required field resolved to a non-empty value."
+                        },
+                        "hasDbOverride": {
+                          "type": "boolean",
+                          "description": "True ⇒ at least one field is set from the DB (Admin-set, not env)."
+                        },
+                        "updatedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "ISO 8601 timestamp the DB row was last written, or null when no row exists."
+                        },
+                        "fields": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "envVar": {
+                                "type": "string",
+                                "description": "Env-var name this field maps to (storage + adapter-builder key)."
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "hint": {
+                                "type": "string"
+                              },
+                              "secret": {
+                                "type": "boolean",
+                                "description": "True ⇒ masked in the UI + never echoed back on read."
+                              },
+                              "required": {
+                                "type": "boolean",
+                                "description": "True ⇒ part of the adapter builder's requiredEnv set."
+                              },
+                              "destructiveRotation": {
+                                "type": "boolean",
+                                "description": "True ⇒ rotating this field invalidates downstream data (e.g. stored bot tokens), forcing re-authorization. The UI warns before such a write."
+                              },
+                              "present": {
+                                "type": "boolean",
+                                "description": "True ⇒ resolved to a non-empty value from the DB or env."
+                              },
+                              "source": {
+                                "type": "string",
+                                "enum": [
+                                  "db",
+                                  "env",
+                                  "unset"
+                                ],
+                                "description": "Where the resolved value came from."
+                              }
+                            },
+                            "required": [
+                              "envVar",
+                              "label",
+                              "hint",
+                              "secret",
+                              "required",
+                              "destructiveRotation",
+                              "present",
+                              "source"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "platform",
+                        "label",
+                        "configured",
+                        "hasDbOverride",
+                        "updatedAt",
+                        "fields"
+                      ]
+                    },
+                    "refreshed": {
+                      "type": "boolean"
+                    },
+                    "refreshError": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unmanaged platform slug",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getPlatformOperatorIntegrationsByPlatform"
+      },
+      "put": {
+        "tags": [
+          "Platform — Operator Integrations"
+        ],
+        "summary": "Set or rotate operator credentials for a platform",
+        "description": "Platform admin only. Merges non-empty fields over the stored encrypted bundle (blank = preserve), persists, then rebuilds the chat plugin at runtime (no redeploy). Secrets are never echoed back; the action is audit-logged without the raw value.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "fields": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Map of env-var name → new value for the platform's fields. Blank/omitted = preserve the stored value. Unknown keys are rejected.",
+                    "example": {
+                      "SLACK_SIGNING_SECRET": "8f14e45fceea167a5a36dedd4bea2543"
+                    }
+                  }
+                },
+                "required": [
+                  "fields"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Credentials saved + masked status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "object",
+                      "properties": {
+                        "platform": {
+                          "type": "string",
+                          "description": "Operator-tier platform slug."
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "configured": {
+                          "type": "boolean",
+                          "description": "True ⇒ every required field resolved to a non-empty value."
+                        },
+                        "hasDbOverride": {
+                          "type": "boolean",
+                          "description": "True ⇒ at least one field is set from the DB (Admin-set, not env)."
+                        },
+                        "updatedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "ISO 8601 timestamp the DB row was last written, or null when no row exists."
+                        },
+                        "fields": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "envVar": {
+                                "type": "string",
+                                "description": "Env-var name this field maps to (storage + adapter-builder key)."
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "hint": {
+                                "type": "string"
+                              },
+                              "secret": {
+                                "type": "boolean",
+                                "description": "True ⇒ masked in the UI + never echoed back on read."
+                              },
+                              "required": {
+                                "type": "boolean",
+                                "description": "True ⇒ part of the adapter builder's requiredEnv set."
+                              },
+                              "destructiveRotation": {
+                                "type": "boolean",
+                                "description": "True ⇒ rotating this field invalidates downstream data (e.g. stored bot tokens), forcing re-authorization. The UI warns before such a write."
+                              },
+                              "present": {
+                                "type": "boolean",
+                                "description": "True ⇒ resolved to a non-empty value from the DB or env."
+                              },
+                              "source": {
+                                "type": "string",
+                                "enum": [
+                                  "db",
+                                  "env",
+                                  "unset"
+                                ],
+                                "description": "Where the resolved value came from."
+                              }
+                            },
+                            "required": [
+                              "envVar",
+                              "label",
+                              "hint",
+                              "secret",
+                              "required",
+                              "destructiveRotation",
+                              "present",
+                              "source"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "platform",
+                        "label",
+                        "configured",
+                        "hasDbOverride",
+                        "updatedAt",
+                        "fields"
+                      ]
+                    },
+                    "refreshed": {
+                      "type": "boolean"
+                    },
+                    "refreshError": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body (unknown field key or all-blank)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unmanaged platform slug or internal DB not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "putPlatformOperatorIntegrationsByPlatform"
+      },
+      "delete": {
+        "tags": [
+          "Platform — Operator Integrations"
+        ],
+        "summary": "Remove operator credentials for a platform (revert to env)",
+        "description": "Platform admin only. Deletes the stored DB bundle so the platform reverts to the env fallback, then rebuilds the chat plugin at runtime. Returns the post-delete masked status.",
+        "responses": {
+          "200": {
+            "description": "Credentials removed + masked status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "object",
+                      "properties": {
+                        "platform": {
+                          "type": "string",
+                          "description": "Operator-tier platform slug."
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "configured": {
+                          "type": "boolean",
+                          "description": "True ⇒ every required field resolved to a non-empty value."
+                        },
+                        "hasDbOverride": {
+                          "type": "boolean",
+                          "description": "True ⇒ at least one field is set from the DB (Admin-set, not env)."
+                        },
+                        "updatedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "ISO 8601 timestamp the DB row was last written, or null when no row exists."
+                        },
+                        "fields": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "envVar": {
+                                "type": "string",
+                                "description": "Env-var name this field maps to (storage + adapter-builder key)."
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "hint": {
+                                "type": "string"
+                              },
+                              "secret": {
+                                "type": "boolean",
+                                "description": "True ⇒ masked in the UI + never echoed back on read."
+                              },
+                              "required": {
+                                "type": "boolean",
+                                "description": "True ⇒ part of the adapter builder's requiredEnv set."
+                              },
+                              "destructiveRotation": {
+                                "type": "boolean",
+                                "description": "True ⇒ rotating this field invalidates downstream data (e.g. stored bot tokens), forcing re-authorization. The UI warns before such a write."
+                              },
+                              "present": {
+                                "type": "boolean",
+                                "description": "True ⇒ resolved to a non-empty value from the DB or env."
+                              },
+                              "source": {
+                                "type": "string",
+                                "enum": [
+                                  "db",
+                                  "env",
+                                  "unset"
+                                ],
+                                "description": "Where the resolved value came from."
+                              }
+                            },
+                            "required": [
+                              "envVar",
+                              "label",
+                              "hint",
+                              "secret",
+                              "required",
+                              "destructiveRotation",
+                              "present",
+                              "source"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "platform",
+                        "label",
+                        "configured",
+                        "hasDbOverride",
+                        "updatedAt",
+                        "fields"
+                      ]
+                    },
+                    "refreshed": {
+                      "type": "boolean"
+                    },
+                    "refreshError": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unmanaged platform slug or internal DB not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deletePlatformOperatorIntegrationsByPlatform"
+      }
+    },
     "/api/v1/platform/actions": {
       "get": {
         "tags": [
@@ -77621,6 +78346,9 @@
     },
     {
       "name": "Platform Admin — SLA"
+    },
+    {
+      "name": "Platform — Operator Integrations"
     },
     {
       "name": "Platform — Plugin Catalog"

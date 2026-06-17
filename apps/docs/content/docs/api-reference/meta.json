@@ -79,6 +79,7 @@
     "platform-admin-custom-domains",
     "platform-admin-residency",
     "platform-admin-sla",
+    "platform-operator-integrations",
     "platform-plugin-catalog",
     "platform-security",
     "prompts",

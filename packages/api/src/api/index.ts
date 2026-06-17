@@ -402,6 +402,21 @@ try {
   );
 }
 
+// Operator-tier integration credential routes — platform admin sets/rotates
+// Atlas's own integration app registrations (Slack OAuth app, etc.) from the
+// console without a redeploy (#3735). Encrypted at rest; picked up at runtime
+// via PluginRegistry.refresh("chat-interaction").
+try {
+  const { adminOperatorIntegrations } = await import("./routes/admin-operator-integrations");
+  app.route("/api/v1/platform/operator-integrations", adminOperatorIntegrations);
+  log.info("Operator integration credential routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load operator integration credential routes — operator credential console will be unavailable",
+  );
+}
+
 // Platform admin action log routes — cross-tenant action audit.
 try {
   const { platformActions } = await import("./routes/platform-actions");

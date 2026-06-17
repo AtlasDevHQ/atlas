@@ -24,6 +24,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { normalizeError } from "@atlas/api/lib/effect/errors";
 import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
+import { foldRollingMean } from "@atlas/api/lib/learn/rolling-mean";
 
 const log = createLogger("internal-db");
 
@@ -1268,12 +1269,20 @@ export function insertLearnedPattern(pattern: {
    */
   durationMs?: number | null | undefined;
 }): void {
-  // Seed the rolling average from the first observation. A finite, non-negative
-  // measurement also stamps `last_seen_at`; absent it, both stay NULL.
+  // Validate the first observation: only a finite, non-negative measurement
+  // counts; absent/invalid leaves the latency columns NULL ("not yet observed")
+  // rather than fabricating a zero.
   const seedDuration =
     typeof pattern.durationMs === "number" && Number.isFinite(pattern.durationMs) && pattern.durationMs >= 0
       ? pattern.durationMs
       : null;
+  // Seed `avg_duration_ms` from the single rolling-mean definition (#3723): a
+  // first observation is `foldRollingMean(null, 0, sample)`, which is the sample
+  // itself (or null when unmeasured). Keeping the seed here means the INSERT and
+  // the UPDATE fold can never derive the average from divergent formulas.
+  const avgDuration = foldRollingMean(null, 0, seedDuration);
+  // `avgDuration` is null iff `seedDuration` is null, so the `$8 IS NULL` guard
+  // below still stamps `last_seen_at` exactly when there is a real measurement.
   internalExecute(
     `INSERT INTO learned_patterns (org_id, pattern_sql, description, source_entity, source_queries, confidence, repetition_count, status, proposed_by, connection_group_id, avg_duration_ms, last_seen_at)
      VALUES ($1, $2, $3, $4, $5, 0.1, 1, 'pending', $6, $7, $8, CASE WHEN $8::double precision IS NULL THEN NULL ELSE now() END)`,
@@ -1285,7 +1294,7 @@ export function insertLearnedPattern(pattern: {
       JSON.stringify(pattern.sourceQueries),
       pattern.proposedBy,
       pattern.connectionGroupId ?? null,
-      seedDuration,
+      avgDuration,
     ],
   );
 }
@@ -1561,6 +1570,16 @@ export function incrementPatternCount(
 
   // Rolling-average + last_seen_at fragment, parameterized on the observation.
   // NULL observation → no-op on both columns (keeps the prior value).
+  //
+  // This path stays SQL-only: it has no pre-read of the old avg/count, so the
+  // fold runs atomically inside the same UPDATE that bumps `repetition_count`
+  // (every SET clause's RHS reads the pre-UPDATE row, so `repetition_count` here
+  // is the old `n`). A pre-read-then-write would lose that atomicity. The CASE
+  // therefore mirrors `foldRollingMean(oldAvg, oldCount, sample)` (#3723)
+  // clause-for-clause — keep the two in lockstep:
+  //   sample === null            → return oldAvg              (WHEN $LAT IS NULL)
+  //   oldAvg === null            → return sample              (WHEN avg IS NULL)
+  //   else (oldAvg*n + sample)/(n+1)                          (ELSE branch)
   const latencyAssignments = `
         avg_duration_ms = CASE
           WHEN $LAT::double precision IS NULL THEN avg_duration_ms

@@ -90,7 +90,12 @@ describe("makeBootSmokeFixture", () => {
     // gate can't pass.
     // ATLAS_DEPLOY_MODE / ATLAS_ENTERPRISE_ENABLED are intentionally NOT in the
     // fixture (#3702) — SaaS resolves both from atlas.config.ts, so the boot
-    // gate proves the region boots green with them unset.
+    // gate proves the region boots green with them unset. Pin the omission so
+    // re-adding either key to the fixture (and the SaasEnv interface) is a
+    // failing test, not a silent regression of the config-only boot proof.
+    const emitted = fixture as unknown as Record<string, string | undefined>;
+    expect(emitted.ATLAS_DEPLOY_MODE).toBeUndefined();
+    expect(emitted.ATLAS_ENTERPRISE_ENABLED).toBeUndefined();
     expect(fixture.DATABASE_URL).toMatch(/^postgresql:\/\//);
     expect(fixture.ATLAS_DATASOURCE_URL).toMatch(/^postgresql:\/\//);
     expect(fixture.ATLAS_ENCRYPTION_KEYS).toMatch(/^v1:/);

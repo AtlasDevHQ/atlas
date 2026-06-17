@@ -27,9 +27,11 @@
  * `ATLAS_DEPLOY_MODE` and `ATLAS_ENTERPRISE_ENABLED` are intentionally
  * NOT in this contract (#3702): on SaaS, `deploy/api/atlas.config.ts`
  * sets `deployMode: "saas"` and `enterprise.enabled: true`, and both
- * resolution paths consult the config file first (`applyDeployMode`'s
- * `process.env.ATLAS_DEPLOY_MODE ?? configFileValue`;
- * `isEnterpriseEnabled*`'s `config.enterprise?.enabled` before env). So
+ * resolve from the config file when the env vars are unset. The two
+ * precedences differ: `applyDeployMode` is `process.env.ATLAS_DEPLOY_MODE
+ * ?? configFileValue` (env wins if set; config supplies the value only
+ * because the env var is absent), whereas `isEnterpriseEnabled*` checks
+ * `config.enterprise?.enabled` *before* env (config wins outright). So
  * a SaaS region boots correctly with both unset. `EnterpriseGuardLive`
  * still inspects the raw `process.env.ATLAS_DEPLOY_MODE` directly to
  * catch the self-host footgun (env requests saas, no `@atlas/ee`) — that

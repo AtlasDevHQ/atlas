@@ -1,23 +1,10 @@
-import { describe, test, expect, mock } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import type { ApprovedPatternRow } from "@atlas/api/lib/db/internal";
-
-// pattern-cache imports settings/internal/logger at module load; stub them so
-// the pure ranking helpers can be imported in isolation.
-mock.module("@atlas/api/lib/db/internal", () => ({
-  getApprovedPatterns: async () => [],
-}));
-mock.module("@atlas/api/lib/settings", () => ({
-  getSetting: () => undefined,
-  getSettingAuto: () => undefined,
-  getSettingLive: async () => undefined,
-}));
-mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
-}));
-
-const { rankPatterns, perfWeight, DEFAULT_LATENCY_BUDGET_MS } = await import(
-  "@atlas/api/lib/learn/pattern-cache"
-);
+// pattern-ranking is PURE — zero db/settings/logger imports — so the ranking
+// helpers import directly with no `mock.module()` at all (#3721). The
+// DEFAULT_LATENCY_BUDGET_MS default now lives in learn-settings and is covered
+// by the settings/retrieval suites.
+import { rankPatterns, perfWeight } from "@atlas/api/lib/learn/pattern-ranking";
 
 function row(over: Partial<ApprovedPatternRow> & { id: string }): ApprovedPatternRow {
   return {
@@ -119,9 +106,5 @@ describe("rankPatterns — down-weight slow but keep present", () => {
     // both within budget → equal perfWeight & score & confidence → latency breaks tie
     const ranked = rankPatterns([a, b], KW, { latencyBudgetMs: 1000, maxPatterns: 10 });
     expect(ranked.map((r) => r.pattern.id)).toEqual(["b", "a"]);
-  });
-
-  test("DEFAULT_LATENCY_BUDGET_MS is a sane positive default", () => {
-    expect(DEFAULT_LATENCY_BUDGET_MS).toBeGreaterThan(0);
   });
 });

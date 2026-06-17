@@ -1,31 +1,35 @@
 /**
  * Effect Layer DAG for Atlas server startup.
  *
- * Replaces a subset of the sequential startup steps in server.ts
- * (telemetry, migrations, semantic sync, settings, schedulers) with
- * composable Layers. Config and plugin wiring remain imperative in
- * server.ts because they produce the config object the DAG needs.
+ * Expresses the startup steps as composable Layers. Only the plugin-wiring
+ * INPUTS (the plugin context object + tool registry) are built imperatively in
+ * server.ts and passed in as `pluginWiring` — registration / init / wiring
+ * themselves now run INSIDE the DAG (#3743).
  *
- * Layer dependency graph:
+ * Layer dependency graph (key ordering edges):
  *
  *   InternalDBLayer         (no deps — creates pg.Pool via PgClient.layerFromPool)
- *   MigrationLayer          (depends on InternalDB — pool must be ready first)
- *   ConnectionsHydrateLayer (depends on InternalDB + Migration — connections table must exist)
- *   TelemetryLayer          (no deps)
- *   ConfigLayer             (no deps — receives pre-resolved config via Layer.succeed)
- *   SemanticSyncLayer       (no deps)
- *   SettingsLayer           (no deps)
- *   SchedulerLayer          (no deps — receives config as function param)
+ *   MigrationLayer          (← InternalDB — pool ready first; SCHEMA migrations only)
+ *   ConnectionRegistryLayer (no deps — binds the GLOBAL `connections` Tag,
+ *                            lifecycle-unmanaged: `manageLifecycle: false`)
+ *   PluginRegistryLayer     (← ConnectionRegistry + Migration — the #3741
+ *                            structural fix: plugin initialize() can't run before
+ *                            core migrations. Wired variant when plugins exist;
+ *                            empty PluginRegistryLive as an ordering barrier otherwise)
+ *   ConnectionsHydrateLayer (← InternalDB + Migration + PluginRegistry — DB-stored
+ *                            datasource plugins must be registered before hydrate)
+ *   AuthBootstrapLayer      (← Migration + PluginRegistry — post-schema bootstrap
+ *                            AFTER wiring, preserving loadPluginSettings order)
+ *   PoolWarmupLayer         (← PluginRegistry + ConnectionsHydrate)
+ *   TelemetryLayer / ConfigLayer / SemanticSyncLayer / SettingsLayer / SchedulerLayer
+ *                            (independent peers)
  *
- *   AppLayer = mergeAll(Telemetry, Config, InternalDB, Migration, ConnectionsHydrate, SemanticSync, Settings, Scheduler)
+ *   AppLayer = mergeAll(... all of the above + the SaaS boot guards ...)
  *
- * Note: ConnectionLayer (P4) and PluginLayer (P5) live in services.ts
- * and are not yet part of AppLayer — they are wired imperatively in server.ts.
- *
- * Each layer wraps an imperative startup step with Effect.addFinalizer
- * for cleanup. On shutdown, Effect disposes scoped layers via their
- * finalizers. Order among independent layers is unspecified (except
- * MigrationLayer which depends on InternalDB).
+ * Each layer wraps a startup step with Effect.addFinalizer for cleanup. On
+ * shutdown, Effect disposes scoped layers via their finalizers (the wired
+ * PluginRegistry layer's finalizer runs `plugins.teardownAll()`). Order among
+ * independent layers is unspecified; the edges above are the only guarantees.
  *
  * SettingsLive and SchedulerLayer fork long-lived periodic fibers
  * (settings refresh, OAuth cleanup, rate-limit cleanup, email scheduler,
@@ -61,7 +65,18 @@ import {
 } from "./saas-guards";
 import { readSaasEnv } from "./saas-env";
 import { EnterpriseLayer, type EnterpriseSubsystem } from "./enterprise-layer";
-import { AuditPurgeScheduler, SaasCrm } from "./services";
+import {
+  AuditPurgeScheduler,
+  SaasCrm,
+  Migration,
+  type MigrationShape,
+  ConnectionRegistry,
+  PluginRegistry,
+  PluginRegistryLive,
+  makeConnectionRegistryLive,
+  makeWiredPluginRegistryLive,
+  type PluginWiringConfig,
+} from "./services";
 import {
   recoverInFlight as recoverOutboxInFlight,
   drainOutbox as drainOutboxQueue,
@@ -338,28 +353,25 @@ export const ConfigLive: Layer.Layer<Config, Error> = Layer.effect(
 // ██  Migration Layer
 // ══════════════════════════════════════════════════════════════════════
 
-export interface MigrationShape {
-  /** Whether migrations ran successfully. */
-  readonly migrated: boolean;
-  /**
-   * When `migrated === false`, the error message captured from the
-   * `Effect.catchAll` in `MigrationLive`. `MigrationGuardLive` threads
-   * this into `MigrationsRequiredError.cause` so the SaaS boot-failure
-   * log line names the actual Drizzle / pg error rather than telling
-   * the operator to "see the prior log".
-   */
-  readonly error?: string;
-}
-
-export class Migration extends Context.Tag("Migration")<
-  Migration,
-  MigrationShape
->() {}
+// The `Migration` Tag + `MigrationShape` moved to `./services` (#3743) so the
+// wired plugin layer there can depend on Migration without importing this
+// heavyweight boot module. Re-exported here so existing importers of `./layers`
+// (and `effect/index.ts`) keep working unchanged.
+export { Migration, type MigrationShape };
 
 /**
- * Run auth + internal DB migrations at boot.
- * Depends on InternalDB — ensures pool is ready before migrations run.
+ * Run CORE SCHEMA migrations at boot (Better Auth → Atlas internal, #1472
+ * order). Depends on InternalDB — ensures pool is ready before migrations run.
  * Non-fatal: logs errors but does not fail the Layer.
+ *
+ * #3743 — runs `runBootMigrations()` (schema only), NOT the full
+ * `migrateAuthTables()`. The post-schema bootstrap (loadPluginSettings, abuse
+ * restore, admin/seed) moved to `AuthBootstrapLive`, which depends on the wired
+ * plugin layer so `loadPluginSettings`'s `registry.disable()` still runs AFTER
+ * plugin wiring (preserving the established order — wiring's `getByType` filters
+ * on `enabled`). The `Migration` Tag here means "schema migrated", which is
+ * exactly what every downstream consumer (seeds, hydrate, guards, the wired
+ * plugin layer) actually gates on.
  */
 export const MigrationLive: Layer.Layer<Migration, never, InternalDB> = Layer.effect(
   Migration,
@@ -375,10 +387,10 @@ export const MigrationLive: Layer.Layer<Migration, never, InternalDB> = Layer.ef
 
     const result = yield* Effect.tryPromise({
       try: async () => {
-        const { migrateAuthTables } = await import(
+        const { runBootMigrations } = await import(
           "@atlas/api/lib/auth/migrate"
         );
-        await migrateAuthTables();
+        await runBootMigrations();
         return { migrated: true } satisfies MigrationShape;
       },
       catch: (err) => (err instanceof Error ? err.message : String(err)),
@@ -1022,13 +1034,21 @@ const defaultLoadSavedConnections = async (): Promise<number> => {
  */
 export function makeConnectionsHydrateLive(
   load: () => Promise<number> = defaultLoadSavedConnections,
-): Layer.Layer<ConnectionsHydrate, never, InternalDB | Migration> {
+): Layer.Layer<ConnectionsHydrate, never, InternalDB | Migration | PluginRegistry> {
   return Layer.effect(
     ConnectionsHydrate,
     Effect.gen(function* () {
       const start = performance.now();
       const db = yield* InternalDB;
       const migration = yield* Migration;
+      // #3743 — ordering barrier: `loadSavedConnections` builds DB-stored plugin
+      // datasource connections via `findDatasourcePluginConnection`, which reads
+      // the GLOBAL plugin registry (`plugins.getAll()`). So datasource plugins
+      // must be REGISTERED + wired before hydrate runs. In the imperative boot
+      // this held because wiring ran before `buildAppLayer`; now the wired plugin
+      // layer is part of the DAG, so this edge makes the dependency explicit. The
+      // value is unused — the dependency ordering is the point.
+      yield* PluginRegistry;
       if (!db.available || !migration.migrated) {
         const durationMs = Math.round(performance.now() - start);
         log.info(
@@ -1088,8 +1108,99 @@ export function makeConnectionsHydrateLive(
 export const ConnectionsHydrateLive: Layer.Layer<
   ConnectionsHydrate,
   never,
-  InternalDB | Migration
+  InternalDB | Migration | PluginRegistry
 > = makeConnectionsHydrateLive();
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  Auth Bootstrap Layer (#3743)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Post-schema boot bootstrap: plugin settings, abuse-state restore, admin
+ * bootstrap + dev seed (via `runPostMigrationBootstrap`).
+ *
+ * Split out of `MigrationLive` (#3743). Depends on:
+ *   - `Migration` — schema must exist before bootstrap reads/writes it.
+ *   - `PluginRegistry` (the wired plugin layer) — `loadPluginSettings` calls
+ *     `registry.disable()`, and wiring's `getByType` filters on `enabled`, so
+ *     this step MUST run AFTER plugin wiring to preserve the established order
+ *     (a DB-disabled datasource plugin stays wired-then-disabled, exactly as in
+ *     the pre-#3743 imperative boot — NOT excluded from wiring).
+ *
+ * Non-fatal: `runPostMigrationBootstrap` self-gates on `hasInternalDB()` /
+ * `detectAuthMode()` and each phase catches its own errors. A dynamic-import
+ * failure here is logged, never crashes boot.
+ */
+export const AuthBootstrapLive: Layer.Layer<
+  never,
+  never,
+  Migration | PluginRegistry
+> = Layer.effectDiscard(
+  Effect.gen(function* () {
+    // Ordering barriers — values unused; the dependency edges are the point.
+    yield* Migration;
+    yield* PluginRegistry;
+
+    yield* Effect.tryPromise({
+      try: async () => {
+        const { runPostMigrationBootstrap } = await import(
+          "@atlas/api/lib/auth/migrate"
+        );
+        await runPostMigrationBootstrap();
+      },
+      catch: (err) => (err instanceof Error ? err.message : String(err)),
+    }).pipe(
+      Effect.catchAll((errMsg) => {
+        log.error({ err: new Error(errMsg) }, "Post-migration bootstrap failed");
+        return Effect.void;
+      }),
+    );
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  Pool Warmup Layer (#3743)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Pre-warm connection pools after all datasources are registered. Replaces the
+ * imperative `connections.warmup()` that ran in server.ts before the DAG.
+ *
+ * Depends on:
+ *   - `PluginRegistry` (wired plugin layer) — config-declared plugin datasources
+ *     registered.
+ *   - `ConnectionsHydrate` — DB-stored connections registered.
+ *
+ * Because it now runs after BOTH, warmup covers DB-hydrated connections too
+ * (the pre-#3743 imperative call ran before hydrate and warmed only config /
+ * already-registered pools) — strictly more complete. Non-fatal.
+ */
+export const PoolWarmupLive: Layer.Layer<
+  never,
+  never,
+  PluginRegistry | ConnectionsHydrate
+> = Layer.effectDiscard(
+  Effect.gen(function* () {
+    yield* PluginRegistry;
+    yield* ConnectionsHydrate;
+
+    yield* Effect.tryPromise({
+      try: async () => {
+        const { connections } = await import("@atlas/api/lib/db/connection");
+        await connections.warmup();
+      },
+      catch: (err) => (err instanceof Error ? err.message : String(err)),
+    }).pipe(
+      Effect.catchAll((errMsg) => {
+        log.error(
+          { err: new Error(errMsg) },
+          "Pool warmup failed — datasource may be unreachable",
+        );
+        return Effect.void;
+      }),
+    );
+  }),
+);
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  Staging Seed Layer (#2914 — staging slice 7)
@@ -2844,20 +2955,39 @@ export const MigrationGuardLive: Layer.Layer<never, MigrationsRequiredError, Con
 /**
  * Build the full application Layer DAG.
  *
- * Layer dependency graph:
+ * Layer dependency graph (key #3743 edges marked):
  *   InternalDB          (no deps — creates pg.Pool via PgClient.layerFromPool)
- *   MigrationLayer      (depends on InternalDB — pool must be ready first)
+ *   Migration           (← InternalDB — pool ready first; SCHEMA migrations only)
+ *   ConnectionRegistry  (no deps — binds the global `connections` Tag, lifecycle-unmanaged)
+ *   PluginRegistry      (← ConnectionRegistry + Migration — #3741 type-level edge:
+ *                        plugin initialize() can't run before core migrations)
+ *   ConnectionsHydrate  (← InternalDB + Migration + PluginRegistry — datasource
+ *                        plugins must be registered before DB-stored conns load)
+ *   AuthBootstrap       (← Migration + PluginRegistry — loadPluginSettings.disable
+ *                        AFTER wiring, preserving pre-#3743 order)
+ *   PoolWarmup          (← PluginRegistry + ConnectionsHydrate)
  *   All other layers    (independent peers)
  *
- * On shutdown, Effect disposes scoped layers via their finalizers.
- * InternalDB scope finalizer closes the pg.Pool automatically.
- * Connection and plugin shutdown is handled imperatively in server.ts.
+ * On shutdown, Effect disposes scoped layers via their finalizers. The wired
+ * PluginRegistry layer's finalizer runs `plugins.teardownAll()`. InternalDB's
+ * finalizer closes the pg.Pool. The global `connections` registry is
+ * lifecycle-unmanaged here (its health fiber starts in `initializeConfig`, its
+ * shutdown stays imperative in server.ts) — see `manageLifecycle: false` below.
+ *
+ * `pluginWiring` is provided by server.ts when `config.plugins?.length`. When
+ * absent, an empty `PluginRegistryLive` backs the Tag purely as an ordering
+ * barrier for ConnectionsHydrate / AuthBootstrap / PoolWarmup.
  */
-export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
+export function buildAppLayer(
+  config: ResolvedConfig,
+  pluginWiring?: PluginWiringConfig,
+): Layer.Layer<
   | Telemetry
   | Config
   | InternalDB
   | Migration
+  | ConnectionRegistry
+  | PluginRegistry
   | BackfillSaasTrial
   | CatalogSeed
   | BuiltinDatasourceCatalogSeed
@@ -2875,6 +3005,35 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
 
   // MigrationLive depends on InternalDB — provide it
   const migrationLayer = MigrationLive.pipe(Layer.provide(internalDBLayer));
+
+  // ConnectionRegistry Tag bound to the GLOBAL `connections` singleton (#3743).
+  // `manageLifecycle: false` — the global already runs its own health fiber
+  // (started in `initializeConfig`) and is shut down imperatively in server.ts,
+  // so this binding adds NO second fiber/finalizer; it only exposes the Tag for
+  // the wired plugin layer's type-level dependency. Lazy `require` keeps the
+  // heavyweight connection module out of layers.ts's eager import graph.
+  const connectionRegistryLayer = makeConnectionRegistryLive(
+    () => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { connections } = require("@atlas/api/lib/db/connection");
+      return connections;
+    },
+    { manageLifecycle: false },
+  );
+
+  // PluginRegistry layer. When plugins are configured, the WIRED layer registers
+  // + migrates + initializes + wires them — gated at the type level on
+  // ConnectionRegistry + Migration (the #3741 structural fix). The wired layer
+  // backs the GLOBAL `plugins` singleton (the rest of the app + the hydrate
+  // bridge read the global), so pass `() => plugins`. Without configured
+  // plugins, an empty `PluginRegistryLive` backs the Tag as an ordering barrier.
+  const pluginRegistryLayer = pluginWiring
+    ? makeWiredPluginRegistryLive(pluginWiring, () => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { plugins } = require("@atlas/api/lib/plugins/registry");
+        return plugins;
+      }).pipe(Layer.provide(Layer.merge(connectionRegistryLayer, migrationLayer)))
+    : PluginRegistryLive;
 
   // BackfillSaasTrialLive depends on Migration (so the `organization`
   // table is guaranteed to exist) and InternalDB. Independent peer of
@@ -2925,8 +3084,27 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     ),
   );
 
+  // ConnectionsHydrate now also depends on PluginRegistry (#3743): the wired
+  // plugin layer must register datasource plugins before `loadSavedConnections`
+  // builds DB-stored plugin datasource pools (which look the plugin up in the
+  // global registry). Same shared `pluginRegistryLayer` reference everywhere, so
+  // Effect memoization keeps the wired layer built once (one `initializeAll`).
   const connectionsHydrateLayer = ConnectionsHydrateLive.pipe(
-    Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
+    Layer.provide(Layer.mergeAll(internalDBLayer, migrationLayer, pluginRegistryLayer)),
+  );
+
+  // AuthBootstrap (#3743) — post-schema bootstrap (plugin settings, abuse,
+  // admin/seed) AFTER plugin wiring, preserving the pre-#3743 loadPluginSettings
+  // order. Depends on Migration + the wired PluginRegistry.
+  const authBootstrapLayer = AuthBootstrapLive.pipe(
+    Layer.provide(Layer.merge(migrationLayer, pluginRegistryLayer)),
+  );
+
+  // PoolWarmup (#3743) — replaces the imperative `connections.warmup()`. Runs
+  // after config datasources (PluginRegistry) AND DB-stored connections
+  // (ConnectionsHydrate) are registered.
+  const poolWarmupLayer = PoolWarmupLive.pipe(
+    Layer.provide(Layer.merge(pluginRegistryLayer, connectionsHydrateLayer)),
   );
 
   // StagingSeedLive (#2914) — depends on Migration (so 0093's demo-postgres
@@ -3019,7 +3197,11 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   // plugin registry + InternalDB inside its Effect body so it can run as
   // a peer of migrationLayer without a static cycle.
   const regionGuardLayer = RegionGuardLive.pipe(Layer.provide(configLayer));
-  const pluginConfigGuardLayer = PluginConfigGuardLive.pipe(Layer.provide(configLayer));
+  // #3743 — PluginConfigGuardLive now carries a PluginRegistry ordering edge so
+  // it validates stored configs AFTER the wired plugin layer registers plugins.
+  const pluginConfigGuardLayer = PluginConfigGuardLive.pipe(
+    Layer.provide(Layer.merge(configLayer, pluginRegistryLayer)),
+  );
   // #1988 C9 — depends on Migration so it can read its `migrated` flag.
   const migrationGuardLayer = MigrationGuardLive.pipe(
     Layer.provide(Layer.merge(configLayer, migrationLayer)),
@@ -3038,12 +3220,16 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     configLayer,
     internalDBLayer,
     migrationLayer,
+    connectionRegistryLayer,
+    pluginRegistryLayer,
     backfillSaasTrialLayer,
     catalogSeedLayer,
     builtinDatasourceCatalogSeedLayer,
     openApiDatasourceCatalogSeedLayer,
     implementationStatusOverrideLayer,
     connectionsHydrateLayer,
+    authBootstrapLayer,
+    poolWarmupLayer,
     stagingSeedLayer,
     semanticSyncLayer,
     settingsLayer,

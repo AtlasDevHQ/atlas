@@ -1,7 +1,8 @@
 import { describe, test, expect } from "bun:test";
-import { Effect, Layer, Exit } from "effect";
+import { Effect, Layer, Exit, Cause } from "effect";
 import {
   PluginRegistry,
+  Migration,
   makePluginRegistryLive,
   makeWiredPluginRegistryLive,
   createPluginTestLayer,
@@ -13,6 +14,13 @@ import type {
   PluginLike,
   PluginContextLike,
 } from "@atlas/api/lib/plugins/registry";
+import { ToolRegistry } from "@atlas/api/lib/tools/registry";
+import {
+  getPluginTools,
+  getContextFragments,
+  getDialectHints,
+} from "@atlas/api/lib/plugins/tools";
+import { getCache, _resetCache } from "@atlas/api/lib/cache/index";
 
 const minimalCtx: PluginContextLike = {
   db: null,
@@ -22,6 +30,15 @@ const minimalCtx: PluginContextLike = {
   config: {},
 };
 
+// Extract the failure message from a failed Exit so assertions can pin the
+// operator-facing remediation text (not just `isFailure`).
+function failureMessage(exit: Exit.Exit<unknown, unknown>): string {
+  if (Exit.isSuccess(exit)) return "";
+  const err = Cause.failureOption(exit.cause);
+  if (err._tag === "Some" && err.value instanceof Error) return err.value.message;
+  return Cause.pretty(exit.cause);
+}
+
 function makePlugin(overrides: Partial<PluginLike> = {}): PluginLike {
   return {
     id: "test-plugin",
@@ -29,6 +46,15 @@ function makePlugin(overrides: Partial<PluginLike> = {}): PluginLike {
     version: "1.0.0",
     ...overrides,
   };
+}
+
+// #3743 — the wired layer now depends on ConnectionRegistry AND Migration.
+const migrationOk = Layer.succeed(Migration, { migrated: true });
+function wiredDeps() {
+  return Layer.merge(
+    createTestLayer({ list: () => [], registerDirect: () => {} }),
+    migrationOk,
+  );
 }
 
 describe("PluginRegistry Effect Service", () => {
@@ -195,11 +221,7 @@ describe("PluginRegistry Effect Service", () => {
       );
 
       // Provide the ConnectionRegistry dependency via test layer
-      const connLayer = createTestLayer({
-        list: () => [],
-        registerDirect: () => {},
-      });
-      const fullLayer = Layer.provide(pluginLayer, connLayer);
+      const fullLayer = Layer.provide(pluginLayer, wiredDeps());
 
       const result = await Effect.runPromise(
         Effect.gen(function* () {
@@ -235,11 +257,7 @@ describe("PluginRegistry Effect Service", () => {
         config,
         () => new PluginRegistryClass(),
       );
-      const connLayer = createTestLayer({
-        list: () => [],
-        registerDirect: () => {},
-      });
-      const fullLayer = Layer.provide(pluginLayer, connLayer);
+      const fullLayer = Layer.provide(pluginLayer, wiredDeps());
 
       await Effect.runPromise(
         Effect.gen(function* () {
@@ -275,11 +293,7 @@ describe("PluginRegistry Effect Service", () => {
         config,
         () => new PluginRegistryClass(),
       );
-      const connLayer = createTestLayer({
-        list: () => [],
-        registerDirect: () => {},
-      });
-      const fullLayer = Layer.provide(pluginLayer, connLayer);
+      const fullLayer = Layer.provide(pluginLayer, wiredDeps());
 
       await Effect.runPromise(
         Effect.gen(function* () {
@@ -311,11 +325,7 @@ describe("PluginRegistry Effect Service", () => {
         config,
         () => new PluginRegistryClass(),
       );
-      const connLayer = createTestLayer({
-        list: () => [],
-        registerDirect: () => {},
-      });
-      const fullLayer = Layer.provide(pluginLayer, connLayer);
+      const fullLayer = Layer.provide(pluginLayer, wiredDeps());
 
       const result = await Effect.runPromise(
         Effect.gen(function* () {
@@ -333,6 +343,351 @@ describe("PluginRegistry Effect Service", () => {
       expect(
         result.descriptions.find((d) => d.id === "bad")?.status,
       ).toBe("unhealthy");
+    });
+
+    // ── #3743 — type-level Migration dependency ────────────────────
+
+    test("requires Migration at the type level (#3741 structural fix)", () => {
+      const config: PluginWiringConfig = {
+        plugins: [makePlugin({ id: "needs-migration" })],
+        context: minimalCtx,
+      };
+      const pluginLayer = makeWiredPluginRegistryLive(
+        config,
+        () => new PluginRegistryClass(),
+      );
+      const connOnly = createTestLayer({ list: () => [], registerDirect: () => {} });
+
+      // Providing ONLY ConnectionRegistry leaves `Migration` unsatisfied, so the
+      // result still carries `Migration` in its requirements (R) — it is NOT
+      // `never`. The @ts-expect-error below is the compile-time assertion that
+      // the Migration edge exists: if the edge is ever dropped, R becomes
+      // `never`, this assignment type-checks, and the unused-directive turns into
+      // a tsgo error. This is the structural guarantee from #3743 — plugin init
+      // can no longer be expressed without a Migration dependency.
+      // @ts-expect-error — Migration is unsatisfied here; R is `Migration`, not `never`.
+      const incomplete: Layer.Layer<PluginRegistry, Error, never> =
+        Layer.provide(pluginLayer, connOnly);
+      expect(incomplete).toBeDefined();
+    });
+
+    // ── #3743 — fatal plugin schema-migration failure ──────────────
+
+    test("schema migration failure is FATAL — fails the layer", async () => {
+      const config: PluginWiringConfig = {
+        plugins: [makePlugin({ id: "schema-plugin" })],
+        context: minimalCtx,
+        runMigrations: async () => {
+          throw new Error("DDL boom");
+        },
+      };
+      const pluginLayer = makeWiredPluginRegistryLive(
+        config,
+        () => new PluginRegistryClass(),
+      );
+
+      const exit = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          yield* PluginRegistry;
+        }).pipe(Effect.provide(Layer.provide(pluginLayer, wiredDeps()))),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      // The operator-facing message is preserved — a `catch: (err) => err`
+      // regression or message reshaping must not pass unnoticed.
+      expect(failureMessage(exit)).toContain("Plugin schema migrations failed");
+      expect(failureMessage(exit)).toContain("DDL boom");
+    });
+
+    // ── #3741 — core-migration outcome gate ────────────────────────
+
+    test("ABORTS plugin init when core migrations FAILED (error set)", async () => {
+      let initialized = false;
+      const config: PluginWiringConfig = {
+        plugins: [
+          makePlugin({
+            id: "reads-core-table",
+            initialize: async () => {
+              initialized = true;
+            },
+          }),
+        ],
+        context: minimalCtx,
+      };
+      const pluginLayer = makeWiredPluginRegistryLive(
+        config,
+        () => new PluginRegistryClass(),
+      );
+      // Migration ran but FAILED — half-migrated core schema.
+      const migrationFailed = Layer.succeed(Migration, {
+        migrated: false,
+        error: "relation \"operator_integration_credentials\" does not exist",
+      });
+      const deps = Layer.merge(
+        createTestLayer({ list: () => [], registerDirect: () => {} }),
+        migrationFailed,
+      );
+
+      const exit = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          yield* PluginRegistry;
+        }).pipe(Effect.provide(Layer.provide(pluginLayer, deps))),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(failureMessage(exit)).toContain("Core schema migrations failed");
+      // Critically: the plugin's initialize() must NOT have run against the
+      // half-migrated schema — this is the #3741 race made unrepresentable.
+      expect(initialized).toBe(false);
+    });
+
+    test("PROCEEDS with plugin init when migrated:false has NO error (no-DB self-host)", async () => {
+      let initialized = false;
+      const config: PluginWiringConfig = {
+        plugins: [
+          makePlugin({
+            id: "no-db-plugin",
+            initialize: async () => {
+              initialized = true;
+            },
+          }),
+        ],
+        context: minimalCtx,
+      };
+      const pluginLayer = makeWiredPluginRegistryLive(
+        config,
+        () => new PluginRegistryClass(),
+      );
+      // No DATABASE_URL: migrations skipped, NO error — a legitimate boot.
+      const migrationSkipped = Layer.succeed(Migration, { migrated: false });
+      const deps = Layer.merge(
+        createTestLayer({ list: () => [], registerDirect: () => {} }),
+        migrationSkipped,
+      );
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* PluginRegistry;
+        }).pipe(Effect.provide(Layer.provide(pluginLayer, deps))),
+      );
+
+      expect(initialized).toBe(true);
+    });
+
+    // ── #3743 — aggregated registration diagnostics ────────────────
+
+    test("aggregates ALL registration failures + actionable message", async () => {
+      const config: PluginWiringConfig = {
+        plugins: [
+          makePlugin({ id: "ok-1" }),
+          makePlugin({ id: "" }), // empty id → register() throws
+          makePlugin({ id: "ok-1" }), // duplicate id → register() throws
+        ],
+        context: minimalCtx,
+      };
+      const pluginLayer = makeWiredPluginRegistryLive(
+        config,
+        () => new PluginRegistryClass(),
+      );
+
+      const exit = await Effect.runPromiseExit(
+        Effect.gen(function* () {
+          yield* PluginRegistry;
+        }).pipe(Effect.provide(Layer.provide(pluginLayer, wiredDeps()))),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      const msg = failureMessage(exit);
+      // Both bad IDs surfaced in one boot (count is 2), with remediation.
+      expect(msg).toContain("2 plugin(s) failed to register");
+      expect(msg).toContain("Fix your atlas.config.ts plugins array");
+    });
+
+    // ── #3743 — single-build memoization across consumers ──────────
+
+    test("wired layer builds ONCE despite multiple consumers (initializeAll not doubled)", async () => {
+      let initCount = 0;
+      const config: PluginWiringConfig = {
+        plugins: [
+          makePlugin({
+            id: "counted",
+            initialize: async () => {
+              initCount += 1;
+            },
+          }),
+        ],
+        context: minimalCtx,
+      };
+      // Single shared reference, exactly as `buildAppLayer` holds
+      // `pluginRegistryLayer` and feeds it to ConnectionsHydrate / AuthBootstrap /
+      // PoolWarmup / PluginConfigGuard + the final mergeAll. Effect memoizes by
+      // reference within one build, so `initializeAll` must run once — a stray
+      // `Layer.fresh` or a second `makeWired...` call would double it and
+      // `registry.initializeAll` throws "cannot be called twice" (loud backstop).
+      const wired = makeWiredPluginRegistryLive(
+        config,
+        () => new PluginRegistryClass(),
+      );
+      const consumerA = Layer.effectDiscard(
+        Effect.gen(function* () {
+          yield* PluginRegistry;
+        }),
+      ).pipe(Layer.provide(wired));
+      const consumerB = Layer.effectDiscard(
+        Effect.gen(function* () {
+          yield* PluginRegistry;
+        }),
+      ).pipe(Layer.provide(wired));
+      const composed = Layer.mergeAll(consumerA, consumerB, wired).pipe(
+        Layer.provide(wiredDeps()),
+      );
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* PluginRegistry;
+        }).pipe(Effect.provide(composed)),
+      );
+
+      expect(initCount).toBe(1);
+    });
+
+    // ── #3743 — ported wiring side-effects ─────────────────────────
+
+    test("publishes plugin tools + freezes the registry after wiring", async () => {
+      const toolRegistry = new ToolRegistry();
+      const ctx: PluginContextLike = {
+        ...minimalCtx,
+        tools: {
+          register: (tool) =>
+            toolRegistry.register(
+              tool as Parameters<typeof toolRegistry.register>[0],
+            ),
+        },
+      };
+      const config: PluginWiringConfig = {
+        plugins: [
+          makePlugin({
+            id: "tooly",
+            types: ["action"],
+            initialize: async (c: PluginContextLike) => {
+              c.tools.register({
+                name: "pluginTool",
+                description: "a plugin tool",
+                tool: {} as never,
+              } as never);
+            },
+          }),
+        ],
+        context: ctx,
+        toolRegistry,
+      };
+      const pluginLayer = makeWiredPluginRegistryLive(
+        config,
+        () => new PluginRegistryClass(),
+      );
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* PluginRegistry;
+        }).pipe(Effect.provide(Layer.provide(pluginLayer, wiredDeps()))),
+      );
+
+      // setPluginTools published the registry...
+      expect(getPluginTools()?.get("pluginTool")).toBeDefined();
+      // ...and freeze() ran (further registration throws).
+      expect(() =>
+        toolRegistry.register({
+          name: "late",
+          description: "x",
+          tool: {} as never,
+        } as never),
+      ).toThrow(/frozen/);
+    });
+
+    test("publishes context fragments from context plugins", async () => {
+      const config: PluginWiringConfig = {
+        plugins: [
+          makePlugin({
+            id: "ctx-plugin",
+            types: ["context"],
+            contextProvider: { load: async () => "FRAGMENT-3743" },
+          } as Partial<PluginLike>),
+        ],
+        context: minimalCtx,
+      };
+      const pluginLayer = makeWiredPluginRegistryLive(
+        config,
+        () => new PluginRegistryClass(),
+      );
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* PluginRegistry;
+        }).pipe(Effect.provide(Layer.provide(pluginLayer, wiredDeps()))),
+      );
+
+      expect(getContextFragments()).toContain("FRAGMENT-3743");
+    });
+
+    test("registers a plugin-provided cache backend", async () => {
+      _resetCache();
+      const cacheStub = {
+        get: async () => undefined,
+        set: async () => {},
+        delete: async () => {},
+        flush: () => {},
+        stats: () => ({ hits: 0, misses: 0, size: 0 }),
+      };
+      const config: PluginWiringConfig = {
+        plugins: [
+          makePlugin({
+            id: "cache-plugin",
+            cacheBackend: cacheStub,
+          } as Partial<PluginLike>),
+        ],
+        context: minimalCtx,
+      };
+      const pluginLayer = makeWiredPluginRegistryLive(
+        config,
+        () => new PluginRegistryClass(),
+      );
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* PluginRegistry;
+        }).pipe(Effect.provide(Layer.provide(pluginLayer, wiredDeps()))),
+      );
+
+      expect(getCache()).toBe(cacheStub as never);
+      _resetCache();
+    });
+
+    test("publishes datasource dialect hints", async () => {
+      const config: PluginWiringConfig = {
+        plugins: [
+          makePlugin({
+            id: "ds-dialect",
+            types: ["datasource"],
+            connection: { dbType: "test-db", create: async () => ({}) },
+            dialect: "spark-sql-3743",
+          } as Partial<PluginLike>),
+        ],
+        context: minimalCtx,
+      };
+      const pluginLayer = makeWiredPluginRegistryLive(
+        config,
+        () => new PluginRegistryClass(),
+      );
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* PluginRegistry;
+        }).pipe(Effect.provide(Layer.provide(pluginLayer, wiredDeps()))),
+      );
+
+      expect(
+        getDialectHints().some((h) => h.dialect === "spark-sql-3743"),
+      ).toBe(true);
     });
   });
 

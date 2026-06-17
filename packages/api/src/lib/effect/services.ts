@@ -28,6 +28,7 @@ import type {
   OrgPoolSettings,
 } from "@atlas/api/lib/db/connection";
 import type { PoolMetrics, OrgPoolMetrics } from "@useatlas/types";
+import type { ToolRegistry as ToolRegistryClass } from "@atlas/api/lib/tools/registry";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   PluginRegistry as PluginRegistryClass,
@@ -58,6 +59,34 @@ function makeNotAvailable(message: string): () => import("@atlas/api/lib/effect/
   };
   return () => new EnterpriseError(message);
 }
+
+// ── Migration service Tag (#3743) ────────────────────────────────────
+//
+// Defined here (not in layers.ts) so `makeWiredPluginRegistryLive` below can
+// declare a type-level dependency on it WITHOUT services.ts importing the
+// heavyweight boot module `layers.ts` (which would balloon every services.ts
+// consumer's import graph). `MigrationLive` — the implementation — stays in
+// layers.ts. The Tag means "core schema migrations completed" (the `migrated`
+// flag); plugin `initialize()` reads core tables, so the wired plugin layer
+// gates on it to make the #3741 migration race unrepresentable.
+
+export interface MigrationShape {
+  /** Whether migrations ran successfully. */
+  readonly migrated: boolean;
+  /**
+   * When `migrated === false`, the error message captured from the
+   * `Effect.catchAll` in `MigrationLive`. `MigrationGuardLive` threads
+   * this into `MigrationsRequiredError.cause` so the SaaS boot-failure
+   * log line names the actual Drizzle / pg error rather than telling
+   * the operator to "see the prior log".
+   */
+  readonly error?: string;
+}
+
+export class Migration extends Context.Tag("Migration")<
+  Migration,
+  MigrationShape
+>() {}
 
 // ── Service interface ────────────────────────────────────────────────
 
@@ -147,7 +176,16 @@ const HEALTH_CHECK_INTERVAL_MS = 60_000;
  */
 export function makeConnectionRegistryLive(
   createImpl?: () => ConnectionRegistryClass,
+  options?: { readonly manageLifecycle?: boolean },
 ): Layer.Layer<ConnectionRegistry> {
+  // `manageLifecycle: false` binds the Tag to an already-managed instance
+  // WITHOUT forking a health-check fiber or registering a shutdown finalizer.
+  // Used by `buildAppLayer` (#3743) to expose the GLOBAL `connections` singleton
+  // as the `ConnectionRegistry` Tag for the wired plugin layer's type-level
+  // dependency: the global already starts its own health fiber in
+  // `initializeConfig` (config.ts) and is shut down imperatively in server.ts,
+  // so a second fiber/finalizer here would double both.
+  const manageLifecycle = options?.manageLifecycle ?? true;
   return Layer.scoped(
     ConnectionRegistry,
     Effect.gen(function* () {
@@ -180,42 +218,44 @@ export function makeConnectionRegistryLive(
         );
       });
 
-      // Shutdown finalizer — registered BEFORE the forkScoped health
-      // fiber below. Effect scope finalizers run LIFO; `forkScoped`
-      // registers an implicit fiber-interrupt finalizer at its fork
-      // point, so this ordering guarantees the health fiber is
-      // interrupted (and `Fiber.interrupt` awaits cleanup completion)
-      // BEFORE `impl.shutdown()` tears down pools. Registered the
-      // other way around, the shutdown would race a concurrent health
-      // cycle against pools being torn down (Codex P2 on #2864).
-      yield* Effect.addFinalizer(() =>
-        Effect.gen(function* () {
-          yield* Effect.promise(() => impl.shutdown());
-          log.info("ConnectionRegistry shut down via Effect scope");
-        }),
-      );
-
-      // forkScoped, not fork — the bare `fork` API links the child fiber
-      // to the parent fiber's lifetime, and the parent here is this gen
-      // which returns the service shape immediately. With `Effect.fork`
-      // the periodic health-check never runs because the child is
-      // interrupted at gen completion (verified by repro; diagnosed in
-      // #2864 on the outbox flusher). forkScoped binds to the
-      // Layer scope, so the fiber lives until layer shutdown.
-      yield* Effect.forkScoped(
-        healthCheckAll.pipe(
-          // Catch expected failures but let defects (programming errors) crash the fiber.
-          // The inner forEach already catches individual health check failures, so this
-          // outer handler is a safety net for unexpected errors in the cycle itself.
-          Effect.catchAllCause((cause) => {
-            const msg = cause.toString();
-            log.warn({ err: msg }, "Health check cycle failed");
-            return Effect.void;
+      if (manageLifecycle) {
+        // Shutdown finalizer — registered BEFORE the forkScoped health
+        // fiber below. Effect scope finalizers run LIFO; `forkScoped`
+        // registers an implicit fiber-interrupt finalizer at its fork
+        // point, so this ordering guarantees the health fiber is
+        // interrupted (and `Fiber.interrupt` awaits cleanup completion)
+        // BEFORE `impl.shutdown()` tears down pools. Registered the
+        // other way around, the shutdown would race a concurrent health
+        // cycle against pools being torn down (Codex P2 on #2864).
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            yield* Effect.promise(() => impl.shutdown());
+            log.info("ConnectionRegistry shut down via Effect scope");
           }),
-          Effect.repeat(Schedule.spaced(Duration.millis(HEALTH_CHECK_INTERVAL_MS))),
-          Effect.asVoid,
-        ),
-      );
+        );
+
+        // forkScoped, not fork — the bare `fork` API links the child fiber
+        // to the parent fiber's lifetime, and the parent here is this gen
+        // which returns the service shape immediately. With `Effect.fork`
+        // the periodic health-check never runs because the child is
+        // interrupted at gen completion (verified by repro; diagnosed in
+        // #2864 on the outbox flusher). forkScoped binds to the
+        // Layer scope, so the fiber lives until layer shutdown.
+        yield* Effect.forkScoped(
+          healthCheckAll.pipe(
+            // Catch expected failures but let defects (programming errors) crash the fiber.
+            // The inner forEach already catches individual health check failures, so this
+            // outer handler is a safety net for unexpected errors in the cycle itself.
+            Effect.catchAllCause((cause) => {
+              const msg = cause.toString();
+              log.warn({ err: msg }, "Health check cycle failed");
+              return Effect.void;
+            }),
+            Effect.repeat(Schedule.spaced(Duration.millis(HEALTH_CHECK_INTERVAL_MS))),
+            Effect.asVoid,
+          ),
+        );
+      }
 
       // --- Build service interface ---
       const service: ConnectionRegistryShape = {
@@ -520,8 +560,13 @@ export interface PluginWiringConfig {
   readonly context: PluginContextLike;
   /** Hono app instance for mounting interaction plugin routes. */
   readonly app?: { route(path: string, subApp: unknown): void };
-  /** Tool registry for action plugin tools. */
-  readonly toolRegistry?: { register(tool: unknown): void };
+  /**
+   * Tool registry for action plugin tools. Pass the SAME instance referenced by
+   * `context.tools.register` (plugins register tools during `initialize`, and
+   * action wiring adds more), so the boot-time tool-shadow check + `freeze()` +
+   * `setPluginTools()` see the complete set.
+   */
+  readonly toolRegistry?: ToolRegistryClass;
   /** Schema migration callback (runs before initialize). */
   readonly runMigrations?: (
     allPlugins: ReadonlyArray<PluginLike>,
@@ -531,43 +576,102 @@ export interface PluginWiringConfig {
 /**
  * Create a Layer that registers, initializes, and wires plugins.
  *
- * Declares ConnectionRegistry as a dependency — the type system enforces
- * that connections must be available before plugin datasources can be wired.
- * This replaces the imperative startup sequence in server.ts with type-safe
- * Layer composition where dependency ordering is enforced at the type level.
+ * Declares ConnectionRegistry AND Migration as type-level dependencies — the
+ * compiler enforces that connections are available AND that core schema
+ * migrations have run before any plugin `initialize()`. The Migration edge is
+ * the structural fix for #3741: a plugin's `initialize()` can read a core
+ * (migration-created) table (e.g. the chat adapter's operator-credential
+ * resolver reads `operator_integration_credentials`, mig 0140), so gating plugin
+ * init on Migration at the type level makes the boot race **unrepresentable** —
+ * it can no longer be reintroduced by moving an imperative call.
  *
- * Startup sequence:
- *   register → migrate → initialize → wire datasources → wire actions →
- *   wire context → wire interactions → health check loop → teardown
+ * Startup sequence (server.ts parity):
+ *   register → plugin-schema-migrate → initialize → wire datasources (+dialect
+ *   hints) → wire actions (+tool-shadow check + setPluginTools) → wire MCP tools
+ *   → wire context (+context fragments) → wire interactions → cache backend →
+ *   health-check loop → teardown
+ *
+ * Pass the GLOBAL singletons via `createImpl` (`() => plugins`) and the
+ * ConnectionRegistry layer wrapping `() => connections` — the rest of the app
+ * (agent tools, `loadSavedConnections`, warmup, guards) reads those globals, so
+ * wiring into a fresh instance would make plugin datasources invisible.
  */
 export function makeWiredPluginRegistryLive(
   config: PluginWiringConfig,
   createImpl?: () => PluginRegistryClass,
-): Layer.Layer<PluginRegistry, never, ConnectionRegistry> {
+): Layer.Layer<PluginRegistry, Error, ConnectionRegistry | Migration> {
   return Layer.scoped(
     PluginRegistry,
     Effect.gen(function* () {
-      // Dependency: ConnectionRegistry must be provided before wiring.
-      // This is enforced at the type level — the Layer won't compile
-      // without ConnectionRegistry in the provided context.
+      // Dependencies: ConnectionRegistry must be provided before wiring, and
+      // Migration (core schema migrated) before any plugin initialize(). Both
+      // are enforced at the type level — the Layer won't compile without them
+      // in the provided context. `yield* Migration` is the load-bearing #3741
+      // edge: it both orders plugin init after core migrations AND gates on the
+      // outcome below.
       const connRegistry = yield* ConnectionRegistry;
+      const migration = yield* Migration;
+
+      // #3741 outcome gate: if core migrations were ATTEMPTED and FAILED
+      // (`error` set), the core schema is half-applied. A plugin `initialize()`
+      // that reads a migration-created table (e.g. the chat adapter's
+      // operator-credential resolver reads `operator_integration_credentials`,
+      // mig 0140) would run against a missing/partial table. Fail the Layer so
+      // boot aborts and the supervisor restarts (retrying migrations) rather
+      // than initializing plugins against a broken schema and relying on the
+      // resolver's `42P01` carve-out. `migrated: false` with NO `error` means
+      // "no DATABASE_URL" — a legitimate stateless self-host boot — so we gate
+      // on an actual migration failure, not on the bare `migrated` flag. This
+      // mirrors `MigrationGuardLive`'s promote-soft-failure-to-fatal stance.
+      if (migration.error !== undefined) {
+        pluginLog.error(
+          { err: migration.error },
+          "Core schema migrations failed — refusing to initialize plugins against a half-migrated database; aborting startup",
+        );
+        return yield* Effect.fail(
+          new Error(`Core schema migrations failed; plugin init aborted: ${migration.error}`),
+        );
+      }
 
       const impl = yield* createPluginImpl(createImpl);
 
       // --- Registration ---
+      // Aggregate failures (server.ts parity): register every plugin so a
+      // misconfigured `atlas.config.ts` surfaces ALL bad IDs in one boot, then
+      // fail the Layer with the actionable remediation message — rather than
+      // letting the first `register()` throw escape as an opaque Layer defect.
+      const registrationFailures: string[] = [];
       for (const plugin of config.plugins) {
-        impl.register(plugin);
+        try {
+          impl.register(plugin);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          pluginLog.error({ err: msg }, "Plugin registration failed");
+          registrationFailures.push(msg);
+        }
+      }
+      if (registrationFailures.length > 0) {
+        return yield* Effect.fail(
+          new Error(
+            `Aborting startup — ${registrationFailures.length} plugin(s) failed to register. ` +
+              `Fix your atlas.config.ts plugins array. Failures: ${registrationFailures.join("; ")}`,
+          ),
+        );
       }
 
       // --- Schema migrations (before initialize so plugins can use their tables) ---
+      // FATAL on failure (server.ts parity, #3741): a plugin whose schema
+      // didn't apply would `initialize()` against missing tables. Fail the Layer
+      // so `buildAppLayer` fails and the server exits non-zero, rather than
+      // booting a half-migrated plugin.
       if (config.runMigrations) {
         yield* Effect.tryPromise({
           try: () => config.runMigrations!(impl.getAll()),
           catch: (err) => (err instanceof Error ? err.message : String(err)),
         }).pipe(
           Effect.catchAll((errMsg) => {
-            pluginLog.error({ err: errMsg }, "Plugin schema migrations failed");
-            return Effect.void;
+            pluginLog.error({ err: errMsg }, "Plugin schema migrations failed — aborting startup");
+            return Effect.fail(new Error(`Plugin schema migrations failed: ${errMsg}`));
           }),
         );
       }
@@ -613,15 +717,33 @@ export function makeWiredPluginRegistryLive(
       if (dsResult.failed.length > 0) {
         pluginLog.error({ failed: dsResult.failed }, "Some datasource plugins failed to wire");
       }
+      if (dsResult.entityFailures.length > 0) {
+        pluginLog.error({ entityFailures: dsResult.entityFailures }, "Some plugin entities failed to load");
+      }
+      if (dsResult.dialectHints.length > 0) {
+        yield* Effect.tryPromise({
+          try: async () => {
+            const { setDialectHints } = await import("@atlas/api/lib/plugins/tools");
+            setDialectHints(dsResult.dialectHints);
+          },
+          catch: (err) => (err instanceof Error ? err.message : String(err)),
+        }).pipe(
+          Effect.catchAll((errMsg) => {
+            pluginLog.error({ err: errMsg }, "Failed to set plugin dialect hints");
+            return Effect.void;
+          }),
+        );
+      }
 
-      // --- Wire actions ---
+      // --- Wire actions (+ tool-shadow check + setPluginTools) ---
       if (config.toolRegistry) {
+        const toolRegistry = config.toolRegistry;
         const actResult = yield* Effect.tryPromise({
           try: async () => {
             const { wireActionPlugins } = await import(
               "@atlas/api/lib/plugins/wiring"
             );
-            return wireActionPlugins(impl, config.toolRegistry as never);
+            return wireActionPlugins(impl, toolRegistry as never);
           },
           catch: (err) => (err instanceof Error ? err.message : String(err)),
         }).pipe(
@@ -633,9 +755,87 @@ export function makeWiredPluginRegistryLive(
         if (actResult.failed.length > 0) {
           pluginLog.error({ failed: actResult.failed }, "Some action plugins failed to wire");
         }
+
+        // #3326 — surface plugin tools silently shadowed by a same-named core
+        // (or action) tool, then freeze + publish the plugin tool registry.
+        // The base mirrors what chat.ts merges against: the action-augmented
+        // registry when ATLAS_ACTIONS_ENABLED, else defaultRegistry. (server.ts
+        // parity — moved verbatim into the wired layer.)
+        if (toolRegistry.size > 0) {
+          yield* Effect.tryPromise({
+            try: async () => {
+              const {
+                ToolRegistry,
+                defaultRegistry,
+                buildRegistry,
+                INTENTIONAL_TOOL_SHADOWS,
+                TOOL_SHADOW_REMEDIATIONS,
+              } = await import("@atlas/api/lib/tools/registry");
+              let shadowBase = defaultRegistry;
+              if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
+                try {
+                  const { registry } = await buildRegistry({ includeActions: true });
+                  shadowBase = registry;
+                } catch (err) {
+                  pluginLog.warn(
+                    { err: err instanceof Error ? err.message : String(err) },
+                    "Tool-shadow check: buildRegistry failed — checking against core tools only",
+                  );
+                }
+              }
+              for (const name of ToolRegistry.shadowedNames(shadowBase, toolRegistry)) {
+                if (INTENTIONAL_TOOL_SHADOWS.has(name)) continue;
+                const remediation = TOOL_SHADOW_REMEDIATIONS[name];
+                pluginLog.error(
+                  { tool: name },
+                  `Plugin tool "${name}" is shadowed by a core tool with the same name — the core tool takes precedence and the plugin tool will never run.${remediation ? ` ${remediation}` : ""}`,
+                );
+              }
+              toolRegistry.freeze();
+              const { setPluginTools } = await import("@atlas/api/lib/plugins/tools");
+              setPluginTools(toolRegistry);
+            },
+            catch: (err) => (err instanceof Error ? err.message : String(err)),
+          }).pipe(
+            Effect.catchAll((errMsg) => {
+              pluginLog.error({ err: errMsg }, "Tool-shadow check / setPluginTools failed");
+              return Effect.void;
+            }),
+          );
+        }
       }
 
-      // --- Wire context ---
+      // --- Wire MCP tools (#2078) ---
+      // Collect plugin MCP tools into the global registry the in-process SSE /
+      // hosted MCP server reads at boot. Non-fatal. (server.ts parity.)
+      const mcpToolResult = yield* Effect.tryPromise({
+        try: async () => {
+          const { wireMcpToolPlugins, pluginMcpToolRegistry } = await import(
+            "@atlas/api/lib/plugins/mcp-tools"
+          );
+          return wireMcpToolPlugins(impl, pluginMcpToolRegistry);
+        },
+        catch: (err) => (err instanceof Error ? err.message : String(err)),
+      }).pipe(
+        Effect.catchAll((errMsg) => {
+          pluginLog.error({ err: errMsg }, "Plugin MCP tool wiring failed entirely");
+          return Effect.succeed({
+            wired: [] as Array<{ pluginId: string; qualifiedName: string }>,
+            failed: [] as Array<{ pluginId: string; tool?: string; error: string }>,
+          });
+        }),
+      );
+      if (mcpToolResult.failed.length > 0) {
+        pluginLog.error({ failed: mcpToolResult.failed }, "Some plugin MCP tools failed to register");
+      }
+      if (mcpToolResult.wired.length > 0) {
+        pluginLog.info(
+          { count: mcpToolResult.wired.length },
+          `Plugin MCP tools registered (${mcpToolResult.wired.length})`,
+        );
+      }
+
+      // --- Wire context (+ context fragments) ---
       const ctxResult = yield* Effect.tryPromise({
         try: async () => {
           const { wireContextPlugins } = await import(
@@ -652,6 +852,20 @@ export function makeWiredPluginRegistryLive(
       );
       if (ctxResult.failed.length > 0) {
         pluginLog.error({ failed: ctxResult.failed }, "Some context plugins failed to load");
+      }
+      if (ctxResult.fragments.length > 0) {
+        yield* Effect.tryPromise({
+          try: async () => {
+            const { setContextFragments } = await import("@atlas/api/lib/plugins/tools");
+            setContextFragments(ctxResult.fragments);
+          },
+          catch: (err) => (err instanceof Error ? err.message : String(err)),
+        }).pipe(
+          Effect.catchAll((errMsg) => {
+            pluginLog.error({ err: errMsg }, "Failed to set plugin context fragments");
+            return Effect.void;
+          }),
+        );
       }
 
       // --- Wire interaction routes ---
@@ -674,6 +888,32 @@ export function makeWiredPluginRegistryLive(
           pluginLog.error({ failed: intResult.failed }, "Some interaction plugins failed to wire");
         }
       }
+
+      // --- Wire plugin cache backend (first plugin that provides one) ---
+      // server.ts parity. Non-fatal: a failure falls back to the in-memory LRU.
+      yield* Effect.tryPromise({
+        try: async () => {
+          for (const plugin of impl.getAll()) {
+            if (plugin.cacheBackend) {
+              const { setCacheBackend } = await import("@atlas/api/lib/cache/index");
+              setCacheBackend(
+                plugin.cacheBackend as import("@atlas/api/lib/cache/index").CacheBackend,
+              );
+              pluginLog.info({ pluginId: plugin.id }, "Plugin-provided cache backend registered");
+              break;
+            }
+          }
+        },
+        catch: (err) => (err instanceof Error ? err.message : String(err)),
+      }).pipe(
+        Effect.catchAll((errMsg) => {
+          pluginLog.error(
+            { err: errMsg },
+            "Failed to wire plugin cache backend — falling back to in-memory LRU",
+          );
+          return Effect.void;
+        }),
+      );
 
       return yield* buildPluginService(impl);
     }),

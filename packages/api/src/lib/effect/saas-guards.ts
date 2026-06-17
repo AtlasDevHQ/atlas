@@ -87,7 +87,8 @@
 
 import { Data, Effect, Layer } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { Config, Migration, Settings } from "./layers";
+import { Config, Settings } from "./layers";
+import { Migration, PluginRegistry } from "./services";
 import { readSaasEnv, type SaasEnv } from "./saas-env";
 
 const log = createLogger("effect:saas-guards");
@@ -907,9 +908,17 @@ function isStrictPluginMode(env: SaasEnv): boolean {
  * `InternalDbGuardLive` in SaaS, and self-hosted may legitimately run
  * without persisted plugin configs.
  */
-export const PluginConfigGuardLive: Layer.Layer<never, PluginConfigStaleError | PluginConfigCheckFailedError, Config> = Layer.effectDiscard(
+export const PluginConfigGuardLive: Layer.Layer<never, PluginConfigStaleError | PluginConfigCheckFailedError, Config | PluginRegistry> = Layer.effectDiscard(
   Effect.gen(function* () {
     yield* Config;
+    // #3743 — ordering barrier: this guard validates stored plugin configs
+    // against each plugin's `getConfigSchema()`, so it must run AFTER the wired
+    // plugin layer registers plugins into the global registry. In the pre-#3743
+    // imperative boot plugins were registered before `buildAppLayer`; now the
+    // wired layer is part of the DAG, so this edge prevents the guard from
+    // racing registration and validating against an empty registry. Value
+    // unused — the dependency ordering is the point.
+    yield* PluginRegistry;
     const env = readSaasEnv();
 
     // The inner async function catches every synchronous throw and the

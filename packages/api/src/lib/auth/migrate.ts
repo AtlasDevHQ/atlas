@@ -22,6 +22,7 @@ const log = createLogger("auth-migrate");
 
 let _migrated = false;
 let _bootMigrated = false;
+let _bootstrapped = false;
 let _migrationError: string | null = null;
 
 /** Return the last migration error message, or null if migrations succeeded (or haven't run). */
@@ -123,12 +124,34 @@ export async function runBootMigrations(): Promise<void> {
 export async function migrateAuthTables(): Promise<void> {
   if (_migrated) return;
 
-  // 1 + 2 — schema migrations. Idempotent: a no-op if the server entry point
-  // already ran them before plugin init (#3741).
+  // 1 + 2 — schema migrations. Idempotent: a no-op if `runBootMigrations` was
+  // already run (e.g. by `MigrationLive`).
   await runBootMigrations();
 
-  // 3. Load post-migration DB state. Kept here (not in `runBootMigrations`) so
-  //    its ordering relative to plugin wiring is unchanged.
+  // 3 + 4 — post-schema bootstrap (plugin settings, abuse state, admin/seed).
+  await runPostMigrationBootstrap();
+
+  _migrated = true;
+}
+
+/**
+ * Post-schema boot bootstrap: load plugin settings, restore abuse state, then
+ * (managed mode) bootstrap the admin user, seed the dev user, and backfill the
+ * password-change flag.
+ *
+ * Split out of `migrateAuthTables` (#3743) so the boot DAG can run it as its
+ * OWN layer (`AuthBootstrapLive`) AFTER plugin wiring — `loadPluginSettings`
+ * calls `registry.disable()`, and wiring's `getByType` filters on `enabled`, so
+ * this step MUST run after plugins are registered+wired to preserve the
+ * established order. Separately idempotent (`_bootstrapped`) so the DAG layer
+ * and the composed `migrateAuthTables` (tests / non-DAG callers) never
+ * double-run it.
+ */
+export async function runPostMigrationBootstrap(): Promise<void> {
+  if (_bootstrapped) return;
+  _bootstrapped = true;
+
+  // 3. Load post-migration DB state.
   if (hasInternalDB()) {
 
     // Load plugin settings (enabled/disabled state from DB)
@@ -192,8 +215,6 @@ export async function migrateAuthTables(): Promise<void> {
       );
     }
   }
-
-  _migrated = true;
 }
 
 async function getAuthInstanceLazy() {
@@ -475,5 +496,6 @@ async function backfillPasswordChangeFlag(): Promise<void> {
 export function resetMigrationState(): void {
   _migrated = false;
   _bootMigrated = false;
+  _bootstrapped = false;
   _migrationError = null;
 }

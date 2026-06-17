@@ -7,9 +7,27 @@
  */
 
 import { getApprovedPatterns, type ApprovedPatternRow } from "@atlas/api/lib/db/internal";
-import { getSettingAuto } from "@atlas/api/lib/settings";
 import { createLogger } from "@atlas/api/lib/logger";
 import { renderPattern } from "./pattern-format";
+import {
+  DEFAULT_RETRIEVAL_TURNS,
+  DEFAULT_LATENCY_BUDGET_MS,
+  getRetrievalTurns,
+  getConfidenceThreshold,
+  getLatencyBudgetMs,
+} from "./learn-settings";
+
+// All ATLAS_LEARN_* reads now live in the single learn-settings resolver
+// (#3722). Re-export the retrieval knobs from this module's public surface so
+// existing consumers (agent.ts) and the test mocks that import them from
+// pattern-cache keep working unchanged.
+export {
+  DEFAULT_RETRIEVAL_TURNS,
+  DEFAULT_LATENCY_BUDGET_MS,
+  getRetrievalTurns,
+  getConfidenceThreshold,
+  getLatencyBudgetMs,
+};
 
 const log = createLogger("pattern-cache");
 
@@ -132,9 +150,6 @@ const STOP_WORDS = new Set([
 // Retrieval-query assembly
 // ---------------------------------------------------------------------------
 
-/** Default number of trailing user turns assembled into the retrieval query. */
-export const DEFAULT_RETRIEVAL_TURNS = 3;
-
 /**
  * Minimal structural shape of a conversation message needed to assemble the
  * retrieval query. Compatible with the AI SDK's `UIMessage` so callers can
@@ -193,54 +208,6 @@ export function buildRetrievalQuery(
   // Reverse to chronological order; order is irrelevant to keyword extraction
   // but keeps the query readable in logs.
   return collected.reverse().join(" ").trim();
-}
-
-/**
- * Resolve the retrieval-turn count for an org, falling back to the default.
- *
- * Read from the settings registry (`getSettingAuto`) so the value is tunable
- * per-workspace at runtime via Admin → Settings and hot-reloaded in SaaS —
- * `workspace override > platform override > env var > default`. The env var is
- * only the self-host fallback tier.
- */
-export function getRetrievalTurns(orgId?: string | null): number {
-  const raw = getSettingAuto("ATLAS_LEARN_RETRIEVAL_TURNS", orgId ?? undefined);
-  const parsed = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
-  return Number.isInteger(parsed) && parsed >= 1 ? parsed : DEFAULT_RETRIEVAL_TURNS;
-}
-
-/** Default minimum confidence for a learned pattern to be eligible. */
-const DEFAULT_CONFIDENCE_THRESHOLD = 0.7;
-
-/**
- * Resolve the pattern confidence threshold for an org, falling back to the
- * default. Workspace-scoped settings-registry read (see {@link getRetrievalTurns}).
- */
-export function getConfidenceThreshold(orgId?: string | null): number {
-  const raw = getSettingAuto("ATLAS_LEARN_CONFIDENCE_THRESHOLD", orgId ?? undefined);
-  const parsed = raw === undefined ? Number.NaN : Number.parseFloat(raw);
-  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : DEFAULT_CONFIDENCE_THRESHOLD;
-}
-
-/**
- * Default latency budget (ms) for perf-weighted retrieval. A pattern whose
- * rolling-mean wall-clock stays at or under this gets no penalty; slower
- * patterns are down-weighted (never excluded). Also the default budget for the
- * nightly auto-promote gate. PRD #3617 B-2.
- */
-export const DEFAULT_LATENCY_BUDGET_MS = 5000;
-
-/**
- * Resolve the latency budget (ms) for an org, falling back to the default.
- * Workspace-scoped settings-registry read (see {@link getRetrievalTurns}); the
- * nightly job reads the same key at platform scope. Non-positive / invalid
- * values fall back to the default rather than disabling the budget, so a typo
- * can't silently turn off down-weighting.
- */
-export function getLatencyBudgetMs(orgId?: string | null): number {
-  const raw = getSettingAuto("ATLAS_LEARN_LATENCY_BUDGET_MS", orgId ?? undefined);
-  const parsed = raw === undefined ? Number.NaN : Number.parseFloat(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_LATENCY_BUDGET_MS;
 }
 
 /** Extract meaningful keywords from a text string. */

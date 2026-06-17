@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.17",
+    title: "Performance-aware Atlas",
+    date: "2026-06-17",
+    summary:
+      "Atlas now treats query performance as a first-class signal in the two subsystems that drive the agent. The semantic layer learns the shape of your data — it harvests index metadata and column cardinality during profiling and feeds composite-aware index hints to the agent, so generated SQL is more likely to be sargable and fast. Learned patterns gain a performance memory too: every saved pattern carries a rolling query-latency average, scoring is weighted toward the patterns that actually run fast, and a nightly job auto-promotes the winners and decays stale ones. Pattern retrieval now understands multi-turn context and pulls in your favorites and approved suggestions. Alongside the agent work, a SaaS-first configuration pass moves operator config out of environment variables into a runtime settings registry — Stripe price IDs, integration credentials, and tuning knobs are now editable from the Admin console without a redeploy, with environment variables reserved for secrets and boot-time inputs.",
+    highlights: [
+      "Index-aware semantic layer — the profiler harvests index metadata (Postgres + MySQL) and surfaces composite-aware index hints to the agent (#3634)",
+      "Column cardinality — unique/null counts flow through the semantic index so the agent knows each column's selectivity (#3630)",
+      "Performance-weighted learned patterns — each pattern carries a rolling latency average; scoring favors fast patterns, with a nightly auto-promote/decay job (#3635, #3636)",
+      "Smarter pattern retrieval — multi-turn question context plus user favorites and approved suggestions feed the agent's organizational-knowledge context (#3632, #3633)",
+      "Sargable-SQL guidance — the agent prompt teaches sargable predicates and fixes a MySQL date-function anti-pattern (#3629)",
+      "SaaS-first config — Stripe price IDs, operator integration credentials, and tuning knobs move from env vars to a runtime, Admin-editable settings registry; no redeploy to change config (#3703, #3704, #3705)",
+    ],
+  },
+  {
     version: "v0.0.16",
     title: "In-Product Datasource Onboarding (Profiler Seam)",
     date: "2026-06-15",

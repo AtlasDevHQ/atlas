@@ -41,13 +41,13 @@ Related learned-pattern bugs folded in: cache-not-invalidated-on-approve ([#3612
 Pre-tag review-findings fixes (8-agent `v0.0.16..HEAD` pass) landed via [#3724](https://github.com/AtlasDevHQ/atlas/pull/3724) — rejected-pattern resurrection, amendment re-apply dedup, `/health` operator-gate, plus real-PG promote/decay + index-harvest coverage. Four deferred learn-subsystem refactors ([#3720](https://github.com/AtlasDevHQ/atlas/issues/3720)–#3723) moved to Architecture Backlog, all now shipped (#3720 → #3726, #3723 → #3725, #3721+#3722 → #3727); the retrieval-module split is recorded as arch-win #97.
 
 **Bundled in — SaaS-first env-var reduction** ([milestone #69](https://github.com/AtlasDevHQ/atlas/milestone/69), umbrella [#3701](https://github.com/AtlasDevHQ/atlas/issues/3701)): make config runtime-controllable so a SaaS operator never redeploys to change it — env reserved for secrets + pre-DB boot inputs. Follows the SaaS-env audit (`docs/development/saas-env-audit.md`). Tier-ordered slices, independently grabbable:
-- [ ] **#3702** (Tier 3) — drop 3 redundant SaaS env vars already covered by `atlas.config.ts` ([#3702](https://github.com/AtlasDevHQ/atlas/issues/3702))
-- [ ] **#3703** (Tier 1) — Stripe price IDs → platform settings (8 env vars → 2) ([#3703](https://github.com/AtlasDevHQ/atlas/issues/3703))
+- [x] **#3702** (Tier 3) — drop 3 redundant SaaS env vars already covered by `atlas.config.ts` ([#3702](https://github.com/AtlasDevHQ/atlas/issues/3702) → [#3730](https://github.com/AtlasDevHQ/atlas/pull/3730))
+- [x] **#3703** (Tier 1) — Stripe price IDs → platform settings (8 env vars → 2) ([#3703](https://github.com/AtlasDevHQ/atlas/issues/3703) → [#3732](https://github.com/AtlasDevHQ/atlas/pull/3732))
 - [ ] **#3704** (Tier 1) — operator integration credentials via Admin instead of boot env ([#3704](https://github.com/AtlasDevHQ/atlas/issues/3704))
 - [ ] **#3705** (Tier 1) — tuning knobs (abuse/TTL/OTEL) → settings registry ([#3705](https://github.com/AtlasDevHQ/atlas/issues/3705))
-- [ ] **#3706** (Tier 2) — non-secret deploy constants → `atlas.config.ts` + derive per-region origins ([#3706](https://github.com/AtlasDevHQ/atlas/issues/3706))
+- [x] **#3706** (Tier 2) — non-secret deploy constants → `atlas.config.ts` + derive per-region origins ([#3706](https://github.com/AtlasDevHQ/atlas/issues/3706) → [#3733](https://github.com/AtlasDevHQ/atlas/pull/3733))
 - [ ] **#3707** (Tier 4) — split `.env.example` + auto-generate the SaaS env reference ([#3707](https://github.com/AtlasDevHQ/atlas/issues/3707))
-- [ ] **#3710** (Tier 4) — document undocumented env vars (SSRF flag + gchat adapter vars) ([#3710](https://github.com/AtlasDevHQ/atlas/issues/3710))
+- [x] **#3710** (Tier 4) — document undocumented env vars (SSRF flag + gchat adapter vars) ([#3710](https://github.com/AtlasDevHQ/atlas/issues/3710) → [#3731](https://github.com/AtlasDevHQ/atlas/pull/3731))
 
 Banked separately toward a later tag: the post-v0.0.16 prod-readiness audit follow-ups (#3679–#3687, under [Planned tags](#planned-tags)) and the www/docs accuracy sweeps (#3677/#3678).
 

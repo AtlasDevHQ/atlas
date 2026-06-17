@@ -839,6 +839,24 @@ export const ADMIN_ACTIONS = {
     markDead: "crm_outbox.mark_dead",
   },
   /**
+   * Operator-tier integration credential mutations (#3735). A platform admin
+   * sets/rotates Atlas's OWN integration app registrations (Slack OAuth app,
+   * etc.) from the Admin console instead of a Railway redeploy. `update`
+   * covers the PUT upsert; `delete` reverts the platform to the env fallback.
+   * Scope is always `platform` — these are operator-shared across every
+   * workspace, not tenant-scoped. The raw secret NEVER lands in metadata:
+   * `hasSecret: true` is the load-bearing marker that a credential was
+   * supplied (same convention as `email_provider.*` / `model_config.*`).
+   * `fieldsSet` lists the env-var NAMES written (never values) so a reviewer
+   * can see which key rotated — the threat is a silent swap of Atlas's app
+   * credentials (e.g. pointing the Slack OAuth app at an attacker-controlled
+   * client secret) with no forensic trail.
+   */
+  operator_integration: {
+    update: "operator_integration.update",
+    delete: "operator_integration.delete",
+  },
+  /**
    * MCP action policy — the per-workspace customer-admin kill-switch (#3509,
    * ADR-0016 gate 1). `update` is emitted when a workspace admin toggles a
    * category between `allowed` / `blocked`. Workspace scope, target id is the

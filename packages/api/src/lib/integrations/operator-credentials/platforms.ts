@@ -40,6 +40,16 @@ export interface OperatorCredentialField {
    * platform as "configured" only when every required field resolves.
    */
   readonly required: boolean;
+  /**
+   * Whether ROTATING this field is destructive — i.e. changing it
+   * invalidates data already encrypted/derived with the old value, forcing
+   * downstream re-authorization. Surfaced to the Admin UI so it can warn
+   * before a write (e.g. Slack's `SLACK_ENCRYPTION_KEY` encrypts stored bot
+   * tokens; rotating it makes every workspace re-authorize). Generic so a
+   * future platform's destructive key lights up the same warning with no
+   * UI change. Absent ⇒ non-destructive rotation.
+   */
+  readonly destructiveRotation?: boolean;
 }
 
 /** An operator-tier platform managed by the Admin credential surface. */
@@ -107,6 +117,7 @@ const SLACK_PLATFORM: OperatorPlatformSpec = {
       hint: "AES-256-GCM key for stored bot tokens. ⚠ Rotating it forces every workspace to re-authorize Slack.",
       secret: true,
       required: true,
+      destructiveRotation: true,
     },
   ],
 };

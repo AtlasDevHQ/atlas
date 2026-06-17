@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { resolveAdapterBuildEnv } from "./index";
-import type { ChatPluginConfig } from "./config";
+import { ChatConfigSchema, type ChatPluginConfig } from "./config";
 
 const noopLogger = {
   info: () => {},
@@ -84,5 +84,25 @@ describe("resolveAdapterBuildEnv", () => {
       throw new Error("decrypt failed");
     });
     await expect(resolveAdapterBuildEnv(cfg(boom), noopLogger)).rejects.toThrow(/decrypt failed/);
+  });
+});
+
+describe("ChatConfigSchema accepts resolveAdapterEnv", () => {
+  // Regression for the #3704 boot crash: `resolveAdapterEnv` was on the
+  // ChatPluginConfig TS interface + wired in atlas.config.ts, but missing
+  // from the `.strict()` Zod schema, so config load rejected the key and the
+  // API crashed before binding HTTP (caught only by Boot Smoke). These tests
+  // exercise the schema directly — the path the TS-typed unit tests bypass.
+  it("validates a config carrying resolveAdapterEnv", () => {
+    const result = ChatConfigSchema.safeParse({
+      executeQuery: async () => ({}),
+      resolveAdapterEnv: async () => ({ SLACK_SIGNING_SECRET: "x" }),
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("still validates a config omitting it (optional)", () => {
+    const result = ChatConfigSchema.safeParse({ executeQuery: async () => ({}) });
+    expect(result.success).toBe(true);
   });
 });

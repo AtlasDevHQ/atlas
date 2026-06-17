@@ -1065,6 +1065,13 @@ export const ChatConfigSchema = z.object({
   executeQueryStream: zCallback<NonNullable<ChatPluginConfig["executeQueryStream"]>>(
     "executeQueryStream must be a function",
   ).optional(),
+  // #3704 — operator-tier credential resolver overlay. Optional async
+  // callback; the host (`@atlas/api`) wires it to the operator-credentials
+  // resolver. Must be in this `.strict()` schema or config load rejects the
+  // key and boot crashes before HTTP binds (caught by Boot Smoke).
+  resolveAdapterEnv: zCallback<NonNullable<ChatPluginConfig["resolveAdapterEnv"]>>(
+    "resolveAdapterEnv must be a function returning Promise<Record<string, string | undefined>>",
+  ).optional(),
 }).strict().refine(
   (c) => {
     // Warn if streaming.enabled is explicitly true but executeQueryStream is missing

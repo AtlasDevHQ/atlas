@@ -86,6 +86,12 @@ jobs:
       - name: Check Drizzle schema ↔ migration drift
         run: bash scripts/check-schema-drift.sh
 
+      - name: Check migration rename/drop discipline (expand-contract, #3686)
+        run: bash scripts/check-migration-rename-discipline.sh
+
+      - name: Adversarial fixtures for the migration-rename-discipline gate (#3686)
+        run: bash scripts/__tests__/check-migration-rename-discipline.test.sh
+
       - name: Check vendored @atlas/oauth-helper ↔ canonical drift
         run: bash scripts/check-oauth-helper-drift.sh
 

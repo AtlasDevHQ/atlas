@@ -28,6 +28,10 @@ drift check does not confirm either.
 > and *dropped* in release N+1. Never drop in the same release that removes the
 > last reader, once a paying customer is live.
 
+> Single-phase `RENAME COLUMN` / `DROP COLUMN` in a *new* migration is
+> CI-enforced against by [`check-migration-rename-discipline.sh`](#ci-guard--check-migration-rename-disciplinesh-3686)
+> (#3686). See also the [launch-readiness checklist](#launch-readiness-checklist-pre-v010).
+
 ### Why — the N-1 ↔ N deploy-overlap window
 
 Migrations are safe *within* a container, but a deploy is not atomic across
@@ -98,3 +102,43 @@ same-release "remove reads + drop" is acceptable today — but call it out as a
 *deliberate* exception in the migration header (state that the overlap is
 empty because there are no customers yet), not a default. Once live, default to
 the two-phase split.
+
+## CI guard — `check-migration-rename-discipline.sh` (#3686)
+
+`scripts/check-migration-rename-discipline.sh` (in `/ci`) enforces this
+discipline mechanically so the pattern can't recur. It diffs the migrations
+*added* on the branch vs the base ref (`git diff --diff-filter=A`) and **fails**
+when a newly-added migration contains a single-phase `RENAME COLUMN` or
+`DROP COLUMN` (including the `DO $$ … $$` and bare `ALTER TABLE … RENAME a TO b`
+spellings). It scans **only added files**, so pre-existing migrations — notably
+`0133_approval_origin_rename.sql`, the authorized pre-customer clean-break — are
+exempt by construction; no allowlist is needed.
+
+When a `DROP COLUMN` is genuinely deploy-safe — the N+1 contract phase of a
+documented two-phase drop, an explicitly-authorized pre-launch clean-break, or a
+table that is not live-written — declare it in the migration with a **justified**
+marker comment:
+
+```sql
+-- expand-contract: N+1 contract drop; reads/writes removed in <release/PR> (#xxxx)
+ALTER TABLE foo DROP COLUMN bar;
+```
+
+A bare `-- expand-contract:` with no justification does not exempt anything —
+the marker forces the deploy-safety rationale into the migration header, which
+is the whole point. The marker suppresses **`DROP COLUMN` only**: a `RENAME
+COLUMN` in the same migration still fails the guard, because a rename is
+inherently single-phase and has no deploy-safe form. Replace it with
+add-new-column + dual-write + backfill + two-phase-drop.
+
+## Launch-readiness checklist (pre-`v0.1.0`)
+
+The `v0.0.x` train runs under the pre-customer clean-break exception above.
+Before the **`v0.1.0` public launch** ([#2919](https://github.com/AtlasDevHQ/atlas/issues/2919)),
+confirm:
+
+- [ ] **Expand-contract is the only column-rename/-drop path on live-written
+  tables.** No single-phase `RENAME COLUMN` / `DROP COLUMN` in a new migration —
+  CI-enforced by `scripts/check-migration-rename-discipline.sh`. Any
+  `-- expand-contract:` escape-hatch usage on `main` has a real two-phase
+  sequence (or non-live-table justification) behind it, not a rubber-stamp.

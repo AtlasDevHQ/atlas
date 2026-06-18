@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.18",
+    title: "Production Hardening II",
+    date: "2026-06-18",
+    summary:
+      "A reliability pass that drains the remaining deferred findings from the post-v0.0.16 production-readiness audit, focused on the operations that have to survive failure cleanly. Uninstalling a plugin now fully tears down everything it owned — scheduled tasks, external webhooks, and dedicated credentials — instead of orphaning them, and canceling a workspace's Stripe subscription is made durable through a cancel-and-reconcile outbox, so a deleted or purged workspace can never strand a live, billable subscription. The profiler and Stripe webhook paths gain OpenTelemetry spans for production observability, and a set of operational guardrails verify region-scheduler intent, MCP boot coherence, and production config floors at startup. The release also bakes the database expand-contract discipline into CI: a guard now rejects any new migration that does a single-phase column rename or drop, ahead of the public launch.",
+    highlights: [
+      "Complete plugin-uninstall teardown — catalog, marketplace, and datasource uninstall paths now clean up scheduled tasks, external webhooks, and dedicated credentials (#3681)",
+      "Durable Stripe teardown — a cancel outbox plus a reconciliation sweep guarantee a deleted/purged workspace's subscription is actually canceled, never left live (#3679)",
+      "Production observability — OpenTelemetry spans added to the profiler seam and Stripe webhook processing (#3684)",
+      "Operational verifications — EU/APAC scheduler-disabled intent, an MCP-spine boot-coherence guard, and production config-floor warnings (#3687)",
+      "Expand-contract migration guard — CI rejects any new single-phase column rename or drop, enforcing the two-phase discipline ahead of the public launch (#3686)",
+      "First-boot race fixed — plugin initialization no longer races ahead of internal-DB migrations on a fresh boot (#3741, #3743)",
+    ],
+  },
+  {
     version: "v0.0.17",
     title: "Performance-aware Atlas",
     date: "2026-06-17",

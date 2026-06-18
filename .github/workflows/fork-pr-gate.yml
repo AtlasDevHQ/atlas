@@ -1,0 +1,68 @@
+name: Fork PR Gate
+
+# Makes external fork PRs a visible, human-gated event.
+#
+# Why this exists: CodeQL default setup (the required `Analyze (javascript-typescript)`
+# check) structurally cannot run on PRs from forks, so a fork PR always shows that
+# gate as "missing". Under the repo's merge discipline that reads as a "broken
+# required check" and invites an `--admin` override — which is exactly how an
+# unreviewed external fork PR (#3772) reached `main`. This gate replaces that
+# ambiguity with an explicit, machine-enforced stop: a fork PR cannot go green
+# until a human applies the `external-approved` label.
+#
+# Security: triggered via `pull_request_target` so it has base-repo write access
+# (needed to label fork PRs), but it NEVER checks out or executes PR/fork code —
+# it only reads event metadata and sets a label + status. Do not add a checkout
+# of the PR head to this workflow.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  pull-requests: write
+  statuses: write
+  contents: read
+
+concurrency:
+  group: fork-pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  fork-pr-gate:
+    name: fork-pr-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate fork provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_LOGIN: ${{ github.event.pull_request.user.login }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [ "$IS_FORK" != "true" ]; then
+            echo "Same-repo PR (head: $HEAD_REPO). Fork gate not applicable — passing."
+            exit 0
+          fi
+
+          echo "::warning title=External fork PR::PR #$PR_NUMBER is from fork $HEAD_REPO by @$HEAD_LOGIN."
+
+          # Ensure the tracking label is present so fork PRs are searchable
+          # (gh pr list --label external-fork) and visually obvious in the UI.
+          if ! echo "$LABELS" | grep -q '"external-fork"'; then
+            gh pr edit "$PR_NUMBER" -R "$REPO" --add-label "external-fork" || true
+          fi
+
+          if echo "$LABELS" | grep -q '"external-approved"'; then
+            echo "external-approved present — a maintainer has signed off. Passing."
+            exit 0
+          fi
+
+          echo "::error title=External fork PR not approved::This PR is from an external fork (@$HEAD_LOGIN). A maintainer must review the diff and apply the 'external-approved' label before it can merge. Do NOT --admin past this gate — it is a deliberate human checkpoint, not a broken check."
+          exit 1

@@ -64,8 +64,8 @@ const log = createLogger("well-known");
  * Three sites must derive the same value:
  *   - `well-known.ts` (here) — advertised in the protected-resource doc
  *   - `hosted.ts:resourceAudience()` — passed to `verifyAccessToken`
- *   - `server.ts:resolveOAuthValidAudiences()` — added to the issuer's
- *     `validAudiences` allow-list so the token endpoint accepts it
+ *   - `oauth-audiences.ts:resolveOAuthValidAudiences()` — added to the
+ *     issuer's `validAudiences` allow-list so the token endpoint accepts it
  *
  * Resolution priority is identical across all three:
  *   1. ATLAS_PUBLIC_API_URL (per-region API host, e.g.

@@ -384,10 +384,20 @@ export class BillingConfigInvalidError extends Data.TaggedError("BillingConfigIn
  * surfaces the misconfig before any HTTP listener starts. The companion
  * `mcp_action_policy` store reachability check is a boot WARNING (not a boot
  * failure) — see `McpSpineGuardLive` for why that half is warn-only. Self-hosted
- * never constructs this — hosted MCP is a SaaS surface and self-host runs stdio
- * MCP, which uses neither spine component.
+ * never constructs this — the guard only *enforces* spine coherence in SaaS,
+ * where hosted MCP is always mounted and the audience set is operator-critical.
+ * (A self-hoster who opts into hosted MCP on their own host owns their audience
+ * config; the guard deliberately doesn't police that surface.)
+ *
+ * Carries a `check` discriminant + `resolvedAudienceCount` (mirrors the
+ * structured-field convention of `BillingConfigInvalidError` above) so the
+ * boot-failure log and tests are actionable without re-parsing `message`. Only
+ * `check: "audiences"` is constructed today; the field leaves room for a future
+ * check to fail-boot under the same tag.
  */
 export class McpSpineIncoherentError extends Data.TaggedError("McpSpineIncoherentError")<{
+  readonly check: "audiences";
+  readonly resolvedAudienceCount: number;
   readonly message: string;
 }> {}
 
@@ -1463,8 +1473,10 @@ export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidErro
  * **MCP-enabled predicate.** Hosted MCP is mounted UNCONDITIONALLY on every SaaS
  * api instance (`api/index.ts` mounts `/mcp/{workspace_id}/sse` with no toggle),
  * so `deployMode === "saas"` IS the "MCP is exposed" gate — there is no separate
- * enable flag to consult. Self-hosted runs stdio MCP, which uses neither the
- * OAuth audience set nor the hosted policy store, so it skips entirely.
+ * enable flag to consult. The guard only *enforces* spine coherence in SaaS and
+ * skips self-hosted entirely: a self-hoster who opts into hosted MCP on their own
+ * host owns their audience/policy config, and the common self-host path is stdio
+ * MCP, which uses neither spine component.
  *
  * Depends on `Config` + `Migration` (`mcp_action_policy` is created by migration
  * 0134; the `Migration` edge mirrors `ChatAdapterEnvGuardLive` so the table
@@ -1492,6 +1504,8 @@ export const McpSpineGuardLive: Layer.Layer<never, McpSpineIncoherentError, Conf
     if (audiences.length === 0) {
       return yield* Effect.fail(
         new McpSpineIncoherentError({
+          check: "audiences",
+          resolvedAudienceCount: audiences.length,
           message:
             `SaaS region exposes hosted MCP but no OAuth valid-audiences are derivable — ` +
             `resolveOAuthValidAudiences() returned an empty list because neither ` +

@@ -117,8 +117,15 @@ function getRpmLimit(orgId?: string): number {
  * warn decision is unit-testable without mocking the logger or config singleton.
  * `0 < n < 5` only — `n <= 0` is already handled (it falls back to the derived
  * default), and self-hosted operators may legitimately pin a tiny ceiling.
+ *
+ * `deployMode` is typed as the exact domain of `getConfig()?.deployMode` (its
+ * sole caller) so a typo'd literal is a compile error rather than a silent
+ * false-negative on this warn path.
  */
-export function isLowSaasChatRpm(n: number, deployMode: string | undefined): boolean {
+export function isLowSaasChatRpm(
+  n: number,
+  deployMode: "saas" | "self-hosted" | undefined,
+): boolean {
   return deployMode === "saas" && Number.isFinite(n) && n > 0 && n < 5;
 }
 

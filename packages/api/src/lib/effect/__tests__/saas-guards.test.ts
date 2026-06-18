@@ -1923,6 +1923,10 @@ describe("McpSpineGuardLive", () => {
       const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
       expect(failure).toBeInstanceOf(McpSpineIncoherentError);
       expect((failure as TMcpSpineIncoherentError)._tag).toBe("McpSpineIncoherentError");
+      // Assert on structure (the discriminant + count), not just prose, so a
+      // copy edit can't silently weaken the test.
+      expect((failure as TMcpSpineIncoherentError).check).toBe("audiences");
+      expect((failure as TMcpSpineIncoherentError).resolvedAudienceCount).toBe(0);
       expect((failure as TMcpSpineIncoherentError).message).toContain("audience");
       expect((failure as TMcpSpineIncoherentError).message).toContain("#3687");
     });
@@ -1936,20 +1940,25 @@ describe("McpSpineGuardLive", () => {
       // A live-DB-probe failure must NOT wedge boot (runtime is already
       // fail-closed) — it surfaces as a loud, event-tagged warning instead.
       expect(Exit.isSuccess(exit)).toBe(true);
-      const warned = capturedLogWarns.some(
+      const warn = capturedLogWarns.find(
         (w) =>
           typeof w.obj === "object" &&
           w.obj !== null &&
           (w.obj as { event?: string }).event === "mcp_spine.policy_store_unreachable",
       );
-      expect(warned).toBe(true);
+      expect(warn).toBeDefined();
+      // The underlying cause must ride along on the warn — it's the
+      // operator-actionable part of the signal, not just the event tag.
+      const cause = (warn?.obj as { err?: unknown }).err;
+      expect(cause).toBeInstanceOf(Error);
+      expect((cause as Error).message).toContain("mcp_action_policy");
     });
   });
 
   test("skips entirely on self-hosted (no audiences, policy store throwing)", async () => {
     await withMcpEnv(async () => {
       // Worst-case inputs that WOULD fail in SaaS — self-hosted must ignore them
-      // because hosted MCP is a SaaS-only surface.
+      // because the guard only enforces spine coherence in SaaS.
       mockPolicyStoreThrows = true;
       const exit = await runMcpGuard("self-hosted");
       expect(Exit.isSuccess(exit)).toBe(true);

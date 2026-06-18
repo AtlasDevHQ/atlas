@@ -232,6 +232,7 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   expert_scheduler: "atlas.scheduler.expert_scheduler",
   promote_decay: "atlas.scheduler.promote_decay",
   billing_reconcile: "atlas.scheduler.billing_reconcile",
+  stripe_teardown_sweep: "atlas.scheduler.stripe_teardown_sweep",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1708,6 +1709,77 @@ export function makeSchedulerLive(
       } else {
         log.debug(
           "Plan-tier reconciliation sweep not started — Stripe billing or internal DB not configured",
+        );
+      }
+
+      // ── Periodic fiber: Stripe teardown outbox sweep (#3679) ────────
+      // Symmetric counterpart to the plan-tier reconcile above: drains the
+      // `stripe_teardown_pending` outbox, retrying the subscription-cancel /
+      // customer-delete ops a Stripe outage stranded during workspace
+      // delete/purge until success or `resource_missing`. Unlike the
+      // plan-tier sweep it does NOT need the webhook secret — only
+      // `STRIPE_SECRET_KEY` (to act on Stripe) + an internal DB (to hold the
+      // outbox). The `yield* Migration` barrier above already sequences this
+      // after `MigrationLive`, so the eager boot tick can't race migration
+      // 0141 creating the table.
+      const teardownSweepEnabled = yield* Effect.try({
+        try: () => {
+          if (!process.env.STRIPE_SECRET_KEY) return false;
+          // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+          const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+            hasInternalDB: () => boolean;
+          };
+          return hasInternalDB();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.debug({ err: errorMessage(err) }, "Stripe teardown sweep gate check failed — skipping");
+            return false;
+          }),
+        ),
+      );
+
+      if (teardownSweepEnabled) {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as orphan_task_reconcile)
+        const { STRIPE_TEARDOWN_SWEEP_INTERVAL_MS } = require("@atlas/api/lib/billing/reconcile-stripe-teardown") as {
+          STRIPE_TEARDOWN_SWEEP_INTERVAL_MS: number;
+        };
+        const teardownSweepTick = Effect.tryPromise({
+          try: async () => {
+            const { sweepStripeTeardownPending } = await import(
+              "@atlas/api/lib/billing/reconcile-stripe-teardown"
+            );
+            await sweepStripeTeardownPending();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              log.warn(
+                { err: errorMessage(err) },
+                "Stripe teardown sweep tick failed — will retry next interval",
+              );
+            }),
+          ),
+        );
+        // forkScoped, not fork — see SettingsLive for rationale.
+        yield* Effect.forkScoped(
+          withFiberDeathLog(
+            "stripe_teardown_sweep",
+            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.stripe_teardown_sweep, {}, teardownSweepTick).pipe(
+              Effect.repeat(Schedule.spaced(Duration.millis(STRIPE_TEARDOWN_SWEEP_INTERVAL_MS))),
+            ),
+          ),
+        );
+        log.info(
+          { intervalMs: STRIPE_TEARDOWN_SWEEP_INTERVAL_MS },
+          "Stripe teardown outbox sweep started",
+        );
+      } else {
+        log.debug(
+          "Stripe teardown outbox sweep not started — Stripe or internal DB not configured",
         );
       }
 

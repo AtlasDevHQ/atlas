@@ -70,6 +70,17 @@ const customersDel: Mock<(id: string) => Promise<unknown>> = mock(async (id: str
   return { id, deleted: true };
 });
 
+/** Live Stripe subscriptions returned by `subscriptions.list` per customer id
+ *  for drift detection (#3679). Default empty — only drift tests populate it. */
+let liveStripeSubs: Record<string, { id: string; status: string; customer?: string }[]> = {};
+const subscriptionsList: Mock<(params: Record<string, unknown>) => Promise<unknown>> = mock(
+  async (params: Record<string, unknown>) => {
+    callOrder.push(`subscriptions.list:${String(params.customer)}`);
+    const subs = liveStripeSubs[String(params.customer)] ?? [];
+    return { data: subs, has_more: false };
+  },
+);
+
 /** Open invoices returned by `invoices.list` per subscription id (#3467). */
 let openInvoices: Record<string, string[]> = {};
 
@@ -88,7 +99,7 @@ const invoicesVoid: Mock<(id: string) => Promise<unknown>> = mock(async (id: str
 let stripeAvailable = true;
 function makeStripeStub() {
   return {
-    subscriptions: { cancel: subscriptionsCancel, update: subscriptionsUpdate },
+    subscriptions: { cancel: subscriptionsCancel, update: subscriptionsUpdate, list: subscriptionsList },
     customers: { del: customersDel },
     invoices: { list: invoicesList, voidInvoice: invoicesVoid },
   };
@@ -105,6 +116,48 @@ const {
   pauseStripeCollectionForWorkspace,
   resumeStripeCollectionForWorkspace,
 } = await import("../workspace-teardown");
+
+/** Rows captured by the outbox INSERT — pins durable persistence (#3679). */
+interface EnqueuedOp {
+  workspaceId: string;
+  op: string;
+  stripeSubId: string | null;
+  stripeCustomerId: string | null;
+  lastError: string | null;
+}
+
+/**
+ * Route `mockInternalQuery` so `FROM subscription` returns `rows` and the
+ * outbox INSERTs are captured into `enqueued`. Returns the capture array.
+ */
+function captureOutbox(rows: Record<string, unknown>[]): EnqueuedOp[] {
+  const enqueued: EnqueuedOp[] = [];
+  mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+    if (sql.includes("FROM subscription")) return rows;
+    if (sql.includes("INSERT INTO stripe_teardown_pending")) {
+      const p = params ?? [];
+      if (sql.includes("'cancel_subscription'")) {
+        enqueued.push({
+          workspaceId: String(p[0]),
+          op: "cancel_subscription",
+          stripeSubId: (p[1] as string | null) ?? null,
+          stripeCustomerId: (p[2] as string | null) ?? null,
+          lastError: (p[3] as string | null) ?? null,
+        });
+      } else {
+        enqueued.push({
+          workspaceId: String(p[0]),
+          op: "delete_customer",
+          stripeSubId: null,
+          stripeCustomerId: (p[1] as string | null) ?? null,
+          lastError: (p[2] as string | null) ?? null,
+        });
+      }
+    }
+    return [];
+  });
+  return enqueued;
+}
 
 // ── Fixtures ────────────────────────────────────────────────────────
 
@@ -138,14 +191,21 @@ beforeEach(() => {
   stripeAvailable = true;
   callOrder = [];
   openInvoices = {};
+  liveStripeSubs = {};
   mockInternalQuery.mockReset();
   mockInternalQuery.mockImplementation(() => Promise.resolve([]));
   subscriptionsCancel.mockClear();
   subscriptionsUpdate.mockClear();
+  subscriptionsList.mockClear();
   customersDel.mockClear();
   invoicesList.mockClear();
   invoicesVoid.mockClear();
   mockLogError.mockClear();
+  subscriptionsList.mockImplementation(async (params: Record<string, unknown>) => {
+    callOrder.push(`subscriptions.list:${String(params.customer)}`);
+    const subs = liveStripeSubs[String(params.customer)] ?? [];
+    return { data: subs, has_more: false };
+  });
   // Restore default success implementations after failure-path tests.
   subscriptionsCancel.mockImplementation(async (id: string) => {
     callOrder.push(`cancel:${id}`);
@@ -517,5 +577,166 @@ describe("pauseStripeCollectionForWorkspace — voids open invoices (#3467)", ()
 
     expect(invoicesList).not.toHaveBeenCalled();
     expect(invoicesVoid).not.toHaveBeenCalled();
+  });
+});
+
+// ── Durable teardown outbox: persist failed ops for retry (#3679) ───
+
+describe("durable teardown outbox (#3679)", () => {
+  it("persists a failed cancel to the outbox (cancel-fails → enqueue → swept later)", async () => {
+    const enqueued = captureOutbox([subRow("sub_boom", "active", "cus_acme")]);
+    subscriptionsCancel.mockImplementation(async () => {
+      throw new FakeStripeError("stripe is down");
+    });
+
+    const outcome = await cancelStripeSubscriptionsForWorkspace(ORG, "cus_acme");
+
+    // Warning still surfaced (legacy fallback), AND the op is durable.
+    expect(outcome.warnings).toHaveLength(1);
+    expect(enqueued).toEqual([
+      {
+        workspaceId: ORG,
+        op: "cancel_subscription",
+        stripeSubId: "sub_boom",
+        stripeCustomerId: "cus_acme",
+        lastError: "stripe is down",
+      },
+    ]);
+  });
+
+  it("does NOT enqueue a resource_missing cancel (already gone, nothing to retry)", async () => {
+    const enqueued = captureOutbox([subRow("sub_gone", "active")]);
+    subscriptionsCancel.mockImplementation(async () => {
+      throw new FakeStripeError("No such subscription", "resource_missing");
+    });
+
+    await cancelStripeSubscriptionsForWorkspace(ORG, "cus_acme");
+
+    expect(enqueued).toEqual([]);
+  });
+
+  it("does NOT enqueue when every cancel succeeds", async () => {
+    const enqueued = captureOutbox([subRow("sub_1", "active"), subRow("sub_2", "active")]);
+
+    await cancelStripeSubscriptionsForWorkspace(ORG, "cus_acme");
+
+    expect(enqueued).toEqual([]);
+  });
+
+  it("GDPR purge: persists a failed customer delete to the outbox for retry", async () => {
+    const enqueued = captureOutbox([]);
+    customersDel.mockImplementation(async () => {
+      throw new FakeStripeError("api_error");
+    });
+
+    const outcome = await purgeStripeBillingForWorkspace(ORG, "cus_acme");
+
+    expect(outcome.warnings).toHaveLength(1);
+    expect(enqueued).toEqual([
+      {
+        workspaceId: ORG,
+        op: "delete_customer",
+        stripeSubId: null,
+        stripeCustomerId: "cus_acme",
+        lastError: "api_error",
+      },
+    ]);
+  });
+
+  it("falls back to a warning when the outbox INSERT itself fails — never throws", async () => {
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM subscription")) return [subRow("sub_boom", "active")];
+      if (sql.includes("INSERT INTO stripe_teardown_pending")) {
+        throw new Error("internal db down");
+      }
+      return [];
+    });
+    subscriptionsCancel.mockImplementation(async () => {
+      throw new FakeStripeError("stripe is down");
+    });
+
+    const outcome = await cancelStripeSubscriptionsForWorkspace(ORG, "cus_acme");
+
+    // The cancel-failure warning PLUS the persistence-failure fallback warning.
+    expect(outcome.attempted).toBe(true);
+    expect(outcome.warnings.some((w) => w.includes("automatic retry"))).toBe(true);
+    expect(mockLogError).toHaveBeenCalled();
+  });
+});
+
+// ── Drift detection: zero local rows but a live Stripe customer (#3679) ─
+
+describe("drift detection — zero local rows but a live customer (#3679)", () => {
+  it("queries Stripe and enqueues live subscriptions found with no local record", async () => {
+    const enqueued = captureOutbox([]); // no local subscription rows
+    liveStripeSubs = {
+      cus_drift: [
+        { id: "sub_live_a", status: "active" },
+        { id: "sub_live_b", status: "trialing" },
+      ],
+    };
+
+    const outcome = await cancelStripeSubscriptionsForWorkspace(ORG, "cus_drift");
+
+    expect(subscriptionsList).toHaveBeenCalledTimes(1);
+    expect(enqueued.map((e) => e.stripeSubId).toSorted()).toEqual(["sub_live_a", "sub_live_b"]);
+    expect(enqueued.every((e) => e.op === "cancel_subscription")).toBe(true);
+    // A warning surfaces the drift rather than silently no-op'ing.
+    expect(outcome.warnings.some((w) => w.includes("no local record"))).toBe(true);
+  });
+
+  it("skips terminal Stripe subscriptions during drift detection", async () => {
+    const enqueued = captureOutbox([]);
+    liveStripeSubs = {
+      cus_drift: [
+        { id: "sub_live", status: "active" },
+        { id: "sub_done", status: "canceled" },
+      ],
+    };
+
+    await cancelStripeSubscriptionsForWorkspace(ORG, "cus_drift");
+
+    expect(enqueued.map((e) => e.stripeSubId)).toEqual(["sub_live"]);
+  });
+
+  it("does NOT query Stripe for drift when local rows exist", async () => {
+    captureOutbox([subRow("sub_1", "active")]);
+
+    await cancelStripeSubscriptionsForWorkspace(ORG, "cus_acme");
+
+    expect(subscriptionsList).not.toHaveBeenCalled();
+  });
+
+  it("does NOT query Stripe for drift when no customer id is supplied", async () => {
+    captureOutbox([]);
+
+    await cancelStripeSubscriptionsForWorkspace(ORG);
+
+    expect(subscriptionsList).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a warning (and logs) when the drift query itself fails — never throws", async () => {
+    captureOutbox([]);
+    subscriptionsList.mockImplementation(async () => {
+      throw new FakeStripeError("stripe list down");
+    });
+
+    const outcome = await cancelStripeSubscriptionsForWorkspace(ORG, "cus_drift");
+
+    expect(outcome.attempted).toBe(true);
+    expect(outcome.warnings.some((w) => w.includes("Could not check Stripe"))).toBe(true);
+    expect(mockLogError).toHaveBeenCalled();
+  });
+
+  it("GDPR purge: detects drift, enqueues the live sub, AND still deletes the customer", async () => {
+    const enqueued = captureOutbox([]); // local table drifted empty
+    liveStripeSubs = { cus_drift: [{ id: "sub_orphan", status: "active" }] };
+
+    const outcome = await purgeStripeBillingForWorkspace(ORG, "cus_drift");
+
+    expect(enqueued.some((e) => e.op === "cancel_subscription" && e.stripeSubId === "sub_orphan")).toBe(true);
+    // Customer is still deleted — a purge must leave no billable linkage.
+    expect(customersDel.mock.calls.map((c) => c[0])).toEqual(["cus_drift"]);
+    expect(outcome.warnings.some((w) => w.includes("no local record"))).toBe(true);
   });
 });

@@ -2472,6 +2472,46 @@ export const stripePurgedSubscriptions = pgTable(
 );
 
 /**
+ * Durable Stripe teardown outbox (#3679) — the symmetric counterpart to the
+ * plan-tier reconcile sweep. Workspace delete/purge cancels Stripe
+ * subscriptions (and deletes the customer on GDPR purge) BEFORE the DB
+ * cascade; a Stripe outage at that instant used to fold into a warnings
+ * string and the cascade proceeded, stranding a live subscription invoicing a
+ * deleted workspace. Failed (or drift-detected) ops are persisted here and
+ * retried by `reconcile-stripe-teardown.ts` until success or `resource_missing`.
+ * The two partial unique indexes make enqueue idempotent (one pending op per
+ * Stripe id). Mirrors `migrations/0141_stripe_teardown_pending.sql`.
+ */
+export const stripeTeardownPending = pgTable(
+  "stripe_teardown_pending",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    stripeSubId: text("stripe_sub_id"),
+    stripeCustomerId: text("stripe_customer_id"),
+    op: text("op").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("chk_stripe_teardown_pending_op", sql`op IN ('cancel_subscription', 'delete_customer')`),
+    check(
+      "chk_stripe_teardown_pending_target",
+      sql`(op = 'cancel_subscription' AND stripe_sub_id IS NOT NULL) OR (op = 'delete_customer' AND stripe_customer_id IS NOT NULL)`,
+    ),
+    uniqueIndex("idx_stripe_teardown_pending_sub")
+      .on(t.stripeSubId)
+      .where(sql`op = 'cancel_subscription'`),
+    uniqueIndex("idx_stripe_teardown_pending_customer")
+      .on(t.stripeCustomerId)
+      .where(sql`op = 'delete_customer'`),
+    index("idx_stripe_teardown_pending_attempts").on(t.attempts, t.createdAt),
+  ],
+);
+
+/**
  * Durable + atomic one-trial-per-user marker (#3469/#3470) — one row per
  * user, stamped at grant time. The PRIMARY KEY makes
  * `INSERT ... ON CONFLICT (user_id) DO NOTHING` an atomic claim under

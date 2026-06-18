@@ -19,17 +19,23 @@
 # (`git diff --diff-filter=A`). Pre-existing migrations — including 0133 —
 # are never re-scanned, so they are exempt by construction (no allowlist).
 #
-# Escape hatch: a migration whose DROP/RENAME is a *deliberate, deploy-safe*
-# step (the N+1 contract phase of a documented two-phase drop, or an
-# explicitly-authorized pre-launch clean-break) declares it with a comment
+# Escape hatch — DROP COLUMN ONLY: a migration whose DROP is a *deliberate,
+# deploy-safe* step (the N+1 contract phase of a documented two-phase drop, or
+# an explicitly-authorized pre-launch clean-break) declares it with a comment
 # line:
 #
 #     -- expand-contract: <why this is deploy-safe + issue/PR ref>
 #
-# The marker is intentionally coarse (file-level) and REQUIRES a written
-# justification — it forces the deploy-safety rationale into the migration
-# header, which is the discipline this guard exists to enforce. A bare
-# `-- expand-contract:` with no text does NOT exempt the file.
+# The marker REQUIRES a written justification — it forces the deploy-safety
+# rationale into the migration header, which is the discipline this guard
+# exists to enforce. A bare `-- expand-contract:` with no text does NOT exempt.
+# The marker suppresses only DROP COLUMN; a RENAME COLUMN in the same file
+# still fails, because a rename is inherently single-phase and has no
+# deploy-safe form — it must be replaced with add-column + dual-write +
+# backfill + two-phase-drop.
+#
+# Requires bash 4+ (mapfile) and git 2.28+ (`git init -b` in the self-test);
+# both are present on the Linux CI runner that is the merge arbiter.
 
 set -euo pipefail
 
@@ -82,8 +88,9 @@ if ! git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
   exit 2
 fi
 
-# Three-dot diff = changes on HEAD since the merge-base with BASE, so files
-# merged into BASE after this branch forked don't count as "added here".
+# Diff from the explicit merge-base to HEAD (equivalent to `BASE...HEAD`):
+# changes on HEAD since this branch forked, so files merged into BASE
+# afterwards don't count as "added here".
 MERGE_BASE="$(git merge-base "$BASE" HEAD 2>/dev/null || true)"
 if [ -z "$MERGE_BASE" ]; then
   echo "::error::no merge-base between '$BASE' and HEAD — unrelated histories or an unfetched base." >&2
@@ -109,6 +116,11 @@ strip_and_statements() {
   sed -E 's/--.*$//' "$1" | tr '\n' ' '
 }
 
+# Collapse a statement to a single trimmed line, capped for readable output.
+fmt_stmt() {
+  echo "$1" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+/ /g' | cut -c1-100
+}
+
 # A column-rename in any of Postgres' accepted spellings:
 #   RENAME COLUMN a TO b           (explicit)
 #   ALTER TABLE t RENAME a TO b    (bare — Postgres treats this as a column
@@ -123,44 +135,62 @@ BARE_RENAME_RE='ALTER[[:space:]]+TABLE[[:space:]].+[[:space:]]RENAME[[:space:]]+
 DROP_COLUMN_RE='DROP[[:space:]]+COLUMN[[:space:]]'
 
 VIOLATIONS=0
-declare -a OFFENDING_FILES=()
 
 for f in "${ADDED[@]}"; do
   [ -f "$f" ] || continue
 
-  # File-level escape hatch: a documented, deploy-safe deliberate step.
-  # Requires non-whitespace after the colon (a written justification).
+  # Escape hatch — DROP COLUMN only. A justified `-- expand-contract:` marker
+  # (non-whitespace after the colon) suppresses an otherwise-flagged DROP. It
+  # does NOT cover RENAME COLUMN: a rename is inherently single-phase, so a
+  # rename in a marked file still fails below.
+  DROP_EXEMPT=0
+  REASON=""
   if grep -Eq '^[[:space:]]*--[[:space:]]*expand-contract:[[:space:]]*[^[:space:]]' "$f"; then
+    DROP_EXEMPT=1
     REASON="$(grep -Em1 '^[[:space:]]*--[[:space:]]*expand-contract:' "$f" | sed -E 's/^[[:space:]]*--[[:space:]]*expand-contract:[[:space:]]*//')"
-    echo "  exempt $f — declared expand-contract: ${REASON}"
-    continue
   fi
 
   STMTS="$(strip_and_statements "$f")"
   FILE_HITS=""
+  RENAME_HITS=0
+  SUPPRESSED_DROPS=0
 
   while IFS= read -r stmt; do
     [ -z "${stmt// }" ] && continue
     if echo "$stmt" | grep -Eqi "$DROP_COLUMN_RE"; then
-      FILE_HITS="${FILE_HITS}    DROP COLUMN: $(echo "$stmt" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+/ /g' | cut -c1-100)"$'\n'
+      if [ "$DROP_EXEMPT" -eq 1 ]; then
+        SUPPRESSED_DROPS=$((SUPPRESSED_DROPS + 1))
+      else
+        FILE_HITS="${FILE_HITS}    DROP COLUMN: $(fmt_stmt "$stmt")"$'\n'
+      fi
     fi
     if echo "$stmt" | grep -Eqi "$RENAME_COLUMN_RE"; then
-      FILE_HITS="${FILE_HITS}    RENAME COLUMN: $(echo "$stmt" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+/ /g' | cut -c1-100)"$'\n'
+      FILE_HITS="${FILE_HITS}    RENAME COLUMN: $(fmt_stmt "$stmt")"$'\n'
+      RENAME_HITS=$((RENAME_HITS + 1))
     elif echo "$stmt" | grep -Eqi "$BARE_RENAME_RE"; then
       # Bare `ALTER TABLE ... RENAME a TO b` (column rename without the COLUMN
       # keyword). BARE_RENAME_RE already excludes the table-rename (`RENAME
       # TO`) and constraint-rename (`RENAME CONSTRAINT ...`) spellings.
-      FILE_HITS="${FILE_HITS}    RENAME COLUMN (bare): $(echo "$stmt" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+/ /g' | cut -c1-100)"$'\n'
+      FILE_HITS="${FILE_HITS}    RENAME COLUMN (bare): $(fmt_stmt "$stmt")"$'\n'
+      RENAME_HITS=$((RENAME_HITS + 1))
     fi
   done < <(echo "$STMTS" | tr ';' '\n')
 
-  if [ -n "$FILE_HITS" ]; then
-    OFFENDING_FILES+=("$f")
-    echo "::error file=$f::single-phase column rename/drop in a newly-added migration (#3686)"
-    echo "  $f:"
-    printf '%s' "$FILE_HITS"
-    VIOLATIONS=$((VIOLATIONS + 1))
+  if [ -z "$FILE_HITS" ]; then
+    # Nothing flagged. Surface a suppressed-drop exemption for the audit trail.
+    if [ "$DROP_EXEMPT" -eq 1 ] && [ "$SUPPRESSED_DROPS" -gt 0 ]; then
+      echo "  exempt $f — DROP COLUMN declared expand-contract: ${REASON}"
+    fi
+    continue
   fi
+
+  echo "::error file=$f::single-phase column rename/drop in a newly-added migration (#3686)"
+  echo "  $f:"
+  printf '%s' "$FILE_HITS"
+  if [ "$DROP_EXEMPT" -eq 1 ] && [ "$RENAME_HITS" -gt 0 ]; then
+    echo "    note: -- expand-contract: exempts DROP COLUMN only; RENAME COLUMN is never deploy-safe."
+  fi
+  VIOLATIONS=$((VIOLATIONS + 1))
 done
 
 if [ "$VIOLATIONS" -gt 0 ]; then

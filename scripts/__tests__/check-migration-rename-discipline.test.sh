@@ -8,8 +8,10 @@
 # Locks in: the gate FAILS on single-phase RENAME COLUMN / DROP COLUMN in a
 # NEWLY-ADDED migration (incl. DO-block and bare-rename spellings), PASSES a
 # clean diff, PASSES when the offending statement is only in a PRE-EXISTING
-# migration (proving 0133 is exempt by construction), and PASSES when an
-# added migration carries a justified `-- expand-contract:` marker.
+# migration (proving 0133 is exempt by construction), PASSES when an added
+# migration carries a justified `-- expand-contract:` marker on a DROP COLUMN,
+# and — crucially — still FAILS a RENAME COLUMN even with a marker (the marker
+# exempts DROP COLUMN only; a rename is never deploy-safe).
 
 set -euo pipefail
 
@@ -112,6 +114,20 @@ ALTER TABLE widgets DROP COLUMN surface;'
 run_fixture fail "bare expand-contract marker (no justification) does not exempt" "0002_bare_marker.sql" \
   '-- expand-contract:
 ALTER TABLE widgets DROP COLUMN surface;'
+
+# ── the marker covers DROP COLUMN only — never RENAME COLUMN ───────────────
+# A rename is inherently single-phase; the escape hatch must not let one
+# through even with a justified marker.
+run_fixture fail "RENAME COLUMN with justified marker still fails (marker is DROP-only)" "0002_rename_marked.sql" \
+  '-- expand-contract: justified for some reason (#1234)
+ALTER TABLE widgets RENAME COLUMN surface TO origin;'
+
+# A marked file may legitimately DROP (suppressed) yet still smuggle a rename —
+# the drop is exempt, the rename is not, so the file fails on the rename.
+run_fixture fail "marker suppresses the DROP but the co-located RENAME still fails" "0002_drop_and_rename.sql" \
+  '-- expand-contract: N+1 contract drop; reads removed in 0001 (#1234)
+ALTER TABLE widgets DROP COLUMN legacy;
+ALTER TABLE widgets RENAME COLUMN surface TO origin;'
 
 echo ""
 echo "check-migration-rename-discipline.test.sh: $PASS passed, $FAIL failed"

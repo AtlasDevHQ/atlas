@@ -124,11 +124,12 @@ marker comment:
 ALTER TABLE foo DROP COLUMN bar;
 ```
 
-A bare `-- expand-contract:` with no justification does not exempt the file —
+A bare `-- expand-contract:` with no justification does not exempt anything —
 the marker forces the deploy-safety rationale into the migration header, which
-is the whole point. There is no exemption path for `RENAME COLUMN`: a rename is
-inherently single-phase, so replace it with add-new-column + dual-write +
-backfill + two-phase-drop.
+is the whole point. The marker suppresses **`DROP COLUMN` only**: a `RENAME
+COLUMN` in the same migration still fails the guard, because a rename is
+inherently single-phase and has no deploy-safe form. Replace it with
+add-new-column + dual-write + backfill + two-phase-drop.
 
 ## Launch-readiness checklist (pre-`v0.1.0`)
 

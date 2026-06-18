@@ -226,7 +226,9 @@ const TELEGRAM_PLATFORM: OperatorPlatformSpec = {
  * WhatsApp (#3770). The four required fields mirror `WHATSAPP_BUILDER.requiredEnv`
  * from `@useatlas/chat` (Meta Cloud API). `META_BUSINESS_APP_ID` is the Meta App
  * ID (public); the access token, app secret (HMAC-SHA256 webhook verification),
- * and verify token (echoed in the GET challenge handshake) are all secrets. No
+ * and verify token (echoed in the GET challenge handshake) are all secrets.
+ * `META_BUSINESS_APP_ID` is in `requiredEnv` as an Atlas-side boot-consistency
+ * gate, not because `@chat-adapter/whatsapp` consumes it at activation time. No
  * field's rotation invalidates stored data, so none is a destructive rotation.
  */
 const WHATSAPP_PLATFORM: OperatorPlatformSpec = {
@@ -282,7 +284,7 @@ const GCHAT_PLATFORM: OperatorPlatformSpec = {
     {
       envVar: "GCHAT_SERVICE_ACCOUNT_JSON",
       label: "Service Account JSON",
-      hint: "Raw GCP service-account JSON. Mints Pub/Sub tokens and authenticates outbound Google Chat API calls.",
+      hint: "Raw GCP service-account JSON. Used to obtain Pub/Sub access tokens and authenticate outbound Google Chat API calls.",
       secret: true,
       required: true,
     },

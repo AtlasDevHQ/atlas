@@ -273,10 +273,12 @@ entry:
    renders every managed platform from the list endpoint; the route's `GET` / `PUT`
    / `DELETE` are platform-agnostic. No new migration, route, or UI code.
 
-Pilot: **Slack** (`#3704`/`#3735`). Remaining chat platforms: **Discord, Teams,
-Telegram, WhatsApp, Google Chat**. Remaining action targets: **Jira, Linear,
-GitHub App, Salesforce** (set `catalogSlug: null`). Each is an independent,
-one-entry follow-up.
+Pilot: **Slack** (`#3704`/`#3735`). All chat platforms now ship: **Discord**
+(`#3767`), **Teams** (`#3768`), **Telegram** (`#3769`), **WhatsApp** (`#3770`),
+**Google Chat** (`#3771`) — children of umbrella `#3765`, each a one-entry
+addition. Remaining action targets: **Jira, Linear, GitHub App, Salesforce** (set
+`catalogSlug: null`) — these need a per-workspace credential design pass first
+(`#3765`) and are not yet in the registry.
 
 ## Tracked work
 

@@ -205,8 +205,12 @@ describe("getMissingOperatorEnvForCatalogSlug (boot-guard helper)", () => {
   });
 
   it("collapses to env-only for an unmanaged slug (no DB read)", async () => {
-    const missing = await getMissingOperatorEnvForCatalogSlug("discord", ["DISCORD_BOT_TOKEN"], {
-      DISCORD_BOT_TOKEN: "set",
+    // "imessage" is not in OPERATOR_PLATFORMS, so the helper finds no managed
+    // operator platform and never reads the credential store — it falls back to
+    // the env-only presence check. (Every shipped chat slug is now managed, so
+    // the unmanaged case is exercised with a slug Atlas ships no adapter for.)
+    const missing = await getMissingOperatorEnvForCatalogSlug("imessage", ["IMESSAGE_TOKEN"], {
+      IMESSAGE_TOKEN: "set",
     });
     expect(missing).toEqual([]);
     expect(mockRead).not.toHaveBeenCalled();

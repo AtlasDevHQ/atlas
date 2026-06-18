@@ -246,7 +246,7 @@ describe("PUT /:platform — merge + refresh + audit", () => {
   });
 
   it("404s a write to an unmanaged platform", async () => {
-    const res = await adminOperatorIntegrations.request("/discord", {
+    const res = await adminOperatorIntegrations.request("/nope", {
       method: "PUT",
       headers: JSON_HEADERS,
       body: JSON.stringify({ fields: { FOO: "bar" } }),
@@ -313,7 +313,7 @@ describe("DELETE /:platform — revert to env", () => {
   });
 
   it("404s a delete on an unmanaged platform", async () => {
-    const res = await adminOperatorIntegrations.request("/discord", { method: "DELETE" });
+    const res = await adminOperatorIntegrations.request("/nope", { method: "DELETE" });
     expect(res.status).toBe(404);
   });
 });
@@ -365,7 +365,7 @@ describe("internal DB absent — write guards return not_configured", () => {
   });
 
   it("still distinguishes an unmanaged slug as 404 `not_found`, not `not_configured`", async () => {
-    const res = await adminOperatorIntegrations.request("/discord", { method: "DELETE" });
+    const res = await adminOperatorIntegrations.request("/nope", { method: "DELETE" });
     expect(res.status).toBe(404);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("not_found");

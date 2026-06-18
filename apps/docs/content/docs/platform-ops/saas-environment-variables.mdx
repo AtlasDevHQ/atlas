@@ -180,10 +180,16 @@ installed workspace re-authorize Slack. The OAuth app credentials
 (`CLIENT_ID` / `CLIENT_SECRET` / `SIGNING_SECRET`) rotate non-destructively. The
 console warns before a destructive rotation.
 
-The pilot covers Slack; the remaining platforms (Discord, Teams, Telegram,
-WhatsApp, Google Chat, and the action targets Jira / Linear / GitHub App /
-Salesforce) follow one registry entry at a time — see the migration checklist in
-`docs/development/saas-env-audit.md`.
+All chat platforms are now console-managed: **Slack**, **Discord**, **Microsoft
+Teams**, **Telegram**, **WhatsApp**, and **Google Chat** each expose their
+operator app credentials on the page (e.g. `DISCORD_BOT_TOKEN` /
+`DISCORD_CLIENT_ID` / `DISCORD_PUBLIC_KEY`, `TEAMS_APP_ID` / `TEAMS_APP_PASSWORD`,
+`TELEGRAM_BOT_TOKEN` / `TELEGRAM_WEBHOOK_SECRET`, the WhatsApp Meta Cloud API
+quartet, and the Google Chat service-account JSON + Pub/Sub topic). None of these
+has a destructive-rotation key (only Slack's `SLACK_ENCRYPTION_KEY` is). The
+action targets (Jira / Linear / GitHub App / Salesforce) are not yet
+console-managed — they need a per-workspace credential design pass first (#3765).
+See the migration checklist in `docs/development/saas-env-audit.md`.
 
 ## Why the list is short
 

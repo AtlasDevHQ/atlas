@@ -20,7 +20,7 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
-**`v0.0.18` — Production Hardening II** ([milestone #70](https://github.com/AtlasDevHQ/atlas/milestone/70)) is the in-flight tag — kicked off 2026-06-18, draining the remaining deferred findings from the post-v0.0.16 production-readiness audit (#3688). Four issues, all `ready-for-agent`: uninstall-orphan teardown (#3681, **HIGH**), Stripe-teardown durable cancel outbox + reconcile sweep (#3679), profiler/Stripe OTel spans (#3684), operational verifications (#3687). The launch-gated migration-0133 expand-contract (#3686) stays unmilestoned — no work until external customers exist (#2919).
+**`v0.0.18` — Production Hardening II** ([milestone #70](https://github.com/AtlasDevHQ/atlas/milestone/70)) is the in-flight tag — kicked off 2026-06-18, draining the remaining deferred findings from the post-v0.0.16 production-readiness audit (#3688). Four issues, 2 shipped: ✅ uninstall-orphan teardown (#3681 → #3776, **HIGH**; durable-reconcile follow-up #3777 deferred), ✅ profiler/Stripe OTel spans (#3684 → #3775); remaining: Stripe-teardown durable cancel outbox + reconcile sweep (#3679), operational verifications (#3687). The launch-gated migration-0133 expand-contract (#3686) stays unmilestoned — no work until external customers exist (#2919).
 
 Also banked toward the tag (merged on `main`, awaiting a `/release`) since `v0.0.17` shipped 2026-06-17 (tag @ `6a3614d7`; see [History](#history)):
 
@@ -43,7 +43,7 @@ Lightweight forward-look. Conviction firms as work begins.
 
 - **Durable agent sessions** ([ADR-0020](../../docs/adr/0020-durable-agent-sessions.md), epic [#3742](https://github.com/AtlasDevHQ/atlas/issues/3742)) — checkpoint/resume/approval-park for long agent turns via native step-boundary checkpoints, with two tracked follow-ons: context compaction (PRD [#3751](https://github.com/AtlasDevHQ/atlas/issues/3751)) and durable per-session working memory (PRD [#3752](https://github.com/AtlasDevHQ/atlas/issues/3752)). 18 issues, all `ready-for-agent`, not yet begun.
 
-- **SaaS-first per-workspace credentials** (umbrella [#3765](https://github.com/AtlasDevHQ/atlas/issues/3765)) — extend operator-settable/per-workspace credentials (today only chat is per-tenant) to the remaining chat platforms (Discord/Teams/Telegram/WhatsApp/Google Chat, #3767–#3771) and action targets (#3766, needs a design decision); env/global stays the self-host fallback. Builds on the v0.0.17 operator-credential Admin seam (Slack pilot).
+- **SaaS-first per-workspace credentials** (umbrella [#3765](https://github.com/AtlasDevHQ/atlas/issues/3765)) — extend operator-settable/per-workspace credentials beyond chat. Chat-platform half ✅ done: Discord/Teams/Telegram/WhatsApp/Google Chat all operator-settable via #3774 (#3767–#3771), on the v0.0.17 operator-credential Admin seam (Slack pilot). Remaining: action targets (#3766, `ready-for-human` — needs the per-workspace-vs-operator-global design decision); env/global stays the self-host fallback.
 
 - **`v0.1.0` — Public launch** ([#2919](https://github.com/AtlasDevHQ/atlas/issues/2919)) — the July 2026 launch event; first minor out of the `v0.0.x` train. Points at the banked changelog accumulated under `v0.0.x` (release-process plumbing, REST datasources, staging live). Tracked outside the tag train until the bundle firms up.
 

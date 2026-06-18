@@ -94,6 +94,17 @@ interface SubscriptionRow {
 }
 
 /**
+ * Whether any local `subscription` row is still non-terminal. Drift detection
+ * gates on the ABSENCE of an active local row, not on the table being literally
+ * empty: a stale terminal row (e.g. a `canceled` row the webhook left behind)
+ * offers no protection against a live Stripe subscription the local table never
+ * synced, so it must not suppress the Stripe cross-check (#3679).
+ */
+function hasActiveLocalSubscription(rows: SubscriptionRow[]): boolean {
+  return rows.some((row) => !(row.status && TERMINAL_STATUSES.has(row.status)));
+}
+
+/**
  * Stripe "the object no longer exists" — treat as already torn down.
  * Exported so the durable-outbox sweep (`reconcile-stripe-teardown.ts`) shares
  * the exact same terminal-success predicate as the inline teardown path.
@@ -419,8 +430,10 @@ export async function cancelStripeSubscriptionsForWorkspace(
     );
   }
 
-  // Drift: no local rows but a live Stripe customer — query Stripe directly.
-  if (rows.length === 0 && stripeCustomerId) {
+  // Drift: no active local rows but a live Stripe customer — query Stripe
+  // directly. Terminal-only local rows don't count as protection (see
+  // hasActiveLocalSubscription).
+  if (!hasActiveLocalSubscription(rows) && stripeCustomerId) {
     await detectCustomerSubscriptionDrift(orgId, stripeCustomerId, actions, warnings, pending);
   }
 
@@ -470,9 +483,10 @@ export async function purgeStripeBillingForWorkspace(
     );
   }
 
-  // Drift: no local rows but a live Stripe customer — query Stripe directly so
-  // a purge can't leave a live subscription the drifted local table hid.
-  if (rows.length === 0 && stripeCustomerId) {
+  // Drift: no active local rows but a live Stripe customer — query Stripe
+  // directly so a purge can't leave a live subscription a drifted local table
+  // hid (terminal-only rows don't count; see hasActiveLocalSubscription).
+  if (!hasActiveLocalSubscription(rows) && stripeCustomerId) {
     await detectCustomerSubscriptionDrift(orgId, stripeCustomerId, actions, warnings, pending);
   }
 

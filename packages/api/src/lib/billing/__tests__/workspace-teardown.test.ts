@@ -699,12 +699,25 @@ describe("drift detection — zero local rows but a live customer (#3679)", () =
     expect(enqueued.map((e) => e.stripeSubId)).toEqual(["sub_live"]);
   });
 
-  it("does NOT query Stripe for drift when local rows exist", async () => {
+  it("does NOT query Stripe for drift when an ACTIVE local row exists", async () => {
     captureOutbox([subRow("sub_1", "active")]);
 
     await cancelStripeSubscriptionsForWorkspace(ORG, "cus_acme");
 
     expect(subscriptionsList).not.toHaveBeenCalled();
+  });
+
+  it("detects drift when local rows are all terminal (a stale canceled row is no protection)", async () => {
+    // Local table holds only a terminal row, but Stripe has a live sub the
+    // webhook never synced — the literal-empty guard would have missed this.
+    const enqueued = captureOutbox([subRow("sub_old", "canceled")]);
+    liveStripeSubs = { cus_drift: [{ id: "sub_live", status: "active" }] };
+
+    const outcome = await cancelStripeSubscriptionsForWorkspace(ORG, "cus_drift");
+
+    expect(subscriptionsList).toHaveBeenCalledTimes(1);
+    expect(enqueued.map((e) => e.stripeSubId)).toEqual(["sub_live"]);
+    expect(outcome.warnings.some((w) => w.includes("no local record"))).toBe(true);
   });
 
   it("does NOT query Stripe for drift when no customer id is supplied", async () => {

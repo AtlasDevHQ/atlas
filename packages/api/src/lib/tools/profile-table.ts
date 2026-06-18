@@ -9,6 +9,7 @@ import { z } from "zod";
 import { connections, getDB, isConnectionVisibleInMode } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTables, getOrgWhitelistedTables } from "@atlas/api/lib/semantic";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { withSpan } from "@atlas/api/lib/tracing";
 
 const log = createLogger("tool:profile-table");
 
@@ -30,6 +31,26 @@ export const profileTable = tool({
   execute: async ({ table, columns, connectionId }) => {
     const connId = connectionId ?? "default";
 
+    // Span the profileTable tool seam so a slow per-column profile is
+    // attributable in traces (#3684). No-op when OTel is uninitialized.
+    return withSpan(
+      "atlas.profile.table",
+      { "atlas.profile.table": table, "atlas.profile.connection_id": connId },
+      () => profileTableImpl({ table, columns, connId }),
+    );
+  },
+});
+
+async function profileTableImpl({
+  table,
+  columns,
+  connId,
+}: {
+  table: string;
+  columns?: string[];
+  connId: string;
+}) {
+  {
     try {
       // Whitelist + mode visibility check
       const reqCtx = getRequestContext();
@@ -159,8 +180,8 @@ export const profileTable = tool({
         error: `Failed to profile table "${table}": ${err instanceof Error ? err.message : String(err)}`,
       };
     }
-  },
-});
+  }
+}
 
 function quoteIdent(name: string): string {
   // Simple identifier quoting — prevents SQL injection in column/table names

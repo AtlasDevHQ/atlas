@@ -6,7 +6,9 @@
  * re-exported here for convenience.
  */
 
+import { type Attributes } from "@opentelemetry/api";
 import { createLogger } from "@atlas/api/lib/logger";
+import { withSpan } from "@atlas/api/lib/tracing";
 // Re-export shared utilities so existing consumers (e.g. @atlas/cli) don't break.
 export { mapSQLType, isViewLike, pluralize, singularize, entityName } from "./profiler-utils";
 
@@ -454,7 +456,49 @@ export async function queryPostgresIndexes(
   );
 }
 
-export async function profilePostgres({
+/**
+ * Build the OTel attribute set for an `atlas.profile.*` profiler span (#3684).
+ *
+ * Pure + exported for unit coverage of the attribute keys. Capturing live spans
+ * would mean wiring an `InMemorySpanExporter` into the global tracer provider —
+ * heavier than the typo it would catch — so the pure builder is the load-bearing
+ * piece, mirroring the `atlas.sql.execute` attribute-builder precedent.
+ */
+export function profileSpanAttributes(
+  dbType: string,
+  opts: { schema?: string; selectedTables?: string[]; connectionId?: string } = {},
+): Attributes {
+  return {
+    "atlas.profile.db_type": dbType,
+    ...(opts.schema !== undefined ? { "atlas.profile.schema": opts.schema } : {}),
+    ...(opts.connectionId !== undefined ? { "atlas.profile.connection_id": opts.connectionId } : {}),
+    ...(opts.selectedTables !== undefined
+      ? { "atlas.profile.selected_table_count": opts.selectedTables.length }
+      : {}),
+  };
+}
+
+/** Result attributes for a profiler span — the profiled/error table counts. */
+function profileResultAttributes(result: ProfilingResult): Attributes {
+  return {
+    "atlas.profile.profiled_count": result.profiles.length,
+    "atlas.profile.error_count": result.errors.length,
+  };
+}
+
+export async function profilePostgres(opts: NativeProfileOptions): Promise<ProfilingResult> {
+  // Span the profiler seam so a slow/hanging profile (large table, slow remote
+  // DB) gets latency attribution — the entry point was previously a trace
+  // black-box (#3684). No-op when OTel is uninitialized (zero overhead).
+  return withSpan(
+    "atlas.profile.postgres",
+    profileSpanAttributes("postgres", { schema: opts.schema ?? "public", selectedTables: opts.selectedTables }),
+    () => profilePostgresImpl(opts),
+    profileResultAttributes,
+  );
+}
+
+async function profilePostgresImpl({
   url,
   schema = "public",
   selectedTables: filterTables,
@@ -914,7 +958,18 @@ export async function queryMySQLIndexes(
   return [...grouped.values()];
 }
 
-export async function profileMySQL({
+export async function profileMySQL(opts: NativeProfileOptions): Promise<ProfilingResult> {
+  // Span the profiler seam so a slow/hanging profile gets latency attribution
+  // (#3684). No-op when OTel is uninitialized (zero overhead).
+  return withSpan(
+    "atlas.profile.mysql",
+    profileSpanAttributes("mysql", { selectedTables: opts.selectedTables }),
+    () => profileMySQLImpl(opts),
+    profileResultAttributes,
+  );
+}
+
+async function profileMySQLImpl({
   url,
   selectedTables: filterTables,
   prefetchedObjects,

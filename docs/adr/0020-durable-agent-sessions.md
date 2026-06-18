@@ -1,4 +1,8 @@
-# Durable agent sessions: native step-boundary checkpoints, not Vercel Workflow
+# ADR-0020: Durable agent sessions — native step-boundary checkpoints, not Vercel Workflow
+
+**Status:** Accepted
+**Date:** 2026-06-17
+**Context milestone:** Durable agent sessions (epic [#3742](https://github.com/AtlasDevHQ/atlas/issues/3742); compaction + durable working memory follow-ons in PRDs #3751/#3752)
 
 Atlas's agent loop is request/response. `runAgent` (`packages/api/src/lib/agent.ts`) is a single `streamText` call with `stopWhen: stepCountIs(getAgentMaxSteps())` (default 25, max 100) and hard timeouts (`totalMs: 180_000`, `stepMs: 30_000`). The conversation *transcript* is persisted by the chat route (`conversations` / `messages`), but the *in-flight turn* is not: if the process dies — deploy, crash, serverless timeout, OOM — the half-finished turn is lost and the user re-asks from their last message, re-paying for every tool call and model step already done. And there is no way to **pause** a turn for a human decision ("approve this query against prod") and resume it later: the existing `/ee` `ApprovalGate` gates *before* a tool executes, synchronously, inside the live request — it cannot suspend a turn that is three steps deep and give the compute back.
 

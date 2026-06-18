@@ -36,6 +36,8 @@ import { getSettingOverride } from "@atlas/api/lib/settings";
 import Stripe from "stripe";
 import { getInternalDB, getWorkspaceDetails, hasInternalDB, internalQuery, isPlanOverrideActive, updateWorkspacePlanTier, updateWorkspaceStatus, withStripeSubscriptionLock, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { withSpan } from "@atlas/api/lib/tracing";
+import { type Attributes } from "@opentelemetry/api";
 import {
   resolveRequireEmailVerification as envProfileResolveRequireEmailVerification,
   resolveCookiePrefix,
@@ -69,6 +71,7 @@ import {
   classifyStripeEvent,
   recordStripeEvent,
   type StripeLedgerEvent,
+  type StripeEventDisposition,
 } from "@atlas/api/lib/billing/stripe-event-ledger";
 import { getConfig } from "@atlas/api/lib/config";
 import { SaasCrm } from "@atlas/api/lib/effect/services";
@@ -1787,6 +1790,25 @@ async function handleSubscriptionStatusPolicy(subscription: Stripe.Subscription)
 }
 
 /**
+ * Build the OTel attribute set for the `stripe.webhook.process` span (#3684).
+ *
+ * Pure + exported for unit coverage of the attribute keys (capturing live spans
+ * would mean wiring an `InMemorySpanExporter` — heavier than the typo it would
+ * catch; mirrors the `atlas.sql.execute` / `atlas.profile.*` builder precedent).
+ */
+export function buildStripeWebhookSpanAttributes(args: {
+  eventId: string;
+  eventType: string;
+  subscriptionId: string | null;
+}): Attributes {
+  return {
+    "stripe.event_id": args.eventId,
+    "stripe.event_type": args.eventType,
+    ...(args.subscriptionId ? { "stripe.subscription_id": args.subscriptionId } : {}),
+  };
+}
+
+/**
  * The must-not-be-lost Stripe sync (#3423): plan-tier writes + the Twenty
  * CRM conversion stamp, keyed on the four subscription-lifecycle event
  * types. Runs inside `onEvent` (behind the event ledger), so internal-DB
@@ -2172,50 +2194,70 @@ export function buildStripePluginOptions(deps: {
       // re-throw → 400 → Stripe redelivers). Different subscriptions use
       // different lock keys and stay concurrent; events with no
       // subscription id skip the lock.
-      await withStripeSubscriptionLock(ledgerEvent.stripeSubscriptionId, async () => {
-        const disposition = await classifyStripeEvent(ledgerEvent);
-        if (disposition !== "fresh") {
-          billingLog.info(
-            { eventId: event.id, eventType: event.type, disposition },
-            "Skipping Stripe webhook event (%s)",
-            disposition,
-          );
-          return;
-        }
+      // #3684 — span the classify→sync→record sequence so slow processing
+      // (multi-second advisory-lock waits, tier-write failures → 400 → Stripe
+      // retry storm) is attributable in traces. The span records the applied
+      // tier (or `none` for a skipped/no-tier event) via setResultAttributes.
+      // No-op when OTel is uninitialized (zero overhead).
+      await withStripeSubscriptionLock(ledgerEvent.stripeSubscriptionId, () =>
+        withSpan(
+          "stripe.webhook.process",
+          buildStripeWebhookSpanAttributes({
+            eventId: event.id,
+            eventType: event.type,
+            subscriptionId: ledgerEvent.stripeSubscriptionId,
+          }),
+          async (): Promise<{ disposition: StripeEventDisposition; appliedTier: PlanTier | null }> => {
+            const disposition = await classifyStripeEvent(ledgerEvent);
+            if (disposition !== "fresh") {
+              billingLog.info(
+                { eventId: event.id, eventType: event.type, disposition },
+                "Skipping Stripe webhook event (%s)",
+                disposition,
+              );
+              return { disposition, appliedTier: null };
+            }
 
-        const appliedTier = await syncStripeEventToWorkspace(event, stripeClient);
+            const appliedTier = await syncStripeEventToWorkspace(event, stripeClient);
 
-        // Delinquency ladder (#3424). All branches are best-effort side
-        // effects of the durable sync above — each helper swallows + logs
-        // and never throws, so it cannot force a redelivery of an
-        // already-applied event.
-        switch (event.type) {
-          case "invoice.payment_failed":
-            await handlePaymentFailure(event.data.object as Stripe.Invoice);
-            break;
-          case "invoice.payment_succeeded":
-          case "invoice.paid":
-            await handleInvoicePaid(event.data.object as Stripe.Invoice);
-            break;
-          case "customer.subscription.updated":
-            await handleSubscriptionStatusPolicy(event.data.object as Stripe.Subscription);
-            break;
-          default:
-            break;
-        }
+            // Delinquency ladder (#3424). All branches are best-effort side
+            // effects of the durable sync above — each helper swallows + logs
+            // and never throws, so it cannot force a redelivery of an
+            // already-applied event.
+            switch (event.type) {
+              case "invoice.payment_failed":
+                await handlePaymentFailure(event.data.object as Stripe.Invoice);
+                break;
+              case "invoice.payment_succeeded":
+              case "invoice.paid":
+                await handleInvoicePaid(event.data.object as Stripe.Invoice);
+                break;
+              case "customer.subscription.updated":
+                await handleSubscriptionStatusPolicy(event.data.object as Stripe.Subscription);
+                break;
+              default:
+                break;
+            }
 
-        await recordStripeEvent(ledgerEvent, appliedTier);
+            await recordStripeEvent(ledgerEvent, appliedTier);
 
-        // Observability: the skip path logged, but a SUCCESSFULLY-processed
-        // event (tier write applied + ledger recorded) was silent — so a
-        // tier-write storm or slow processing left no positive audit trail of
-        // which subscription events were actually applied. Log the applied
-        // disposition (no PII — ids + tier only).
-        billingLog.info(
-          { eventId: event.id, eventType: event.type, appliedTier: appliedTier ?? null },
-          "Processed Stripe webhook event",
-        );
-      });
+            // Observability: the skip path logged, but a SUCCESSFULLY-processed
+            // event (tier write applied + ledger recorded) was silent — so a
+            // tier-write storm or slow processing left no positive audit trail of
+            // which subscription events were actually applied. Log the applied
+            // disposition (no PII — ids + tier only).
+            billingLog.info(
+              { eventId: event.id, eventType: event.type, appliedTier: appliedTier ?? null },
+              "Processed Stripe webhook event",
+            );
+            return { disposition, appliedTier };
+          },
+          (result) => ({
+            "stripe.webhook.disposition": result.disposition,
+            "stripe.webhook.applied_tier": result.appliedTier ?? "none",
+          }),
+        ),
+      );
     },
   };
 }

@@ -41,10 +41,12 @@ import type { DBType } from "@atlas/api/lib/db/connection";
 import {
   profilePostgres,
   profileMySQL,
+  profileSpanAttributes,
   checkFailureThreshold,
   type ProfileLogger,
   type ProfileProgressCallbacks,
 } from "@atlas/api/lib/profiler";
+import { withEffectSpan } from "@atlas/api/lib/tracing";
 import {
   analyzeTableProfiles,
   generateSemanticLayer,
@@ -377,6 +379,25 @@ function resolveProfiler(
 }
 
 function profileImpl(
+  opts: ProfileConnectionOptions,
+): Effect.Effect<ProfileConnectionResult, ProfilingFailedError> {
+  // Span the Effect-path profiler seam (the MCP/wizard profile entry point) so a
+  // slow/hanging profile is attributable in traces (#3684). `withEffectSpan`
+  // keeps the typed `ProfilingFailedError` in the error channel and no-ops when
+  // OTel is uninitialized.
+  return withEffectSpan(
+    "atlas.profile.connection",
+    profileSpanAttributes(opts.dbType, { schema: opts.schema, selectedTables: opts.selectedTables }),
+    profileImplInner(opts),
+    (result) => ({
+      "atlas.profile.profiled_count": result.profiles.length,
+      "atlas.profile.error_count": result.errors.length,
+      "atlas.profile.elapsed_ms": result.elapsedMs,
+    }),
+  );
+}
+
+function profileImplInner(
   opts: ProfileConnectionOptions,
 ): Effect.Effect<ProfileConnectionResult, ProfilingFailedError> {
   return Effect.gen(function* () {

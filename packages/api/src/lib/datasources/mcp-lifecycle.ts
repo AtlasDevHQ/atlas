@@ -81,7 +81,8 @@ import {
   type ProfileAndGenerateResult,
 } from "@atlas/api/lib/effect/semantic-generator";
 import { ProfilingFailedError, IntegrationReconnectRequiredError } from "@atlas/api/lib/effect/errors";
-import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
+import { profileSpanAttributes, type ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
+import { withSpan } from "@atlas/api/lib/tracing";
 
 const log = createLogger("datasources:mcp-lifecycle");
 
@@ -1168,7 +1169,23 @@ export type RunSemanticProfileOutcome =
  * tagged `ProfilingFailedError` is returned as a typed `error` outcome; an
  * unexpected defect re-throws for the caller's `internal_error` path.
  */
-export async function profileLiveDatasource(opts: {
+export function profileLiveDatasource(
+  opts: Parameters<typeof profileLiveDatasourceImpl>[0],
+): Promise<RunSemanticProfileOutcome> {
+  // Span the whole profile→generate→persist seam so a slow/hanging live-DB
+  // profile (large table, slow remote DB, profile-over-MCP) has latency
+  // attribution (#3684). No-op when OTel is uninitialized (zero overhead).
+  return withSpan(
+    "atlas.profile.live_datasource",
+    profileSpanAttributes(opts.connection.dbType, {
+      connectionId: opts.connectionId,
+      ...(opts.schema !== undefined ? { schema: opts.schema } : {}),
+    }),
+    () => profileLiveDatasourceImpl(opts),
+  );
+}
+
+async function profileLiveDatasourceImpl(opts: {
   connection: LiveDatasourceConnection;
   /**
    * Connection-group identifier — the whitelist key + entity `connection:` field.

@@ -58,6 +58,13 @@ describe("profileSpanAttributes", () => {
     });
   });
 
+  it("emits a zero count for a present-but-empty selectedTables array", () => {
+    expect(profileSpanAttributes("postgres", { selectedTables: [] })).toEqual({
+      "atlas.profile.db_type": "postgres",
+      "atlas.profile.selected_table_count": 0,
+    });
+  });
+
   it("omits optional attributes rather than emitting undefined values", () => {
     const attrs = profileSpanAttributes("postgres", {});
     expect(Object.keys(attrs)).toEqual(["atlas.profile.db_type"]);

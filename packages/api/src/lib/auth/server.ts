@@ -1790,6 +1790,25 @@ async function handleSubscriptionStatusPolicy(subscription: Stripe.Subscription)
 }
 
 /**
+ * Build the OTel attribute set for the `stripe.webhook.process` span (#3684).
+ *
+ * Pure + exported for unit coverage of the attribute keys (capturing live spans
+ * would mean wiring an `InMemorySpanExporter` — heavier than the typo it would
+ * catch; mirrors the `atlas.sql.execute` / `atlas.profile.*` builder precedent).
+ */
+export function buildStripeWebhookSpanAttributes(args: {
+  eventId: string;
+  eventType: string;
+  subscriptionId: string | null;
+}): Attributes {
+  return {
+    "stripe.event_id": args.eventId,
+    "stripe.event_type": args.eventType,
+    ...(args.subscriptionId ? { "stripe.subscription_id": args.subscriptionId } : {}),
+  };
+}
+
+/**
  * The must-not-be-lost Stripe sync (#3423): plan-tier writes + the Twenty
  * CRM conversion stamp, keyed on the four subscription-lifecycle event
  * types. Runs inside `onEvent` (behind the event ledger), so internal-DB
@@ -1818,25 +1837,6 @@ async function handleSubscriptionStatusPolicy(subscription: Stripe.Subscription)
  *
  * @internal — exported for testing.
  */
-/**
- * Build the OTel attribute set for the `stripe.webhook.process` span (#3684).
- *
- * Pure + exported for unit coverage of the attribute keys (capturing live spans
- * would mean wiring an `InMemorySpanExporter` — heavier than the typo it would
- * catch; mirrors the `atlas.sql.execute` / `atlas.profile.*` builder precedent).
- */
-export function buildStripeWebhookSpanAttributes(args: {
-  eventId: string;
-  eventType: string;
-  subscriptionId: string | null;
-}): Attributes {
-  return {
-    "stripe.event_id": args.eventId,
-    "stripe.event_type": args.eventType,
-    ...(args.subscriptionId ? { "stripe.subscription_id": args.subscriptionId } : {}),
-  };
-}
-
 export async function syncStripeEventToWorkspace(
   event: Stripe.Event,
   stripeClient: Stripe,

@@ -198,10 +198,26 @@ export async function probePluginDatasourceConnection(
   // adapter chooses to — so an adapter that eagerly connects on build, or
   // ignores its own probe timeout, must not hang the MCP `create_datasource`
   // call against an unreachable host. On a deadline breach we close any
-  // already-built connection immediately from the timeout callback (#3580) so a
+  // already-built connection from whichever path observes it: the timeout
+  // callback (eager build finished before the deadline, #3580) or the
+  // early-return below (build resolves AFTER the deadline, #3608) — so a
   // slow-but-eternal query that NEVER settles can't leak a pool.
   const probeRun = (async () => {
     built = (await createFromConfig(decryptedConfig)) as ProbeableConnection;
+    if (timedOut) {
+      // #3608 — the build resolved after the deadline already fired, so the
+      // timeout callback never saw `built` and couldn't close it. Tear it down
+      // here, before issuing a probe that might never settle (which would
+      // strand the `.finally()` salvage below). `closedByTimeout` keeps this
+      // exclusive with the timeout-callback close.
+      if (!closedByTimeout) {
+        closedByTimeout = true;
+        // intentionally ignored: best-effort teardown of a throwaway probe
+        // connection — mirrors the in-deadline `finally` close below.
+        await built.close().catch(() => {});
+      }
+      return;
+    }
     // Prefer the connection's native liveness check (ES/OpenSearch `ping`); fall
     // back to `SELECT 1` for SQL-only adapters that expose no `ping`.
     if (typeof built.ping === "function") {

@@ -263,6 +263,15 @@ if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
 }
 
 // Scheduled tasks routes — lazy import, only loaded if ATLAS_SCHEDULER_ENABLED is set.
+//
+// CO-GATING INVARIANT (#3687): this is the ONLY customer-facing path that INSERTs
+// into `scheduled_tasks` (via createScheduledTask), and it is gated on the exact
+// same `ATLAS_SCHEDULER_ENABLED === "true"` flag that drives the scheduler fiber
+// (config.scheduler.backend → makeSchedulerLive in lib/effect/layers.ts) and the
+// `/health` scheduler reporter. The single global (US) scheduler design is
+// therefore safe: a region without the scheduler fiber (EU/APAC) does not mount
+// this route either, so customers there get a 404 on creation rather than a task
+// that is written but never fires. Keep these three sites flag-coherent.
 if (process.env.ATLAS_SCHEDULER_ENABLED === "true") {
   const { scheduledTasks } = await import("./routes/scheduled-tasks");
   app.route("/api/v1/scheduled-tasks", scheduledTasks);

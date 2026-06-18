@@ -27,14 +27,21 @@ let capturedLogErrors: Array<{ obj: unknown; msg: unknown }> = [];
 const recordError = (obj: unknown, msg?: unknown) => {
   capturedLogErrors.push({ obj, msg });
 };
+// `log.warn` capture — McpSpineGuardLive's policy-store probe warns (never
+// fails) when the store is unreachable (#3687), so the test asserts the warn
+// fired rather than a boot failure.
+let capturedLogWarns: Array<{ obj: unknown; msg: unknown }> = [];
+const recordWarn = (obj: unknown, msg?: unknown) => {
+  capturedLogWarns.push({ obj, msg });
+};
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     error: recordError,
-    warn: () => {},
+    warn: recordWarn,
     info: () => {},
     debug: () => {},
   }),
-  getLogger: () => ({ error: recordError, warn: () => {}, info: () => {}, debug: () => {}, level: "info" }),
+  getLogger: () => ({ error: recordError, warn: recordWarn, info: () => {}, debug: () => {}, level: "info" }),
   setLogLevel: () => true,
   getRequestContext: () => undefined,
 }));
@@ -90,6 +97,7 @@ import type {
   RegionMisconfiguredError as TRegionMisconfiguredError,
   ChatAdapterEnvMissingError as TChatAdapterEnvMissingError,
   BillingConfigInvalidError as TBillingConfigInvalidError,
+  McpSpineIncoherentError as TMcpSpineIncoherentError,
 } from "../saas-guards";
 
 // ── Stripe client mock for BillingConfigGuardLive (#3435) ────────────
@@ -117,6 +125,27 @@ mock.module("@atlas/api/lib/billing/stripe-client", () => ({
   _resetStripeClientCache: () => {},
 }));
 
+// ── mcp_action_policy store mock for McpSpineGuardLive (#3687) ────────
+// The guard lazy-imports `loadMcpActionPolicy` and runs it against a sentinel
+// org id to prove the policy store is reachable. `mockPolicyStoreThrows` forces
+// that probe to throw (the "store unreachable at boot" path); the default
+// returns an all-allowed policy (reachable). Reset per test. Full export
+// surface mocked per mock-all-exports.
+let mockPolicyStoreThrows = false;
+mock.module("@atlas/api/lib/mcp/action-policy", () => ({
+  MCP_ACTION_CATEGORIES: [],
+  MCP_ACTION_CATEGORY_META: [],
+  isMcpActionCategory: () => false,
+  loadMcpActionPolicy: async () => {
+    if (mockPolicyStoreThrows) {
+      throw new Error('relation "mcp_action_policy" does not exist');
+    }
+    return { isBlocked: () => false };
+  },
+  getMcpActionPolicyEntries: async () => [],
+  setMcpActionCategoryStatus: async () => {},
+}));
+
 const {
   EnterpriseGuardLive,
   EnterpriseRequiredError,
@@ -137,6 +166,8 @@ const {
   ChatAdapterEnvMissingError,
   BillingConfigGuardLive,
   BillingConfigInvalidError,
+  McpSpineGuardLive,
+  McpSpineIncoherentError,
 } = await import("../saas-guards");
 const { Config, Migration, Settings } = await import("../layers");
 const { _resetEncryptionKeyCache } = await import("@atlas/api/lib/db/encryption-keys");
@@ -1818,5 +1849,110 @@ describe("BillingConfigGuardLive", () => {
         expect(Exit.isSuccess(exit)).toBe(true);
       },
     );
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  McpSpineGuardLive (#3687)
+// ══════════════════════════════════════════════════════════════════════
+
+// `ATLAS_PUBLIC_API_URL` / `ATLAS_OAUTH_VALID_AUDIENCES` are NOT part of the
+// SaaS boot contract (`SAAS_ENV_KEYS`), so `withCleanEnv` doesn't touch them —
+// clean them here too so the audience-derivation assertion can't pass for the
+// wrong reason on a leaked env var. `withCleanEnv` already clears
+// `BETTER_AUTH_URL`, the third input to `resolveOAuthValidAudiences`.
+const MCP_EXTRA_ENV_KEYS = ["ATLAS_PUBLIC_API_URL", "ATLAS_OAUTH_VALID_AUDIENCES"] as const;
+function withMcpEnv<T>(run: () => Promise<T>): Promise<T> {
+  const saved: Record<string, string | undefined> = {};
+  for (const k of MCP_EXTRA_ENV_KEYS) {
+    saved[k] = process.env[k];
+    delete process.env[k];
+  }
+  mockPolicyStoreThrows = false;
+  capturedLogWarns = [];
+  return withCleanEnv(run).finally(() => {
+    for (const k of MCP_EXTRA_ENV_KEYS) {
+      if (saved[k] !== undefined) process.env[k] = saved[k];
+      else delete process.env[k];
+    }
+    mockPolicyStoreThrows = false;
+    capturedLogWarns = [];
+  });
+}
+
+function runMcpGuard(deployMode: "saas" | "self-hosted") {
+  return Effect.runPromiseExit(
+    Effect.void.pipe(
+      Effect.provide(
+        McpSpineGuardLive.pipe(
+          Layer.provide(
+            Layer.merge(
+              makeTestConfigLayer({ deployMode }),
+              Layer.succeed(Migration, { migrated: true }),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+describe("McpSpineGuardLive", () => {
+  test("succeeds in SaaS when audiences are derivable and the policy store is reachable", async () => {
+    await withMcpEnv(async () => {
+      process.env.ATLAS_PUBLIC_API_URL = "https://api.useatlas.dev";
+      const exit = await runMcpGuard("saas");
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("succeeds in SaaS with an explicit ATLAS_OAUTH_VALID_AUDIENCES list", async () => {
+    await withMcpEnv(async () => {
+      process.env.ATLAS_OAUTH_VALID_AUDIENCES = "https://api.useatlas.dev/mcp";
+      const exit = await runMcpGuard("saas");
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("fails boot in SaaS when no OAuth valid-audiences are derivable", async () => {
+    await withMcpEnv(async () => {
+      // No ATLAS_PUBLIC_API_URL / BETTER_AUTH_URL / ATLAS_OAUTH_VALID_AUDIENCES
+      // → resolveOAuthValidAudiences returns [].
+      const exit = await runMcpGuard("saas");
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(McpSpineIncoherentError);
+      expect((failure as TMcpSpineIncoherentError)._tag).toBe("McpSpineIncoherentError");
+      expect((failure as TMcpSpineIncoherentError).message).toContain("audience");
+      expect((failure as TMcpSpineIncoherentError).message).toContain("#3687");
+    });
+  });
+
+  test("WARNS (does not fail boot) in SaaS when the mcp_action_policy store is unreachable", async () => {
+    await withMcpEnv(async () => {
+      process.env.ATLAS_PUBLIC_API_URL = "https://api.useatlas.dev";
+      mockPolicyStoreThrows = true;
+      const exit = await runMcpGuard("saas");
+      // A live-DB-probe failure must NOT wedge boot (runtime is already
+      // fail-closed) — it surfaces as a loud, event-tagged warning instead.
+      expect(Exit.isSuccess(exit)).toBe(true);
+      const warned = capturedLogWarns.some(
+        (w) =>
+          typeof w.obj === "object" &&
+          w.obj !== null &&
+          (w.obj as { event?: string }).event === "mcp_spine.policy_store_unreachable",
+      );
+      expect(warned).toBe(true);
+    });
+  });
+
+  test("skips entirely on self-hosted (no audiences, policy store throwing)", async () => {
+    await withMcpEnv(async () => {
+      // Worst-case inputs that WOULD fail in SaaS — self-hosted must ignore them
+      // because hosted MCP is a SaaS-only surface.
+      mockPolicyStoreThrows = true;
+      const exit = await runMcpGuard("self-hosted");
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
   });
 });

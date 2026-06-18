@@ -605,9 +605,25 @@ ATLAS_EMAIL_ALLOWED_DOMAINS=example.com,trusted-partner.com
 
 Scheduled task execution. Can also be configured via [`atlas.config.ts`](/reference/config#scheduler). See [Scheduled Tasks](/guides/scheduled-tasks) for the full guide.
 
+<Callout type="info">
+**Multi-region (SaaS): run a single global scheduler.** In a multi-region SaaS
+deployment the scheduler is intended to run on **one region only** (US). Set
+`ATLAS_SCHEDULER_ENABLED=true` on that region's api service and leave it unset on
+the others — they will report `scheduler: "disabled"` at `/health` by design.
+This is safe because `ATLAS_SCHEDULER_ENABLED` **co-gates task creation and task
+execution**: the `POST /api/v1/scheduled-tasks` route is mounted only when the
+flag is set, so a region without the scheduler fiber also returns `404` for task
+creation. A customer in a scheduler-disabled region therefore cannot create a
+task that would silently never fire. (The scheduler fiber reads/writes
+`scheduled_tasks` in the shared internal database, so the single US fiber
+executes every workspace's tasks regardless of the workspace's region.) Do **not**
+enable the flag on more than one region — multiple fibers would double-execute the
+same shared task rows.
+</Callout>
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_SCHEDULER_ENABLED` | — | Set `true` to enable scheduled task execution |
+| `ATLAS_SCHEDULER_ENABLED` | — | Set `true` to enable scheduled task execution. **In SaaS, enable on exactly one region (US)** — see the multi-region callout above; it co-gates the `/api/v1/scheduled-tasks` creation route |
 | `ATLAS_SCHEDULER_BACKEND` | `bun` | Execution backend: `bun`, `webhook`, or `vercel` |
 | `ATLAS_SCHEDULER_SECRET` | — | Shared secret for the `/tick` endpoint (non-Vercel). On Vercel, use `CRON_SECRET` instead |
 | `CRON_SECRET` | — | Vercel-native alternative to `ATLAS_SCHEDULER_SECRET`. When set, the `/tick` endpoint requires `Authorization: Bearer <secret>`. Takes precedence over `ATLAS_SCHEDULER_SECRET` |

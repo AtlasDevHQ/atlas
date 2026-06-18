@@ -47,6 +47,7 @@ import { getWebOrigin } from "@atlas/api/lib/web-origin";
 // eagerly without importing better-auth (#3045). Re-exported here so the auth
 // surface (and its tests) keep a single import site.
 import { resolvePasskeyRpId } from "@atlas/api/lib/auth/rpid";
+import { resolveOAuthValidAudiences } from "@atlas/api/lib/auth/oauth-audiences";
 export { resolvePasskeyRpId, DEFAULT_RP_ID } from "@atlas/api/lib/auth/rpid";
 import {
   assertInvitationRoleAllowed,
@@ -1223,105 +1224,10 @@ export const ATLAS_OAUTH_SCOPES = [
   "mcp:write",
 ] as const;
 
-/**
- * Resolve the list of valid OAuth audiences from the environment.
- *
- * The MCP spec wants each MCP endpoint to be its own resource (with an
- * audience URI) so a token issued to the SaaS US region cannot replay
- * against the EU region. Per-region API hosts provide that natively.
- *
- * The audience the issuer accepts MUST equal what the resource server
- * advertises and what the verifier checks. All three sites resolve to
- * `<base>/mcp` (region-scoped, NOT workspace-scoped — see well-known.ts
- * `buildResourceUri` for the rationale and the spec citation).
- *
- * Resolution priority:
- *   1. ATLAS_OAUTH_VALID_AUDIENCES — comma-separated explicit list.
- *      Used verbatim, no `/mcp` suffix appended (operator owns the
- *      values and may want non-MCP audiences too).
- *   2. ATLAS_PUBLIC_API_URL — same env var well-known.ts and hosted.ts
- *      prefer; we suffix `/mcp` here so the issuer accepts the verifier's
- *      expected audience.
- *   3. BETTER_AUTH_URL — last fallback, `/mcp` suffix appended.
- *
- * Empty string in the env var → no override → fall back to (2)/(3).
- *
- * #2068 — when the resolved base is one of the canonical SaaS regional
- * `api*.useatlas.dev` hosts (`api`, `api-eu`, `api-apac`), the
- * brand-mirror `mcp*.useatlas.dev/mcp` audience is appended so tokens
- * minted post-cutover (advertised on the new canonical hostname)
- * verify here, AND tokens minted just before the cutover (against the
- * regional `<region>.api.useatlas.dev/mcp` host) keep verifying.
- * Self-hosted operators on arbitrary hostnames are unaffected — the
- * mirror only synthesises for `*.useatlas.dev`.
- */
-export function resolveOAuthValidAudiences(env: NodeJS.ProcessEnv): string[] {
-  const explicit = env.ATLAS_OAUTH_VALID_AUDIENCES?.trim();
-  if (explicit) {
-    return explicit
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-  const base =
-    env.ATLAS_PUBLIC_API_URL?.trim() || env.BETTER_AUTH_URL?.trim();
-  if (!base) return [];
-  const trimmed = base.replace(/\/+$/, "");
-  const audiences = [`${trimmed}/mcp`];
-  const brand = brandMcpAudience(trimmed);
-  if (brand) audiences.push(brand);
-  return audiences;
-}
-
-/**
- * Map a SaaS regional `api*.useatlas.dev` host to its brand
- * counterpart, OR a SaaS brand `mcp*.useatlas.dev` host to its
- * regional counterpart (#2068). The mapping is symmetric so the
- * audience-synthesis invariant doesn't depend on which hostname an
- * operator chose for `ATLAS_PUBLIC_API_URL`:
- *
- *   `api.useatlas.dev`      → `mcp.useatlas.dev`
- *   `api-eu.useatlas.dev`   → `mcp-eu.useatlas.dev`
- *   `api-apac.useatlas.dev` → `mcp-apac.useatlas.dev`
- *   `mcp.useatlas.dev`      → `api.useatlas.dev`
- *   `mcp-eu.useatlas.dev`   → `api-eu.useatlas.dev`
- *   `mcp-apac.useatlas.dev` → `api-apac.useatlas.dev`
- *
- * Anything else (self-hosted, dev, custom-domain SaaS, `apiv2`,
- * `api.eu.useatlas.dev`, etc.) returns null — synthesising a
- * `.useatlas.dev` mirror for an unrelated host would be wrong. The
- * match is anchored on hostname only, so a `BETTER_AUTH_URL` with an
- * unusual port or path still maps cleanly.
- *
- * Symmetry rationale: pre-#2068 every site used the regional host as
- * the canonical base; post-#2068 docs/CLI/registry use the brand. An
- * operator who flips `ATLAS_PUBLIC_API_URL` to the brand (reasonable —
- * it's what the CLI default writes) must still see both audiences
- * synthesised so pre-cutover tokens bound to the regional audience
- * keep verifying. Closing that footgun is cheaper than documenting it
- * as a deployment invariant.
- */
-function brandMcpAudience(base: string): string | null {
-  let url: URL;
-  try {
-    url = new URL(base);
-  } catch {
-    // intentionally ignored: a non-URL `ATLAS_PUBLIC_API_URL` falls
-    // back to BETTER_AUTH_URL one layer up; if that fails too, the
-    // outer caller returns an empty audience list. Surfacing the
-    // parse failure here would double-log on every request.
-    return null;
-  }
-  // Strict match: `api.useatlas.dev` / `api-<region>.useatlas.dev` /
-  // `mcp.useatlas.dev` / `mcp-<region>.useatlas.dev`. `apiv2`,
-  // `api.eu.useatlas.dev`, etc. are intentionally excluded — we only
-  // mirror the documented regional surfaces.
-  const matched = url.hostname.match(/^(api|mcp)(-[a-z0-9]+)?\.useatlas\.dev$/);
-  if (!matched) return null;
-  const flipped = matched[1] === "api" ? "mcp" : "api";
-  const regionSuffix = matched[2] ?? "";
-  return `https://${flipped}${regionSuffix}.useatlas.dev/mcp`;
-}
+// `resolveOAuthValidAudiences` (+ its `brandMcpAudience` helper) was extracted
+// to `./oauth-audiences` (#3687) so the boot-time `McpSpineGuardLive` can assert
+// audiences are derivable without importing this 3k-line Better Auth module.
+// Imported at the top of this file and used in the Better Auth config below.
 
 /**
  * Resolve `allowUnauthenticatedClientRegistration` from the environment.

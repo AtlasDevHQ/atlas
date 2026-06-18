@@ -1,4 +1,4 @@
-# ADR-0020: Plugin initialization moves into the Effect Layer boot DAG with a type-level Migration dependency
+# ADR-0021: Plugin initialization moves into the Effect Layer boot DAG with a type-level Migration dependency
 
 **Status:** Accepted
 **Date:** 2026-06-17

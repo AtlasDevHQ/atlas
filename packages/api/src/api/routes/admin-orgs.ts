@@ -750,8 +750,12 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
     // fails, and the @better-auth/stripe plugin's own guard blocks
     // user-initiated org deletion while subscriptions exist — this
     // direct-DB path honors the same ordering rather than bypassing it.
-    // Stripe failures join the existing `warnings` array; delete proceeds.
-    const billing = yield* Effect.promise(() => cancelStripeSubscriptionsForWorkspace(orgId));
+    // Stripe failures join the existing `warnings` array AND are persisted to
+    // the durable teardown outbox for retry (#3679); delete proceeds. The
+    // customer id enables drift detection over a drifted-empty local table.
+    const billing = yield* Effect.promise(() =>
+      cancelStripeSubscriptionsForWorkspace(orgId, workspace.stripe_customer_id),
+    );
     warnings.push(...billing.warnings);
 
     const cascade = yield* Effect.tryPromise({

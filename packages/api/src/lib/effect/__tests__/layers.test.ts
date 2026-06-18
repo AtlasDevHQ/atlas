@@ -426,6 +426,7 @@ describe("makeSchedulerLive", () => {
         "expert_scheduler",
         "promote_decay",
         "billing_reconcile",
+        "stripe_teardown_sweep",
       ],
     },
   ] as const;

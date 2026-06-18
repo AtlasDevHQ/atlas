@@ -733,8 +733,13 @@ platformAdmin.openapi(deleteWorkspaceRoute, async (c) => {
     // @better-auth/stripe plugin's own guard blocks user-initiated org
     // deletion while subscriptions exist — this direct-DB path honors the
     // same ordering rather than bypassing it. Stripe failures surface as
-    // operator warnings on the response; the delete proceeds.
-    const billing = yield* Effect.promise(() => cancelStripeSubscriptionsForWorkspace(workspaceId));
+    // operator warnings on the response AND are persisted to the durable
+    // teardown outbox for retry (#3679); the delete proceeds. The customer
+    // id enables drift detection — if the local subscription table drifted
+    // empty, Stripe is queried directly so a live sub can't survive.
+    const billing = yield* Effect.promise(() =>
+      cancelStripeSubscriptionsForWorkspace(workspaceId, workspace.stripe_customer_id),
+    );
 
     // Cascade cleanup first, then mark as deleted — if cleanup fails,
     // the workspace remains in its current state and can be retried.

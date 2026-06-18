@@ -93,8 +93,12 @@ interface SubscriptionRow {
   [key: string]: unknown;
 }
 
-/** Stripe "the object no longer exists" — treat as already torn down. */
-function isResourceMissing(err: unknown): boolean {
+/**
+ * Stripe "the object no longer exists" — treat as already torn down.
+ * Exported so the durable-outbox sweep (`reconcile-stripe-teardown.ts`) shares
+ * the exact same terminal-success predicate as the inline teardown path.
+ */
+export function isStripeResourceMissing(err: unknown): boolean {
   return (
     typeof err === "object"
     && err !== null
@@ -104,6 +108,189 @@ function isResourceMissing(err: unknown): boolean {
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** A Stripe teardown op that outlived its inline attempt — durably retried. */
+export type StripeTeardownOp = "cancel_subscription" | "delete_customer";
+
+/**
+ * One row to persist into the `stripe_teardown_pending` outbox. The operative
+ * id depends on `op` (subscription id for a cancel, customer id for a delete);
+ * the migration's CHECK enforces the right one is present.
+ */
+export interface PendingTeardownOp {
+  workspaceId: string;
+  op: StripeTeardownOp;
+  stripeSubId: string | null;
+  stripeCustomerId: string | null;
+  lastError: string | null;
+}
+
+/**
+ * Persist failed/drift-detected Stripe teardown ops into the durable outbox so
+ * the scheduler sweep can retry them until success or `resource_missing`.
+ * Idempotent: a Stripe id can only be pending once per op (partial unique
+ * indexes), so re-running a teardown refreshes `last_error` instead of growing
+ * duplicate rows. Returns the number of ops written. No-ops without an internal
+ * DB. Throws on internal-DB failure — callers wrap it so the teardown helper
+ * stays total (see {@link persistPendingTeardown}).
+ */
+export async function enqueueStripeTeardownOps(ops: PendingTeardownOp[]): Promise<number> {
+  if (ops.length === 0 || !hasInternalDB()) return 0;
+
+  let enqueued = 0;
+  for (const op of ops) {
+    if (op.op === "cancel_subscription") {
+      if (!op.stripeSubId) continue;
+      await internalQuery(
+        `INSERT INTO stripe_teardown_pending (workspace_id, stripe_sub_id, stripe_customer_id, op, last_error)
+         VALUES ($1, $2, $3, 'cancel_subscription', $4)
+         ON CONFLICT (stripe_sub_id) WHERE op = 'cancel_subscription'
+         DO UPDATE SET
+           last_error = EXCLUDED.last_error,
+           stripe_customer_id = COALESCE(EXCLUDED.stripe_customer_id, stripe_teardown_pending.stripe_customer_id),
+           updated_at = NOW()`,
+        [op.workspaceId, op.stripeSubId, op.stripeCustomerId, op.lastError],
+      );
+    } else {
+      if (!op.stripeCustomerId) continue;
+      await internalQuery(
+        `INSERT INTO stripe_teardown_pending (workspace_id, stripe_customer_id, op, last_error)
+         VALUES ($1, $2, 'delete_customer', $3)
+         ON CONFLICT (stripe_customer_id) WHERE op = 'delete_customer'
+         DO UPDATE SET last_error = EXCLUDED.last_error, updated_at = NOW()`,
+        [op.workspaceId, op.stripeCustomerId, op.lastError],
+      );
+    }
+    enqueued += 1;
+  }
+  return enqueued;
+}
+
+/**
+ * Flush collected pending ops to the durable outbox without breaking the
+ * teardown helper's total contract: an internal-DB failure here is logged and
+ * surfaced as a warning (the legacy manual-follow-up fallback) rather than
+ * thrown — the lifecycle op must still proceed.
+ */
+async function persistPendingTeardown(
+  orgId: string,
+  pending: PendingTeardownOp[],
+  warnings: string[],
+): Promise<void> {
+  if (pending.length === 0) return;
+  try {
+    const enqueued = await enqueueStripeTeardownOps(pending);
+    log.info(
+      { orgId, enqueued },
+      "Persisted Stripe teardown ops to durable outbox for automatic retry",
+    );
+  } catch (err) {
+    const msg = errMessage(err);
+    log.error(
+      { orgId, err: msg },
+      "Failed to persist Stripe teardown ops to durable outbox — falling back to manual-follow-up warnings",
+    );
+    warnings.push(
+      `Could not record failed Stripe teardown operations for automatic retry (${msg}). `
+      + "Follow up manually in the Stripe dashboard using the ids above.",
+    );
+  }
+}
+
+/**
+ * Page through a customer's Stripe subscriptions and return the ones still
+ * live (non-terminal). Used for drift detection — when teardown finds zero
+ * LOCAL subscription rows but the org carries a `stripeCustomerId`, a drifted
+ * local table (manual row delete, sync gap) could otherwise hide a live
+ * subscription that keeps invoicing a deleted workspace.
+ */
+async function listLiveStripeSubscriptionsForCustomer(
+  stripe: NonNullable<ReturnType<typeof getStripeClient>>,
+  stripeCustomerId: string,
+): Promise<{ id: string; customerId: string | null }[]> {
+  const live: { id: string; customerId: string | null }[] = [];
+  let startingAfter: string | undefined;
+  // Cap the page walk defensively (mirrors the open-invoice walk) so a
+  // mis-paging Stripe response can't spin forever; a customer realistically
+  // carries a handful of subscriptions, so this rarely loops more than once.
+  for (let page = 0; page < 1000; page++) {
+    const res = await stripe.subscriptions.list({
+      customer: stripeCustomerId,
+      status: "all",
+      limit: 100,
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+    });
+    for (const sub of res.data) {
+      if (typeof sub.id !== "string") continue;
+      const status = typeof sub.status === "string" ? sub.status : null;
+      if (status && TERMINAL_STATUSES.has(status)) continue;
+      const customerId = typeof sub.customer === "string" ? sub.customer : stripeCustomerId;
+      live.push({ id: sub.id, customerId });
+    }
+    if (!res.has_more || res.data.length === 0) break;
+    const lastId = res.data[res.data.length - 1]?.id;
+    if (typeof lastId !== "string") break;
+    startingAfter = lastId;
+  }
+  return live;
+}
+
+/**
+ * Drift detection (#3679, audit Part A #7/#8): teardown found NO local
+ * subscription rows, but the org has a `stripeCustomerId`. Query Stripe
+ * directly; any live subscription found is enqueued for durable cancellation
+ * and surfaced as a warning, rather than silently no-op'ing. A Stripe read
+ * failure here is logged + warned, never thrown (the helper stays total).
+ */
+async function detectCustomerSubscriptionDrift(
+  orgId: string,
+  stripeCustomerId: string,
+  actions: string[],
+  warnings: string[],
+  pending: PendingTeardownOp[],
+): Promise<void> {
+  const stripe = getStripeClient();
+  if (!stripe) return; // callers gate before reaching here
+
+  let liveSubs: { id: string; customerId: string | null }[];
+  try {
+    liveSubs = await listLiveStripeSubscriptionsForCustomer(stripe, stripeCustomerId);
+  } catch (err) {
+    const msg = errMessage(err);
+    log.error(
+      { orgId, stripeCustomerId, err: msg },
+      "Failed to query Stripe for live subscriptions during teardown drift detection",
+    );
+    warnings.push(
+      `Could not check Stripe for live subscriptions on customer ${stripeCustomerId} (${msg}). `
+      + "Check the Stripe dashboard manually for subscriptions that should be canceled.",
+    );
+    return;
+  }
+
+  if (liveSubs.length === 0) return;
+
+  for (const sub of liveSubs) {
+    pending.push({
+      workspaceId: orgId,
+      op: "cancel_subscription",
+      stripeSubId: sub.id,
+      stripeCustomerId: sub.customerId ?? stripeCustomerId,
+      lastError: "drift: live in Stripe with no local subscription row at teardown",
+    });
+    actions.push(
+      `detected live Stripe subscription ${sub.id} with no local record — enqueued for cancellation`,
+    );
+    log.warn(
+      { orgId, stripeSubscriptionId: sub.id, stripeCustomerId },
+      "Drift detected: live Stripe subscription with no local subscription row — enqueued for durable cancellation",
+    );
+  }
+  warnings.push(
+    `Found ${liveSubs.length} live Stripe subscription(s) on customer ${stripeCustomerId} with no local record — `
+    + "enqueued for automatic cancellation.",
+  );
 }
 
 /**
@@ -146,12 +333,19 @@ async function listStripeSubscriptions(
   }
 }
 
-/** Cancel one Stripe subscription, folding the result into actions/warnings. */
+/**
+ * Cancel one Stripe subscription, folding the result into actions/warnings.
+ * On a (non-`resource_missing`) failure the op is ALSO appended to `pending`
+ * so the caller can persist it to the durable outbox — the warning is the
+ * legacy manual-follow-up fallback, the outbox is the retry mechanism (#3679).
+ */
 async function cancelOneSubscription(
   orgId: string,
   stripeSubscriptionId: string,
+  stripeCustomerId: string | null,
   actions: string[],
   warnings: string[],
+  pending: PendingTeardownOp[],
 ): Promise<void> {
   const stripe = getStripeClient();
   if (!stripe) return; // callers gate before reaching here
@@ -163,7 +357,7 @@ async function cancelOneSubscription(
       "Canceled Stripe subscription during workspace teardown",
     );
   } catch (err) {
-    if (isResourceMissing(err)) {
+    if (isStripeResourceMissing(err)) {
       actions.push(`Stripe subscription ${stripeSubscriptionId} already absent in Stripe`);
       log.info(
         { orgId, stripeSubscriptionId },
@@ -176,9 +370,16 @@ async function cancelOneSubscription(
       { orgId, stripeSubscriptionId, err: msg },
       "Failed to cancel Stripe subscription during workspace teardown",
     );
+    pending.push({
+      workspaceId: orgId,
+      op: "cancel_subscription",
+      stripeSubId: stripeSubscriptionId,
+      stripeCustomerId,
+      lastError: msg,
+    });
     warnings.push(
       `Failed to cancel Stripe subscription ${stripeSubscriptionId}: ${msg}. `
-      + "Cancel it manually in the Stripe dashboard.",
+      + "It has been queued for automatic retry; cancel it manually in the Stripe dashboard if it persists.",
     );
   }
 }
@@ -186,22 +387,44 @@ async function cancelOneSubscription(
 /**
  * Workspace delete: cancel every non-terminal Stripe subscription for the
  * org. Call BEFORE the DB cascade (see module doc for the ordering
- * rationale). Total — never throws; failures land in `warnings`.
+ * rationale). Total — never throws; failures land in `warnings` AND are
+ * persisted to the durable outbox for retry (#3679).
+ *
+ * `stripeCustomerId` (the org's `organization."stripeCustomerId"`, read by the
+ * caller before the cascade) enables drift detection: when there are no local
+ * subscription rows but the org has a customer, Stripe is queried directly so
+ * a drifted local table can't leave a live subscription invoicing.
  */
 export async function cancelStripeSubscriptionsForWorkspace(
   orgId: string,
+  stripeCustomerId: string | null = null,
 ): Promise<StripeTeardownOutcome> {
   if (!hasInternalDB() || !getStripeClient()) return noopOutcome();
 
   const actions: string[] = [];
   const warnings: string[] = [];
+  const pending: PendingTeardownOp[] = [];
   const { rows, warning } = await listStripeSubscriptions(orgId);
   if (warning) warnings.push(warning);
 
   for (const row of rows) {
     if (row.status && TERMINAL_STATUSES.has(row.status)) continue;
-    await cancelOneSubscription(orgId, row.stripeSubscriptionId, actions, warnings);
+    await cancelOneSubscription(
+      orgId,
+      row.stripeSubscriptionId,
+      row.stripeCustomerId ?? stripeCustomerId,
+      actions,
+      warnings,
+      pending,
+    );
   }
+
+  // Drift: no local rows but a live Stripe customer — query Stripe directly.
+  if (rows.length === 0 && stripeCustomerId) {
+    await detectCustomerSubscriptionDrift(orgId, stripeCustomerId, actions, warnings, pending);
+  }
+
+  await persistPendingTeardown(orgId, pending, warnings);
 
   return { attempted: true, actions, warnings };
 }
@@ -228,6 +451,7 @@ export async function purgeStripeBillingForWorkspace(
 
   const actions: string[] = [];
   const warnings: string[] = [];
+  const pending: PendingTeardownOp[] = [];
   const { rows, warning } = await listStripeSubscriptions(orgId);
   if (warning) warnings.push(warning);
 
@@ -236,7 +460,20 @@ export async function purgeStripeBillingForWorkspace(
   // org deletion (#3425 plugin-review note).
   for (const row of rows) {
     if (row.status && TERMINAL_STATUSES.has(row.status)) continue;
-    await cancelOneSubscription(orgId, row.stripeSubscriptionId, actions, warnings);
+    await cancelOneSubscription(
+      orgId,
+      row.stripeSubscriptionId,
+      row.stripeCustomerId ?? stripeCustomerId,
+      actions,
+      warnings,
+      pending,
+    );
+  }
+
+  // Drift: no local rows but a live Stripe customer — query Stripe directly so
+  // a purge can't leave a live subscription the drifted local table hid.
+  if (rows.length === 0 && stripeCustomerId) {
+    await detectCustomerSubscriptionDrift(orgId, stripeCustomerId, actions, warnings, pending);
   }
 
   const customerIds = new Set<string>();
@@ -254,7 +491,7 @@ export async function purgeStripeBillingForWorkspace(
         "Deleted Stripe customer during GDPR purge",
       );
     } catch (err) {
-      if (isResourceMissing(err)) {
+      if (isStripeResourceMissing(err)) {
         actions.push(`Stripe customer ${customerId} already absent in Stripe`);
         log.info(
           { orgId, stripeCustomerId: customerId },
@@ -267,12 +504,21 @@ export async function purgeStripeBillingForWorkspace(
         { orgId, stripeCustomerId: customerId, err: msg },
         "Failed to delete Stripe customer during GDPR purge",
       );
+      pending.push({
+        workspaceId: orgId,
+        op: "delete_customer",
+        stripeSubId: null,
+        stripeCustomerId: customerId,
+        lastError: msg,
+      });
       warnings.push(
         `Failed to delete Stripe customer ${customerId}: ${msg}. `
-        + "Delete it manually in the Stripe dashboard — a GDPR purge must not leave a billable customer record.",
+        + "It has been queued for automatic retry; delete it manually in the Stripe dashboard if it persists — a GDPR purge must not leave a billable customer record.",
       );
     }
   }
+
+  await persistPendingTeardown(orgId, pending, warnings);
 
   return { attempted: true, actions, warnings };
 }
@@ -344,7 +590,7 @@ async function voidOpenInvoicesForSubscription(
         "Voided open invoice during workspace suspend",
       );
     } catch (err) {
-      if (isResourceMissing(err)) {
+      if (isStripeResourceMissing(err)) {
         actions.push(`invoice ${invoiceId} already absent in Stripe`);
         log.info(
           { orgId, stripeSubscriptionId, invoiceId },
@@ -409,7 +655,7 @@ async function updateCollectionForWorkspace(
         await voidOpenInvoicesForSubscription(orgId, id, actions, warnings);
       }
     } catch (err) {
-      if (isResourceMissing(err)) {
+      if (isStripeResourceMissing(err)) {
         actions.push(`Stripe subscription ${id} already absent in Stripe`);
         log.info(
           { orgId, stripeSubscriptionId: id, mode },

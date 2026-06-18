@@ -7,6 +7,7 @@ import {
   resetRateLimits,
   rateLimitCleanupTick,
   getClientIP,
+  isLowSaasChatRpm,
   _setValidatorOverrides,
   _setSSOEnforcementOverride,
   _setAuditEnforcementBlockOverride,
@@ -819,6 +820,33 @@ describe("checkRateLimit() — chat bucket (F-74)", () => {
       expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
     }
     expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3687 — prod-floor warn predicate for an explicit low chat RPM
+// ---------------------------------------------------------------------------
+describe("isLowSaasChatRpm() — prod-floor warn decision (#3687)", () => {
+  it("flags an explicit (0, 5) override on SaaS", () => {
+    expect(isLowSaasChatRpm(2, "saas")).toBe(true);
+    expect(isLowSaasChatRpm(4, "saas")).toBe(true);
+    expect(isLowSaasChatRpm(4.9, "saas")).toBe(true);
+  });
+
+  it("does NOT flag values at or above the recommended floor", () => {
+    expect(isLowSaasChatRpm(5, "saas")).toBe(false);
+    expect(isLowSaasChatRpm(100, "saas")).toBe(false);
+  });
+
+  it("does NOT flag zero / negative / non-finite (handled by the fallback branch)", () => {
+    expect(isLowSaasChatRpm(0, "saas")).toBe(false);
+    expect(isLowSaasChatRpm(-3, "saas")).toBe(false);
+    expect(isLowSaasChatRpm(Number.NaN, "saas")).toBe(false);
+  });
+
+  it("does NOT flag on self-hosted or unknown deploy mode (operator may pin a tiny ceiling)", () => {
+    expect(isLowSaasChatRpm(2, "self-hosted")).toBe(false);
+    expect(isLowSaasChatRpm(2, undefined)).toBe(false);
   });
 });
 

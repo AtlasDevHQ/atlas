@@ -526,7 +526,16 @@ health.openapi(healthRoute, async (c) => {
         lastCheckedAt: now,
         ...(hasKeyError && { message: "MISSING_API_KEY" }),
       },
-      // Config-level status only — does not probe the scheduler engine at runtime
+      // Config-level status only — does not probe the scheduler engine at runtime.
+      //
+      // `disabled` is EXPECTED and SAFE on EU/APAC regions (#3687): the scheduler
+      // is a single global (US) fiber by design. Crucially, the customer-facing
+      // task-creation route `POST /api/v1/scheduled-tasks` is mounted behind the
+      // SAME `ATLAS_SCHEDULER_ENABLED === "true"` flag that starts the fiber
+      // (api/index.ts) — so a region reporting `scheduler: "disabled"` also
+      // returns 404 for task creation. Creation and execution are co-gated, so an
+      // EU/APAC customer can never create a scheduled task that silently never
+      // fires.
       scheduler: {
         status: schedulerEnabled ? "healthy" as const : "disabled" as const,
         lastCheckedAt: now,

@@ -17,6 +17,7 @@ import { checkPasswordChangeGate } from "@atlas/api/lib/auth/password-gate";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
 import { resolveRateLimitRpm } from "@atlas/api/lib/env-profile";
+import { getConfig } from "@atlas/api/lib/config";
 import { Effect } from "effect";
 import { SSOPolicy } from "@atlas/api/lib/effect/services";
 import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
@@ -56,6 +57,12 @@ const windows = new Map<string, number[]>();
 let lastWarnedRpmValue: string | undefined;
 let lastWarnedChatRpmValue: string | undefined;
 let lastWarnedAdminRpmValue: string | undefined;
+// Separate dedup slot for the SaaS prod-floor warn (#3687): an explicit
+// `ATLAS_RATE_LIMIT_RPM_CHAT` in (0, 5) is a VALID-but-suspiciously-low
+// override that's silently accepted (unlike the `n <= 0` branch which falls
+// back). Kept distinct from `lastWarnedChatRpmValue` so the two warn lines
+// don't suppress each other.
+let lastWarnedChatRpmFloorValue: string | undefined;
 
 function getRpmLimit(orgId?: string): number {
   // Precedence: workspace DB override > platform DB override > env var >
@@ -103,6 +110,25 @@ function getRpmLimit(orgId?: string): number {
  * default bucket); when the global limit is disabled all sub-buckets are
  * also disabled regardless of override.
  */
+/**
+ * #3687 — does an EXPLICIT `ATLAS_RATE_LIMIT_RPM_CHAT` override resolve to a
+ * suspiciously-low value on a SaaS region? Only the explicit-override path can
+ * land below 5 (`Math.floor(n)`); the derived default floors at 5. Pure so the
+ * warn decision is unit-testable without mocking the logger or config singleton.
+ * `0 < n < 5` only — `n <= 0` is already handled (it falls back to the derived
+ * default), and self-hosted operators may legitimately pin a tiny ceiling.
+ *
+ * `deployMode` is typed as the exact domain of `getConfig()?.deployMode` (its
+ * sole caller) so a typo'd literal is a compile error rather than a silent
+ * false-negative on this warn path.
+ */
+export function isLowSaasChatRpm(
+  n: number,
+  deployMode: "saas" | "self-hosted" | undefined,
+): boolean {
+  return deployMode === "saas" && Number.isFinite(n) && n > 0 && n < 5;
+}
+
 function getRpmLimitForBucket(bucket: RateLimitBucket, orgId?: string): number {
   const baseLimit = getRpmLimit(orgId);
   if (bucket === "default") return baseLimit;
@@ -127,6 +153,20 @@ function getRpmLimitForBucket(bucket: RateLimitBucket, orgId?: string): number {
         lastWarnedChatRpmValue = raw;
       }
       return Math.max(5, Math.floor(baseLimit / 4));
+    }
+    // Prod-floor soft warn (#3687): an explicit value in (0, 5) is accepted as
+    // written (unlike the default path, which floors at 5). On SaaS this is most
+    // likely a typo'd per-region knob — a chat ceiling under 5/min throttles a
+    // single multi-step agent run. Warn (never throw — these are operator-tuned
+    // knobs) so a fat-fingered Railway override surfaces in the logs instead of
+    // silently degrading chat. Self-hosted is intentionally exempt: operators
+    // there may legitimately pin a tiny ceiling for an evaluation deploy.
+    if (isLowSaasChatRpm(n, getConfig()?.deployMode) && raw !== lastWarnedChatRpmFloorValue) {
+      log.warn(
+        { value: raw, resolved: Math.floor(n) },
+        "ATLAS_RATE_LIMIT_RPM_CHAT resolves to <5/min on a SaaS region — a single multi-step agent run can exhaust this ceiling. Confirm the per-region override is intentional (a value of 5+ is recommended). See #3687.",
+      );
+      lastWarnedChatRpmFloorValue = raw;
     }
     return Math.floor(n);
   }
@@ -264,6 +304,7 @@ export function resetRateLimits(): void {
   windows.clear();
   lastWarnedRpmValue = undefined;
   lastWarnedChatRpmValue = undefined;
+  lastWarnedChatRpmFloorValue = undefined;
   lastWarnedAdminRpmValue = undefined;
 }
 

@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Effect, Layer, Exit, ManagedRuntime } from "effect";
@@ -691,6 +691,23 @@ describe("MigrationGuardLive", () => {
 // ── buildAppLayer ──────────────────────────────────────────────────
 
 describe("buildAppLayer", () => {
+  // #3687 — the SaaS canary tests below assert that exactly ONE sibling guard
+  // fails in `Layer.mergeAll`. `McpSpineGuardLive` is a new SaaS fail-fast guard
+  // that fails when no OAuth valid-audiences are derivable, so satisfy that input
+  // here (a derivable `BETTER_AUTH_URL`) the same way these tests already satisfy
+  // every other sibling guard — otherwise it would race the guard-under-test to
+  // the failure channel. (Its policy-store probe is warn-only, so it never
+  // competes.) Self-hosted canary tests are unaffected — the guard skips.
+  let savedBetterAuthUrl: string | undefined;
+  beforeEach(() => {
+    savedBetterAuthUrl = process.env.BETTER_AUTH_URL;
+    process.env.BETTER_AUTH_URL = "https://api.useatlas.dev";
+  });
+  afterEach(() => {
+    if (savedBetterAuthUrl !== undefined) process.env.BETTER_AUTH_URL = savedBetterAuthUrl;
+    else delete process.env.BETTER_AUTH_URL;
+  });
+
   test("composes all layers into a single app layer", async () => {
     const config = {} as Parameters<typeof buildAppLayer>[0];
     const layer = buildAppLayer(config);

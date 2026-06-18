@@ -99,6 +99,15 @@ const ISSUE_REF_1988 = "#1988";
 const CHAT_ADAPTER_ISSUE_REF = "#2672";
 const PROVIDER_KEY_ISSUE_REF = "#3178";
 const BILLING_CONFIG_ISSUE_REF = "#3435";
+const MCP_SPINE_ISSUE_REF = "#3687";
+
+/**
+ * Sentinel org id for the boot-time `mcp_action_policy` reachability probe. It
+ * is never a real workspace, so the `WHERE org_id = $1` SELECT returns zero rows
+ * and the probe only proves the table + query path is reachable — it asserts
+ * nothing about any tenant's policy.
+ */
+const MCP_POLICY_PROBE_ORG_ID = "__mcp_spine_boot_probe__";
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  Tagged errors
@@ -358,6 +367,38 @@ export class BillingConfigInvalidError extends Data.TaggedError("BillingConfigIn
   readonly message: string;
   readonly missingPriceIdEnvVars: readonly string[];
   readonly keyMode: "test" | "live" | "unknown";
+}> {}
+
+/**
+ * SaaS region exposes hosted MCP (always mounted in SaaS — see `api/index.ts`'s
+ * unconditional `/mcp/{workspace_id}/sse` mount) but the v0.0.15 MCP security
+ * spine's OAuth audience set is not derivable at boot (#3687):
+ * `resolveOAuthValidAudiences(process.env)` returns an EMPTY list because neither
+ * `ATLAS_OAUTH_VALID_AUDIENCES` nor a base URL (`ATLAS_PUBLIC_API_URL` /
+ * `BETTER_AUTH_URL`) is set. Better Auth would then validate every MCP bearer
+ * token against an empty `validAudiences`, so all OAuth-authenticated MCP calls
+ * 401 while boot and `/health` stay green.
+ *
+ * This is the FAIL-FAST half of the MCP-spine coherence check — it is a
+ * deterministic, env-only assertion (no I/O), so failing boot is safe and
+ * surfaces the misconfig before any HTTP listener starts. The companion
+ * `mcp_action_policy` store reachability check is a boot WARNING (not a boot
+ * failure) — see `McpSpineGuardLive` for why that half is warn-only. Self-hosted
+ * never constructs this — the guard only *enforces* spine coherence in SaaS,
+ * where hosted MCP is always mounted and the audience set is operator-critical.
+ * (A self-hoster who opts into hosted MCP on their own host owns their audience
+ * config; the guard deliberately doesn't police that surface.)
+ *
+ * Carries a `check` discriminant + `resolvedAudienceCount` (mirrors the
+ * structured-field convention of `BillingConfigInvalidError` above) so the
+ * boot-failure log and tests are actionable without re-parsing `message`. Only
+ * `check: "audiences"` is constructed today; the field leaves room for a future
+ * check to fail-boot under the same tag.
+ */
+export class McpSpineIncoherentError extends Data.TaggedError("McpSpineIncoherentError")<{
+  readonly check: "audiences";
+  readonly resolvedAudienceCount: number;
+  readonly message: string;
 }> {}
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1393,6 +1434,115 @@ export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidErro
         `One or more configured Stripe prices resolved with a livemode inconsistent with the ` +
           `secret key's ${keyMode} mode — checkout / webhook plan sync will silently no-op for the ` +
           `affected tier(s). See ${BILLING_CONFIG_ISSUE_REF}.`,
+      );
+    }
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  McpSpineGuardLive (#3687)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Surface MCP-spine incoherence at BOOT in SaaS when hosted MCP is exposed
+ * (#3687). Two checks with deliberately DIFFERENT severities:
+ *
+ *   1. OAuth valid-audiences DERIVABLE — `resolveOAuthValidAudiences` returns a
+ *      non-empty list. An empty list means Better Auth validates MCP bearer
+ *      tokens against `validAudiences: []`, so every OAuth MCP call 401s at first
+ *      I/O while boot stays green. This is a deterministic, env-only check (no
+ *      I/O), so a violation FAILS BOOT ({@link McpSpineIncoherentError}) — the
+ *      same fail-fast posture as the rest of the guard family.
+ *   2. `mcp_action_policy` STORE reachable — a cheap sentinel-org SELECT
+ *      succeeds. The dispatch gate's action-policy check fails CLOSED on a read
+ *      error, so an unreachable store turns every hosted MCP action into an
+ *      opaque `internal_error` at first call. This is a live DB probe, so a
+ *      failure is a loud `log.warn` (operator-actionable, event-tagged) — NOT a
+ *      boot failure.
+ *
+ * **Why check 2 warns instead of failing boot.** A boot-time DB probe that fails
+ * the boot Layer would (a) wedge a whole region on a transient DB blip at deploy
+ * time — even though `InternalDbGuardLive` + the SaaS migration guard already
+ * fail boot when the DB is genuinely absent — and (b) compete non-deterministically
+ * with the other guards in the parallel `Layer.mergeAll`. It mirrors
+ * `PluginConfigGuardLive`'s non-strict posture (a DB read error there warns and
+ * continues rather than wedging boot). The runtime is ALSO already fail-closed on
+ * a policy read error (dispatch Gate 1), so the security property holds regardless
+ * — the warn just moves DISCOVERY of an unreachable store to boot.
+ *
+ * **MCP-enabled predicate.** Hosted MCP is mounted UNCONDITIONALLY on every SaaS
+ * api instance (`api/index.ts` mounts `/mcp/{workspace_id}/sse` with no toggle),
+ * so `deployMode === "saas"` IS the "MCP is exposed" gate — there is no separate
+ * enable flag to consult. The guard only *enforces* spine coherence in SaaS and
+ * skips self-hosted entirely: a self-hoster who opts into hosted MCP on their own
+ * host owns their audience/policy config, and the common self-host path is stdio
+ * MCP, which uses neither spine component.
+ *
+ * Depends on `Config` + `Migration` (`mcp_action_policy` is created by migration
+ * 0134; the `Migration` edge mirrors `ChatAdapterEnvGuardLive` so the table
+ * exists before the probe runs and the warn can't false-positive on first boot).
+ * Both modules are lazy-imported (same wall-off rationale as
+ * `EncryptionKeyGuardLive`) so this file stays free of the auth-server / MCP
+ * static graphs. A rejected `oauth-audiences` import is promoted to a defect via
+ * `Effect.orDie` (it is core and always loadable at boot); a rejected
+ * `action-policy` import or query is caught and folded into the same warn as a
+ * live read failure.
+ */
+export const McpSpineGuardLive: Layer.Layer<never, McpSpineIncoherentError, Config | Migration> = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const { config } = yield* Config;
+    if (config.deployMode !== "saas") return;
+    yield* Migration; // mcp_action_policy created by migration 0134 — order after migrations
+
+    // ── Check 1 (FAIL BOOT): OAuth valid-audiences derivable ─────────────
+    const { resolveOAuthValidAudiences } = yield* Effect.tryPromise({
+      try: () => import("@atlas/api/lib/auth/oauth-audiences"),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.orDie);
+
+    const audiences = resolveOAuthValidAudiences(process.env);
+    if (audiences.length === 0) {
+      return yield* Effect.fail(
+        new McpSpineIncoherentError({
+          check: "audiences",
+          resolvedAudienceCount: audiences.length,
+          message:
+            `SaaS region exposes hosted MCP but no OAuth valid-audiences are derivable — ` +
+            `resolveOAuthValidAudiences() returned an empty list because neither ` +
+            `ATLAS_OAUTH_VALID_AUDIENCES nor a base URL (ATLAS_PUBLIC_API_URL / BETTER_AUTH_URL) ` +
+            `is set. Better Auth would then verify every MCP bearer token against an empty ` +
+            `audience set, 401-ing all OAuth-authenticated MCP calls while boot and /health stay ` +
+            `green. Set ATLAS_PUBLIC_API_URL (or BETTER_AUTH_URL) on every region's api service ` +
+            `before booting. See ${MCP_SPINE_ISSUE_REF}.`,
+        }),
+      );
+    }
+
+    // ── Check 2 (WARN): mcp_action_policy store reachable ────────────────
+    // Live DB probe — a failure WARNS (never fails boot). The inner try/catch
+    // converts a rejected import OR a query failure into a discriminated result.
+    const probe = yield* Effect.promise(
+      async (): Promise<{ ok: true } | { ok: false; cause: Error }> => {
+        try {
+          const { loadMcpActionPolicy } = await import("@atlas/api/lib/mcp/action-policy");
+          // Sentinel org — proves the table + query path is reachable without
+          // asserting anything about a real tenant's policy.
+          await loadMcpActionPolicy(MCP_POLICY_PROBE_ORG_ID);
+          return { ok: true };
+        } catch (err) {
+          return { ok: false, cause: err instanceof Error ? err : new Error(String(err)) };
+        }
+      },
+    );
+
+    if (!probe.ok) {
+      log.warn(
+        { err: probe.cause, event: "mcp_spine.policy_store_unreachable" },
+        `SaaS region exposes hosted MCP but the mcp_action_policy store could not be reached at ` +
+          `boot: ${probe.cause.message}. The dispatch gate's action-policy check fails CLOSED on a ` +
+          `read error, so until this is resolved every hosted MCP action returns an opaque ` +
+          `internal_error at first call. Verify the internal DB is reachable and migration 0134 ` +
+          `(mcp_action_policy) has applied. See ${MCP_SPINE_ISSUE_REF}.`,
       );
     }
   }),

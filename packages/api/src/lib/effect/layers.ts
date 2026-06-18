@@ -61,6 +61,7 @@ import {
   PluginConfigGuardLive,
   ChatAdapterEnvGuardLive,
   BillingConfigGuardLive,
+  McpSpineGuardLive,
   MigrationsRequiredError,
 } from "./saas-guards";
 import { readSaasEnv } from "./saas-env";
@@ -1457,7 +1458,17 @@ export function makeSchedulerLive(
         ? (raw as SchedulerShape["backend"])
         : "none";
 
-      // Start main scheduler
+      // Start main scheduler.
+      //
+      // SINGLE GLOBAL (US) SCHEDULER (#3687): `config.scheduler.backend` is `bun`
+      // only when `ATLAS_SCHEDULER_ENABLED === "true"` (config.ts), which in SaaS
+      // is set on the US region only. EU/APAC report `scheduler: "disabled"` at
+      // `/health` by design. This is SAFE because the customer-facing task-creation
+      // route (`POST /api/v1/scheduled-tasks` in api/index.ts) is gated on the SAME
+      // flag — so a region without this fiber also rejects task creation with a 404
+      // rather than persisting a task that would never fire. The fiber reads/writes
+      // `scheduled_tasks` in the shared internal DB, so the US fiber executes every
+      // workspace's tasks regardless of the workspace's region.
       if (backend === "bun") {
         yield* Effect.tryPromise({
           try: async () => {
@@ -3264,6 +3275,19 @@ export function buildAppLayer(
   const billingConfigGuardLayer = BillingConfigGuardLive.pipe(
     Layer.provide(Layer.merge(configLayer, settingsLayer)),
   );
+  // #3687 — MCP-spine boot coherence guard. Gated on `deployMode === "saas"`
+  // (hosted MCP is unconditionally mounted in SaaS, so SaaS IS the MCP-exposed
+  // predicate); self-hosted is inert. FAILS boot when OAuth valid-audiences are
+  // not derivable (deterministic env check) and WARNS when the
+  // `mcp_action_policy` store is unreachable (live DB probe — warn, not fail, to
+  // avoid wedging a region on a transient blip; runtime is already fail-closed).
+  // Depends on `Config` + `Migration` (the policy table is created by migration
+  // 0134 — same `migrationLayer` edge as `chatAdapterEnvGuardLayer` so the probe
+  // can't race the migration). Lazy-imports oauth-audiences + the policy store
+  // inside its Effect body.
+  const mcpSpineGuardLayer = McpSpineGuardLive.pipe(
+    Layer.provide(Layer.merge(configLayer, migrationLayer)),
+  );
   // #1988 C7 + C8 — region routing claim and stale plugin config checks.
   // Both depend only on `Config`. PluginConfigGuardLive lazy-imports the
   // plugin registry + InternalDB inside its Effect body so it can run as
@@ -3317,6 +3341,7 @@ export function buildAppLayer(
     pluginConfigGuardLayer,
     chatAdapterEnvGuardLayer,
     billingConfigGuardLayer,
+    mcpSpineGuardLayer,
     migrationGuardLayer,
     EnterpriseLayer,
   );

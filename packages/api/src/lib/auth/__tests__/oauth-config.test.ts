@@ -8,8 +8,8 @@
  */
 
 import { describe, it, expect } from "bun:test";
+import { resolveOAuthValidAudiences } from "../oauth-audiences";
 import {
-  resolveOAuthValidAudiences,
   resolveAllowUnauthDcr,
   ATLAS_OAUTH_SCOPES,
 } from "../server";

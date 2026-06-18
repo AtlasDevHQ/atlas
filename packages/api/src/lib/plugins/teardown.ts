@@ -194,11 +194,19 @@ export interface WorkspaceTeardownArgs {
   readonly hookTimeoutMs?: number;
 }
 
+/**
+ * Best-effort teardown outcome — a diagnostics / audit record, NOT a
+ * control-flow contract. Callers persist it to the uninstall audit row and at
+ * most branch on the error fields (`credentialError`, `hookFailures.length`);
+ * the success flags (`credentialStoreCleared`, `hookInvoked`,
+ * `scheduledTasksError`) exist so a partial failure is fully reconstructable
+ * from the audit trail. Do not add invariant-dependent logic on these fields.
+ */
 export interface WorkspaceTeardownResult {
   /** Plugin ids whose `onUninstall` ran to completion. */
-  readonly hookInvoked: string[];
+  readonly hookInvoked: readonly string[];
   /** `onUninstall` hook throws / builder failures, normalized to messages. */
-  readonly hookFailures: Array<{ pluginId: string; error: string }>;
+  readonly hookFailures: ReadonlyArray<{ pluginId: string; error: string }>;
   /** Whether dedicated-credential teardown ran without throwing. */
   readonly credentialStoreCleared: boolean;
   /** Dedicated-credential teardown error, when it threw. */

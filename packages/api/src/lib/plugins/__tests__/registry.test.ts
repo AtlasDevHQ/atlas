@@ -208,6 +208,40 @@ describe("PluginRegistry", () => {
     });
   });
 
+  // --- markUnhealthy stickiness against the health loop (#3681) ---
+
+  describe("markUnhealthy + healthCheckAll (sticky)", () => {
+    // The headline #3681 guarantee: a plugin disabled by a failed boot-time
+    // schema migration must stay unhealthy. If healthCheckAll re-probed it and
+    // its healthCheck() only validated an external upstream (not its missing
+    // tables), the next 60s tick would flip it back to "healthy", re-surface it
+    // via getByType, and let it dispatch against relations that never existed.
+    test("healthCheckAll never re-probes or promotes a migration-failed plugin", async () => {
+      const probe = mock(async () => ({ healthy: true, latencyMs: 1 }));
+      registry.register(makePlugin({ id: "broken", healthCheck: probe }));
+      await registry.initializeAll(minimalCtx);
+
+      registry.markUnhealthy("broken", "schema migration failed: boom");
+      expect(registry.getStatus("broken")).toBe("unhealthy");
+
+      const results = await registry.healthCheckAll();
+
+      // The probe is skipped entirely, and the plugin stays unhealthy with the
+      // migration reason — it does NOT flip to the probe's healthy result.
+      expect(probe).not.toHaveBeenCalled();
+      const entry = results.get("broken");
+      expect(entry?.healthy).toBe(false);
+      expect(entry?.status).toBe("unhealthy");
+      expect(entry?.message).toBe("schema migration failed: boom");
+      expect(registry.getStatus("broken")).toBe("unhealthy");
+
+      // Stays unhealthy across repeated ticks and is never surfaced for dispatch.
+      await registry.healthCheckAll();
+      expect(probe).not.toHaveBeenCalled();
+      expect(registry.getByType("datasource")).toEqual([]);
+    });
+  });
+
   // --- healthCheckAll ---
 
   describe("healthCheckAll", () => {

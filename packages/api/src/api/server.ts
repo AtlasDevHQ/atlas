@@ -159,7 +159,17 @@ if (config.plugins?.length) {
       }
       if (migrationResult.failed.length > 0) {
         for (const { pluginId, error } of migrationResult.failed) {
-          plugins.markUnhealthy(pluginId, `schema migration failed: ${error}`);
+          if (!plugins.markUnhealthy(pluginId, `schema migration failed: ${error}`)) {
+            // The migration reported a plugin id the registry never registered
+            // — markUnhealthy no-op'd, so initializeAll will NOT skip it and the
+            // plugin could initialize/dispatch against tables that were never
+            // created (the exact #3681 regression). Surface the contradiction
+            // loudly rather than letting it pass silently.
+            log.error(
+              { pluginId },
+              "Migration reported a failed plugin id not present in the registry — it may still initialize against missing tables",
+            );
+          }
         }
         log.error(
           { failed: migrationResult.failed },

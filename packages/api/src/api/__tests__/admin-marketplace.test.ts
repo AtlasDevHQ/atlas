@@ -707,6 +707,30 @@ describe("Platform Plugin Catalog", () => {
       expect(tearDownCalls.find((c) => c.workspaceId === "ws-a")?.teamId).toBe("T-a");
     });
 
+    // #3681 (F1) — a catalog row left half-deleted is NOT recoverable, so the
+    // cascade DELETE must proceed even if the per-workspace teardown enumeration
+    // throws. A regression that let the enumeration error escape would turn a
+    // recoverable orphan into a 500 + un-deleted catalog row.
+    it("proceeds with the cascade (200) when teardown enumeration throws (#3681 F1)", async () => {
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", [{ slug: "twenty" }]);
+      setQueryResult("SELECT COUNT(*)::int AS count FROM workspace_plugins", [{ count: 2 }]);
+      setQueryResult(
+        "SELECT workspace_id, config->>'team_id' AS team_id FROM workspace_plugins",
+        new Error("enumeration boom"),
+      );
+      setQueryResult("DELETE FROM plugin_catalog", [{ id: "cat-1" }]);
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/cat-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.deleted).toBe(true);
+      // Enumeration failed before any per-workspace teardown ran.
+      expect(tearDownCalls).toHaveLength(0);
+      // The cascade DELETE still executed.
+      expect(findCapturedQuery("DELETE FROM plugin_catalog")).toBeDefined();
+    });
+
     it("does not enumerate workspaces when nothing installed the entry (#3681 F1)", async () => {
       setQueryResult("SELECT slug FROM plugin_catalog WHERE id", [{ slug: "email" }]);
       setQueryResult("SELECT COUNT(*)::int AS count FROM workspace_plugins", [{ count: 0 }]);
@@ -1300,6 +1324,42 @@ describe("Workspace Plugin Marketplace", () => {
         cleanupFailed: true,
       });
       expect(entry.metadata!.error).toContain("connection lost");
+    });
+
+    // #3681 (F2) — credential teardown is best-effort and symmetric with the
+    // scheduled-task posture: the install row is already gone by the time it
+    // runs, so a transient store hiccup must surface as a failure audit, never
+    // a 500 that would leave the operator thinking the uninstall failed.
+    it("returns 200 + credentialTeardownFailed audit when the dedicated credential store throws (#3681 F2)", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "twenty", team_id: "T-77" },
+      ]);
+      setQueryResult("DELETE FROM scheduled_tasks", []);
+      mockDeleteDedicatedCredentialStore.mockImplementationOnce(async () => {
+        throw new Error("twenty store unreachable");
+      });
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.deleted).toBe(true);
+
+      // The failure audit is the only operator surface for the orphaned
+      // credential — the HTTP response is identical to a clean uninstall.
+      const failure = mockLogAdminAction.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.metadata?.credentialTeardownFailed === true);
+      expect(failure).toBeDefined();
+      expect(failure!.status).toBe("failure");
+      expect(failure!.metadata).toMatchObject({
+        installationId: "inst-1",
+        pluginId: "cat-1",
+        pluginSlug: "twenty",
+        orgId: "org-1",
+        credentialTeardownFailed: true,
+      });
+      expect(failure!.metadata!.error).toContain("twenty store unreachable");
     });
 
     // #1987 — locks in the workspace-isolation contract documented in the

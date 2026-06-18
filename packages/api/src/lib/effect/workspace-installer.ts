@@ -1650,9 +1650,12 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
 
       // #3681 — scheduled-task teardown so the datasource uninstall is
       // symmetric with `WorkspaceInstaller.uninstall`. Before this, an
-      // archived row left its `scheduled_tasks` firing (the orphan-reconcile
-      // predicate skips archived installs, so nothing swept them) and a hard
-      // delete relied on the soft-FK going uncascaded. Datasources are
+      // archived row left its `scheduled_tasks` firing: a soft archive keeps
+      // the `workspace_plugins` row (status='archived'), and the
+      // orphan-reconcile predicate matches that still-present row by
+      // (catalog_id, workspace_id) — it never classifies the tasks as orphans,
+      // so nothing swept them. A hard delete relied on the soft-FK going
+      // uncascaded. Datasources are
       // multi-instance per (workspace, catalog) and `scheduled_tasks` is scoped
       // by (plugin_id = catalog_id, org_id) — NOT install_id — so we only tear
       // tasks down once NO live install of this catalog remains for the
@@ -1915,19 +1918,6 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
   } satisfies WorkspaceInstallerShape;
 }
 
-/**
- * Slug-keyed credential teardown. Dispatched off the per-Platform
- * convention rather than the catalog's `install_model`:
- *   - chat OAuth (Slack) writes to `chat_cache` keyed by `team_id`.
- *   - action OAuth (Salesforce, Jira, …) writes to `integration_credentials`
- *     keyed by (workspace, catalog).
- *   - form-based installs have no separate credential row — secrets are
- *     inside `workspace_plugins.config` and disappear with the row.
- *
- * Throws on unknown slugs whose pillar would imply a credential store
- * but no dispatch is wired — defensive backstop; the route layer should
- * surface 501 before this fires.
- */
 // ---------------------------------------------------------------------------
 // Test helper
 // ---------------------------------------------------------------------------

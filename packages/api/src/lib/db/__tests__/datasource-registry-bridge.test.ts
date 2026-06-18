@@ -557,7 +557,13 @@ describe("probePluginDatasourceConnection (#3547)", () => {
     const out = await bridge.probePluginDatasourceConnection("clickhouse", { url: "clickhouse://slow/db" }, 20);
     expect(out.ok).toBe(false);
 
-    await new Promise((r) => setTimeout(r, 80));
+    // The close fires only once the late build resolves (~60ms), after the 20ms
+    // deadline already returned `ok: false`. Poll for it rather than sleep a
+    // fixed margin so a loaded parallel runner can't flake on a tight window.
+    const deadline = Date.now() + 2000;
+    while (!closed && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
     expect(closed).toBe(true);
   });
 

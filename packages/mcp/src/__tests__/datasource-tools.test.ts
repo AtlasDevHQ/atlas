@@ -899,6 +899,49 @@ describe("create_datasource", () => {
     expect(mockProvision).not.toHaveBeenCalled();
   });
 
+  it("#3608 — a required field that is whitespace-only is rejected before provisioning", async () => {
+    elicitOutcome = { action: "accept", values: { url: "   " } };
+    const client = await createTestClient();
+
+    const res = await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "postgres", install_id: "new-pg" },
+    });
+
+    expect(res.isError).toBe(true);
+    const err = parseAtlasMcpToolError(getContentText(res.content));
+    expect(err?.code).toBe("validation_failed");
+    expect(err?.message).toContain("Connection URL");
+    expect(mockProvision).not.toHaveBeenCalled();
+  });
+
+  it("#3608 — multiple blank required fields are reported together (plural, field-named)", async () => {
+    provisionConfigFields = {
+      kind: "ok",
+      fields: [
+        { key: "url", label: "Connection URL", required: true, secret: false },
+        { key: "apiKey", label: "API Key", required: true, secret: true },
+      ],
+      secretKeys: ["apiKey"],
+    };
+    provisionCapability = { kind: "plugin", dbType: "elasticsearch" };
+    elicitOutcome = { action: "accept", values: { url: "", apiKey: "   " } };
+    const client = await createTestClient();
+
+    const res = await client.callTool({
+      name: "create_datasource",
+      arguments: { db_type: "elasticsearch", install_id: "logs" },
+    });
+
+    expect(res.isError).toBe(true);
+    const err = parseAtlasMcpToolError(getContentText(res.content));
+    expect(err?.code).toBe("validation_failed");
+    expect(err?.message).toContain("Missing required fields:"); // plural
+    expect(err?.message).toContain("Connection URL");
+    expect(err?.message).toContain("API Key");
+    expect(mockProvision).not.toHaveBeenCalled();
+  });
+
   it("an elicitation failure (unsupported client) → validation_failed, no leak", async () => {
     elicitThrows = true;
     const client = await createTestClient();

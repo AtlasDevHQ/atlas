@@ -68,6 +68,45 @@ mock.module("@atlas/api/lib/plugins/uninstall-hook", () => ({
   ON_UNINSTALL_HOOK_TIMEOUT_MS: 15_000,
 }));
 
+// #3681 — shared per-workspace teardown. The catalog DELETE calls
+// `tearDownWorkspaceInstall` per affected workspace BEFORE the
+// `plugin_catalog` cascade; the marketplace DELETE calls
+// `deleteDedicatedCredentialStore` for dedicated-credential teardown.
+// Captured here (with a flag recording whether the cascade had already run)
+// so tests assert args + ordering. Mock ALL exports of the module.
+const tearDownCalls: Array<{
+  workspaceId: string;
+  catalogId: string;
+  catalogSlug: string;
+  teamId?: string | null;
+  catalogDeleteAlreadyRan: boolean;
+}> = [];
+const mockTearDownWorkspaceInstall = mock(
+  async (args: { workspaceId: string; catalogId: string; catalogSlug: string; teamId?: string | null }) => {
+    tearDownCalls.push({
+      ...args,
+      catalogDeleteAlreadyRan: findCapturedQuery("DELETE FROM plugin_catalog") !== undefined,
+    });
+    return {
+      hookInvoked: [] as string[],
+      hookFailures: [] as Array<{ pluginId: string; error: string }>,
+      credentialStoreCleared: true,
+      scheduledTasksDeleted: 0,
+    };
+  },
+);
+const credStoreCalls: Array<{ slug: string; workspaceId: string; catalogId: string; teamId: string | null }> = [];
+const mockDeleteDedicatedCredentialStore = mock(
+  async (slug: string, workspaceId: string, catalogId: string, teamId: string | null) => {
+    credStoreCalls.push({ slug, workspaceId, catalogId, teamId });
+  },
+);
+mock.module("@atlas/api/lib/plugins/teardown", () => ({
+  tearDownWorkspaceInstall: mockTearDownWorkspaceInstall,
+  deleteDedicatedCredentialStore: mockDeleteDedicatedCredentialStore,
+  INTEGRATION_CREDENTIALS_SLUGS: new Set<string>(["salesforce", "jira", "linear"]),
+}));
+
 // F-42: admin-marketplace.ts imports errorMessage from audit/error-scrub.
 // The real module imports Cause/Option from "effect", which the shim below
 // doesn't export — load a minimal inline replica that just does the
@@ -490,6 +529,8 @@ const sampleCatalogRow = {
   config_schema: null,
   min_plan: "starter",
   enabled: true,
+  // #3681 — the marketplace install path is gated to the `form` install model.
+  install_model: "form",
   created_at: now,
   updated_at: now,
 };
@@ -503,6 +544,8 @@ describe("Platform Plugin Catalog", () => {
     mockHasInternalDB = true;
     mockQueryResults = new Map();
     capturedQueries = [];
+    tearDownCalls.length = 0;
+    mockTearDownWorkspaceInstall.mockClear();
   });
 
   describe("GET /catalog", () => {
@@ -627,6 +670,57 @@ describe("Platform Plugin Catalog", () => {
       const res = await app.request("/catalog/nonexistent", { method: "DELETE" });
       expect(res.status).toBe(404);
     });
+
+    // #3681 (F1, HIGH) — the catalog DELETE previously relied solely on the
+    // plugin_catalog FK cascade, which does NOT reach scheduled_tasks (soft
+    // FK), the dedicated credential tables, the onUninstall hook, or the
+    // loader. It must now run the shared per-workspace teardown for EVERY
+    // affected workspace, BEFORE the cascade fires (so the hook can still
+    // authenticate and the dedicated credentials still exist).
+    it("tears down every affected workspace before the cascade (#3681 F1)", async () => {
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", [{ slug: "twenty" }]);
+      setQueryResult("SELECT COUNT(*)::int AS count FROM workspace_plugins", [{ count: 2 }]);
+      setQueryResult(
+        "SELECT workspace_id, config->>'team_id' AS team_id FROM workspace_plugins",
+        [
+          { workspace_id: "ws-a", team_id: "T-a" },
+          { workspace_id: "ws-b", team_id: null },
+        ],
+      );
+      setQueryResult("DELETE FROM plugin_catalog", [{ id: "cat-1" }]);
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/cat-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+
+      // One teardown per affected workspace, scoped to this catalog + slug,
+      // carrying the per-workspace team_id.
+      expect(tearDownCalls).toHaveLength(2);
+      expect(tearDownCalls.map((c) => c.workspaceId).sort()).toEqual(["ws-a", "ws-b"]);
+      for (const call of tearDownCalls) {
+        expect(call.catalogId).toBe("cat-1");
+        expect(call.catalogSlug).toBe("twenty");
+        // The teardown MUST run while install rows + credentials still exist —
+        // i.e. BEFORE the plugin_catalog cascade.
+        expect(call.catalogDeleteAlreadyRan).toBe(false);
+      }
+      expect(tearDownCalls.find((c) => c.workspaceId === "ws-a")?.teamId).toBe("T-a");
+    });
+
+    it("does not enumerate workspaces when nothing installed the entry (#3681 F1)", async () => {
+      setQueryResult("SELECT slug FROM plugin_catalog WHERE id", [{ slug: "email" }]);
+      setQueryResult("SELECT COUNT(*)::int AS count FROM workspace_plugins", [{ count: 0 }]);
+      setQueryResult("DELETE FROM plugin_catalog", [{ id: "cat-1" }]);
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/cat-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(tearDownCalls).toHaveLength(0);
+      // No per-workspace enumeration query issued.
+      expect(
+        findCapturedQuery("SELECT workspace_id, config->>'team_id' AS team_id FROM workspace_plugins"),
+      ).toBeUndefined();
+    });
   });
 });
 
@@ -655,6 +749,9 @@ describe("Workspace Plugin Marketplace", () => {
     // Default to an unresolved deploy mode (self-hosted behavior) so the
     // plan-only tests below are unaffected by the #3301 saas_eligible gate.
     mockDeployMode = undefined;
+    // #3681 — reset dedicated-credential teardown capture.
+    credStoreCalls.length = 0;
+    mockDeleteDedicatedCredentialStore.mockClear();
   });
 
   describe("GET /marketplace/available", () => {
@@ -931,6 +1028,37 @@ describe("Workspace Plugin Marketplace", () => {
       expect(res.status).toBe(404);
     });
 
+    // #3681 (F2) — the generic marketplace install path persists config
+    // directly to workspace_plugins; it must refuse credential-bearing
+    // (oauth / static-bot / oauth-datasource) plugins, which carry a dedicated
+    // credential store only their own install/disconnect handlers manage.
+    it.each(["oauth", "static-bot", "oauth-datasource"])(
+      "rejects a non-form install model (%s) and persists nothing (#3681 F2)",
+      async (model) => {
+        setQueryResult("SELECT * FROM plugin_catalog WHERE id", [
+          { ...sampleCatalogRow, slug: "salesforce", install_model: model },
+        ]);
+        setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+        setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+
+        const res = await buildWorkspaceApp().request("/marketplace/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ catalogId: "cat-1" }),
+        });
+        expect(res.status).toBe(400);
+        const body = await json(res);
+        expect(body.error).toBe("install_model_unsupported");
+        // Must short-circuit before persisting anything.
+        expect(findCapturedQuery("INSERT INTO workspace_plugins")).toBeUndefined();
+        // A failure audit records the blocked attempt.
+        const failure = mockLogAdminAction.mock.calls
+          .map((c) => c[0])
+          .find((e) => e.actionType === "plugin.install" && e.status === "failure");
+        expect(failure?.metadata).toMatchObject({ installModelRejected: model, orgId: "org-1" });
+      },
+    );
+
     // #3301 defense-in-depth — hiding the card on SaaS isn't enough; the
     // install endpoint must also refuse a saas_eligible=false row so a direct
     // POST (known catalog id) can't slip DuckDB into a SaaS tenant.
@@ -1063,6 +1191,29 @@ describe("Workspace Plugin Marketplace", () => {
       const body = await json(res);
       expect(body.deleted).toBe(true);
       expect(body.scheduledTasksDeleted).toBe(0);
+    });
+
+    // #3681 (F2) — the workspace_plugins DELETE does NOT cascade
+    // integration_credentials (that FK is on plugin_catalog) and never touches
+    // slack/discord/twenty tables. The uninstall must tear the dedicated
+    // credential store down too, symmetric with WorkspaceInstaller.uninstall.
+    it("tears down the dedicated credential store with the resolved slug + team_id (#3681 F2)", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "twenty", team_id: "T-77" },
+      ]);
+      setQueryResult("DELETE FROM scheduled_tasks", []);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+
+      expect(credStoreCalls).toHaveLength(1);
+      expect(credStoreCalls[0]).toEqual({
+        slug: "twenty",
+        workspaceId: "org-1",
+        catalogId: "cat-1",
+        teamId: "T-77",
+      });
     });
 
     // ── #3188 — per-workspace onUninstall hook ───────────────────────

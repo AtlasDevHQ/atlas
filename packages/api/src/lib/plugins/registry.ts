@@ -205,6 +205,18 @@ export class PluginRegistry {
     const failed: string[] = [];
 
     for (const entry of this.entries) {
+      // #3681 — a plugin whose boot-time schema migration failed is marked
+      // unhealthy before init. Skip it: its tables were never created, so
+      // initializing (and later dispatching against) it would only surface
+      // confusing "relation does not exist" errors. It stays unhealthy.
+      if (entry.status === "unhealthy") {
+        failed.push(entry.plugin.id);
+        log.warn(
+          { pluginId: entry.plugin.id },
+          "Plugin already marked unhealthy (e.g. failed schema migration) — skipping initialization",
+        );
+        continue;
+      }
       entry.status = "initializing";
       if (!entry.plugin.initialize) {
         entry.status = "healthy";
@@ -441,6 +453,22 @@ export class PluginRegistry {
 
   getStatus(id: string): PluginStatus | undefined {
     return this.entries.find((e) => e.plugin.id === id)?.status;
+  }
+
+  /**
+   * Force a registered plugin into the "unhealthy" state. Used at boot when a
+   * plugin's schema migration fails (#3681): the migration is isolated per
+   * plugin so one bad DDL doesn't `exit(1)` the replica, but the plugin's
+   * tables don't exist, so it must not be initialized or dispatched against.
+   * `initializeAll` skips plugins already marked unhealthy. Returns false when
+   * the id is unknown.
+   */
+  markUnhealthy(id: string, reason?: string): boolean {
+    const entry = this.entries.find((e) => e.plugin.id === id);
+    if (!entry) return false;
+    entry.status = "unhealthy";
+    log.warn({ pluginId: id, ...(reason ? { reason } : {}) }, "Plugin marked unhealthy");
+    return true;
   }
 
   /** Return plugins whose types array includes the given type, are enabled, and are currently healthy. */

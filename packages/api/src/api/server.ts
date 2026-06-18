@@ -129,8 +129,11 @@ if (config.plugins?.length) {
     app: app as unknown as PluginWiringConfig["app"],
     toolRegistry: pluginToolRegistry,
     // Plugin schema migrations — run by the wired layer BEFORE initialize() so
-    // plugins can use their tables. FATAL on failure (the wired layer fails the
-    // Layer → server exits), preserving the prior imperative `process.exit(1)`.
+    // plugins can use their tables. #3681 — migrations are isolated per plugin:
+    // a single plugin's bad DDL no longer fails the Layer / `exit(1)`s the
+    // replica. The failed plugin is marked unhealthy (so `initializeAll` skips
+    // it and it never dispatches against tables that were never created) and
+    // boot continues with the healthy plugins.
     runMigrations: async (allPlugins) => {
       const pluginsWithSchema = allPlugins.filter((p) => p.schema != null);
       if (pluginsWithSchema.length === 0) return;
@@ -144,6 +147,7 @@ if (config.plugins?.length) {
       const { runPluginMigrations } = await import(
         "@atlas/api/lib/plugins/migrate"
       );
+      const { plugins } = await import("@atlas/api/lib/plugins/registry");
       // Spread to a mutable array — `runPluginMigrations` takes `PluginLike[]`
       // and the wired layer hands us a `ReadonlyArray`.
       const migrationResult = await runPluginMigrations(getInternalDB(), [...allPlugins]);
@@ -151,6 +155,15 @@ if (config.plugins?.length) {
         log.info(
           { applied: migrationResult.applied },
           "Plugin schema migrations applied",
+        );
+      }
+      if (migrationResult.failed.length > 0) {
+        for (const { pluginId, error } of migrationResult.failed) {
+          plugins.markUnhealthy(pluginId, `schema migration failed: ${error}`);
+        }
+        log.error(
+          { failed: migrationResult.failed },
+          "Some plugin schema migrations failed — those plugins are marked unhealthy and skipped; boot continues with the rest",
         );
       }
     },

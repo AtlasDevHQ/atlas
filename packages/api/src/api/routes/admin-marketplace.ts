@@ -26,7 +26,12 @@ import {
 } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { invokeOnUninstallHookForInstallRow } from "@atlas/api/lib/plugins/uninstall-hook";
+import {
+  deleteDedicatedCredentialStore,
+  tearDownWorkspaceInstall,
+} from "@atlas/api/lib/plugins/teardown";
 import { getConfig } from "@atlas/api/lib/config";
+import type { CatalogInstallModel } from "@useatlas/types";
 import { MIN_PLAN_TIERS, type PlanTier } from "@useatlas/types";
 import {
   isPlanEligible as planRankEligible,
@@ -48,6 +53,17 @@ const log = createLogger("admin-marketplace");
 
 const PLUGIN_TYPES = ["datasource", "context", "interaction", "action", "sandbox"] as const;
 type PluginType = (typeof PLUGIN_TYPES)[number];
+
+/**
+ * The generic marketplace install/uninstall path only serves `form`-model
+ * plugins (config persisted directly to `workspace_plugins.config`). OAuth,
+ * static-bot, and oauth-datasource plugins have dedicated credential stores +
+ * install/disconnect handlers — see the gate in the install route (#3681).
+ */
+const MARKETPLACE_INSTALL_MODEL: CatalogInstallModel = "form";
+function isFormInstallModel(value: unknown): value is "form" {
+  return value === MARKETPLACE_INSTALL_MODEL;
+}
 
 /**
  * Whether the workspace's tier admits installing a plugin requiring
@@ -541,6 +557,62 @@ platformCatalog.openapi(deleteCatalogRoute, async (c) => {
         ...(priorLookupFailed && { priorLookupFailed: true }),
       };
 
+      // #3681 — tear down the per-workspace state the `plugin_catalog` FK
+      // cascade does NOT reach, for EVERY affected workspace, BEFORE the
+      // cascade fires. The cascade removes `workspace_plugins` +
+      // `integration_credentials` (both FK `plugin_catalog`), but it is blind
+      // to: `scheduled_tasks` (soft FK, migration 0044 — the scheduler keeps
+      // firing them post-delete), the dedicated credential tables
+      // (`slack_installations` / `discord_installations` / `twenty_integrations`,
+      // which key on team/workspace not catalog), the per-workspace
+      // `onUninstall` hook (external webhook / OAuth grant revocation), and the
+      // `LazyPluginLoader` cache (socket-holding plugin instances). The shared
+      // teardown runs WHILE the install rows + credentials still exist (the
+      // cascade below removes them, and the hook needs them to authenticate).
+      //
+      // Best-effort and non-atomic by design: a per-workspace teardown failure
+      // is logged + counted and the cascade still proceeds — an orphaned task
+      // is skipped by the execution-time guard and swept by the reconcile
+      // fiber, whereas a catalog row left half-deleted is not recoverable.
+      let teardownSummary = {
+        workspaces: 0,
+        hookFailures: 0,
+        credentialFailures: 0,
+        scheduledTasksDeleted: 0,
+      };
+      if (affectedOrgCount > 0) {
+        teardownSummary = yield* Effect.promise(async () => {
+          const summary = { workspaces: 0, hookFailures: 0, credentialFailures: 0, scheduledTasksDeleted: 0 };
+          try {
+            const affected = await internalQuery<{ workspace_id: string; team_id: string | null }>(
+              "SELECT workspace_id, config->>'team_id' AS team_id FROM workspace_plugins WHERE catalog_id = $1",
+              [id],
+            );
+            for (const ws of affected) {
+              const result = await tearDownWorkspaceInstall({
+                workspaceId: ws.workspace_id,
+                catalogId: id,
+                // `pluginSlug` is null only when the pre-lookup degraded; the
+                // credential switch then no-ops but the hook + scheduled_tasks
+                // + loader evict still run keyed on catalog id.
+                catalogSlug: pluginSlug ?? "",
+                teamId: ws.team_id,
+              });
+              summary.workspaces += 1;
+              summary.hookFailures += result.hookFailures.length;
+              if (result.credentialError !== undefined) summary.credentialFailures += 1;
+              summary.scheduledTasksDeleted += result.scheduledTasksDeleted;
+            }
+          } catch (err) {
+            log.error(
+              { catalogId: id, err: err instanceof Error ? err : new Error(String(err)) },
+              "Catalog delete: per-workspace teardown enumeration failed — proceeding with cascade; some workspace state may be orphaned",
+            );
+          }
+          return summary;
+        });
+      }
+
       const rows = yield* queryEffect<{ id: string }>(
         "DELETE FROM plugin_catalog WHERE id = $1 RETURNING id",
         [id],
@@ -578,10 +650,29 @@ platformCatalog.openapi(deleteCatalogRoute, async (c) => {
           targetType: "plugin",
           targetId: id,
           scope: "platform",
-          metadata: auditMetadataBase,
+          metadata: {
+            ...auditMetadataBase,
+            // #3681 — per-workspace teardown coverage so an operator can see
+            // how many workspaces were torn down vs orphaned by a partial run.
+            teardownWorkspaces: teardownSummary.workspaces,
+            scheduledTasksDeleted: teardownSummary.scheduledTasksDeleted,
+            ...(teardownSummary.hookFailures > 0 && { teardownHookFailures: teardownSummary.hookFailures }),
+            ...(teardownSummary.credentialFailures > 0 && { teardownCredentialFailures: teardownSummary.credentialFailures }),
+          },
         });
       }
-      log.info({ catalogId: id, affectedOrgCount, priorLookupFailed }, "Catalog entry deleted (cascaded to workspace installations)");
+      log.info(
+        {
+          catalogId: id,
+          affectedOrgCount,
+          priorLookupFailed,
+          teardownWorkspaces: teardownSummary.workspaces,
+          scheduledTasksDeleted: teardownSummary.scheduledTasksDeleted,
+          teardownHookFailures: teardownSummary.hookFailures,
+          teardownCredentialFailures: teardownSummary.credentialFailures,
+        },
+        "Catalog entry deleted (per-workspace teardown + cascade to workspace installations)",
+      );
       return c.json({ deleted: true }, 200);
     }),
     { label: "delete catalog entry" },
@@ -818,6 +909,40 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
       }
       const catalogEntry = catalogRows[0]!;
 
+      // #3681 — gate by `install_model`. The generic marketplace install path
+      // persists `workspace_plugins.config` directly; that is the install
+      // shape for `form` plugins only (Email, Webhook, Obsidian, …). OAuth,
+      // static-bot, and oauth-datasource plugins carry a DEDICATED credential
+      // store (`integration_credentials` / `slack_installations` /
+      // `twenty_integrations` / a datasource pool) that only their own
+      // install + disconnect handlers (`WorkspaceInstaller`, the OAuth
+      // callback routes, `/admin/connections`) populate and tear down. Letting
+      // them be installed here would create a half-credentialed row whose
+      // dedicated store the marketplace `DELETE` then can't fully reach —
+      // exactly the orphan class #3681 fixes. Refuse server-side and point the
+      // admin at the dedicated connect flow.
+      const installModel = (catalogEntry as { install_model?: string }).install_model;
+      if (!isFormInstallModel(installModel)) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.install,
+          targetType: "plugin",
+          targetId: body.catalogId,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: body.catalogId,
+            pluginSlug: catalogEntry.slug,
+            orgId,
+            installModelRejected: installModel ?? "unknown",
+          },
+        });
+        return c.json({
+          error: "install_model_unsupported",
+          message: `"${catalogEntry.slug}" uses the "${installModel ?? "unknown"}" install model and cannot be installed through the marketplace — use its dedicated connect flow under Admin → Integrations or Admin → Connections.`,
+          requestId,
+        }, 400);
+      }
+
       // #3301 defense-in-depth — the /available listing hides
       // `saas_eligible = false` rows on SaaS, but the install path must also
       // refuse them server-side: a workspace admin who already knows the
@@ -1042,9 +1167,9 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       // statement) to capture slug alongside the uninstall. The subselect
       // can still return NULL if the catalog row was already gone (e.g. a
       // catalog_delete cascade raced with this request).
-      const rows = yield* queryEffect<{ id: string; catalog_id: string; slug: string | null }>(
+      const rows = yield* queryEffect<{ id: string; catalog_id: string; slug: string | null; team_id: string | null }>(
         `DELETE FROM workspace_plugins WHERE id = $1 AND workspace_id = $2
-         RETURNING id, catalog_id, (SELECT slug FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS slug`,
+         RETURNING id, catalog_id, config->>'team_id' AS team_id, (SELECT slug FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS slug`,
         [id, orgId],
       ).pipe(Effect.tapError((err) => Effect.sync(() => {
         // The DELETE rejected before RETURNING resolved, so we don't have
@@ -1155,6 +1280,54 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
         );
         return c.json({ deleted: true, scheduledTasksDeleted: 0 }, 200);
       }
+
+      // #3681 — dedicated credential teardown, symmetric with
+      // `WorkspaceInstaller.uninstall`. The `workspace_plugins` DELETE above
+      // does NOT cascade `integration_credentials` (that FK is on
+      // `plugin_catalog`, not `workspace_plugins`) and never touches the
+      // `slack_installations` / `discord_installations` / `twenty_integrations`
+      // tables. Without this, a credential-bearing row removed here orphaned
+      // its dedicated credential. The install route now gates non-`form`
+      // models out, so for a normally-installed plugin this is a no-op; it
+      // remains as defense-in-depth for any pre-gate / dedicated-flow row that
+      // reaches this path. Best-effort (matches the scheduled-task posture):
+      // the install row is already gone, so a transient store hiccup must not
+      // surface as a 500 — log + failure-audit instead.
+      yield* Effect.promise(async () => {
+        try {
+          await deleteDedicatedCredentialStore(
+            deleted.slug ?? "",
+            orgId,
+            deleted.catalog_id,
+            deleted.team_id,
+          );
+        } catch (err) {
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.plugin.uninstall,
+            targetType: "plugin",
+            targetId: id,
+            scope: "workspace",
+            status: "failure",
+            metadata: {
+              installationId: id,
+              pluginId: deleted.catalog_id,
+              ...(deleted.slug != null && { pluginSlug: deleted.slug }),
+              orgId,
+              credentialTeardownFailed: true,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+          log.error(
+            {
+              orgId,
+              installationId: id,
+              pluginId: deleted.catalog_id,
+              err: err instanceof Error ? err : new Error(String(err)),
+            },
+            "Plugin uninstalled but dedicated credential teardown failed — credential row may be orphaned until purged manually",
+          );
+        }
+      });
 
       logAdminAction({
         actionType: ADMIN_ACTIONS.plugin.uninstall,

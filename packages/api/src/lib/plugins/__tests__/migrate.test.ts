@@ -758,11 +758,14 @@ describe("runPluginMigrations", () => {
       plugins as Parameters<typeof runPluginMigrations>[1],
     );
 
-    // Phase 1: 2 CREATE TABLE statements applied
-    // Phase 2: 1 ALTER TABLE for plugin_a_items.y (x already exists, plugin_b skipped)
+    // #3681 — migrations run per-plugin (CREATE then ALTER for plugin a,
+    // then CREATE for plugin b) so the ordering is grouped by plugin:
+    //   a: CREATE plugin_a_items, ALTER plugin_a_items.y (x already exists)
+    //   b: CREATE plugin_b_things (no ALTER — table not yet in information_schema)
     expect(result.applied).toEqual([
-      "plugin_a_items", "plugin_b_things", "plugin_a_items",
+      "plugin_a_items", "plugin_a_items", "plugin_b_things",
     ]);
+    expect(result.failed).toEqual([]);
   });
 
   test("handles plugins with no schema", async () => {
@@ -803,7 +806,9 @@ describe("runPluginMigrations", () => {
     expect(alterQuery).toBeUndefined();
   });
 
-  test("propagates Phase 1 errors and skips Phase 2", async () => {
+  test("isolates a Phase 1 failure to the failing plugin (no throw, no Phase 2)", async () => {
+    // #3681 — a plugin's bad DDL is caught and recorded in `failed` rather
+    // than thrown, so the boot Layer no longer `exit(1)`s the replica.
     const db = makeMockDB({ failOnCreate: true });
     const plugins = [
       makePlugin("test", {
@@ -811,13 +816,65 @@ describe("runPluginMigrations", () => {
       }),
     ];
 
-    await expect(
-      runPluginMigrations(db, plugins as Parameters<typeof runPluginMigrations>[1]),
-    ).rejects.toThrow(/permission denied/);
+    const result = await runPluginMigrations(
+      db,
+      plugins as Parameters<typeof runPluginMigrations>[1],
+    );
 
-    // No ALTER TABLE queries should have been attempted
+    expect(result.applied).toEqual([]);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]!.pluginId).toBe("test");
+    expect(result.failed[0]!.error).toMatch(/permission denied/);
+
+    // Phase 2 must not run for the failed plugin.
     const alterQuery = db.queries.find((q) => q.sql.includes("ALTER TABLE"));
     expect(alterQuery).toBeUndefined();
+  });
+
+  test("a failing plugin does not abort the migrations of healthy plugins", async () => {
+    // #3681 — the core acceptance criterion: one bad plugin doesn't take the
+    // whole replica down. `bad` throws on CREATE; `good` still migrates.
+    const db: MigrateDB & { queries: QueryLog[] } = (() => {
+      const queries: QueryLog[] = [];
+      const existingMigrations: Array<{ plugin_id: string; table_name: string; sql_hash: string }> = [];
+      return {
+        queries,
+        async query(sql: string, params?: unknown[]) {
+          queries.push({ sql, params });
+          if (sql.includes("CREATE TABLE") && sql.includes("plugin_bad_")) {
+            throw new Error("syntax error at or near \"GARBAGE\"");
+          }
+          if (sql.includes("FROM plugin_migrations")) return { rows: existingMigrations };
+          if (sql.includes("INSERT INTO plugin_migrations") && params) {
+            existingMigrations.push({
+              plugin_id: String(params[0]),
+              table_name: String(params[1]),
+              sql_hash: String(params[2]),
+            });
+            return { rows: [] };
+          }
+          if (sql.includes("information_schema.columns")) return { rows: [] };
+          return { rows: [] };
+        },
+      };
+    })();
+
+    const plugins = [
+      makePlugin("bad", { widgets: { fields: { name: { type: "string" } } } }),
+      makePlugin("good", { items: { fields: { name: { type: "string" } } } }),
+    ];
+
+    const result = await runPluginMigrations(
+      db,
+      plugins as Parameters<typeof runPluginMigrations>[1],
+    );
+
+    expect(result.failed.map((f) => f.pluginId)).toEqual(["bad"]);
+    expect(result.applied).toContain("plugin_good_items");
+    const goodCreate = db.queries.find(
+      (q) => q.sql.includes("CREATE TABLE") && q.sql.includes("plugin_good_items"),
+    );
+    expect(goodCreate).toBeDefined();
   });
 
   test("idempotent when run twice", async () => {

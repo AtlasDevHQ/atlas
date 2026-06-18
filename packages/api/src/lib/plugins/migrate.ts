@@ -348,32 +348,70 @@ export async function generateColumnMigrations(
 // High-level orchestrator
 // ---------------------------------------------------------------------------
 
+/** Per-plugin outcome of {@link runPluginMigrations}. */
+export interface PluginMigrationResult {
+  /** Prefixed table names whose CREATE/ALTER ran in this invocation. */
+  applied: string[];
+  /** Prefixed table names whose migration was already recorded (idempotent skip). */
+  skipped: string[];
+  /**
+   * Plugins whose migration threw — isolated so one bad plugin's DDL does
+   * NOT abort the others (or `exit(1)` the replica). Each entry is the
+   * plugin id + the normalized error message; the caller marks the plugin
+   * unhealthy and continues boot.
+   */
+  failed: Array<{ pluginId: string; error: string }>;
+}
+
 /**
- * Run all plugin schema migrations: CREATE TABLE for new tables, then
- * ALTER TABLE ADD COLUMN for new fields on existing tables.
+ * Run all plugin schema migrations: for each plugin, CREATE TABLE for new
+ * tables, then ALTER TABLE ADD COLUMN for new fields on existing tables.
  *
  * Idempotent — safe to call on every startup.
+ *
+ * #3681 — migrations are isolated PER PLUGIN. A throw from one plugin's DDL
+ * (bad type, permission error, conflicting table) is caught, recorded in
+ * `failed`, and the remaining plugins still migrate. Previously every plugin
+ * ran inside one try/catch and a single failure propagated to the boot Layer
+ * → `process.exit(1)`, taking the whole replica down. The caller marks each
+ * failed plugin unhealthy so it is skipped at `initializeAll` time rather
+ * than running against tables that were never created.
  */
 export async function runPluginMigrations(
   db: MigrateDB,
   plugins: PluginWithSchema[],
-): Promise<{ applied: string[]; skipped: string[] }> {
-  // Phase 1: CREATE TABLE
-  const createStatements = generateMigrationSQL(plugins);
-  const createResult = await applyMigrations(db, createStatements);
+): Promise<PluginMigrationResult> {
+  const applied: string[] = [];
+  const skipped: string[] = [];
+  const failed: Array<{ pluginId: string; error: string }> = [];
 
-  // Phase 2: ALTER TABLE ADD COLUMN (for tables that already existed or were just created)
-  const columnStatements = await generateColumnMigrations(db, plugins);
-  if (columnStatements.length === 0) {
-    return createResult;
+  for (const plugin of plugins) {
+    if (!plugin.schema) continue;
+    try {
+      // Phase 1: CREATE TABLE (this plugin only).
+      const createResult = await applyMigrations(db, generateMigrationSQL([plugin]));
+      applied.push(...createResult.applied);
+      skipped.push(...createResult.skipped);
+
+      // Phase 2: ALTER TABLE ADD COLUMN for tables that already existed or
+      // were just created (this plugin only).
+      const columnStatements = await generateColumnMigrations(db, [plugin]);
+      if (columnStatements.length > 0) {
+        const columnResult = await applyMigrations(db, columnStatements);
+        applied.push(...columnResult.applied);
+        skipped.push(...columnResult.skipped);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failed.push({ pluginId: plugin.id, error: message });
+      log.error(
+        { pluginId: plugin.id, err: err instanceof Error ? err : new Error(message) },
+        "Plugin schema migration failed — isolating this plugin; remaining plugins continue migrating",
+      );
+    }
   }
 
-  const columnResult = await applyMigrations(db, columnStatements);
-
-  return {
-    applied: [...createResult.applied, ...columnResult.applied],
-    skipped: [...createResult.skipped, ...columnResult.skipped],
-  };
+  return { applied, skipped, failed };
 }
 
 // ---------------------------------------------------------------------------

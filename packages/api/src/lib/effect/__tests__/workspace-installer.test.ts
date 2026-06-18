@@ -1583,6 +1583,72 @@ describe("WorkspaceInstaller.uninstallDatasource", () => {
     expect(deleteCall).toBeDefined();
     expect(bridgeUnregisterCalls).toContain("prod");
   });
+
+  // #3681 — datasources are multi-instance per (workspace, catalog); the
+  // scheduled-task teardown is scoped by (plugin_id = catalog_id, org_id), NOT
+  // install_id. Tearing down while a sibling instance is still live would
+  // wrongly delete the sibling's tasks, so teardown is guarded on "no live
+  // install of this catalog remains for the workspace".
+  it("SKIPS scheduled-task teardown when a sibling instance is still live (#3681)", async () => {
+    queueCatalogLookup("postgres", {
+      pillar: "datasource",
+      install_model: "form",
+      id: "cat:postgres",
+    });
+    internalQueryResponses.push({
+      match: (sql) =>
+        sql.includes("UPDATE workspace_plugins") && sql.includes("'archived'"),
+      rows: [{ id: "row-1" }],
+    });
+    // Sibling-guard SELECT finds a still-live instance of the same catalog.
+    internalQueryResponses.push({
+      match: (sql) =>
+        sql.includes("SELECT id FROM workspace_plugins") &&
+        sql.includes("status <> 'archived'"),
+      rows: [{ id: "sibling-still-live" }],
+    });
+    const installer = await getLiveService();
+    await runEffect(installer.uninstallDatasource(WSID, "postgres", "prod"));
+
+    // No scheduled_tasks DELETE — the sibling's tasks must be preserved.
+    const taskDelete = internalQueryCalls.find((c) =>
+      c.sql.includes("DELETE FROM scheduled_tasks"),
+    );
+    expect(taskDelete).toBeUndefined();
+  });
+
+  it("RUNS scheduled-task teardown scoped by (catalog_id, workspace) when it's the last instance (#3681)", async () => {
+    queueCatalogLookup("postgres", {
+      pillar: "datasource",
+      install_model: "form",
+      id: "cat:postgres",
+    });
+    internalQueryResponses.push({
+      match: (sql) =>
+        sql.includes("UPDATE workspace_plugins") && sql.includes("'archived'"),
+      rows: [{ id: "row-1" }],
+    });
+    // Sibling-guard SELECT finds no live instance → teardown runs.
+    internalQueryResponses.push({
+      match: (sql) =>
+        sql.includes("SELECT id FROM workspace_plugins") &&
+        sql.includes("status <> 'archived'"),
+      rows: [],
+    });
+    internalQueryResponses.push({
+      match: (sql) => sql.includes("DELETE FROM scheduled_tasks"),
+      rows: [{ id: "task-1" }],
+    });
+    const installer = await getLiveService();
+    await runEffect(installer.uninstallDatasource(WSID, "postgres", "prod"));
+
+    const taskDelete = internalQueryCalls.find((c) =>
+      c.sql.includes("DELETE FROM scheduled_tasks"),
+    );
+    expect(taskDelete).toBeDefined();
+    // Scoped by (plugin_id = catalog_id, org_id = workspace), never install_id.
+    expect(taskDelete?.params).toEqual(["cat:postgres", WSID]);
+  });
 });
 
 describe("WorkspaceInstaller.updateDatasourceConfig", () => {

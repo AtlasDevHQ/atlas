@@ -169,6 +169,77 @@ describe("PluginRegistry", () => {
 
       expect(() => registry.initializeAll(minimalCtx)).toThrow("already initialized");
     });
+
+    // #3681 — a plugin whose boot-time schema migration failed is marked
+    // unhealthy BEFORE init; initializeAll must skip it (its tables were
+    // never created) rather than run initialize() against missing tables.
+    test("skips a plugin already marked unhealthy and keeps it unhealthy", async () => {
+      const badInit = mock(() => Promise.resolve());
+      const goodInit = mock(() => Promise.resolve());
+      registry.register(makePlugin({ id: "bad", initialize: badInit }));
+      registry.register(makePlugin({ id: "good", initialize: goodInit }));
+
+      // Simulate a failed schema migration on "bad".
+      expect(registry.markUnhealthy("bad", "schema migration failed")).toBe(true);
+
+      const result = await registry.initializeAll(minimalCtx);
+
+      expect(badInit).not.toHaveBeenCalled();
+      expect(goodInit).toHaveBeenCalledTimes(1);
+      expect(result.failed).toContain("bad");
+      expect(result.succeeded).toEqual(["good"]);
+      expect(registry.getStatus("bad")).toBe("unhealthy");
+      expect(registry.getStatus("good")).toBe("healthy");
+    });
+  });
+
+  // --- markUnhealthy ---
+
+  describe("markUnhealthy", () => {
+    test("flips a registered plugin to unhealthy", () => {
+      registry.register(makePlugin({ id: "p" }));
+      expect(registry.getStatus("p")).toBe("registered");
+      expect(registry.markUnhealthy("p")).toBe(true);
+      expect(registry.getStatus("p")).toBe("unhealthy");
+    });
+
+    test("returns false for an unknown plugin id", () => {
+      expect(registry.markUnhealthy("nope")).toBe(false);
+    });
+  });
+
+  // --- markUnhealthy stickiness against the health loop (#3681) ---
+
+  describe("markUnhealthy + healthCheckAll (sticky)", () => {
+    // The headline #3681 guarantee: a plugin disabled by a failed boot-time
+    // schema migration must stay unhealthy. If healthCheckAll re-probed it and
+    // its healthCheck() only validated an external upstream (not its missing
+    // tables), the next 60s tick would flip it back to "healthy", re-surface it
+    // via getByType, and let it dispatch against relations that never existed.
+    test("healthCheckAll never re-probes or promotes a migration-failed plugin", async () => {
+      const probe = mock(async () => ({ healthy: true, latencyMs: 1 }));
+      registry.register(makePlugin({ id: "broken", healthCheck: probe }));
+      await registry.initializeAll(minimalCtx);
+
+      registry.markUnhealthy("broken", "schema migration failed: boom");
+      expect(registry.getStatus("broken")).toBe("unhealthy");
+
+      const results = await registry.healthCheckAll();
+
+      // The probe is skipped entirely, and the plugin stays unhealthy with the
+      // migration reason — it does NOT flip to the probe's healthy result.
+      expect(probe).not.toHaveBeenCalled();
+      const entry = results.get("broken");
+      expect(entry?.healthy).toBe(false);
+      expect(entry?.status).toBe("unhealthy");
+      expect(entry?.message).toBe("schema migration failed: boom");
+      expect(registry.getStatus("broken")).toBe("unhealthy");
+
+      // Stays unhealthy across repeated ticks and is never surfaced for dispatch.
+      await registry.healthCheckAll();
+      expect(probe).not.toHaveBeenCalled();
+      expect(registry.getByType("datasource")).toEqual([]);
+    });
   });
 
   // --- healthCheckAll ---

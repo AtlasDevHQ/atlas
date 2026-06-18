@@ -58,6 +58,11 @@ import {
 } from "@atlas/api/lib/plugins/secrets";
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import { invokeOnUninstallHook } from "@atlas/api/lib/plugins/uninstall-hook";
+import {
+  deleteDedicatedCredentialStore,
+  tearDownWorkspaceInstall,
+  INTEGRATION_CREDENTIALS_SLUGS,
+} from "@atlas/api/lib/plugins/teardown";
 import type {
   CatalogRowForDispatch,
   CredentialResult,
@@ -373,29 +378,12 @@ export type InstallResult =
 // wrappers in the Live layer normalize errors)
 // ---------------------------------------------------------------------------
 
-/**
- * Slugs whose credentials live in `integration_credentials` keyed by
- * (workspace_id, catalog_id). Salesforce shipped first (#2658); Jira
- * (#2659) is the second consumer that proves the abstraction.
- *
- * Moved from `api/routes/integrations.ts` so the facade owns the
- * dispatch table for action-OAuth teardown. Per ADR-0005, adding a new
- * lazy OAuth integration is one line here + a `*-oauth-handler.ts`
- * pair + registration in `lib/integrations/install/register.ts`.
- *
- * @see docs/adr/0005-integration-credentials-table.md
- */
-export const INTEGRATION_CREDENTIALS_SLUGS: ReadonlySet<string> = new Set<string>([
-  "salesforce",
-  "jira",
-  // #2750 — Linear OAuth mode. The API-key mode (`linear-apikey`)
-  // intentionally is NOT in this set: its credentials live inline in
-  // `workspace_plugins.config` via selective-field encryption, so the
-  // standard `workspace_plugins` DELETE teardown is sufficient. Only
-  // OAuth installs that hydrate `integration_credentials` need
-  // dual-store teardown.
-  "linear",
-]);
+// `INTEGRATION_CREDENTIALS_SLUGS` + `deleteDedicatedCredentialStore` moved to
+// `lib/plugins/teardown.ts` (#3681) so the catalog/marketplace uninstall routes
+// share one credential-teardown switch with `WorkspaceInstaller.uninstall`.
+// Re-exported here for the existing import sites (`api/routes/integrations.ts`,
+// `lib/effect/index.ts`, `lib/effect/services.ts`).
+export { INTEGRATION_CREDENTIALS_SLUGS };
 
 interface CatalogRow {
   readonly id: string;
@@ -1188,7 +1176,7 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
       // 2) workspace_plugins SECOND. A failure here leaves the install
       //    row dangling but credentials are already gone (recoverable).
       yield* Effect.tryPromise({
-        try: () => deleteCredentialStoreForSlug(catalogSlug, workspaceId, catalog.id, row.teamId),
+        try: () => deleteDedicatedCredentialStore(catalogSlug, workspaceId, catalog.id, row.teamId),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(Effect.catchAll((err) => Effect.die(err)));
 
@@ -1660,6 +1648,56 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
         );
       }
 
+      // #3681 — scheduled-task teardown so the datasource uninstall is
+      // symmetric with `WorkspaceInstaller.uninstall`. Before this, an
+      // archived row left its `scheduled_tasks` firing: a soft archive keeps
+      // the `workspace_plugins` row (status='archived'), and the
+      // orphan-reconcile predicate matches that still-present row by
+      // (catalog_id, workspace_id) — it never classifies the tasks as orphans,
+      // so nothing swept them. A hard delete relied on the soft-FK going
+      // uncascaded. Datasources are
+      // multi-instance per (workspace, catalog) and `scheduled_tasks` is scoped
+      // by (plugin_id = catalog_id, org_id) — NOT install_id — so we only tear
+      // tasks down once NO live install of this catalog remains for the
+      // workspace, otherwise a sibling instance's tasks would be wrongly
+      // deleted. Credentials live inline in `workspace_plugins.config` (cleared
+      // by the row delete) so there is no dedicated store to clear, and the
+      // `onUninstall` hook is suppressed (datasource teardown is owned by the
+      // pool unregister above, and a soft archive must not revoke grants).
+      yield* Effect.tryPromise({
+        try: async () => {
+          const live = await lazyInternalQuery()<{ id: string }>(
+            `SELECT id FROM workspace_plugins
+              WHERE workspace_id = $1 AND catalog_id = $2 AND status <> 'archived'
+              LIMIT 1`,
+            [workspaceId, catalog.id],
+          );
+          if (live.length > 0) return; // a sibling instance is still live
+          await tearDownWorkspaceInstall({
+            workspaceId,
+            catalogId: catalog.id,
+            catalogSlug,
+            invokeHook: false,
+            deleteCredentials: false,
+          });
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.warn(
+            {
+              workspaceId,
+              installId,
+              catalogSlug,
+              catalogId: catalog.id,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "WorkspaceInstaller.uninstallDatasource: scheduled-task cleanup failed — orphan tasks are skipped by the execution-time guard and swept by the reconcile fiber",
+          );
+          return Effect.succeed(undefined);
+        }),
+      );
+
       log.info(
         { workspaceId, catalogSlug, installId, hard },
         "WorkspaceInstaller.uninstallDatasource completed",
@@ -1878,97 +1916,6 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
     uninstallDatasource: uninstallDatasourceImpl,
     updateDatasourceConfig: updateDatasourceConfigImpl,
   } satisfies WorkspaceInstallerShape;
-}
-
-/**
- * Slug-keyed credential teardown. Dispatched off the per-Platform
- * convention rather than the catalog's `install_model`:
- *   - chat OAuth (Slack) writes to `chat_cache` keyed by `team_id`.
- *   - action OAuth (Salesforce, Jira, …) writes to `integration_credentials`
- *     keyed by (workspace, catalog).
- *   - form-based installs have no separate credential row — secrets are
- *     inside `workspace_plugins.config` and disappear with the row.
- *
- * Throws on unknown slugs whose pillar would imply a credential store
- * but no dispatch is wired — defensive backstop; the route layer should
- * surface 501 before this fires.
- */
-async function deleteCredentialStoreForSlug(
-  slug: string,
-  workspaceId: string,
-  catalogId: string,
-  teamId: string | null,
-): Promise<void> {
-  if (slug === "slack") {
-    if (!teamId) {
-      // Defensive — a Slack install row should always carry team_id.
-      // If it doesn't, the row is corrupted; surface as a hard error
-      // so the admin disconnect attempt isn't silently a no-op.
-      throw new Error(
-        `Slack disconnect requires team_id from workspace_plugins.config for workspace=${workspaceId}`,
-      );
-    }
-    // Lazy import — keeps `slack/store` and
-    // `integrations/credentials/store` out of the static import graph
-    // so partial `mock.module()` setups elsewhere (which intentionally
-    // omit `deleteInstallation` / `deleteCredentialBundle` because
-    // those tests don't exercise the disconnect path) don't trip
-    // bun's "Export named 'X' not found" loader error. Production
-    // perf cost is one resolver hit per disconnect call.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { deleteInstallation } = require("@atlas/api/lib/slack/store") as {
-      deleteInstallation: (teamId: string) => Promise<void>;
-    };
-    await deleteInstallation(teamId);
-    return;
-  }
-  if (INTEGRATION_CREDENTIALS_SLUGS.has(slug)) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { deleteCredentialBundle } = require("@atlas/api/lib/integrations/credentials/store") as {
-      deleteCredentialBundle: (workspaceId: string, catalogId: string) => Promise<boolean>;
-    };
-    await deleteCredentialBundle(workspaceId, catalogId);
-    return;
-  }
-  if (slug === "twenty") {
-    // Twenty CRM — credentials live in the dedicated
-    // `twenty_integrations` table, not `workspace_plugins.config`. The
-    // catalog DELETE removes the workspace_plugins row (step 2 of the
-    // disconnect dance); this step removes the credential row so the
-    // dispatcher falls back to env var (or surfaces the actionable
-    // "configure under Admin → Integrations → Twenty" error).
-    //
-    // Lazy import for the same reason as the Slack branch above — keeps
-    // the Twenty store off the static graph of test files that mock
-    // `db/internal` partially.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { deleteTwentyIntegration } = require("@atlas/api/lib/integrations/twenty/store") as {
-      deleteTwentyIntegration: (workspaceId: string) => Promise<boolean>;
-    };
-    await deleteTwentyIntegration(workspaceId);
-    return;
-  }
-  if (slug === "discord") {
-    // Discord is dual-store: the static-bot install writes only
-    // `workspace_plugins` (routing), but a self-hosted BYOT install also
-    // persists a bot token to `discord_installations` (#3161 keeps that
-    // table). When a workspace has both, a unified disconnect must clear the
-    // BYOT credential too — otherwise `discord_installations.bot_token_encrypted`
-    // is stranded and the admin has to disconnect a second time through the
-    // legacy endpoint (Codex #3163). `deleteDiscordInstallationByOrg` is a no-op
-    // (returns false) for a static-bot-only install with no BYOT row, so this
-    // is safe in both cases. Lazy `require` mirrors the Slack/Twenty branches —
-    // keeps the discord store off the static graph of partial-mock test files.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { deleteDiscordInstallationByOrg } = require("@atlas/api/lib/discord/store") as {
-      deleteDiscordInstallationByOrg: (orgId: string) => Promise<boolean>;
-    };
-    await deleteDiscordInstallationByOrg(workspaceId);
-    return;
-  }
-  // Form-based / static-bot (telegram/gchat/whatsapp/teams): no separate
-  // credential store; the DELETE on workspace_plugins (step 2) is the
-  // credential teardown. No-op here.
 }
 
 // ---------------------------------------------------------------------------

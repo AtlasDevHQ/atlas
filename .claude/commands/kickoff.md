@@ -111,7 +111,7 @@ After creating all issues, recommend 2-3 issues to start with (same format as `/
 - Prefer foundational work that unblocks other items
 - Consider parallelizability (can multiple sessions work on different items?)
 
-Output session prompts in the same format as `/next` — detailed enough for a fresh Claude Code session.
+Output session prompts in the same format as `/next` — detailed enough for a fresh Claude Code session. This **includes the loud worktree banner and the `bun install --frozen-lockfile` step**: every emitted prompt opens with the `🚨 STOP — work in your own git worktree` block and its `git worktree add ... && cd ... && bun install --frozen-lockfile` step ZERO, because these sessions share one checkout and a fresh worktree has no `node_modules`. Do not drop it.
 
 ---
 

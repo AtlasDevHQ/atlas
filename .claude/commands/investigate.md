@@ -94,7 +94,7 @@ Output a summary:
 Then ask the user to choose:
 
 1. **Park it** — Issue is filed. Pick it up later via `/next`. Done.
-2. **Fix it now** — Output a session prompt (same format as `/next`) so the user can start immediately.
+2. **Fix it now** — Output a session prompt (same format as `/next`) so the user can start immediately. Use the full `/next` prompt template, **including the loud worktree banner and the `git worktree add ... && cd ... && bun install --frozen-lockfile` step ZERO** — the session shares this checkout and a fresh worktree has no `node_modules`. Don't drop it.
 
 ---
 

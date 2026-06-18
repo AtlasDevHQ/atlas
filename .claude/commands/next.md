@@ -61,8 +61,9 @@ The user runs up to 3 Claude Code sessions in parallel, **all sharing this one w
 [
 🚨🚨🚨 STOP — YOU MUST WORK IN YOUR OWN GIT WORKTREE. 🚨🚨🚨
 This repo is a SHARED working tree. Other sessions are on this exact checkout RIGHT NOW.
-Before you read, edit, run, or commit ANYTHING, create your own worktree off the latest main:
-    git fetch origin && git worktree add -b <branch> ../atlas-wt-<slug> origin/main && cd ../atlas-wt-<slug>
+Before you read, edit, run, or commit ANYTHING, create your own worktree off the latest main
+AND install deps into it (a fresh worktree has NO node_modules — tests/builds fail until you do):
+    git fetch origin && git worktree add -b <branch> ../atlas-wt-<slug> origin/main && cd ../atlas-wt-<slug> && bun install --frozen-lockfile
 Do NOT `/reset`, `git checkout main`, `git add -A`, or `git commit -a` in the shared tree — you will
 clobber another session's branch and stage their files. Full rules are in the Worktree isolation block
 at the bottom of this prompt. Do this step ZERO, before anything else.
@@ -126,6 +127,7 @@ IMPORTANT — Worktree isolation (this repo is a SHARED working tree — you mus
 - You are NOT in a pre-made worktree. Other sessions share this exact checkout (same HEAD + index). Before making ANY change, create a dedicated worktree + branch off the latest main and do all work from there:
     `git fetch origin && git worktree add -b <branch> ../atlas-wt-<slug> origin/main && cd ../atlas-wt-<slug>`
     (`<slug>` = a slash-free short name; the branch name may contain slashes but the directory must not.)
+- **Install deps into the fresh worktree before running anything** — a brand-new `git worktree add` has NO `node_modules`. The first thing you do after `cd` into it is `bun install --frozen-lockfile`. Skip this and you'll hit a confusing failure loop: tests/builds error on missing `@useatlas/types/*` (unbuilt dist) and then missing `pino` and other deps until install has run in the worktree once. Run it before any `bun run test`, `bun run type`, `bun run lint`, or `/ci`. Use `--frozen-lockfile` (matches CI) so the install can't mutate `bun.lock` and pollute your worktree's `git status`. If frozen install *fails*, your branch's `package.json` is out of sync with the lockfile — fix that (a deliberate dep change is the only valid reason to run a plain `bun install` and commit the updated `bun.lock`), don't just drop the flag to paper over it.
 - Why: if you commit on the shared checkout, your commit can land on another session's branch (and `git add -A` can stage their files). A private worktree gives you an isolated HEAD + index.
 - Commit only your explicit paths: `git commit -o <file1> <file2> -m ...`. NEVER `git add -A` / `git add .` / `git commit -a`.
 - Do NOT run `/reset`, `git checkout main`, or switch/reset branches in the shared tree.

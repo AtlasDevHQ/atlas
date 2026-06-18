@@ -8,6 +8,20 @@ Revamp a cluttered admin or SaaS page using the `.impeccable.md` toolkit — the
 
 ---
 
+## Step 0 — Worktree isolation (do this FIRST)
+
+This repo is a **shared working tree** — other Claude sessions may be on this exact checkout right now. Revamp edits source files and then branches, so do all of it in your own worktree, not the shared tree.
+
+1. Derive a slash-free `<page-slug>` from the target page (e.g. `/admin/integrations` → `admin-integrations`).
+2. Create the worktree off the latest main **and install deps into it** (a fresh worktree has NO `node_modules`):
+   ```bash
+   git fetch origin && git worktree add -b <user>/revamp-<page-slug> ../atlas-wt-revamp-<page-slug> origin/main \
+     && cd ../atlas-wt-revamp-<page-slug> && bun install --frozen-lockfile
+   ```
+   Use `--frozen-lockfile` (matches CI) so the install can't mutate `bun.lock`. If it *fails*, the branch's `package.json` is out of sync with the lockfile — fix that, don't drop the flag.
+3. Do **all** subsequent steps from inside this worktree. The dev server in Step 1 must run from here too — a dev server started in the shared tree serves the shared tree's code, so Playwright would show stale output and miss your edits. If another session already holds `:3000`, start yours on a free port (`PORT=3010 bun run dev`) and point Playwright at that port.
+4. Never `git checkout main`, `git add -A`, or `git commit -a` in the shared tree. Commit only your explicit changed paths. After the PR merges, remove the worktree (`git worktree remove ../atlas-wt-revamp-<page-slug>`).
+
 ## Step 1 — Baseline
 
 Read context and take a before-snapshot so we can compare.
@@ -18,7 +32,7 @@ Read context and take a before-snapshot so we can compare.
    ```
    Glob: packages/web/src/**/{page,layout}.tsx matching the URL
    ```
-4. Start the dev server if it isn't running (`bun run dev`), then navigate Playwright to the target page (log in as **admin@useatlas.dev / atlas-dev** if it's behind admin auth — if that password has drifted, reseed via `Bun.password.hash` + `UPDATE "account" SET password = ...`).
+4. Start the dev server **from your Step 0 worktree** if it isn't running (`bun run dev`, or `PORT=3010 bun run dev` if `:3000` is taken by another session), then navigate Playwright to the target page on that port (log in as **admin@useatlas.dev / atlas-dev** if it's behind admin auth — if that password has drifted, reseed via `Bun.password.hash` + `UPDATE "account" SET password = ...`).
 5. Take `page-before-top.png` and `page-before-bottom.png` full-viewport screenshots at **1440×900**.
 
 ## Step 2 — Critique
@@ -92,8 +106,9 @@ Skip this step entirely if the page already has prominent teal buttons/accents t
 
 Branch, commit, push, PR — per `feedback_always_branch` and `feedback_pr_before_merge`. Don't merge without review.
 
+You're already on `<user>/revamp-<page-slug>` in your Step 0 worktree — do NOT `git checkout -b` again, and do NOT branch in the shared tree.
+
 ```bash
-git checkout -b <user>/revamp-<page-slug>
 git add <changed files only — never the screenshot PNGs>
 git commit -m "$(cat <<'EOF'
 refactor(web/admin): redesign <page> with compact rows + deeper teal

@@ -48,6 +48,8 @@ This prevents findings from being lost between sessions.
 
 The user runs up to 3 Claude Code sessions in parallel, **all sharing this one working tree** (same `.git`, same HEAD and index). There is **no orchestrator that pre-creates a worktree** — so each emitted prompt MUST instruct its session to **create its own `git worktree` before touching anything**. Committing on the shared checkout collides with the other sessions: a commit can land on another session's branch, and `git add -A` / `commit -a` can stage their files. So every prompt must (1) start by creating a private worktree off the latest `main`, and (2) never `/reset`, `git checkout main`, or switch/reset branches in the shared tree. Bake the **Worktree isolation** block below into every emitted prompt.
 
+> 🚨 **NON-NEGOTIABLE — agents keep forgetting this, so it goes FIRST.** Every emitted prompt MUST open with the loud worktree banner shown as the first line of the template below (the `🚨 STOP` block) **before** any task description. Do NOT bury the worktree instruction at the bottom — the agent must hit it before it reads what to build. The full **Worktree isolation** block still goes at the end too, but the banner up top is mandatory. Also lead the overall `/next` output (above your suggestions) with a one-line reminder that every session below must create its own worktree first.
+
 **Independent prompts** — If tasks touch different files with no merge conflicts:
 ```
 ### Prompt [N]: [short title]
@@ -56,7 +58,17 @@ The user runs up to 3 Claude Code sessions in parallel, **all sharing this one w
 **Files:** [key files to create/modify]
 **Branch:** [suggested branch name]
 
-[Full prompt — detailed enough for a fresh session with only CLAUDE.md context.
+[
+🚨🚨🚨 STOP — YOU MUST WORK IN YOUR OWN GIT WORKTREE. 🚨🚨🚨
+This repo is a SHARED working tree. Other sessions are on this exact checkout RIGHT NOW.
+Before you read, edit, run, or commit ANYTHING, create your own worktree off the latest main:
+    git fetch origin && git worktree add -b <branch> ../atlas-wt-<slug> origin/main && cd ../atlas-wt-<slug>
+Do NOT `/reset`, `git checkout main`, `git add -A`, or `git commit -a` in the shared tree — you will
+clobber another session's branch and stage their files. Full rules are in the Worktree isolation block
+at the bottom of this prompt. Do this step ZERO, before anything else.
+🚨🚨🚨 ---------------------------------------------------------- 🚨🚨🚨
+
+Full prompt — detailed enough for a fresh session with only CLAUDE.md context.
 Reference the GH issue number. Include acceptance criteria.
 
 IMPORTANT — CI gates (mandatory before PR):

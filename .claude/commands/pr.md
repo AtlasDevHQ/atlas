@@ -71,9 +71,21 @@ Output a summary:
 - Milestone the issue belongs to
 - Any follow-up items noticed during review
 
+**Merging someone else's PR? Check provenance first (mandatory)**
+
+Before merging *any* PR you did not author on this branch — and **always** before an `--admin` merge — confirm whose code it is:
+
+```
+gh pr view <PR> -R AtlasDevHQ/atlas --json number,author,headRepositoryOwner,isCrossRepository,reviews
+```
+
+- If `isCrossRepository: true` (or `headRepositoryOwner.login != "AtlasDevHQ"`), it is an **external fork PR**. **STOP.** Do not merge it autonomously — not even with all checks green. State plainly: "This is an EXTERNAL FORK PR by @<login>", read the full diff for anything malicious (exfiltration, obfuscation, new deps, CI/secret changes), and get explicit human confirmation. Human sign-off = a maintainer applying the `external-approved` label, which clears the required `fork-pr-gate` check. See the **Merge discipline** section of `CLAUDE.md` and #3772.
+- A red `fork-pr-gate` (or a CodeQL gate that never started on a fork) is **by design**, not a broken check — never `--admin` past it.
+
 **Rules:**
 - Always use `-R AtlasDevHQ/atlas` with all `gh` commands
 - Never force-push or amend without asking
 - **Do NOT close the issue** — `Closes #N` in the PR body handles that automatically on merge
 - Do NOT run `gh issue close`
 - **CI gates must pass** — `/ci` is mandatory in Step 4, not optional
+- **Never merge an external fork PR autonomously** — see the provenance check above

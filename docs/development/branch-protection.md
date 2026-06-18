@@ -10,7 +10,7 @@ Two branches carry protection rules — `main` (the integration branch) and `pro
 
 | Setting | Value |
 | --- | --- |
-| Required status checks (strict, must be green on the head SHA being merged) | `ci`, `api-tests (1/4)`, `api-tests (2/4)`, `api-tests (3/4)`, `api-tests (4/4)`, `Deploy Validation`, `Analyze (javascript-typescript)`, `Symlink Stub Build` |
+| Required status checks (strict, must be green on the head SHA being merged) | `ci`, `api-tests (1/4)`, `api-tests (2/4)`, `api-tests (3/4)`, `api-tests (4/4)`, `Deploy Validation`, `Analyze (javascript-typescript)`, `Symlink Stub Build`, `fork-pr-gate` |
 | `strict` (branch must be up to date with `main` before merge) | `true` |
 | Required pull request reviews | none |
 | Enforce on admins | `false` |
@@ -38,6 +38,18 @@ The list is the minimum set of checks that demonstrably catches the failure mode
 - `Deploy Validation` — umbrella over `scaffold-smoke` (`docker` + `vercel`), `standalone-build`, `config-validation`, `boot-build`, and `boot-smoke` (see "The `Deploy Validation` umbrella" above). Catches scaffold-template drift, standalone-build regressions, Docker/deploy-mode misconfigurations, Dockerfile-shape breakage on every PR (`boot-build`), and full container-boot regressions including SaaS env contract drift on runtime-relevant PRs (`boot-smoke`, gated)
 - `Analyze (javascript-typescript)` — CodeQL. Static security analysis we want enforced, not advisory
 - `Symlink Stub Build` — the `ee-stub-build` job in `.github/workflows/ci.yml`. Replaces `ee/` with the no-op stub at `scripts/ee-stub/` and re-runs `bun run type` + `bun run build` against core. Closes the 1.5.1 architecture-deepening arc (#2017 / milestone #48): the inversion that made every enterprise subsystem reachable from core via a `Context.Tag` is only meaningful if a regression that re-introduces a `core → ee` import beyond `lib/effect/enterprise-layer.ts` actually fails the merge gate. Without this required, a PR that breaks core-only compile can still ship
+- `fork-pr-gate` — `.github/workflows/fork-pr-gate.yml`. Runs on every PR open/update/label event via `pull_request_target` and reports on each (passing immediately for same-repo PRs; status is keyed to the head SHA, which `synchronize` re-runs), so it never leaves the merge BLOCKED-forever on internal PRs. For a PR from a **fork** — or any PR whose head-repo provenance can't be positively confirmed as this repo — it auto-applies the `external-fork` label and fails closed until a maintainer applies `external-approved` by hand. See [The fork-PR gate](#the-fork-pr-gate) below
+
+### The fork-PR gate
+
+CodeQL default setup — the required `Analyze (javascript-typescript)` check — **structurally cannot run on PRs from forks** (GitHub doesn't expose repo secrets / the code-scanning upload token to fork-triggered runs). So a fork PR *always* shows that gate as missing, which under the override rules below reads exactly like a "broken required check" and invites an `--admin` merge. That is precisely how #3772 — an unreviewed external fork PR — reached `main`: the agent classified the never-running CodeQL gate as broken and admin-merged.
+
+`fork-pr-gate` removes the ambiguity. It is a tiny `pull_request_target` workflow (base-repo token, **never checks out or runs fork code** — it only reads event metadata and sets a label + status) that:
+
+- passes immediately for same-repo PRs (`head.repo.fork == false`), so internal PRs are unaffected;
+- for fork PRs, applies the `external-fork` label (a permanent, searchable marker — `gh pr list --label external-fork`) and **fails** until a maintainer applies `external-approved`.
+
+The `external-approved` label *is* the human sign-off: a person read the diff and vouched for the external code. A red `fork-pr-gate` is **missing-by-design, not broken** — see "When override is not legitimate" below. This converts "trust the agent's broken-gate judgment" into "a human must physically approve external code", with no impact on the internal solo-dev flow.
 
 ## Why required reviews are off
 
@@ -67,6 +79,7 @@ When you do override, document the reason in the PR description or the merge com
 - The check is pending and you don't want to wait — wait. The 1.4.x cadence already saw two CI gaps caused by exactly this (#2186, #2201, plus #2206 itself). The cost of waiting 5–15 minutes is much smaller than the cost of breaking Railway boot for everyone
 - The check failed and you believe the failure is unrelated — investigate first. Re-run the workflow if it looks like a flake. If you can prove the failure is unrelated and infra is broken, that's a "broken gate" case (above) — but only after you've proven it
 - "It worked locally" — local `/ci` and CI run different code paths (e.g. the `dist/` artifact parity issue documented in `feedback_ci_dist_artifact_parity.md`). The gate exists because local-pass doesn't imply CI-pass
+- **A gate that is missing-by-design on this class of PR** — a fork PR has no CodeQL `Analyze` run and a red `fork-pr-gate` *by design*. Neither is "broken". Admin-merging an external fork PR is **never** legitimate for an agent — apply `external-approved` after a human security review instead. See [The fork-PR gate](#the-fork-pr-gate) and #3772
 
 ## Reproducing the configuration
 
@@ -84,7 +97,8 @@ The protection was applied via `gh api PUT repos/AtlasDevHQ/atlas/branches/main/
       "api-tests (4/4)",
       "Deploy Validation",
       "Analyze (javascript-typescript)",
-      "Symlink Stub Build"
+      "Symlink Stub Build",
+      "fork-pr-gate"
     ]
   },
   "enforce_admins": false,

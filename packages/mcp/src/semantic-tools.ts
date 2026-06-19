@@ -52,6 +52,8 @@ import {
   classifyExecuteSqlError,
   envelope,
   toEnvelopeResult,
+  toJsonContent,
+  toStructuredContent,
 } from "./error-envelope.js";
 import { createMcpDispatch } from "./mcp-dispatch.js";
 import { runMetricOutputShape } from "./structured-output.js";
@@ -96,27 +98,6 @@ export interface RegisterSemanticToolsOptions {
   clientId?: string;
   /** #3504 — OAuth token scopes, threaded onto each dispatch's RequestContext. */
   scopes?: readonly string[];
-}
-
-function toJsonContent(value: unknown): CallToolResult {
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
-  };
-}
-
-/**
- * Like {@link toJsonContent} but also attaches `structuredContent` (#3498).
- * Used by tools that declare an `outputSchema` (runMetric): the MCP SDK
- * requires `structuredContent` on every non-error result once an output
- * schema is present. The text block is retained for clients that don't
- * consume structured output; both are built from the same object so they
- * can't drift.
- */
-function toStructuredContent(value: Record<string, unknown>): CallToolResult {
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
-    structuredContent: value,
-  };
 }
 
 export function registerSemanticTools(

@@ -244,6 +244,7 @@ interface GateCall {
     toolName: string;
     checksBilling?: boolean;
     requiresWrite: boolean;
+    requiresBoundOrg?: boolean;
     minRole: string;
     actionCategory?: string;
     destructive?: { resource: string; description: string };
@@ -627,6 +628,47 @@ describe("no bound workspace → mutations refused (consistency with gate orgId)
     expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("forbidden");
     expect(mockElicit).not.toHaveBeenCalled();
     expect(mockProvision).not.toHaveBeenCalled();
+  });
+
+  // #3609 — `requireBoundOrg`'s per-body guard was promoted to a declarative
+  // `requiresBoundOrg: true` requirement enforced ONCE in the dispatcher. The
+  // refusal envelope (code + message + hint) must stay byte-identical to the
+  // pre-refactor block so agents that branch on it don't regress.
+  it("#3609 — a no-bound-org mutation is refused with the identical forbidden envelope", async () => {
+    const client = await createTestClient(NO_ORG_ACTOR);
+    const res = await client.callTool({ name: "archive_datasource", arguments: { id: "prod-us" } });
+    const err = parseAtlasMcpToolError(getContentText(res.content));
+    expect(err?.code).toBe("forbidden");
+    expect(err?.message).toBe(
+      "This MCP session is not bound to a workspace; datasource changes require a bound workspace.",
+    );
+    expect(err?.hint).toBe("Set ATLAS_MCP_ORG_ID (and ATLAS_MCP_USER_ID) on the MCP server.");
+    // The bound-org refusal short-circuits BEFORE the tool body's lib calls.
+    expect(mockRunInstaller).not.toHaveBeenCalled();
+  });
+
+  // #3609 — the precondition is now declarative: every mutating tool passes
+  // `requiresBoundOrg: true` to the gate requirement set so a new mutating tool
+  // that omits it can't silently key the mutation on the `actor.id` fallback.
+  it("#3609 — every mutating tool declares requiresBoundOrg; read tools do not", async () => {
+    const client = await createTestClient();
+    const mutating = [
+      ["archive_datasource", { id: "prod-us" }],
+      ["restore_datasource", { id: "prod-us" }],
+      ["delete_datasource", { id: "prod-us" }],
+      ["create_datasource", { db_type: "postgres", install_id: "new-pg" }],
+      ["create_rest_datasource", {}],
+      ["profile_datasource", { id: "prod-us" }],
+    ] as const;
+    for (const [tool, args] of mutating) {
+      await client.callTool({ name: tool, arguments: args });
+      expect(gateCallFor(tool)?.reqs.requiresBoundOrg).toBe(true);
+    }
+    // Read tools carry no bound-workspace precondition.
+    await client.callTool({ name: "list_datasources", arguments: {} });
+    await client.callTool({ name: "test_datasource", arguments: { id: "prod-us" } });
+    expect(gateCallFor("list_datasources")?.reqs.requiresBoundOrg).toBeUndefined();
+    expect(gateCallFor("test_datasource")?.reqs.requiresBoundOrg).toBeUndefined();
   });
 });
 

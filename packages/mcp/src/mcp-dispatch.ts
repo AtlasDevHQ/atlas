@@ -217,6 +217,23 @@ export function createMcpDispatch(opts: McpDispatchOptions): McpDispatcher {
               );
               if (gateBlock) return gateBlock;
 
+              // #3609 — declarative bound-workspace precondition for mutating
+              // tools. Enforced ONCE here (downstream of the gate order, so a
+              // destructive tool's gate-4 approval identity guard still surfaces
+              // first) rather than a per-body `requireBoundOrg()` guard a new
+              // mutating tool could forget. A no-org session is refused with the
+              // SAME `forbidden` envelope, so the mutation can't silently key on
+              // the `actor.id` OTel fallback instead of the gated workspace.
+              if (reqs.requiresBoundOrg && !actor.activeOrganizationId) {
+                return toEnvelopeResult(
+                  envelope(
+                    "forbidden",
+                    "This MCP session is not bound to a workspace; datasource changes require a bound workspace.",
+                    { hint: "Set ATLAS_MCP_ORG_ID (and ATLAS_MCP_USER_ID) on the MCP server." },
+                  ),
+                );
+              }
+
               const result = await body(requestId);
               // ADR-0018 / #3651 — surface trial days-remaining on successful
               // billing-gated tool responses (executeSQL / runMetric / setup),

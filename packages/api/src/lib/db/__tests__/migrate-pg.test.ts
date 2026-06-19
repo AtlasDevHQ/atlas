@@ -6,6 +6,7 @@ import { z } from "zod";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { buildStaleCatalogQuery } from "@atlas/api/lib/scheduler/byot-catalog-query";
+import { RUNNING_UPSERT_SQL, TERMINAL_UPSERT_SQL } from "@atlas/api/lib/durable-session";
 
 // Real-Postgres migration smoke. Skips cleanly when TEST_DATABASE_URL
 // is unset so local dev that hasn't run `bun run db:up` is unaffected.
@@ -2444,6 +2445,107 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
       [conversationId],
     );
     expect(after.rows[0]?.c).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // 0143 (#3746, ADR-0020) — phase 1b per-step upsert SEMANTICS, executed
+  // against real Postgres rather than substring-matched on a mocked SQL string.
+  // These are the slice's core safety properties: ON CONFLICT (id) collapses a
+  // turn to one row, GREATEST + the transcript CASE guard make a reordered
+  // fire-and-forget write non-regressing, and the WHERE status guard prevents a
+  // stale checkpoint from resurrecting a terminated row. A `LEAST`-for-`GREATEST`
+  // typo or a missing guard passes the unit substring tests but fails here.
+  it("0143 (1b): running upserts collapse to one row; step_index + transcript reorder-safe", async () => {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO conversations DEFAULT VALUES RETURNING id`,
+    );
+    const conversationId = rows[0]!.id;
+    const runId = "11111111-1111-1111-1111-111111111111";
+
+    // Three in-order per-step `running` checkpoints (steps 1 → 3).
+    for (const step of [1, 2, 3]) {
+      await pool.query(RUNNING_UPSERT_SQL, [
+        runId,
+        conversationId,
+        "org-1",
+        "running",
+        step,
+        JSON.stringify([{ role: "assistant", content: `step ${step}` }]),
+      ]);
+    }
+
+    // A reordered, stale step-1 checkpoint lands LAST. GREATEST must keep the
+    // step index at 3, and the transcript CASE guard must keep the step-3
+    // transcript — the stale write must not pair the higher index with an
+    // older, shorter transcript.
+    await pool.query(RUNNING_UPSERT_SQL, [
+      runId,
+      conversationId,
+      "org-1",
+      "running",
+      1,
+      JSON.stringify([{ role: "assistant", content: "stale" }]),
+    ]);
+
+    const afterRunning = await pool.query<{ step_index: number; transcript: unknown }>(
+      `SELECT step_index, transcript FROM agent_runs WHERE id = $1`,
+      [runId],
+    );
+    // ON CONFLICT (id) → exactly one row for the turn.
+    expect(afterRunning.rowCount).toBe(1);
+    expect(afterRunning.rows[0]!.step_index).toBe(3); // GREATEST held it at 3
+    expect(afterRunning.rows[0]!.transcript).toEqual([{ role: "assistant", content: "step 3" }]);
+
+    // Terminal write flips the SAME row to done with the authoritative
+    // transcript — still one row, terminal transcript wins unconditionally.
+    await pool.query(TERMINAL_UPSERT_SQL, [
+      runId,
+      conversationId,
+      "org-1",
+      "done",
+      3,
+      JSON.stringify([{ role: "assistant", content: "final" }]),
+    ]);
+    const afterTerminal = await pool.query<{ status: string; transcript: unknown }>(
+      `SELECT status, transcript FROM agent_runs WHERE id = $1`,
+      [runId],
+    );
+    expect(afterTerminal.rowCount).toBe(1);
+    expect(afterTerminal.rows[0]!.status).toBe("done");
+    expect(afterTerminal.rows[0]!.transcript).toEqual([{ role: "assistant", content: "final" }]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0143 (1b): a stale running checkpoint can't resurrect a terminated row", async () => {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO conversations DEFAULT VALUES RETURNING id`,
+    );
+    const conversationId = rows[0]!.id;
+    const runId = "22222222-2222-2222-2222-222222222222";
+
+    // running at step 2, then a terminal `done` write at step 2.
+    await pool.query(RUNNING_UPSERT_SQL, [
+      runId, conversationId, "org-1", "running", 2,
+      JSON.stringify([{ role: "assistant", content: "mid" }]),
+    ]);
+    await pool.query(TERMINAL_UPSERT_SQL, [
+      runId, conversationId, "org-1", "done", 2,
+      JSON.stringify([{ role: "assistant", content: "final" }]),
+    ]);
+
+    // A late, higher-step `running` checkpoint arrives AFTER the terminal write.
+    // The WHERE status guard must reject the update entirely: the row stays
+    // `done`, the step index stays 2, and the terminal transcript is preserved.
+    await pool.query(RUNNING_UPSERT_SQL, [
+      runId, conversationId, "org-1", "running", 3,
+      JSON.stringify([{ role: "assistant", content: "late" }]),
+    ]);
+
+    const row = await pool.query<{ status: string; step_index: number; transcript: unknown }>(
+      `SELECT status, step_index, transcript FROM agent_runs WHERE id = $1`,
+      [runId],
+    );
+    expect(row.rows[0]!.status).toBe("done");
+    expect(row.rows[0]!.step_index).toBe(2);
+    expect(row.rows[0]!.transcript).toEqual([{ role: "assistant", content: "final" }]);
   }, PG_TEST_TIMEOUT_MS);
 });
 

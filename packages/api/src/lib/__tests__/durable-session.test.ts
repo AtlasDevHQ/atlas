@@ -10,12 +10,16 @@
 import { describe, expect, it, beforeEach, mock } from "bun:test";
 import type { ModelMessage } from "ai";
 import * as realInternal from "@atlas/api/lib/db/internal";
+import * as realLogger from "@atlas/api/lib/logger";
 
 let hasInternalDB = true;
 const execCalls: Array<{ sql: string; params?: unknown[] }> = [];
 const queryCalls: Array<{ sql: string; params?: unknown[] }> = [];
 let queryRows: Array<{ id: string }> = [];
 let queryThrow: Error | null = null;
+// Captures the fail-soft warn the write helpers must emit so a circular
+// transcript (or any synchronous throw) is observable, not silently swallowed.
+const warnCalls: Array<{ obj: unknown; msg: unknown }> = [];
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
@@ -28,6 +32,18 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     if (queryThrow) throw queryThrow;
     return queryRows;
   },
+}));
+
+mock.module("@atlas/api/lib/logger", () => ({
+  ...realLogger,
+  createLogger: () => ({
+    warn: (obj: unknown, msg?: unknown) => {
+      warnCalls.push({ obj, msg });
+    },
+    info: () => {},
+    error: () => {},
+    debug: () => {},
+  }),
 }));
 
 let settingValue: Record<string, string | undefined> = {};
@@ -48,6 +64,7 @@ beforeEach(() => {
   hasInternalDB = true;
   execCalls.length = 0;
   queryCalls.length = 0;
+  warnCalls.length = 0;
   queryRows = [];
   queryThrow = null;
   settingValue = {};
@@ -128,6 +145,11 @@ describe("recordTerminalAgentRun", () => {
       }),
     ).not.toThrow();
     expect(execCalls).toHaveLength(0);
+    // Fail-soft, not silent: the catch must log a type-narrowed warn so the
+    // dropped checkpoint is observable.
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]!.msg).toBe("Failed to record terminal agent run checkpoint");
+    expect((warnCalls[0]!.obj as { err: unknown }).err).toBeTypeOf("string");
   });
 });
 
@@ -148,6 +170,9 @@ describe("recordRunCheckpoint", () => {
     expect(call.sql).toContain("ON CONFLICT (id) DO UPDATE");
     // Monotonic step index: a reordered fire-and-forget write can't regress it.
     expect(call.sql).toContain("step_index = GREATEST(agent_runs.step_index, EXCLUDED.step_index)");
+    // Transcript is reorder-safe too: only overwritten when the incoming
+    // checkpoint is at least as advanced as the stored row.
+    expect(call.sql).toContain("WHEN EXCLUDED.step_index >= agent_runs.step_index THEN EXCLUDED.transcript");
     // Guard: a stale checkpoint must never resurrect a terminated/parked row.
     expect(call.sql).toContain("WHERE agent_runs.status NOT IN ('done', 'failed', 'parked')");
     expect(call.sql).toContain("$6::jsonb");
@@ -186,6 +211,10 @@ describe("recordRunCheckpoint", () => {
       }),
     ).not.toThrow();
     expect(execCalls).toHaveLength(0);
+    // Fail-soft, not silent: the catch must log a type-narrowed warn.
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]!.msg).toBe("Failed to record agent run checkpoint");
+    expect((warnCalls[0]!.obj as { err: unknown }).err).toBeTypeOf("string");
   });
 });
 

@@ -285,10 +285,15 @@ describe("agent_runs checkpoint write path (#3745 terminal, #3746 per-step)", ()
     // onStepFinish fires once per step (2 tool-call steps + 1 text step).
     expect(running.map(stepIndexOf)).toEqual([1, 2, 3]);
 
-    // Transcript grows monotonically as each step's messages accumulate.
+    // Transcript grows (non-decreasing) as each step's messages accumulate and
+    // is strictly larger at the end of the turn than at the first step. (Strict
+    // step-over-step growth would be wrong: a final text-only step adds an
+    // assistant message but no tool result, so consecutive checkpoints can tie.
+    // The strong anti-duplication guard is the running==terminal equality below.)
     const lengths = running.map((c) => transcriptOf(c).length);
-    expect(lengths[0]!).toBeLessThan(lengths[1]!);
-    expect(lengths[1]!).toBeLessThan(lengths[2]!);
+    expect(lengths[0]!).toBeLessThanOrEqual(lengths[1]!);
+    expect(lengths[1]!).toBeLessThanOrEqual(lengths[2]!);
+    expect(lengths[2]!).toBeGreaterThan(lengths[0]!);
 
     // One logical row: every per-step + terminal write shares the run id.
     expect(new Set(agentRunWrites().map(runIdOf)).size).toBe(1);
@@ -298,6 +303,14 @@ describe("agent_runs checkpoint write path (#3745 terminal, #3746 per-step)", ()
     expect(terminals).toHaveLength(1);
     expect(statusOf(terminals[0]!)).toBe("done");
     expect(stepIndexOf(terminals[0]!)).toBe(3);
+
+    // Regression guard for the AI SDK 6 cumulative-`response.messages` bug: that
+    // field is the FULL running transcript at each step, not just the step's own
+    // messages, so the final `running` checkpoint must equal the terminal
+    // transcript EXACTLY — not a quadratically-duplicated superset of it.
+    // (Length-growth alone missed this: duplication still grows monotonically.)
+    const lastRunning = running[running.length - 1]!;
+    expect(transcriptOf(lastRunning)).toEqual(transcriptOf(terminals[0]!));
 
     // Token accounting unchanged vs pre-1b: exactly one token_usage row, no
     // double counting from the per-step checkpoints.

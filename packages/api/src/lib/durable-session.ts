@@ -110,7 +110,9 @@ export interface RecordTerminalRunArgs extends AgentRunWrite {
   status: TerminalAgentRunStatus;
 }
 
-const AGENT_RUN_INSERT = `INSERT INTO agent_runs (id, conversation_id, org_id, status, step_index, transcript, updated_at)
+// Exported for the real-Postgres upsert-behavior tests (migrate-pg.test.ts) so
+// they exercise the EXACT SQL the helpers run, not a hand-copied reimplementation.
+export const AGENT_RUN_INSERT = `INSERT INTO agent_runs (id, conversation_id, org_id, status, step_index, transcript, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb, now())`;
 
 /**
@@ -120,16 +122,29 @@ const AGENT_RUN_INSERT = `INSERT INTO agent_runs (id, conversation_id, org_id, s
  * flipped to `done`/`failed` (or a future `parked`). `internalExecute` is
  * fire-and-forget and unordered, so the guard, not call order, is what keeps the
  * lifecycle one-directional.
+ *
+ * `transcript` is guarded the same way as `step_index`: it is only overwritten
+ * when the incoming checkpoint is at least as advanced (`EXCLUDED.step_index >=
+ * agent_runs.step_index`). Without this a reordered stale checkpoint would pair
+ * the higher (GREATEST-preserved) step index with its own older, shorter
+ * transcript — leaving step index and transcript mutually inconsistent.
  */
-const RUNNING_UPSERT_SQL = `${AGENT_RUN_INSERT}
+export const RUNNING_UPSERT_SQL = `${AGENT_RUN_INSERT}
        ON CONFLICT (id) DO UPDATE SET
          step_index = GREATEST(agent_runs.step_index, EXCLUDED.step_index),
-         transcript = EXCLUDED.transcript,
+         transcript = CASE
+           WHEN EXCLUDED.step_index >= agent_runs.step_index THEN EXCLUDED.transcript
+           ELSE agent_runs.transcript
+         END,
          updated_at = now()
        WHERE agent_runs.status NOT IN ('done', 'failed', 'parked')`;
 
-/** Terminal upsert. Always wins the status; step index never regresses. */
-const TERMINAL_UPSERT_SQL = `${AGENT_RUN_INSERT}
+/**
+ * Terminal upsert. Always wins the status AND the transcript — the terminal
+ * write carries the authoritative full-turn transcript, so (unlike the running
+ * path) it overwrites unconditionally. Step index never regresses (`GREATEST`).
+ */
+export const TERMINAL_UPSERT_SQL = `${AGENT_RUN_INSERT}
        ON CONFLICT (id) DO UPDATE SET
          status = EXCLUDED.status,
          step_index = GREATEST(agent_runs.step_index, EXCLUDED.step_index),

@@ -45,6 +45,7 @@ import {
   isDurabilityEnabled,
   recordRunCheckpoint,
   recordTerminalAgentRun,
+  type AgentRunStatus,
   type TerminalAgentRunStatus,
 } from "./durable-session";
 import { loadGroupRoutingContext } from "./env-routing/lookup";
@@ -1281,14 +1282,37 @@ export async function runAgent({
   const runId = crypto.randomUUID();
   let terminalWritten = false;
   let observedSteps = 0;
-  // Response messages (assistant text, tool calls, tool results) accumulated
-  // across steps. `onStepFinish`'s `response.messages` carries only the current
-  // step's messages, so we concatenate to reconstruct the running transcript for
-  // mid-flight (`running`) and failure checkpoints. The clean `onFinish` path
-  // uses its own cumulative `response.messages` (authoritative for the turn).
-  const accumulatedResponse: ModelMessage[] = [];
-  const currentTranscript = (): ModelMessage[] => [...modelMessages, ...accumulatedResponse];
-  const writeCheckpoint = (stepIndex: number) => {
+  // Response messages (assistant text, tool calls, tool results) generated this
+  // turn. In AI SDK 6, `onStepFinish`'s `response.messages` is the CUMULATIVE
+  // running transcript (every step 0..N), NOT just the latest step's messages —
+  // so we keep the most recent snapshot rather than concatenating. (Concatenating
+  // would re-append all prior steps each step and quadratically duplicate the
+  // persisted transcript.) `currentTranscript()` prepends the input messages to
+  // build the running transcript persisted by the mid-flight (`running`) and
+  // failure checkpoints; the clean `onFinish` path uses the same
+  // `response.messages` snapshot directly (authoritative for the turn).
+  let latestResponseMessages: ModelMessage[] = [];
+  const currentTranscript = (): ModelMessage[] => [...modelMessages, ...latestResponseMessages];
+  // Per-step / terminal observability on the existing atlas.agent span
+  // (last-write-wins). Fail-soft: these run inside onStepFinish/onError/onFinish
+  // on the live stream path, so a span-mutation throw must never propagate and
+  // disrupt the turn — the same guarantee the fire-and-forget checkpoint write
+  // already makes for the DB.
+  const setDurableSpanAttrs = (status: AgentRunStatus, stepIndex: number): void => {
+    try {
+      span.setAttributes({
+        "atlas.durable.run_id": runId,
+        "atlas.durable.status": status,
+        "atlas.durable.step_index": stepIndex,
+      });
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), runId },
+        "Failed to set durable-session span attributes",
+      );
+    }
+  };
+  const writeCheckpoint = (stepIndex: number): void => {
     if (!durabilityActive) return;
     recordRunCheckpoint({
       runId,
@@ -1297,14 +1321,9 @@ export async function runAgent({
       stepIndex,
       transcript: currentTranscript(),
     });
-    // Per-step observability on the existing atlas.agent span (last-write-wins).
-    span.setAttributes({
-      "atlas.durable.run_id": runId,
-      "atlas.durable.status": AGENT_RUN_STATUS.RUNNING,
-      "atlas.durable.step_index": stepIndex,
-    });
+    setDurableSpanAttrs(AGENT_RUN_STATUS.RUNNING, stepIndex);
   };
-  const writeTerminal = (status: TerminalAgentRunStatus, stepIndex: number, transcript: ModelMessage[]) => {
+  const writeTerminal = (status: TerminalAgentRunStatus, stepIndex: number, transcript: ModelMessage[]): void => {
     if (!durabilityActive || terminalWritten) return;
     terminalWritten = true;
     recordTerminalAgentRun({
@@ -1317,11 +1336,7 @@ export async function runAgent({
     });
     // Terminal status progression on the span — set before `endSpan` at every
     // call site so the final span reflects the persisted terminal state.
-    span.setAttributes({
-      "atlas.durable.run_id": runId,
-      "atlas.durable.status": status,
-      "atlas.durable.step_index": stepIndex,
-    });
+    setDurableSpanAttrs(status, stepIndex);
   };
 
   let result;
@@ -1452,11 +1467,12 @@ export async function runAgent({
         // outer catch) can record how far the turn got. `stepNumber` is
         // 0-based; +1 gives the count of completed steps.
         observedSteps = stepNumber + 1;
-        // Grow the running transcript with this step's generated messages, then
-        // upsert a mid-flight `running` checkpoint (#3746) keyed on the turn's
-        // run id. In-place update — one row per turn — so an interruption after
-        // this step leaves a recoverable row at step index `observedSteps`.
-        accumulatedResponse.push(...response.messages);
+        // Snapshot this step's cumulative running transcript — AI SDK 6 hands us
+        // every step's messages (0..N) in `response.messages`, not just step N —
+        // then upsert a mid-flight `running` checkpoint (#3746) keyed on the
+        // turn's run id. In-place update — one row per turn — so an interruption
+        // after this step leaves a recoverable row at step index `observedSteps`.
+        latestResponseMessages = [...response.messages];
         writeCheckpoint(observedSteps);
         log.info(
           {

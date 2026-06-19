@@ -112,6 +112,13 @@ export interface ProvisionTrialDeps {
   setGraceWindow: (orgId: string, endsAtIso: string) => Promise<number>;
   /** Build the hosted-MCP connect URL for the new Workspace. */
   buildConnectUrl: (workspaceId: string) => string;
+  /**
+   * Enqueue the distinct `MCP_SIGNUP` CRM lead (ADR-0018, #3653) through the
+   * existing `SaasCrm.upsertLead` → `crm_outbox` → Twenty pipeline. Mirrors
+   * the web path's `signup` enqueue, but as a measurable acquisition channel.
+   * Swallows its own failures (a CRM/outbox outage must not fail provisioning).
+   */
+  enqueueMcpSignupLead: (email: string, name?: string) => Promise<void>;
   /** Grace window length in ms. */
   graceMs: number;
 }
@@ -121,11 +128,20 @@ function defaultDeps(): ProvisionTrialDeps {
     getDeployMode: () => getConfig()?.deployMode,
     signUpEmail: async (body) => {
       const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
+      const { runWithSignupOrigin } = await import(
+        "@atlas/api/lib/auth/signup-origin"
+      );
       const auth = getAuthInstance();
       const signUp = (auth.api as Record<string, unknown>).signUpEmail as (o: {
         body: { email: string; password: string; name: string };
       }) => Promise<{ user?: { id?: string } } | undefined>;
-      return signUp({ body });
+      // Tag the in-flight signup as MCP-originated so Better Auth's
+      // `user.create.after` hook (`dispatchSignupCrmLead`) suppresses the
+      // generic SIGNUP CRM lead — this path emits MCP_SIGNUP itself, and a
+      // second same-email row with an earlier `created_at` would steal the
+      // sticky first-source. The ALS context propagates through the await
+      // chain into the hook.
+      return runWithSignupOrigin("mcp", () => signUp({ body }));
     },
     createOrganization: async (body) => {
       const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
@@ -158,6 +174,12 @@ function defaultDeps(): ProvisionTrialDeps {
       return updated.length;
     },
     buildConnectUrl: (workspaceId) => buildMcpConnectUrl(workspaceId),
+    enqueueMcpSignupLead: async (email, name) => {
+      const { dispatchMcpSignupCrmLead } = await import(
+        "@atlas/api/lib/auth/server"
+      );
+      await dispatchMcpSignupCrmLead({ email, name });
+    },
     graceMs: TRIAL_GRACE_HOURS * 60 * 60 * 1000,
   };
 }
@@ -237,6 +259,18 @@ export async function provisionTrialWorkspace(
       "Could not create an account for this email. It may already be registered — sign in on the web instead.",
     );
   }
+
+  // Attribute the acquisition channel as MCP_SIGNUP. Enqueued here — right
+  // after the user account is created, BEFORE org creation — to mirror exactly
+  // where the web path enqueues its SIGNUP lead (Better Auth's
+  // `user.create.after` hook). That auto-SIGNUP is suppressed on this path
+  // (signUpEmail ran under `runWithSignupOrigin("mcp")`), so MCP_SIGNUP is the
+  // sole `crm_outbox` row and wins sticky first-touch. Placing it here (not
+  // after the final return) also guarantees no "user created with zero CRM
+  // lead" gap should org creation fail downstream. Self-contained failure
+  // handling inside `enqueueMcpSignupLead` keeps a CRM outage from failing the
+  // provision.
+  await deps.enqueueMcpSignupLead(email, name);
 
   const org = await deps.createOrganization({
     name: orgName,

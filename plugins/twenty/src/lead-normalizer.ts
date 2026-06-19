@@ -2,9 +2,9 @@
  * LeadNormalizer — pure mapping from Atlas lead events to the Twenty
  * upsert input shape.
  *
- * Ships the `demo`, `sales-form`, `signup`, and `conversion` variants.
- * `normalizeLead`'s exhaustive switch surfaces a compile error the moment a
- * new union member lands.
+ * Ships the `demo`, `sales-form`, `signup`, `mcp-signup`, and `conversion`
+ * variants. `normalizeLead`'s exhaustive switch surfaces a compile error the
+ * moment a new union member lands.
  *
  * Design rule: the normalizer outputs a single `eventSource` field;
  * the first-source / last-source translation happens INSIDE
@@ -30,6 +30,7 @@ import type { UpsertPersonInput } from "./client";
 export type AtlasEventSource =
   | "DEMO"
   | "SIGNUP"
+  | "MCP_SIGNUP"
   | "SALES_FORM"
   | "CONVERSION"
   | "OTHER";
@@ -81,6 +82,32 @@ export interface AtlasSignupLeadEvent {
 }
 
 /**
+ * Self-serve MCP trial-signup variant — fired by `provisionTrialWorkspace`
+ * (`ee/src/onboarding/provision-trial.ts`) on the `start_trial` path
+ * (ADR-0018). Structurally identical to the web `signup` variant, but a
+ * DISTINCT lead source so the acquisition channel is measurable in the CRM:
+ * `eventSource = "MCP_SIGNUP"` → sticky `atlasFirstSource = MCP_SIGNUP`.
+ *
+ * Because the same provisioning path also runs Better Auth's `user.create`
+ * hook (which would otherwise emit a `signup`/`SIGNUP` lead), the auto-signup
+ * enqueue is suppressed on the MCP path (see `signup-origin.ts` /
+ * `dispatchSignupCrmLead`) so this is the SOLE `crm_outbox` row for the email
+ * and wins first-touch. Lead source (acquisition attribution) is deliberately
+ * kept separate from Agent origin (approval/audit, ADR-0015): both can say
+ * "mcp", but unifying them would recreate the `surface`→`origin` overload.
+ */
+export interface AtlasMcpSignupLeadEvent {
+  readonly source: "mcp-signup";
+  readonly email: string;
+  /**
+   * Optional display name — parity with `signup`. The provisioner derives a
+   * name from the email local-part, but MCP signup stays email-first, so this
+   * may be absent. Split into first/last at the normalizer seam.
+   */
+  readonly name?: string;
+}
+
+/**
  * Stripe → Twenty conversion stamping variant — fired by the
  * `onSubscriptionComplete` hook in `packages/api/src/lib/auth/server.ts`
  * after a paying checkout. Carries the Stripe `customer.id` so the
@@ -108,6 +135,7 @@ export type AtlasLeadEvent =
   | AtlasDemoLeadEvent
   | AtlasSalesFormLeadEvent
   | AtlasSignupLeadEvent
+  | AtlasMcpSignupLeadEvent
   | AtlasConversionLeadEvent;
 
 /** Note attached to the Person — only emitted by variants that carry a message. */
@@ -224,6 +252,34 @@ export function normalizeSignupLead(event: AtlasSignupLeadEvent): NormalizedLead
 }
 
 /**
+ * Normalize a self-serve MCP trial-signup event to a Twenty upsert payload.
+ * Mirror of `normalizeSignupLead` save for the `MCP_SIGNUP` event source — no
+ * note, no request context, first vs. last source semantics owned by
+ * `upsertPerson`. The distinct source is the whole reason this variant exists
+ * (ADR-0018): it lets the CRM attribute MCP self-serve as its own channel.
+ */
+export function normalizeMcpSignupLead(
+  event: AtlasMcpSignupLeadEvent,
+): NormalizedLead {
+  const email = event.email.toLowerCase().trim();
+  const eventSource: AtlasEventSource = "MCP_SIGNUP";
+
+  const customFields: { atlasIp?: string } = {};
+
+  const name = event.name ? splitName(event.name) : undefined;
+
+  return {
+    person: {
+      email,
+      eventSource,
+      ...(name ? { name } : {}),
+      customFields,
+    },
+    eventSource,
+  };
+}
+
+/**
  * Normalize a Stripe → Twenty conversion event to a Twenty upsert
  * payload. The `atlasStripeCustomerId` rides through `customFields` and
  * is spread inline by `upsertPerson` on every write path (POST + both
@@ -255,6 +311,8 @@ export function normalizeLead(event: AtlasLeadEvent): NormalizedLead {
       return normalizeSalesFormLead(event);
     case "signup":
       return normalizeSignupLead(event);
+    case "mcp-signup":
+      return normalizeMcpSignupLead(event);
     case "conversion":
       return normalizeConversionLead(event);
     default: {

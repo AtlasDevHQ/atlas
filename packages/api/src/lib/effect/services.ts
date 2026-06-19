@@ -2753,6 +2753,23 @@ export type SaasCrmLeadInput =
     }
   | {
       /**
+       * Self-serve MCP trial-signup (ADR-0018, #3653). Enqueued by
+       * `provisionTrialWorkspace` on the `start_trial` path. Structurally
+       * identical to `signup`, but a DISTINCT lead source
+       * (`MCP_SIGNUP` → sticky `atlasFirstSource`) so the acquisition channel
+       * is measurable. The provisioner suppresses the auto-`signup` lead the
+       * shared Better Auth `user.create` hook would otherwise emit (see
+       * `lib/auth/signup-origin.ts`), so this is the sole `crm_outbox` row for
+       * the email. Lead source stays separate from `agentOrigin`
+       * (approval/audit) — do not conflate.
+       */
+      readonly source: "mcp-signup";
+      readonly email: string;
+      /** Optional display name — parity with `signup`. */
+      readonly name?: string;
+    }
+  | {
+      /**
        * Stripe → Twenty conversion stamping (#2737). Fired from the
        * `onSubscriptionComplete` Better Auth hook after a paying
        * checkout. The dispatcher stamps `customFields.atlasStripeCustomerId`

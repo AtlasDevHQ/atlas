@@ -16,12 +16,14 @@ function stubDeps(over: Partial<ProvisionTrialDeps> = {}): {
     signUp: Array<{ email: string; name: string }>;
     createOrg: Array<{ name: string; slug: string; userId: string }>;
     grace: Array<{ orgId: string; endsAtIso: string }>;
+    mcpLead: Array<{ email: string; name?: string }>;
   };
 } {
   const calls = {
     signUp: [] as Array<{ email: string; name: string }>,
     createOrg: [] as Array<{ name: string; slug: string; userId: string }>,
     grace: [] as Array<{ orgId: string; endsAtIso: string }>,
+    mcpLead: [] as Array<{ email: string; name?: string }>,
   };
   const deps: Partial<ProvisionTrialDeps> = {
     getDeployMode: () => "saas",
@@ -39,6 +41,9 @@ function stubDeps(over: Partial<ProvisionTrialDeps> = {}): {
       return 1;
     },
     buildConnectUrl: (id) => `https://mcp.test/mcp/${id}/sse`,
+    enqueueMcpSignupLead: async (email, name) => {
+      calls.mcpLead.push({ email, name });
+    },
     graceMs: 72 * 60 * 60 * 1000,
     ...over,
   };
@@ -75,6 +80,45 @@ describe("provisionTrialWorkspace", () => {
     expect(graceMs).toBeGreaterThanOrEqual(before + 72 * 60 * 60 * 1000);
     expect(graceMs).toBeLessThanOrEqual(after + 72 * 60 * 60 * 1000);
     expect(graceMs).toBeLessThan(before + 14 * 24 * 60 * 60 * 1000);
+
+    // Exactly ONE CRM lead — the MCP_SIGNUP one — is enqueued, carrying the
+    // same derived name the user account got. The competing auto-SIGNUP that
+    // Better Auth's user.create hook would emit is suppressed on this path
+    // (see dispatch-signup-crm-lead.test.ts), so MCP_SIGNUP is the sole
+    // crm_outbox row and wins sticky first-touch (atlasFirstSource = MCP_SIGNUP,
+    // pinned end-to-end in plugins/twenty/__tests__/client.test.ts).
+    expect(calls.mcpLead).toHaveLength(1);
+    expect(calls.mcpLead[0]!.email).toBe("founder@acme.com");
+    expect(calls.mcpLead[0]!.name).toBe("founder");
+  });
+
+  it("enqueues the MCP_SIGNUP lead for the locked (repeat-signup) arm too", async () => {
+    // A successful provision attributes the acquisition channel regardless of
+    // whether the user already consumed a trial — `locked` is still a real
+    // MCP-sourced signup that should be measurable.
+    const { deps, calls } = stubDeps({
+      readOrgTier: async () => ({
+        plan_tier: "locked",
+        trial_ends_at: new Date().toISOString(),
+      }),
+    });
+    const result = await provisionTrialWorkspace(
+      { email: "founder@acme.com", orgName: "Acme Two" },
+      deps,
+    );
+    expect(result.state).toBe("locked");
+    expect(calls.mcpLead).toHaveLength(1);
+    expect(calls.mcpLead[0]!.email).toBe("founder@acme.com");
+  });
+
+  it("does NOT enqueue an MCP_SIGNUP lead when signup itself fails", async () => {
+    const { deps, calls } = stubDeps({
+      signUpEmail: async () => ({ user: {} }),
+    });
+    await expect(
+      provisionTrialWorkspace({ email: "a@b.com", orgName: "Acme" }, deps),
+    ).rejects.toMatchObject({ code: "signup_failed" });
+    expect(calls.mcpLead).toHaveLength(0);
   });
 
   it("refuses when deployMode !== 'saas'", async () => {

@@ -22,11 +22,34 @@ mock.module("@atlas/api/lib/agent", () => ({
   runAgent: mockRunAgent,
 }));
 
-// Gate 0 always allows here — we are isolating the claim-gate. (The expiry
-// block via Gate 0 is covered in agent-query-billing.test.ts.)
+// Gate 0 result is controllable so we can assert the expiry block precedes
+// (and overrides) the claim-gate. Default: allow.
+class BillingBlockedErrorStub extends Error {
+  override readonly name = "BillingBlockedError";
+  readonly errorCode: string;
+  readonly httpStatus: number;
+  readonly retryable: boolean;
+  readonly retryAfterSeconds: number | undefined;
+  readonly usage: undefined;
+  constructor(block: { errorCode: string; errorMessage: string; httpStatus: number; retryable: boolean }) {
+    super(block.errorMessage);
+    this.errorCode = block.errorCode;
+    this.httpStatus = block.httpStatus;
+    this.retryable = block.retryable;
+    this.retryAfterSeconds = undefined;
+    this.usage = undefined;
+  }
+}
+
+type GateResult =
+  | { allowed: true }
+  | { allowed: false; errorCode: string; errorMessage: string; httpStatus: number; retryable: boolean };
+let gateResult: GateResult = { allowed: true };
+const mockCheckAgentBillingGate = mock(async (_orgId: string | undefined) => gateResult);
+
 mock.module("@atlas/api/lib/billing/agent-gate", () => ({
-  checkAgentBillingGate: mock(async () => ({ allowed: true })),
-  BillingBlockedError: class extends Error {},
+  checkAgentBillingGate: mockCheckAgentBillingGate,
+  BillingBlockedError: BillingBlockedErrorStub,
 }));
 
 // Faithful stand-in — `executeAgentQuery` throws this; callers narrow via
@@ -58,8 +81,10 @@ const { createAtlasUser } = await import("@atlas/api/lib/auth/types");
 describe("executeAgentQuery claim-gate seam", () => {
   beforeEach(() => {
     claimResult = { allowed: true };
+    gateResult = { allowed: true };
     mockRunAgent.mockClear();
     mockCheckClaimGate.mockClear();
+    mockCheckAgentBillingGate.mockClear();
   });
 
   it("consults the claim-gate with the actor's org", async () => {
@@ -97,5 +122,38 @@ describe("executeAgentQuery claim-gate seam", () => {
     const result = await executeAgentQuery("question", "req-3", { actor });
     expect(result.answer).toBe("answer");
     expect(mockRunAgent).toHaveBeenCalledTimes(1);
+  });
+
+  // AC5/AC7 (#3651) — an EXPIRED trial blocks via Gate 0 (`trial_expired`)
+  // BEFORE the claim-gate runs, so expiry overrides the meter: an
+  // unclaimed-AND-expired workspace gets `trial_expired` (block + pay), never
+  // `claim_required`. This pins the gate ordering this feature introduced;
+  // the cross-surface expiry block (setup + MCP) is covered by Gate 0's own
+  // tests (billing/agent-gate, mcp tools/dispatch-gate/datasource-tools).
+  it("expired trial blocks at Gate 0 before the claim-gate is consulted (expiry overrides metering)", async () => {
+    gateResult = {
+      allowed: false,
+      errorCode: "trial_expired",
+      errorMessage: "Your free trial has expired. Upgrade to a paid plan to continue using Atlas.",
+      httpStatus: 403,
+      retryable: false,
+    };
+    // Even if the workspace is also unclaimed, expiry must win.
+    claimResult = { allowed: false, claimUrl: "https://app.useatlas.dev/signup" };
+    const actor = createAtlasUser("user-1", "managed", "user-1@example.com", {
+      activeOrganizationId: "org-expired",
+    });
+    const err: unknown = await executeAgentQuery("question", "req-4", { actor }).then(
+      () => {
+        throw new Error("expected executeAgentQuery to reject");
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(BillingBlockedErrorStub);
+    if (!(err instanceof BillingBlockedErrorStub)) throw new Error("unreachable");
+    expect(err.errorCode).toBe("trial_expired");
+    // Claim-gate never consulted — Gate 0 short-circuited first.
+    expect(mockCheckClaimGate).not.toHaveBeenCalled();
+    expect(mockRunAgent).not.toHaveBeenCalled();
   });
 });

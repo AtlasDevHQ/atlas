@@ -245,7 +245,7 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
         `SELECT event_type, payload FROM crm_outbox LIMIT 1`,
       );
       expect(rows[0]?.event_type).toBe("demo");
-      // payload is the raw AtlasLeadEvent (the dispatcher re-normalizes).
+      // payload is the raw LeadEvent (the dispatcher re-normalizes).
       // Email lowercases at the *normalizer* seam — the payload itself
       // carries the original form. Pin both so a future "lowercase at
       // enqueue" refactor doesn't silently change the contract.

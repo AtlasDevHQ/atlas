@@ -2,7 +2,7 @@
  * Persona fixture parser for `atlas ops smoke-crm`.
  *
  * Reads a YAML document of personas and returns the discriminated union of
- * `AtlasLeadEvent` variants the saas-crm dispatcher consumes. Validation is
+ * `LeadEvent` variants the saas-crm dispatcher consumes. Validation is
  * intentionally manual (rather than zod / similar) so the error messages
  * point at the offending persona index — a typo on persona 7 of 10 should
  * say "persona[6].planInterest is required for source=sales-form", not a
@@ -17,11 +17,11 @@ import { readFileSync } from "node:fs";
 import { load as parseYaml } from "js-yaml";
 
 import type {
-  AtlasConversionLeadEvent,
-  AtlasDemoLeadEvent,
-  AtlasLeadEvent,
-  AtlasSalesFormLeadEvent,
-  AtlasSignupLeadEvent,
+  ConversionLeadEvent,
+  DemoLeadEvent,
+  LeadEvent,
+  SalesFormLeadEvent,
+  SignupLeadEvent,
 } from "@useatlas/twenty/lead-normalizer";
 
 /** Top-level YAML shape. */
@@ -69,7 +69,7 @@ function optionalString(
 function parseSalesFormPersona(
   personaIndex: number,
   raw: Record<string, unknown>,
-): AtlasSalesFormLeadEvent {
+): SalesFormLeadEvent {
   return {
     source: "sales-form",
     email: requireString(personaIndex, raw, "email"),
@@ -85,7 +85,7 @@ function parseSalesFormPersona(
 function parseDemoPersona(
   personaIndex: number,
   raw: Record<string, unknown>,
-): AtlasDemoLeadEvent {
+): DemoLeadEvent {
   return {
     source: "demo",
     email: requireString(personaIndex, raw, "email"),
@@ -97,7 +97,7 @@ function parseDemoPersona(
 function parseSignupPersona(
   personaIndex: number,
   raw: Record<string, unknown>,
-): AtlasSignupLeadEvent {
+): SignupLeadEvent {
   const name = optionalString(personaIndex, raw, "name");
   return {
     source: "signup",
@@ -109,7 +109,7 @@ function parseSignupPersona(
 function parseConversionPersona(
   personaIndex: number,
   raw: Record<string, unknown>,
-): AtlasConversionLeadEvent {
+): ConversionLeadEvent {
   return {
     source: "conversion",
     email: requireString(personaIndex, raw, "email"),
@@ -118,7 +118,7 @@ function parseConversionPersona(
 }
 
 /** Pure entry point — `text` is a YAML string. Throws `FixtureParseError`. */
-export function parseFixtureYaml(text: string): AtlasLeadEvent[] {
+export function parseFixtureYaml(text: string): LeadEvent[] {
   let doc: unknown;
   try {
     doc = parseYaml(text);
@@ -138,7 +138,7 @@ export function parseFixtureYaml(text: string): AtlasLeadEvent[] {
     throw new FixtureParseError("fixture must contain at least one persona");
   }
 
-  const out: AtlasLeadEvent[] = [];
+  const out: LeadEvent[] = [];
   for (let i = 0; i < personas.length; i++) {
     const raw = personas[i];
     if (!raw || typeof raw !== "object") {
@@ -173,7 +173,7 @@ export function parseFixtureYaml(text: string): AtlasLeadEvent[] {
 }
 
 /** Read fixture from disk and parse. Errors surface unchanged. */
-export function loadFixture(path: string): AtlasLeadEvent[] {
+export function loadFixture(path: string): LeadEvent[] {
   let text: string;
   try {
     text = readFileSync(path, "utf-8");

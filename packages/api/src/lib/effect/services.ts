@@ -28,6 +28,7 @@ import type {
   OrgPoolSettings,
 } from "@atlas/api/lib/db/connection";
 import type { PoolMetrics, OrgPoolMetrics } from "@useatlas/types";
+import type { LeadEvent } from "@useatlas/twenty/lead-normalizer";
 import type { ToolRegistry as ToolRegistryClass } from "@atlas/api/lib/tools/registry";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
@@ -2700,88 +2701,17 @@ export const NoopDeployModeResolverLayer: Layer.Layer<DeployModeResolver> =
 // SaaS-only CRM dispatch (Twenty). Self-hosted gets the Noop layer.
 
 /**
- * Inputs to `SaasCrm.upsertLead`. Mirrors the discriminated union in
- * `plugins/twenty/src/lead-normalizer.ts:AtlasLeadEvent`. Drift between the
- * two is caught at compile time by the `_leadUnionsAreMirrors` bridge in
- * `ee/src/saas-crm/index.ts` (the EE layer is the only place allowed to
- * depend on both unions) — an exact-type-equality assertion that fails
- * `tsgo` if the unions diverge in any way (a variant added on one side, or
- * a field's shape changed on just one side). The normalizer's
- * exhaustiveness switch is the runtime backstop: were a divergence to slip
- * past the bridge, the next dispatch dead-letters with `Unknown lead source`
- * rather than silently swallowing.
- *
- * Adding a variant: extend BOTH this union AND `AtlasLeadEvent`, or the
- * bridge goes red. The two-place duplication exists because the runtime queue
- * (`lib/lead-outbox/`) and the route layer (the `SaasCrm` Tag's
- * `upsertLead` contract surface) intentionally stay free of any
- * `@useatlas/twenty` import — the EE dispatcher is the only allowed
- * cross-boundary consumer. The one-shot operator backfill at
- * `lib/db/migrations/scripts/backfill-crm-leads.ts` is the documented
- * carve-out: it imports `normalizeLead` to render dry-run previews,
- * and `@useatlas/twenty` is therefore a runtime dep of `@atlas/api`.
- * Promote to `@useatlas/types` when a second consumer of the union
- * itself (not the normalizer) appears.
+ * Inputs to `SaasCrm.upsertLead`. This is the `LeadEvent` discriminated
+ * union from `plugins/twenty/src/lead-normalizer.ts` — the single source of
+ * truth for the `crm_outbox` payload wire shape — imported directly (type
+ * only, no runtime coupling). `@atlas/api` already depends on
+ * `@useatlas/twenty` (the backfill at
+ * `lib/db/migrations/scripts/backfill-crm-leads.ts` imports `normalizeLead`),
+ * and `normalizeLead` runs `LeadEventSchema.parse` on the persisted row at
+ * flush — so there is no second union to mirror and no drift guard to keep.
+ * Adding a variant is a one-line edit to `LeadEventSchema`.
  */
-export type SaasCrmLeadInput =
-  | {
-      readonly source: "demo";
-      readonly email: string;
-      readonly ip?: string | null;
-      readonly userAgent?: string | null;
-    }
-  | {
-      readonly source: "sales-form";
-      readonly email: string;
-      /** Full name as typed by the prospect — split into first/last at the seam. */
-      readonly name: string;
-      readonly company: string;
-      readonly planInterest: string;
-      /** Free-text message body — becomes the attached Twenty Note's body. */
-      readonly message: string;
-      readonly ip?: string | null;
-      readonly userAgent?: string | null;
-    }
-  | {
-      readonly source: "signup";
-      readonly email: string;
-      /**
-       * Better Auth `user.name` — optional because email-only signup is
-       * allowed. Split into first/last at the normalizer seam.
-       */
-      readonly name?: string;
-    }
-  | {
-      /**
-       * Self-serve MCP trial-signup (ADR-0018, #3653). Enqueued by
-       * `provisionTrialWorkspace` on the `start_trial` path. Structurally
-       * identical to `signup`, but a DISTINCT lead source
-       * (`MCP_SIGNUP` → sticky `atlasFirstSource`) so the acquisition channel
-       * is measurable. The provisioner suppresses the auto-`signup` lead the
-       * shared Better Auth `user.create` hook would otherwise emit (see
-       * `lib/auth/signup-origin.ts`), so this is the sole `crm_outbox` row for
-       * the email. Lead source stays separate from `agentOrigin`
-       * (approval/audit) — do not conflate.
-       */
-      readonly source: "mcp-signup";
-      readonly email: string;
-      /** Optional display name — parity with `signup`. */
-      readonly name?: string;
-    }
-  | {
-      /**
-       * Stripe → Twenty conversion stamping (#2737). Fired from the
-       * `onSubscriptionComplete` Better Auth hook after a paying
-       * checkout. The dispatcher stamps `customFields.atlasStripeCustomerId`
-       * on the Twenty Person matching `email`; if no Person exists,
-       * `upsertPerson` creates one with `atlasFirstSource = "CONVERSION"`
-       * so the stamp is never lost.
-       */
-      readonly source: "conversion";
-      readonly email: string;
-      /** Stripe `customer.id` (`cus_…`). */
-      readonly stripeCustomerId: string;
-    };
+export type SaasCrmLeadInput = LeadEvent;
 
 /**
  * Inputs to `SaasCrm.stampConversion`. Derived from the `conversion`

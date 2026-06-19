@@ -433,7 +433,7 @@ export const SHUTDOWN_RECOVERY_STALE_MS = 30_000;   // 30 s
  * investigate before atlasFirstSource flips weeks later.
  *
  * The literals must match the `eventType` strings that actually land
- * in `crm_outbox.event_type`, NOT the upstream `AtlasLeadEvent.source`
+ * in `crm_outbox.event_type`, NOT the upstream `LeadEvent.source`
  * variants — they coincide for `demo` / `signup` / `sales-form` (the
  * dispatcher passes `input.source` through verbatim) but diverge for
  * conversions, which enqueue as `"stamp-conversion"` (the

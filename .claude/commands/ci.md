@@ -15,7 +15,6 @@ bash scripts/check-openapi-drift.sh  # apps/docs/openapi.json + api-reference MD
 bash scripts/check-oauth-helper-drift.sh  # plugins/mcp/src/_oauth-helper ↔ packages/oauth-helper/src parity
 bash scripts/check-test-discipline.sh  # No new top-level env/chdir mutations in test files
 bash scripts/check-twenty-resolver-imports.sh  # Twenty operator resolver confined to ee/saas-crm (#2850)
-bash scripts/check-lead-union-mirror.sh  # SaasCrmLeadInput ↔ AtlasLeadEvent ExactType mirror assertion present (#3653)
 bash scripts/check-settings-readers.sh  # Every settings-registry key has a non-test runtime reader (#3382)
 bash scripts/check-saas-env-doc.sh  # SaaS env reference table ↔ SAAS_ENV_KEYS SSOT parity (#3707)
 bun run scripts/check-published-symbols.ts  # @useatlas/* imports in scaffold-bound source ↔ pinned-published exports parity

@@ -28,7 +28,7 @@
  */
 
 import { Client } from "pg";
-import { normalizeLead, type AtlasLeadEvent, type NormalizedLead } from "@useatlas/twenty/lead-normalizer";
+import { normalizeLead, type LeadEvent, type NormalizedLead } from "@useatlas/twenty/lead-normalizer";
 import { extractEmailKey } from "../../../lead-outbox/outbox";
 
 /** Surface every code path the script touches — keeps the unit tests
@@ -207,10 +207,10 @@ function buildBulkEnqueueSql(rowCount: number): string {
   return `INSERT INTO crm_outbox (event_type, payload, email_key, workspace_id, status) VALUES ${placeholders.join(", ")} RETURNING id`;
 }
 
-/** Map a `demo_leads` row to the corresponding `AtlasLeadEvent`.
+/** Map a `demo_leads` row to the corresponding `LeadEvent`.
  *  Today only the demo variant — a future sales-form table will fan
  *  out a sibling mapper. */
-function toLeadEvent(row: DemoLeadRow, source: BackfillSource): AtlasLeadEvent {
+function toLeadEvent(row: DemoLeadRow, source: BackfillSource): LeadEvent {
   switch (source) {
     case "demo":
       return {

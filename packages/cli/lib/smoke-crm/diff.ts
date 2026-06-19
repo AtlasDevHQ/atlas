@@ -15,7 +15,7 @@
 import {
   normalizeLead,
   type AtlasEventSource,
-  type AtlasLeadEvent,
+  type LeadEvent,
   type NormalizedNote,
 } from "@useatlas/twenty/lead-normalizer";
 
@@ -86,7 +86,7 @@ export interface ObservedState {
  *    row and each row produces one note. (#2729's idempotency contract
  *    prevents double-create on retry *within* a row, not across rows.)
  */
-export function buildExpectedState(events: ReadonlyArray<AtlasLeadEvent>): ExpectedState {
+export function buildExpectedState(events: ReadonlyArray<LeadEvent>): ExpectedState {
   const persons = new Map<string, ExpectedPerson>();
   const notes: ExpectedNote[] = [];
 

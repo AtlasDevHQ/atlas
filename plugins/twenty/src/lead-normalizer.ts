@@ -11,15 +11,21 @@
  * `TwentyClient.upsertPerson`. That keeps this module a pure function
  * of input → payload, with no I/O and no Twenty-record-state coupling.
  *
- * Types are defined inline here and mirrored in `packages/api/src/lib/effect/services.ts`
- * (`SaasCrmLeadInput`). The compile-time gate that keeps the two in lockstep
- * is the `_leadUnionsAreMirrors` exact-equality assertion in
- * `ee/src/saas-crm/index.ts` (the one place allowed to depend on both); the
- * exhaustiveness switch in `normalizeLead` is the runtime backstop. Promote
- * to `@useatlas/types` when a second consumer outside of `ee/src/saas-crm/`
- * appears.
+ * `LeadEventSchema` is the SINGLE source of truth for the lead-event wire
+ * shape. `@atlas/api` (the `SaasCrm` Tag's `upsertLead` contract) imports the
+ * derived `LeadEvent` type, and `normalizeLead` runs `LeadEventSchema.parse`
+ * on the raw `crm_outbox` payload — so a malformed row dead-letters with a
+ * precise field error instead of an `as`-cast trusting jsonb it never
+ * validated. The `ee` dispatcher passes the persisted payload straight to
+ * `normalizeLead`; the schema *value* stays inside this module so only the
+ * already-published `normalizeLead` symbol crosses into `@atlas/api`/`ee`.
+ * Both already depend on `@useatlas/twenty`, so there is no second union to
+ * mirror and no drift guard to maintain. Promote the schema to a neutral
+ * package only when a SECOND CRM adapter (not the Twenty one) needs it — until
+ * then the adapter that consumes the shape owns it.
  */
 
+import { z } from "zod";
 import type { UpsertPersonInput } from "./client";
 
 /**
@@ -43,31 +49,31 @@ export type AtlasEventSource =
   | "OTHER";
 
 /** Demo signup variant — captured at the `/demo` gate on useatlas.dev. */
-export interface AtlasDemoLeadEvent {
-  readonly source: "demo";
-  readonly email: string;
-  readonly ip?: string | null;
-  readonly userAgent?: string | null;
-}
+const demoLeadEventSchema = z.object({
+  source: z.literal("demo"),
+  email: z.string(),
+  ip: z.string().nullish(),
+  userAgent: z.string().nullish(),
+});
 
 /**
  * Sales-form variant — captured by the Talk-to-sales dialog on
  * `/pricing`. Carries the free-text message that becomes a Twenty Note
  * attached to the Person.
  */
-export interface AtlasSalesFormLeadEvent {
-  readonly source: "sales-form";
-  readonly email: string;
+const salesFormLeadEventSchema = z.object({
+  source: z.literal("sales-form"),
+  email: z.string(),
   /** Full name as typed by the prospect. Split into first/last at the seam. */
-  readonly name: string;
-  readonly company: string;
+  name: z.string(),
+  company: z.string(),
   /** Plan label they're interested in (e.g. "Starter" / "Pro" / "Business"). */
-  readonly planInterest: string;
+  planInterest: z.string(),
   /** Free-text message. Becomes the Note body verbatim. */
-  readonly message: string;
-  readonly ip?: string | null;
-  readonly userAgent?: string | null;
-}
+  message: z.string(),
+  ip: z.string().nullish(),
+  userAgent: z.string().nullish(),
+});
 
 /**
  * Better Auth signup variant — fired by the `user.create.after` hook in
@@ -76,17 +82,13 @@ export interface AtlasSalesFormLeadEvent {
  * attached message — first/last source semantics are owned by
  * `TwentyClient.upsertPerson`, so a prior demo/sales-form touch keeps
  * its `atlasFirstSource` and only `atlasLastSource` flips to `SIGNUP`.
+ * `name` is optional because email-only signup is allowed.
  */
-export interface AtlasSignupLeadEvent {
-  readonly source: "signup";
-  readonly email: string;
-  /**
-   * Full name from Better Auth's `user.name` field — split into
-   * first/last at the seam (parity with the sales-form variant).
-   * Optional because email-only signup is allowed.
-   */
-  readonly name?: string;
-}
+const signupLeadEventSchema = z.object({
+  source: z.literal("signup"),
+  email: z.string(),
+  name: z.string().optional(),
+});
 
 /**
  * Self-serve MCP trial-signup variant — fired by `provisionTrialWorkspace`
@@ -102,19 +104,13 @@ export interface AtlasSignupLeadEvent {
  * suppression is load-bearing. Lead source (acquisition attribution) is
  * deliberately kept separate from Agent origin (approval/audit, ADR-0015):
  * both can say "mcp", but unifying them would recreate the `surface`→`origin`
- * overload.
+ * overload. `name` is optional for parity with `signup`.
  */
-export interface AtlasMcpSignupLeadEvent {
-  readonly source: "mcp-signup";
-  readonly email: string;
-  /**
-   * Optional display name — present for type-parity with `signup` and any
-   * future email-only caller. Today's provisioner always derives one from the
-   * email local-part, so in practice it's populated. Split into first/last at
-   * the normalizer seam.
-   */
-  readonly name?: string;
-}
+const mcpSignupLeadEventSchema = z.object({
+  source: z.literal("mcp-signup"),
+  email: z.string(),
+  name: z.string().optional(),
+});
 
 /**
  * Stripe → Twenty conversion stamping variant — fired by the
@@ -128,24 +124,36 @@ export interface AtlasMcpSignupLeadEvent {
  * still creates a new Person with `atlasFirstSource = "CONVERSION"` (the
  * `upsertPerson` POST branch) so the stamp is never lost.
  */
-export interface AtlasConversionLeadEvent {
-  readonly source: "conversion";
-  readonly email: string;
+const conversionLeadEventSchema = z.object({
+  source: z.literal("conversion"),
+  email: z.string(),
   /** Stripe `customer.id` (the `cus_…` literal). */
-  readonly stripeCustomerId: string;
-}
+  stripeCustomerId: z.string(),
+});
 
 /**
- * Discriminated union over every Atlas-internal lead event. The
- * exhaustiveness check in `normalizeLead` catches missing handlers
- * at compile time.
+ * Discriminated union over every Atlas-internal lead event — the single
+ * source of truth for the `crm_outbox` payload wire shape. The
+ * exhaustiveness check in `normalizeLead` catches missing handlers at
+ * compile time; `LeadEventSchema.parse` catches malformed payloads at the
+ * `ee/src/saas-crm` flush boundary at runtime.
  */
-export type AtlasLeadEvent =
-  | AtlasDemoLeadEvent
-  | AtlasSalesFormLeadEvent
-  | AtlasSignupLeadEvent
-  | AtlasMcpSignupLeadEvent
-  | AtlasConversionLeadEvent;
+export const LeadEventSchema = z.discriminatedUnion("source", [
+  demoLeadEventSchema,
+  salesFormLeadEventSchema,
+  signupLeadEventSchema,
+  mcpSignupLeadEventSchema,
+  conversionLeadEventSchema,
+]);
+
+/** Every Atlas-internal lead event. Derived from {@link LeadEventSchema}. */
+export type LeadEvent = z.infer<typeof LeadEventSchema>;
+
+export type DemoLeadEvent = Extract<LeadEvent, { source: "demo" }>;
+export type SalesFormLeadEvent = Extract<LeadEvent, { source: "sales-form" }>;
+export type SignupLeadEvent = Extract<LeadEvent, { source: "signup" }>;
+export type McpSignupLeadEvent = Extract<LeadEvent, { source: "mcp-signup" }>;
+export type ConversionLeadEvent = Extract<LeadEvent, { source: "conversion" }>;
 
 /** Note attached to the Person — only emitted by variants that carry a message. */
 export interface NormalizedNote {
@@ -164,7 +172,7 @@ export interface NormalizedLead {
 }
 
 /** Normalize a demo lead event to a Twenty upsert payload. */
-export function normalizeDemoLead(event: AtlasDemoLeadEvent): NormalizedLead {
+export function normalizeDemoLead(event: DemoLeadEvent): NormalizedLead {
   const email = event.email.toLowerCase().trim();
   const eventSource: AtlasEventSource = "DEMO";
 
@@ -207,7 +215,7 @@ function splitName(raw: string): { firstName: string; lastName?: string } | unde
 
 /** Normalize a sales-form lead event to a Twenty upsert payload + note. */
 export function normalizeSalesFormLead(
-  event: AtlasSalesFormLeadEvent,
+  event: SalesFormLeadEvent,
 ): NormalizedLead {
   const email = event.email.toLowerCase().trim();
   const eventSource: AtlasEventSource = "SALES_FORM";
@@ -241,7 +249,7 @@ export function normalizeSalesFormLead(
  * No note — signup events don't carry a message; first vs. last source
  * semantics are owned by `upsertPerson`, not the normalizer.
  */
-export function normalizeSignupLead(event: AtlasSignupLeadEvent): NormalizedLead {
+export function normalizeSignupLead(event: SignupLeadEvent): NormalizedLead {
   const email = event.email.toLowerCase().trim();
   const eventSource: AtlasEventSource = "SIGNUP";
 
@@ -268,7 +276,7 @@ export function normalizeSignupLead(event: AtlasSignupLeadEvent): NormalizedLead
  * (ADR-0018): it lets the CRM attribute MCP self-serve as its own channel.
  */
 export function normalizeMcpSignupLead(
-  event: AtlasMcpSignupLeadEvent,
+  event: McpSignupLeadEvent,
 ): NormalizedLead {
   const email = event.email.toLowerCase().trim();
   const eventSource: AtlasEventSource = "MCP_SIGNUP";
@@ -296,7 +304,7 @@ export function normalizeMcpSignupLead(
  * already existed. No note — conversion carries no message.
  */
 export function normalizeConversionLead(
-  event: AtlasConversionLeadEvent,
+  event: ConversionLeadEvent,
 ): NormalizedLead {
   const email = event.email.toLowerCase().trim();
   const eventSource: AtlasEventSource = "CONVERSION";
@@ -311,25 +319,37 @@ export function normalizeConversionLead(
   };
 }
 
-/** Dispatch on `source`. */
-export function normalizeLead(event: AtlasLeadEvent): NormalizedLead {
-  switch (event.source) {
+/**
+ * Validate the persisted payload, then dispatch on `source`. This is the
+ * single trust boundary for the `crm_outbox` payload: `LeadEventSchema.parse`
+ * rejects a malformed/stale row with a precise Zod field error — instead of an
+ * `as`-cast trusting jsonb it never validated — and the exhaustive switch maps
+ * the parsed `LeadEvent` to a Twenty upsert payload. The caller (the `ee`
+ * outbox dispatcher) passes the raw jsonb object as `unknown` and gets either a
+ * `NormalizedLead` or a thrown error to dead-letter. Folding the parse in here
+ * (rather than exposing `LeadEventSchema` for callers to parse) also keeps the
+ * schema *value* out of `@atlas/api`/`ee` import sites — only this already-
+ * published `normalizeLead` symbol crosses the package boundary.
+ */
+export function normalizeLead(event: unknown): NormalizedLead {
+  const parsed = LeadEventSchema.parse(event);
+  switch (parsed.source) {
     case "demo":
-      return normalizeDemoLead(event);
+      return normalizeDemoLead(parsed);
     case "sales-form":
-      return normalizeSalesFormLead(event);
+      return normalizeSalesFormLead(parsed);
     case "signup":
-      return normalizeSignupLead(event);
+      return normalizeSignupLead(parsed);
     case "mcp-signup":
-      return normalizeMcpSignupLead(event);
+      return normalizeMcpSignupLead(parsed);
     case "conversion":
-      return normalizeConversionLead(event);
+      return normalizeConversionLead(parsed);
     default: {
-      // Exhaustiveness — when new variants are added to `AtlasLeadEvent`,
+      // Exhaustiveness — when new variants are added to `LeadEventSchema`,
       // the absence of a case here surfaces as a tsgo compile error.
-      const _exhaustive: never = event;
+      const _exhaustive: never = parsed;
       void _exhaustive;
-      throw new Error(`Unknown lead source: ${String((event as { source?: unknown }).source)}`);
+      throw new Error(`Unknown lead source: ${String((parsed as { source?: unknown }).source)}`);
     }
   }
 }

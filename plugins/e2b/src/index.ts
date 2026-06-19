@@ -89,8 +89,8 @@ function loadE2BSDK(): { Sandbox: any } {
 
 // The semantic-tree walker (with its symlink-escape guard) now lives in
 // @useatlas/plugin-sdk — `collectSemanticFiles`. E2B's `files.write` wants
-// `{ path, data: string }`, so the call site maps the shared Buffer content
-// via `.toString("utf-8")`.
+// `{ path, data: string }`, so the call site decodes the shared `Uint8Array`
+// content via `Buffer.from(content).toString("utf-8")`.
 
 // ---------------------------------------------------------------------------
 // Shared helper — create an E2B sandbox instance
@@ -128,9 +128,10 @@ export function buildE2BSandboxPlugin(
 
         try {
           // Collect and upload semantic layer files. The shared collector is
-          // binary-safe (Buffer content); E2B's files.write wants string data.
+          // binary-safe (Uint8Array content); E2B's files.write wants string
+          // data, so decode each via Buffer.
           const files = collectSemanticFiles(semanticRoot, "semantic", log).map(
-            (f) => ({ path: f.path, data: f.content.toString("utf-8") }),
+            (f) => ({ path: f.path, data: Buffer.from(f.content).toString("utf-8") }),
           );
 
           if (files.length > 0) {

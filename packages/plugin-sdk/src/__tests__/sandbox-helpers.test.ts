@@ -59,7 +59,8 @@ describe("collectSemanticFiles", () => {
 
     const files = collectSemanticFiles(root, "semantic");
     expect(files).toHaveLength(1);
-    expect(files[0].content.equals(bytes)).toBe(true);
+    // content is typed Uint8Array (a Node Buffer at runtime); wrap to compare.
+    expect(Buffer.from(files[0].content).equals(bytes)).toBe(true);
   });
 
   test("follows symlinks that stay inside the semantic root", () => {
@@ -117,6 +118,66 @@ describe("collectSemanticFiles", () => {
     } finally {
       fs.rmSync(base, { recursive: true, force: true });
     }
+  });
+
+  test("SECURITY: rejects a symlinked DIRECTORY escaping the semantic root", () => {
+    // The escape guard must cover the directory-recursion arm, not just files —
+    // a symlinked dir pointing outside the root would otherwise leak a whole
+    // subtree (e.g. semantic/x -> /etc), the higher-impact exfiltration vector.
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "outside-dir-"));
+    try {
+      fs.mkdirSync(path.join(outside, "secrets"), { recursive: true });
+      fs.writeFileSync(path.join(outside, "secrets", "secret.yml"), "password: hunter2\n");
+      fs.writeFileSync(path.join(root, "real.yml"), "table: real\n");
+      fs.symlinkSync(path.join(outside, "secrets"), path.join(root, "linkdir"));
+
+      const { warnings, logger } = makeLogger();
+      const files = collectSemanticFiles(root, "semantic", logger);
+
+      const paths = files.map((f) => f.path);
+      expect(paths).toContain("semantic/real.yml");
+      expect(paths.some((p) => p.includes("linkdir"))).toBe(false);
+      expect(files.some((f) => f.content.toString().includes("hunter2"))).toBe(false);
+      expect(warnings.some((w) => w.includes("escaping semantic root"))).toBe(true);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("SECURITY: rejects a relative ../ symlink escaping the root", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "relative-escape-"));
+    try {
+      fs.mkdirSync(path.join(base, "semantic"), { recursive: true });
+      fs.writeFileSync(path.join(base, "secret.yml"), "password: hunter2\n");
+      fs.writeFileSync(path.join(base, "semantic", "real.yml"), "table: real\n");
+      // Relative target climbing out of the root — distinct from the absolute
+      // targets the other escape tests use.
+      fs.symlinkSync("../secret.yml", path.join(base, "semantic", "leak.yml"));
+
+      const { warnings, logger } = makeLogger();
+      const files = collectSemanticFiles(path.join(base, "semantic"), "semantic", logger);
+      const paths = files.map((f) => f.path);
+      expect(paths.some((p) => p.endsWith("real.yml"))).toBe(true);
+      expect(paths.some((p) => p.endsWith("leak.yml"))).toBe(false);
+      expect(files.some((f) => f.content.toString().includes("hunter2"))).toBe(false);
+      expect(warnings.some((w) => w.includes("escaping semantic root"))).toBe(true);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("terminates on a self-referential symlink cycle (no duplicate explosion)", () => {
+    // A directory symlink pointing back at the root is inside the root, so the
+    // escape guard allows it — the cycle-break (visited realpaths) is what
+    // stops it from re-walking the tree until the OS aborts with ELOOP.
+    fs.writeFileSync(path.join(root, "real.yml"), "table: real\n");
+    fs.symlinkSync(root, path.join(root, "selflink"));
+
+    const files = collectSemanticFiles(root, "semantic");
+    const realYmls = files.filter((f) => f.path.endsWith("real.yml"));
+    // real.yml is collected exactly once; the self-link is not re-walked.
+    expect(realYmls).toHaveLength(1);
+    expect(files.some((f) => f.path.includes("selflink"))).toBe(false);
   });
 
   test("returns empty (logs warn) when the semantic root is unreadable/missing", () => {
@@ -233,6 +294,10 @@ describe("runHealthCheckWithTimeout", () => {
     );
     expect(result.healthy).toBe(false);
     expect(result.message).toContain("timed out after 20ms");
+    // latencyMs is attached on the timeout branch too — the branch a refactor
+    // is most likely to forget.
+    expect(typeof result.latencyMs).toBe("number");
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
     expect(cleaned).toBe(true);
   });
 
@@ -257,7 +322,9 @@ describe("runHealthCheckWithTimeout", () => {
     );
     expect(result.healthy).toBe(false);
     expect(result.message).toContain("timed out after 20ms");
-    expect(cleanup).toHaveBeenCalled();
+    // cleanup is the timeout safety net — it must fire exactly once even though
+    // the probe also nulls its own ref on its (losing) happy path.
+    expect(cleanup).toHaveBeenCalledTimes(1);
     // wait for the slow probe to finish so the ref it set is observable
     await new Promise((r) => setTimeout(r, 250));
     // cleanup nulled it before the probe's create resolved
@@ -305,5 +372,54 @@ describe("runHealthCheckWithTimeout", () => {
     );
     expect(result.healthy).toBe(false);
     expect(result.message).toBe("plain string failure");
+  });
+
+  test("handles a synchronously-throwing probe (not just async rejection)", async () => {
+    // Promise.race invokes fn() synchronously, so a sync throw escapes the race
+    // and is caught only by the outer try/catch — a distinct code path.
+    const cleanup = mock(() => Promise.resolve());
+    const result = await runHealthCheckWithTimeout(
+      (() => {
+        throw new Error("sync boom");
+      }) as unknown as () => Promise<{ healthy: boolean }>,
+      { timeoutMs: 1_000, cleanup },
+    );
+    expect(result.healthy).toBe(false);
+    expect(result.message).toBe("sync boom");
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  test("logs a warning on the probe-throw branch", async () => {
+    const { warnings, logger } = makeLogger();
+    await runHealthCheckWithTimeout(
+      async () => {
+        throw new Error("quota exceeded");
+      },
+      { timeoutMs: 1_000, cleanup: () => {}, logger },
+    );
+    expect(warnings.some((w) => w.includes("probe failed") && w.includes("quota exceeded"))).toBe(
+      true,
+    );
+  });
+
+  test("logs a warning on the timeout branch", async () => {
+    const { warnings, logger } = makeLogger();
+    await runHealthCheckWithTimeout(() => new Promise(() => {}), {
+      timeoutMs: 20,
+      cleanup: () => {},
+      logger,
+    });
+    expect(warnings.some((w) => w.includes("timed out after 20ms"))).toBe(true);
+  });
+
+  test("throws on a non-positive or non-finite timeoutMs", async () => {
+    for (const bad of [0, -5, NaN, Infinity]) {
+      await expect(
+        runHealthCheckWithTimeout(async () => ({ healthy: true }), {
+          timeoutMs: bad,
+          cleanup: () => {},
+        }),
+      ).rejects.toThrow(/timeoutMs must be a positive, finite number/);
+    }
   });
 });

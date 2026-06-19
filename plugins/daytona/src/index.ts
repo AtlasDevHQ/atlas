@@ -103,7 +103,8 @@ function createDaytonaClient(DaytonaClass: any, config: DaytonaSandboxConfig): a
 
 // The semantic-tree walker (with its symlink-escape guard) now lives in
 // @useatlas/plugin-sdk — `collectSemanticFiles` — returning binary-safe
-// `{ path, content: Buffer }` tuples that daytona uploads via fs.uploadFile.
+// `{ path, content: Uint8Array }` tuples (a Node Buffer at runtime) that
+// daytona uploads via fs.uploadFile.
 
 // ---------------------------------------------------------------------------
 // Plugin builder

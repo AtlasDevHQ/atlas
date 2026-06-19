@@ -298,11 +298,13 @@ export interface CollectedSemanticFile {
   /** POSIX-style path under the sandbox dir, e.g. `"semantic/entities/users.yml"`. */
   path: string;
   /**
-   * Raw file bytes. Sandbox SDKs that want string content can call
-   * `.toString()` (or `.toString("utf-8")`) at the call site — keeping the
-   * shared collector binary-safe avoids an encoding round-trip.
+   * Raw file bytes (binary-safe — the collector does no encoding round-trip).
+   * Typed as the portable `Uint8Array` so the published SDK surface carries no
+   * Node `Buffer` global; the runtime value IS a Node `Buffer`, so call sites
+   * that want string content use `Buffer.from(content).toString("utf-8")` (or
+   * `new TextDecoder().decode(content)`).
    */
-  content: Buffer;
+  content: Uint8Array;
 }
 
 /**
@@ -318,7 +320,10 @@ export interface CollectedSemanticFile {
  * traversal are both rejected — a bare `startsWith(root)` would not catch the
  * former. Unreadable directories/files (and an unreadable/missing root) are
  * skipped with a warning rather than throwing, so a partially-readable tree
- * still yields the files it can.
+ * still yields the files it can. Symlink cycles (a directory symlink resolving
+ * to an already-walked directory, e.g. a self-link back to the root) are broken
+ * via a visited-realpath set, so a self-referential tree terminates instead of
+ * re-uploading the same files until the OS aborts with `ELOOP`.
  *
  * @param localDir   Absolute path to the local semantic directory to walk.
  * @param sandboxDir Remote path prefix for the returned `path` values.
@@ -349,6 +354,13 @@ export function collectSemanticFiles(
     return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
   }
 
+  // Real directories already walked, keyed by realpath. Seeded with the root so
+  // a directory symlink resolving back to an ancestor (a cycle) is skipped
+  // instead of re-walked. Only directory symlinks are tracked — a tree of real
+  // directories cannot cycle, so non-symlink recursion stays as before (and
+  // distinct symlinks to the same in-root dir keep their prior dup behavior).
+  const visitedDirs = new Set<string>([semanticRoot]);
+
   function walk(dir: string, relative: string): void {
     let entries: fs.Dirent[];
     try {
@@ -374,6 +386,12 @@ export function collectSemanticFiles(
           }
           const stat = fs.statSync(entryPath);
           if (stat.isDirectory()) {
+            if (visitedDirs.has(realPath)) {
+              // Symlink cycle — this dir's real path was already walked. Skip so
+              // a self-referential tree terminates instead of looping forever.
+              continue;
+            }
+            visitedDirs.add(realPath);
             walk(entryPath, remotePath);
           } else if (stat.isFile()) {
             results.push({ path: remotePath, content: fs.readFileSync(entryPath) });
@@ -413,7 +431,12 @@ export interface HealthCheckTimeoutOptions {
    * thrown here are logged, never propagated.
    */
   cleanup: () => void | Promise<void>;
-  /** Optional logger; `warn` is called if `cleanup` throws. */
+  /**
+   * Optional logger; `warn` is called on every failing branch — the probe
+   * timing out, the probe throwing, and `cleanup` throwing. (Success and a
+   * returned unhealthy result are not logged; the latter is the probe's to
+   * report.)
+   */
   logger?: SandboxHelperLogger;
 }
 
@@ -439,10 +462,17 @@ const HEALTH_CHECK_TIMEOUT = Symbol("plugin-sdk:health-check-timeout");
  * reference reaped here fires immediately instead.
  */
 export async function runHealthCheckWithTimeout(
-  fn: () => Promise<Omit<PluginHealthResult, "latencyMs">>,
+  fn: () => Promise<Omit<PluginHealthResult, "latencyMs"> & { latencyMs?: never }>,
   options: HealthCheckTimeoutOptions,
 ): Promise<PluginHealthResult> {
   const { timeoutMs, cleanup, logger } = options;
+  // Fail fast on a misconfigured timeout: setTimeout coerces NaN/negative to 0,
+  // which would silently report every probe as timed-out/unhealthy.
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(
+      `runHealthCheckWithTimeout: timeoutMs must be a positive, finite number (got ${timeoutMs})`,
+    );
+  }
   const start = performance.now();
   let timer: ReturnType<typeof setTimeout>;
 
@@ -466,6 +496,7 @@ export async function runHealthCheckWithTimeout(
 
     const latencyMs = Math.round(performance.now() - start);
     if (result === HEALTH_CHECK_TIMEOUT) {
+      logger?.warn(`[plugin-sdk] Health check timed out after ${timeoutMs}ms`);
       await runCleanup();
       return {
         healthy: false,
@@ -475,10 +506,12 @@ export async function runHealthCheckWithTimeout(
     }
     return { ...result, latencyMs };
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger?.warn(`[plugin-sdk] Health check probe failed: ${message}`);
     await runCleanup();
     return {
       healthy: false,
-      message: err instanceof Error ? err.message : String(err),
+      message,
       latencyMs: Math.round(performance.now() - start),
     };
   }

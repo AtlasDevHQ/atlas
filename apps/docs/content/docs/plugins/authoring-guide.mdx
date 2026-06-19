@@ -531,8 +531,8 @@ Plugin sandbox backends default to priority 60 (between nsjail and sidecar). Set
 
 Most sandbox plugins need the same two pieces of infrastructure, so `@useatlas/plugin-sdk` ships them — use these instead of re-implementing them per plugin:
 
-- **`collectSemanticFiles(localDir, sandboxDir, logger?)`** — recursively walks the local semantic tree and returns `{ path, content: Buffer }[]` ready to upload into the sandbox. It carries a **symlink-escape guard**: a symlink whose real target resolves outside the semantic root is skipped (and logged), never uploaded. This is a security property — single-sourcing it means a fix lands once for every sandbox backend. SDKs that want string content (e.g. E2B's `files.write`) map `f.content.toString("utf-8")` at the call site.
-- **`runHealthCheckWithTimeout(fn, { timeoutMs, cleanup, logger })`** — wraps a `healthCheck()` probe in the `Promise.race` timeout, attaches a measured `latencyMs`, and runs `cleanup` in every failing branch (timeout or throw). The probe owns its happy-path teardown; `cleanup` is the safety net that reaps a sandbox reference the probe captured but could not release (it must be idempotent/guarded). `await using` is intentionally not used — the timeout can win while the SDK is still mid-create with no `AbortSignal`, so an explicit guarded cleanup fires immediately.
+- **`collectSemanticFiles(localDir, sandboxDir, logger?)`** — recursively walks the local semantic tree and returns `{ path, content: Uint8Array }[]` ready to upload into the sandbox (the content is a Node `Buffer` at runtime; the type is the portable `Uint8Array`). It carries a **symlink-escape guard**: a symlink whose real target resolves outside the semantic root is skipped (and logged), never uploaded — and symlink cycles are broken so a self-referential tree terminates. This is a security property — single-sourcing it means a fix lands once for every sandbox backend. SDKs that want string content (e.g. E2B's `files.write`) decode via `Buffer.from(f.content).toString("utf-8")` at the call site.
+- **`runHealthCheckWithTimeout(fn, { timeoutMs, cleanup, logger })`** — wraps a `healthCheck()` probe in the `Promise.race` timeout, attaches a measured `latencyMs`, and runs `cleanup` in every failing branch (timeout or throw). The optional `logger.warn` fires on each failing branch (timeout, probe throw, cleanup throw). The probe owns its happy-path teardown; `cleanup` is the safety net that reaps a sandbox reference the probe captured but could not release (it must be idempotent/guarded). `await using` is intentionally not used — the timeout can win while the SDK is still mid-create with no `AbortSignal`, so an explicit guarded cleanup fires immediately.
 
 ```typescript
 import { collectSemanticFiles, runHealthCheckWithTimeout } from "@useatlas/plugin-sdk";
@@ -541,7 +541,7 @@ sandbox: {
   async create(semanticRoot: string): Promise<PluginExploreBackend> {
     const sandbox = await mySdk.create();
     const files = collectSemanticFiles(semanticRoot, "semantic", log);
-    await sandbox.upload(files); // each { path, content: Buffer }
+    await sandbox.upload(files); // each { path, content: Uint8Array }
     return { /* exec, close */ };
   },
 },

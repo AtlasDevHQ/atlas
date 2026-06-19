@@ -155,7 +155,9 @@ async function loadSandboxModule(): Promise<{ Sandbox: SandboxConstructor }> {
 // We avoid importing the real types since it's an optional peer dependency.
 interface SandboxInstance {
   mkDir(path: string): Promise<void>;
-  writeFiles(files: { path: string; content: Buffer }[]): Promise<void>;
+  // `collectSemanticFiles` yields `Uint8Array` content (a Node Buffer at
+  // runtime, which the real @vercel/sandbox writeFiles accepts).
+  writeFiles(files: { path: string; content: Uint8Array }[]): Promise<void>;
   runCommand(opts: {
     cmd: string;
     args: string[];
@@ -227,7 +229,7 @@ async function createVercelExploreBackend(
   });
 
   // 3. Collect semantic layer files
-  let files: { path: string; content: Buffer }[];
+  let files: { path: string; content: Uint8Array }[];
   try {
     files = collectSemanticFiles(semanticRoot, SANDBOX_SEMANTIC_REL, log);
   } catch (err) {

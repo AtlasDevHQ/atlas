@@ -103,12 +103,13 @@ interface RailwayExecResult {
 }
 
 // Native binary-safe file surface (railway >= 3.3.0). We declare only the two
-// operations the upload path needs; `write` accepts a Buffer (a Uint8Array) and
-// auto-creates parent directories, `mkdir` is `mkdir -p`. Optional defensively:
-// an older SDK exposes no `files` getter, which the backend turns into a clear
-// install-hint error rather than a crash.
+// operations the upload path needs; `write` accepts a Uint8Array (a Node Buffer
+// at runtime, which the SDK accepts) and auto-creates parent directories,
+// `mkdir` is `mkdir -p`. Optional defensively: an older SDK exposes no `files`
+// getter, which the backend turns into a clear install-hint error rather than a
+// crash.
 interface RailwaySandboxFiles {
-  write(path: string, content: Buffer): Promise<void>;
+  write(path: string, content: Uint8Array): Promise<void>;
   mkdir(path: string): Promise<void>;
 }
 
@@ -184,7 +185,7 @@ function shellQuote(s: string): string {
 
 async function uploadSemanticFiles(
   sandbox: RailwaySandboxInstance,
-  files: { path: string; content: Buffer }[],
+  files: { path: string; content: Uint8Array }[],
 ): Promise<void> {
   // The native files API (railway >= 3.3.0) is binary-safe, streamed, and
   // creates parent dirs on write — none of the old base64-over-exec machinery
@@ -308,7 +309,7 @@ async function createRailwayExploreBackend(
 
   // 2. Collect semantic layer files BEFORE creating the sandbox — no point
   // paying for a microVM when the semantic dir is empty/unreadable.
-  let files: { path: string; content: Buffer }[];
+  let files: { path: string; content: Uint8Array }[];
   try {
     files = collectSemanticFiles(semanticRoot, "semantic", log);
   } catch (err) {

@@ -388,8 +388,8 @@ The `security` metadata is informational — it's the plugin's self-declaration,
 
 `@useatlas/plugin-sdk` ships two shared helpers for sandbox plugins — prefer them over re-implementing the same boilerplate:
 
-- **`collectSemanticFiles(localDir, sandboxDir, logger?)`** — walks the local semantic tree into `{ path, content: Buffer }[]` for upload, with a **symlink-escape guard** (a symlink resolving outside the semantic root is skipped, never uploaded — a single-sourced security property). Map `f.content.toString("utf-8")` at the call site for SDKs that want string content.
-- **`runHealthCheckWithTimeout(fn, { timeoutMs, cleanup, logger })`** — wraps the probe in the timeout race, attaches `latencyMs`, and runs the guarded `cleanup` safety net on timeout/throw. `await using` is intentionally avoided (the timeout can win mid-create with no `AbortSignal`).
+- **`collectSemanticFiles(localDir, sandboxDir, logger?)`** — walks the local semantic tree into `{ path, content: Uint8Array }[]` for upload (a Node `Buffer` at runtime; the portable `Uint8Array` type keeps the published surface Node-global-free), with a **symlink-escape guard** (a symlink resolving outside the semantic root is skipped, never uploaded — a single-sourced security property) and symlink-cycle breaking. Decode via `Buffer.from(f.content).toString("utf-8")` at the call site for SDKs that want string content.
+- **`runHealthCheckWithTimeout(fn, { timeoutMs, cleanup, logger })`** — wraps the probe in the timeout race, attaches `latencyMs`, and runs the guarded `cleanup` safety net on timeout/throw. `logger.warn` fires on each failing branch (timeout, probe throw, cleanup throw). `await using` is intentionally avoided (the timeout can win mid-create with no `AbortSignal`).
 
 ## Common Patterns
 

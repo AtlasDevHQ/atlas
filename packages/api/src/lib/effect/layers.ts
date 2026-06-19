@@ -78,7 +78,10 @@ import {
   makeConnectionRegistryLive,
   makeWiredPluginRegistryLive,
   type PluginWiringConfig,
+  DurableSession,
 } from "./services";
+import { durableSessionLayer } from "./durable-session";
+import { getRetentionDays } from "@atlas/api/lib/durable-session";
 import {
   recoverInFlight as recoverOutboxInFlight,
   drainOutbox as drainOutboxQueue,
@@ -166,7 +169,7 @@ function withFiberDeathLog<A, E, R>(
 //
 // Membership splits into two single-source records, by fiber kind:
 //
-//   • SCHEDULER_CLEANUP_SPAN_NAMES — 10 cleanup/sweep fibers (they evict
+//   • SCHEDULER_CLEANUP_SPAN_NAMES — 11 cleanup/sweep fibers (they evict
 //     expired in-memory or DB state). Eight were retrofitted with a span by
 //     #2945 (the TTL/ratelimit/state sweeps below); the ninth,
 //     `orphan_task_reconcile` (#2944), shipped with its span from day one and
@@ -175,7 +178,9 @@ function withFiberDeathLog<A, E, R>(
 //     catalog-refresh fiber and the scheduler engine use that 4th arg
 //     elsewhere, inside their own modules). The tenth,
 //     `trial_rate_limit_cleanup` (#3654), sweeps the unauthenticated
-//     `start_trial` per-IP/email attempt-limiter maps.
+//     `start_trial` per-IP/email attempt-limiter maps. The eleventh,
+//     `agent_runs_retention_sweep` (#3745, ADR-0020), deletes terminal
+//     durable-session runs past the retention window.
 //
 //   • SCHEDULER_WORK_SPAN_NAMES — 5 background-work fibers (they perform
 //     recurring side-effecting work rather than evicting state):
@@ -225,6 +230,7 @@ export const SCHEDULER_CLEANUP_SPAN_NAMES = {
   conversation_rate_sweep: "atlas.scheduler.conversation_rate_sweep",
   share_token_cleanup: "atlas.scheduler.share_token_cleanup",
   orphan_task_reconcile: "atlas.scheduler.orphan_task_reconcile",
+  agent_runs_retention_sweep: "atlas.scheduler.agent_runs_retention_sweep",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
 // Per-tick spans for the background-work fibers (#2987). Same wrap shape and
@@ -1450,7 +1456,7 @@ export class Scheduler extends Context.Tag("Scheduler")<
  */
 export function makeSchedulerLive(
   config: ResolvedConfig,
-): Layer.Layer<Scheduler, never, AuditPurgeScheduler | SaasCrm | Migration> {
+): Layer.Layer<Scheduler, never, AuditPurgeScheduler | SaasCrm | Migration | DurableSession> {
   return Layer.scoped(
     Scheduler,
     Effect.gen(function* () {
@@ -2247,6 +2253,44 @@ export function makeSchedulerLive(
           withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.share_token_cleanup, {}, shareCleanupEffect).pipe(
             Effect.repeat(Schedule.spaced(Duration.millis(SHARE_CLEANUP_INTERVAL_MS))),
           ),
+        ),
+      );
+
+      // ── Periodic fiber: agent_runs retention sweep (#3745, ADR-0020) ──
+      // Deletes terminal (done/failed) durable-session runs past the retention
+      // window; non-terminal runs are never touched. Resolves the
+      // `DurableSession` Tag — Noop when there is no internal DB, so the fiber
+      // forks but sweeps nothing. The retention window is read per-tick (no
+      // orgId → platform/env/default) so an operator setting change takes
+      // effect without a restart. Hourly, like the share-token sweep.
+      const durableSession = yield* DurableSession;
+      // Per-tick catch (inside repeat) so the loop survives a transient fault
+      // and keeps sweeping — same resilience shape as the share-token sweep.
+      const agentRunsRetentionTick = Effect.gen(function* () {
+        yield* durableSession.sweepTerminal(getRetentionDays());
+      }).pipe(
+        Effect.catchAllCause((cause) =>
+          Effect.sync(() => {
+            // A defect here is genuinely unexpected: `sweepTerminal` already
+            // self-catches DB errors → -1, so this only fires on an escaped
+            // defect (e.g. `getRetentionDays()` throwing). `error`, not `warn`,
+            // matching the sibling share-token sweep's unexpected-error level.
+            log.error(
+              { err: cause.toString() },
+              "agent_runs retention sweep tick failed",
+            );
+          }),
+        ),
+      );
+      // forkScoped, not fork — see SettingsLive for rationale.
+      yield* Effect.forkScoped(
+        withFiberDeathLog(
+          "agent_runs_retention_sweep",
+          withEffectSpan(
+            SCHEDULER_CLEANUP_SPAN_NAMES.agent_runs_retention_sweep,
+            {},
+            agentRunsRetentionTick,
+          ).pipe(Effect.repeat(Schedule.spaced(Duration.hours(1)))),
         ),
       );
 
@@ -3185,11 +3229,19 @@ export function buildAppLayer(
   | SemanticSync
   | Settings
   | Scheduler
+  | DurableSession
   | EnterpriseSubsystem,
   Error
 > {
   const configLayer = Layer.succeed(Config, { config });
   const internalDBLayer = makeInternalDBLive();
+
+  // DurableSession (#3745, ADR-0020) — real, internal-DB-backed store when an
+  // internal DB is present; the Noop layer otherwise (same `hasInternalDB()`
+  // gate as the EE Noop layers). The scheduler's retention-sweep fiber resolves
+  // it via the Tag. The per-workspace `ATLAS_DURABILITY_ENABLED` flag is checked
+  // at write time in the agent loop, not here.
+  const durableSession = durableSessionLayer(hasInternalDB());
 
   // MigrationLive depends on InternalDB — provide it
   const migrationLayer = MigrationLive.pipe(Layer.provide(internalDBLayer));
@@ -3325,8 +3377,14 @@ export function buildAppLayer(
   // creates `stripe_webhook_events`. Same shared reference as everywhere
   // else, so Effect memoization makes the edge free (Migration ←
   // InternalDB only — no cycle back into Scheduler).
+  //
+  // `durableSession` is provided so the retention-sweep fiber (#3745) can
+  // resolve the `DurableSession` Tag — Noop when there is no internal DB, so
+  // the fiber forks but sweeps nothing.
   const schedulerLayer = makeSchedulerLive(config).pipe(
-    Layer.provide(Layer.mergeAll(EnterpriseLayer, settingsLayer, migrationLayer)),
+    Layer.provide(
+      Layer.mergeAll(EnterpriseLayer, settingsLayer, migrationLayer, durableSession),
+    ),
   );
 
   // DpaGuardLive depends on Config + Settings — provide them so the boot
@@ -3441,6 +3499,7 @@ export function buildAppLayer(
     semanticSyncLayer,
     settingsLayer,
     schedulerLayer,
+    durableSession,
     dpaGuardLayer,
     enterpriseGuardLayer,
     encryptionKeyGuardLayer,

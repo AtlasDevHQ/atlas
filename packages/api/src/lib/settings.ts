@@ -348,6 +348,34 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "workspace",
   },
   {
+    // #3745 / ADR-0020 — durable agent sessions. When on (and an internal DB is
+    // present), each turn writes a terminal `agent_runs` checkpoint. Default
+    // OFF: off, or no internal DB, → behavior identical to today. Hot-reloadable
+    // (no requiresRestart) — the agent loop reads it per turn via getSettingAuto.
+    key: "ATLAS_DURABILITY_ENABLED",
+    section: "Agent",
+    label: "Durable Sessions",
+    description:
+      "Persist a durable checkpoint of each agent turn to the internal database (ADR-0020). Requires an internal DB; off by default. Foundation for crash-resume and approval-park.",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_DURABILITY_ENABLED",
+    scope: "workspace",
+  },
+  {
+    // Retention window for terminal (done/failed) runs; the scheduler sweep
+    // deletes terminal runs older than this. Non-terminal runs are untouched.
+    key: "ATLAS_DURABILITY_RETENTION_DAYS",
+    section: "Agent",
+    label: "Durable Session Retention (days)",
+    description:
+      "How long terminal agent-run checkpoints are retained before the retention sweep deletes them. Non-terminal runs are never swept.",
+    type: "number",
+    default: "30",
+    envVar: "ATLAS_DURABILITY_RETENTION_DAYS",
+    scope: "workspace",
+  },
+  {
     key: "ATLAS_PROVIDER",
     section: "Agent",
     label: "LLM Provider",

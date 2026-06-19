@@ -388,6 +388,10 @@ describe("migrateAuthTables", () => {
             { name: "0139_learned_patterns_auto_promoted.sql" },
             { name: "0140_operator_integration_credentials.sql" },
             { name: "0141_stripe_teardown_pending.sql" },
+            // 0142 is a MANAGED_AUTH_MIGRATION (skipped outside managed mode),
+            // so it doesn't need to appear here. 0143 touches `conversations`
+            // (Atlas-internal, not Better Auth), so it runs and must be listed.
+            { name: "0143_agent_runs.sql" },
           ],
         };
       }

@@ -278,11 +278,18 @@ describe("makeSchedulerLive", () => {
   // builds cleanly.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { NoopEnterpriseDefaultsLayer } = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { NoopDurableSessionLayer } = require("@atlas/api/lib/effect/durable-session") as typeof import("@atlas/api/lib/effect/durable-session");
 
   // #3446 — `makeSchedulerLive` requires `Migration` as an ordering
   // barrier for the billing-reconcile boot tick; tests satisfy it with
-  // the immediate test layer.
-  const schedulerDeps = Layer.merge(NoopEnterpriseDefaultsLayer, makeTestMigrationLayer());
+  // the immediate test layer. #3745 — it also requires `DurableSession`;
+  // the Noop layer suffices (the retention-sweep fiber forks but no-ops).
+  const schedulerDeps = Layer.mergeAll(
+    NoopEnterpriseDefaultsLayer,
+    makeTestMigrationLayer(),
+    NoopDurableSessionLayer,
+  );
 
   test("returns 'none' backend when no scheduler configured", async () => {
     const config = {} as Parameters<typeof makeSchedulerLive>[0];
@@ -347,7 +354,9 @@ describe("makeSchedulerLive", () => {
 
     const config = {} as Parameters<typeof makeSchedulerLive>[0];
     const layer = makeSchedulerLive(config).pipe(
-      Layer.provide(Layer.merge(NoopEnterpriseDefaultsLayer, gatedMigrationLayer)),
+      Layer.provide(
+        Layer.mergeAll(NoopEnterpriseDefaultsLayer, gatedMigrationLayer, NoopDurableSessionLayer),
+      ),
     );
 
     let schedulerBuilt = false;
@@ -412,6 +421,7 @@ describe("makeSchedulerLive", () => {
         "conversation_rate_sweep",
         "share_token_cleanup",
         "orphan_task_reconcile",
+        "agent_runs_retention_sweep",
       ],
     },
     {

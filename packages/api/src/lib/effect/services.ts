@@ -89,6 +89,45 @@ export class Migration extends Context.Tag("Migration")<
   MigrationShape
 >() {}
 
+// ---------------------------------------------------------------------------
+// DurableSession — agent-turn checkpoint store (#3745, ADR-0020)
+// ---------------------------------------------------------------------------
+
+export interface DurableSessionShape {
+  /**
+   * Whether a real (internal-DB-backed) durable store is wired. `false` for
+   * the Noop layer selected when no internal DB is present (`hasInternalDB()`),
+   * mirroring the enterprise Noop layers. The agent loop additionally gates on
+   * the per-workspace `ATLAS_DURABILITY_ENABLED` settings flag at write time.
+   */
+  readonly available: boolean;
+  /**
+   * Persist a single terminal run checkpoint (`done`/`failed`) at turn
+   * completion (phase 1a). Fire-and-forget: rides the shared `internalExecute`
+   * circuit breaker, never throws, never disrupts the stream. No-op on the
+   * Noop layer.
+   */
+  recordTerminal(args: {
+    conversationId: string;
+    orgId: string | null;
+    status: "done" | "failed";
+    stepIndex: number;
+    transcript: unknown;
+  }): void;
+  /**
+   * Delete terminal runs older than the retention window; leaves non-terminal
+   * (`running`/`parked`) runs untouched. Returns the number deleted (0 on the
+   * Noop layer, -1 on a DB error). Driven by the retention-sweep scheduler
+   * fiber.
+   */
+  sweepTerminal(retentionDays: number): Effect.Effect<number>;
+}
+
+export class DurableSession extends Context.Tag("DurableSession")<
+  DurableSession,
+  DurableSessionShape
+>() {}
+
 // ── Service interface ────────────────────────────────────────────────
 
 /** Typed contract for the ConnectionRegistry Effect service. */

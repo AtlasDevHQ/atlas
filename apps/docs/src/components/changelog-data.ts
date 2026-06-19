@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.19",
+    title: "Self-serve MCP Trial Signup",
+    date: "2026-06-19",
+    summary:
+      "Atlas can now hand out a trial of itself straight from an AI client. A new front-door start_trial MCP tool provisions a metered trial workspace on the spot and returns a connect URL; the user claims it on the web behind a one-time-passcode step, which flips the workspace from metered to full and starts the trial clock. Because the front door is open to anonymous callers, it ships with the controls a public signup needs: business-email-only signup that rejects disposable and free-mail domains, metering that withholds answers until the trial is claimed, an automatic reaper that expires trials never claimed past their grace window, and abuse protection via Cloudflare Turnstile plus per-IP and per-email rate limiting. Every signup also flows into the CRM as a tagged MCP_SIGNUP lead. A post-launch hardening wave added a Turnstile boot guard, trial-gate metrics, marketing and legal copy reconciliation, and a single source of truth for the lead-event schema.",
+    highlights: [
+      "start_trial MCP tool — provision a metered trial workspace from any AI client and get a connect URL back (#3649)",
+      "Claim-gated metering — answers are withheld until the trial is claimed on the web via a one-time passcode, which flips metered → full and starts the clock (#3651)",
+      "Business-email-only signup — disposable and free-mail domains are hard-denied across both web and MCP (#3650)",
+      "Abuse controls — Cloudflare Turnstile plus per-IP and per-email rate limiting on the open signup door (#3654)",
+      "Unclaimed-grace reaper — trials never claimed past their grace window are automatically expired (#3652)",
+      "MCP_SIGNUP CRM lead source — self-serve signups flow into the CRM tagged by origin (#3653)",
+    ],
+  },
+  {
     version: "v0.0.18",
     title: "Production Hardening II",
     date: "2026-06-18",

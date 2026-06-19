@@ -75,7 +75,7 @@ const TIERS: Tier[] = [
     badge: "14-day free trial",
     cta: "Start free trial",
     ctaHref: "https://app.useatlas.dev/signup?plan=starter",
-    ctaSecondary: "no card required",
+    ctaSecondary: "no card · work email",
     features: [
       "~100 AI queries/seat/mo included",
       "Up to 10 seats",
@@ -95,7 +95,7 @@ const TIERS: Tier[] = [
     badge: "14-day free trial",
     cta: "Start free trial",
     ctaHref: "https://app.useatlas.dev/signup?plan=pro",
-    ctaSecondary: "no card required",
+    ctaSecondary: "no card · work email",
     highlighted: true,
     features: [
       "~250 AI queries/seat/mo included",
@@ -208,7 +208,17 @@ const FAQS: FAQ[] = [
   {
     question: "Is there a free option?",
     answer:
-      "Yes — self-hosted Atlas is free and always will be (AGPL-3.0). Deploy on your own infrastructure with unlimited everything. For Atlas Cloud, all paid plans include a 14-day free trial with no credit card required. Every trial runs at Starter-tier usage limits (2M tokens/seat, up to 10 seats, 1 connection) for 14 days, regardless of the plan you start from.",
+      "Yes — self-hosted Atlas is free and always will be (AGPL-3.0). Deploy on your own infrastructure with unlimited everything. For Atlas Cloud, all paid plans include a 14-day free trial with no credit card required (work email required — see below). Every trial runs at Starter-tier usage limits (2M tokens/seat, up to 10 seats, 1 connection) for 14 days, regardless of the plan you start from.",
+  },
+  {
+    question: "What email can I sign up with?",
+    answer:
+      "Atlas Cloud signup requires a business (work) email. Disposable-mailbox and consumer freemium domains (gmail.com, outlook.com, yahoo.com, and similar) are not accepted, on both the web form and the MCP start_trial flow. Use your company address. Self-hosted Atlas has no such restriction.",
+  },
+  {
+    question: "How does the trial work over MCP?",
+    answer:
+      "You can start a trial directly from your MCP client (Claude Desktop, Cursor, etc.) with the start_trial tool — no web visit needed to begin. That workspace starts metered: you can set it up and run SQL, but Atlas-token Q&A is held until you claim the account on the web (verify your email and set a credential). Claiming starts your full 14-day clock; an unclaimed workspace runs on a short grace window and expires if it's never claimed. Signing up on the web claims the account in the same step.",
   },
   {
     question: "Do you offer annual billing?",

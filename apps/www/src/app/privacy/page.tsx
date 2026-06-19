@@ -69,10 +69,11 @@ const SECTIONS: LegalSectionData[] = [
       "Configuration data: semantic-layer YAML, validator rules, warehouse connection metadata (host, database, schema names — never credentials in plaintext).",
       "Operational data: query metadata (timestamp, gate outcomes, execution time, row count, error class). Query SQL and natural-language prompts are stored only when audit logging is enabled by the Customer admin.",
       "Telemetry: IP address, browser user-agent, page-load timing, error stack traces. Telemetry is sampled and retained for 30 days.",
+      "Security data: on signup and other abuse-sensitive endpoints we capture the client IP address and a bot-mitigation token to enforce rate limits and verify the request is human. The IP and token are sent to Cloudflare (Turnstile) for verification; per-IP and per-email attempt windows are kept transiently and swept automatically.",
       "Billing data: company name, billing address, tax ID, payment method tokens. We use Stripe as our payment processor; we never store full card numbers.",
     ],
     plain:
-      "Account info, your configuration, query metadata (query text only when your admin enables audit logging), error and performance telemetry, and billing details handled by Stripe.",
+      "Account info, your configuration, query metadata (query text only when your admin enables audit logging), error and performance telemetry, security/anti-abuse signals (IP + a bot-check token, verified by Cloudflare on signup), and billing details handled by Stripe.",
   },
   {
     id: "why",
@@ -81,11 +82,12 @@ const SECTIONS: LegalSectionData[] = [
       "To provide the Service: authenticate users, execute queries, render dashboards, send transactional email.",
       "To improve the Service: aggregate, anonymized telemetry to find slow paths, broken flows, and common errors. We do not use Customer Data to train models.",
       "To bill you: process payments, send invoices, comply with tax law.",
-      "To keep the Service safe: detect abuse, rate-limit attackers, investigate security incidents.",
+      "To keep the Service safe: detect abuse, rate-limit attackers, and verify signups are human. We process the client IP address and a Cloudflare Turnstile bot-check token on signup and abuse-sensitive endpoints for this purpose, and investigate security incidents.",
+      "To follow up on sales interest: when you sign up or contact sales, we record your name and email in our CRM (Twenty) so our team can respond. We do not use it for advertising and we do not sell it.",
       "To support you: respond to email, debug your issue with your explicit permission to read configuration data.",
     ],
     plain:
-      "To operate the Service, improve it through aggregate telemetry, process payments, prevent abuse, and respond to support requests.",
+      "To operate the Service, improve it through aggregate telemetry, process payments, prevent abuse (IP + bot-check via Cloudflare), follow up on signups/sales enquiries via our CRM, and respond to support requests.",
   },
   {
     id: "no-train",
@@ -116,13 +118,13 @@ const SECTIONS: LegalSectionData[] = [
     id: "share",
     title: "Who we share with",
     legal: [
-      "Sub-processors: a small set of vendors that help us run the Service (cloud infrastructure, uptime monitoring, payment processing). The current list is published at useatlas.dev/dpa and customers receive 30 days’ notice of additions.",
+      "Sub-processors: a small set of vendors that help us run the Service (cloud infrastructure, uptime monitoring, payment processing, bot mitigation, and CRM for sales follow-up). The current list is published at useatlas.dev/dpa and customers receive 30 days’ notice of additions.",
       "Model providers: when Customer uses Atlas’s hosted models, prompts are routed through Vercel AI Gateway, which forwards them to the upstream model provider configured for that Customer (e.g. Anthropic, OpenAI). Vercel acts as a sub-processor for routing, observability, and fallback. Where Customer uses BYO model keys, traffic is sent directly to the provider Customer specifies and does not transit Vercel.",
       "Legal: we may disclose information when required by law, court order, or to protect our rights, with notice to Customer where legally permitted.",
       "Successors: in a merger or sale of substantially all assets, the acquirer takes on the same obligations under this Policy.",
     ],
     plain:
-      "A short list of operational vendors (cloud infra, uptime monitoring, payments), the model provider you select, and disclosures required by valid legal process.",
+      "A short list of operational vendors (cloud infra, uptime monitoring, payments, bot mitigation, CRM), the model provider you select, and disclosures required by valid legal process.",
   },
   {
     id: "rights",
@@ -225,9 +227,9 @@ export default function PrivacyPage() {
             it. Aggressively boring on purpose.
           </p>
           <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-zinc-400 uppercase">
-            <span>effective 2026-05-02</span>
+            <span>effective 2026-06-19</span>
             <span aria-hidden="true">·</span>
-            <span>v3.1</span>
+            <span>v3.2</span>
             <span aria-hidden="true">·</span>
             <span>questions: privacy@useatlas.dev</span>
           </div>

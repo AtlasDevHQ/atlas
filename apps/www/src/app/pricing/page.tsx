@@ -13,7 +13,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Pricing — Atlas",
     description:
-      "Self-host is free, forever. Cloud adds the things you'd build anyway: SSO, audit, uptime, support. 14-day free trial — no card required.",
+      "Self-host is free, forever. Cloud adds the things you'd build anyway: SSO, audit, uptime, support. 14-day free trial — no card, work email required.",
     url: "https://www.useatlas.dev/pricing",
     siteName: "Atlas",
     type: "website",

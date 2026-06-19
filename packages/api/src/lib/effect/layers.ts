@@ -165,14 +165,16 @@ function withFiberDeathLog<A, E, R>(
 //
 // Membership splits into two single-source records, by fiber kind:
 //
-//   • SCHEDULER_CLEANUP_SPAN_NAMES — 9 cleanup/sweep fibers (they evict
+//   • SCHEDULER_CLEANUP_SPAN_NAMES — 10 cleanup/sweep fibers (they evict
 //     expired in-memory or DB state). Eight were retrofitted with a span by
 //     #2945 (the TTL/ratelimit/state sweeps below); the ninth,
 //     `orphan_task_reconcile` (#2944), shipped with its span from day one and
 //     additionally attaches the orphan count as a result attribute (the only
 //     fiber in either record that passes `setResultAttributes` — the BYOT
 //     catalog-refresh fiber and the scheduler engine use that 4th arg
-//     elsewhere, inside their own modules).
+//     elsewhere, inside their own modules). The tenth,
+//     `trial_rate_limit_cleanup` (#3654), sweeps the unauthenticated
+//     `start_trial` per-IP/email attempt-limiter maps.
 //
 //   • SCHEDULER_WORK_SPAN_NAMES — 5 background-work fibers (they perform
 //     recurring side-effecting work rather than evicting state):
@@ -216,6 +218,7 @@ export const SCHEDULER_CLEANUP_SPAN_NAMES = {
   rate_limit_cleanup: "atlas.scheduler.rate_limit_cleanup",
   demo_rate_limit_cleanup: "atlas.scheduler.demo_rate_limit_cleanup",
   contact_rate_limit_cleanup: "atlas.scheduler.contact_rate_limit_cleanup",
+  trial_rate_limit_cleanup: "atlas.scheduler.trial_rate_limit_cleanup",
   abuse_cleanup: "atlas.scheduler.abuse_cleanup",
   dashboard_rate_limit_cleanup: "atlas.scheduler.dashboard_rate_limit_cleanup",
   conversation_rate_sweep: "atlas.scheduler.conversation_rate_sweep",
@@ -2057,6 +2060,41 @@ export function makeSchedulerLive(
         withFiberDeathLog(
           "contact_rate_limit_cleanup",
           withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.contact_rate_limit_cleanup, {}, contactTick).pipe(
+            Effect.repeat(Schedule.spaced(Duration.seconds(60))),
+          ),
+        ),
+      );
+
+      // ── Periodic fiber: trial-signup rate-limit cleanup — every 60s ──
+      // Same leak shape as the contact limiter (#3654): the unauthenticated
+      // `start_trial` bootstrap keys two per-IP/per-email maps; `peek` only
+      // trims timestamps WITHIN a live entry, never removes the key, so
+      // without this sweep a spammer cycling distinct IPs/emails grows the
+      // maps until restart. `trialAttemptCleanupTick` evicts fully-stale keys.
+      const trialTick = Effect.try({
+        try: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { trialAttemptCleanupTick } = require("@atlas/api/lib/trial-abuse") as {
+            trialAttemptCleanupTick: () => void;
+          };
+          trialAttemptCleanupTick();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.error(
+              { err: errorMessage(err) },
+              "Trial rate-limit cleanup tick failed",
+            );
+          }),
+        ),
+      );
+      // forkScoped, not fork — see SettingsLive for rationale.
+      yield* Effect.forkScoped(
+        withFiberDeathLog(
+          "trial_rate_limit_cleanup",
+          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.trial_rate_limit_cleanup, {}, trialTick).pipe(
             Effect.repeat(Schedule.spaced(Duration.seconds(60))),
           ),
         ),

@@ -1,5 +1,25 @@
-import { describe, expect, it, afterEach } from "bun:test";
-import { buildMcpConnectUrl, resolveMcpBaseUrl } from "../connect-url.js";
+import { describe, expect, it, afterEach, mock, type Mock } from "bun:test";
+
+// Capture the warn `buildMcpConnectUrl` emits on an unresolved base. Mock the
+// logger before importing the SUT so its module-level `createLogger` call binds
+// to these spies. Mock the full logger surface (CLAUDE.md "mock all exports").
+const mockLogWarn: Mock<(...args: unknown[]) => void> = mock(() => {});
+const stubLogger = {
+  info: mock(() => {}),
+  warn: mockLogWarn,
+  error: mock(() => {}),
+  debug: mock(() => {}),
+};
+mock.module("@atlas/api/lib/logger", () => ({
+  createLogger: () => stubLogger,
+  getLogger: () => stubLogger,
+  withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
+  getRequestContext: () => undefined,
+  redactPaths: [],
+  setLogLevel: () => false,
+}));
+
+const { buildMcpConnectUrl, resolveMcpBaseUrl } = await import("../connect-url.js");
 
 const ORIG_PUBLIC = process.env.ATLAS_PUBLIC_API_URL;
 const ORIG_AUTH = process.env.BETTER_AUTH_URL;
@@ -12,7 +32,10 @@ function restoreEnv(): void {
 }
 
 describe("buildMcpConnectUrl", () => {
-  afterEach(restoreEnv);
+  afterEach(() => {
+    restoreEnv();
+    mockLogWarn.mockClear();
+  });
 
   it("builds /mcp/{workspaceId}/sse from an explicit base override", () => {
     expect(buildMcpConnectUrl("org_123", "https://example.test")).toBe(
@@ -73,5 +96,17 @@ describe("buildMcpConnectUrl", () => {
     delete process.env.ATLAS_PUBLIC_API_URL;
     delete process.env.BETTER_AUTH_URL;
     expect(buildMcpConnectUrl("org_z")).toBe("/mcp/org_z/sse");
+    // The warn is the actual point of the fix — surface the misconfiguration
+    // rather than silently handing back a relative path. Assert it fired with
+    // the workspace id so a regression that drops the warn is caught.
+    expect(mockLogWarn).toHaveBeenCalledTimes(1);
+    expect(mockLogWarn.mock.calls[0]?.[0]).toEqual({ workspaceId: "org_z" });
+  });
+
+  it("does NOT warn when a base resolves", () => {
+    expect(buildMcpConnectUrl("org_ok", "https://example.test")).toBe(
+      "https://example.test/mcp/org_ok/sse",
+    );
+    expect(mockLogWarn).not.toHaveBeenCalled();
   });
 });

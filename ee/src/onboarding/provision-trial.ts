@@ -252,7 +252,7 @@ export async function provisionTrialWorkspace(
   }
 
   const name = email.split("@")[0] || orgName;
-  let signup: { user?: { id?: string } } | undefined;
+  let signup: Awaited<ReturnType<ProvisionTrialDeps["signUpEmail"]>>;
   try {
     signup = await deps.signUpEmail({
       email,
@@ -268,12 +268,26 @@ export async function provisionTrialWorkspace(
     // retry" a bare rethrow would produce (a deny is permanent, not transient).
     // Lazily imported so the heavy `better-auth-harmony` graph this recognizer
     // pulls stays out of stub-injected unit tests (mirrors the dep philosophy).
-    const { isBusinessEmailRejection, BUSINESS_EMAIL_REQUIRED_MESSAGE } =
-      await import("@atlas/api/lib/auth/business-email");
-    if (isBusinessEmailRejection(err)) {
+    //
+    // The import is wrapped so a (realistically impossible — already loaded on
+    // the real signup path) module-evaluation failure can't *substitute* the
+    // original signup error: on import failure we log and rethrow `err`, the
+    // genuine failure, rather than letting the import rejection mask it.
+    let recognizer:
+      | typeof import("@atlas/api/lib/auth/business-email")
+      | undefined;
+    try {
+      recognizer = await import("@atlas/api/lib/auth/business-email");
+    } catch (importErr) {
+      log.warn(
+        { err: importErr instanceof Error ? importErr.message : String(importErr) },
+        "business-email recognizer import failed; rethrowing original signup error",
+      );
+    }
+    if (recognizer?.isBusinessEmailRejection(err)) {
       throw new TrialProvisioningError(
         "invalid_input",
-        BUSINESS_EMAIL_REQUIRED_MESSAGE,
+        recognizer.BUSINESS_EMAIL_REQUIRED_MESSAGE,
       );
     }
     throw err;

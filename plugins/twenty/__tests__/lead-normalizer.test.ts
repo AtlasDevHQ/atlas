@@ -7,10 +7,12 @@ import {
   normalizeConversionLead,
   normalizeDemoLead,
   normalizeLead,
+  normalizeMcpSignupLead,
   normalizeSalesFormLead,
   normalizeSignupLead,
   type AtlasConversionLeadEvent,
   type AtlasDemoLeadEvent,
+  type AtlasMcpSignupLeadEvent,
   type AtlasSalesFormLeadEvent,
   type AtlasSignupLeadEvent,
 } from "../src/lead-normalizer";
@@ -309,6 +311,82 @@ describe("normalizeSignupLead", () => {
   });
 });
 
+describe("normalizeMcpSignupLead", () => {
+  test("maps a full MCP-signup event to a Twenty upsert payload (no note)", () => {
+    const event: AtlasMcpSignupLeadEvent = {
+      source: "mcp-signup",
+      email: "Founder@Acme.com",
+      name: "Founder Acme",
+    };
+
+    const result = normalizeMcpSignupLead(event);
+
+    // The distinct lead source is the whole point — MCP signups must be
+    // attributable as their own acquisition channel, never folded into SIGNUP.
+    expect(result.eventSource).toBe("MCP_SIGNUP");
+    expect(result.person.email).toBe("founder@acme.com");
+    expect(result.person.eventSource).toBe("MCP_SIGNUP");
+    expect(result.person.name).toEqual({ firstName: "Founder", lastName: "Acme" });
+    // No request context (IP/UA) and no message → no atlasIp, no Note.
+    expect(result.person.customFields).toEqual({});
+    expect(result.note).toBeUndefined();
+  });
+
+  test("lowercases and trims the email", () => {
+    const result = normalizeMcpSignupLead({
+      source: "mcp-signup",
+      email: "  Bob@ACME.COM ",
+      name: "Bob",
+    });
+    expect(result.person.email).toBe("bob@acme.com");
+  });
+
+  test("single-word name maps to firstName only (no empty lastName)", () => {
+    const result = normalizeMcpSignupLead({
+      source: "mcp-signup",
+      email: "u@t.com",
+      name: "Cher",
+    });
+    expect(result.person.name).toEqual({ firstName: "Cher" });
+  });
+
+  test("omits name when missing — MCP signup is email-first too", () => {
+    const result = normalizeMcpSignupLead({
+      source: "mcp-signup",
+      email: "u@t.com",
+    });
+    expect(result.person.name).toBeUndefined();
+  });
+
+  test("omits name when empty / whitespace-only — never PATCH a stray empty name", () => {
+    for (const name of ["", "   ", "\t"]) {
+      const result = normalizeMcpSignupLead({
+        source: "mcp-signup",
+        email: "u@t.com",
+        name,
+      });
+      expect(result.person.name).toBeUndefined();
+    }
+  });
+
+  test("always stamps eventSource = MCP_SIGNUP for the mcp-signup variant", () => {
+    const result = normalizeMcpSignupLead({ source: "mcp-signup", email: "u@t.com" });
+    expect(result.eventSource).toBe("MCP_SIGNUP");
+    expect(result.person.eventSource).toBe("MCP_SIGNUP");
+  });
+
+  test("never attaches a Note and never round-trips an ip", () => {
+    const result = normalizeMcpSignupLead({
+      source: "mcp-signup",
+      email: "u@t.com",
+      name: "Founder",
+    });
+    expect(result.note).toBeUndefined();
+    expect(result.person.customFields).toEqual({});
+    expect(JSON.stringify(result)).not.toContain("atlasIp");
+  });
+});
+
 describe("normalizeConversionLead", () => {
   test("maps a conversion event to a Twenty upsert payload carrying atlasStripeCustomerId", () => {
     const event: AtlasConversionLeadEvent = {
@@ -416,5 +494,15 @@ describe("normalizeLead — dispatch", () => {
     });
     expect(result.eventSource).toBe("CONVERSION");
     expect(result.person.customFields?.atlasStripeCustomerId).toBe("cus_abc");
+  });
+
+  test("dispatches mcp-signup source to the mcp-signup normalizer", () => {
+    const result = normalizeLead({
+      source: "mcp-signup",
+      email: "u@t.com",
+      name: "Founder Acme",
+    });
+    expect(result.eventSource).toBe("MCP_SIGNUP");
+    expect(result.note).toBeUndefined();
   });
 });

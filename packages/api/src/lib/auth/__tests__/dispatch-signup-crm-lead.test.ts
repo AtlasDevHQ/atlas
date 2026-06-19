@@ -73,7 +73,8 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 // ── Import the unit under test AFTER mocks ─────────────────────────
 
-const { dispatchSignupCrmLead } = await import("../server");
+const { dispatchSignupCrmLead, dispatchMcpSignupCrmLead } = await import("../server");
+const { runWithSignupOrigin } = await import("../signup-origin");
 
 // `dispatchSignupCrmLead` only calls `upsertLead` — the per-row
 // `dispatcher` hook is flusher-side only. We cast the recording shape
@@ -276,5 +277,109 @@ describe("dispatchSignupCrmLead — Noop / self-hosted shape", () => {
     ).resolves.toBeUndefined();
     expect(runs).toBe(1);
     expect(upsertLeadCalls).toHaveLength(0);
+  });
+});
+
+describe("dispatchSignupCrmLead — MCP-origin suppression (#3653)", () => {
+  // The MCP self-serve path (provisionTrialWorkspace) emits its own
+  // `MCP_SIGNUP` lead. Since `signUpEmail` fires this hook FIRST (earlier
+  // `created_at`) and `atlasFirstSource` is sticky first-touch, letting the
+  // generic SIGNUP enqueue here would steal first-source from MCP_SIGNUP.
+  // So when the signup is MCP-originated, this helper must NOT enqueue.
+  it("suppresses the SIGNUP enqueue when the signup origin is 'mcp'", async () => {
+    await runWithSignupOrigin("mcp", () =>
+      dispatchSignupCrmLead({
+        user: { id: "u12", email: "mcp@founder.com", name: "MCP Founder" },
+      }),
+    );
+    // No lead — the MCP path owns the MCP_SIGNUP enqueue itself.
+    expect(upsertLeadCalls).toHaveLength(0);
+    // The suppression is intentional and logged at debug, not warn/error.
+    expect(mockLogWarn).not.toHaveBeenCalled();
+    expect(mockLogError).not.toHaveBeenCalled();
+  });
+
+  it("still enqueues a SIGNUP lead for an ordinary (web) signup — no origin bound", async () => {
+    await dispatchSignupCrmLead({
+      user: { id: "u13", email: "web@founder.com", name: "Web Founder" },
+    });
+    expect(upsertLeadCalls).toHaveLength(1);
+    expect(upsertLeadCalls[0]).toEqual({
+      source: "signup",
+      email: "web@founder.com",
+      name: "Web Founder",
+    });
+  });
+});
+
+describe("dispatchMcpSignupCrmLead — happy path", () => {
+  it("enqueues an mcp-signup lead with email + name", async () => {
+    await dispatchMcpSignupCrmLead({
+      email: "Founder@Acme.com",
+      name: "Founder Acme",
+    });
+
+    expect(upsertLeadCalls).toHaveLength(1);
+    expect(upsertLeadCalls[0]).toEqual({
+      source: "mcp-signup",
+      email: "founder@acme.com",
+      name: "Founder Acme",
+    });
+  });
+
+  it("enqueues without `name` when name is missing / blank", async () => {
+    for (const name of [undefined, "", "   ", "\t"]) {
+      upsertLeadCalls.length = 0;
+      await dispatchMcpSignupCrmLead({ email: "n@acme.com", name });
+      expect(upsertLeadCalls).toHaveLength(1);
+      expect(upsertLeadCalls[0]).toEqual({
+        source: "mcp-signup",
+        email: "n@acme.com",
+      });
+      expect("name" in upsertLeadCalls[0]!).toBe(false);
+    }
+  });
+
+  it("does nothing when email is missing / blank", async () => {
+    for (const email of ["", "   "]) {
+      upsertLeadCalls.length = 0;
+      await dispatchMcpSignupCrmLead({ email });
+      expect(upsertLeadCalls).toHaveLength(0);
+    }
+  });
+
+  it("resolves and logs a defect when runEnterprise rejects — never throws into the provisioner", async () => {
+    runEnterpriseImpl = async () => Promise.reject(new Error("async reject"));
+
+    await expect(
+      dispatchMcpSignupCrmLead({ email: "die@acme.com", name: "X" }),
+    ).resolves.toBeUndefined();
+
+    expect(mockLogWarn).toHaveBeenCalledTimes(1);
+    const [logCtx] = mockLogWarn.mock.calls[0] as [Record<string, unknown>, string];
+    expect(logCtx.event).toBe("mcp_signup_crm.dispatch_defect");
+  });
+
+  it("resolves and logs `mcp_signup_crm.enqueue_failed` when SaasCrm.upsertLead fails with a typed Error", async () => {
+    runEnterpriseImpl = async (program) => {
+      await Effect.runPromise(
+        Effect.provide(
+          program as Effect.Effect<unknown, never, SaasCrm>,
+          failingLayer(new Error("crm_outbox enqueue failed — pg blip")),
+        ),
+      );
+    };
+
+    await expect(
+      dispatchMcpSignupCrmLead({ email: "pgblip@acme.com", name: "X" }),
+    ).resolves.toBeUndefined();
+
+    // The typed `Effect.fail` path goes through `Effect.either` Left, not the
+    // outer catch — pin that branch independently (mirror of the SIGNUP suite's
+    // `signup_crm.enqueue_failed` test) so a refactor dropping the Left-side
+    // log gets caught here for the MCP path too.
+    expect(mockLogWarn).toHaveBeenCalledTimes(1);
+    const [logCtx] = mockLogWarn.mock.calls[0] as [Record<string, unknown>, string];
+    expect(logCtx.event).toBe("mcp_signup_crm.enqueue_failed");
   });
 });

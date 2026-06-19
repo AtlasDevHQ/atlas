@@ -28,6 +28,7 @@ import {
   type TwentyClientConfig,
   type TwentyPerson,
 } from "../src/client";
+import { normalizeLead } from "../src/lead-normalizer";
 
 // ─────────────────────────────────────────────────────────────────────
 //  Fetch helpers
@@ -144,6 +145,45 @@ describe("upsertPerson — Person absent", () => {
     expect(body.atlasFirstSource).toBe("DEMO");
     expect(body.atlasLastSource).toBe("DEMO");
     expect(body.customFields).toBeUndefined();
+  });
+
+  test("end-to-end: an mcp-signup lead POSTs a Person with atlasFirstSource = MCP_SIGNUP (#3653)", async () => {
+    // Wire the normalizer → upsertPerson the way the outbox dispatcher does,
+    // so this pins the FULL attribution path: lead source MCP_SIGNUP becomes
+    // the sticky first-touch on a brand-new Person. The provisioner suppresses
+    // the competing SIGNUP lead, so for a fresh email this POST IS first-touch.
+    const { fetch, calls } = makeScriptedFetch([
+      { status: 200, body: { data: { people: [] } } }, // GET — nothing found
+      {
+        status: 200,
+        body: {
+          data: {
+            createPerson: {
+              id: "person_mcp",
+              emails: { primaryEmail: "founder@acme.com" },
+              atlasFirstSource: "MCP_SIGNUP",
+              atlasLastSource: "MCP_SIGNUP",
+            } as TwentyPerson,
+          },
+        },
+      },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    const normalized = normalizeLead({
+      source: "mcp-signup",
+      email: "Founder@Acme.com",
+      name: "Founder Acme",
+    });
+    expect(normalized.eventSource).toBe("MCP_SIGNUP");
+
+    const result = await upsertPerson(config, normalized.person);
+
+    expect(result.id).toBe("person_mcp");
+    expect(calls[1].method).toBe("POST");
+    const body = JSON.parse(calls[1].body ?? "{}");
+    expect(body.atlasFirstSource).toBe("MCP_SIGNUP");
+    expect(body.atlasLastSource).toBe("MCP_SIGNUP");
   });
 });
 

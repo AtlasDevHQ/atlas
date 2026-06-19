@@ -79,6 +79,7 @@ import {
 import { getConfig } from "@atlas/api/lib/config";
 import { SaasCrm } from "@atlas/api/lib/effect/services";
 import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
+import { getSignupOrigin } from "@atlas/api/lib/auth/signup-origin";
 import { Effect } from "effect";
 
 /**
@@ -330,6 +331,19 @@ export async function dispatchSignupCrmLead(args: {
   const email = user.email?.toLowerCase().trim();
   if (!email) return;
 
+  // MCP self-serve trial signups (ADR-0018, #3653) run this SAME Better Auth
+  // path but want a DISTINCT lead source (`MCP_SIGNUP`), which the provisioner
+  // emits itself — so suppress the generic SIGNUP here to avoid two competing
+  // `crm_outbox` rows for one email. See `lib/auth/signup-origin.ts` for the
+  // sticky-first-touch race this prevents and why the suppression is correct.
+  if (getSignupOrigin() === "mcp") {
+    log.debug(
+      { userId: user.id, event: "signup_crm.suppressed_mcp" },
+      "Suppressing auto SIGNUP CRM lead for MCP-originated signup — provisioner emits MCP_SIGNUP",
+    );
+    return;
+  }
+
   const name = user.name?.trim() || undefined;
 
   try {
@@ -363,6 +377,68 @@ export async function dispatchSignupCrmLead(args: {
         event: "signup_crm.dispatch_defect",
       },
       "Unexpected SaasCrm dispatch error during signup — swallowed to keep auth response unblocked",
+    );
+  }
+}
+
+/**
+ * Twenty CRM dispatch for a self-serve MCP trial signup (ADR-0018, #3653).
+ * Sibling of {@link dispatchSignupCrmLead}: enqueues an `mcp-signup` lead so
+ * the Workspace's acquisition channel is attributable as `MCP_SIGNUP`
+ * (sticky `atlasFirstSource`) rather than the generic `SIGNUP`.
+ *
+ * Called by `provisionTrialWorkspace` (the single self-serve provisioning
+ * seam) AFTER the user account is created. The provisioner wraps its
+ * `signUpEmail` call in `runWithSignupOrigin("mcp", …)` so the auto-`SIGNUP`
+ * enqueue is suppressed in `dispatchSignupCrmLead` above — leaving this the
+ * sole `crm_outbox` row for the email.
+ *
+ * Same swallow-and-log contract as the signup helper: a Twenty/`crm_outbox`
+ * outage must NEVER fail provisioning. Self-hosted resolves to the no-op
+ * `SaasCrm` Layer and produces no Twenty traffic.
+ *
+ * @internal
+ */
+export async function dispatchMcpSignupCrmLead(args: {
+  email: string;
+  name?: string | null;
+}): Promise<void> {
+  const email = args.email?.toLowerCase().trim();
+  if (!email) return;
+
+  const name = args.name?.trim() || undefined;
+
+  try {
+    await runEnterprise(
+      Effect.gen(function* () {
+        const crm = yield* SaasCrm;
+        const result = yield* crm
+          .upsertLead({
+            source: "mcp-signup",
+            email,
+            ...(name ? { name } : {}),
+          })
+          .pipe(Effect.either);
+        if (result._tag === "Left") {
+          log.warn(
+            {
+              email,
+              err: errorMessage(result.left),
+              event: "mcp_signup_crm.enqueue_failed",
+            },
+            "SaasCrm.upsertLead enqueue failed during MCP signup — swallowed to keep provisioning unblocked",
+          );
+        }
+      }),
+    );
+  } catch (err) {
+    log.warn(
+      {
+        email,
+        err: errorMessage(err),
+        event: "mcp_signup_crm.dispatch_defect",
+      },
+      "Unexpected SaasCrm dispatch error during MCP signup — swallowed to keep provisioning unblocked",
     );
   }
 }
@@ -3228,10 +3304,18 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
             }
           },
           after: async (user: User) => {
-            // Awaited deliberately — the helper swallows every failure
-            // mode internally, so the await only blocks on the
-            // outbox INSERT. Not awaiting risks an unhandled rejection
-            // if a future change widens the error channel.
+            // Awaited INLINE deliberately — two reasons:
+            //  1. The helper swallows every failure mode internally, so the
+            //     await only blocks on the outbox INSERT; not awaiting risks an
+            //     unhandled rejection if a future change widens the error channel.
+            //  2. CONTRACT (do not break): MCP_SIGNUP attribution depends on the
+            //     AsyncLocalStorage signup-origin set by `runWithSignupOrigin("mcp")`
+            //     in `provisionTrialWorkspace` propagating INTO this call so
+            //     `dispatchSignupCrmLead` can suppress the generic SIGNUP lead.
+            //     Deferring this (setTimeout / detached microtask / queueMicrotask)
+            //     drops the ALS context, silently un-suppressing SIGNUP and
+            //     corrupting acquisition attribution. `signup-origin-wiring.test.ts`
+            //     pins this — keep it awaited inline.
             await dispatchSignupCrmLead({ user });
 
             // Onboarding welcome email — fire-and-forget after signup.

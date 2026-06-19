@@ -56,6 +56,7 @@ context (which are secrets, which are derived, what changes at runtime).
 | `ATLAS_STRICT_PLUGIN_SECRETS` | Plugin config | Strict mode: fail boot on a missing plugin secret rather than silently dropping the plugin. `PluginConfigGuardLive`. |
 | `ATLAS_SMTP_URL` | Platform email (DPA) | SMTP URL for platform transactional email — alternative to `RESEND_API_KEY`. DPA-gated by `DpaGuardLive`. |
 | `RESEND_API_KEY` | Platform email (DPA) | Resend API key for platform transactional email. SaaS platform email must be Resend (DPA). |
+| `TURNSTILE_SECRET_KEY` | Abuse protection | Cloudflare Turnstile secret for the contact form + `start_trial` MCP onboarding. `TurnstileGuardLive` refuses to boot a SaaS region without it (fail-closed verify would silently 403 every signup otherwise). |
 | `BETTER_AUTH_URL` | Auth boot inputs | Better Auth base URL — read inside the library's plugin init before settings load. |
 | `BETTER_AUTH_TRUSTED_ORIGINS` | Auth boot inputs | Anchors verification / password-reset redirects to the web origin (also seeds `getWebOrigin()`). |
 | `SLACK_SIGNING_SECRET` | Slack adapter | Slack request-signature secret (32-char lowercase hex). |

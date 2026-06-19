@@ -30,6 +30,7 @@
 
 import { createLogger } from "./logger";
 import { getSettingAuto } from "@atlas/api/lib/settings";
+import { trialAbuseRejections } from "@atlas/api/lib/metrics";
 
 const log = createLogger("trial-abuse");
 
@@ -175,10 +176,15 @@ export function checkTrialAttemptRateLimit(input: {
   // first-checked bucket isn't charged for an attempt the second bucket blocks.
   const ipCheck = peek(ipWindows, ipKey, ipLimit, now);
   if (!ipCheck.allowed) {
+    // Observability (#3796): aggregate per-replica in-memory rejections at the
+    // collector so a fleet-wide attack is a graphable/alertable series, not
+    // just a per-request log. No-op when OTel is uninitialized (metrics.ts).
+    trialAbuseRejections.add(1, { limiter: "ip" });
     return { allowed: false, bucket: "ip", retryAfterMs: ipCheck.retryAfterMs };
   }
   const emailCheck = peek(emailWindows, emailKey, emailLimit, now);
   if (!emailCheck.allowed) {
+    trialAbuseRejections.add(1, { limiter: "email" });
     return { allowed: false, bucket: "email", retryAfterMs: emailCheck.retryAfterMs };
   }
 

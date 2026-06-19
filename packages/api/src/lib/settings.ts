@@ -1430,6 +1430,10 @@ export async function setSetting(key: string, value: string, userId?: string, or
   applySettingSideEffect(key, value);
 
   log.info({ key, orgId: effectiveOrgId, actorId: userId }, "Setting override saved");
+  // #3797 — louder audit trail when a runtime-mutable abuse control is changed
+  // (especially disabled via the documented `0` sentinel), so weakening it is
+  // traceable during an incident rather than buried in settings-change noise.
+  auditSecuritySensitiveChange(key, "set", value, userId, effectiveOrgId);
 }
 
 /**
@@ -1475,6 +1479,9 @@ export async function deleteSetting(key: string, userId?: string, orgId?: string
   }
 
   log.info({ key, orgId: effectiveOrgId, actorId: userId }, "Setting override removed");
+  // #3797 — clearing an abuse-control override reverts it to env/default,
+  // which is itself a security-relevant change; audit it too.
+  auditSecuritySensitiveChange(key, "clear", undefined, userId, effectiveOrgId);
 }
 
 /**
@@ -1683,6 +1690,65 @@ export type SaasImmutableKey = (typeof SAAS_IMMUTABLE_KEYS_LITERAL)[number];
 /** Type-guard that narrows `string` → `SaasImmutableKey` at the throw site. */
 function isSaasImmutableKey(key: string): key is SaasImmutableKey {
   return (SAAS_IMMUTABLE_KEYS as ReadonlySet<string>).has(key);
+}
+
+/**
+ * Abuse-control thresholds that stay hot-reloadable by design (operators
+ * tune them without a redeploy) but whose runtime mutation is
+ * security-relevant (#3797). Unlike {@link SAAS_IMMUTABLE_KEYS}, these are
+ * NOT write-blocked — the documented `0 = disabled` semantics and the
+ * tune-without-restart contract are intentional. Instead, a write or clear
+ * emits a distinct `log.warn` security-audit line (above the generic
+ * "Setting override saved" info log) so weakening or disabling an abuse
+ * control is traceable and alertable during an incident, not lost in the
+ * settings-change noise. The per-IP / per-email start_trial limiters are the
+ * subject of #3797; the sibling contact / demo attempt limiters share the
+ * same shape and are reasonable future additions.
+ */
+export const SECURITY_SENSITIVE_KEYS: ReadonlySet<string> = new Set([
+  "ATLAS_TRIAL_IP_RATE_LIMIT_RPM",
+  "ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM",
+]);
+
+/**
+ * Pure audit decision for {@link auditSecuritySensitiveChange}: returns the
+ * structured fields to log when `key` is a {@link SECURITY_SENSITIVE_KEYS}
+ * abuse threshold, or `null` when it isn't (no audit). `disablesControl`
+ * flags the `0`/non-finite disabled-sentinel for a `set` so an outright
+ * disable is obvious in the log line and alertable. Exported for unit
+ * testing the disable-detection without DB/logger plumbing.
+ */
+export function securitySensitiveAuditFields(
+  key: string,
+  action: "set" | "clear",
+  value: string | undefined,
+): { disablesControl: boolean } | null {
+  if (!SECURITY_SENSITIVE_KEYS.has(key)) return null;
+  const parsed = value === undefined ? undefined : Number(value);
+  const disablesControl =
+    action === "set" && (parsed === 0 || (parsed !== undefined && !Number.isFinite(parsed)));
+  return { disablesControl };
+}
+
+/**
+ * Emit a security-audit `log.warn` when a {@link SECURITY_SENSITIVE_KEYS}
+ * abuse threshold is changed or cleared at runtime. `action` is `set` (a new
+ * value persisted) or `clear` (override deleted → reverts to env/default).
+ * A no-op for non-sensitive keys.
+ */
+function auditSecuritySensitiveChange(
+  key: string,
+  action: "set" | "clear",
+  value: string | undefined,
+  actorId: string | undefined,
+  orgId: string | undefined,
+): void {
+  const fields = securitySensitiveAuditFields(key, action, value);
+  if (!fields) return;
+  log.warn(
+    { key, action, value, disablesControl: fields.disablesControl, actorId, orgId, event: "security_setting.changed" },
+    `Security-sensitive abuse control ${action === "clear" ? "override cleared" : "changed"} at runtime: ${key}`,
+  );
 }
 
 /**

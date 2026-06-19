@@ -33,6 +33,7 @@ import { getConfig } from "@atlas/api/lib/config";
 import { getCachedWorkspace } from "./enforcement";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import { createLogger } from "@atlas/api/lib/logger";
+import { claimGateDecisions } from "@atlas/api/lib/metrics";
 
 const log = createLogger("billing:claim-gate");
 
@@ -191,6 +192,27 @@ export async function checkClaimGate(
     return { allowed: true };
   }
 
+  const result = await computeSaasClaimGate(orgId, deps);
+  // Observability (#3796): one counter per real SaaS claim decision so the
+  // withheld-vs-served ratio is a graphable series and a `claim_required`
+  // spike (or a `check_failed` blip from a DB wobble) is alertable. The
+  // non-SaaS short-circuit above is deliberately not counted — it isn't a
+  // metering decision. No-op when OTel is uninitialized (see metrics.ts).
+  claimGateDecisions.add(1, { outcome: result.allowed ? "allowed" : result.reason });
+  return result;
+}
+
+/**
+ * Core claim decision for a SaaS request that carries an org and has an
+ * internal DB — the metering-relevant path. Split out from
+ * {@link checkClaimGate} so the decision counter wraps exactly the real
+ * decisions (the non-SaaS short-circuit stays uncounted). See
+ * {@link checkClaimGate} for the full fail-closed contract.
+ */
+async function computeSaasClaimGate(
+  orgId: string,
+  deps: ClaimGateDeps,
+): Promise<ClaimGateResult> {
   let workspace: WorkspaceRow | null;
   try {
     // Gate 0 (`checkAgentBillingGate`) already warmed this cache on the

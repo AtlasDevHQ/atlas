@@ -100,6 +100,7 @@ const CHAT_ADAPTER_ISSUE_REF = "#2672";
 const PROVIDER_KEY_ISSUE_REF = "#3178";
 const BILLING_CONFIG_ISSUE_REF = "#3435";
 const MCP_SPINE_ISSUE_REF = "#3687";
+const TURNSTILE_ISSUE_REF = "#3795";
 
 /**
  * Sentinel org id for the boot-time `mcp_action_policy` reachability probe. It
@@ -173,6 +174,21 @@ export class InternalDatabaseRequiredError extends Data.TaggedError("InternalDat
  * every value the combined runtime path would treat as disabled.
  */
 export class RateLimitRequiredError extends Data.TaggedError("RateLimitRequiredError")<{
+  readonly message: string;
+}> {}
+
+/**
+ * SaaS region booted without `TURNSTILE_SECRET_KEY` (#3795). Turnstile is
+ * the bot-protection gate in front of the talk-to-sales contact form AND
+ * the self-serve `start_trial` MCP onboarding bootstrap (#3654). With the
+ * secret unset, `verifyTurnstile` fails CLOSED — every contact submission
+ * and every trial attempt 403s — while boot and `/health` stay green. The
+ * fail-closed posture is correct (fail-open would be an abuse hole), but the
+ * silent-100%-rejection outage is invisible until conversions hit zero.
+ * Self-hosted is unaffected: the onboarding router/contact route are SaaS
+ * carve-outs, and a self-host operator who wants Turnstile sets it opt-in.
+ */
+export class TurnstileSecretRequiredError extends Data.TaggedError("TurnstileSecretRequiredError")<{
   readonly message: string;
 }> {}
 
@@ -632,6 +648,40 @@ export const RateLimitGuardLive: Layer.Layer<never, RateLimitRequiredError, Conf
             `SaaS region booted with ATLAS_RATE_LIMIT_RPM=${JSON.stringify(raw)} — value would parse to ` +
             `"rate limiting disabled" at runtime via getRpmLimit() + checkRateLimit() in auth/middleware.ts. ` +
             `Set ATLAS_RATE_LIMIT_RPM to a positive integer (>= 1). See ${RATE_LIMIT_ISSUE_REF}.`,
+        }),
+      );
+    }
+  }),
+);
+
+/**
+ * {@link TurnstileGuardLive} (#3795) — `TURNSTILE_SECRET_KEY` unset (or
+ * empty) in SaaS. Turnstile gates the talk-to-sales contact form AND the
+ * self-serve `start_trial` MCP onboarding bootstrap (#3654). `verifyTurnstile`
+ * fails CLOSED when the secret is missing, so a deploy with the secret unset
+ * boots green, serves a 200 `/health`, and silently 403s 100% of signups and
+ * contact submissions — the only signal a per-request `turnstile.no_secret`
+ * log nobody is watching. This guard turns that silent outage into a loud boot
+ * failure. `Config`-only and reads env directly (same shape as
+ * `RateLimitGuardLive`), so it fails fast alongside the other env-checking
+ * guards. Presence-only: the value is validated at per-request siteverify, not
+ * here. The onboarding router + contact route are SaaS carve-outs, so the
+ * guard is inert on self-hosted (Turnstile stays opt-in there).
+ */
+export const TurnstileGuardLive: Layer.Layer<never, TurnstileSecretRequiredError, Config> = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const { config } = yield* Config;
+    if (config.deployMode !== "saas") return;
+
+    const raw = readSaasEnv().TURNSTILE_SECRET_KEY;
+    if (raw === undefined || raw === "") {
+      return yield* Effect.fail(
+        new TurnstileSecretRequiredError({
+          message:
+            `SaaS region booted without TURNSTILE_SECRET_KEY set — verifyTurnstile() in lib/turnstile.ts ` +
+            `fails CLOSED, so every talk-to-sales contact submission AND every start_trial MCP onboarding ` +
+            `attempt 403s while boot and /health stay green (a silent 100% signup outage). ` +
+            `Set TURNSTILE_SECRET_KEY from the Cloudflare Turnstile dashboard. See ${TURNSTILE_ISSUE_REF}.`,
         }),
       );
     }

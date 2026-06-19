@@ -52,6 +52,7 @@ describe("SAAS_ENV_KEYS", () => {
       ATLAS_STRICT_PLUGIN_SECRETS: undefined,
       ATLAS_SMTP_URL: undefined,
       RESEND_API_KEY: undefined,
+      TURNSTILE_SECRET_KEY: undefined,
       BETTER_AUTH_URL: undefined,
       BETTER_AUTH_TRUSTED_ORIGINS: undefined,
       SLACK_SIGNING_SECRET: undefined,
@@ -105,6 +106,9 @@ describe("makeBootSmokeFixture", () => {
     expect(fixture.BETTER_AUTH_SECRET?.length ?? 0).toBeGreaterThanOrEqual(32);
     expect(fixture.ATLAS_API_REGION).toBe("us");
     expect(fixture.RESEND_API_KEY).toBeTruthy();
+    // TurnstileGuardLive (#3795): asserts presence only, so any non-empty
+    // value lets boot-smoke pass.
+    expect(fixture.TURNSTILE_SECRET_KEY).toBeTruthy();
     // ProviderKeyGuardLive (#3178): ATLAS_PROVIDER unset → gateway default, so
     // the gateway key must be present for boot-smoke to pass.
     expect(fixture.ATLAS_PROVIDER).toBeUndefined();
@@ -163,6 +167,18 @@ describe("indirect-read drift guard", () => {
 
   test("every process.env.X in lib/db/encryption-keys.ts is in SAAS_ENV_KEYS", async () => {
     const reads = await readProcessEnvKeys("lib/db/encryption-keys.ts");
+    expect(reads.size).toBeGreaterThan(0);
+    for (const key of reads) {
+      expect(SAAS_ENV_KEYS).toContain(key as (typeof SAAS_ENV_KEYS)[number]);
+    }
+  });
+
+  // #3795 — TurnstileGuardLive reads via readSaasEnv(), but verifyTurnstile
+  // itself reads process.env.TURNSTILE_SECRET_KEY directly. Pin that the key
+  // it reads is in the SaaS contract so the fixture populates it (boot-smoke)
+  // and a rename trips here before CI's boot-smoke gate.
+  test("every process.env.X in lib/turnstile.ts is in SAAS_ENV_KEYS", async () => {
+    const reads = await readProcessEnvKeys("lib/turnstile.ts");
     expect(reads.size).toBeGreaterThan(0);
     for (const key of reads) {
       expect(SAAS_ENV_KEYS).toContain(key as (typeof SAAS_ENV_KEYS)[number]);

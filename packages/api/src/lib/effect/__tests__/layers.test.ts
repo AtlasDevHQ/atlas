@@ -789,6 +789,7 @@ describe("buildAppLayer", () => {
     const savedDb = process.env.DATABASE_URL;
     const savedKeys = process.env.ATLAS_ENCRYPTION_KEYS;
     const savedProvider = process.env.ATLAS_PROVIDER;
+    const savedTurnstile = process.env.TURNSTILE_SECRET_KEY;
     delete process.env.DATABASE_URL;
     // Provide a valid encryption key so EncryptionKeyGuardLive doesn't
     // also fail and hide the InternalDbGuardLive failure.
@@ -796,6 +797,8 @@ describe("buildAppLayer", () => {
     // Satisfy ProviderKeyGuardLive (#3178) with a keyless provider so its
     // failure doesn't mix into the cause this test asserts on.
     process.env.ATLAS_PROVIDER = "ollama";
+    // Satisfy TurnstileGuardLive (#3795) so its error doesn't mix in either.
+    process.env.TURNSTILE_SECRET_KEY = "ci-wiring-test-turnstile-secret";
 
     try {
       const config = { deployMode: "saas" } as Parameters<typeof buildAppLayer>[0];
@@ -812,6 +815,8 @@ describe("buildAppLayer", () => {
       const text = String(Exit.isFailure(exit) ? exit.cause : "");
       expect(text).toContain("InternalDatabaseRequiredError");
     } finally {
+      if (savedTurnstile !== undefined) process.env.TURNSTILE_SECRET_KEY = savedTurnstile;
+      else delete process.env.TURNSTILE_SECRET_KEY;
       if (savedDb !== undefined) process.env.DATABASE_URL = savedDb;
       if (savedKeys !== undefined) process.env.ATLAS_ENCRYPTION_KEYS = savedKeys;
       else delete process.env.ATLAS_ENCRYPTION_KEYS;
@@ -831,12 +836,15 @@ describe("buildAppLayer", () => {
     const savedKeys = process.env.ATLAS_ENCRYPTION_KEYS;
     const savedRpm = process.env.ATLAS_RATE_LIMIT_RPM;
     const savedProvider = process.env.ATLAS_PROVIDER;
+    const savedTurnstile = process.env.TURNSTILE_SECRET_KEY;
     // Satisfy the other SaaS guards so the failure cause carries
     // exclusively the rate-limit error — not the encryption-key,
-    // internal-DB, or provider-key error from a sibling guard firing first.
+    // internal-DB, provider-key, or turnstile error from a sibling guard
+    // firing first.
     process.env.DATABASE_URL = "postgresql://localhost:5432/wiring-test";
     process.env.ATLAS_ENCRYPTION_KEYS = "v1:wiring-regression-test-key-32-bytes-long-aaa";
     process.env.ATLAS_PROVIDER = "ollama"; // keyless provider — satisfies ProviderKeyGuardLive
+    process.env.TURNSTILE_SECRET_KEY = "ci-wiring-test-turnstile-secret"; // satisfies TurnstileGuardLive (#3795)
     delete process.env.ATLAS_RATE_LIMIT_RPM;
 
     try {
@@ -851,6 +859,8 @@ describe("buildAppLayer", () => {
       const text = String(Exit.isFailure(exit) ? exit.cause : "");
       expect(text).toContain("RateLimitRequiredError");
     } finally {
+      if (savedTurnstile !== undefined) process.env.TURNSTILE_SECRET_KEY = savedTurnstile;
+      else delete process.env.TURNSTILE_SECRET_KEY;
       if (savedDb !== undefined) process.env.DATABASE_URL = savedDb;
       else delete process.env.DATABASE_URL;
       if (savedKeys !== undefined) process.env.ATLAS_ENCRYPTION_KEYS = savedKeys;
@@ -874,12 +884,16 @@ describe("buildAppLayer", () => {
     const savedRpm = process.env.ATLAS_RATE_LIMIT_RPM;
     const savedProvider = process.env.ATLAS_PROVIDER;
     const savedAnthropic = process.env.ANTHROPIC_API_KEY;
+    const savedTurnstile = process.env.TURNSTILE_SECRET_KEY;
     // Satisfy the sibling guards so the cause carries exclusively the
-    // provider-key error.
+    // provider-key error. TURNSTILE_SECRET_KEY is set because TurnstileGuardLive
+    // (#3795) is a fast sync guard — left unset it would fail first and
+    // interrupt this async provider-key guard before it can fail.
     process.env.DATABASE_URL = "postgresql://localhost:5432/wiring-test";
     process.env.ATLAS_ENCRYPTION_KEYS = "v1:wiring-regression-test-key-32-bytes-long-aaa";
     process.env.ATLAS_RATE_LIMIT_RPM = "300";
     process.env.ATLAS_PROVIDER = "anthropic";
+    process.env.TURNSTILE_SECRET_KEY = "ci-wiring-test-turnstile-secret";
     delete process.env.ANTHROPIC_API_KEY;
 
     try {
@@ -894,6 +908,8 @@ describe("buildAppLayer", () => {
       const text = String(Exit.isFailure(exit) ? exit.cause : "");
       expect(text).toContain("ProviderKeyMissingError");
     } finally {
+      if (savedTurnstile !== undefined) process.env.TURNSTILE_SECRET_KEY = savedTurnstile;
+      else delete process.env.TURNSTILE_SECRET_KEY;
       if (savedDb !== undefined) process.env.DATABASE_URL = savedDb;
       else delete process.env.DATABASE_URL;
       if (savedKeys !== undefined) process.env.ATLAS_ENCRYPTION_KEYS = savedKeys;
@@ -929,15 +945,19 @@ describe("buildAppLayer", () => {
     const savedStripeKey = process.env.STRIPE_SECRET_KEY;
     const savedWebhook = process.env.STRIPE_WEBHOOK_SECRET;
     const savedResend = process.env.RESEND_API_KEY;
+    const savedTurnstile = process.env.TURNSTILE_SECRET_KEY;
     // Satisfy the sibling SaaS guards so the cause carries exclusively the
     // billing error. RESEND_API_KEY satisfies DpaGuardLive, which (like the
     // billing guard since #3703) is Settings-gated and would otherwise race it.
+    // TURNSTILE_SECRET_KEY satisfies TurnstileGuardLive (#3795) — a fast sync
+    // guard that would otherwise fail first and interrupt this async one.
     process.env.DATABASE_URL = "postgresql://localhost:5432/wiring-test";
     process.env.ATLAS_ENCRYPTION_KEYS = "v1:wiring-regression-test-key-32-bytes-long-aaa";
     process.env.ATLAS_RATE_LIMIT_RPM = "300";
     process.env.ATLAS_PROVIDER = "ollama"; // keyless provider
     process.env.RESEND_API_KEY = "re_wiring_test";
     process.env.STRIPE_SECRET_KEY = "sk_test_wiring";
+    process.env.TURNSTILE_SECRET_KEY = "ci-wiring-test-turnstile-secret";
     // Webhook secret absent → env-only fail-fast before any network call.
     delete process.env.STRIPE_WEBHOOK_SECRET;
 
@@ -964,6 +984,48 @@ describe("buildAppLayer", () => {
       restore("STRIPE_SECRET_KEY", savedStripeKey);
       restore("STRIPE_WEBHOOK_SECRET", savedWebhook);
       restore("RESEND_API_KEY", savedResend);
+      restore("TURNSTILE_SECRET_KEY", savedTurnstile);
+    }
+  });
+
+  // #3795 — same canary shape as the sibling guards above. Boot the full app
+  // layer in SaaS with TURNSTILE_SECRET_KEY unset and assert the tagged error
+  // reaches the boot Layer's failure channel, proving turnstileGuardLayer is
+  // actually wired into Layer.mergeAll (not just unit-tested in isolation).
+  test("buildAppLayer wires TurnstileGuardLive — missing TURNSTILE_SECRET_KEY fails the layer in SaaS", async () => {
+    const savedDb = process.env.DATABASE_URL;
+    const savedKeys = process.env.ATLAS_ENCRYPTION_KEYS;
+    const savedRpm = process.env.ATLAS_RATE_LIMIT_RPM;
+    const savedProvider = process.env.ATLAS_PROVIDER;
+    const savedTurnstile = process.env.TURNSTILE_SECRET_KEY;
+    // Satisfy the sibling SaaS guards so the cause carries the turnstile error.
+    process.env.DATABASE_URL = "postgresql://localhost:5432/wiring-test";
+    process.env.ATLAS_ENCRYPTION_KEYS = "v1:wiring-regression-test-key-32-bytes-long-aaa";
+    process.env.ATLAS_RATE_LIMIT_RPM = "300";
+    process.env.ATLAS_PROVIDER = "ollama"; // keyless provider
+    delete process.env.TURNSTILE_SECRET_KEY;
+
+    try {
+      const config = { deployMode: "saas" } as Parameters<typeof buildAppLayer>[0];
+      const layer = buildAppLayer(config);
+
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(Effect.provide(layer)),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      const text = String(Exit.isFailure(exit) ? exit.cause : "");
+      expect(text).toContain("TurnstileSecretRequiredError");
+    } finally {
+      const restore = (key: string, val: string | undefined) => {
+        if (val !== undefined) process.env[key] = val;
+        else delete process.env[key];
+      };
+      restore("DATABASE_URL", savedDb);
+      restore("ATLAS_ENCRYPTION_KEYS", savedKeys);
+      restore("ATLAS_RATE_LIMIT_RPM", savedRpm);
+      restore("ATLAS_PROVIDER", savedProvider);
+      restore("TURNSTILE_SECRET_KEY", savedTurnstile);
     }
   });
 });

@@ -18,6 +18,8 @@ import {
   getSettingDefinition,
   HOT_RELOADED_KEYS,
   isHotReloadedKey,
+  securitySensitiveAuditFields,
+  SECURITY_SENSITIVE_KEYS,
   _resetSettingsCache,
 } from "../settings";
 
@@ -990,6 +992,44 @@ describe("settings module", () => {
       // Should revert to env or default
       delete process.env.ATLAS_ROW_LIMIT;
       expect(getSetting("ATLAS_ROW_LIMIT")).toBe("1000");
+    });
+  });
+});
+
+// #3797 — runtime changes to abuse-control thresholds emit a security-audit
+// warn. The decision (which keys, and whether a value disables the control) is
+// a pure function, tested here without DB/logger plumbing.
+describe("securitySensitiveAuditFields (#3797)", () => {
+  it("includes both start_trial RPM limiters in the sensitive set", () => {
+    expect(SECURITY_SENSITIVE_KEYS.has("ATLAS_TRIAL_IP_RATE_LIMIT_RPM")).toBe(true);
+    expect(SECURITY_SENSITIVE_KEYS.has("ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM")).toBe(true);
+  });
+
+  it("returns null (no audit) for a non-sensitive key", () => {
+    expect(securitySensitiveAuditFields("ATLAS_ROW_LIMIT", "set", "0")).toBeNull();
+  });
+
+  it("audits a normal change without flagging disablesControl", () => {
+    expect(securitySensitiveAuditFields("ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "set", "10")).toEqual({
+      disablesControl: false,
+    });
+  });
+
+  it("flags disablesControl when set to the 0 disabled-sentinel", () => {
+    expect(securitySensitiveAuditFields("ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM", "set", "0")).toEqual({
+      disablesControl: true,
+    });
+  });
+
+  it("flags disablesControl when set to a non-finite value", () => {
+    expect(securitySensitiveAuditFields("ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "set", "off")).toEqual({
+      disablesControl: true,
+    });
+  });
+
+  it("audits a clear without flagging disablesControl (revert is value-unknown)", () => {
+    expect(securitySensitiveAuditFields("ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "clear", undefined)).toEqual({
+      disablesControl: false,
     });
   });
 });

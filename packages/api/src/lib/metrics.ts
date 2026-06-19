@@ -284,3 +284,44 @@ export const emailOutboxDeadCount: Gauge = meter.createGauge(
       "Current email_outbox rows in dead status, observed per flusher tick (#2942)",
   },
 );
+
+/**
+ * `atlas.claim_gate.decisions` — one increment per real SaaS claim-gate
+ * decision on the Atlas-token Q&A path (#3651, #3796). The withhold path
+ * (`claim_required`) and the serve path (`allowed`) are otherwise only
+ * per-request logs, so the withheld-vs-served ratio isn't graphable and a
+ * `claim_required` spike isn't alertable without this counter. The non-SaaS
+ * short-circuit (self-hosted / CLI / no internal DB) is NOT counted — it isn't
+ * a metering decision.
+ *
+ * Attributes:
+ *   - `outcome` — `allowed` (served / claimed / non-metered tier),
+ *                 `claim_required` (withheld pre-claim), or
+ *                 `check_failed` (lookup errored → fail-closed 503).
+ */
+export const claimGateDecisions: Counter = meter.createCounter(
+  "atlas.claim_gate.decisions",
+  {
+    description:
+      "SaaS claim-gate decisions by outcome (allowed / claim_required / check_failed) (#3651)",
+  },
+);
+
+/**
+ * `atlas.trial_abuse.rejections` — one increment per `start_trial` attempt
+ * rejected by the per-IP / per-email rate limiter (#3654, #3796). The
+ * limiter's windows are in-memory `Map`s (per-replica), so a per-request
+ * `log.warn` is the only on-call signal today; this counter aggregates at the
+ * collector for a fleet-wide attack view and an alertable series.
+ *
+ * Attributes:
+ *   - `limiter` — `ip` (per-IP attempt window tripped) or
+ *                 `email` (per-email attempt window tripped).
+ */
+export const trialAbuseRejections: Counter = meter.createCounter(
+  "atlas.trial_abuse.rejections",
+  {
+    description:
+      "Self-serve start_trial attempts rejected by the per-IP / per-email rate limiter (#3654)",
+  },
+);

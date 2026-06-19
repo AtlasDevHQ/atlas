@@ -77,6 +77,16 @@ export interface SaasEnv {
   readonly ATLAS_SMTP_URL: string | undefined;
   readonly RESEND_API_KEY: string | undefined;
 
+  // Cloudflare Turnstile abuse gate (TurnstileGuardLive, #3795). Read by
+  // `lib/turnstile.ts :: verifyTurnstile` — the bot-protection gate in front
+  // of the talk-to-sales contact form AND the self-serve `start_trial` MCP
+  // onboarding bootstrap (#3654). When unset, `verifyTurnstile` fails CLOSED
+  // (every contact submission + every trial attempt 403s) — so a missing
+  // secret is a silent 100% signup outage that boots green. Listed here so the
+  // boot-smoke fixture populates it and `TurnstileGuardLive` asserts on it via
+  // `readSaasEnv()`.
+  readonly TURNSTILE_SECRET_KEY: string | undefined;
+
   // Boot-survival keys (not guard-enforced — required for the API
   // process to start in managed-auth + SaaS mode, but no Atlas guard
   // explicitly verifies them).
@@ -140,6 +150,7 @@ export const SAAS_ENV_KEYS = [
   "ATLAS_STRICT_PLUGIN_SECRETS",
   "ATLAS_SMTP_URL",
   "RESEND_API_KEY",
+  "TURNSTILE_SECRET_KEY",
   "BETTER_AUTH_URL",
   "BETTER_AUTH_TRUSTED_ORIGINS",
   "SLACK_SIGNING_SECRET",
@@ -177,6 +188,7 @@ export function readSaasEnv(env: NodeJS.ProcessEnv = process.env): SaasEnv {
     ATLAS_STRICT_PLUGIN_SECRETS: env.ATLAS_STRICT_PLUGIN_SECRETS,
     ATLAS_SMTP_URL: env.ATLAS_SMTP_URL,
     RESEND_API_KEY: env.RESEND_API_KEY,
+    TURNSTILE_SECRET_KEY: env.TURNSTILE_SECRET_KEY,
     BETTER_AUTH_URL: env.BETTER_AUTH_URL,
     BETTER_AUTH_TRUSTED_ORIGINS: env.BETTER_AUTH_TRUSTED_ORIGINS,
     SLACK_SIGNING_SECRET: env.SLACK_SIGNING_SECRET,
@@ -253,6 +265,11 @@ export function makeBootSmokeFixture(
     ATLAS_STRICT_PLUGIN_SECRETS: undefined,
     ATLAS_SMTP_URL: undefined,
     RESEND_API_KEY: "ci-fixture-resend-key-not-a-secret",
+    // TurnstileGuardLive (#3795) asserts presence only (non-empty) in SaaS —
+    // `verifyTurnstile` reads it at per-request siteverify, never at boot, so
+    // any non-empty value satisfies the boot guard. Not a secret — identical
+    // every CI run, like the other fixture placeholders.
+    TURNSTILE_SECRET_KEY: "ci-fixture-turnstile-secret-not-a-secret",
     BETTER_AUTH_URL: "http://127.0.0.1:3001",
     BETTER_AUTH_TRUSTED_ORIGINS: "http://127.0.0.1:3000",
     // 32-char lowercase hex placeholder. Satisfies the new strict

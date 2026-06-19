@@ -44,6 +44,7 @@ describe("DurableSessionLive", () => {
         const ds = yield* DurableSession;
         expect(ds.available).toBe(true);
         ds.recordTerminal({
+          runId: "run-1",
           conversationId: "conv-1",
           orgId: "org-1",
           status: "done",
@@ -55,6 +56,26 @@ describe("DurableSessionLive", () => {
 
     expect(execCalls).toHaveLength(1);
     expect(execCalls[0]!.sql).toContain("INSERT INTO agent_runs");
+    expect(execCalls[0]!.sql).toContain("status = EXCLUDED.status");
+  });
+
+  it("records a per-step `running` checkpoint via internalExecute", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const ds = yield* DurableSession;
+        ds.recordCheckpoint({
+          runId: "run-1",
+          conversationId: "conv-1",
+          orgId: "org-1",
+          stepIndex: 2,
+          transcript: [],
+        });
+      }).pipe(Effect.provide(DurableSessionLive)),
+    );
+
+    expect(execCalls).toHaveLength(1);
+    expect(execCalls[0]!.sql).toContain("ON CONFLICT (id) DO UPDATE");
+    expect(execCalls[0]!.params?.[3]).toBe("running");
   });
 
   it("sweepTerminal returns the deleted count", async () => {
@@ -75,7 +96,15 @@ describe("NoopDurableSessionLayer", () => {
       Effect.gen(function* () {
         const ds = yield* DurableSession;
         expect(ds.available).toBe(false);
+        ds.recordCheckpoint({
+          runId: "run-1",
+          conversationId: "conv-1",
+          orgId: null,
+          stepIndex: 1,
+          transcript: [],
+        });
         ds.recordTerminal({
+          runId: "run-1",
           conversationId: "conv-1",
           orgId: null,
           status: "failed",

@@ -30,7 +30,7 @@ import type {
 import type { PoolMetrics, OrgPoolMetrics } from "@useatlas/types";
 import type { LeadEvent } from "@useatlas/twenty/lead-normalizer";
 import type { ToolRegistry as ToolRegistryClass } from "@atlas/api/lib/tools/registry";
-import type { RecordTerminalRunArgs } from "@atlas/api/lib/durable-session";
+import type { RecordRunCheckpointArgs, RecordTerminalRunArgs } from "@atlas/api/lib/durable-session";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   PluginRegistry as PluginRegistryClass,
@@ -102,6 +102,12 @@ export interface DurableSessionShape {
    * the per-workspace `ATLAS_DURABILITY_ENABLED` settings flag at write time.
    */
   readonly available: boolean;
+  /**
+   * Persist a per-step `running` checkpoint (phase 1b) — upserts the turn's row
+   * in place keyed on `runId`, advancing the step index + transcript. Same
+   * fire-and-forget contract as {@link recordTerminal}. No-op on the Noop layer.
+   */
+  recordCheckpoint(args: RecordRunCheckpointArgs): void;
   /**
    * Persist a single terminal run checkpoint (`done`/`failed`) at turn
    * completion (phase 1a). Fire-and-forget: rides the shared `internalExecute`

@@ -43,6 +43,7 @@ import { hasInternalDB, internalExecute } from "./db/internal";
 import {
   AGENT_RUN_STATUS,
   isDurabilityEnabled,
+  recordRunCheckpoint,
   recordTerminalAgentRun,
   type TerminalAgentRunStatus,
 } from "./durable-session";
@@ -1262,27 +1263,64 @@ export async function runAgent({
   const compactionSettings = resolveCompactionSettings(orgId);
   let compactionSummaryMemo: { olderCount: number; text: string } | undefined;
 
-  // ── Durable-session terminal checkpoint (#3745, ADR-0020, phase 1a) ──
-  // A turn writes exactly ONE durable `agent_runs` row at completion: `done`
-  // on a clean finish, `failed` on an uncaught error. Gated on a conversation
-  // id (a run belongs to a conversation) + the per-workspace durability flag;
-  // `recordTerminalAgentRun` additionally no-ops without an internal DB, so
-  // off / no-DB → behavior identical to today. Fire-and-forget: it rides the
-  // shared circuit breaker and never disrupts the stream. `terminalWritten`
-  // makes the write idempotent across the onFinish/onError/catch seams (first
-  // terminal status wins — one row per turn).
+  // ── Durable-session checkpoints (#3745 phase 1a, #3746 phase 1b, ADR-0020) ──
+  // A turn occupies exactly ONE durable `agent_runs` row, keyed on a stable
+  // per-turn `runId` and advanced IN PLACE:
+  //   - phase 1b: `onStepFinish` upserts a `running` checkpoint at every step
+  //     boundary (monotonic step index, transcript grown to the messages
+  //     accumulated so far), so an interrupted turn leaves a recoverable
+  //     mid-flight row at the last completed step.
+  //   - phase 1a: the terminal write flips that same row to `done`/`failed`.
+  // Gated on a conversation id (a run belongs to a conversation) + the
+  // per-workspace durability flag; the helpers additionally no-op without an
+  // internal DB, so off / no-DB → behavior identical to today. Fire-and-forget:
+  // each write rides the shared circuit breaker and never disrupts the stream.
+  // `terminalWritten` makes the terminal write idempotent across the
+  // onFinish/onError/catch seams (first terminal status wins — one row per turn).
   const durabilityActive = Boolean(conversationId) && isDurabilityEnabled(orgId);
+  const runId = crypto.randomUUID();
   let terminalWritten = false;
   let observedSteps = 0;
+  // Response messages (assistant text, tool calls, tool results) accumulated
+  // across steps. `onStepFinish`'s `response.messages` carries only the current
+  // step's messages, so we concatenate to reconstruct the running transcript for
+  // mid-flight (`running`) and failure checkpoints. The clean `onFinish` path
+  // uses its own cumulative `response.messages` (authoritative for the turn).
+  const accumulatedResponse: ModelMessage[] = [];
+  const currentTranscript = (): ModelMessage[] => [...modelMessages, ...accumulatedResponse];
+  const writeCheckpoint = (stepIndex: number) => {
+    if (!durabilityActive) return;
+    recordRunCheckpoint({
+      runId,
+      conversationId: conversationId as string,
+      orgId: orgId ?? null,
+      stepIndex,
+      transcript: currentTranscript(),
+    });
+    // Per-step observability on the existing atlas.agent span (last-write-wins).
+    span.setAttributes({
+      "atlas.durable.run_id": runId,
+      "atlas.durable.status": AGENT_RUN_STATUS.RUNNING,
+      "atlas.durable.step_index": stepIndex,
+    });
+  };
   const writeTerminal = (status: TerminalAgentRunStatus, stepIndex: number, transcript: ModelMessage[]) => {
     if (!durabilityActive || terminalWritten) return;
     terminalWritten = true;
     recordTerminalAgentRun({
+      runId,
       conversationId: conversationId as string,
       orgId: orgId ?? null,
       status,
       stepIndex,
       transcript,
+    });
+    // Terminal status progression on the span — set before `endSpan` at every
+    // call site so the final span reflects the persisted terminal state.
+    span.setAttributes({
+      "atlas.durable.run_id": runId,
+      "atlas.durable.status": status,
+      "atlas.durable.step_index": stepIndex,
     });
   };
 
@@ -1321,13 +1359,12 @@ export async function runAgent({
           { err: error instanceof Error ? error : new Error(String(error)) },
           "stream error",
         );
-        // Durable terminal checkpoint for the failure path. Records only the
-        // input messages we had at the point of failure; any assistant/tool
-        // messages produced by steps that completed before the error are NOT
-        // captured on this path (per-step persistence lands in a later slice).
-        // Idempotent via `terminalWritten`, so a subsequent onFinish/catch
-        // won't double-write.
-        writeTerminal(AGENT_RUN_STATUS.FAILED, observedSteps, modelMessages);
+        // Durable terminal checkpoint for the failure path. Records the
+        // transcript accumulated up to the point of failure (input messages +
+        // any assistant/tool messages from steps that completed before the
+        // error, captured by the per-step checkpoints, #3746). Idempotent via
+        // `terminalWritten`, so a subsequent onFinish/catch won't double-write.
+        writeTerminal(AGENT_RUN_STATUS.FAILED, observedSteps, currentTranscript());
         endSpan(
           SpanStatusCode.ERROR,
           error instanceof Error ? error.message : String(error),
@@ -1410,15 +1447,23 @@ export async function runAgent({
         };
       },
 
-      onStepFinish: ({ stepNumber, finishReason, usage }) => {
+      onStepFinish: ({ stepNumber, finishReason, usage, response }) => {
         // Track the highest observed step so a `failed` checkpoint (onError /
         // outer catch) can record how far the turn got. `stepNumber` is
         // 0-based; +1 gives the count of completed steps.
         observedSteps = stepNumber + 1;
+        // Grow the running transcript with this step's generated messages, then
+        // upsert a mid-flight `running` checkpoint (#3746) keyed on the turn's
+        // run id. In-place update — one row per turn — so an interruption after
+        // this step leaves a recoverable row at step index `observedSteps`.
+        accumulatedResponse.push(...response.messages);
+        writeCheckpoint(observedSteps);
         log.info(
           {
             step: stepNumber,
+            stepIndex: observedSteps,
             finishReason,
+            durableStatus: durabilityActive ? AGENT_RUN_STATUS.RUNNING : undefined,
             inputTokens: usage?.inputTokens,
             outputTokens: usage?.outputTokens,
             cacheRead: usage?.inputTokenDetails?.cacheReadTokens,
@@ -1446,16 +1491,17 @@ export async function runAgent({
           "atlas.total_input_tokens": totalUsage?.inputTokens ?? 0,
           "atlas.total_output_tokens": totalUsage?.outputTokens ?? 0,
         });
-        endSpan(SpanStatusCode.OK);
 
         // Durable terminal checkpoint (#3745, ADR-0020). The full transcript is
         // the input messages plus the messages the model generated this turn
         // (assistant text, tool calls, tool results). `finishReason === "error"`
         // is the AI-SDK's in-band error signal — record it as `failed`, not
-        // `done`. Idempotent via `terminalWritten`.
+        // `done`. Idempotent via `terminalWritten`. Runs BEFORE `endSpan` so its
+        // terminal status attributes land on the still-open span.
         const status: TerminalAgentRunStatus =
           finishReason === "error" ? AGENT_RUN_STATUS.FAILED : AGENT_RUN_STATUS.DONE;
         writeTerminal(status, steps.length, [...modelMessages, ...response.messages]);
+        endSpan(SpanStatusCode.OK);
 
         // Persist token usage to internal DB (fire-and-forget).
         // Shares the internalExecute circuit breaker with audit writes.
@@ -1509,8 +1555,9 @@ export async function runAgent({
     }));
   } catch (err) {
     // Synchronous setup failure before the stream began. Record a `failed`
-    // terminal checkpoint (idempotent) before re-throwing.
-    writeTerminal(AGENT_RUN_STATUS.FAILED, observedSteps, modelMessages);
+    // terminal checkpoint (idempotent) before re-throwing. `currentTranscript()`
+    // is just the input messages here (no step ran), matching pre-1b behavior.
+    writeTerminal(AGENT_RUN_STATUS.FAILED, observedSteps, currentTranscript());
     endSpan(
       SpanStatusCode.ERROR,
       err instanceof Error ? err.message : String(err),

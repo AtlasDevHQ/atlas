@@ -349,6 +349,35 @@ If you connect a client not listed here and it works (or it doesn't), [open an i
 
 ---
 
+## Start a trial from inside your agent
+
+On Atlas SaaS there's a separate, **unauthenticated** onboarding endpoint at `mcp.useatlas.dev/mcp/onboarding/sse` that exposes exactly one tool — `start_trial`. It's how a brand-new prospect goes from *nothing* to a live, connectable Atlas workspace without leaving the agent. You don't need an account, a token, or a workspace to call it.
+
+<Callout type="info">
+`start_trial` is the **only** tool reachable before you have an identity. It runs outside Atlas's MCP dispatch gate (there is no actor or workspace yet) and can do exactly one thing: provision a trial workspace. Every other tool — `explore`, `executeSQL`, datasource lifecycle — lives on the authenticated, per-workspace endpoint and runs the full gate (action policy → `mcp:write` → RBAC → approval). The endpoint exists only on Atlas SaaS; self-hosted has no billing surface to onboard onto.
+</Callout>
+
+### start_trial
+
+Provision a new trial workspace and get a connect URL back. The tool collects a **business email** and a **workspace name** — supply them as arguments, or let your agent prompt you for them via MCP elicitation:
+
+```
+email: "you@yourcompany.com"
+orgName: "Acme Analytics"
+```
+
+It returns:
+
+```json
+{
+  "workspaceId": "org_…",
+  "connectUrl": "https://mcp.useatlas.dev/mcp/org_…/sse",
+  "state": "grace"
+}
+```
+
+Point your agent's MCP client at `connectUrl` to run the normal OAuth 2.1 + DCR + PKCE [connect flow](#path-a--in-product-wizard-recommended) and attach a hosted actor to the new workspace. The workspace starts in a short **unclaimed grace period** (`state: "grace"`) — setup (connect a datasource, build the semantic layer) and client-paid MCP querying work immediately; the full 14-day trial clock starts when you **claim** the account on the web (verify email → set a credential → accept ToS).
+
 ## Available tools
 
 The MCP server exposes six core semantic tools — two general-purpose and four typed accessors over the semantic layer — plus a set of admin [datasource lifecycle tools](#datasource-lifecycle-tools) covered below. Prefer the typed tools when you only need catalog/glossary/metric data; reach for `explore` only when you need raw file access.

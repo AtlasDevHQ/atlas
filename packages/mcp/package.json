@@ -8,6 +8,7 @@
     "./sse": "./src/sse.ts",
     "./telemetry-bootstrap": "./src/telemetry-bootstrap.ts",
     "./hosted": "./src/hosted.ts",
+    "./onboarding": "./src/onboarding.ts",
     "./prompts/listing": "./src/prompts/listing.ts",
     "./eval/auth": "./src/eval/auth.ts",
     "./eval/client": "./src/eval/client.ts",

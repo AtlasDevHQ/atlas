@@ -85,6 +85,21 @@ const UNLIMITED = -1;
 export const TRIAL_DAYS = 14;
 
 /**
+ * Initial unclaimed-grace window (hours) for a Workspace provisioned over
+ * MCP by the anonymous onboarding caller (`start_trial`, ADR-0018).
+ *
+ * A self-serve trial is provisioned into a SHORT grace window rather than the
+ * full {@link TRIAL_DAYS}: the 14-day clock only starts when a human *claims*
+ * the account on the web (verify email → set credential → accept ToS). Until
+ * then the Workspace sits on `plan_tier='trial'` with `trial_ends_at = NOW() +
+ * TRIAL_GRACE_HOURS`, so an abandoned signup can't squat on a 14-day free
+ * window and the grace reaper (#3652) has a bounded horizon to sweep. Setup
+ * (datasource connect, semantic layer) stays open during grace because Gate 0
+ * only blocks once `trial_ends_at` lapses.
+ */
+export const TRIAL_GRACE_HOURS = 72;
+
+/**
  * Default duration (days) of a platform-admin plan-override window (#3427).
  *
  * When an operator sets `plan_tier` directly, the Stripe webhook tier sync

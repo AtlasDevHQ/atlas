@@ -21,8 +21,11 @@
  * match (self-hosted operators on arbitrary hostnames stay on the resolved
  * base).
  *
- * Mirrors `@atlas/mcp/hosted:brandedMcpHost` and `well-known.ts:brandedMcpHost`
- * — keep the regex in lockstep with both.
+ * The same `^api(-[a-z0-9]+)?\.useatlas\.dev$` regex is duplicated in three
+ * other places — keep all four in lockstep:
+ *   - `@atlas/mcp/hosted:brandedMcpHost`
+ *   - `packages/api/src/api/routes/well-known.ts:brandedMcpHost`
+ *   - `packages/web/src/app/settings/ai-agents/branded-mcp-base.ts:brandedMcpBase`
  */
 function brandedMcpHost(base: string): string | null {
   let url: URL;

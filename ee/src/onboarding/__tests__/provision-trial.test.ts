@@ -36,6 +36,7 @@ function stubDeps(over: Partial<ProvisionTrialDeps> = {}): {
     readOrgTier: async () => ({ plan_tier: "trial", trial_ends_at: null }),
     setGraceWindow: async (orgId, endsAtIso) => {
       calls.grace.push({ orgId, endsAtIso });
+      return 1;
     },
     buildConnectUrl: (id) => `https://mcp.test/mcp/${id}/sse`,
     graceMs: 72 * 60 * 60 * 1000,
@@ -136,6 +137,16 @@ describe("provisionTrialWorkspace", () => {
     await expect(
       provisionTrialWorkspace({ email: "a@b.com", orgName: "Acme" }, deps),
     ).rejects.toMatchObject({ code: "org_failed" });
+  });
+
+  it("throws trial_not_assigned when the grace-window UPDATE matches no row (TOCTOU)", async () => {
+    // The tier was read as 'trial' but the guarded UPDATE narrows zero rows
+    // (the tier changed under us) — returning grace here would hand back a
+    // full-window trial, so the provisioner must refuse instead.
+    const { deps } = stubDeps({ setGraceWindow: async () => 0 });
+    await expect(
+      provisionTrialWorkspace({ email: "a@b.com", orgName: "Acme" }, deps),
+    ).rejects.toMatchObject({ code: "trial_not_assigned" });
   });
 
   it("throws trial_not_assigned when the org lands on neither trial nor locked", async () => {

@@ -63,16 +63,24 @@ const okProvision: ProvisionTrialFn = async (input) => ({
 
 async function wireTool(
   provision: ProvisionTrialFn,
-  opts: { withElicitation?: { email: string; orgName: string } } = {},
+  opts: {
+    withElicitation?: { email: string; orgName: string };
+    /** Raw elicitation reply — lets a test decline/cancel or return partial content. */
+    elicit?: () => { action: string; content?: Record<string, string> };
+  } = {},
 ) {
   const server = new McpServer({ name: "test", version: "0.0.1" });
   registerStartTrialTool(server, { provision });
 
+  const wantsElicit = Boolean(opts.withElicitation || opts.elicit);
   const client = new Client(
     { name: "test-client", version: "0.0.1" },
-    opts.withElicitation ? { capabilities: { elicitation: {} } } : undefined,
+    wantsElicit ? { capabilities: { elicitation: {} } } : undefined,
   );
-  if (opts.withElicitation) {
+  if (opts.elicit) {
+    const reply = opts.elicit;
+    client.setRequestHandler(ElicitRequestSchema, async () => reply());
+  } else if (opts.withElicitation) {
     const reply = opts.withElicitation;
     client.setRequestHandler(ElicitRequestSchema, async () => ({
       action: "accept",
@@ -139,6 +147,93 @@ describe("start_trial tool", () => {
     ).toBe("org_elicited");
   });
 
+  it("returns a validation_failed envelope when the client declines elicitation", async () => {
+    let provisioned = false;
+    const provision: ProvisionTrialFn = async () => {
+      provisioned = true;
+      return {
+        workspaceId: "org_x",
+        connectUrl: "https://mcp.test/mcp/org_x/sse",
+        state: "grace",
+      };
+    };
+    const { client } = await wireTool(provision, {
+      elicit: () => ({ action: "decline" }),
+    });
+    // No args → the tool elicits; the client declines.
+    const result = await client.callTool({ name: "start_trial", arguments: {} });
+    expect(result.isError).toBe(true);
+    const arr = result.content as Array<{ type: string; text: string }>;
+    const err = parseAtlasMcpToolError(arr[0]!.text);
+    expect(err?.code).toBe("validation_failed");
+    // A declined elicitation must never provision.
+    expect(provisioned).toBe(false);
+  });
+
+  it("merges a supplied arg with an elicited field (partial elicitation)", async () => {
+    const seen: Array<{ email: string; orgName: string }> = [];
+    const provision: ProvisionTrialFn = async (input) => {
+      seen.push(input);
+      return {
+        workspaceId: "org_partial",
+        connectUrl: "https://mcp.test/mcp/org_partial/sse",
+        state: "grace",
+      };
+    };
+    // email supplied as an arg; only orgName comes back from elicitation.
+    const { client } = await wireTool(provision, {
+      elicit: () => ({ action: "accept", content: { orgName: "Elicited Co" } }),
+    });
+    const result = await client.callTool({
+      name: "start_trial",
+      arguments: { email: "supplied@acme.com" },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(seen).toEqual([
+      { email: "supplied@acme.com", orgName: "Elicited Co" },
+    ]);
+  });
+
+  it("maps every TrialProvisioningError code to the right envelope", async () => {
+    const cases: Array<{
+      code:
+        | "invalid_input"
+        | "signup_failed"
+        | "not_saas"
+        | "org_failed"
+        | "trial_not_assigned";
+      envelopeCode: "validation_failed" | "forbidden" | "internal_error";
+      expectHint?: boolean;
+      expectRequestId?: boolean;
+    }> = [
+      { code: "invalid_input", envelopeCode: "validation_failed" },
+      { code: "signup_failed", envelopeCode: "validation_failed", expectHint: true },
+      { code: "not_saas", envelopeCode: "forbidden" },
+      { code: "org_failed", envelopeCode: "internal_error", expectRequestId: true },
+      {
+        code: "trial_not_assigned",
+        envelopeCode: "internal_error",
+        expectRequestId: true,
+      },
+    ];
+    for (const tc of cases) {
+      const provision: ProvisionTrialFn = async () => {
+        throw new TrialProvisioningError(tc.code, `boom:${tc.code}`);
+      };
+      const { client } = await wireTool(provision);
+      const result = await client.callTool({
+        name: "start_trial",
+        arguments: { email: "x@y.com", orgName: "Acme" },
+      });
+      expect(result.isError).toBe(true);
+      const arr = result.content as Array<{ type: string; text: string }>;
+      const err = parseAtlasMcpToolError(arr[0]!.text);
+      expect(err?.code).toBe(tc.envelopeCode);
+      if (tc.expectHint) expect(err?.hint).toBeTruthy();
+      if (tc.expectRequestId) expect(err?.request_id).toBeTruthy();
+    }
+  });
+
   it("maps a TrialProvisioningError(invalid_input) to a validation_failed envelope", async () => {
     const provision: ProvisionTrialFn = async () => {
       throw new TrialProvisioningError("invalid_input", "bad email");
@@ -194,5 +289,25 @@ describe("onboarding SaaS gating", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
     });
     expect(on.status).not.toBe(404);
+  });
+
+  it("returns a structured unknown_session 404 for a bogus mcp-session-id (SaaS)", async () => {
+    mockDeployMode = "saas";
+    const router = createOnboardingMcpRouter();
+    const res = await router.request("/sse", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-session-id": "does-not-exist",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    });
+    // A present-but-unknown session id is a different 404 than the off-SaaS
+    // no-route 404 — it carries the structured unknown_session body + requestId.
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error?: string; requestId?: string };
+    expect(body.error).toBe("unknown_session");
+    expect(body.requestId).toBeTruthy();
   });
 });

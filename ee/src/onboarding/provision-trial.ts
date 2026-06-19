@@ -26,7 +26,11 @@
 import { randomBytes } from "node:crypto";
 import { getConfig } from "@atlas/api/lib/config";
 import { TRIAL_GRACE_HOURS } from "@atlas/api/lib/billing/plans";
+import type { PlanTier } from "@atlas/api/lib/db/internal";
 import { buildMcpConnectUrl } from "@atlas/api/lib/mcp/connect-url";
+import { createLogger } from "@atlas/api/lib/logger";
+
+const log = createLogger("provision-trial");
 
 export type TrialWorkspaceState = "grace" | "locked";
 
@@ -67,9 +71,13 @@ export class TrialProvisioningError extends Error {
 }
 
 // A type alias (not an interface) so it satisfies the
-// `Record<string, unknown>` constraint on `internalQuery<T>`.
+// `Record<string, unknown>` constraint on `internalQuery<T>`. `plan_tier` is
+// typed as the closed `PlanTier` union (not a widened `string`) so the
+// `planTier === 'trial' | 'locked'` checks below narrow instead of comparing
+// against an open string. `OrgTierRow` is module-private and not part of the
+// ee-stub lockstep surface, so importing `PlanTier` here costs nothing there.
 type OrgTierRow = {
-  plan_tier: string;
+  plan_tier: PlanTier;
   trial_ends_at: string | null;
 };
 
@@ -95,8 +103,13 @@ export interface ProvisionTrialDeps {
   }) => Promise<{ id?: string } | undefined>;
   /** Read the post-hook tier so we know whether the Workspace got the trial. */
   readOrgTier: (orgId: string) => Promise<OrgTierRow | undefined>;
-  /** Narrow `trial_ends_at` to the grace window (guarded on `plan_tier='trial'`). */
-  setGraceWindow: (orgId: string, endsAtIso: string) => Promise<void>;
+  /**
+   * Narrow `trial_ends_at` to the grace window (guarded on `plan_tier='trial'`).
+   * Returns the number of rows actually updated so the caller can detect a
+   * guarded no-op (tier changed under us between read and write) rather than
+   * silently returning a full-window `grace` state.
+   */
+  setGraceWindow: (orgId: string, endsAtIso: string) => Promise<number>;
   /** Build the hosted-MCP connect URL for the new Workspace. */
   buildConnectUrl: (workspaceId: string) => string;
   /** Grace window length in ms. */
@@ -133,11 +146,16 @@ function defaultDeps(): ProvisionTrialDeps {
     },
     setGraceWindow: async (orgId, endsAtIso) => {
       const { internalQuery } = await import("@atlas/api/lib/db/internal");
-      await internalQuery(
+      // `RETURNING id` so we get the affected rows back — `internalQuery`
+      // surfaces rows, not a `rowCount`, so this is how we know the guarded
+      // `plan_tier = 'trial'` UPDATE actually landed.
+      const updated = await internalQuery<{ id: string }>(
         `UPDATE organization SET trial_ends_at = $1
-         WHERE id = $2 AND plan_tier = 'trial'`,
+         WHERE id = $2 AND plan_tier = 'trial'
+         RETURNING id`,
         [endsAtIso, orgId],
       );
+      return updated.length;
     },
     buildConnectUrl: (workspaceId) => buildMcpConnectUrl(workspaceId),
     graceMs: TRIAL_GRACE_HOURS * 60 * 60 * 1000,
@@ -227,9 +245,18 @@ export async function provisionTrialWorkspace(
   });
   const workspaceId = org?.id;
   if (!workspaceId) {
+    // The user account was already created by `signUpEmail` above, so this
+    // leaves an orphaned user with no Workspace. Retrying `start_trial` with
+    // the same email would now hit `signup_failed` ("already registered"), so
+    // the prospect can't self-recover — log it so an operator can find/reap the
+    // orphan, and tell the caller to sign in rather than retry.
+    log.error(
+      { userId },
+      "start_trial: organization creation returned no id — orphaned user with no workspace",
+    );
     throw new TrialProvisioningError(
       "org_failed",
-      "Account created but the workspace could not be provisioned. Please retry.",
+      "Your account was created but the workspace could not be provisioned. Sign in on the web to finish setup, or contact support.",
     );
   }
 
@@ -242,11 +269,29 @@ export async function provisionTrialWorkspace(
   let state: TrialWorkspaceState;
   if (planTier === "trial") {
     const graceEndsAt = new Date(Date.now() + deps.graceMs).toISOString();
-    await deps.setGraceWindow(workspaceId, graceEndsAt);
+    const updated = await deps.setGraceWindow(workspaceId, graceEndsAt);
+    if (updated !== 1) {
+      // The guarded UPDATE matched no row — the tier changed between the
+      // read-back and the write (TOCTOU). Returning `grace` here would hand
+      // back a Workspace still on the full TRIAL_DAYS window, silently
+      // defeating the unclaimed-grace property. Fail loud instead.
+      log.warn(
+        { workspaceId, updated },
+        "start_trial: grace-window narrowing matched no row (tier changed under us); refusing to report grace",
+      );
+      throw new TrialProvisioningError(
+        "trial_not_assigned",
+        "Workspace was created but the trial grace window could not be set. Please contact support.",
+      );
+    }
     state = "grace";
   } else if (planTier === "locked") {
     state = "locked";
   } else {
+    log.error(
+      { workspaceId, planTier: planTier ?? "unknown" },
+      "start_trial: workspace landed on neither trial nor locked after assignSaasTrial",
+    );
     throw new TrialProvisioningError(
       "trial_not_assigned",
       "Workspace was created but did not land on the trial tier. Please contact support.",

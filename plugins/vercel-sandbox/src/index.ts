@@ -28,7 +28,11 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import {
+  createPlugin,
+  collectSemanticFiles,
+  runHealthCheckWithTimeout,
+} from "@useatlas/plugin-sdk";
 import type {
   AtlasSandboxPlugin,
   PluginExploreBackend,
@@ -36,7 +40,6 @@ import type {
   PluginHealthResult,
 } from "@useatlas/plugin-sdk";
 import * as path from "path";
-import * as fs from "fs";
 
 // ---------------------------------------------------------------------------
 // Sensitive pattern regex (copied from @atlas/api/lib/security.ts —
@@ -86,63 +89,8 @@ export function sandboxErrorDetail(err: unknown): string {
   return detail;
 }
 
-/** Recursively collect all files under `localDir` into `{ path, content }` tuples. */
-export function collectSemanticFiles(
-  localDir: string,
-  sandboxDir: string,
-  logger?: { warn(msg: string): void },
-): { path: string; content: Buffer }[] {
-  const results: { path: string; content: Buffer }[] = [];
-
-  function walk(dir: string, relative: string) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (err) {
-      logger?.warn(`[vercel-sandbox] Skipping unreadable directory ${dir}: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-    for (const entry of entries) {
-      const localPath = path.join(dir, entry.name);
-      const remotePath = `${relative}/${entry.name}`;
-
-      if (entry.isSymbolicLink()) {
-        try {
-          const realPath = fs.realpathSync(localPath);
-          if (!realPath.startsWith(localDir)) {
-            logger?.warn(`[vercel-sandbox] Skipping symlink escaping semantic root: ${localPath} -> ${realPath}`);
-            continue;
-          }
-          const stat = fs.statSync(localPath);
-          if (stat.isDirectory()) {
-            walk(localPath, remotePath);
-          } else if (stat.isFile()) {
-            results.push({
-              path: remotePath,
-              content: fs.readFileSync(localPath),
-            });
-          }
-        } catch (err) {
-          logger?.warn(`[vercel-sandbox] Skipping unreadable symlink ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      } else if (entry.isDirectory()) {
-        walk(localPath, remotePath);
-      } else if (entry.isFile()) {
-        try {
-          results.push({
-            path: remotePath,
-            content: fs.readFileSync(localPath),
-          });
-        } catch (err) {
-          logger?.warn(`[vercel-sandbox] Skipping unreadable file ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    }
-  }
-
-  walk(localDir, sandboxDir);
-  return results;
-}
+// The semantic-tree walker (with its symlink-escape guard) now lives in
+// @useatlas/plugin-sdk — `collectSemanticFiles` — shared across sandbox plugins.
 
 // Prefix for sandbox file paths: the SDK resolves relative paths under /vercel/sandbox/.
 const SANDBOX_SEMANTIC_REL = "semantic";
@@ -416,16 +364,14 @@ export function buildVercelSandboxPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
-      const start = performance.now();
-      const TIMEOUT = 30_000;
-      // NOTE: `await using` is intentionally NOT used here. The Promise.race
-      // timeout can win while the inner IIFE is still mid-create/runCommand, and
-      // the v2 SDK exposes no AbortSignal on the object-form runCommand or on
-      // create — so a scope-bound disposer would only fire once the (possibly
-      // hung) operation settled, leaking the microVM past the timeout. We keep an
-      // explicit sandbox reference and stop() it in every branch instead.
+      // NOTE: `await using` is intentionally NOT used here (see
+      // runHealthCheckWithTimeout's docs). The race timeout can win while the
+      // probe is still mid-create/runCommand, and the v2 SDK exposes no
+      // AbortSignal on the object-form runCommand or on create — so a
+      // scope-bound disposer would only fire once the (possibly hung) operation
+      // settled, leaking the microVM past the timeout. The shared helper keeps
+      // an explicit sandbox reference and stop()s it in every failing branch.
       let sandbox: SandboxInstance | null = null;
-      let timer: ReturnType<typeof setTimeout>;
       const stopQuietly = async (sb: SandboxInstance) => {
         try {
           await sb.stop();
@@ -437,64 +383,54 @@ export function buildVercelSandboxPlugin(
           );
         }
       };
-      try {
-        const result = await Promise.race([
-          (async () => {
-            const { Sandbox } = await loadSandboxModule();
+      return runHealthCheckWithTimeout(
+        async () => {
+          const { Sandbox } = await loadSandboxModule();
 
-            const createOpts: Record<string, unknown> = {
-              runtime: "node24",
-              networkPolicy: "deny-all",
-              // v2 persists by default — keep the health-check sandbox ephemeral.
-              persistent: false,
-            };
-            if (config.accessToken) {
-              createOpts.accessToken = config.accessToken;
-              createOpts.teamId = config.teamId;
+          const createOpts: Record<string, unknown> = {
+            runtime: "node24",
+            networkPolicy: "deny-all",
+            // v2 persists by default — keep the health-check sandbox ephemeral.
+            persistent: false,
+          };
+          if (config.accessToken) {
+            createOpts.accessToken = config.accessToken;
+            createOpts.teamId = config.teamId;
+          }
+
+          sandbox = await Sandbox.create(createOpts);
+          const res = await sandbox.runCommand({
+            cmd: "sh",
+            args: ["-c", "echo vercel-ok"],
+            cwd: "/tmp",
+          });
+          const stdout = await res.stdout();
+          await stopQuietly(sandbox);
+          sandbox = null;
+
+          if (res.exitCode === 0 && stdout.includes("vercel-ok")) {
+            return { healthy: true };
+          }
+          return {
+            healthy: false,
+            message: `Sandbox test command failed (exit ${res.exitCode})`,
+          };
+        },
+        {
+          timeoutMs: 30_000,
+          logger: log,
+          cleanup: async () => {
+            // Best-effort cleanup — the probe may still be mid-create. Cast
+            // needed: TS narrows `sandbox` to null (the probe ends with
+            // sandbox = null) but the race means it may not have run.
+            const sb = sandbox as SandboxInstance | null;
+            if (sb) {
+              await stopQuietly(sb);
+              sandbox = null;
             }
-
-            sandbox = await Sandbox.create(createOpts);
-            const res = await sandbox.runCommand({
-              cmd: "sh",
-              args: ["-c", "echo vercel-ok"],
-              cwd: "/tmp",
-            });
-            const stdout = await res.stdout();
-            await stopQuietly(sandbox);
-            sandbox = null;
-
-            if (res.exitCode === 0 && stdout.includes("vercel-ok")) {
-              return { healthy: true as const };
-            }
-            return {
-              healthy: false as const,
-              message: `Sandbox test command failed (exit ${res.exitCode})`,
-            };
-          })(),
-          new Promise<"timeout">((resolve) => {
-            timer = setTimeout(() => resolve("timeout"), TIMEOUT);
-          }),
-        ]).finally(() => clearTimeout(timer!));
-
-        const latencyMs = Math.round(performance.now() - start);
-        if (result === "timeout") {
-          // Best-effort cleanup — the IIFE may still be creating if create() is
-          // what's slow. Cast needed: TS narrows `sandbox` to null (the IIFE
-          // ends with sandbox = null) but the race means it may not have run.
-          const sb = sandbox as SandboxInstance | null;
-          if (sb) await stopQuietly(sb);
-          return { healthy: false, message: `Health check timed out after ${TIMEOUT}ms`, latencyMs };
-        }
-        return { ...result, latencyMs };
-      } catch (err) {
-        const sb = sandbox as SandboxInstance | null;
-        if (sb) await stopQuietly(sb);
-        return {
-          healthy: false,
-          message: err instanceof Error ? err.message : String(err),
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
+          },
+        },
+      );
     },
   };
 }

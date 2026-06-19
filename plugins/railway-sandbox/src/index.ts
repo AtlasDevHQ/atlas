@@ -41,15 +41,17 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import {
+  createPlugin,
+  collectSemanticFiles,
+  runHealthCheckWithTimeout,
+} from "@useatlas/plugin-sdk";
 import type {
   AtlasSandboxPlugin,
   PluginExploreBackend,
   PluginExecResult,
   PluginHealthResult,
 } from "@useatlas/plugin-sdk";
-import * as path from "path";
-import * as fs from "fs";
 
 // ---------------------------------------------------------------------------
 // Sensitive pattern regex (subset of @atlas/api/lib/security.ts adapted for
@@ -163,75 +165,9 @@ async function loadRailwaySdk(): Promise<{ Sandbox: RailwaySandboxConstructor }>
   }
 }
 
-// ---------------------------------------------------------------------------
-// Semantic file collection (mirrors explore-sandbox.ts; symlink-escape guarded)
-// ---------------------------------------------------------------------------
-
-export function collectSemanticFiles(
-  localDir: string,
-  sandboxDir: string,
-  logger?: { warn(msg: string): void },
-): { path: string; content: Buffer }[] {
-  const results: { path: string; content: Buffer }[] = [];
-  // Resolve the root once so the symlink containment check compares real
-  // paths via path.relative — a bare startsWith(localDir) would accept
-  // prefix collisions like `${localDir}_evil/…`.
-  const semanticRoot = fs.realpathSync(localDir);
-
-  function isInsideSemanticRoot(realPath: string): boolean {
-    const rel = path.relative(semanticRoot, realPath);
-    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-  }
-
-  function walk(dir: string, relative: string) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (err) {
-      logger?.warn(`[railway-sandbox] Skipping unreadable directory ${dir}: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-    for (const entry of entries) {
-      const localPath = path.join(dir, entry.name);
-      const remotePath = `${relative}/${entry.name}`;
-
-      if (entry.isSymbolicLink()) {
-        try {
-          const realPath = fs.realpathSync(localPath);
-          if (!isInsideSemanticRoot(realPath)) {
-            logger?.warn(`[railway-sandbox] Skipping symlink escaping semantic root: ${localPath} -> ${realPath}`);
-            continue;
-          }
-          const stat = fs.statSync(localPath);
-          if (stat.isDirectory()) {
-            walk(localPath, remotePath);
-          } else if (stat.isFile()) {
-            results.push({
-              path: remotePath,
-              content: fs.readFileSync(localPath),
-            });
-          }
-        } catch (err) {
-          logger?.warn(`[railway-sandbox] Skipping unreadable symlink ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      } else if (entry.isDirectory()) {
-        walk(localPath, remotePath);
-      } else if (entry.isFile()) {
-        try {
-          results.push({
-            path: remotePath,
-            content: fs.readFileSync(localPath),
-          });
-        } catch (err) {
-          logger?.warn(`[railway-sandbox] Skipping unreadable file ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    }
-  }
-
-  walk(localDir, sandboxDir);
-  return results;
-}
+// The semantic-tree walker (with its symlink-escape guard, the canonical
+// path.relative-based containment check this plugin originated) now lives in
+// @useatlas/plugin-sdk — `collectSemanticFiles` — shared across sandbox plugins.
 
 // ---------------------------------------------------------------------------
 // Upload helpers
@@ -500,61 +436,46 @@ export function buildRailwaySandboxPlugin(
     // Avoid calling at high frequency — creations bill and count toward the
     // per-environment sandbox cap.
     async healthCheck(): Promise<PluginHealthResult> {
-      const start = performance.now();
-      const TIMEOUT = 30_000;
-      // The timeout race can win while the IIFE is still mid-create/exec, so
-      // keep an explicit reference and destroy in every branch (same rationale
-      // as the vercel-sandbox plugin's health check).
+      // The timeout race can win while the probe is still mid-create/exec, so
+      // keep an explicit reference and destroy in every failing branch (same
+      // rationale as the shared runHealthCheckWithTimeout helper's docs).
       let sandbox: RailwaySandboxInstance | null = null;
-      let timer: ReturnType<typeof setTimeout>;
-      try {
-        const result = await Promise.race([
-          (async () => {
-            const { Sandbox } = await loadRailwaySdk();
+      return runHealthCheckWithTimeout(
+        async () => {
+          const { Sandbox } = await loadRailwaySdk();
 
-            // Short backstop — a health-check sandbox should never outlive
-            // its check by more than a minute even if destroy() fails.
-            sandbox = await Sandbox.create(buildCreateOpts(config, 1));
-            const res = await sandbox.exec("echo railway-ok", {
-              timeoutSec: config.timeoutSec,
-            });
-            await destroyQuietly(sandbox, log, "after health check");
-            sandbox = null;
+          // Short backstop — a health-check sandbox should never outlive
+          // its check by more than a minute even if destroy() fails.
+          sandbox = await Sandbox.create(buildCreateOpts(config, 1));
+          const res = await sandbox.exec("echo railway-ok", {
+            timeoutSec: config.timeoutSec,
+          });
+          await destroyQuietly(sandbox, log, "after health check");
+          sandbox = null;
 
-            if (res.exitCode === 0 && (res.stdout ?? "").includes("railway-ok")) {
-              return { healthy: true as const };
+          if (res.exitCode === 0 && (res.stdout ?? "").includes("railway-ok")) {
+            return { healthy: true };
+          }
+          return {
+            healthy: false,
+            message: `Sandbox test command failed (exit ${res.exitCode ?? "unknown"})`,
+          };
+        },
+        {
+          timeoutMs: 30_000,
+          logger: log,
+          cleanup: async () => {
+            // Best-effort cleanup — the probe may still be mid-create. Cast
+            // needed: TS narrows `sandbox` to null (the probe ends with
+            // sandbox = null) but the race means it may not have run.
+            const sb = sandbox as RailwaySandboxInstance | null;
+            if (sb) {
+              await destroyQuietly(sb, log, "after health-check failure");
+              sandbox = null;
             }
-            return {
-              healthy: false as const,
-              message: `Sandbox test command failed (exit ${res.exitCode ?? "unknown"})`,
-            };
-          })(),
-          new Promise<"timeout">((resolve) => {
-            timer = setTimeout(() => resolve("timeout"), TIMEOUT);
-          }),
-        ]).finally(() => clearTimeout(timer!));
-
-        const latencyMs = Math.round(performance.now() - start);
-        if (result === "timeout") {
-          // Best-effort cleanup — the IIFE may still be mid-create. Cast needed:
-          // TS narrows `sandbox` to null (the IIFE ends with sandbox = null) but
-          // the race means it may not have run to completion.
-          const sb = sandbox as RailwaySandboxInstance | null;
-          if (sb) await destroyQuietly(sb, log, "after health-check timeout");
-          return { healthy: false, message: `Health check timed out after ${TIMEOUT}ms`, latencyMs };
-        }
-        return { ...result, latencyMs };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log?.warn(`[railway-sandbox] Health check failed: ${msg}`);
-        const sb = sandbox as RailwaySandboxInstance | null;
-        if (sb) await destroyQuietly(sb, log, "after health-check failure");
-        return {
-          healthy: false,
-          message: msg,
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
+          },
+        },
+      );
     },
   };
 }

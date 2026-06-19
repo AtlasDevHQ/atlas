@@ -527,6 +527,26 @@ The `priority` field determines selection order when multiple backends are avail
 
 Plugin sandbox backends default to priority 60 (between nsjail and sidecar). Set a higher value to take precedence over built-in backends, or a lower value to act as a fallback.
 
+#### Shared sandbox helpers
+
+Most sandbox plugins need the same two pieces of infrastructure, so `@useatlas/plugin-sdk` ships them — use these instead of re-implementing them per plugin:
+
+- **`collectSemanticFiles(localDir, sandboxDir, logger?)`** — recursively walks the local semantic tree and returns `{ path, content: Buffer }[]` ready to upload into the sandbox. It carries a **symlink-escape guard**: a symlink whose real target resolves outside the semantic root is skipped (and logged), never uploaded. This is a security property — single-sourcing it means a fix lands once for every sandbox backend. SDKs that want string content (e.g. E2B's `files.write`) map `f.content.toString("utf-8")` at the call site.
+- **`runHealthCheckWithTimeout(fn, { timeoutMs, cleanup, logger })`** — wraps a `healthCheck()` probe in the `Promise.race` timeout, attaches a measured `latencyMs`, and runs `cleanup` in every failing branch (timeout or throw). The probe owns its happy-path teardown; `cleanup` is the safety net that reaps a sandbox reference the probe captured but could not release (it must be idempotent/guarded). `await using` is intentionally not used — the timeout can win while the SDK is still mid-create with no `AbortSignal`, so an explicit guarded cleanup fires immediately.
+
+```typescript
+import { collectSemanticFiles, runHealthCheckWithTimeout } from "@useatlas/plugin-sdk";
+
+sandbox: {
+  async create(semanticRoot: string): Promise<PluginExploreBackend> {
+    const sandbox = await mySdk.create();
+    const files = collectSemanticFiles(semanticRoot, "semantic", log);
+    await sandbox.upload(files); // each { path, content: Buffer }
+    return { /* exec, close */ };
+  },
+},
+```
+
 ## `createPlugin` vs `definePlugin`
 
 The SDK exports two helpers for authoring plugins. Choose based on whether your plugin accepts runtime configuration.
@@ -1034,45 +1054,32 @@ async healthCheck(): Promise<PluginHealthResult> {
 }
 ```
 
-Standard pattern for **sandbox** plugins (where probe operations are slow):
+Standard pattern for **sandbox** plugins (where probe operations are slow) — use the SDK's `runHealthCheckWithTimeout` helper so the timeout race, `latencyMs`, and cleanup-in-every-failing-branch are single-sourced (see [Shared sandbox helpers](#shared-sandbox-helpers)):
 
 ```typescript
+import { runHealthCheckWithTimeout } from "@useatlas/plugin-sdk";
+
 async healthCheck(): Promise<PluginHealthResult> {
-  const start = performance.now();
-  const TIMEOUT = 30_000; // sandbox creation can be slow
   let sandbox: SandboxInstance | null = null; // hoist for cleanup on timeout
-  let timer: ReturnType<typeof setTimeout>;
-  try {
-    const result = await Promise.race([
-      (async () => {
-        sandbox = await createSandbox(config); // your SDK's create method
-        await sandbox.close(); // cleanup method varies by SDK (kill, stop, delete, etc.)
-        sandbox = null;
-        return "ok" as const;
-      })(),
-      new Promise<"timeout">((resolve) => {
-        timer = setTimeout(() => resolve("timeout"), TIMEOUT);
-      }),
-    ]).finally(() => clearTimeout(timer!)); // always clean up the timer
-    const latencyMs = Math.round(performance.now() - start);
-    if (result === "timeout") {
-      // Best-effort cleanup — sandbox may still be creating
-      if (sandbox) {
-        try { await sandbox.close(); } catch { /* best-effort */ }
-      }
-      return { healthy: false, message: `Timed out after ${TIMEOUT}ms`, latencyMs };
-    }
-    return { healthy: true, latencyMs };
-  } catch (err) {
-    if (sandbox) {
-      try { await sandbox.close(); } catch { /* best-effort */ }
-    }
-    return {
-      healthy: false,
-      message: err instanceof Error ? err.message : String(err),
-      latencyMs: Math.round(performance.now() - start),
-    };
-  }
+  return runHealthCheckWithTimeout(
+    async () => {
+      sandbox = await createSandbox(config); // your SDK's create method
+      await sandbox.close(); // cleanup method varies by SDK (kill, stop, delete, etc.)
+      sandbox = null;
+      return { healthy: true };
+    },
+    {
+      timeoutMs: 30_000, // sandbox creation can be slow
+      logger: log,
+      cleanup: async () => {
+        // Safety net — runs only on timeout/throw; idempotent + guarded.
+        if (sandbox) {
+          try { await sandbox.close(); } catch { /* best-effort */ }
+          sandbox = null;
+        }
+      },
+    },
+  );
 }
 ```
 

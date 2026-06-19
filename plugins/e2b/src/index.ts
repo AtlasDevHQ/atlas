@@ -24,15 +24,17 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import {
+  createPlugin,
+  collectSemanticFiles,
+  runHealthCheckWithTimeout,
+} from "@useatlas/plugin-sdk";
 import type {
   AtlasSandboxPlugin,
   PluginExploreBackend,
   PluginExecResult,
   PluginHealthResult,
 } from "@useatlas/plugin-sdk";
-import * as fs from "fs";
-import * as path from "path";
 
 // ---------------------------------------------------------------------------
 // Config schema
@@ -85,68 +87,10 @@ function loadE2BSDK(): { Sandbox: any } {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Semantic file collector (adapted from explore-sandbox.ts)
-// ---------------------------------------------------------------------------
-
-function collectSemanticFiles(
-  localDir: string,
-  sandboxDir: string,
-  logger?: { warn(msg: string): void },
-): { path: string; data: string }[] {
-  const results: { path: string; data: string }[] = [];
-
-  function walk(dir: string, relative: string) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (err) {
-      logger?.warn(`[e2b-sandbox] Skipping unreadable directory ${dir}: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-    for (const entry of entries) {
-      const localPath = path.join(dir, entry.name);
-      const remotePath = `${relative}/${entry.name}`;
-
-      if (entry.isSymbolicLink()) {
-        try {
-          const realPath = fs.realpathSync(localPath);
-          if (!realPath.startsWith(localDir)) {
-            logger?.warn(`[e2b-sandbox] Skipping symlink escaping semantic root: ${localPath} -> ${realPath}`);
-            continue;
-          }
-          const stat = fs.statSync(localPath);
-          if (stat.isDirectory()) {
-            walk(localPath, remotePath);
-          } else if (stat.isFile()) {
-            results.push({
-              path: remotePath,
-              data: fs.readFileSync(localPath, "utf-8"),
-            });
-          }
-        } catch (err) {
-          logger?.warn(`[e2b-sandbox] Skipping unreadable symlink ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
-          continue;
-        }
-      } else if (entry.isDirectory()) {
-        walk(localPath, remotePath);
-      } else if (entry.isFile()) {
-        try {
-          results.push({
-            path: remotePath,
-            data: fs.readFileSync(localPath, "utf-8"),
-          });
-        } catch (err) {
-          logger?.warn(`[e2b-sandbox] Skipping unreadable file ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
-          continue;
-        }
-      }
-    }
-  }
-
-  walk(localDir, sandboxDir);
-  return results;
-}
+// The semantic-tree walker (with its symlink-escape guard) now lives in
+// @useatlas/plugin-sdk — `collectSemanticFiles`. E2B's `files.write` wants
+// `{ path, data: string }`, so the call site maps the shared Buffer content
+// via `.toString("utf-8")`.
 
 // ---------------------------------------------------------------------------
 // Shared helper — create an E2B sandbox instance
@@ -183,8 +127,11 @@ export function buildE2BSandboxPlugin(
         const sandbox = await createE2BSandbox(config);
 
         try {
-          // Collect and upload semantic layer files
-          const files = collectSemanticFiles(semanticRoot, "semantic", log);
+          // Collect and upload semantic layer files. The shared collector is
+          // binary-safe (Buffer content); E2B's files.write wants string data.
+          const files = collectSemanticFiles(semanticRoot, "semantic", log).map(
+            (f) => ({ path: f.path, data: f.content.toString("utf-8") }),
+          );
 
           if (files.length > 0) {
             await sandbox.files.write(files);
@@ -249,41 +196,32 @@ export function buildE2BSandboxPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
-      const start = performance.now();
-      const TIMEOUT = 30_000;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let sandbox: any = null;
-      let timer: ReturnType<typeof setTimeout>;
-      try {
-        const result = await Promise.race([
-          (async () => {
-            sandbox = await createE2BSandbox(config);
-            await sandbox.kill();
-            sandbox = null;
-            return "ok" as const;
-          })(),
-          new Promise<"timeout">((resolve) => {
-            timer = setTimeout(() => resolve("timeout"), TIMEOUT);
-          }),
-        ]).finally(() => clearTimeout(timer!));
-        const latencyMs = Math.round(performance.now() - start);
-        if (result === "timeout") {
-          if (sandbox) {
-            try { await sandbox.kill(); } catch { /* best-effort cleanup */ }
-          }
-          return { healthy: false, message: `Health check timed out after ${TIMEOUT}ms`, latencyMs };
-        }
-        return { healthy: true, latencyMs };
-      } catch (err) {
-        if (sandbox) {
-          try { await sandbox.kill(); } catch { /* best-effort cleanup */ }
-        }
-        return {
-          healthy: false,
-          message: err instanceof Error ? err.message : String(err),
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
+      return runHealthCheckWithTimeout(
+        async () => {
+          sandbox = await createE2BSandbox(config);
+          await sandbox.kill();
+          sandbox = null;
+          return { healthy: true };
+        },
+        {
+          timeoutMs: 30_000,
+          logger: log,
+          cleanup: async () => {
+            if (sandbox) {
+              try {
+                await sandbox.kill();
+              } catch (err) {
+                log?.warn(
+                  `[e2b-sandbox] Failed to kill health-check sandbox: ${err instanceof Error ? err.message : String(err)}`,
+                );
+              }
+              sandbox = null;
+            }
+          },
+        },
+      );
     },
   };
 }

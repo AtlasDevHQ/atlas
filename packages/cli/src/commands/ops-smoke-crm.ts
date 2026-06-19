@@ -38,7 +38,7 @@ import {
   type ObservedState,
 } from "../../lib/smoke-crm/diff";
 import { createTwentyAdmin } from "../../lib/smoke-crm/twenty-admin";
-import type { AtlasLeadEvent } from "@useatlas/twenty/lead-normalizer";
+import type { LeadEvent } from "@useatlas/twenty/lead-normalizer";
 
 const DEFAULT_TIMEOUT_SECONDS = 60;
 const POLL_INTERVAL_MS = 1_000;
@@ -278,7 +278,7 @@ export async function handleOpsSmokeCrm(args: string[]): Promise<void> {
     return;
   }
 
-  let events: AtlasLeadEvent[];
+  let events: LeadEvent[];
   try {
     events = loadFixture(parsed.personasPath);
   } catch (err) {

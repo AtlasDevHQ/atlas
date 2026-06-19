@@ -54,7 +54,6 @@ import { Effect, Layer } from "effect";
 import {
   SaasCrm,
   type SaasCrmShape,
-  type SaasCrmLeadInput,
 } from "@atlas/api/lib/effect/services";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -78,7 +77,7 @@ import {
   TwentyClientError,
   TwentyCredentialError,
   isTwentyDecryptError,
-  type AtlasLeadEvent,
+  type LeadEvent,
   type DbCredentialLookup,
   type ResolvedTwentyCredentials,
   type TwentyClientConfig,
@@ -391,44 +390,6 @@ const outboxDb: OutboxDB = {
 };
 
 /**
- * Compile-time bridge between the two intentionally-duplicated lead-event
- * unions: `SaasCrmLeadInput` (the `SaasCrm` Tag's `upsertLead` contract, in
- * `@atlas/api`) and `AtlasLeadEvent` (the Twenty normalizer's input, in
- * `@useatlas/twenty`). They are mirrored by hand — see the "Adding a
- * variant" note on `SaasCrmLeadInput` — never merged, because that would
- * drag `@useatlas/twenty` into `@atlas/api`'s public contract surface.
- *
- * This `ee/src/saas-crm/` file is the one place that legitimately depends on
- * both sides (the EE inversion rule), and the `row.payload as SaasCrmLeadInput`
- * → `normalizeLead(...)` cast in `dispatchOutboxRow` below relies on the two
- * unions being interchangeable.
- *
- * `ExactType<A, B>` is the standard exact-equality check (the
- * function-parameter-bivariance idiom): it resolves to `true` only when A and
- * B are structurally *identical* — same variants, same fields, same
- * optionality and `readonly`-ness — and to `false` on any asymmetry. That's
- * stricter than mutual assignability (`[A] extends [B]` both ways), which
- * would silently tolerate, e.g., one side dropping `readonly` or flipping a
- * field optional. "Mirror" means identical, so equality is the right tool.
- *
- * Asserting `= true` (rather than a bare `T extends true` helper) is
- * load-bearing: on drift the check resolves to `false`/`never`, and `never`
- * *is* assignable to a `T extends true` constraint — so a naked helper would
- * fail open. `const _x: ExactType<…> = true` instead forbids the drift result.
- * Add a variant to one union but not the other — or change a field's shape on
- * just one side — and this line goes red in `tsgo` HERE, instead of
- * dead-lettering at flush with `normalizeLead`'s runtime `Unknown lead source`
- * throw.
- */
-type ExactType<A, B> = (<T>() => T extends A ? 1 : 2) extends <
-  T,
->() => T extends B ? 1 : 2
-  ? true
-  : false;
-const _leadUnionsAreMirrors: ExactType<SaasCrmLeadInput, AtlasLeadEvent> = true;
-void _leadUnionsAreMirrors;
-
-/**
  * Dispatch one claimed outbox row through the Twenty client. Each
  * sub-step's resource ID is persisted via the `persist` callbacks
  * AS SOON AS the call returns — that's what makes the partial-success
@@ -444,21 +405,24 @@ export async function dispatchOutboxRow(
   row: ClaimedOutboxRow,
   persist: OutboxPersistHelpers,
 ): Promise<DispatchOutcome> {
-  // Normalize from the persisted payload. The payload was JSON.stringified
-  // on enqueue (`enqueue` passes `JSON.stringify(input.payload)`), and the
-  // jsonb column round-trips through pg as a plain object — so what we
-  // get back is structurally a `SaasCrmLeadInput`. Cast at this single
-  // boundary; downstream code is type-safe.
+  // Normalize the persisted payload. The payload was JSON.stringified on
+  // enqueue (`enqueue` passes `JSON.stringify(input.payload)`) and the jsonb
+  // column round-trips through pg as a plain object — but "round-trips" is not
+  // "valid", so `normalizeLead` runs `LeadEventSchema.parse` on it internally
+  // (the schema is the single trust boundary, owned by the normalizer) rather
+  // than this seam `as`-casting unvalidated jsonb: a stale enqueue, a schema
+  // evolution, or a hand-edited row surfaces HERE as a precise Zod field error
+  // instead of stamping garbage downstream.
   let normalized;
   try {
-    normalized = normalizeLead(row.payload as SaasCrmLeadInput);
+    normalized = normalizeLead(row.payload);
   } catch (err) {
-    // A normalizer error is a bug in our own code (the discriminated
-    // union exhaustiveness should have caught it). Dead-letter so an
-    // operator sees the corrupt payload.
+    // Either the payload failed schema validation (corrupt/stale row) or the
+    // normalizer threw on an unhandled variant (our own bug). Both are
+    // permanent — dead-letter so an operator sees the offending payload.
     return {
       kind: "permanent",
-      message: `normalizeLead threw: ${err instanceof Error ? err.message : String(err)}`,
+      message: `lead payload parse/normalize failed: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 
@@ -775,11 +739,11 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
           ),
         ),
       stampConversion: (input) => {
-        // Construct the canonical `conversion` SaasCrmLeadInput payload
-        // — the normalizer is the single source of truth for the
-        // dispatch shape, and routing by re-normalizing the payload
-        // keeps the dispatcher generic over event types.
-        const payload: SaasCrmLeadInput = {
+        // Construct the canonical `conversion` LeadEvent payload — the
+        // normalizer is the single source of truth for the dispatch shape,
+        // and routing by re-normalizing the payload keeps the dispatcher
+        // generic over event types.
+        const payload: LeadEvent = {
           source: "conversion",
           email: input.email,
           stripeCustomerId: input.stripeCustomerId,

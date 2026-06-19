@@ -4,22 +4,23 @@
  */
 import { describe, test, expect } from "bun:test";
 import {
+  LeadEventSchema,
   normalizeConversionLead,
   normalizeDemoLead,
   normalizeLead,
   normalizeMcpSignupLead,
   normalizeSalesFormLead,
   normalizeSignupLead,
-  type AtlasConversionLeadEvent,
-  type AtlasDemoLeadEvent,
-  type AtlasMcpSignupLeadEvent,
-  type AtlasSalesFormLeadEvent,
-  type AtlasSignupLeadEvent,
+  type ConversionLeadEvent,
+  type DemoLeadEvent,
+  type McpSignupLeadEvent,
+  type SalesFormLeadEvent,
+  type SignupLeadEvent,
 } from "../src/lead-normalizer";
 
 describe("normalizeDemoLead", () => {
   test("maps a full demo event to a Twenty upsert payload", () => {
-    const event: AtlasDemoLeadEvent = {
+    const event: DemoLeadEvent = {
       source: "demo",
       email: "User@Example.com",
       ip: "203.0.113.42",
@@ -93,7 +94,7 @@ describe("normalizeDemoLead", () => {
 
 describe("normalizeSalesFormLead", () => {
   test("maps a full sales-form event to a Twenty upsert payload + note", () => {
-    const event: AtlasSalesFormLeadEvent = {
+    const event: SalesFormLeadEvent = {
       source: "sales-form",
       email: "User@Example.com",
       name: "Alice Example",
@@ -216,7 +217,7 @@ describe("normalizeSalesFormLead", () => {
 
 describe("normalizeSignupLead", () => {
   test("maps a full signup event to a Twenty upsert payload (no note)", () => {
-    const event: AtlasSignupLeadEvent = {
+    const event: SignupLeadEvent = {
       source: "signup",
       email: "User@Example.com",
       name: "Alice Example",
@@ -313,7 +314,7 @@ describe("normalizeSignupLead", () => {
 
 describe("normalizeMcpSignupLead", () => {
   test("maps a full MCP-signup event to a Twenty upsert payload (no note)", () => {
-    const event: AtlasMcpSignupLeadEvent = {
+    const event: McpSignupLeadEvent = {
       source: "mcp-signup",
       email: "Founder@Acme.com",
       name: "Founder Acme",
@@ -389,7 +390,7 @@ describe("normalizeMcpSignupLead", () => {
 
 describe("normalizeConversionLead", () => {
   test("maps a conversion event to a Twenty upsert payload carrying atlasStripeCustomerId", () => {
-    const event: AtlasConversionLeadEvent = {
+    const event: ConversionLeadEvent = {
       source: "conversion",
       email: "User@Example.com",
       stripeCustomerId: "cus_NffrFeUfNV2Hib",
@@ -504,5 +505,62 @@ describe("normalizeLead — dispatch", () => {
     });
     expect(result.eventSource).toBe("MCP_SIGNUP");
     expect(result.note).toBeUndefined();
+  });
+});
+
+describe("LeadEventSchema — parse at the crm_outbox flush boundary", () => {
+  // This schema is the SSOT for the persisted payload shape. `ee/src/saas-crm`
+  // runs `LeadEventSchema.parse(row.payload)` at flush instead of an `as`-cast,
+  // so these cases assert the trust boundary that replaced the old hand-mirror
+  // + `_leadUnionsAreMirrors` witness + grep guard.
+
+  test("accepts every valid variant", () => {
+    const valid: unknown[] = [
+      { source: "demo", email: "a@b.com" },
+      { source: "demo", email: "a@b.com", ip: "203.0.113.7", userAgent: "UA" },
+      { source: "demo", email: "a@b.com", ip: null, userAgent: null },
+      {
+        source: "sales-form",
+        email: "a@b.com",
+        name: "Ada Lovelace",
+        company: "Analytical",
+        planInterest: "Pro",
+        message: "hi",
+      },
+      { source: "signup", email: "a@b.com" },
+      { source: "signup", email: "a@b.com", name: "Ada" },
+      { source: "mcp-signup", email: "a@b.com" },
+      { source: "mcp-signup", email: "a@b.com", name: "Ada" },
+      { source: "conversion", email: "a@b.com", stripeCustomerId: "cus_123" },
+    ];
+    for (const payload of valid) {
+      expect(() => LeadEventSchema.parse(payload)).not.toThrow();
+    }
+  });
+
+  test("rejects an unknown source (what the exhaustiveness switch alone caught late)", () => {
+    expect(() =>
+      LeadEventSchema.parse({ source: "telepathy", email: "a@b.com" }),
+    ).toThrow();
+  });
+
+  test("rejects a conversion row missing stripeCustomerId (what the as-cast let through)", () => {
+    // The pre-refactor `row.payload as SaasCrmLeadInput` cast + discriminant-only
+    // switch would have passed this straight into the dispatcher; the parse
+    // dead-letters it with a precise field error instead.
+    expect(() =>
+      LeadEventSchema.parse({ source: "conversion", email: "a@b.com" }),
+    ).toThrow();
+  });
+
+  test("rejects a sales-form row missing required fields", () => {
+    expect(() =>
+      LeadEventSchema.parse({ source: "sales-form", email: "a@b.com" }),
+    ).toThrow();
+  });
+
+  test("rejects a non-object / null payload", () => {
+    expect(() => LeadEventSchema.parse(null)).toThrow();
+    expect(() => LeadEventSchema.parse("nope")).toThrow();
   });
 });

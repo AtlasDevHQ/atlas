@@ -15,7 +15,7 @@
  */
 import { describe, expect, test } from "bun:test";
 
-import type { AtlasLeadEvent } from "@useatlas/twenty/lead-normalizer";
+import type { LeadEvent } from "@useatlas/twenty/lead-normalizer";
 
 import {
   buildExpectedState,
@@ -75,7 +75,7 @@ describe("buildExpectedState — single-event cases", () => {
 describe("buildExpectedState — multi-event email collapses", () => {
   test("demo → signup on the same email keeps atlasFirstSource sticky", () => {
     // This is the C10 stickiness pair from the default fixture.
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       { source: "demo", email: "g@globex.com", ip: null, userAgent: null },
       { source: "signup", email: "g@globex.com", name: "Greta Worth" },
     ];
@@ -91,7 +91,7 @@ describe("buildExpectedState — multi-event email collapses", () => {
 
   test("demo → demo idempotency pair collapses to one Person", () => {
     // B8 idempotency pair — duplicate dispatches must not produce duplicate Persons.
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       { source: "demo", email: "m@cyberdyne.com", ip: "1.1.1.1", userAgent: null },
       { source: "demo", email: "m@cyberdyne.com", ip: "2.2.2.2", userAgent: null },
     ];
@@ -109,7 +109,7 @@ describe("buildExpectedState — multi-event email collapses", () => {
   test("two sales-form events on the same email produce TWO Notes", () => {
     // Per #2729 idempotency contract: createNote runs once per dispatch.
     // Same email → one Person but two Notes.
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       {
         source: "sales-form",
         email: "a@b.com",
@@ -139,7 +139,7 @@ describe("buildExpectedState — multi-event email collapses", () => {
 
   test("10-persona default-fixture shape → 8 distinct Persons + 4 Notes", () => {
     // Mirror of the default fixture (without re-reading the file).
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       // 4 sales-form
       makeSalesForm("dlockhart@initech.com", "David Lockhart", "Initech"),
       makeSalesForm("wbell@massivedynamic.com", "Walter Bell", "Massive Dynamic"),
@@ -248,7 +248,7 @@ describe("computeDiff — dirty diffs", () => {
     // 10 distinct emails → 1 Person in observed (the filter bug). The diff
     // surfaces this as 9 missing Persons AND a noteCountMismatch on the
     // one observed Person whose Notes ballooned to 10.
-    const events: AtlasLeadEvent[] = [];
+    const events: LeadEvent[] = [];
     for (let i = 0; i < 10; i++) {
       events.push(makeSalesForm(`p${i}@example.com`, `Person ${i}`, `Co ${i}`));
     }
@@ -297,7 +297,7 @@ describe("computeDiff — dirty diffs", () => {
   test("atlasIp mismatch on an existing Person is surfaced", () => {
     // The #2737-shape regression: dispatcher writes atlasIp on the wrong
     // Person. The fixture supplied 1.2.3.4 but Twenty has 9.9.9.9.
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       { source: "demo", email: "alice@example.com", ip: "1.2.3.4", userAgent: null },
     ];
     const expected = buildExpectedState(events);
@@ -327,7 +327,7 @@ describe("computeDiff — dirty diffs", () => {
     // The #2737-shape regression: Stripe conversion stamps the wrong cus_
     // on the matching Twenty Person. Without this check the smoke would
     // report clean on a real attribution bug.
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       {
         source: "conversion",
         email: "paying@example.com",
@@ -362,7 +362,7 @@ describe("computeDiff — dirty diffs", () => {
     // rows with the same primary email. The first one wins the Map lookup
     // and the second is silently dropped — masking the real bug. Surface
     // as a dedicated category.
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       { source: "demo", email: "alice@example.com", ip: null, userAgent: null },
     ];
     const expected = buildExpectedState(events);
@@ -395,7 +395,7 @@ describe("computeDiff — dirty diffs", () => {
     // the smoke — otherwise one stray pre-existing dup fails every deploy.
     // Mirrors the `unexpectedPersons` informational-by-default rule. (Codex
     // P2 on PR #3090.)
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       { source: "demo", email: "fixture@example.com", ip: null, userAgent: null },
     ];
     const expected = buildExpectedState(events);
@@ -415,7 +415,7 @@ describe("computeDiff — dirty diffs", () => {
   test("a duplicate ON a fixture email is still dirty in no-wipe mode (#2865 still caught)", () => {
     // Scoping duplicates to fixture emails must NOT weaken #2865 detection:
     // the upsert-dedup regression duplicates the fixture rows too.
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       { source: "demo", email: "fixture@example.com", ip: null, userAgent: null },
     ];
     const expected = buildExpectedState(events);
@@ -435,7 +435,7 @@ describe("computeDiff — dirty diffs", () => {
     // After --wipe-twenty the workspace should be empty before the smoke runs,
     // so a duplicate anywhere — fixture email or not — means the wipe was
     // partial / a dedupe regression is live. Strict widens the scope to global.
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       { source: "demo", email: "fixture@example.com", ip: null, userAgent: null },
     ];
     const expected = buildExpectedState(events);
@@ -458,7 +458,7 @@ describe("computeDiff — dirty diffs", () => {
   test("strict-workspace mode flips unexpectedPersons from informational to dirty", () => {
     // Codex P2-A: after --wipe-twenty the workspace should be empty before
     // the smoke runs. Residual rows = partial/truncated wipe = dirty.
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       { source: "demo", email: "alice@example.com", ip: null, userAgent: null },
     ];
     const expected = buildExpectedState(events);
@@ -489,7 +489,7 @@ describe("computeDiff — dirty diffs", () => {
     // Catches the case where a Note's title is correct (so a title-only
     // check would pass) but the body got swapped — exactly what would
     // happen if a dispatcher dropped the message field on a sales-form.
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       {
         source: "sales-form",
         email: "alice@example.com",
@@ -531,7 +531,7 @@ describe("computeDiff — dirty diffs", () => {
     // Same-titled sales-form events on the same email = 2 distinct notes
     // (per #2729 idempotency contract within row, distinct rows produce
     // distinct notes). A title-only contains-check would pass.
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       makeSalesForm("a@b.com", "Alice A", "Acme"),
       makeSalesForm("a@b.com", "Alice A", "Acme"),
     ];
@@ -571,7 +571,7 @@ describe("computeDiff — dirty diffs", () => {
   test("atlasIp absent from fixture → no atlasIp check is emitted (no false positive)", () => {
     // Many personas don't carry an IP. The diff must not fire a mismatch on
     // `expected="(unset)", observed="(unset)"` in that case.
-    const events: AtlasLeadEvent[] = [
+    const events: LeadEvent[] = [
       { source: "demo", email: "alice@example.com", ip: null, userAgent: null },
     ];
     const expected = buildExpectedState(events);
@@ -717,7 +717,7 @@ function makeSalesForm(
   email: string,
   name: string,
   company: string,
-): AtlasLeadEvent {
+): LeadEvent {
   return {
     source: "sales-form",
     email,

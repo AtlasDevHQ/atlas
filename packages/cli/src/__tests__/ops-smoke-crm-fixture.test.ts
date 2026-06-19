@@ -2,7 +2,7 @@
  * Unit tests for the persona fixture parser.
  *
  * The fixture is operator-authored, so the tests focus on:
- *  - Happy path: every AtlasLeadEvent variant round-trips correctly.
+ *  - Happy path: every LeadEvent variant round-trips correctly.
  *  - Error path: every required-field omission and unknown-source case
  *    surfaces a per-persona-indexed error (not a generic schema blob).
  *  - The shipped default fixture (`scripts/test-fixtures/crm-personas.yml`)

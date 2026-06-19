@@ -12,7 +12,7 @@ pipeline turns that into a one-line check.
 Run before opening any PR that touches:
 
 - `plugins/twenty/src/client.ts` — the Twenty REST client.
-- `plugins/twenty/src/lead-normalizer.ts` — the `AtlasLeadEvent`
+- `plugins/twenty/src/lead-normalizer.ts` — the `LeadEvent`
   → Twenty payload translation.
 - `ee/src/saas-crm/index.ts` — the SaaS dispatcher Layer.
 - `packages/api/src/lib/lead-outbox/outbox.ts` — the outbox flusher and
@@ -110,7 +110,7 @@ enqueues → `N` distinct Persons.
 
 Adding a persona is one block under `personas:` in
 `scripts/test-fixtures/crm-personas.yml`. The shape is the same as the
-`AtlasLeadEvent` discriminated union — `parseFixtureYaml` validates each
+`LeadEvent` discriminated union — `parseFixtureYaml` validates each
 persona's required-field set against its `source`. The parser fails
 loudly on the first invalid persona with a per-index error message;
 there's no "best-effort" parsing mode.

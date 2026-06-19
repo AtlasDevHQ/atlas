@@ -8,8 +8,9 @@
  * the policy is exercised in isolation from the DB and config.
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, spyOn } from "bun:test";
 import { checkClaimGate, buildClaimUrl, ClaimRequiredError, ClaimCheckFailedError, type ClaimGateDeps } from "../claim-gate";
+import { claimGateDecisions } from "@atlas/api/lib/metrics";
 import type { PlanTier, WorkspaceRow } from "@atlas/api/lib/db/internal";
 
 function workspace(tier: PlanTier): WorkspaceRow {
@@ -133,6 +134,59 @@ describe("ClaimRequiredError", () => {
     expect(err.httpStatus).toBe(403);
     expect(err.claimUrl).toBe("https://app.useatlas.dev/signup");
     expect(err.message).toContain("https://app.useatlas.dev/signup");
+  });
+});
+
+// #3796 — every real SaaS claim decision increments a counter so the
+// withheld-vs-served ratio is graphable. Spy on the singleton counter's `.add`
+// (works under the no-op meter, which exposes no value).
+describe("decision metric (#3796)", () => {
+  it("counts a withheld trial as outcome=claim_required", async () => {
+    const add = spyOn(claimGateDecisions, "add");
+    try {
+      await checkClaimGate("org-1", deps({}));
+      expect(add).toHaveBeenCalledWith(1, { outcome: "claim_required" });
+    } finally {
+      add.mockRestore();
+    }
+  });
+
+  it("counts a claimed trial as outcome=allowed", async () => {
+    const add = spyOn(claimGateDecisions, "add");
+    try {
+      await checkClaimGate(
+        "org-1",
+        deps({ getOwnerVerification: async () => ({ emailVerified: true, email: "o@acme.com" }) }),
+      );
+      expect(add).toHaveBeenCalledWith(1, { outcome: "allowed" });
+    } finally {
+      add.mockRestore();
+    }
+  });
+
+  it("counts a lookup failure as outcome=check_failed", async () => {
+    const add = spyOn(claimGateDecisions, "add");
+    try {
+      await checkClaimGate(
+        "org-1",
+        deps({ getOwnerVerification: async () => { throw new Error("db blip"); } }),
+      );
+      expect(add).toHaveBeenCalledWith(1, { outcome: "check_failed" });
+    } finally {
+      add.mockRestore();
+    }
+  });
+
+  it("does NOT count the non-SaaS short-circuit (not a metering decision)", async () => {
+    const add = spyOn(claimGateDecisions, "add");
+    try {
+      await checkClaimGate("org-1", deps({ getDeployMode: () => "self-hosted" }));
+      await checkClaimGate(undefined, deps({}));
+      await checkClaimGate("org-1", deps({ hasInternalDB: () => false }));
+      expect(add).not.toHaveBeenCalled();
+    } finally {
+      add.mockRestore();
+    }
   });
 });
 

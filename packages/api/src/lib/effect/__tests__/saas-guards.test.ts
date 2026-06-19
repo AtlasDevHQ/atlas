@@ -92,6 +92,7 @@ import type {
   EncryptionKeyMalformedError as TEncryptionKeyMalformedError,
   InternalDatabaseRequiredError as TInternalDatabaseRequiredError,
   RateLimitRequiredError as TRateLimitRequiredError,
+  TurnstileSecretRequiredError as TTurnstileSecretRequiredError,
   ProviderKeyMissingError as TProviderKeyMissingError,
   ProviderUnsupportedError as TProviderUnsupportedError,
   RegionMisconfiguredError as TRegionMisconfiguredError,
@@ -156,6 +157,8 @@ const {
   InternalDatabaseRequiredError,
   RateLimitGuardLive,
   RateLimitRequiredError,
+  TurnstileGuardLive,
+  TurnstileSecretRequiredError,
   ProviderKeyGuardLive,
   ProactiveProviderKeyGuardLive,
   ProviderKeyMissingError,
@@ -710,6 +713,82 @@ describe("RateLimitGuardLive", () => {
         Effect.void.pipe(
           Effect.provide(
             RateLimitGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "self-hosted" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  TurnstileGuardLive (#3795)
+// ══════════════════════════════════════════════════════════════════════
+
+describe("TurnstileGuardLive", () => {
+  test("fails boot in SaaS when TURNSTILE_SECRET_KEY is unset", async () => {
+    await withCleanEnv(async () => {
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            TurnstileGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(TurnstileSecretRequiredError);
+      expect((failure as TTurnstileSecretRequiredError)._tag).toBe("TurnstileSecretRequiredError");
+      expect((failure as TTurnstileSecretRequiredError).message).toContain("#3795");
+      expect((failure as TTurnstileSecretRequiredError).message).toContain("TURNSTILE_SECRET_KEY");
+      expect((failure as TTurnstileSecretRequiredError).message).toContain("start_trial");
+    });
+  });
+
+  test("fails boot in SaaS when TURNSTILE_SECRET_KEY is empty string", async () => {
+    await withCleanEnv(async () => {
+      process.env.TURNSTILE_SECRET_KEY = "";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            TurnstileGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(TurnstileSecretRequiredError);
+    });
+  });
+
+  test("succeeds in SaaS when TURNSTILE_SECRET_KEY is set", async () => {
+    await withCleanEnv(async () => {
+      process.env.TURNSTILE_SECRET_KEY = "0x-some-turnstile-secret";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            TurnstileGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("succeeds on self-hosted with TURNSTILE_SECRET_KEY unset (Turnstile is opt-in there)", async () => {
+    await withCleanEnv(async () => {
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            TurnstileGuardLive.pipe(
               Layer.provide(makeTestConfigLayer({ deployMode: "self-hosted" })),
             ),
           ),

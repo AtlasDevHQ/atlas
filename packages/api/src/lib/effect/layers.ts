@@ -55,6 +55,7 @@ import {
   EncryptionKeyGuardLive,
   InternalDbGuardLive,
   RateLimitGuardLive,
+  TurnstileGuardLive,
   ProviderKeyGuardLive,
   ProactiveProviderKeyGuardLive,
   RegionGuardLive,
@@ -1816,15 +1817,25 @@ export function makeSchedulerLive(
         // meaningful load (one guarded UPDATE per pass). `Effect.repeat` runs
         // the tick once at boot, then on the spacing.
         const UNCLAIMED_GRACE_REAP_INTERVAL_MS = 60 * 60 * 1000;
-        const reapTick = Effect.tryPromise({
-          try: async () => {
-            const { reapUnclaimedGraceWorkspaces } = await import(
-              "@atlas/api/lib/billing/reap-unclaimed-grace"
-            );
-            await reapUnclaimedGraceWorkspaces();
-          },
-          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-        }).pipe(
+        // #3796 — attach the reaped count as a span result attribute (the
+        // orphan_task_reconcile pattern): the span wraps the raw tick so the
+        // attribute is truthful, and the loop-liveness catchAll is applied
+        // OUTSIDE the span so a failed tick records ERROR (not OK-with-a-
+        // fabricated-zero) while the hourly fiber survives a DB blip.
+        const reapTick = withEffectSpan(
+          SCHEDULER_WORK_SPAN_NAMES.unclaimed_grace_reap,
+          {},
+          Effect.tryPromise({
+            try: async () => {
+              const { reapUnclaimedGraceWorkspaces } = await import(
+                "@atlas/api/lib/billing/reap-unclaimed-grace"
+              );
+              return reapUnclaimedGraceWorkspaces();
+            },
+            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+          }),
+          (result) => ({ "atlas.unclaimed_grace.reaped_count": result.reapedCount }),
+        ).pipe(
           Effect.catchAll((err) =>
             Effect.sync(() => {
               log.warn(
@@ -1838,7 +1849,7 @@ export function makeSchedulerLive(
         yield* Effect.forkScoped(
           withFiberDeathLog(
             "unclaimed_grace_reap",
-            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.unclaimed_grace_reap, {}, reapTick).pipe(
+            reapTick.pipe(
               Effect.repeat(Schedule.spaced(Duration.millis(UNCLAIMED_GRACE_REAP_INTERVAL_MS))),
             ),
           ),
@@ -3333,6 +3344,12 @@ export function buildAppLayer(
   const encryptionKeyGuardLayer = EncryptionKeyGuardLive.pipe(Layer.provide(configLayer));
   const internalDbGuardLayer = InternalDbGuardLive.pipe(Layer.provide(configLayer));
   const rateLimitGuardLayer = RateLimitGuardLive.pipe(Layer.provide(configLayer));
+  // #3795 — fails boot when TURNSTILE_SECRET_KEY is unset in SaaS. Turnstile
+  // gates the contact form + the start_trial MCP onboarding bootstrap;
+  // verifyTurnstile fails closed, so a missing secret is a silent 100% signup
+  // outage that boots green. `Config`-only and reads env directly, so it fails
+  // fast as a peer of the other env-checking guards.
+  const turnstileGuardLayer = TurnstileGuardLive.pipe(Layer.provide(configLayer));
   // #3178/#3200 — fails boot when the env-only MAIN-CHAT provider's required
   // config is incomplete in SaaS (boot-green-then-503 otherwise). Validates
   // required env as a SET (`getMissingProviderConfig`). `Config`-only and reads
@@ -3429,6 +3446,7 @@ export function buildAppLayer(
     encryptionKeyGuardLayer,
     internalDbGuardLayer,
     rateLimitGuardLayer,
+    turnstileGuardLayer,
     providerKeyGuardLayer,
     proactiveProviderKeyGuardLayer,
     regionGuardLayer,

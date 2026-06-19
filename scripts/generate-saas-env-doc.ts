@@ -117,6 +117,11 @@ const KEY_META: Record<SaasEnvKey, KeyMeta> = {
     purpose:
       "Resend API key for platform transactional email. SaaS platform email must be Resend (DPA).",
   },
+  TURNSTILE_SECRET_KEY: {
+    category: "Abuse protection",
+    purpose:
+      "Cloudflare Turnstile secret for the contact form + `start_trial` MCP onboarding. `TurnstileGuardLive` refuses to boot a SaaS region without it (fail-closed verify would silently 403 every signup otherwise).",
+  },
   BETTER_AUTH_URL: {
     category: "Auth boot inputs",
     purpose:

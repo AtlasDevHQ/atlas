@@ -6,7 +6,7 @@
  * bound is on ATTEMPTS, not trials: distinct IPs / emails keep fresh budgets,
  * a blocked attempt is not recorded, and the window recovers on schedule.
  */
-import { describe, test, expect, beforeEach, afterAll } from "bun:test";
+import { describe, test, expect, beforeEach, afterAll, spyOn } from "bun:test";
 import {
   checkTrialAttemptRateLimit,
   getTrialIpRpmLimit,
@@ -14,6 +14,7 @@ import {
   resetTrialAttemptRateLimits,
   trialAttemptCleanupTick,
 } from "../trial-abuse";
+import { trialAbuseRejections } from "../metrics";
 
 const ORIG_IP = process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM;
 const ORIG_EMAIL = process.env.ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM;
@@ -155,5 +156,48 @@ describe("trialAttemptCleanupTick", () => {
     trialAttemptCleanupTick();
     // ip-evict is gone (reset cleared it); ip-recent still has budget.
     expect(checkTrialAttemptRateLimit({ ip: "ip-recent", email: "c@x.com" }).allowed).toBe(true);
+  });
+});
+
+// #3796 — rejections export a counter so a fleet-wide attack is alertable, not
+// just a per-replica log. Spy on the singleton counter's `.add` (works under
+// the no-op meter, which exposes no value).
+describe("rejection metric (#3796)", () => {
+  test("increments the counter with limiter=ip when the IP window trips", () => {
+    process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "1";
+    process.env.ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM = "1000";
+    const add = spyOn(trialAbuseRejections, "add");
+    try {
+      checkTrialAttemptRateLimit({ ip: "9.9.9.9", email: "a@x.com" }); // allowed
+      checkTrialAttemptRateLimit({ ip: "9.9.9.9", email: "b@x.com" }); // IP trips
+      expect(add).toHaveBeenCalledWith(1, { limiter: "ip" });
+    } finally {
+      add.mockRestore();
+    }
+  });
+
+  test("increments the counter with limiter=email when the email window trips", () => {
+    process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "1000";
+    process.env.ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM = "1";
+    const add = spyOn(trialAbuseRejections, "add");
+    try {
+      checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "same@x.com" }); // allowed
+      checkTrialAttemptRateLimit({ ip: "2.2.2.2", email: "same@x.com" }); // email trips
+      expect(add).toHaveBeenCalledWith(1, { limiter: "email" });
+    } finally {
+      add.mockRestore();
+    }
+  });
+
+  test("does not increment when the attempt is allowed", () => {
+    process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "1000";
+    process.env.ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM = "1000";
+    const add = spyOn(trialAbuseRejections, "add");
+    try {
+      checkTrialAttemptRateLimit({ ip: "3.3.3.3", email: "ok@x.com" });
+      expect(add).not.toHaveBeenCalled();
+    } finally {
+      add.mockRestore();
+    }
   });
 });

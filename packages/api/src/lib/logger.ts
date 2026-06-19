@@ -62,6 +62,16 @@ interface RequestContext {
    */
   agentOrigin?: import("@useatlas/types").ApprovalRequestOrigin;
   /**
+   * #3654 — best-effort client IP for the current request, resolved via
+   * `getClientIP` and stamped by unauthenticated bootstrap surfaces (the MCP
+   * onboarding router) so a per-session MCP tool handler can read the
+   * per-request IP for attempt rate-limiting without re-threading the raw
+   * `Request`. `null` when no trusted proxy is configured (`ATLAS_TRUST_PROXY`
+   * unset) — the per-IP limiter then collapses to one shared bucket. Undefined
+   * on non-onboarding requests, which resolve the IP at their own seam.
+   */
+  clientIp?: string | null;
+  /**
    * #3504 — OAuth token scopes (from the JWT `scope` claim) on hosted MCP
    * requests, threaded by `verifyMcpBearer` through the dispatch frame.
    * The dispatch seam gates write tools on `mcp:write` (see

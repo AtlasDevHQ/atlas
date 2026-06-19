@@ -359,12 +359,15 @@ On Atlas SaaS there's a separate, **unauthenticated** onboarding endpoint at `mc
 
 ### start_trial
 
-Provision a new trial workspace and get a connect URL back. The tool collects a **business email** and a **workspace name** — supply them as arguments, or let your agent prompt you for them via MCP elicitation:
+Provision a new trial workspace and get a connect URL back. The tool collects a **business email**, a **workspace name**, and a **Cloudflare Turnstile token** — supply them as arguments, or let your agent prompt you for the email and workspace name via MCP elicitation:
 
 ```
 email: "you@yourcompany.com"
 orgName: "Acme Analytics"
+turnstileToken: "0.abc…"   # REQUIRED — a Turnstile token proving a human triggered the call
 ```
+
+The `turnstileToken` is mandatory: a call without one is rejected with a `validation_failed` envelope, and a token that fails Cloudflare siteverify is rejected with `forbidden`. `start_trial` is also rate-limited per-IP and per-email (defaults 5 / 3 attempts per minute, tunable via `ATLAS_TRIAL_IP_RATE_LIMIT_RPM` / `ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM`); exceeding a limit returns a `rate_limited` envelope carrying `retry_after`.
 
 It returns:
 
@@ -375,6 +378,8 @@ It returns:
   "state": "grace"
 }
 ```
+
+`state` is one of `grace` (a fresh trial in its unclaimed-grace window) or `locked` (this account has already used its one trial — the workspace is created but starts blocked, and you must subscribe on the web to use it).
 
 Point your agent's MCP client at `connectUrl` to run the normal OAuth 2.1 + DCR + PKCE [connect flow](#path-a--in-product-wizard-recommended) and attach a hosted actor to the new workspace. The workspace starts in a short **unclaimed grace period** (`state: "grace"`) — setup (connect a datasource, build the semantic layer) and client-paid MCP querying work immediately; the full 14-day trial clock starts when you **claim** the account on the web (verify email → set a credential → accept ToS).
 

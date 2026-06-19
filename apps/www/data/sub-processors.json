@@ -47,5 +47,19 @@
     "region": "European Union",
     "since": "2026-01",
     "changed_at": "2026-01-15"
+  },
+  {
+    "name": "Cloudflare",
+    "purpose": "Bot mitigation (Turnstile on signup / abuse-sensitive endpoints) + CDN/edge proxy; receives end-user IP address",
+    "region": "Global (edge)",
+    "since": "2026-06",
+    "changed_at": "2026-06-19"
+  },
+  {
+    "name": "Twenty",
+    "purpose": "Customer-relationship management — stores signup and sales-enquiry contact details (name, email) for sales follow-up",
+    "region": "Customer’s selected region — co-located with Atlas infrastructure",
+    "since": "2026-06",
+    "changed_at": "2026-06-19"
   }
 ]

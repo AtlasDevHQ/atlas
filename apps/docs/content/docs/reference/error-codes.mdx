@@ -159,6 +159,15 @@ The scheduler runs proactive prompts and report deliveries on workspace cron sch
 |------|--------|-------------|---------|-----|-----------|
 | `conflict` | `UnsafeRegionMigrationResetError` | 409 | Operator attempted to reset a region migration that had already passed Phase 3 (cutover). Re-running Phase 1 on a workspace that already moved would re-export stale data and corrupt the destination. `migrationId`, `workspaceId`, `targetRegion`, and `sourceRegion` are on the error instance and structured logs (correlate via `requestId`), not in the response body | Follow the data-residency manual-intervention runbook in [Data Residency](/platform-ops/data-residency). The code path is closed by design; this is not retryable | No |
 
+### Self-serve trial claim-gating (#3651)
+
+A workspace provisioned over MCP by `start_trial` starts **unclaimed (metered)**: setup and client-paid MCP querying work immediately, but Atlas-token Q&A (the web `/api/v1/query` endpoint, chat platforms, and the scheduler) is withheld until the owner claims the account by verifying their email on the web. These codes are surfaced inline by `/api/v1/query` (they are plain `Error` subclasses, not `mapTaggedError` tags). See [Self-Serve Signup](/guides/signup#claiming-a-self-serve-mcp-trial).
+
+| Code | Class | HTTP Status | Trigger | Fix | Retryable |
+|------|-------|-------------|---------|-----|-----------|
+| `claim_required` | `ClaimRequiredError` | 403 | Atlas-token Q&A was attempted on an unclaimed (metered) trial workspace. The response body carries `claimUrl` (the web OTP interstitial) alongside `message` | Open `claimUrl`, verify the owner's email (enter the emailed one-time code), set a credential, and accept the Terms. Verifying email **is** the claim — it flips the workspace metered → full | No |
+| `claim_check_failed` | `ClaimCheckFailedError` | 503 | The claim-gate could not read the owner's `emailVerified` state (e.g. internal DB transiently unavailable). Surfaced as a retryable 503 rather than spending Atlas tokens on an unverifiable request | Retry after a short backoff. If it persists, check internal-DB (`DATABASE_URL`) health | Yes |
+
 ### Backups (#2989)
 
 Platform backup verify/restore routes (`/api/v1/admin/backups/*`, SaaS/EE). Structural `_tag` mapping replaced the routes' earlier `message.includes(...)` classification. All three messages are admin-safe (no secrets, no connection strings).

@@ -51,7 +51,7 @@ const TOOLS: ModelContextTool[] = [
       const url = "https://app.useatlas.dev/signup";
       return openAndReport(
         url,
-        `Opened the Atlas signup page: ${url}. New workspaces include a 14-day free trial (Starter-tier limits); no credit card required.`,
+        `Opened the Atlas signup page: ${url}. New workspaces include a 14-day free trial (Starter-tier limits); no credit card required. Signup requires a business (work) email — consumer/freemium domains aren't accepted. The 14-day clock starts once you verify your email and set a credential (the "claim" step); web signup does this in the same flow.`,
       );
     },
   },

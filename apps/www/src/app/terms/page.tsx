@@ -59,7 +59,7 @@ const SECTIONS: LegalSectionData[] = [
     id: "fees",
     title: "Fees & Payment",
     legal: [
-      "Customer agrees to pay all fees stated in the order form or on the pricing page in effect at the time of purchase. Fees are exclusive of taxes; Customer is responsible for sales, use, VAT, and similar taxes. Atlas Cloud paid plans include a 14-day free trial; trial accounts are provided without service-level commitment, support obligation, or liability — see Sections 8 and 9.",
+      "Customer agrees to pay all fees stated in the order form or on the pricing page in effect at the time of purchase. Fees are exclusive of taxes; Customer is responsible for sales, use, VAT, and similar taxes. Atlas Cloud paid plans include a 14-day free trial; trial accounts are provided without service-level commitment, support obligation, or liability — see Sections 8 and 9. The 14-day trial clock begins when the account is claimed (email verified and credentials set). A workspace provisioned but never claimed runs on a short grace window and expires automatically when that window elapses. Signup is limited to business email addresses.",
       "Subscriptions auto-renew for the same term unless either party gives written notice of non-renewal at least 30 days before the renewal date. Atlas may increase prices at renewal with 30 days’ written notice. Bring-your-own-token (BYOK) usage is billed by the LLM provider directly; Atlas charges only for infrastructure under BYOK.",
       "Invoices are due within 30 days. Past-due amounts accrue interest at 1.5%/month or the maximum allowed by law. Atlas may suspend the Service for accounts more than 60 days past due. Refunds are not provided for partial billing periods; cancellation retains access through the end of the current period.",
     ],
@@ -195,9 +195,9 @@ export default function TermsPage() {
             right.
           </p>
           <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-zinc-400 uppercase">
-            <span>effective 2026-05-02</span>
+            <span>effective 2026-06-19</span>
             <span aria-hidden="true">·</span>
-            <span>v4.2</span>
+            <span>v4.3</span>
             <span aria-hidden="true">·</span>
             <span>last updated 2026-05-02</span>
           </div>

@@ -347,6 +347,54 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_CONVERSATION_STEP_CAP",
     scope: "workspace",
   },
+  // Context Compaction (#3759 — PRD #3751). When a turn's assembled context
+  // crosses the fill fraction of the (coarsely-resolved) context window, older
+  // history is collapsed into one generated summary while the most-recent N
+  // steps + the system prompt are pinned. Default OFF — flag off = no change.
+  {
+    key: "ATLAS_COMPACTION_ENABLED",
+    section: "Context Compaction",
+    label: "Context Compaction",
+    description:
+      "When on, a long agent turn whose assembled context crosses the fill fraction is compacted — older history is replaced by a generated summary and the turn continues instead of erroring. Default off.",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_COMPACTION_ENABLED",
+    scope: "workspace",
+  },
+  {
+    key: "ATLAS_COMPACTION_FILL_FRACTION",
+    section: "Context Compaction",
+    label: "Compaction Fill Fraction",
+    description:
+      "Trigger threshold as a fraction (0–1] of the model context window. When the assembled context crosses this fraction, a compaction pass runs. Default 0.85.",
+    type: "number",
+    default: "0.85",
+    envVar: "ATLAS_COMPACTION_FILL_FRACTION",
+    scope: "workspace",
+  },
+  {
+    key: "ATLAS_COMPACTION_PINNED_RECENT_STEPS",
+    section: "Context Compaction",
+    label: "Compaction Pinned Recent Steps",
+    description:
+      "How many of the most-recent agent steps to pin verbatim (never summarize) during a compaction pass (1–100). Default 6.",
+    type: "number",
+    default: "6",
+    envVar: "ATLAS_COMPACTION_PINNED_RECENT_STEPS",
+    scope: "workspace",
+  },
+  {
+    key: "ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS",
+    section: "Context Compaction",
+    label: "Compaction Context Window (tokens)",
+    description:
+      "Coarse context-window size (tokens) used to compute the compaction trigger. A single configured value in this slice; accurate per-model resolution lands in a follow-up. Default 200000.",
+    type: "number",
+    default: "200000",
+    envVar: "ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS",
+    scope: "workspace",
+  },
   {
     // #3745 / ADR-0020 — durable agent sessions. When on (and an internal DB is
     // present), each turn writes a terminal `agent_runs` checkpoint. Default

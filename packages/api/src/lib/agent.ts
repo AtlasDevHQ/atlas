@@ -58,6 +58,15 @@ import {
   context as otelContext,
 } from "@opentelemetry/api";
 import { AtlasAiModel, type AtlasAiModelShape } from "./effect/ai";
+import {
+  resolveCompactionSettings,
+  estimateContextTokens,
+  shouldCompact,
+  compactOlderHistory,
+  summarizeOlderHistory,
+  summarizeIncremental,
+  compactionSpanAttributes,
+} from "./agent-compaction";
 import { ModelRouter } from "./effect/services";
 import { runEnterprise } from "./effect/enterprise-layer";
 import { BOUND_AGENT_PROMPT_GUIDANCE } from "./bound-chat-context";
@@ -1236,6 +1245,23 @@ export async function runAgent({
   const rawTools = activeRegistry.getAll();
   const tools = wrapToolsWithHooks(rawTools, { userId: userId ?? undefined, conversationId });
 
+  // System prompt is built once and pinned: it carries the semantic index +
+  // glossary and is passed to the model separately, so it never enters the
+  // message array compaction rewrites (#3759).
+  const systemParam = buildSystemParam(providerType, activeRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext, presentationMode ?? "developer", restRepresentation, resolvedModelId);
+
+  // #3759 — context compaction. Resolved once per turn (knobs hot-reload at the
+  // next turn via the settings cache). Off by default ⇒ the prepareStep below
+  // behaves exactly as before. `prepareStep` re-receives the full, growing
+  // history each step (the AI SDK does not persist our override), so once a turn
+  // crosses the threshold every subsequent step would re-summarize. The in-turn
+  // memo holds the running summary + how many older messages it covers: an
+  // identical older slice is reused verbatim, and a grown one folds only the
+  // newly-aged-out delta into the prior summary (rolling summary) — keeping the
+  // per-step summarization cost bounded instead of O(full older slice).
+  const compactionSettings = resolveCompactionSettings(orgId);
+  let compactionSummaryMemo: { olderCount: number; text: string } | undefined;
+
   // ── Durable-session terminal checkpoint (#3745, ADR-0020, phase 1a) ──
   // A turn writes exactly ONE durable `agent_runs` row at completion: `done`
   // on a clean finish, `failed` on an uncaught error. Gated on a conversation
@@ -1264,7 +1290,7 @@ export async function runAgent({
   try {
     result = otelContext.with(agentCtx, () => streamText({
       model,
-      system: buildSystemParam(providerType, activeRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext, presentationMode ?? "developer", restRepresentation, resolvedModelId),
+      system: systemParam,
       messages: modelMessages,
       tools,
       temperature: 0.2,
@@ -1308,9 +1334,79 @@ export async function runAgent({
         );
       },
 
-      prepareStep: ({ messages: stepMessages }) => {
+      prepareStep: async ({ messages: stepMessages }) => {
+        let effectiveMessages: ModelMessage[] = stepMessages;
+
+        // #3759 — compaction trigger. When the assembled context (system prompt
+        // + messages) crosses the configured fill fraction of the coarse context
+        // window, collapse older history into one generated summary on the turn
+        // model and keep going, instead of letting the turn blow the window.
+        // Fail-soft: a summarization failure logs and continues with full
+        // context — compaction never costs the turn its answer.
+        if (compactionSettings.enabled) {
+          const beforeTokens = estimateContextTokens(systemParam, stepMessages);
+          if (shouldCompact(beforeTokens, compactionSettings)) {
+            try {
+              const compacted = await compactOlderHistory({
+                messages: stepMessages,
+                pinnedRecentSteps: compactionSettings.pinnedRecentSteps,
+                summarize: async (older) => {
+                  const memo = compactionSummaryMemo;
+                  // Same older slice as last step → reuse the summary verbatim.
+                  if (memo?.olderCount === older.length) return memo.text;
+                  // Older grew (history only appends within a turn) → roll the
+                  // prior summary forward over just the delta, not the whole
+                  // slice. First pass (no memo) summarizes the full older slice.
+                  const text =
+                    memo && memo.olderCount < older.length
+                      ? await summarizeIncremental(model, memo.text, older.slice(memo.olderCount))
+                      : await summarizeOlderHistory(model, older);
+                  compactionSummaryMemo = { olderCount: older.length, text };
+                  return text;
+                },
+              });
+              if (compacted) {
+                effectiveMessages = compacted.messages;
+                const afterTokens = estimateContextTokens(systemParam, effectiveMessages);
+                log.info(
+                  {
+                    beforeTokens,
+                    afterTokens,
+                    beforeMessages: stepMessages.length,
+                    afterMessages: effectiveMessages.length,
+                    summarizedMessages: compacted.summarizedMessageCount,
+                    pinnedMessages: compacted.pinnedMessageCount,
+                    fillFraction: compactionSettings.fillFraction,
+                    contextWindowTokens: compactionSettings.contextWindowTokens,
+                  },
+                  "context compaction pass ran",
+                );
+                // OTel attributes on the enclosing atlas.agent span. Only set
+                // when a pass actually runs — a non-compacting turn emits
+                // neither this nor the log line above. Last-write-wins across
+                // steps: on a multi-pass turn the span reflects the FINAL pass's
+                // counts; the per-pass detail lives in the log line above.
+                span.setAttributes(
+                  compactionSpanAttributes({
+                    beforeTokens,
+                    afterTokens,
+                    beforeMessages: stepMessages.length,
+                    afterMessages: effectiveMessages.length,
+                    summarizedMessages: compacted.summarizedMessageCount,
+                  }),
+                );
+              }
+            } catch (err) {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err) },
+                "context compaction pass failed — continuing with full context",
+              );
+            }
+          }
+        }
+
         return {
-          messages: applyCacheControl(stepMessages, providerType, resolvedModelId),
+          messages: applyCacheControl(effectiveMessages, providerType, resolvedModelId),
         };
       },
 

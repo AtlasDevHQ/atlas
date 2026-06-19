@@ -109,6 +109,32 @@ export function errorMessage(err: unknown, fallback: string): string {
 }
 
 /**
+ * Append a trial days-remaining advisory to a successful tool result (ADR-0018
+ * / #3651). Returns the result unchanged when `days` is null (off-SaaS /
+ * no-org / non-trial) or the result is an error envelope — so the annotation is
+ * purely additive and never converts a success into an error. Pure + exported
+ * for unit testing without the full dispatch machinery.
+ */
+export function withTrialFooter(
+  result: CallToolResult,
+  days: number | null,
+): CallToolResult {
+  if (days === null || result.isError) return result;
+  return {
+    ...result,
+    content: [
+      ...result.content,
+      {
+        type: "text" as const,
+        text:
+          `Atlas trial: ${days} day${days === 1 ? "" : "s"} remaining. ` +
+          `Subscribe on the web before it ends to keep querying.`,
+      },
+    ],
+  };
+}
+
+/**
  * Build a dispatcher bound to one MCP server's actor/transport/workspace. Every
  * tool file constructs one (`const { dispatch } = createMcpDispatch(opts)`) and
  * routes each `server.registerTool` handler through it.
@@ -191,7 +217,25 @@ export function createMcpDispatch(opts: McpDispatchOptions): McpDispatcher {
               );
               if (gateBlock) return gateBlock;
 
-              return await body(requestId);
+              const result = await body(requestId);
+              // ADR-0018 / #3651 — surface trial days-remaining on successful
+              // billing-gated tool responses (executeSQL / runMetric / setup),
+              // so post-claim Q&A and setup over MCP keep the trial clock
+              // visible. `getTrialDaysRemaining` never throws and returns null
+              // off-SaaS / no-org / non-trial, so this is a no-op for stdio and
+              // self-hosted. `withTrialFooter` skips error envelopes.
+              //
+              // Lazy-imported for the same reason the dispatch gate is (see the
+              // module header): keep MCP tool *registration* off the
+              // billing/enforcement graph. enforcement.ts is already pulled by
+              // the gate on any `checksBilling` dispatch, so this adds no new
+              // static coupling.
+              if (!reqs.checksBilling) return result;
+              const { getTrialDaysRemaining } = await import(
+                "@atlas/api/lib/billing/enforcement"
+              );
+              const days = await getTrialDaysRemaining(actor.activeOrganizationId);
+              return withTrialFooter(result, days);
             } catch (err) {
               // Client-initiated cancellation (#3500) is not a tool failure —
               // the SDK already suppressed the response, so propagate it.

@@ -22,6 +22,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { getScheduledTask, updateRunDeliveryStatus } from "@atlas/api/lib/scheduled-tasks";
 import { executeAgentQuery, type AgentQueryResult } from "@atlas/api/lib/agent-query";
 import { BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
+import { ClaimRequiredError } from "@atlas/api/lib/billing/claim-gate";
 import { loadActorUser } from "@atlas/api/lib/auth/actor";
 import { SchedulerTaskTimeoutError, SchedulerExecutionError } from "@atlas/api/lib/effect/errors";
 import { causeToError } from "@atlas/api/lib/audit/error-scrub";
@@ -62,9 +63,14 @@ function agentQueryEffect(
         message:
           err instanceof BillingBlockedError
             ? `Blocked by billing enforcement [${err.errorCode}]: ${err.message}`
-            : err instanceof Error
-              ? err.message
-              : String(err),
+            : // ADR-0018 / #3651 — an unclaimed (metered) workspace blocks
+              // scheduler Atlas-token runs too; record the claim reason + URL
+              // on the run row so the owner knows to claim on the web.
+              err instanceof ClaimRequiredError
+              ? `Workspace not yet claimed [${err.errorCode}]: ${err.message}`
+              : err instanceof Error
+                ? err.message
+                : String(err),
         taskId,
       }),
   }).pipe(

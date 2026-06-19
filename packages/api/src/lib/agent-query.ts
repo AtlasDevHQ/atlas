@@ -10,6 +10,7 @@ import { runAgent } from "@atlas/api/lib/agent";
 import { createLogger, getRequestContext, withRequestContext } from "@atlas/api/lib/logger";
 import type { ActorKind, RequestActor } from "@atlas/api/lib/logger";
 import { checkAgentBillingGate, BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
+import { checkClaimGate, ClaimRequiredError, ClaimCheckFailedError } from "@atlas/api/lib/billing/claim-gate";
 import type { PlanLimitWarning } from "@atlas/api/lib/billing/enforcement";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { ApprovalRequestOrigin } from "@useatlas/types";
@@ -193,6 +194,32 @@ export async function executeAgentQuery(
         "Agent run blocked by billing enforcement",
       );
       throw new BillingBlockedError(gate);
+    }
+
+    // ADR-0018 / #3651 — claim-gated metering. AFTER Gate 0 (solvency), an
+    // unclaimed (metered) trial Workspace withholds Atlas-token Q&A until a
+    // human claims it on the web. Keyed on the owner's `emailVerified` bit and
+    // placed HERE on the Atlas-token-spending path only — NOT in Gate 0, which
+    // every MCP `checksBilling` tool (incl. setup) routes through, so MCP
+    // executeSQL + setup stay open pre-claim (client model pays, no Atlas
+    // tokens). Off-SaaS / no-org / claimed workspaces pass through untouched.
+    const claim = await checkClaimGate(gateOrgId);
+    if (!claim.allowed) {
+      if (claim.reason === "check_failed") {
+        // Fail closed: claim status couldn't be determined (lookup error).
+        // Surface a retryable 503 rather than spend Atlas tokens on an
+        // unverifiable workspace.
+        log.warn(
+          { requestId: id, orgId: gateOrgId, ...(origin ? { agentOrigin: origin } : {}) },
+          "Agent run blocked: claim status could not be verified",
+        );
+        throw new ClaimCheckFailedError();
+      }
+      log.warn(
+        { requestId: id, orgId: gateOrgId, ...(origin ? { agentOrigin: origin } : {}) },
+        "Agent run blocked: workspace unclaimed (claim required)",
+      );
+      throw new ClaimRequiredError(claim.claimUrl);
     }
 
     const priorUIMessages = (options?.priorMessages ?? []).map((m, i) => ({

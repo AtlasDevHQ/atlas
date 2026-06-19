@@ -21,6 +21,7 @@ import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
+import { ClaimRequiredError, ClaimCheckFailedError } from "@atlas/api/lib/billing/claim-gate";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
@@ -318,6 +319,44 @@ query.openapi(
           }, 200);
         } catch (err) {
           if (err instanceof HTTPException) throw err;
+
+          // ADR-0018 / #3651 — claim-gate block: an unclaimed (metered) trial
+          // Workspace must claim on the web before Atlas-token Q&A runs. Surface
+          // the typed `claim_required` envelope carrying the claim URL (403).
+          if (err instanceof ClaimRequiredError) {
+            log.warn(
+              { requestId, errorCode: err.errorCode, category: "claim_required" },
+              "Query blocked — workspace unclaimed",
+            );
+            return c.json(
+              {
+                error: err.errorCode,
+                message: err.message,
+                claimUrl: err.claimUrl,
+                retryable: false,
+                requestId,
+              },
+              err.httpStatus,
+            );
+          }
+
+          // Claim status couldn't be verified (lookup error) — fail closed as a
+          // retryable 503, NOT a token-spending allow and NOT a claim prompt.
+          if (err instanceof ClaimCheckFailedError) {
+            log.warn(
+              { requestId, errorCode: err.errorCode, category: "claim_check_failed" },
+              "Query blocked — claim status unverifiable",
+            );
+            return c.json(
+              {
+                error: err.errorCode,
+                message: err.message,
+                retryable: err.retryable,
+                requestId,
+              },
+              err.httpStatus,
+            );
+          }
 
           // #3419/#3420 — billing-enforcement block from the seam in
           // `executeAgentQuery`. Map to the same envelope the inline

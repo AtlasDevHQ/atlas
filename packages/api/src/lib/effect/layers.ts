@@ -234,6 +234,7 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   promote_decay: "atlas.scheduler.promote_decay",
   billing_reconcile: "atlas.scheduler.billing_reconcile",
   stripe_teardown_sweep: "atlas.scheduler.stripe_teardown_sweep",
+  unclaimed_grace_reap: "atlas.scheduler.unclaimed_grace_reap",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1791,6 +1792,61 @@ export function makeSchedulerLive(
       } else {
         log.debug(
           "Stripe teardown outbox sweep not started — Stripe or internal DB not configured",
+        );
+      }
+
+      // ── Periodic fiber: unclaimed-grace reaper (#3652, ADR-0018) ────────
+      // Bounds the free pre-claim window of self-serve trial Workspaces
+      // provisioned over MCP: an UNCLAIMED Workspace (owner `emailVerified =
+      // false`) whose short grace window has lapsed is demoted to the
+      // `'locked'` churn tier, so Gate 0 then blocks it on every surface incl.
+      // MCP. Claimed trials are never touched (the reaper's EXISTS arm only
+      // matches an unverified owner) — those run the full 14-day clock under
+      // normal trial-expiry. SaaS-only: the fork is gated on
+      // `config.deployMode === 'saas'` here AND the sweep itself no-ops
+      // off-SaaS / without an internal DB. The `yield* Migration` barrier above
+      // already sequences this after `MigrationLive`, so the eager boot tick
+      // can't race the `organization`/`member`/`user` tables into existence.
+      if (config.deployMode === "saas") {
+        // 1h: the grace window is measured in hours (TRIAL_GRACE_HOURS), so an
+        // hourly sweep keeps the abandoned-signup horizon tight without adding
+        // meaningful load (one guarded UPDATE per pass). `Effect.repeat` runs
+        // the tick once at boot, then on the spacing.
+        const UNCLAIMED_GRACE_REAP_INTERVAL_MS = 60 * 60 * 1000;
+        const reapTick = Effect.tryPromise({
+          try: async () => {
+            const { reapUnclaimedGraceWorkspaces } = await import(
+              "@atlas/api/lib/billing/reap-unclaimed-grace"
+            );
+            await reapUnclaimedGraceWorkspaces();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              log.warn(
+                { err: errorMessage(err) },
+                "Unclaimed-grace reaper tick failed — will retry next interval",
+              );
+            }),
+          ),
+        );
+        // forkScoped, not fork — see SettingsLive for rationale.
+        yield* Effect.forkScoped(
+          withFiberDeathLog(
+            "unclaimed_grace_reap",
+            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.unclaimed_grace_reap, {}, reapTick).pipe(
+              Effect.repeat(Schedule.spaced(Duration.millis(UNCLAIMED_GRACE_REAP_INTERVAL_MS))),
+            ),
+          ),
+        );
+        log.info(
+          { intervalMs: UNCLAIMED_GRACE_REAP_INTERVAL_MS },
+          "Unclaimed-grace reaper started",
+        );
+      } else {
+        log.debug(
+          "Unclaimed-grace reaper not started — not a SaaS deployment",
         );
       }
 

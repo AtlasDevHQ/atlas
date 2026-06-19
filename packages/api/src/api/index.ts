@@ -626,6 +626,30 @@ log.info(
 // lifecycle, semantic-tools) into the function bundle would inflate
 // cold starts. The Hono API server (which Bun runs natively, no
 // bundler) resolves the import at runtime via the workspace dep.
+// Anonymous onboarding endpoint (ADR-0018 / #3649) — the single pre-auth
+// carve-out from the dispatch gate. Mounted at /mcp/onboarding/sse and BEFORE
+// the hosted router so the static `onboarding` segment is matched here rather
+// than treated as a workspace id by /mcp/:workspaceId/sse. The router
+// self-gates on deployMode === 'saas' (empty router off-SaaS), so `start_trial`
+// is absent everywhere but the hosted SaaS server.
+try {
+  const { createOnboardingMcpRouter } = await import(
+    /* turbopackIgnore: true */ "@atlas/mcp/onboarding"
+  );
+  app.route("/mcp/onboarding", createOnboardingMcpRouter());
+  log.info("Onboarding MCP endpoint mounted at /mcp/onboarding/sse (SaaS-gated)");
+} catch (err) {
+  // Soft-fail to match the hosted-MCP block below: the standalone Vercel
+  // template intentionally doesn't bundle `@atlas/mcp`, so throwing here would
+  // break that build's boot. But on a SaaS deploy that DOES intend self-serve,
+  // this disables the entire trial funnel, so log at error with an operator-
+  // pageable message (don't let a real boot defect look like "not bundled").
+  log.error(
+    { err: err instanceof Error ? err.message : String(err) },
+    "Onboarding MCP endpoint not available in this build — self-serve start_trial will be unavailable. On SaaS this disables the trial signup funnel; verify packages/mcp is shipped in the runtime container.",
+  );
+}
+
 try {
   const { createHostedMcpRouter } = await import(
     /* turbopackIgnore: true */ "@atlas/mcp/hosted"

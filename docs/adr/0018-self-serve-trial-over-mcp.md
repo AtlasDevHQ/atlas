@@ -28,6 +28,14 @@ Because `start_trial` provisions through the same Better Auth signup path, signu
 
 The one-trial-per-*user* cap is a no-op against fresh-email MCP signups and is **not** the abuse bound — and it doesn't need to be, because the meter removes the thing worth abusing (pre-claim costs Atlas ~nothing: no Atlas tokens, web Q&A claim-gated, MCP querying client-paid). Residual spam is DB-row/provisioning churn, bounded by **Turnstile + per-IP/email rate-limiting + the short unclaimed-grace reaper + the email-quality policy above**. Per-IP *trial* caps were rejected (punish shared NATs).
 
+## Implementation status
+
+The tracer-bullet slice (#3649) lands **end-to-end provisioning + connect** only — the meter (#3651), CRM lead source (#3653), email-quality policy (#3650), grace reaper (#3652), and abuse controls (#3654) are tracked as follow-on slices.
+
+- **Lib seam** — `provisionTrialWorkspace({ email, orgName })` in `ee/src/onboarding/provision-trial.ts` is the single, testable provisioning seam. It runs the same Better Auth path the web uses (`signUpEmail` → `createOrganization`), which fires the existing `afterCreateOrganization` hook (`assignSaasTrial` → the atomic `claimTrialGrant` one-trial-per-user claim + `trial` tier). The provisioner then **narrows `trial_ends_at`** from the full `TRIAL_DAYS` down to the short `TRIAL_GRACE_HOURS` window — the unclaimed-grace state. It refuses when `deployMode !== 'saas'` and never binds an MCP actor. The MCP tool and any future HTTP onboarding face both call it; no new column, no new tier.
+- **Anonymous onboarding caller** — `start_trial` (`packages/mcp/src/onboarding.ts`) is registered on a **separate, unauthenticated** MCP server (`createOnboardingMcpServer`) mounted at `/mcp/onboarding/sse` (`createOnboardingMcpRouter`), ordered before the hosted `/mcp/:workspaceId/sse` router. That server exposes *only* `start_trial`, so the caller is structurally incapable of reaching `runMcpDispatchGate`. Both the server and the route self-gate on `deployMode === 'saas'`. The tool collects `email` + `orgName` (args or MCP elicitation), calls `provisionTrialWorkspace`, and returns `{ workspaceId, connectUrl, state }`; typed failures map to the standard `AtlasMcpToolError` envelope.
+- **Connect handoff** — `connectUrl` is the canonical per-workspace hosted-MCP resource URL (`buildMcpConnectUrl`, `packages/api/src/lib/mcp/connect-url.ts`); the agent runs the existing DCR/PKCE flow against it to attach a normal *hosted* actor, after which every read/write/setup tool runs the full dispatch gate unchanged.
+
 ## Considered and rejected
 
 - **Meter as `tokenBudgetPerSeat: 0`, a new `trial_metered` plan tier, or a `meter_state` column** — rejected; the budget clamp blocks setup + MCP via Gate 0, and a new tier duplicates the whole limit table. The meter is a claim-gate at `executeAgentQuery` keyed on `emailVerified`.

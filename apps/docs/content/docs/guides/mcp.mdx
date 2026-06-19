@@ -378,6 +378,17 @@ It returns:
 
 Point your agent's MCP client at `connectUrl` to run the normal OAuth 2.1 + DCR + PKCE [connect flow](#path-a--in-product-wizard-recommended) and attach a hosted actor to the new workspace. The workspace starts in a short **unclaimed grace period** (`state: "grace"`) — setup (connect a datasource, build the semantic layer) and client-paid MCP querying work immediately; the full 14-day trial clock starts when you **claim** the account on the web (verify email → set a credential → accept ToS).
 
+#### Metered until claimed
+
+While the workspace is unclaimed, it is **metered**: everything you do over MCP keeps working (your own model pays — no Atlas tokens), but **Atlas-token Q&A is withheld**. Concretely:
+
+- **Open pre-claim:** `start_trial`, the datasource setup/lifecycle tools, `executeSQL`, `runMetric`, and the rest of the MCP surface. The client model pays for MCP querying, so it costs Atlas nothing.
+- **Withheld pre-claim:** Atlas-token Q&A on the web `/api/v1/query` endpoint, chat platforms, and the scheduler. These return a typed `claim_required` response carrying the claim URL (the web OTP interstitial) instead of an answer.
+
+**Claim the account on the web** — open the claim URL, enter the emailed one-time code to verify your email (never a magic link), set a credential or passkey, and accept the Terms. Verifying your email **is** the claim: it flips the workspace metered → full and starts the full 14-day trial clock. No payment is required. Once claimed, Atlas-token Q&A runs within the normal trial budget, and `checksBilling` MCP tool responses include the number of **trial days remaining**.
+
+See [Claiming a Self-Serve (MCP) Trial](/guides/signup#claiming-a-self-serve-mcp-trial) for the full claim flow. Note this is distinct from trial **expiry**: once a trial expires, every surface — MCP included — is blocked with `billing_blocked` until a paid subscription is added.
+
 ## Available tools
 
 The MCP server exposes six core semantic tools — two general-purpose and four typed accessors over the semantic layer — plus a set of admin [datasource lifecycle tools](#datasource-lifecycle-tools) covered below. Prefer the typed tools when you only need catalog/glossary/metric data; reach for `explore` only when you need raw file access.

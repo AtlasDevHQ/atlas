@@ -456,6 +456,40 @@ export function severityOf(status: OverageStatus): number {
   return SEVERITY_ORDER[status];
 }
 
+/**
+ * Days remaining in a workspace's trial, for surfacing in MCP tool responses
+ * (ADR-0018 / #3651). Returns `null` when there is nothing to surface: no
+ * internal DB, no org, the workspace is absent, or it isn't on the `trial`
+ * tier. Otherwise the whole-days count until `trial_ends_at`, floored at 0
+ * (an already-lapsed trial reports 0, not a negative).
+ *
+ * Never throws — a lookup failure logs and returns `null`, so a caller can
+ * attach the line opportunistically without risking the underlying response.
+ */
+export async function getTrialDaysRemaining(
+  orgId: string | undefined,
+): Promise<number | null> {
+  if (!orgId || !hasInternalDB()) return null;
+  let workspace: WorkspaceRow | null;
+  try {
+    workspace = await getCachedWorkspace(orgId);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), orgId },
+      "Failed to read workspace for trial days-remaining — omitting from response",
+    );
+    return null;
+  }
+  if (!workspace || workspace.plan_tier !== "trial") return null;
+
+  const endsAt = workspace.trial_ends_at
+    ? new Date(workspace.trial_ends_at)
+    : new Date(new Date(workspace.createdAt).getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+  const msRemaining = endsAt.getTime() - Date.now();
+  if (!Number.isFinite(msRemaining)) return null;
+  return Math.max(0, Math.ceil(msRemaining / (24 * 60 * 60 * 1000)));
+}
+
 function isTrialExpired(workspace: WorkspaceRow): boolean {
   if (!workspace.trial_ends_at) {
     // No trial_ends_at set — check if the workspace was created more than TRIAL_DAYS ago

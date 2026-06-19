@@ -217,6 +217,40 @@ For most self-serve deployments, the datasource URL comes from the onboarding fl
 
 ---
 
+## Claiming a Self-Serve (MCP) Trial
+
+<Callout type="info" title="SaaS only">
+Applies to workspaces provisioned over MCP by the `start_trial` tool (see [MCP](/guides/mcp#self-serve-trial-signup)). Web signups verify their email as part of the wizard, so they are already claimed.
+</Callout>
+
+A workspace created over MCP starts **unclaimed (metered)**. In that state:
+
+- **Setup** (connect a datasource, build the semantic layer) and **querying over MCP** (your own model pays — no Atlas tokens) work immediately.
+- **Atlas-token Q&A** — the web `/api/v1/query` endpoint, chat platforms, and the scheduler — is **withheld** until the account is claimed. A metered request returns a typed `claim_required` response carrying the **claim URL**:
+
+```json
+{
+  "error": "claim_required",
+  "message": "Asking Atlas questions of your data is paused until you claim this workspace…",
+  "claimUrl": "https://app.useatlas.dev/signup?email=you@acme.com",
+  "retryable": false
+}
+```
+
+**Claiming** = completing the post-signup OTP interstitial on the web: enter the emailed one-time code to verify your email (Atlas never uses magic links), set a credential or passkey, and accept the Terms. Verifying your email **is** the claim. On claim, Atlas:
+
+1. Flips the workspace from metered → full (Atlas-token Q&A is no longer withheld).
+2. Records the owner's `emailVerified` bit — the single signal the claim-gate keys on.
+3. **Starts the full 14-day trial clock** (`trial_ends_at = NOW() + 14 days`). Until claim, the workspace sits on a short unclaimed-grace window, so an abandoned signup can't squat on a free 14-day window.
+
+No payment is required to claim. After claim, Atlas-token Q&A runs within the normal trial budget, and MCP tool responses surface the number of trial days remaining.
+
+<Callout type="warn" title="Expired trials">
+Claiming is distinct from expiry. Once a trial **expires** (claimed or not), the workspace can neither query nor keep setting things up on **any** surface — web, chat, scheduler, **and** MCP — until a paid subscription makes it solvent again. Expiry is the conversion lever.
+</Callout>
+
+---
+
 ## After Signup
 
 Once a user completes onboarding:

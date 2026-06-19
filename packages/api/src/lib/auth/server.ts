@@ -67,7 +67,7 @@ import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { enforceBanOnSessionCreate } from "@atlas/api/lib/auth/admin-user-ops";
 import { assertBusinessEmail } from "@atlas/api/lib/auth/business-email";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
-import { userHasConsumedTrial, claimTrialGrant } from "@atlas/api/lib/billing/trial-eligibility";
+import { userHasConsumedTrial, claimTrialGrant, extendTrialOnClaim } from "@atlas/api/lib/billing/trial-eligibility";
 import { getStripeClient } from "@atlas/api/lib/billing/stripe-client";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import {
@@ -2991,6 +2991,34 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
       // Re-issue a verification code whenever an unverified user attempts
       // sign-in. The plugin's override turns this into an OTP send.
       sendOnSignIn: true,
+      // ADR-0018 / #3651 — verifying email IS the claim. The emailOTP plugin's
+      // verify route calls this after flipping `emailVerified` (never on a
+      // magic-link path — there is none). Start the full 14-day trial clock for
+      // any unclaimed grace-window trial this user owns (metered → full). The
+      // claim-gate keyed on `emailVerified` then lets Atlas-token Q&A through on
+      // the next request. SaaS-only, mirroring `assignSaasTrial`.
+      afterEmailVerification: async (user: User) => {
+        try {
+          if (!hasInternalDB()) return;
+          if (getConfig()?.deployMode !== "saas") return;
+          const extended = await extendTrialOnClaim(user.id);
+          for (const orgId of extended) invalidatePlanCache(orgId);
+          if (extended.length > 0) {
+            log.info(
+              { userId: user.id, orgIds: extended },
+              "Trial claimed via email verification — started full trial clock",
+            );
+          }
+        } catch (err) {
+          // log.error: a sustained failure here means a claimed user stays on
+          // the short grace window and gets reaped early. Verification itself
+          // is unaffected (the hook's throw is swallowed here).
+          log.error(
+            { err: errorMessage(err), userId: user.id },
+            "Failed to start trial clock on claim — workspace stays on grace window",
+          );
+        }
+      },
     },
     socialProviders: deps.socialProviders,
     // F-07 — cookieCache.maxAge bounds the revocation window. Previously

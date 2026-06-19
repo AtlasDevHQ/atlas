@@ -977,6 +977,9 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // Stripe webhook tier sync respects an active platform-admin plan grant
   // instead of clobbering it (#3427).
   "0132_org_plan_override.sql",
+  // Adds normalizedEmail (+ unique index) to Better Auth's "user" table for
+  // business-email-only signup / one-trial-per-user teeth (#3650).
+  "0142_user_normalized_email.sql",
 ];
 
 /**

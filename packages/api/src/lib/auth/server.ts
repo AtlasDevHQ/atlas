@@ -20,6 +20,7 @@ import { emailOTP } from "better-auth/plugins/email-otp";
 // All pinned to ^1.6.x in package.json — update together (the peer-dep
 // constraint is exact-version per minor on the @better-auth/* side).
 import { apiKey } from "@better-auth/api-key";
+import { emailHarmony } from "better-auth-harmony";
 import { passkey } from "@better-auth/passkey";
 import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin, type StripeOptions } from "@better-auth/stripe";
@@ -64,6 +65,7 @@ import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from
 import { blockNativeMemberRoleUpdate, blockNativeMemberRemoval } from "@atlas/api/lib/auth/org-member-guards";
 import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { enforceBanOnSessionCreate } from "@atlas/api/lib/auth/admin-user-ops";
+import { assertBusinessEmail } from "@atlas/api/lib/auth/business-email";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
 import { userHasConsumedTrial, claimTrialGrant } from "@atlas/api/lib/billing/trial-eligibility";
 import { getStripeClient } from "@atlas/api/lib/billing/stripe-client";
@@ -2173,6 +2175,20 @@ export function buildPlugins() {
   const plugins: any[] = [
     bearer(),
     apiKey(),
+    // Business-email-only signup (#3650, ADR-0018). `emailHarmony` contributes
+    // the unique `normalizedEmail` column + `+alias`/dot/case normalization —
+    // the teeth behind one-trial-per-user — and ships the `mailchecker`
+    // disposable-domain engine. We DISABLE its built-in route validation
+    // (`matchers.validation: []`) on purpose: a disposable address would
+    // otherwise be rejected here with the plugin's generic "Invalid email" 400,
+    // preempting the single typed `business_email_required` rejection we throw
+    // in `databaseHooks.user.create.before` (see `assertBusinessEmail` /
+    // business-email.ts). Disposable blocking still happens — through that hook,
+    // using emailHarmony's own `validateEmail` engine — so web and the MCP
+    // `start_trial` path get one actionable error / one typed envelope for both
+    // disposable AND freemium denies. The normalization databaseHook the plugin
+    // installs via `init()` is unaffected by the matcher and keeps running.
+    emailHarmony({ matchers: { validation: [] } }),
     // #3159 — the Better Auth `admin()` plugin was removed. It authorized the
     // caller by the raw `user.role` column (via `hasPermission`), which after
     // #2890 (single-role, platform-only) was a contained-but-live footgun: any
@@ -3114,6 +3130,26 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
       user: {
         create: {
           before: async (user: User & Record<string, unknown>) => {
+            // Business-email-only signup (#3650, ADR-0018) — gate EVERY SaaS
+            // signup path (web, social, MCP start_trial) identically. SaaS-only,
+            // mirroring `assignSaasTrial` above: business-email-only is a
+            // hosted-trial policy, and a self-hosted operator must be able to
+            // bootstrap with any `ATLAS_ADMIN_EMAIL` (a consumer domain
+            // included) without this hook rejecting their first-boot admin.
+            //
+            // Deliberately OUTSIDE the try/catch below: the rejection is an
+            // APIError that MUST propagate to abort user creation (Better Auth
+            // serializes it to a 400 with the typed `business_email_required`
+            // code), exactly like the session.create.before ban guard.
+            // Swallowing it here would silently admit disposable/freemium
+            // signups. Better Auth runs every create.before hook in sequence
+            // (this one plus emailHarmony's normalization hook); a throw from
+            // any of them aborts creation, so ordering between them doesn't
+            // matter here.
+            if (getConfig()?.deployMode === "saas") {
+              assertBusinessEmail(user.email);
+            }
+
             try {
               const decision = await computeBootstrapRole(user, {
                 adminEmail,

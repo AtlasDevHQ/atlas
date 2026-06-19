@@ -30,6 +30,7 @@ import type {
 import type { PoolMetrics, OrgPoolMetrics } from "@useatlas/types";
 import type { LeadEvent } from "@useatlas/twenty/lead-normalizer";
 import type { ToolRegistry as ToolRegistryClass } from "@atlas/api/lib/tools/registry";
+import type { RecordTerminalRunArgs } from "@atlas/api/lib/durable-session";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   PluginRegistry as PluginRegistryClass,
@@ -87,6 +88,39 @@ export interface MigrationShape {
 export class Migration extends Context.Tag("Migration")<
   Migration,
   MigrationShape
+>() {}
+
+// ---------------------------------------------------------------------------
+// DurableSession — agent-turn checkpoint store (#3745, ADR-0020)
+// ---------------------------------------------------------------------------
+
+export interface DurableSessionShape {
+  /**
+   * Whether a real (internal-DB-backed) durable store is wired. `false` for
+   * the Noop layer selected when no internal DB is present (`hasInternalDB()`),
+   * mirroring the enterprise Noop layers. The agent loop additionally gates on
+   * the per-workspace `ATLAS_DURABILITY_ENABLED` settings flag at write time.
+   */
+  readonly available: boolean;
+  /**
+   * Persist a single terminal run checkpoint (`done`/`failed`) at turn
+   * completion (phase 1a). Fire-and-forget: rides the shared `internalExecute`
+   * circuit breaker, never throws, never disrupts the stream. No-op on the
+   * Noop layer.
+   */
+  recordTerminal(args: RecordTerminalRunArgs): void;
+  /**
+   * Delete terminal runs older than the retention window; leaves non-terminal
+   * (`running`/`parked`) runs untouched. Returns the number deleted (0 on the
+   * Noop layer, -1 on a DB error). Driven by the retention-sweep scheduler
+   * fiber.
+   */
+  sweepTerminal(retentionDays: number): Effect.Effect<number>;
+}
+
+export class DurableSession extends Context.Tag("DurableSession")<
+  DurableSession,
+  DurableSessionShape
 >() {}
 
 // ── Service interface ────────────────────────────────────────────────

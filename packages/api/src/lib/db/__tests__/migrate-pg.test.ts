@@ -2391,6 +2391,60 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     // 0115 is idempotent — re-applying the ALTER IF NOT EXISTS is a no-op.
     await expect(pool.query(sql0115)).resolves.toBeDefined();
   }, PG_TEST_TIMEOUT_MS);
+
+  // 0143 (#3745, ADR-0020) — agent_runs durable-session checkpoint store.
+  // The status CHECK constraint and the conversation FK cascade are the two
+  // teeth of the schema: a bad status must reject (23514) and a deleted
+  // conversation must take its runs with it.
+  it("0143: agent_runs status CHECK rejects unknown values with 23514", async () => {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO conversations DEFAULT VALUES RETURNING id`,
+    );
+    const conversationId = rows[0]!.id;
+
+    // A canonical terminal status writes cleanly.
+    await pool.query(
+      `INSERT INTO agent_runs (conversation_id, status, transcript)
+       VALUES ($1, 'done', '[]'::jsonb)`,
+      [conversationId],
+    );
+
+    // An out-of-enum status rejects at the DB layer.
+    await expect(
+      pool.query(
+        `INSERT INTO agent_runs (conversation_id, status, transcript)
+         VALUES ($1, 'finished', '[]'::jsonb)`,
+        [conversationId],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0143: status defaults to 'running' and deleting the conversation cascades", async () => {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO conversations DEFAULT VALUES RETURNING id`,
+    );
+    const conversationId = rows[0]!.id;
+
+    // step_index defaults to 0, status defaults to 'running'.
+    await pool.query(
+      `INSERT INTO agent_runs (conversation_id, transcript) VALUES ($1, '[]'::jsonb)`,
+      [conversationId],
+    );
+    const before = await pool.query<{ status: string; step_index: number }>(
+      `SELECT status, step_index FROM agent_runs WHERE conversation_id = $1`,
+      [conversationId],
+    );
+    expect(before.rows[0]?.status).toBe("running");
+    expect(before.rows[0]?.step_index).toBe(0);
+
+    // ON DELETE CASCADE — removing the conversation removes its runs.
+    await pool.query(`DELETE FROM conversations WHERE id = $1`, [conversationId]);
+    const after = await pool.query<{ c: number }>(
+      `SELECT COUNT(*)::int AS c FROM agent_runs WHERE conversation_id = $1`,
+      [conversationId],
+    );
+    expect(after.rows[0]?.c).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
 });
 
 // #2606 — source-level revert guard for the integration-store SQL formatter.

@@ -164,7 +164,8 @@ describe("runMigrations", () => {
     //   Plus 0140 (operator_integration_credentials, operator-tier app creds, #3704) = 141.
     //   Plus 0141 (stripe_teardown_pending durable teardown outbox, #3679) = 142.
     //   Plus 0142 (user.normalizedEmail business-email/one-trial teeth, #3650) = 143.
-    expect(count).toBe(143);
+    //   Plus 0143 (agent_runs durable-session checkpoint store, ADR-0020, #3745) = 144.
+    expect(count).toBe(144);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -336,6 +337,7 @@ describe("runMigrations", () => {
         "0140_operator_integration_credentials.sql",
         "0141_stripe_teardown_pending.sql",
         "0142_user_normalized_email.sql",
+        "0143_agent_runs.sql",
       ],
     });
 

@@ -11,6 +11,7 @@
 
 import type { OutboxStatus } from "../lead-outbox/outbox";
 import type { EmailOutboxStatus } from "../email-outbox/outbox";
+import type { AgentRunStatus } from "../durable-session";
 import {
   pgTable,
   uuid,
@@ -2555,5 +2556,53 @@ export const mcpActionPolicy = pgTable(
   (t) => [
     primaryKey({ columns: [t.orgId, t.category] }),
     check("chk_mcp_action_policy_status", sql`status IN ('allowed', 'blocked')`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Durable agent sessions — turn checkpoint store (#3745, ADR-0020)
+// ---------------------------------------------------------------------------
+
+/**
+ * Durable agent-session checkpoints. A *run* is one user turn; phase 1a
+ * (#3745) writes exactly one terminal row per turn (`done`/`failed`) at
+ * completion, establishing the persistence seam before per-step `running`
+ * checkpoints and `parked`/`resuming_lease` resume land in later slices.
+ *
+ * CONTENT-MODE EXEMPT (deliberate): this is execution state — the in-flight
+ * turn's transcript + lifecycle status — not user-surfaced content, so it
+ * carries no draft/published `status` column or ContentModeRegistry filter
+ * (there is nothing to publish). The `status` column is the run lifecycle
+ * (running/parked/done/failed), unrelated to content mode. See ADR-0020 and
+ * docs/development/content-mode.md.
+ *
+ * `conversation_id` FKs `conversations(id)` ON DELETE CASCADE — a run is
+ * meaningless once its conversation is gone. `org_id` is the Better-Auth
+ * organization id (TEXT, no FK — `organization` is not a Drizzle table).
+ * Mirrors `migrations/0143_agent_runs.sql`.
+ */
+export const agentRuns = pgTable(
+  "agent_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    orgId: text("org_id"),
+    status: text("status").$type<AgentRunStatus>().notNull().default("running"),
+    stepIndex: integer("step_index").notNull().default(0),
+    transcript: jsonb("transcript").notNull(),
+    parkedReason: text("parked_reason"),
+    resumingLease: timestamp("resuming_lease", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_agent_runs_conversation").on(t.conversationId),
+    index("idx_agent_runs_org").on(t.orgId),
+    // Non-terminal runs are the hot working set for resume + the park reaper,
+    // a small slice of a table dominated by terminal rows awaiting the sweep.
+    index("idx_agent_runs_active").on(t.status).where(sql`status IN ('running', 'parked')`),
+    check("chk_agent_runs_status", sql`status IN ('running', 'parked', 'done', 'failed')`),
   ],
 );

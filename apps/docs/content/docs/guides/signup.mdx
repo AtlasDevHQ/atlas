@@ -46,7 +46,7 @@ On the hosted SaaS, Atlas signup is **business-email only**, with identical poli
 - **Disposable / throwaway mailboxes** (mailinator, guerrillamail, 10-minute-mail, …) — detected via the [`better-auth-harmony`](https://github.com/GauBen/better-auth-harmony) `emailHarmony` plugin's `mailchecker` engine (50k+ domains).
 - **Freemium / consumer domains** (gmail, outlook, yahoo, icloud, proton, …) — a maintained denylist in code.
 
-Both denials surface the same way: an actionable error on the web form ("Please sign up with your work email address…") and a typed `business_email_required` envelope on the MCP path. Legitimate business-domain signups are unaffected.
+Both denials carry the same actionable message — "Please sign up with your work email address…". On the **web form** it arrives as a Better Auth `400` whose body carries `code: "business_email_required"`. On the **MCP `start_trial`** path it arrives as a [`validation_failed`](/reference/error-codes#self-serve-trial-signup-over-mcp-start_trial) envelope carrying that message plus a "use your work email" `hint` (the closed MCP envelope catalog has no dedicated business-email code, and a personal address is invalid trial input). Legitimate business-domain signups are unaffected.
 
 The `emailHarmony` plugin also writes a unique `normalizedEmail` column — collapsing `+alias`, dot, and case variants of the same address — so `john.doe+trial@acme.com` and `johndoe@acme.com` can't both claim a separate trial.
 

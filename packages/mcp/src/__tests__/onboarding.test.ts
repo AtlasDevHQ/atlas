@@ -217,6 +217,7 @@ describe("start_trial tool", () => {
     const cases: Array<{
       code:
         | "invalid_input"
+        | "business_email"
         | "signup_failed"
         | "not_saas"
         | "org_failed"
@@ -226,6 +227,7 @@ describe("start_trial tool", () => {
       expectRequestId?: boolean;
     }> = [
       { code: "invalid_input", envelopeCode: "validation_failed" },
+      { code: "business_email", envelopeCode: "validation_failed", expectHint: true },
       { code: "signup_failed", envelopeCode: "validation_failed", expectHint: true },
       { code: "not_saas", envelopeCode: "forbidden" },
       { code: "org_failed", envelopeCode: "internal_error", expectRequestId: true },

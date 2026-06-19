@@ -145,14 +145,14 @@ describe("provisionTrialWorkspace", () => {
     expect(calls.mcpLead).toHaveLength(0);
   });
 
-  it("maps a business-email rejection from the signup hook to invalid_input (actionable, not internal_error)", async () => {
+  it("maps a business-email rejection from the signup hook to business_email (actionable, not internal_error)", async () => {
     // #3650 enforces business-email-only signup in the SHARED Better Auth
     // `user.create.before` hook, so a freemium/disposable address throws a typed
     // BUSINESS_EMAIL_REQUIRED APIError out of `signUpEmail`. The provisioner must
-    // recognize it and surface `invalid_input` (→ validation_failed envelope at
-    // the MCP layer) carrying the actionable message — NOT the generic
-    // `internal_error`/"please retry" a bare rethrow would produce. A deny is
-    // permanent, not transient.
+    // recognize it and surface the distinct `business_email` code (→ a
+    // validation_failed envelope WITH a work-email hint at the MCP layer)
+    // carrying the actionable message — NOT the generic `internal_error`/"please
+    // retry" a bare rethrow would produce. A deny is permanent, not transient.
     const { APIError } = await import("better-auth/api");
     const { BUSINESS_EMAIL_REQUIRED_CODE, BUSINESS_EMAIL_REQUIRED_MESSAGE } =
       await import("@atlas/api/lib/auth/business-email");
@@ -168,7 +168,7 @@ describe("provisionTrialWorkspace", () => {
     await expect(
       provisionTrialWorkspace({ email: "user@gmail.com", orgName: "Acme" }, deps),
     ).rejects.toMatchObject({
-      code: "invalid_input",
+      code: "business_email",
       message: BUSINESS_EMAIL_REQUIRED_MESSAGE,
     });
     // A denied signup provisions nothing: no org, no grace, no CRM lead.

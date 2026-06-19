@@ -121,3 +121,16 @@ Abuse prevention is separate from [rate limiting](/guides/rate-limiting):
 - **Abuse prevention** is per-workspace, uses a longer sliding window, and applies graduated response
 
 Both can be active simultaneously. Rate limiting catches individual users making too many requests; abuse prevention catches workspace-level patterns that may involve multiple users or automated access.
+
+---
+
+## Unclaimed-grace reaper (self-serve MCP trials)
+
+A workspace provisioned over MCP by [`start_trial`](/guides/mcp#start_trial) lands on the `trial` tier in a short **unclaimed grace** window (`TRIAL_GRACE_HOURS`, default 72h) rather than the full 14-day clock — the clock only starts when the owner **claims** the account on the web (verifies their email). This bounds the free pre-claim window so abandoned and spam signups can't sit on a free MCP-querying workspace indefinitely.
+
+A background sweep (`reapUnclaimedGraceWorkspaces`) demotes any **unclaimed** workspace whose grace window has lapsed to the `locked` churn tier, after which Gate 0 (`checkPlanLimits`) blocks it on every surface — MCP included — with `subscription_required`. Operator-relevant properties:
+
+- **Runs on every SaaS region, hourly.** It is gated on `deployMode === "saas"` + an internal DB only — deliberately **independent** of `ATLAS_SCHEDULER_ENABLED` (unlike the proactive/report scheduler), so it sweeps even in regions where the task scheduler is off.
+- **Never touches a claimed trial.** The sweep matches only an unverified owner (`emailVerified = false`), so a claimed trial runs its normal 14-day expiry untouched. It also honors active operator `plan_override_until` grants.
+- **Idempotent + concurrency-safe.** A guarded `UPDATE` on `plan_tier = 'trial'`; a second pass or a peer region finds zero candidates. A failed sweep is logged and swallowed — candidates simply remain on `trial` until the next interval retries.
+- **Observability.** A non-zero reap logs `reapedCount` + `orgIds` at `info` (logger `billing.reap-unclaimed-grace`); failures log at `error`. No metric is emitted today.

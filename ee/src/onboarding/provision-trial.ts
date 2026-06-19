@@ -56,6 +56,7 @@ export interface ProvisionTrialResult {
 export type TrialProvisioningCode =
   | "not_saas"
   | "invalid_input"
+  | "business_email"
   | "signup_failed"
   | "org_failed"
   | "trial_not_assigned";
@@ -219,9 +220,10 @@ function isValidEmail(email: string): boolean {
  * Provision a brand-new trial Workspace and return the hosted-MCP connect URL.
  *
  * @throws {TrialProvisioningError} `not_saas` when deploy mode isn't SaaS;
- *   `invalid_input` for empty/malformed email or name; `signup_failed` /
- *   `org_failed` when the Better Auth path returns no id; `trial_not_assigned`
- *   when the org landed on neither `trial` nor `locked`.
+ *   `invalid_input` for empty/malformed email or name; `business_email` when the
+ *   address is freemium/disposable (the shared #3650 signup-hook deny);
+ *   `signup_failed` / `org_failed` when the Better Auth path returns no id;
+ *   `trial_not_assigned` when the org landed on neither `trial` nor `locked`.
  */
 export async function provisionTrialWorkspace(
   input: ProvisionTrialInput,
@@ -263,8 +265,10 @@ export async function provisionTrialWorkspace(
     // The business-email-only policy (#3650) is enforced in the SHARED Better
     // Auth `user.create.before` hook, so a freemium/disposable address throws
     // a typed `business_email_required` APIError out of `signUpEmail`. Map it to
-    // `invalid_input` so the MCP `start_trial` envelope surfaces the actionable
-    // "use your work email" message — NOT the generic `internal_error`/"please
+    // the distinct `business_email` code so the MCP `start_trial` envelope
+    // surfaces the actionable "use your work email" message + a tailored hint
+    // (a `validation_failed` envelope on the wire, but distinguishable from a
+    // malformed-email `invalid_input`) — NOT the generic `internal_error`/"please
     // retry" a bare rethrow would produce (a deny is permanent, not transient).
     // Lazily imported so the heavy `better-auth-harmony` graph this recognizer
     // pulls stays out of stub-injected unit tests (mirrors the dep philosophy).
@@ -286,7 +290,7 @@ export async function provisionTrialWorkspace(
     }
     if (recognizer?.isBusinessEmailRejection(err)) {
       throw new TrialProvisioningError(
-        "invalid_input",
+        "business_email",
         recognizer.BUSINESS_EMAIL_REQUIRED_MESSAGE,
       );
     }

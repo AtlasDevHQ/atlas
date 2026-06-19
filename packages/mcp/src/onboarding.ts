@@ -238,7 +238,7 @@ export function registerStartTrialTool(
         // NOT trials per IP (shared NATs must keep signing up).
         const rate = checkRateLimit({ ip: clientIp, email: input.email });
         if (!rate.allowed) {
-          const retryAfter = Math.ceil((rate.retryAfterMs ?? 60_000) / 1000);
+          const retryAfter = Math.ceil(rate.retryAfterMs / 1000);
           log.warn(
             { requestId, bucket: rate.bucket, retryAfter, event: "start_trial.rate_limited" },
             "start_trial creation attempt rate-limited",
@@ -278,7 +278,24 @@ export function registerStartTrialTool(
         // Turnstile siteverify — fails closed (missing secret, network error,
         // and explicit rejection all return ok:false). Never leak the secret,
         // the token, or Cloudflare error codes to the caller; log them only.
-        const verify = await verifyTurnstileFn({ token, remoteIp: clientIp, requestId });
+        // The real verifier never throws (it folds every failure into ok:false),
+        // but an abuse control must fail CLOSED even on an unexpected verifier
+        // defect: a throw is treated as a failed bot-check (forbidden/deny), not
+        // a generic internal_error that would invite endless retries.
+        let verify: VerifyTurnstileResult;
+        try {
+          verify = await verifyTurnstileFn({ token, remoteIp: clientIp, requestId });
+        } catch (err) {
+          log.error(
+            {
+              requestId,
+              err: err instanceof Error ? err.message : String(err),
+              event: "start_trial.turnstile_threw",
+            },
+            "start_trial Turnstile verifier threw — failing closed (deny)",
+          );
+          verify = { ok: false, errorCodes: [], reason: "verifier_threw" };
+        }
         if (!verify.ok) {
           log.warn(
             {

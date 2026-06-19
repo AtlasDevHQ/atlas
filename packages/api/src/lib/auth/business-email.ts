@@ -150,10 +150,26 @@ export function isFreemiumEmailDomain(email: string): boolean {
  * Better Auth owns the required-field case. This keeps the exported helper safe
  * for a direct caller (e.g. the MCP `start_trial` provisioner, #3649) that
  * hasn't already passed through {@link assertBusinessEmail}'s empty guard.
+ *
+ * If `validateEmail` itself THROWS on hostile input (a pathological/over-length
+ * address, or a future `mailchecker` that throws instead of returning false),
+ * we fail CLOSED — treat the address as disposable (deny) rather than let an
+ * unclassified throw escape `assertBusinessEmail` as an opaque 500. An
+ * abuse/eligibility check must never admit an address it couldn't validate.
+ * Logged via `console` to keep this module dependency-light (template-synced;
+ * no Atlas-internal imports — see the file header).
  */
 export function isDisposableEmail(email: string): boolean {
   if (!email) return false;
-  return !validateEmail(email);
+  try {
+    return !validateEmail(email);
+  } catch (err) {
+    console.warn(
+      "[business-email] validateEmail threw; denying address as disposable (fail closed):",
+      err instanceof Error ? err.message : String(err),
+    );
+    return true;
+  }
 }
 
 /** Why an address fails the business-email policy. */

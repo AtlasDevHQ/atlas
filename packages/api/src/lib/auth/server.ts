@@ -312,8 +312,9 @@ export async function assignSaasTrial(args: {
  * defense:
  *  - inner `.pipe(Effect.either)` absorbs `upsertLead`'s typed `Error`
  *    channel (e.g. a `crm_outbox` Postgres blip), with a structured
- *    `log.warn` so the failure surfaces in this module's logs — does
- *    NOT rely on the EE-side `tapError` for the audit trail.
+ *    `log.error` (a failed durable enqueue is a permanent lead loss) so the
+ *    failure surfaces in this module's logs — does NOT rely on the EE-side
+ *    `tapError` for the audit trail.
  *  - outer `try/catch` absorbs runtime defects (a stuck `runPromise`,
  *    an unhandled rejection from a future Layer change).
  *
@@ -358,13 +359,18 @@ export async function dispatchSignupCrmLead(args: {
           })
           .pipe(Effect.either);
         if (result._tag === "Left") {
-          log.warn(
+          // `log.error`, not warn: the Left channel here means the durable
+          // `crm_outbox` enqueue itself failed (not a downstream Twenty hiccup
+          // the flusher would retry), so this signup's acquisition lead is
+          // permanently lost. Pageable — the swallow keeps auth unblocked, but
+          // the loss must alert. (#3653 review S-1.)
+          log.error(
             {
               userId: user.id,
               err: errorMessage(result.left),
               event: "signup_crm.enqueue_failed",
             },
-            "SaasCrm.upsertLead enqueue failed during signup — swallowed to keep auth response unblocked",
+            "SaasCrm.upsertLead enqueue failed during signup — lead lost; swallowed to keep auth response unblocked",
           );
         }
       }),
@@ -420,13 +426,16 @@ export async function dispatchMcpSignupCrmLead(args: {
           })
           .pipe(Effect.either);
         if (result._tag === "Left") {
-          log.warn(
+          // `log.error`, not warn — see the sibling enqueue_failed branch in
+          // dispatchSignupCrmLead: a failed durable `crm_outbox` enqueue means
+          // this MCP_SIGNUP acquisition lead is permanently lost. Pageable.
+          log.error(
             {
               email,
               err: errorMessage(result.left),
               event: "mcp_signup_crm.enqueue_failed",
             },
-            "SaasCrm.upsertLead enqueue failed during MCP signup — swallowed to keep provisioning unblocked",
+            "SaasCrm.upsertLead enqueue failed during MCP signup — lead lost; swallowed to keep provisioning unblocked",
           );
         }
       }),

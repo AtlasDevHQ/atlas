@@ -14,6 +14,10 @@
  * both hand back an identical, canonical connect URL.
  */
 
+import { createLogger } from "@atlas/api/lib/logger";
+
+const log = createLogger("mcp-connect-url");
+
 /**
  * Map a regional `api[-region].useatlas.dev` host onto the public brand host
  * `mcp[-region].useatlas.dev`, so a client that never sees the internal
@@ -64,5 +68,16 @@ export function resolveMcpBaseUrl(baseUrl?: string): string {
  */
 export function buildMcpConnectUrl(workspaceId: string, baseUrl?: string): string {
   const base = resolveMcpBaseUrl(baseUrl);
+  if (!base) {
+    // No public API base resolved (ATLAS_PUBLIC_API_URL / BETTER_AUTH_URL both
+    // unset). SaaS boot requires these, so this is unreachable in a correctly
+    // configured region — but a bare relative `/mcp/{id}/sse` would be the
+    // trial's entire payoff handed back unusable. Surface the misconfiguration
+    // at provision time rather than as a confusing client-side connect failure.
+    log.warn(
+      { workspaceId },
+      "buildMcpConnectUrl: no public API base resolved — connect URL is relative and unusable; check ATLAS_PUBLIC_API_URL/BETTER_AUTH_URL",
+    );
+  }
   return `${base}/mcp/${workspaceId}/sse`;
 }

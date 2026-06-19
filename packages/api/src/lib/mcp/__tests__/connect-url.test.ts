@@ -56,4 +56,22 @@ describe("buildMcpConnectUrl", () => {
       "https://atlas.acme.internal",
     );
   });
+
+  it("resolves to an empty base when no source is set", () => {
+    delete process.env.ATLAS_PUBLIC_API_URL;
+    delete process.env.BETTER_AUTH_URL;
+    expect(resolveMcpBaseUrl()).toBe("");
+  });
+
+  it("yields a relative (unusable) connect URL when no base resolves — and warns", () => {
+    // SaaS boot requires a public API base, so this is unreachable in a
+    // correctly configured region. The function does NOT throw (a missing base
+    // shouldn't crash provisioning), but it emits a warn so the misconfiguration
+    // surfaces rather than silently handing back a relative path. We assert the
+    // documented degenerate shape so a future regression to a thrown error or a
+    // different fallback is caught.
+    delete process.env.ATLAS_PUBLIC_API_URL;
+    delete process.env.BETTER_AUTH_URL;
+    expect(buildMcpConnectUrl("org_z")).toBe("/mcp/org_z/sse");
+  });
 });

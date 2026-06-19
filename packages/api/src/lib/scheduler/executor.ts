@@ -22,7 +22,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { getScheduledTask, updateRunDeliveryStatus } from "@atlas/api/lib/scheduled-tasks";
 import { executeAgentQuery, type AgentQueryResult } from "@atlas/api/lib/agent-query";
 import { BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
-import { ClaimRequiredError } from "@atlas/api/lib/billing/claim-gate";
+import { ClaimRequiredError, ClaimCheckFailedError } from "@atlas/api/lib/billing/claim-gate";
 import { loadActorUser } from "@atlas/api/lib/auth/actor";
 import { SchedulerTaskTimeoutError, SchedulerExecutionError } from "@atlas/api/lib/effect/errors";
 import { causeToError } from "@atlas/api/lib/audit/error-scrub";
@@ -68,9 +68,15 @@ function agentQueryEffect(
               // on the run row so the owner knows to claim on the web.
               err instanceof ClaimRequiredError
               ? `Workspace not yet claimed [${err.errorCode}]: ${err.message}`
-              : err instanceof Error
-                ? err.message
-                : String(err),
+              : // A transient claim-status lookup failure (fail-closed 503). Its
+                // message is user-safe; label it for parity with the query/chat
+                // paths so the owner's run history isn't an unattributed error.
+                // The run is recorded failed and retries on the next tick.
+                err instanceof ClaimCheckFailedError
+                ? `Claim status check failed [${err.errorCode}]: ${err.message}`
+                : err instanceof Error
+                  ? err.message
+                  : String(err),
         taskId,
       }),
   }).pipe(

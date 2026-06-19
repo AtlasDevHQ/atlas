@@ -145,6 +145,78 @@ describe("provisionTrialWorkspace", () => {
     expect(calls.mcpLead).toHaveLength(0);
   });
 
+  it("maps a business-email rejection from the signup hook to invalid_input (actionable, not internal_error)", async () => {
+    // #3650 enforces business-email-only signup in the SHARED Better Auth
+    // `user.create.before` hook, so a freemium/disposable address throws a typed
+    // BUSINESS_EMAIL_REQUIRED APIError out of `signUpEmail`. The provisioner must
+    // recognize it and surface `invalid_input` (→ validation_failed envelope at
+    // the MCP layer) carrying the actionable message — NOT the generic
+    // `internal_error`/"please retry" a bare rethrow would produce. A deny is
+    // permanent, not transient.
+    const { APIError } = await import("better-auth/api");
+    const { BUSINESS_EMAIL_REQUIRED_CODE, BUSINESS_EMAIL_REQUIRED_MESSAGE } =
+      await import("@atlas/api/lib/auth/business-email");
+    const { deps, calls } = stubDeps({
+      signUpEmail: async () => {
+        throw new APIError("BAD_REQUEST", {
+          code: BUSINESS_EMAIL_REQUIRED_CODE,
+          message: BUSINESS_EMAIL_REQUIRED_MESSAGE,
+          reason: "freemium",
+        });
+      },
+    });
+    await expect(
+      provisionTrialWorkspace({ email: "user@gmail.com", orgName: "Acme" }, deps),
+    ).rejects.toMatchObject({
+      code: "invalid_input",
+      message: BUSINESS_EMAIL_REQUIRED_MESSAGE,
+    });
+    // A denied signup provisions nothing: no org, no grace, no CRM lead.
+    expect(calls.createOrg).toHaveLength(0);
+    expect(calls.grace).toHaveLength(0);
+    expect(calls.mcpLead).toHaveLength(0);
+  });
+
+  it("rethrows a non-business-email signup throw unchanged (a generic failure stays generic)", async () => {
+    // Anything other than the business-email rejection propagates untouched, so
+    // the MCP layer maps it to internal_error — only the recognized deny is
+    // re-tagged to invalid_input.
+    const { deps } = stubDeps({
+      signUpEmail: async () => {
+        throw new Error("better auth exploded");
+      },
+    });
+    await expect(
+      provisionTrialWorkspace({ email: "a@b.com", orgName: "Acme" }, deps),
+    ).rejects.toThrow("better auth exploded");
+  });
+
+  it("is idempotent for a duplicate email — a repeat provision is refused before any org creation", async () => {
+    // Simulate Better Auth's enumeration-safe dedup: the first signup returns a
+    // real user id; a second signup for the same email returns the synthetic
+    // no-id response. The provisioner must refuse the second BEFORE org creation
+    // so a repeat call can't mint a second workspace for one account.
+    let seen = false;
+    const { deps, calls } = stubDeps({
+      signUpEmail: async () => {
+        if (seen) return { user: {} }; // duplicate → no id
+        seen = true;
+        return { user: { id: "user_first" } };
+      },
+    });
+    const first = await provisionTrialWorkspace(
+      { email: "dup@acme.com", orgName: "Acme" },
+      deps,
+    );
+    expect(first.workspaceId).toBe("org_new");
+    await expect(
+      provisionTrialWorkspace({ email: "dup@acme.com", orgName: "Acme" }, deps),
+    ).rejects.toMatchObject({ code: "signup_failed" });
+    // Only the first provision created an org and enqueued a lead.
+    expect(calls.createOrg).toHaveLength(1);
+    expect(calls.mcpLead).toHaveLength(1);
+  });
+
   it("refuses when deployMode !== 'saas'", async () => {
     const { deps, calls } = stubDeps({ getDeployMode: () => "self-hosted" });
     await expect(

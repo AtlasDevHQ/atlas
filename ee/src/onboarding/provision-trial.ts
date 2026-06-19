@@ -60,7 +60,15 @@ export type TrialProvisioningCode =
   | "org_failed"
   | "trial_not_assigned";
 
-/** Typed error so the MCP tool / HTTP face can map to a structured envelope. */
+/**
+ * Typed error so the MCP tool / HTTP face can map to a structured envelope.
+ *
+ * A plain `Error` subclass (not a `Data.TaggedError`) on purpose: the consumer
+ * is the plain-async MCP `start_trial` tool seam, which recognizes it with
+ * `instanceof TrialProvisioningError` (see `packages/mcp/src/onboarding.ts`).
+ * Converting it to a tagged error would break that `instanceof` check — mirrors
+ * the same deliberate choice in `ClaimRequiredError` (`billing/claim-gate.ts`).
+ */
 export class TrialProvisioningError extends Error {
   override readonly name = "TrialProvisioningError";
   readonly code: TrialProvisioningCode;
@@ -244,11 +252,32 @@ export async function provisionTrialWorkspace(
   }
 
   const name = email.split("@")[0] || orgName;
-  const signup = await deps.signUpEmail({
-    email,
-    password: generateThrowawayPassword(),
-    name,
-  });
+  let signup: { user?: { id?: string } } | undefined;
+  try {
+    signup = await deps.signUpEmail({
+      email,
+      password: generateThrowawayPassword(),
+      name,
+    });
+  } catch (err) {
+    // The business-email-only policy (#3650) is enforced in the SHARED Better
+    // Auth `user.create.before` hook, so a freemium/disposable address throws
+    // a typed `business_email_required` APIError out of `signUpEmail`. Map it to
+    // `invalid_input` so the MCP `start_trial` envelope surfaces the actionable
+    // "use your work email" message — NOT the generic `internal_error`/"please
+    // retry" a bare rethrow would produce (a deny is permanent, not transient).
+    // Lazily imported so the heavy `better-auth-harmony` graph this recognizer
+    // pulls stays out of stub-injected unit tests (mirrors the dep philosophy).
+    const { isBusinessEmailRejection, BUSINESS_EMAIL_REQUIRED_MESSAGE } =
+      await import("@atlas/api/lib/auth/business-email");
+    if (isBusinessEmailRejection(err)) {
+      throw new TrialProvisioningError(
+        "invalid_input",
+        BUSINESS_EMAIL_REQUIRED_MESSAGE,
+      );
+    }
+    throw err;
+  }
   const userId = signup?.user?.id;
   if (!userId) {
     // Better Auth returns an enumeration-safe synthetic response (no real user

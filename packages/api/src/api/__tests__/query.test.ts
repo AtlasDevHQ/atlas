@@ -211,6 +211,45 @@ mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   BillingBlockedError: BillingBlockedErrorStub,
 }));
 
+// ADR-0018 / #3651 — the claim-gate seam lives inside `executeAgentQuery`; the
+// route's job is mapping the typed claim errors to HTTP envelopes (403/503).
+// Mock the gate so tests control the verdict; the stub error classes mirror the
+// real ones (the route + executeAgentQuery both narrow via `instanceof`, and
+// both resolve the class from this same mocked module).
+class ClaimRequiredErrorStub extends Error {
+  override readonly name = "ClaimRequiredError";
+  readonly errorCode = "claim_required" as const;
+  readonly httpStatus = 403 as const;
+  readonly claimUrl: string;
+  constructor(claimUrl: string) {
+    super(`Claim required: ${claimUrl}`);
+    this.claimUrl = claimUrl;
+  }
+}
+class ClaimCheckFailedErrorStub extends Error {
+  override readonly name = "ClaimCheckFailedError";
+  readonly errorCode = "claim_check_failed" as const;
+  readonly httpStatus = 503 as const;
+  readonly retryable = true as const;
+  constructor() {
+    super("Unable to verify your workspace's claim status. Please try again.");
+  }
+}
+type ClaimGateVerdict =
+  | { allowed: true }
+  | { allowed: false; reason: "claim_required"; claimUrl: string }
+  | { allowed: false; reason: "check_failed" };
+let claimGateVerdict: ClaimGateVerdict = { allowed: true };
+const mockCheckClaimGate = mock(async (_orgId?: string) => claimGateVerdict);
+
+mock.module("@atlas/api/lib/billing/claim-gate", () => ({
+  checkClaimGate: mockCheckClaimGate,
+  ClaimRequiredError: ClaimRequiredErrorStub,
+  ClaimCheckFailedError: ClaimCheckFailedErrorStub,
+  buildClaimUrl: (email?: string) =>
+    `https://app.useatlas.dev/signup${email ? `?email=${email}` : ""}`,
+}));
+
 // Import after mocks are registered
 const { app } = await import("../index");
 
@@ -255,6 +294,8 @@ describe("POST /api/v1/query", () => {
     mockGetConversationQuery.mockResolvedValue({ ok: false, reason: "not_found" });
     billingGateVerdict = { allowed: true };
     mockCheckAgentBillingGate.mockClear();
+    claimGateVerdict = { allowed: true };
+    mockCheckClaimGate.mockClear();
   });
 
   afterEach(() => {
@@ -276,6 +317,42 @@ describe("POST /api/v1/query", () => {
     expect(body.data).toEqual([{ columns: ["count"], rows: [{ count: 42 }] }]);
     expect(body.steps).toBe(1);
     expect(body.usage).toEqual({ totalTokens: 150 });
+  });
+
+  // ADR-0018 / #3651 — route-level mapping of the claim-gate's typed errors.
+  // The block-vs-allow matrix is tested at the gate (billing/claim-gate.test.ts)
+  // and seam (agent-query-claim-gate.test.ts) levels; these pin the HTTP
+  // envelope the route emits, which nothing else exercised.
+  it("maps a claim-gate block to a 403 claim_required envelope carrying the claim URL", async () => {
+    claimGateVerdict = {
+      allowed: false,
+      reason: "claim_required",
+      claimUrl: "https://app.useatlas.dev/signup?email=owner@acme.com",
+    };
+    const response = await app.fetch(makeQueryRequest());
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.error).toBe("claim_required");
+    expect(body.claimUrl).toBe(
+      "https://app.useatlas.dev/signup?email=owner@acme.com",
+    );
+    expect(body.retryable).toBe(false);
+    expect(body.requestId).toBeTruthy();
+    // A withheld query must not spend Atlas tokens.
+    expect(mockRunAgent).not.toHaveBeenCalled();
+  });
+
+  it("maps an unverifiable claim status to a retryable 503 (fails closed, no claim URL, no token spend)", async () => {
+    claimGateVerdict = { allowed: false, reason: "check_failed" };
+    const response = await app.fetch(makeQueryRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.error).toBe("claim_check_failed");
+    expect(body.retryable).toBe(true);
+    // 503/check_failed is NOT a claim prompt — no claimUrl on this arm.
+    expect(body.claimUrl).toBeUndefined();
+    expect(body.requestId).toBeTruthy();
+    expect(mockRunAgent).not.toHaveBeenCalled();
   });
 
   // ── #3419/#3420: billing blocks from the seam map to the HTTP envelope ──

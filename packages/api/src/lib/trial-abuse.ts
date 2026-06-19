@@ -108,7 +108,7 @@ function peek(
   key: string,
   limit: number,
   now: number,
-): { allowed: boolean; retryAfterMs?: number } {
+): { allowed: true } | { allowed: false; retryAfterMs: number } {
   if (limit === 0) return { allowed: true };
 
   const cutoff = now - WINDOW_MS;
@@ -141,13 +141,20 @@ function record(windows: Map<string, number[]>, key: string, limit: number, now:
 /** Which bucket tripped — surfaced for structured logging, never to the caller's user. */
 export type TrialAttemptBucket = "ip" | "email";
 
-export interface TrialAttemptRateLimitResult {
-  readonly allowed: boolean;
-  /** The bucket that tripped (only when `allowed === false`). */
-  readonly bucket?: TrialAttemptBucket;
-  /** Milliseconds until the tripped bucket frees a slot. */
-  readonly retryAfterMs?: number;
-}
+/**
+ * Discriminated on `allowed` so `bucket` + `retryAfterMs` are present IFF the
+ * attempt was blocked — a `{ allowed: true }` result can't carry a stray bucket,
+ * and a consumer that branches on `!allowed` reads both fields without a fallback.
+ */
+export type TrialAttemptRateLimitResult =
+  | { readonly allowed: true }
+  | {
+      /** The bucket that tripped. */
+      readonly allowed: false;
+      readonly bucket: TrialAttemptBucket;
+      /** Milliseconds until the tripped bucket frees a slot. */
+      readonly retryAfterMs: number;
+    };
 
 /**
  * Check a trial creation attempt against BOTH the per-IP and per-email windows.

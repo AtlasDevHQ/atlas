@@ -248,8 +248,12 @@ describe("start_trial tool", () => {
       const arr = result.content as Array<{ type: string; text: string }>;
       const err = parseAtlasMcpToolError(arr[0]!.text);
       expect(err?.code).toBe(tc.envelopeCode);
-      if (tc.expectHint) expect(err?.hint).toBeTruthy();
-      if (tc.expectRequestId) expect(err?.request_id).toBeTruthy();
+      if (tc.expectHint) expect(typeof err?.hint).toBe("string");
+      if (tc.expectRequestId) {
+        // Assert the shape, not mere truthiness — the literal string
+        // "undefined" would pass `toBeTruthy()`. request_id is a UUID.
+        expect(err?.request_id).toMatch(/^[0-9a-f-]{36}$/i);
+      }
     }
   });
 
@@ -281,7 +285,7 @@ describe("start_trial tool", () => {
     const arr = result.content as Array<{ type: string; text: string }>;
     const err = parseAtlasMcpToolError(arr[0]!.text);
     expect(err?.code).toBe("internal_error");
-    expect(err?.request_id).toBeTruthy();
+    expect(err?.request_id).toMatch(/^[0-9a-f-]{36}$/i);
   });
 });
 
@@ -367,6 +371,37 @@ describe("start_trial abuse controls (#3654)", () => {
     });
     expect(result.isError).toBeFalsy();
     expect(seen).toEqual([{ token: "good-token", remoteIp: null }]);
+    // The pass must actually reach provisioning — assert the payoff, not just
+    // that the verifier was called.
+    expect(
+      (result.structuredContent as { workspaceId: string }).workspaceId,
+    ).toBe("org_new");
+  });
+
+  it("fails CLOSED (forbidden) when the verifier THROWS — an abuse control denies on a verifier defect", async () => {
+    // The real verifier never throws (it folds every failure into ok:false), so
+    // this pins the defensive contract: an unexpected verifier throw must deny
+    // as a failed bot-check (forbidden), NOT fall through to an internal_error
+    // that invites endless retries — and must NEVER provision.
+    let provisioned = false;
+    const provision: ProvisionTrialFn = async () => {
+      provisioned = true;
+      return okProvision({ email: "x@y.com", orgName: "Acme" });
+    };
+    const verifyTurnstile: VerifyTurnstileFn = async () => {
+      throw new Error("siteverify client blew up");
+    };
+    const { client } = await wireTool(provision, { verifyTurnstile });
+    const result = await client.callTool({
+      name: "start_trial",
+      arguments: { email: "founder@acme.com", orgName: "Acme", turnstileToken: "tok" },
+    });
+    expect(result.isError).toBe(true);
+    const err = parseAtlasMcpToolError(
+      (result.content as Array<{ text: string }>)[0]!.text,
+    );
+    expect(err?.code).toBe("forbidden");
+    expect(provisioned).toBe(false);
   });
 
   // ── Rate limiting ─────────────────────────────────────────────────────────

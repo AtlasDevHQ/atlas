@@ -280,6 +280,31 @@ describe("executor", () => {
     expect(mockUpdateRunDeliveryStatus).not.toHaveBeenCalled();
   });
 
+  it("records a claim-required block on the run with the claim reason (#3651)", async () => {
+    const { ClaimRequiredError } = await import("@atlas/api/lib/billing/claim-gate");
+    mockExecuteAgentQuery.mockImplementationOnce(() =>
+      Promise.reject(new ClaimRequiredError("https://app.example.test/claim")),
+    );
+    const promise = executeScheduledTask("task-1", "run-1", 30_000);
+    await expect(promise).rejects.toThrow(/Workspace not yet claimed \[claim_required\]/);
+    expect(mockDeliverResult).not.toHaveBeenCalled();
+    expect(mockUpdateRunDeliveryStatus).not.toHaveBeenCalled();
+  });
+
+  it("labels a transient claim-check failure on the run for parity (#3803)", async () => {
+    const { ClaimCheckFailedError } = await import("@atlas/api/lib/billing/claim-gate");
+    mockExecuteAgentQuery.mockImplementationOnce(() =>
+      Promise.reject(new ClaimCheckFailedError()),
+    );
+    // A fail-closed 503 claim-status lookup failure: the run must be recorded
+    // failed with the labeled, user-safe reason (parity with query/chat paths)
+    // rather than an unattributed error. The next tick retries.
+    const promise = executeScheduledTask("task-1", "run-1", 30_000);
+    await expect(promise).rejects.toThrow(/Claim status check failed \[claim_check_failed\]/);
+    expect(mockDeliverResult).not.toHaveBeenCalled();
+    expect(mockUpdateRunDeliveryStatus).not.toHaveBeenCalled();
+  });
+
   it("skips delivery status when no recipients attempted", async () => {
     mockDeliverResult.mockResolvedValueOnce({ attempted: 0, succeeded: 0, failed: 0, permanentFailures: 0, firstPermanentError: null });
     await executeScheduledTask("task-1", "run-1", 30_000);

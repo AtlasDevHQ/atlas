@@ -12,6 +12,14 @@
  * switch over `TrialProvisioningCode` in `onboarding.ts` depends on the literal
  * union, not a widened `string`.
  *
+ * Drift is type-enforced across two builds, so no separate mirror-assertion is
+ * needed (unlike the cross-package CRM lead union, which has `check-lead-union-
+ * mirror.sh`): normal CI type-checks `packages/mcp` against the REAL union (a
+ * new code → onboarding.ts's exhaustive switch fails to compile), and the
+ * `ee-stub-build` job type-checks it against THIS stub (a switch case for a code
+ * the stub lacks → `tsgo` rejects the comparison). A divergence fails one build
+ * or the other.
+ *
  * Not used at runtime.
  */
 

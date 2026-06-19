@@ -26,6 +26,13 @@ import type { UpsertPersonInput } from "./client";
  * Sticky / last-touch source attribution stamped on Twenty Person
  * records. Narrow literal union: a typo here persists in Twenty
  * forever, so the type must reject misspellings at compile time.
+ *
+ * `OTHER` is intentionally NOT produced by any `AtlasLeadEvent` variant — it's
+ * the catch-all the agent-facing `upsertTwentyPerson` tool exposes (see the
+ * `eventSource` enum in `index.ts`) for an agent stamping a Person that doesn't
+ * fit a tracked acquisition channel. `MCP_SIGNUP` is deliberately the inverse:
+ * an internal channel the provisioner sets but agents must NOT stamp by hand,
+ * so it's absent from that tool enum.
  */
 export type AtlasEventSource =
   | "DEMO"

@@ -237,6 +237,58 @@ describe("upsertPerson — Person exists with atlasFirstSource set", () => {
     expect(body.atlasFirstSource).toBeUndefined();
   });
 
+  test("end-to-end: an mcp-signup lead for an EXISTING Person PATCHes only atlasLastSource — first-touch (DEMO) is sticky (#3653)", async () => {
+    // The companion test pins MCP_SIGNUP as first-touch on a NEW Person; this
+    // pins the inverse — the whole point of the suppression machinery. A prospect
+    // who demoed first, then self-served via MCP, must keep atlasFirstSource=DEMO
+    // and only flip atlasLastSource to MCP_SIGNUP. A regression that stamped
+    // firstSource here would silently steal the original acquisition attribution.
+    const { fetch, calls } = makeScriptedFetch([
+      {
+        status: 200,
+        body: {
+          data: {
+            people: [
+              {
+                id: "person_demoed",
+                emails: { primaryEmail: "founder@acme.com" },
+                atlasFirstSource: "DEMO",
+                atlasLastSource: "DEMO",
+              },
+            ],
+          },
+        },
+      },
+      {
+        status: 200,
+        body: {
+          data: {
+            updatePerson: {
+              id: "person_demoed",
+              atlasFirstSource: "DEMO",
+              atlasLastSource: "MCP_SIGNUP",
+            },
+          },
+        },
+      },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    const normalized = normalizeLead({
+      source: "mcp-signup",
+      email: "founder@acme.com",
+      name: "Founder Acme",
+    });
+    const result = await upsertPerson(config, normalized.person);
+
+    expect(result.id).toBe("person_demoed");
+    expect(calls[1].method).toBe("PATCH");
+    const mcpBody = JSON.parse(calls[1].body ?? "{}");
+    expect(mcpBody.atlasLastSource).toBe("MCP_SIGNUP");
+    // CRITICAL: the sticky first-touch must NOT be overwritten.
+    expect(mcpBody.atlasFirstSource).toBeUndefined();
+  });
+
   test("PATCH includes name when provided (input.name merges into every write path)", async () => {
     const { fetch, calls } = makeScriptedFetch([
       {

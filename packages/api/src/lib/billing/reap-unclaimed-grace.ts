@@ -53,13 +53,25 @@ export interface ReapResult {
 const SKIPPED: ReapResult = { reapedCount: 0, orgIds: [] };
 
 /**
+ * Injectable boundary so the per-org cache eviction can be verified without
+ * `mock.module` (mirrors the DI seam in `claim-gate.ts` / `provision-trial.ts`).
+ */
+export interface ReapDeps {
+  /** Evict one org from this replica's plan cache. */
+  invalidatePlanCache: (orgId: string) => void;
+}
+
+/**
  * Run one reaping pass.
  *
  * Returns `SKIPPED` synchronously when deploy mode isn't SaaS or no internal DB
  * is configured. Errors during the UPDATE are logged and swallowed — a failed
  * sweep must not crash the scheduler fiber; the next interval retries.
  */
-export async function reapUnclaimedGraceWorkspaces(): Promise<ReapResult> {
+export async function reapUnclaimedGraceWorkspaces(
+  overrides: Partial<ReapDeps> = {},
+): Promise<ReapResult> {
+  const invalidate = overrides.invalidatePlanCache ?? invalidatePlanCache;
   if (getConfig()?.deployMode !== "saas") return SKIPPED;
   if (!hasInternalDB()) return SKIPPED;
 
@@ -97,7 +109,7 @@ export async function reapUnclaimedGraceWorkspaces(): Promise<ReapResult> {
     // this instance sees the lock immediately rather than after TTL (≤60s).
     // Per-replica only (#3432) — peers self-heal on TTL expiry, same contract
     // as `reconcilePlanTiers`.
-    for (const id of orgIds) invalidatePlanCache(id);
+    for (const id of orgIds) invalidate(id);
 
     if (orgIds.length > 0) {
       log.info(

@@ -252,9 +252,10 @@ describe("dispatchSignupCrmLead — failure swallow contract", () => {
     // The typed `Effect.fail` path goes through `Effect.either` Left,
     // not the outer catch — pin that branch independently so a future
     // refactor that drops the Left-side log gets caught here, not by
-    // relying on EE's `tapError` for the audit trail.
-    expect(mockLogWarn).toHaveBeenCalledTimes(1);
-    const [logCtx] = mockLogWarn.mock.calls[0] as [Record<string, unknown>, string];
+    // relying on EE's `tapError` for the audit trail. Logged at `error`
+    // (not warn): a failed durable enqueue is a permanent lead loss (S-1).
+    expect(mockLogError).toHaveBeenCalledTimes(1);
+    const [logCtx] = mockLogError.mock.calls[0] as [Record<string, unknown>, string];
     expect(logCtx.event).toBe("signup_crm.enqueue_failed");
     expect(logCtx.userId).toBe("u10");
   });
@@ -377,9 +378,10 @@ describe("dispatchMcpSignupCrmLead — happy path", () => {
     // The typed `Effect.fail` path goes through `Effect.either` Left, not the
     // outer catch — pin that branch independently (mirror of the SIGNUP suite's
     // `signup_crm.enqueue_failed` test) so a refactor dropping the Left-side
-    // log gets caught here for the MCP path too.
-    expect(mockLogWarn).toHaveBeenCalledTimes(1);
-    const [logCtx] = mockLogWarn.mock.calls[0] as [Record<string, unknown>, string];
+    // log gets caught here for the MCP path too. Logged at `error` (not warn):
+    // a failed durable enqueue is a permanent MCP_SIGNUP lead loss (S-1).
+    expect(mockLogError).toHaveBeenCalledTimes(1);
+    const [logCtx] = mockLogError.mock.calls[0] as [Record<string, unknown>, string];
     expect(logCtx.event).toBe("mcp_signup_crm.enqueue_failed");
   });
 });

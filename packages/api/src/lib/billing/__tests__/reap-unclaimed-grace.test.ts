@@ -150,6 +150,42 @@ describe("reapUnclaimedGraceWorkspaces", () => {
 
   // ── Mixed fixture + defensive guards ─────────────────────────────────
 
+  it("evicts each reaped org from the plan cache so the lock takes effect before TTL", async () => {
+    // The DB demotion alone isn't enough: a request hitting THIS replica would
+    // keep serving the cached 'trial' tier until the ≤60s TTL. Assert the reaper
+    // invalidates the cache for exactly the reaped ids (and nothing else).
+    const { pool } = makeMockPool([
+      { id: "org_reap_a", plan_tier: "trial", trialEndsInMs: -2 * HOUR_MS, ownerEmailVerified: false },
+      { id: "org_reap_b", plan_tier: "trial", trialEndsInMs: -3 * HOUR_MS, ownerEmailVerified: false },
+      { id: "org_claimed", plan_tier: "trial", trialEndsInMs: -2 * HOUR_MS, ownerEmailVerified: true },
+    ]);
+    _resetPool(pool);
+
+    const invalidated: string[] = [];
+    const result = await reapUnclaimedGraceWorkspaces({
+      invalidatePlanCache: (id) => invalidated.push(id),
+    });
+
+    expect(result.orgIds).toEqual(["org_reap_a", "org_reap_b"]);
+    // One eviction per reaped org — the claimed (un-reaped) org is never touched.
+    expect(invalidated).toEqual(["org_reap_a", "org_reap_b"]);
+  });
+
+  it("does not invalidate any cache entry when nothing is reaped", async () => {
+    const { pool } = makeMockPool([
+      { id: "org_in_grace", plan_tier: "trial", trialEndsInMs: 5 * HOUR_MS, ownerEmailVerified: false },
+    ]);
+    _resetPool(pool);
+
+    const invalidated: string[] = [];
+    const result = await reapUnclaimedGraceWorkspaces({
+      invalidatePlanCache: (id) => invalidated.push(id),
+    });
+
+    expect(result.reapedCount).toBe(0);
+    expect(invalidated).toEqual([]);
+  });
+
   it("reaps only the unclaimed past-grace rows from a mixed fixture", async () => {
     const { pool } = makeMockPool([
       { id: "org_reap_me", plan_tier: "trial", trialEndsInMs: -2 * HOUR_MS, ownerEmailVerified: false },

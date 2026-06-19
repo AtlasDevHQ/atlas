@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { checkClaimGate, buildClaimUrl, ClaimRequiredError, type ClaimGateDeps } from "../claim-gate";
+import { checkClaimGate, buildClaimUrl, ClaimRequiredError, ClaimCheckFailedError, type ClaimGateDeps } from "../claim-gate";
 import type { PlanTier, WorkspaceRow } from "@atlas/api/lib/db/internal";
 
 function workspace(tier: PlanTier): WorkspaceRow {
@@ -45,10 +45,12 @@ function deps(overrides: Partial<ClaimGateDeps>): Partial<ClaimGateDeps> {
 }
 
 describe("checkClaimGate — block-vs-allow matrix", () => {
-  it("BLOCKS an unclaimed (owner emailVerified=false) SaaS trial", async () => {
+  it("BLOCKS an unclaimed (owner emailVerified=false) SaaS trial with claim_required", async () => {
     const result = await checkClaimGate("org-1", deps({}));
     expect(result.allowed).toBe(false);
     if (result.allowed) throw new Error("unreachable");
+    expect(result.reason).toBe("claim_required");
+    if (result.reason !== "claim_required") throw new Error("unreachable");
     expect(result.claimUrl).toContain("/signup");
     expect(result.claimUrl).toContain("owner@acme.com");
   });
@@ -93,7 +95,7 @@ describe("checkClaimGate — block-vs-allow matrix", () => {
     expect(result.allowed).toBe(true);
   });
 
-  it("fails OPEN (allows) when the owner lookup throws — metering refinement, Gate 0 owns solvency (#3428)", async () => {
+  it("fails CLOSED (check_failed) when the owner lookup throws — no token spend on an unverifiable workspace", async () => {
     const result = await checkClaimGate(
       "org-1",
       deps({
@@ -102,10 +104,12 @@ describe("checkClaimGate — block-vs-allow matrix", () => {
         },
       }),
     );
-    expect(result.allowed).toBe(true);
+    expect(result.allowed).toBe(false);
+    if (result.allowed) throw new Error("unreachable");
+    expect(result.reason).toBe("check_failed");
   });
 
-  it("fails OPEN (allows) when the workspace lookup throws", async () => {
+  it("fails CLOSED (check_failed) when the workspace lookup throws", async () => {
     const result = await checkClaimGate(
       "org-1",
       deps({
@@ -114,7 +118,9 @@ describe("checkClaimGate — block-vs-allow matrix", () => {
         },
       }),
     );
-    expect(result.allowed).toBe(true);
+    expect(result.allowed).toBe(false);
+    if (result.allowed) throw new Error("unreachable");
+    expect(result.reason).toBe("check_failed");
   });
 });
 
@@ -127,6 +133,18 @@ describe("ClaimRequiredError", () => {
     expect(err.httpStatus).toBe(403);
     expect(err.claimUrl).toBe("https://app.useatlas.dev/signup");
     expect(err.message).toContain("https://app.useatlas.dev/signup");
+  });
+});
+
+describe("ClaimCheckFailedError", () => {
+  it("is a retryable 503 / claim_check_failed with no claim URL", () => {
+    const err = new ClaimCheckFailedError();
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("ClaimCheckFailedError");
+    expect(err.errorCode).toBe("claim_check_failed");
+    expect(err.httpStatus).toBe(503);
+    expect(err.retryable).toBe(true);
+    expect(err.message).toContain("try again");
   });
 });
 

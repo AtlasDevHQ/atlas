@@ -65,13 +65,27 @@ class ClaimRequiredErrorStub extends Error {
   }
 }
 
-type ClaimResult = { allowed: true } | { allowed: false; claimUrl: string };
+class ClaimCheckFailedErrorStub extends Error {
+  override readonly name = "ClaimCheckFailedError";
+  readonly errorCode = "claim_check_failed" as const;
+  readonly httpStatus = 503 as const;
+  readonly retryable = true as const;
+  constructor() {
+    super("Unable to verify your workspace's claim status. Please try again.");
+  }
+}
+
+type ClaimResult =
+  | { allowed: true }
+  | { allowed: false; reason: "claim_required"; claimUrl: string }
+  | { allowed: false; reason: "check_failed" };
 let claimResult: ClaimResult = { allowed: true };
 const mockCheckClaimGate = mock(async (_orgId: string | undefined) => claimResult);
 
 mock.module("@atlas/api/lib/billing/claim-gate", () => ({
   checkClaimGate: mockCheckClaimGate,
   ClaimRequiredError: ClaimRequiredErrorStub,
+  ClaimCheckFailedError: ClaimCheckFailedErrorStub,
   buildClaimUrl: (email?: string) => `https://app.useatlas.dev/signup${email ? `?email=${email}` : ""}`,
 }));
 
@@ -97,7 +111,7 @@ describe("executeAgentQuery claim-gate seam", () => {
   });
 
   it("throws ClaimRequiredError and never runs the agent when unclaimed", async () => {
-    claimResult = { allowed: false, claimUrl: "https://app.useatlas.dev/signup?email=owner@acme.com" };
+    claimResult = { allowed: false, reason: "claim_required", claimUrl: "https://app.useatlas.dev/signup?email=owner@acme.com" };
     const actor = createAtlasUser("user-1", "managed", "user-1@example.com", {
       activeOrganizationId: "org-metered",
     });
@@ -124,6 +138,24 @@ describe("executeAgentQuery claim-gate seam", () => {
     expect(mockRunAgent).toHaveBeenCalledTimes(1);
   });
 
+  it("fails CLOSED with ClaimCheckFailedError (no agent spend) when claim status can't be verified", async () => {
+    claimResult = { allowed: false, reason: "check_failed" };
+    const actor = createAtlasUser("user-1", "managed", "user-1@example.com", {
+      activeOrganizationId: "org-unknown",
+    });
+    const err: unknown = await executeAgentQuery("question", "req-5", { actor }).then(
+      () => {
+        throw new Error("expected executeAgentQuery to reject");
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ClaimCheckFailedErrorStub);
+    if (!(err instanceof ClaimCheckFailedErrorStub)) throw new Error("unreachable");
+    expect(err.errorCode).toBe("claim_check_failed");
+    expect(err.httpStatus).toBe(503);
+    expect(mockRunAgent).not.toHaveBeenCalled();
+  });
+
   // AC5/AC7 (#3651) — an EXPIRED trial blocks via Gate 0 (`trial_expired`)
   // BEFORE the claim-gate runs, so expiry overrides the meter: an
   // unclaimed-AND-expired workspace gets `trial_expired` (block + pay), never
@@ -139,7 +171,7 @@ describe("executeAgentQuery claim-gate seam", () => {
       retryable: false,
     };
     // Even if the workspace is also unclaimed, expiry must win.
-    claimResult = { allowed: false, claimUrl: "https://app.useatlas.dev/signup" };
+    claimResult = { allowed: false, reason: "claim_required", claimUrl: "https://app.useatlas.dev/signup" };
     const actor = createAtlasUser("user-1", "managed", "user-1@example.com", {
       activeOrganizationId: "org-expired",
     });

@@ -81,9 +81,30 @@ export class ClaimRequiredError extends Error {
   }
 }
 
+/**
+ * Thrown when the claim-gate cannot DETERMINE claim status because a lookup
+ * failed (e.g. the owner-`emailVerified` query errored transiently). The gate
+ * FAILS CLOSED: rather than allow an unclaimed workspace to spend Atlas tokens
+ * on a blip (a false-negative on a metering gate — CLAUDE.md: "Return 500, not
+ * a false negative"), it surfaces a retryable 503 "try again". Distinct from
+ * {@link ClaimRequiredError} so a genuinely-claimed user is told to retry, not
+ * misdirected to re-claim.
+ */
+export class ClaimCheckFailedError extends Error {
+  override readonly name = "ClaimCheckFailedError";
+  readonly errorCode = "claim_check_failed" as const;
+  readonly httpStatus = 503 as const;
+  readonly retryable = true as const;
+
+  constructor() {
+    super("Unable to verify your workspace's claim status. Please try again.");
+  }
+}
+
 export type ClaimGateResult =
   | { allowed: true }
-  | { allowed: false; claimUrl: string };
+  | { allowed: false; reason: "claim_required"; claimUrl: string }
+  | { allowed: false; reason: "check_failed" };
 
 /** Owner-verification shape resolved per org. */
 interface OwnerVerification {
@@ -142,15 +163,23 @@ function isMeterableTier(tier: PlanTier): boolean {
 
 /**
  * Decide whether the metered claim-gate blocks an Atlas-token agent run for
- * `orgId`. Returns `{ allowed: true }` for every non-metered case and
- * `{ allowed: false, claimUrl }` only for an unclaimed (owner `emailVerified`
- * false) `trial` Workspace on SaaS.
+ * `orgId`. Returns `{ allowed: true }` for every non-metered case,
+ * `{ allowed: false, reason: "claim_required", claimUrl }` for an unclaimed
+ * (owner `emailVerified` false) `trial` Workspace on SaaS, and
+ * `{ allowed: false, reason: "check_failed" }` when a lookup errored and claim
+ * status can't be determined.
  *
  * Short-circuits to `allowed` when: no org (self-hosted / CLI), no internal DB,
  * not SaaS, the workspace row is absent, the tier isn't metered, or no owner
  * row exists. The expiry/solvency concerns (`trial_expired`, `locked`,
  * suspension, hard-cap) are NOT this gate's job — Gate 0
  * (`checkAgentBillingGate`) runs first and owns them on every surface.
+ *
+ * FAILS CLOSED on a lookup error: a metering gate that returned `allowed` on a
+ * DB blip would be a false-negative (let an unclaimed workspace spend Atlas
+ * tokens), which CLAUDE.md forbids ("Return 500, not a false negative"). The
+ * caller surfaces `check_failed` as a retryable 503 — no token spend, and no
+ * misdirecting an already-claimed user to "re-claim".
  */
 export async function checkClaimGate(
   orgId: string | undefined,
@@ -166,19 +195,15 @@ export async function checkClaimGate(
   try {
     // Gate 0 (`checkAgentBillingGate`) already warmed this cache on the
     // `executeAgentQuery` path, so this is a cache hit. A genuine lookup error
-    // would have failed Gate 0 closed (503) before we ever got here.
+    // would have failed Gate 0 closed (503) before we ever got here; fail
+    // closed here too rather than let an unclaimed workspace through.
     workspace = await deps.getWorkspace(orgId);
   } catch (err) {
-    // Mirror enforcement.ts's metering fail-open posture (#3428): the
-    // claim-gate is a metering refinement layered on top of the fail-closed
-    // Gate 0 solvency check. If the meter itself can't be evaluated, allow the
-    // run rather than block a legitimately-provisioned workspace, and make the
-    // bypass operator-visible.
     log.error(
       { err: err instanceof Error ? err.message : String(err), orgId },
-      "Claim-gate workspace lookup failed — allowing run (metering refinement unavailable)",
+      "Claim-gate workspace lookup failed — blocking as precaution (claim status unknown)",
     );
-    return { allowed: true };
+    return { allowed: false, reason: "check_failed" };
   }
 
   // No org row (pre-migration / Better-Auth-only) or a non-metered tier:
@@ -191,13 +216,14 @@ export async function checkClaimGate(
   try {
     owner = await deps.getOwnerVerification(orgId);
   } catch (err) {
-    // Same fail-open rationale as above (#3428): a transient owner-lookup blip
-    // must not misdirect an already-claimed user to "re-claim", nor 500 the run.
+    // Fail CLOSED: we can't tell whether this metered trial is claimed, so we
+    // must not let it spend Atlas tokens. Surfaced as a retryable 503, not a
+    // `claim_required` (which would wrongly tell a claimed user to re-claim).
     log.error(
       { err: err instanceof Error ? err.message : String(err), orgId },
-      "Claim-gate owner lookup failed — allowing run (metering refinement unavailable)",
+      "Claim-gate owner lookup failed — blocking as precaution (claim status unknown)",
     );
-    return { allowed: true };
+    return { allowed: false, reason: "check_failed" };
   }
 
   // No owner row, or owner already verified → claimed (or not a metered trial).
@@ -206,5 +232,9 @@ export async function checkClaimGate(
   }
 
   // Unclaimed metered trial — withhold Atlas-token Q&A.
-  return { allowed: false, claimUrl: deps.buildClaimUrl(owner.email ?? undefined) };
+  return {
+    allowed: false,
+    reason: "claim_required",
+    claimUrl: deps.buildClaimUrl(owner.email ?? undefined),
+  };
 }

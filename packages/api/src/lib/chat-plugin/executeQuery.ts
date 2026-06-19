@@ -63,7 +63,7 @@ import type {
 import type { ApprovalRequestOrigin } from "@useatlas/types";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
-import { ClaimRequiredError } from "@atlas/api/lib/billing/claim-gate";
+import { ClaimRequiredError, ClaimCheckFailedError } from "@atlas/api/lib/billing/claim-gate";
 import { createLogger } from "@atlas/api/lib/logger";
 import { checkRateLimit } from "@atlas/api/lib/auth/middleware";
 import { botActorUser, type ChatBotPlatform } from "@atlas/api/lib/auth/actor";
@@ -1422,10 +1422,10 @@ async function runAgentAndMap(args: RunAgentArgs): Promise<ChatQueryResult> {
     // (metered) workspace's Atlas-token Q&A is a policy outcome, not a
     // failure. Its `message` carries the user-safe claim prompt + URL, so
     // rethrow UNCHANGED for the bridge to deliver in-thread.
-    if (err instanceof ClaimRequiredError) {
+    if (err instanceof ClaimRequiredError || err instanceof ClaimCheckFailedError) {
       log.warn(
         { errorCode: err.errorCode, requestId, ...tenantLabel },
-        "Chat plugin executeQuery blocked — workspace unclaimed",
+        "Chat plugin executeQuery blocked — claim gate",
       );
       throw err;
     }

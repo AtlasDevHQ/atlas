@@ -10,7 +10,7 @@ import { runAgent } from "@atlas/api/lib/agent";
 import { createLogger, getRequestContext, withRequestContext } from "@atlas/api/lib/logger";
 import type { ActorKind, RequestActor } from "@atlas/api/lib/logger";
 import { checkAgentBillingGate, BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
-import { checkClaimGate, ClaimRequiredError } from "@atlas/api/lib/billing/claim-gate";
+import { checkClaimGate, ClaimRequiredError, ClaimCheckFailedError } from "@atlas/api/lib/billing/claim-gate";
 import type { PlanLimitWarning } from "@atlas/api/lib/billing/enforcement";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { ApprovalRequestOrigin } from "@useatlas/types";
@@ -205,6 +205,16 @@ export async function executeAgentQuery(
     // tokens). Off-SaaS / no-org / claimed workspaces pass through untouched.
     const claim = await checkClaimGate(gateOrgId);
     if (!claim.allowed) {
+      if (claim.reason === "check_failed") {
+        // Fail closed: claim status couldn't be determined (lookup error).
+        // Surface a retryable 503 rather than spend Atlas tokens on an
+        // unverifiable workspace.
+        log.warn(
+          { requestId: id, orgId: gateOrgId, ...(origin ? { agentOrigin: origin } : {}) },
+          "Agent run blocked: claim status could not be verified",
+        );
+        throw new ClaimCheckFailedError();
+      }
       log.warn(
         { requestId: id, orgId: gateOrgId, ...(origin ? { agentOrigin: origin } : {}) },
         "Agent run blocked: workspace unclaimed (claim required)",

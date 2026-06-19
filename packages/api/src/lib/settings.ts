@@ -810,6 +810,39 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
+  // Self-serve MCP trial bootstrap (#3654, ADR-0018) — per-IP / per-email
+  // creation-ATTEMPT limiters guarding the unauthenticated `start_trial`
+  // onboarding caller. Hot-reloadable: `getTrialIpRpmLimit()` /
+  // `getTrialEmailRpmLimit()` read per attempt. Per-IP is looser than the
+  // contact form because the limit is on attempts, NOT trials — shared NATs
+  // (co-working spaces, universities) must keep signing up; ADR-0018 rejects a
+  // per-IP *trial* cap outright. Per-email is the tighter bound (one mailbox
+  // retrying repeatedly is the spam signal).
+  {
+    key: "ATLAS_TRIAL_IP_RATE_LIMIT_RPM",
+    section: "Rate Limiting",
+    label: "Trial Signup Rate Limit — per IP (RPM)",
+    description:
+      "Max self-serve trial creation attempts per minute per IP (0 = disabled). Bounds attempt RATE, not trials per IP — shared NATs are not capped.",
+    type: "number",
+    default: "5",
+    envVar: "ATLAS_TRIAL_IP_RATE_LIMIT_RPM",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM",
+    section: "Rate Limiting",
+    label: "Trial Signup Rate Limit — per email (RPM)",
+    description:
+      "Max self-serve trial creation attempts per minute per email (0 = disabled). The tighter bound — one mailbox retrying repeatedly is the spam signal.",
+    type: "number",
+    default: "3",
+    envVar: "ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM",
+    scope: "platform",
+    saasVisible: false,
+  },
+
   // Demo (continued) — public email-gated demo. Hot-reloadable:
   // `getDemoRpmLimit()` / `getDemoMaxSteps()` read per request.
   {

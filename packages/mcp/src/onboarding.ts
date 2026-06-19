@@ -29,7 +29,20 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { getConfig } from "@atlas/api/lib/config";
-import { withRequestContext, createLogger } from "@atlas/api/lib/logger";
+import {
+  withRequestContext,
+  getRequestContext,
+  createLogger,
+} from "@atlas/api/lib/logger";
+import { getClientIP } from "@atlas/api/lib/auth/middleware";
+import {
+  verifyTurnstile as defaultVerifyTurnstile,
+  type VerifyTurnstileResult,
+} from "@atlas/api/lib/turnstile";
+import {
+  checkTrialAttemptRateLimit as defaultCheckRateLimit,
+  type TrialAttemptRateLimitResult,
+} from "@atlas/api/lib/trial-abuse";
 import {
   provisionTrialWorkspace as defaultProvision,
   TrialProvisioningError,
@@ -53,9 +66,26 @@ export type ProvisionTrialFn = (
   input: ProvisionTrialInput,
 ) => Promise<ProvisionTrialResult>;
 
+/** Injected for tests; defaults to the real Cloudflare Turnstile verifier. */
+export type VerifyTurnstileFn = (opts: {
+  token: string;
+  remoteIp?: string | null;
+  requestId?: string;
+}) => Promise<VerifyTurnstileResult>;
+
+/** Injected for tests; defaults to the real per-IP/email attempt limiter. */
+export type TrialAttemptLimiter = (input: {
+  ip: string | null;
+  email: string;
+}) => TrialAttemptRateLimitResult;
+
 export interface RegisterStartTrialOptions {
   /** Override the provisioner (tests inject a stub). */
   readonly provision?: ProvisionTrialFn;
+  /** Override Turnstile verification (tests inject a pass/fail stub). */
+  readonly verifyTurnstile?: VerifyTurnstileFn;
+  /** Override the creation-attempt rate limiter (tests force a trip). */
+  readonly checkRateLimit?: TrialAttemptLimiter;
 }
 
 /** Structured output shape of a successful `start_trial` call. */
@@ -74,6 +104,15 @@ const startTrialInputShape = {
     .string()
     .optional()
     .describe("Name for the new workspace. Elicited if omitted."),
+  turnstileToken: z
+    .string()
+    .max(4096)
+    .optional()
+    .describe(
+      "Cloudflare Turnstile token proving the signup is human-initiated. " +
+        "REQUIRED — obtain it from the Turnstile challenge presented during the " +
+        "onboarding handshake. Missing or invalid tokens are rejected.",
+    ),
 } as const;
 
 /** Map a typed provisioning failure onto the MCP tool-error envelope. */
@@ -152,6 +191,8 @@ export function registerStartTrialTool(
   opts: RegisterStartTrialOptions = {},
 ): void {
   const provision = opts.provision ?? defaultProvision;
+  const verifyTurnstileFn = opts.verifyTurnstile ?? defaultVerifyTurnstile;
+  const checkRateLimit = opts.checkRateLimit ?? defaultCheckRateLimit;
 
   server.registerTool(
     "start_trial",
@@ -173,6 +214,12 @@ export function registerStartTrialTool(
     },
     async (args): Promise<CallToolResult> => {
       const requestId = crypto.randomUUID();
+      // Best-effort per-request client IP, stamped by the onboarding router
+      // (createOnboardingMcpRouter) into the AsyncLocalStorage request context.
+      // `null` when no trusted proxy is configured or off the HTTP path
+      // (in-memory transport tests) — the per-IP limiter degrades to a shared
+      // bucket, never throws.
+      const clientIp = getRequestContext()?.clientIp ?? null;
       try {
         const input = await resolveSignupInput(server, args, requestId);
         if (!input) {
@@ -180,6 +227,72 @@ export function registerStartTrialTool(
             envelope(
               "validation_failed",
               "A business email and workspace name are required to start a trial.",
+            ),
+          );
+        }
+
+        // ── Abuse controls (ADR-0018 § Abuse posture, #3654) ───────────────
+        // Order: rate-limit FIRST (cheap, throttles even malformed/tokenless
+        // spam before it can burn a Turnstile round-trip or a DB write), then
+        // Turnstile. The limiter bounds creation ATTEMPTS per-IP/per-email —
+        // NOT trials per IP (shared NATs must keep signing up).
+        const rate = checkRateLimit({ ip: clientIp, email: input.email });
+        if (!rate.allowed) {
+          const retryAfter = Math.ceil((rate.retryAfterMs ?? 60_000) / 1000);
+          log.warn(
+            { requestId, bucket: rate.bucket, retryAfter, event: "start_trial.rate_limited" },
+            "start_trial creation attempt rate-limited",
+          );
+          return toEnvelopeResult(
+            envelope(
+              "rate_limited",
+              `Too many trial signup attempts. Please wait ${retryAfter} seconds and try again.`,
+              {
+                retry_after: retryAfter,
+                hint: "Self-serve trial signups are rate-limited per IP and per email. Wait the indicated time before retrying.",
+              },
+            ),
+          );
+        }
+
+        // Turnstile token presence — a client that never ran the widget gets a
+        // validation rejection (not a Turnstile failure: that requires a
+        // server round-trip we skip when the token is clearly absent).
+        const token = args.turnstileToken?.trim();
+        if (!token) {
+          log.warn(
+            { requestId, event: "start_trial.turnstile_missing" },
+            "start_trial called without a Turnstile token",
+          );
+          return toEnvelopeResult(
+            envelope(
+              "validation_failed",
+              "A Cloudflare Turnstile token is required to start a trial.",
+              {
+                hint: "Complete the bot-protection challenge and pass its token as `turnstileToken`.",
+              },
+            ),
+          );
+        }
+
+        // Turnstile siteverify — fails closed (missing secret, network error,
+        // and explicit rejection all return ok:false). Never leak the secret,
+        // the token, or Cloudflare error codes to the caller; log them only.
+        const verify = await verifyTurnstileFn({ token, remoteIp: clientIp, requestId });
+        if (!verify.ok) {
+          log.warn(
+            {
+              requestId,
+              errorCodes: verify.errorCodes,
+              reason: verify.reason,
+              event: "start_trial.turnstile_failed",
+            },
+            "start_trial Turnstile verification failed",
+          );
+          return toEnvelopeResult(
+            envelope(
+              "forbidden",
+              "Bot-protection check failed. Refresh the challenge and try again.",
             ),
           );
         }
@@ -262,9 +375,14 @@ export function createOnboardingMcpRouter(): Hono {
   router.on(HANDLED_METHODS, "/sse", async (c) => {
     const requestId = crypto.randomUUID();
     const sessionId = c.req.raw.headers.get("mcp-session-id");
+    // Resolve the client IP once at the HTTP seam and stamp it into the request
+    // context so the per-session `start_trial` handler can rate-limit attempts
+    // per-IP without re-threading the raw Request (#3654). `null` when no
+    // trusted proxy is configured (ATLAS_TRUST_PROXY unset).
+    const clientIp = getClientIP(c.req.raw);
     try {
       return await withRequestContext(
-        { requestId, atlasMode: "published", agentOrigin: "mcp" },
+        { requestId, atlasMode: "published", agentOrigin: "mcp", clientIp },
         async () => {
           if (sessionId) {
             const entry = sessions.get(sessionId);

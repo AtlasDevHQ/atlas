@@ -406,6 +406,7 @@ describe("makeSchedulerLive", () => {
         "rate_limit_cleanup",
         "demo_rate_limit_cleanup",
         "contact_rate_limit_cleanup",
+        "trial_rate_limit_cleanup",
         "abuse_cleanup",
         "dashboard_rate_limit_cleanup",
         "conversation_rate_sweep",

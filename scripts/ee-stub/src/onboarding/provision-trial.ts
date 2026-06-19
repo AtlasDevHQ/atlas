@@ -39,6 +39,7 @@ export interface ProvisionTrialResult {
 export type TrialProvisioningCode =
   | "not_saas"
   | "invalid_input"
+  | "business_email"
   | "signup_failed"
   | "org_failed"
   | "trial_not_assigned";

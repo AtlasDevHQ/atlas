@@ -168,6 +168,21 @@ A workspace provisioned over MCP by `start_trial` starts **unclaimed (metered)**
 | `claim_required` | `ClaimRequiredError` | 403 | Atlas-token Q&A was attempted on an unclaimed (metered) trial workspace. The response body carries `claimUrl` (the web OTP interstitial) alongside `message` | Open `claimUrl`, verify the owner's email (enter the emailed one-time code), set a credential, and accept the Terms. Verifying email **is** the claim — it flips the workspace metered → full | No |
 | `claim_check_failed` | `ClaimCheckFailedError` | 503 | The claim-gate could not read the owner's `emailVerified` state (e.g. internal DB transiently unavailable). Surfaced as a retryable 503 rather than spending Atlas tokens on an unverifiable request | Retry after a short backoff. If it persists, check internal-DB (`DATABASE_URL`) health | Yes |
 
+### Self-serve trial signup over MCP (`start_trial`)
+
+The anonymous onboarding tool [`start_trial`](/guides/mcp#start_trial) (#3649/#3654) provisions a trial workspace before any actor or bearer exists. Because it runs outside the MCP dispatch gate, its failures are returned as the structured MCP tool-error envelope (`{ code, message, hint?, request_id?, retry_after? }`, an `isError: true` tool result parsed by `parseAtlasMcpToolError`) — **not** the HTTP `{ error, message, requestId }` shape. The `code` is always one of the closed [`AtlasMcpToolErrorCode`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/types/src/mcp.ts) catalog; `start_trial` emits the four below.
+
+| Code | Trigger | `hint` / extras | Agent recovery |
+|------|---------|-----------------|----------------|
+| `validation_failed` | Missing/malformed email or workspace name, a missing Turnstile token, a declined elicitation, an already-registered email, **or a business-email denial** (freemium/disposable address — the shared [business-email policy](/guides/signup#business-email-only-signup)). The business-email case carries a "use your work email" `hint` so it's distinguishable from a malformed-email rejection | `hint` on the business-email and already-registered cases | Permanent — fix the input. For the business-email hint, retry with a work email; for "already registered", sign in on the web instead |
+| `rate_limited` | Per-IP / per-email creation-attempt limit tripped (#3654) | `retry_after` (seconds) | Wait `retry_after` seconds, then retry. Self-serve signups are throttled per IP and per email |
+| `forbidden` | Cloudflare Turnstile `siteverify` failed (bot-check), or the tool was reached off-SaaS (where it isn't registered) | — | Refresh the Turnstile challenge and retry. Never leaks the secret, the token, or Cloudflare error codes |
+| `internal_error` | Account created but the workspace/grace-window couldn't be provisioned (`org_failed` / `trial_not_assigned`), or an unexpected failure | `request_id` | Retry once; if it persists, quote `request_id` to support. The orphaned account may need an operator to reap it |
+
+<Callout>
+The wire `code` is intentionally **not** `business_email_required` on the MCP path — that string is only the Better Auth `400` body code on the web form. The MCP envelope catalog is closed and versioned with the SDK, so business-email denials reuse `validation_failed` (semantically: a personal address is invalid trial input) and lean on the `hint` for the work-email guidance.
+</Callout>
+
 ### Backups (#2989)
 
 Platform backup verify/restore routes (`/api/v1/admin/backups/*`, SaaS/EE). Structural `_tag` mapping replaced the routes' earlier `message.includes(...)` classification. All three messages are admin-safe (no secrets, no connection strings).

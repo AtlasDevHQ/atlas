@@ -123,6 +123,18 @@ function provisioningErrorResult(
   switch (err.code) {
     case "invalid_input":
       return toEnvelopeResult(envelope("validation_failed", err.message));
+    case "business_email":
+      // A freemium/disposable address (the shared #3650 signup-hook deny). Wire
+      // code stays `validation_failed` — the closed MCP envelope catalog has no
+      // dedicated business-email code, and a personal email IS invalid trial
+      // input — but the tailored hint lets an agent tell the user to switch to a
+      // work email rather than re-typing the same address. Distinguished from a
+      // malformed-email `invalid_input` only by the message + hint, not the code.
+      return toEnvelopeResult(
+        envelope("validation_failed", err.message, {
+          hint: "Personal and disposable email addresses aren't supported for Atlas trials — start the trial again with your work email.",
+        }),
+      );
     case "signup_failed":
       return toEnvelopeResult(
         envelope("validation_failed", err.message, {

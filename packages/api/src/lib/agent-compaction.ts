@@ -20,6 +20,10 @@
  * - The summary runs on the active TURN model; a cheaper dedicated summary model
  *   is #3761.
  * - Default OFF. With the flag off the loop behaves exactly as before.
+ * - Single pass per step, no second loop: if the older slice is so large that
+ *   summary + pinned-N steps still exceed the window, the turn can still over-
+ *   fill it. Accurate windows (#3760) + the cheaper summary model (#3761) shrink
+ *   that gap; a re-trigger loop is out of scope for the thinnest slice.
  *
  * All knobs resolve through the settings registry (workspace > platform > env >
  * default, hot-reloadable) — see `ATLAS_COMPACTION_*` in `settings.ts`.
@@ -27,7 +31,7 @@
 
 import { generateText, type LanguageModel, type ModelMessage } from "ai";
 import type { Attributes } from "@opentelemetry/api";
-import { createLogger } from "./logger";
+import { createLogger, getRequestContext } from "./logger";
 import { getSetting } from "./settings";
 
 const log = createLogger("agent:compaction");
@@ -75,9 +79,13 @@ function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
  * platform override > env var > registry default, matching `getAgentMaxSteps`.
  */
 export function resolveCompactionSettings(orgId?: string): CompactionSettings {
-  const enabled = parseBoolean(getSetting("ATLAS_COMPACTION_ENABLED", orgId), false);
+  // Fall back to the request-context org when the caller omits it, matching
+  // getAgentMaxSteps — so a future caller that forgets to thread orgId still
+  // hits the workspace tier instead of silently resolving platform-wide.
+  const effectiveOrgId = orgId ?? getRequestContext()?.user?.activeOrganizationId;
+  const enabled = parseBoolean(getSetting("ATLAS_COMPACTION_ENABLED", effectiveOrgId), false);
 
-  const fillRaw = getSetting("ATLAS_COMPACTION_FILL_FRACTION", orgId);
+  const fillRaw = getSetting("ATLAS_COMPACTION_FILL_FRACTION", effectiveOrgId);
   let fillFraction = fillRaw !== undefined ? Number(fillRaw) : DEFAULT_FILL_FRACTION;
   if (!Number.isFinite(fillFraction) || fillFraction <= 0 || fillFraction > 1) {
     warnInvalidOnce(
@@ -88,7 +96,7 @@ export function resolveCompactionSettings(orgId?: string): CompactionSettings {
     fillFraction = DEFAULT_FILL_FRACTION;
   }
 
-  const stepsRaw = getSetting("ATLAS_COMPACTION_PINNED_RECENT_STEPS", orgId);
+  const stepsRaw = getSetting("ATLAS_COMPACTION_PINNED_RECENT_STEPS", effectiveOrgId);
   let pinnedRecentSteps = stepsRaw !== undefined ? parseInt(stepsRaw, 10) : DEFAULT_PINNED_RECENT_STEPS;
   if (
     !Number.isFinite(pinnedRecentSteps) ||
@@ -103,7 +111,7 @@ export function resolveCompactionSettings(orgId?: string): CompactionSettings {
     pinnedRecentSteps = DEFAULT_PINNED_RECENT_STEPS;
   }
 
-  const windowRaw = getSetting("ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS", orgId);
+  const windowRaw = getSetting("ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS", effectiveOrgId);
   let contextWindowTokens = windowRaw !== undefined ? parseInt(windowRaw, 10) : DEFAULT_CONTEXT_WINDOW_TOKENS;
   if (!Number.isFinite(contextWindowTokens) || contextWindowTokens < MIN_CONTEXT_WINDOW_TOKENS) {
     warnInvalidOnce(
@@ -266,6 +274,16 @@ const SUMMARY_SYSTEM_PROMPT = `You compress the earlier portion of a data-analys
 Do not invent facts. Do not add commentary. Output only the summary.`;
 
 /**
+ * Incremental (rolling) variant. Folds only the steps that crossed the pin
+ * boundary since the last pass into the existing running summary, instead of
+ * re-reading the entire older slice every step. Same fidelity contract as the
+ * full prompt above.
+ */
+const SUMMARY_INCREMENTAL_SYSTEM_PROMPT = `${SUMMARY_SYSTEM_PROMPT}
+
+You are given an existing running summary of the agent's earlier work followed by additional newer steps that have since aged out of the live context. Produce an UPDATED running summary that folds the new steps into the existing one — preserve every still-relevant fact from the prior summary and integrate the new steps. Do not drop facts from the prior summary just because they are old.`;
+
+/**
  * Render a transcript of older messages for the summarizer prompt. Coarse but
  * lossless-enough: each message becomes a role-tagged block; non-text content
  * (tool calls/results) is JSON-serialized so the summarizer sees what ran.
@@ -278,6 +296,15 @@ function renderTranscript(messages: readonly ModelMessage[]): string {
     })
     .join("\n");
 }
+
+/**
+ * Hard ceiling on a single summarization call. runAgent threads no abort signal
+ * into the turn (so a client disconnect can't cancel an in-flight summary), and
+ * `prepareStep` latency eats into the step budget — so bound the call itself: a
+ * stuck summary fails fast and the fail-soft branch in `agent.ts` continues the
+ * turn with full context rather than hanging the step.
+ */
+const SUMMARY_TIMEOUT_MS = 25_000;
 
 /**
  * Summarize older history using the active turn model (this slice runs on the
@@ -293,6 +320,31 @@ export async function summarizeOlderHistory(
     prompt: `Summarize the earlier portion of this agent transcript:\n\n${renderTranscript(older)}`,
     temperature: 0,
     maxOutputTokens: 1024,
+    abortSignal: AbortSignal.timeout(SUMMARY_TIMEOUT_MS),
+  });
+  return text.trim();
+}
+
+/**
+ * Roll a prior running summary forward over only the `newer` steps that have
+ * aged past the pin boundary since the last pass. Keeps per-step summarization
+ * input bounded by (prior summary + delta) instead of re-reading the whole
+ * older slice each step — older history grows monotonically within a turn, so
+ * the delta is just the steps that crossed the boundary. Same turn model and
+ * timeout discipline as {@link summarizeOlderHistory}.
+ */
+export async function summarizeIncremental(
+  model: LanguageModel,
+  priorSummary: string,
+  newer: readonly ModelMessage[],
+): Promise<string> {
+  const { text } = await generateText({
+    model,
+    system: SUMMARY_INCREMENTAL_SYSTEM_PROMPT,
+    prompt: `Existing running summary:\n\n${priorSummary}\n\nNewer steps to fold in:\n\n${renderTranscript(newer)}`,
+    temperature: 0,
+    maxOutputTokens: 1024,
+    abortSignal: AbortSignal.timeout(SUMMARY_TIMEOUT_MS),
   });
   return text.trim();
 }

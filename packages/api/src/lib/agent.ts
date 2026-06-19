@@ -58,6 +58,7 @@ import {
   shouldCompact,
   compactOlderHistory,
   summarizeOlderHistory,
+  summarizeIncremental,
   compactionSpanAttributes,
 } from "./agent-compaction";
 import { ModelRouter } from "./effect/services";
@@ -1245,9 +1246,13 @@ export async function runAgent({
 
   // #3759 — context compaction. Resolved once per turn (knobs hot-reload at the
   // next turn via the settings cache). Off by default ⇒ the prepareStep below
-  // behaves exactly as before. The in-turn memo avoids re-summarizing an
-  // unchanged older slice across steps (prepareStep re-receives the full,
-  // growing history each step — the AI SDK does not persist our override).
+  // behaves exactly as before. `prepareStep` re-receives the full, growing
+  // history each step (the AI SDK does not persist our override), so once a turn
+  // crosses the threshold every subsequent step would re-summarize. The in-turn
+  // memo holds the running summary + how many older messages it covers: an
+  // identical older slice is reused verbatim, and a grown one folds only the
+  // newly-aged-out delta into the prior summary (rolling summary) — keeping the
+  // per-step summarization cost bounded instead of O(full older slice).
   const compactionSettings = resolveCompactionSettings(orgId);
   let compactionSummaryMemo: { olderCount: number; text: string } | undefined;
 
@@ -1309,10 +1314,16 @@ export async function runAgent({
                 messages: stepMessages,
                 pinnedRecentSteps: compactionSettings.pinnedRecentSteps,
                 summarize: async (older) => {
-                  if (compactionSummaryMemo?.olderCount === older.length) {
-                    return compactionSummaryMemo.text;
-                  }
-                  const text = await summarizeOlderHistory(model, older);
+                  const memo = compactionSummaryMemo;
+                  // Same older slice as last step → reuse the summary verbatim.
+                  if (memo?.olderCount === older.length) return memo.text;
+                  // Older grew (history only appends within a turn) → roll the
+                  // prior summary forward over just the delta, not the whole
+                  // slice. First pass (no memo) summarizes the full older slice.
+                  const text =
+                    memo && memo.olderCount < older.length
+                      ? await summarizeIncremental(model, memo.text, older.slice(memo.olderCount))
+                      : await summarizeOlderHistory(model, older);
                   compactionSummaryMemo = { olderCount: older.length, text };
                   return text;
                 },
@@ -1335,7 +1346,9 @@ export async function runAgent({
                 );
                 // OTel attributes on the enclosing atlas.agent span. Only set
                 // when a pass actually runs — a non-compacting turn emits
-                // neither this nor the log line above.
+                // neither this nor the log line above. Last-write-wins across
+                // steps: on a multi-pass turn the span reflects the FINAL pass's
+                // counts; the per-pass detail lives in the log line above.
                 span.setAttributes(
                   compactionSpanAttributes({
                     beforeTokens,

@@ -192,6 +192,8 @@ const MOCK_USAGE = {
 let capturedPrompts: unknown[] = [];
 /** How many times the summarizer (`doGenerate`) ran. */
 let summarizerCalls = 0;
+/** Captured `prompt` from each summarizer (`doGenerate`) call. */
+let summarizerPrompts: unknown[] = [];
 
 function sqlStep(marker: string): LanguageModelV3StreamPart[] {
   return [
@@ -230,8 +232,9 @@ function buildModel(): InstanceType<typeof MockLanguageModelV3> {
       return { stream: convertArrayToReadableStream(chunks) };
     },
     // Summarizer path (generateText → doGenerate).
-    doGenerate: async () => {
+    doGenerate: async (options) => {
       summarizerCalls++;
+      summarizerPrompts.push(options.prompt);
       return {
         content: [{ type: "text", text: "GENERATED CONTEXT SUMMARY" }],
         finishReason: { unified: "stop", raw: "end_turn" },
@@ -264,6 +267,7 @@ describe("agent compaction — runAgent seam (#3759)", () => {
     callId = 0;
     capturedPrompts = [];
     summarizerCalls = 0;
+    summarizerPrompts = [];
     recordedSpans.length = 0;
     invalidateExploreBackend();
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
@@ -335,6 +339,22 @@ describe("agent compaction — runAgent seam (#3759)", () => {
     // Older steps are gone from the verbatim context (folded into the summary).
     expect(lastPrompt).not.toContain("marker0");
     expect(lastPrompt).not.toContain("marker1");
+  });
+
+  it("rolls the summary forward incrementally rather than re-reading the whole older slice each step", async () => {
+    enableCompaction();
+
+    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    await result.steps;
+
+    // The threshold trips on multiple steps, so the summarizer runs more than
+    // once. The FIRST pass summarizes the full older slice; every later pass
+    // takes the rolling path — folding only the newly-aged-out steps into the
+    // prior running summary (prompt carries the "Existing running summary"
+    // frame), keeping per-step summarization input bounded.
+    expect(summarizerCalls).toBeGreaterThanOrEqual(2);
+    const laterPrompts = JSON.stringify(summarizerPrompts.slice(1));
+    expect(laterPrompts).toContain("Existing running summary");
   });
 
   it("flag off (default) → no compaction regardless of context size", async () => {

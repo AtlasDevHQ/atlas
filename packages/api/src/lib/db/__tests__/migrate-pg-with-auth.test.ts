@@ -267,6 +267,46 @@ describeIfPg("migrate-pg-with-auth (real Postgres, Better Auth tables present)",
     PG_TEST_TIMEOUT_MS,
   );
 
+  // ── 0142 normalizedEmail unique-index — the one-trial-per-user "teeth" ──
+  //
+  // The whole premise of #3650: `+alias`/dot/case variants collapse to one
+  // normalizedEmail, so a duplicate signup trips a 23505 instead of minting a
+  // second trial. The migration adds the column + a UNIQUE index; this asserts
+  // BOTH halves of the index contract — duplicates reject, and NULLs (legacy
+  // rows that predate the column) stay distinct so they never collide.
+  it(
+    "0142: duplicate normalizedEmail rejects with 23505; NULL normalizedEmail rows stay distinct",
+    async () => {
+      // Two distinct rows that normalize to the same address must collide.
+      await pool.query(
+        `INSERT INTO "user" (id, email, "normalizedEmail") VALUES ($1, $2, $3)`,
+        ["u-0142-a", "John.Doe+trial@acme.com", "johndoe@acme.com"],
+      );
+      let duplicateError: { code?: string } | undefined;
+      try {
+        await pool.query(
+          `INSERT INTO "user" (id, email, "normalizedEmail") VALUES ($1, $2, $3)`,
+          ["u-0142-b", "johndoe@acme.com", "johndoe@acme.com"],
+        );
+      } catch (err) {
+        duplicateError = err as { code?: string };
+      }
+      expect(duplicateError?.code).toBe("23505");
+
+      // NULL normalizedEmail is distinct in a Postgres unique index — two legacy
+      // rows that predate the column must both insert without colliding.
+      await pool.query(
+        `INSERT INTO "user" (id, email) VALUES ($1, $2), ($3, $4)`,
+        ["u-0142-null-1", "legacy1@acme.com", "u-0142-null-2", "legacy2@acme.com"],
+      );
+      const legacy = await pool.query(
+        `SELECT id FROM "user" WHERE id IN ('u-0142-null-1', 'u-0142-null-2')`,
+      );
+      expect(legacy.rows).toHaveLength(2);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
   // ── 0048 FK constraint pins ──
   it(
     "0048: trusted_device FK to user enforces ON DELETE CASCADE",

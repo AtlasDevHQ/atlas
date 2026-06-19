@@ -140,13 +140,24 @@ export function isFreemiumEmailDomain(email: string): boolean {
 
 /**
  * True when the email is a disposable/throwaway mailbox (or otherwise fails the
- * `mailchecker` validity check). Delegates to `better-auth-harmony`'s
+ * `mailchecker` validity check — a syntactically invalid address also returns
+ * `true` here, folded into the same deny). Delegates to `better-auth-harmony`'s
  * `validateEmail` so we share the exact disposable-domain corpus the plugin
  * blocks with.
+ *
+ * `validateEmail` throws on a null/empty input (its underlying `isEmail`
+ * expects a string), so we guard first and report empty as not-disposable —
+ * Better Auth owns the required-field case. This keeps the exported helper safe
+ * for a direct caller (e.g. the MCP `start_trial` provisioner, #3649) that
+ * hasn't already passed through {@link assertBusinessEmail}'s empty guard.
  */
 export function isDisposableEmail(email: string): boolean {
+  if (!email) return false;
   return !validateEmail(email);
 }
+
+/** Why an address fails the business-email policy. */
+export type BusinessEmailReason = "disposable" | "freemium";
 
 /**
  * Why an address was rejected, or `{ ok: true }` when it passes both denies.
@@ -155,7 +166,7 @@ export function isDisposableEmail(email: string): boolean {
  */
 export type BusinessEmailVerdict =
   | { ok: true }
-  | { ok: false; reason: "disposable" | "freemium" };
+  | { ok: false; reason: BusinessEmailReason };
 
 /** Classify an address against the business-email policy. Pure, no throw. */
 export function classifyBusinessEmail(email: string): BusinessEmailVerdict {
@@ -165,24 +176,40 @@ export function classifyBusinessEmail(email: string): BusinessEmailVerdict {
 }
 
 /**
+ * Shape of the {@link APIError} body thrown on a business-email rejection — the
+ * single typed contract shared by the producer ({@link assertBusinessEmail}),
+ * the recognizer ({@link isBusinessEmailRejection}), and the MCP `start_trial`
+ * envelope mapping (#3649). `reason` reuses {@link BusinessEmailReason}, so a new
+ * deny reason can't be emitted on the wire without widening the verdict union in
+ * the same edit.
+ */
+export interface BusinessEmailErrorBody {
+  code: typeof BUSINESS_EMAIL_REQUIRED_CODE;
+  message: typeof BUSINESS_EMAIL_REQUIRED_MESSAGE;
+  reason: BusinessEmailReason;
+}
+
+/**
  * Throw a typed {@link APIError} when `email` violates the business-email policy.
  * No-op for an allowed business address (and for a null/empty email — Better
  * Auth's own validation owns the "email required" case; we only judge domains).
  *
- * Called from `databaseHooks.user.create.before` so it gates EVERY signup path
- * (web, social, MCP `start_trial`) identically. The throw aborts user creation;
- * Better Auth serializes the `APIError` to a 400 whose body carries
+ * Called from `databaseHooks.user.create.before` (SaaS deploy mode only — see
+ * the call site in server.ts) so it gates EVERY SaaS signup path (web, social,
+ * MCP `start_trial`) identically. The throw aborts user creation; Better Auth
+ * serializes the `APIError` to a 400 whose body carries
  * {@link BUSINESS_EMAIL_REQUIRED_CODE} + {@link BUSINESS_EMAIL_REQUIRED_MESSAGE}.
  */
 export function assertBusinessEmail(email: string | null | undefined): void {
   if (!email) return;
   const verdict = classifyBusinessEmail(email);
   if (verdict.ok) return;
-  throw new APIError("BAD_REQUEST", {
+  const body: BusinessEmailErrorBody = {
     code: BUSINESS_EMAIL_REQUIRED_CODE,
     message: BUSINESS_EMAIL_REQUIRED_MESSAGE,
     reason: verdict.reason,
-  });
+  };
+  throw new APIError("BAD_REQUEST", body);
 }
 
 /**
@@ -194,6 +221,6 @@ export function assertBusinessEmail(email: string | null | undefined): void {
  */
 export function isBusinessEmailRejection(err: unknown): boolean {
   if (!(err instanceof APIError)) return false;
-  const body = err.body as { code?: unknown } | undefined;
+  const body = err.body as Partial<BusinessEmailErrorBody> | undefined;
   return body?.code === BUSINESS_EMAIL_REQUIRED_CODE;
 }

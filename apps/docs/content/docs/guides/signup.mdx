@@ -37,7 +37,11 @@ Each step validates before allowing the user to proceed. The database URL is tes
 
 ## Business-Email-Only Signup
 
-Atlas signup is **business-email only**, with identical policy on the web form and the MCP `start_trial` path (both provision through the same Better Auth signup, so the policy is shared by construction). Two classes of address are hard-denied:
+<Callout type="info" title="SaaS only">
+This policy applies to the hosted Atlas SaaS. Self-hosted deployments do **not** enforce it — operators control who signs up, and the bootstrap admin can use any address (including a consumer domain).
+</Callout>
+
+On the hosted SaaS, Atlas signup is **business-email only**, with identical policy on the web form and the MCP `start_trial` path (both provision through the same Better Auth signup, so the policy is shared by construction). Two classes of address are hard-denied:
 
 - **Disposable / throwaway mailboxes** (mailinator, guerrillamail, 10-minute-mail, …) — detected via the [`better-auth-harmony`](https://github.com/GauBen/better-auth-harmony) `emailHarmony` plugin's `mailchecker` engine (50k+ domains).
 - **Freemium / consumer domains** (gmail, outlook, yahoo, icloud, proton, …) — a maintained denylist in code.
@@ -46,8 +50,8 @@ Both denials surface the same way: an actionable error on the web form ("Please 
 
 The `emailHarmony` plugin also writes a unique `normalizedEmail` column — collapsing `+alias`, dot, and case variants of the same address — so `john.doe+trial@acme.com` and `johndoe@acme.com` can't both claim a separate trial.
 
-<Callout type="info" title="Relaxing the denylist (self-hosted)">
-The freemium-domain denylist lives in code at `packages/api/src/lib/auth/business-email.ts` (`FREEMIUM_EMAIL_DOMAINS`). Self-hosted operators who want to allow consumer domains can trim that set and redeploy.
+<Callout type="info" title="Tuning the denylist (operators)">
+The freemium-domain denylist lives in code at `packages/api/src/lib/auth/business-email.ts` (`FREEMIUM_EMAIL_DOMAINS`). The whole policy is gated to SaaS deploy mode, so self-hosted deployments are unaffected; a SaaS operator who wants to allow specific consumer domains can trim that set and redeploy.
 </Callout>
 
 ---

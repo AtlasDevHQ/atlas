@@ -7,12 +7,15 @@
 -- normalized value, so a duplicate signup trips a 23505 instead of minting a
 -- second trial. See ADR-0018.
 --
--- In managed mode Better Auth's own migrator (`ctx.runMigrations()`) also
+-- In managed mode Better Auth's own migrator (`ctx.runMigrations()`) normally
 -- materializes this column from the plugin's schema declaration and runs FIRST
--- (see auth/migrate.ts runBootMigrations) — so the ADD COLUMN below is
--- idempotent belt-and-suspenders, and the named UNIQUE INDEX pins the
--- constraint deterministically regardless of how the plugin's auto-migration
--- spells it.
+-- (the server entry calls runBootMigrations before MigrationLive — see
+-- auth/migrate.ts) — so the ADD COLUMN below is idempotent, and the named
+-- UNIQUE INDEX pins the constraint deterministically regardless of how the
+-- plugin's auto-migration spells it. The `user`-table existence guard below is
+-- NOT decorative belt-and-suspenders: it is the primary safety net for the
+-- degenerate case where that ordering did not hold — it fails loud rather than
+-- silently ADDing a column to a non-existent table.
 --
 -- In non-managed auth modes Better Auth never creates `user`, so the migration
 -- runner skips this file via MANAGED_AUTH_MIGRATIONS (see

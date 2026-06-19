@@ -3130,17 +3130,25 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
       user: {
         create: {
           before: async (user: User & Record<string, unknown>) => {
-            // Business-email-only signup (#3650, ADR-0018) — gate EVERY signup
-            // path (web, social, MCP start_trial) identically. Deliberately
-            // OUTSIDE the try/catch below: the rejection is an APIError that
-            // MUST propagate to abort user creation (Better Auth serializes it
-            // to a 400 with the typed `business_email_required` code), exactly
-            // like the session.create.before ban guard. Swallowing it here would
-            // silently admit disposable/freemium signups. Better Auth runs every
-            // create.before hook in sequence (this one plus emailHarmony's
-            // normalization hook); a throw from any of them aborts creation, so
-            // ordering between them doesn't matter here.
-            assertBusinessEmail(user.email);
+            // Business-email-only signup (#3650, ADR-0018) — gate EVERY SaaS
+            // signup path (web, social, MCP start_trial) identically. SaaS-only,
+            // mirroring `assignSaasTrial` above: business-email-only is a
+            // hosted-trial policy, and a self-hosted operator must be able to
+            // bootstrap with any `ATLAS_ADMIN_EMAIL` (a consumer domain
+            // included) without this hook rejecting their first-boot admin.
+            //
+            // Deliberately OUTSIDE the try/catch below: the rejection is an
+            // APIError that MUST propagate to abort user creation (Better Auth
+            // serializes it to a 400 with the typed `business_email_required`
+            // code), exactly like the session.create.before ban guard.
+            // Swallowing it here would silently admit disposable/freemium
+            // signups. Better Auth runs every create.before hook in sequence
+            // (this one plus emailHarmony's normalization hook); a throw from
+            // any of them aborts creation, so ordering between them doesn't
+            // matter here.
+            if (getConfig()?.deployMode === "saas") {
+              assertBusinessEmail(user.email);
+            }
 
             try {
               const decision = await computeBootstrapRole(user, {

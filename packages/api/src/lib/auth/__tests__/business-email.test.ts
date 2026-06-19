@@ -74,6 +74,13 @@ describe("isDisposableEmail", () => {
     expect(isDisposableEmail("alice@acme.com")).toBe(false);
     expect(isDisposableEmail("alice@gmail.com")).toBe(false);
   });
+
+  it("is safe (no throw) on empty input — the underlying validateEmail throws on null", () => {
+    // Hardening for a direct caller that skips assertBusinessEmail's empty guard
+    // (e.g. the MCP start_trial provisioner). Empty is reported not-disposable;
+    // Better Auth owns the required-field case.
+    expect(isDisposableEmail("")).toBe(false);
+  });
 });
 
 describe("classifyBusinessEmail", () => {
@@ -81,6 +88,10 @@ describe("classifyBusinessEmail", () => {
     expect(classifyBusinessEmail("a@mailinator.com")).toEqual({ ok: false, reason: "disposable" });
     expect(classifyBusinessEmail("a@gmail.com")).toEqual({ ok: false, reason: "freemium" });
     expect(classifyBusinessEmail("a@acme.com")).toEqual({ ok: true });
+  });
+
+  it("does not throw on empty input (defers required-field to Better Auth)", () => {
+    expect(classifyBusinessEmail("")).toEqual({ ok: true });
   });
 });
 

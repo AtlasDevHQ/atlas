@@ -7,27 +7,45 @@
  *
  *   • `emailHarmony` in `buildPlugins()` output, declaring a UNIQUE
  *     `normalizedEmail` field + collapsing `+alias`/dot/case variants (the
- *     teeth behind one-trial-per-user).
+ *     teeth behind one-trial-per-user) — and still normalizing through the
+ *     EXACT instance Atlas wires (with `matchers.validation: []` disabling only
+ *     route validation, not normalization).
  *   • `assertBusinessEmail` invoked from `databaseHooks.user.create.before` in
  *     `buildAuthOptions()`, OUTSIDE the bootstrap-role try/catch, so a
  *     disposable/freemium signup is rejected with the typed
- *     `business_email_required` code rather than silently admitted.
+ *     `business_email_required` code rather than silently admitted — and only
+ *     in SaaS deploy mode.
  *
  * This is the same "well-tested logic + missing wiring assertion = silent prod
  * regression" shape that databaseHooks-wiring.test.ts guards. A refactor that
  * dropped the `emailHarmony(...)` push or the `assertBusinessEmail(user.email)`
- * line would pass every unit test yet reopen consumer/disposable signups.
+ * line — or one where a harmony upgrade folded normalization behind the same
+ * disabled matcher — would pass every isolated unit test yet reopen
+ * consumer/disposable signups.
  *
  * No mock.module needed: the deny path throws before any DB/CRM/email side
  * effect, and the allowed path resolves through `computeBootstrapRole` with no
- * internal DB (bootstrapAdmin "none" + database undefined → no query).
+ * internal DB (bootstrapAdmin "none" + database undefined → no query). Deploy
+ * mode is set via `_setConfigForTest` (same pattern as assign-saas-trial.test).
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll } from "bun:test";
 import { APIError } from "better-auth/api";
-import { emailHarmony } from "better-auth-harmony";
 import { buildPlugins, buildAuthOptions, parseAuthSecret } from "../server";
 import { BUSINESS_EMAIL_REQUIRED_CODE } from "../business-email";
+import { _setConfigForTest, type ResolvedConfig } from "@atlas/api/lib/config";
+
+function configWithDeployMode(deployMode: "saas" | "self-hosted"): ResolvedConfig {
+  return {
+    datasources: {},
+    tools: ["explore", "executeSQL"],
+    auth: "managed",
+    semanticLayer: "./semantic",
+    maxTotalConnections: 100,
+    source: "file",
+    deployMode,
+  };
+}
 
 function authDeps(plugins: ReturnType<typeof buildPlugins>) {
   return {
@@ -70,10 +88,20 @@ describe("emailHarmony plugin wiring", () => {
     expect(field?.returned).toBe(false);
   });
 
-  it("normalizes +alias / dot / case variants to a single normalizedEmail (collapse)", async () => {
-    // The plugin's normalization runs from its init() databaseHook regardless of
-    // the disabled route-validation matcher.
-    const before = emailHarmony().init().options.databaseHooks.user.create.before;
+  it("normalizes +alias / dot / case variants via the COMPOSED instance (matchers.validation:[] disables only route validation)", async () => {
+    // Reach into the exact plugin object Atlas wires — i.e. the one constructed
+    // with `matchers: { validation: [] }` in buildPlugins() — and run ITS
+    // normalization databaseHook (installed via init()). Constructing a fresh
+    // `emailHarmony()` here would test the default plugin, not the one we ship,
+    // and miss a regression where disabling validation also disabled
+    // normalization (the exact risk in this feature's rationale).
+    const harmony = buildPlugins().find((p: { id?: string }) => p.id === "harmony-email");
+    expect(harmony, "emailHarmony must be wired into the Better Auth plugin array").toBeDefined();
+    const before = (harmony as {
+      init: () => {
+        options: { databaseHooks: { user: { create: { before: (u: never) => Promise<unknown> } } } };
+      };
+    }).init().options.databaseHooks.user.create.before;
 
     const norm = async (email: string) => {
       const r = await before({ id: "u", email } as never);
@@ -89,7 +117,14 @@ describe("emailHarmony plugin wiring", () => {
   });
 });
 
-describe("databaseHooks.user.create.before — business-email deny wiring", () => {
+describe("databaseHooks.user.create.before — business-email deny wiring (SaaS)", () => {
+  beforeEach(() => {
+    _setConfigForTest(configWithDeployMode("saas"));
+  });
+  afterAll(() => {
+    _setConfigForTest(null);
+  });
+
   async function rejection(email: string): Promise<unknown> {
     const before = getUserCreateBefore();
     try {
@@ -112,9 +147,43 @@ describe("databaseHooks.user.create.before — business-email deny wiring", () =
     expect((err as APIError).body?.code).toBe(BUSINESS_EMAIL_REQUIRED_CODE);
   });
 
+  it("rejects a Google-OAuth-shaped freemium signup (social path goes through the same hook)", async () => {
+    // Social-provider signups provision through the same user.create.before, so
+    // a consumer-domain OAuth identity is denied identically to a web signup.
+    const err = await rejection("person@gmail.com");
+    expect(err, "social-provider freemium signup must be rejected by the composed hook").toBeInstanceOf(APIError);
+    expect((err as APIError).body?.code).toBe(BUSINESS_EMAIL_REQUIRED_CODE);
+  });
+
   it("allows a legitimate business-domain signup (no business-email throw)", async () => {
     // bootstrapAdmin "none" + database undefined → computeBootstrapRole returns
     // promote:false with no DB query, so a clean business email falls through.
     expect(await rejection("founder@acme.com")).toBeUndefined();
+  });
+});
+
+describe("databaseHooks.user.create.before — business-email policy is SaaS-only", () => {
+  afterAll(() => {
+    _setConfigForTest(null);
+  });
+
+  async function rejection(email: string): Promise<unknown> {
+    const before = getUserCreateBefore();
+    try {
+      await before({ id: "u_selfhost", email });
+    } catch (err) {
+      return err;
+    }
+    return undefined;
+  }
+
+  it("does NOT deny a freemium signup in self-hosted mode (operator may bootstrap with any domain)", async () => {
+    _setConfigForTest(configWithDeployMode("self-hosted"));
+    expect(await rejection("operator@gmail.com")).toBeUndefined();
+  });
+
+  it("does NOT deny when deploy mode is unresolved (config null → not saas)", async () => {
+    _setConfigForTest(null);
+    expect(await rejection("operator@gmail.com")).toBeUndefined();
   });
 });

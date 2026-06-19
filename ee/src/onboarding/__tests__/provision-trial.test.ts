@@ -109,6 +109,30 @@ describe("provisionTrialWorkspace", () => {
     expect(result.state).toBe("locked");
     expect(calls.mcpLead).toHaveLength(1);
     expect(calls.mcpLead[0]!.email).toBe("founder@acme.com");
+    // Symmetric with the grace arm: the lead carries the same derived name.
+    expect(calls.mcpLead[0]!.name).toBe("founder");
+  });
+
+  it("still provisions (grace) when the CRM lead enqueue throws — a CRM outage must not fail provisioning", async () => {
+    // The default `enqueueMcpSignupLead` swallows its own failures, but the
+    // provisioner wraps the call in a seam guard too: even a dep whose contract
+    // regresses to throwing must not abort a successful provision. Attribution
+    // is best-effort; provisioning is not.
+    const { deps, calls } = stubDeps({
+      enqueueMcpSignupLead: async () => {
+        throw new Error("crm down");
+      },
+    });
+    const result = await provisionTrialWorkspace(
+      { email: "founder@acme.com", orgName: "Acme" },
+      deps,
+    );
+    expect(result.state).toBe("grace");
+    expect(result.workspaceId).toBe("org_new");
+    // The throw was swallowed AFTER the user account was created but did not
+    // prevent org creation or grace-window narrowing.
+    expect(calls.createOrg).toHaveLength(1);
+    expect(calls.grace).toHaveLength(1);
   });
 
   it("does NOT enqueue an MCP_SIGNUP lead when signup itself fails", async () => {

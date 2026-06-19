@@ -332,11 +332,10 @@ export async function dispatchSignupCrmLead(args: {
   if (!email) return;
 
   // MCP self-serve trial signups (ADR-0018, #3653) run this SAME Better Auth
-  // path but want a DISTINCT lead source (`MCP_SIGNUP`). The provisioner emits
-  // that lead itself; suppress the generic SIGNUP here so the two don't both
-  // land in `crm_outbox`. The race matters: this hook fires inside
-  // `signUpEmail` (earlier `created_at`) and `atlasFirstSource` is sticky
-  // first-touch, so a SIGNUP row would steal first-source from MCP_SIGNUP.
+  // path but want a DISTINCT lead source (`MCP_SIGNUP`), which the provisioner
+  // emits itself — so suppress the generic SIGNUP here to avoid two competing
+  // `crm_outbox` rows for one email. See `lib/auth/signup-origin.ts` for the
+  // sticky-first-touch race this prevents and why the suppression is correct.
   if (getSignupOrigin() === "mcp") {
     log.debug(
       { userId: user.id, event: "signup_crm.suppressed_mcp" },
@@ -3305,10 +3304,18 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
             }
           },
           after: async (user: User) => {
-            // Awaited deliberately — the helper swallows every failure
-            // mode internally, so the await only blocks on the
-            // outbox INSERT. Not awaiting risks an unhandled rejection
-            // if a future change widens the error channel.
+            // Awaited INLINE deliberately — two reasons:
+            //  1. The helper swallows every failure mode internally, so the
+            //     await only blocks on the outbox INSERT; not awaiting risks an
+            //     unhandled rejection if a future change widens the error channel.
+            //  2. CONTRACT (do not break): MCP_SIGNUP attribution depends on the
+            //     AsyncLocalStorage signup-origin set by `runWithSignupOrigin("mcp")`
+            //     in `provisionTrialWorkspace` propagating INTO this call so
+            //     `dispatchSignupCrmLead` can suppress the generic SIGNUP lead.
+            //     Deferring this (setTimeout / detached microtask / queueMicrotask)
+            //     drops the ALS context, silently un-suppressing SIGNUP and
+            //     corrupting acquisition attribution. `signup-origin-wiring.test.ts`
+            //     pins this — keep it awaited inline.
             await dispatchSignupCrmLead({ user });
 
             // Onboarding welcome email — fire-and-forget after signup.

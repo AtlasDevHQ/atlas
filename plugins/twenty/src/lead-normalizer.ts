@@ -88,21 +88,23 @@ export interface AtlasSignupLeadEvent {
  * DISTINCT lead source so the acquisition channel is measurable in the CRM:
  * `eventSource = "MCP_SIGNUP"` → sticky `atlasFirstSource = MCP_SIGNUP`.
  *
- * Because the same provisioning path also runs Better Auth's `user.create`
- * hook (which would otherwise emit a `signup`/`SIGNUP` lead), the auto-signup
- * enqueue is suppressed on the MCP path (see `signup-origin.ts` /
- * `dispatchSignupCrmLead`) so this is the SOLE `crm_outbox` row for the email
- * and wins first-touch. Lead source (acquisition attribution) is deliberately
- * kept separate from Agent origin (approval/audit, ADR-0015): both can say
- * "mcp", but unifying them would recreate the `surface`→`origin` overload.
+ * The same provisioning path also runs Better Auth's `user.create` hook, whose
+ * auto-`SIGNUP` lead is suppressed on the MCP path so this is the SOLE
+ * `crm_outbox` row for the email and wins first-touch — see
+ * `lib/auth/signup-origin.ts` for the sticky-first-touch race and why
+ * suppression is load-bearing. Lead source (acquisition attribution) is
+ * deliberately kept separate from Agent origin (approval/audit, ADR-0015):
+ * both can say "mcp", but unifying them would recreate the `surface`→`origin`
+ * overload.
  */
 export interface AtlasMcpSignupLeadEvent {
   readonly source: "mcp-signup";
   readonly email: string;
   /**
-   * Optional display name — parity with `signup`. The provisioner derives a
-   * name from the email local-part, but MCP signup stays email-first, so this
-   * may be absent. Split into first/last at the normalizer seam.
+   * Optional display name — present for type-parity with `signup` and any
+   * future email-only caller. Today's provisioner always derives one from the
+   * email local-part, so in practice it's populated. Split into first/last at
+   * the normalizer seam.
    */
   readonly name?: string;
 }

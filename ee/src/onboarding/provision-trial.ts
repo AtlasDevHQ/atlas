@@ -261,16 +261,29 @@ export async function provisionTrialWorkspace(
   }
 
   // Attribute the acquisition channel as MCP_SIGNUP. Enqueued here — right
-  // after the user account is created, BEFORE org creation — to mirror exactly
-  // where the web path enqueues its SIGNUP lead (Better Auth's
-  // `user.create.after` hook). That auto-SIGNUP is suppressed on this path
-  // (signUpEmail ran under `runWithSignupOrigin("mcp")`), so MCP_SIGNUP is the
-  // sole `crm_outbox` row and wins sticky first-touch. Placing it here (not
-  // after the final return) also guarantees no "user created with zero CRM
-  // lead" gap should org creation fail downstream. Self-contained failure
-  // handling inside `enqueueMcpSignupLead` keeps a CRM outage from failing the
-  // provision.
-  await deps.enqueueMcpSignupLead(email, name);
+  // after the user account is created, BEFORE org creation — to mirror where
+  // the web path enqueues its SIGNUP lead (Better Auth's `user.create.after`
+  // hook), and so there's no "user created with zero CRM lead" gap if org
+  // creation fails downstream. The competing auto-SIGNUP is suppressed on this
+  // path (`signUpEmail` ran under `runWithSignupOrigin("mcp")`), leaving
+  // MCP_SIGNUP the sole `crm_outbox` row — see `lib/auth/signup-origin.ts` for
+  // the sticky-first-touch race that makes suppression load-bearing.
+  //
+  // Wrapped in try/catch as a seam guard, belt-and-suspenders over the
+  // swallow-and-log inside the default `enqueueMcpSignupLead`: a CRM/outbox
+  // outage — or a future dep whose contract regresses — must NEVER fail trial
+  // provisioning. Attribution is best-effort; provisioning is not.
+  try {
+    await deps.enqueueMcpSignupLead(email, name);
+  } catch (err) {
+    log.warn(
+      {
+        event: "mcp_signup_crm.enqueue_threw",
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "enqueueMcpSignupLead threw — swallowed to keep provisioning unblocked",
+    );
+  }
 
   const org = await deps.createOrganization({
     name: orgName,

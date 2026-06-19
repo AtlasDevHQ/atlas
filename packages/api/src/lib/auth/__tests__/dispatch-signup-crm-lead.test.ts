@@ -359,4 +359,27 @@ describe("dispatchMcpSignupCrmLead — happy path", () => {
     const [logCtx] = mockLogWarn.mock.calls[0] as [Record<string, unknown>, string];
     expect(logCtx.event).toBe("mcp_signup_crm.dispatch_defect");
   });
+
+  it("resolves and logs `mcp_signup_crm.enqueue_failed` when SaasCrm.upsertLead fails with a typed Error", async () => {
+    runEnterpriseImpl = async (program) => {
+      await Effect.runPromise(
+        Effect.provide(
+          program as Effect.Effect<unknown, never, SaasCrm>,
+          failingLayer(new Error("crm_outbox enqueue failed — pg blip")),
+        ),
+      );
+    };
+
+    await expect(
+      dispatchMcpSignupCrmLead({ email: "pgblip@acme.com", name: "X" }),
+    ).resolves.toBeUndefined();
+
+    // The typed `Effect.fail` path goes through `Effect.either` Left, not the
+    // outer catch — pin that branch independently (mirror of the SIGNUP suite's
+    // `signup_crm.enqueue_failed` test) so a refactor dropping the Left-side
+    // log gets caught here for the MCP path too.
+    expect(mockLogWarn).toHaveBeenCalledTimes(1);
+    const [logCtx] = mockLogWarn.mock.calls[0] as [Record<string, unknown>, string];
+    expect(logCtx.event).toBe("mcp_signup_crm.enqueue_failed");
+  });
 });

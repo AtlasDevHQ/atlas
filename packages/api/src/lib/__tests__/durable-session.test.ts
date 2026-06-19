@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, it, beforeEach, mock } from "bun:test";
+import type { ModelMessage } from "ai";
 import * as realInternal from "@atlas/api/lib/db/internal";
 
 let hasInternalDB = true;
@@ -86,15 +87,36 @@ describe("recordTerminalAgentRun", () => {
     expect(execCalls).toHaveLength(0);
   });
 
-  it("serializes a null transcript as an empty array", () => {
+  it("serializes a nullish transcript as an empty array (runtime guard)", () => {
+    // The arg type is `ModelMessage[]`, so callers can't pass null; the `?? []`
+    // is a belt-and-suspenders guard for a nullish value crossing an untyped
+    // boundary. Cast to exercise that runtime defense.
     recordTerminalAgentRun({
       conversationId: "conv-1",
       orgId: null,
       status: "done",
       stepIndex: 0,
-      transcript: null,
+      transcript: null as unknown as ModelMessage[],
     });
     expect((execCalls[0]!.params as unknown[])[4]).toBe("[]");
+  });
+
+  it("never throws and writes nothing when JSON.stringify fails (circular transcript)", () => {
+    // The documented synchronous-throw hazard: a circular structure makes
+    // `JSON.stringify` throw. The helper must catch it (fail-soft), so the
+    // stream is never disrupted and no row is written.
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(() =>
+      recordTerminalAgentRun({
+        conversationId: "conv-1",
+        orgId: null,
+        status: "done",
+        stepIndex: 0,
+        transcript: [circular] as unknown as ModelMessage[],
+      }),
+    ).not.toThrow();
+    expect(execCalls).toHaveLength(0);
   });
 });
 

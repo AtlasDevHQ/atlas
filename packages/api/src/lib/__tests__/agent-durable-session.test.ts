@@ -108,6 +108,40 @@ function throwingModel(): InstanceType<typeof MockLanguageModelV3> {
   });
 }
 
+/**
+ * A model that finishes cleanly *in-band* with `finishReason: error` — the
+ * AI-SDK's in-stream error signal. This drives `onFinish` (NOT `onError`) with
+ * `finishReason === "error"`, exercising the distinct ternary in the agent loop
+ * that maps that reason to a `failed` checkpoint (rather than `done`).
+ */
+function inBandErrorModel(): InstanceType<typeof MockLanguageModelV3> {
+  const chunks: LanguageModelV3StreamPart[] = [
+    { type: "text-delta", id: "text-0", delta: "partial" },
+    { type: "finish", usage: STOP_USAGE, finishReason: { unified: "error", raw: "error" } },
+  ];
+  return new MockLanguageModelV3({
+    doStream: async () => ({ stream: convertArrayToReadableStream(chunks) }),
+  });
+}
+
+/**
+ * A model whose stream emits an `error` part (firing `onError`) and then still
+ * reaches a `finish` part (firing `onFinish`). Both terminal seams fire on the
+ * same turn — the case the `terminalWritten` idempotency guard exists for. The
+ * first write (onError → `failed`) must win and the second must be suppressed,
+ * leaving exactly one row.
+ */
+function errorThenFinishModel(): InstanceType<typeof MockLanguageModelV3> {
+  const chunks: LanguageModelV3StreamPart[] = [
+    { type: "text-delta", id: "text-0", delta: "partial" },
+    { type: "error", error: new Error("mid-stream") },
+    { type: "finish", usage: STOP_USAGE, finishReason: { unified: "stop", raw: "end_turn" } },
+  ];
+  return new MockLanguageModelV3({
+    doStream: async () => ({ stream: convertArrayToReadableStream(chunks) }),
+  });
+}
+
 /** Drain the data stream so the streamText onFinish/onError callback runs. */
 async function drive(model: InstanceType<typeof MockLanguageModelV3>): Promise<void> {
   mockModel = model;
@@ -151,6 +185,7 @@ describe("agent_runs terminal checkpoint write path (#3745)", () => {
     const params = insert.params as unknown[];
     expect(params[0]).toBe("conv-1"); // conversation_id
     expect(params[2]).toBe("done"); // status
+    expect(params[3]).toBe(1); // step_index — one completed step (steps.length)
     expect(typeof params[4]).toBe("string"); // transcript is JSON text
     // Transcript is valid JSON carrying the turn's messages (input + response).
     const transcript = JSON.parse(params[4] as string) as unknown[];
@@ -161,6 +196,24 @@ describe("agent_runs terminal checkpoint write path (#3745)", () => {
   it("writes a row with status 'failed' when the turn throws", async () => {
     await drive(throwingModel());
 
+    const inserts = internalCalls.filter((c) => c.sql.includes("INSERT INTO agent_runs"));
+    expect(inserts).toHaveLength(1);
+    expect((inserts[0]!.params as unknown[])[2]).toBe("failed");
+  });
+
+  it("records 'failed' (not 'done') when the turn finishes in-band with finishReason error", async () => {
+    await drive(inBandErrorModel());
+
+    const inserts = internalCalls.filter((c) => c.sql.includes("INSERT INTO agent_runs"));
+    expect(inserts).toHaveLength(1);
+    expect((inserts[0]!.params as unknown[])[2]).toBe("failed");
+  });
+
+  it("writes exactly one row when both onError and onFinish fire (idempotency guard)", async () => {
+    await drive(errorThenFinishModel());
+
+    // Both terminal seams fire on this turn; the guard keeps it to one row and
+    // the first status (onError → 'failed') wins.
     const inserts = internalCalls.filter((c) => c.sql.includes("INSERT INTO agent_runs"));
     expect(inserts).toHaveLength(1);
     expect((inserts[0]!.params as unknown[])[2]).toBe("failed");

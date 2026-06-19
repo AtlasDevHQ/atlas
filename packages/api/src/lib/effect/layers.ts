@@ -2271,7 +2271,11 @@ export function makeSchedulerLive(
       }).pipe(
         Effect.catchAllCause((cause) =>
           Effect.sync(() => {
-            log.warn(
+            // A defect here is genuinely unexpected: `sweepTerminal` already
+            // self-catches DB errors → -1, so this only fires on an escaped
+            // defect (e.g. `getRetentionDays()` throwing). `error`, not `warn`,
+            // matching the sibling share-token sweep's unexpected-error level.
+            log.error(
               { err: cause.toString() },
               "agent_runs retention sweep tick failed",
             );

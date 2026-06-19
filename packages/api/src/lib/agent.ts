@@ -1248,7 +1248,7 @@ export async function runAgent({
   const durabilityActive = Boolean(conversationId) && isDurabilityEnabled(orgId);
   let terminalWritten = false;
   let observedSteps = 0;
-  const writeTerminal = (status: TerminalAgentRunStatus, stepIndex: number, transcript: unknown) => {
+  const writeTerminal = (status: TerminalAgentRunStatus, stepIndex: number, transcript: ModelMessage[]) => {
     if (!durabilityActive || terminalWritten) return;
     terminalWritten = true;
     recordTerminalAgentRun({
@@ -1295,10 +1295,12 @@ export async function runAgent({
           { err: error instanceof Error ? error : new Error(String(error)) },
           "stream error",
         );
-        // Durable terminal checkpoint for the failure path. Records the
-        // transcript we had at the point of failure (the input messages — the
-        // turn never produced a clean response set). Idempotent via
-        // `terminalWritten`, so a subsequent onFinish/catch won't double-write.
+        // Durable terminal checkpoint for the failure path. Records only the
+        // input messages we had at the point of failure; any assistant/tool
+        // messages produced by steps that completed before the error are NOT
+        // captured on this path (per-step persistence lands in a later slice).
+        // Idempotent via `terminalWritten`, so a subsequent onFinish/catch
+        // won't double-write.
         writeTerminal(AGENT_RUN_STATUS.FAILED, observedSteps, modelMessages);
         endSpan(
           SpanStatusCode.ERROR,

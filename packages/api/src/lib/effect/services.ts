@@ -30,6 +30,7 @@ import type {
 import type { PoolMetrics, OrgPoolMetrics } from "@useatlas/types";
 import type { LeadEvent } from "@useatlas/twenty/lead-normalizer";
 import type { ToolRegistry as ToolRegistryClass } from "@atlas/api/lib/tools/registry";
+import type { RecordTerminalRunArgs } from "@atlas/api/lib/durable-session";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   PluginRegistry as PluginRegistryClass,
@@ -107,13 +108,7 @@ export interface DurableSessionShape {
    * circuit breaker, never throws, never disrupts the stream. No-op on the
    * Noop layer.
    */
-  recordTerminal(args: {
-    conversationId: string;
-    orgId: string | null;
-    status: "done" | "failed";
-    stepIndex: number;
-    transcript: unknown;
-  }): void;
+  recordTerminal(args: RecordTerminalRunArgs): void;
   /**
    * Delete terminal runs older than the retention window; leaves non-terminal
    * (`running`/`parked`) runs untouched. Returns the number deleted (0 on the

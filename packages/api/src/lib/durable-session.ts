@@ -19,6 +19,7 @@
  * today — durability is an enhancement, never a new hard requirement.
  */
 
+import type { ModelMessage } from "ai";
 import { hasInternalDB, internalExecute, internalQuery } from "@atlas/api/lib/db/internal";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -68,20 +69,32 @@ export function getRetentionDays(orgId?: string): number {
 }
 
 /**
+ * Arguments for a terminal-checkpoint write. The single source of truth for the
+ * write shape — referenced (via `import type`) by `DurableSessionShape`'s
+ * `recordTerminal` so the Effect Tag contract can't drift from the helper.
+ */
+export interface RecordTerminalRunArgs {
+  conversationId: string;
+  orgId: string | null;
+  status: TerminalAgentRunStatus;
+  /**
+   * Completed-step COUNT as of this turn (1-based), not a 0-based index:
+   * `onFinish` passes `steps.length`; the failure paths pass `observedSteps`
+   * (`onStepFinish`'s `stepNumber + 1`). Stored in the `step_index` column.
+   */
+  stepIndex: number;
+  /** Accumulated transcript as of this turn; serialized to JSONB. */
+  transcript: ModelMessage[];
+}
+
+/**
  * Persist a single terminal run checkpoint (fire-and-forget).
  *
  * Mirrors the `token_usage` write in the agent loop's `onFinish`: gated on
  * `hasInternalDB()`, routed through `internalExecute` (shared circuit breaker),
  * type-narrowed catch, never throws. The transcript is serialized to JSONB.
  */
-export function recordTerminalAgentRun(args: {
-  conversationId: string;
-  orgId: string | null;
-  status: TerminalAgentRunStatus;
-  stepIndex: number;
-  /** Accumulated ModelMessage[] as of this turn; serialized to JSONB. */
-  transcript: unknown;
-}): void {
+export function recordTerminalAgentRun(args: RecordTerminalRunArgs): void {
   if (!hasInternalDB()) return;
   try {
     internalExecute(
@@ -101,7 +114,11 @@ export function recordTerminalAgentRun(args: {
     // never disrupted. ADR-0020: a degraded checkpoint store costs
     // resumability, never the current answer.
     log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
+      {
+        err: err instanceof Error ? err.message : String(err),
+        conversationId: args.conversationId,
+        status: args.status,
+      },
       "Failed to record terminal agent run checkpoint",
     );
   }

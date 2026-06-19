@@ -11,6 +11,7 @@
 
 import type { OutboxStatus } from "../lead-outbox/outbox";
 import type { EmailOutboxStatus } from "../email-outbox/outbox";
+import type { AgentRunStatus } from "../durable-session";
 import {
   pgTable,
   uuid,
@@ -2588,7 +2589,7 @@ export const agentRuns = pgTable(
       .notNull()
       .references(() => conversations.id, { onDelete: "cascade" }),
     orgId: text("org_id"),
-    status: text("status").notNull().default("running"),
+    status: text("status").$type<AgentRunStatus>().notNull().default("running"),
     stepIndex: integer("step_index").notNull().default(0),
     transcript: jsonb("transcript").notNull(),
     parkedReason: text("parked_reason"),

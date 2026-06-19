@@ -37,7 +37,7 @@ On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View 
 
 Annual billing is available for Starter, Pro, and Business (pay for 10 months, get 12).
 
-- **Trial** — Auto-assigned to the first workspace a user creates on SaaS. One trial per user: further workspaces you create start **locked** (blocked until subscribed) rather than receiving a fresh trial. Same limits as Starter (10 seats, 1 connection, ~100 queries/seat). Expires after 14 days, then queries are blocked until the workspace upgrades.
+- **Trial** — Auto-assigned to the first workspace a user creates on SaaS. One trial per user: further workspaces you create start **locked** (blocked until subscribed) rather than receiving a fresh trial. Same limits as Starter (10 seats, 1 connection, ~100 queries/seat). Expires after 14 days, then queries are blocked until the workspace upgrades. (For workspaces provisioned over MCP by `start_trial`, the 14-day clock starts when the account is **claimed** on the web — before that the workspace sits on a short 72-hour unclaimed-grace window. See [Self-Serve Signup](/guides/signup#claiming-a-self-serve-mcp-trial).)
 - **Starter** — Entry paid tier. Per-seat billing via Stripe.
 - **Pro** — Higher query budgets, more connections, custom domain support.
 - **Business** — Unlimited seats and connections. Includes SSO, SCIM, data residency, and SLA.
@@ -123,7 +123,7 @@ Billing enforcement is skipped entirely when:
 
 ### Trial Expiry
 
-Trial workspaces have a separate check: if the trial has expired (14 days from creation or past the `trial_ends_at` date), all requests are blocked with HTTP 403 and a message to upgrade.
+Trial workspaces have a separate check: if the trial has expired (past the `trial_ends_at` date — 14 days from creation for web signups, or 14 days from claim for MCP self-serve trials), all requests are blocked with HTTP 403 and a message to upgrade.
 
 ### Metering Failures
 
@@ -317,7 +317,7 @@ To run Atlas without any billing:
 
 ### Trial expired unexpectedly
 
-- Trial duration is 14 days from workspace creation (or from `trial_ends_at` if set)
+- Trial duration is 14 days from workspace creation for web signups; for MCP self-serve trials the 14-day clock starts at claim (the value in `trial_ends_at` is always authoritative)
 - Check the workspace's creation date via `GET /api/v1/billing` — the `trialEndsAt` field shows the expiry
 
 ---

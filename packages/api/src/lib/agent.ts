@@ -1261,7 +1261,7 @@ export async function runAgent({
   // identical older slice is reused verbatim, and a grown one folds only the
   // newly-aged-out delta into the prior summary (rolling summary) — keeping the
   // per-step summarization cost bounded instead of O(full older slice).
-  const compactionSettings = resolveCompactionSettings(orgId);
+  const compactionSettings = resolveCompactionSettings(resolvedModelId, orgId);
   let compactionSummaryMemo: { olderCount: number; text: string } | undefined;
 
   // ── Durable-session checkpoints (#3745 phase 1a, #3746 phase 1b, ADR-0020) ──

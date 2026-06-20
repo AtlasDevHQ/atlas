@@ -16,4 +16,4 @@ export const RunStatusResponseSchema = z.object({
   status: RunStatusValueSchema,
   runId: z.string().optional(),
   parkedReason: z.string().nullable().optional(),
-}) satisfies z.ZodType<RunStatusResponse, unknown>;
+}) satisfies z.ZodType<RunStatusResponse>;

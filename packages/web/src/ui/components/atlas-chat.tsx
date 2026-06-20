@@ -548,17 +548,27 @@ export function AtlasChat({
 
   const isLoading = status === "streaming" || status === "submitted";
 
+  // #3749 — auto-resume hook seam. `useRunStatus` (below) must call the resume
+  // handler when a poll sees a parked turn re-armed to `running`, but the handler
+  // is produced AFTER it (it depends on `runStatusCtl`). A ref breaks the cycle:
+  // `useRunStatus` fires this stable wrapper, which dispatches to the latest
+  // `handleResume` (kept current by the effect below it).
+  const handleResumeRef = useRef<() => void>(() => {});
+  const handleParkedResolved = useCallback(() => handleResumeRef.current(), []);
+
   // #3749 — durable run status for the open conversation. Fetched once its
   // history has committed (not mid-load) so the affordance reflects the mounted
   // thread, and only for a signed-in managed session (self-hosted/no-DB returns
   // `none` and renders nothing anyway). Drives the resume / waiting-on-approval
-  // banner below the message thread.
+  // banner below the message thread. While parked it polls for the server's
+  // approval-park re-arm and auto-resumes on the parked→running flip (AC3).
   const runStatusCtl = useRunStatus({
     apiUrl,
     getHeaders,
     getCredentials,
     conversationId: loadingConversation ? null : conversationId,
     enabled: authResolved && isSignedIn,
+    onParkedResolved: handleParkedResolved,
   });
 
   // #3749 — resume orchestration lives in `useResumeHandler` (unit-tested): the
@@ -576,6 +586,13 @@ export function AtlasChat({
       setTimeout(() => setTransientWarning(""), 5000);
     },
   });
+  // Point the auto-resume seam at the freshly-built handler (see the ref above).
+  // In an effect, not during render: a render the React scheduler discards must
+  // not leave the ref pointing at a stale `handleResume` (the same concurrent-
+  // rendering guard the `warningHandlerRef` seam uses above).
+  useEffect(() => {
+    handleResumeRef.current = handleResume;
+  }, [handleResume]);
 
   // Adaptive empty-chat starter surface — backend composes the ranked
   // prompt list from favorites / popular / library tiers. TanStack Query

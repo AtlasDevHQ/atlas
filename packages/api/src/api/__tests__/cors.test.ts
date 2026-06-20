@@ -148,6 +148,10 @@ describe("CORS middleware", () => {
     const exposeHeaders =
       res.headers.get("Access-Control-Expose-Headers") ?? "";
     expect(exposeHeaders).toContain("Retry-After");
+    // #3747 — the resume reattach headers must be exposed cross-origin so the
+    // embedded widget can read the conversation id + run id off the response.
+    expect(exposeHeaders).toContain("x-conversation-id");
+    expect(exposeHeaders).toContain("x-run-id");
   });
 
   it("streaming chat POST response includes CORS headers (HTTPException path)", async () => {

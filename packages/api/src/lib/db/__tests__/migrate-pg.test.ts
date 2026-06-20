@@ -6,7 +6,7 @@ import { z } from "zod";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { buildStaleCatalogQuery } from "@atlas/api/lib/scheduler/byot-catalog-query";
-import { RUNNING_UPSERT_SQL, TERMINAL_UPSERT_SQL } from "@atlas/api/lib/durable-session";
+import { RUNNING_UPSERT_SQL, TERMINAL_UPSERT_SQL, RESUME_CLAIM_SQL } from "@atlas/api/lib/durable-session";
 
 // Real-Postgres migration smoke. Skips cleanly when TEST_DATABASE_URL
 // is unset so local dev that hasn't run `bun run db:up` is unaffected.
@@ -2546,6 +2546,75 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     expect(row.rows[0]!.status).toBe("done");
     expect(row.rows[0]!.step_index).toBe(2);
     expect(row.rows[0]!.transcript).toEqual([{ role: "assistant", content: "final" }]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // 0144 (#3747, ADR-0020 phase 2) — the resume lease single-flight, executed
+  // against real Postgres. The atomic claim's whole job is to let exactly ONE of
+  // two concurrent resumes win the run; this exercises the actual CTE/UPDATE SQL
+  // the helper runs (RESUME_CLAIM_SQL), not a mock.
+  it("0144: the resume claim leases a free run and rejects a second concurrent claim", async () => {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO conversations DEFAULT VALUES RETURNING id`,
+    );
+    const conversationId = rows[0]!.id;
+
+    // A mid-flight `running` run, lease free.
+    await pool.query(RUNNING_UPSERT_SQL, [
+      "33333333-3333-3333-3333-333333333333",
+      conversationId, "org-1", "running", 2,
+      JSON.stringify([{ role: "assistant", content: "mid" }]),
+    ]);
+
+    // First claim wins: it returns the row (the transcript to resume) and stamps
+    // a future lease + owner token.
+    const first = await pool.query<{ id: string; step_index: number; transcript: unknown }>(
+      RESUME_CLAIM_SQL,
+      [conversationId, "300", "owner-A"],
+    );
+    expect(first.rowCount).toBe(1);
+    expect(first.rows[0]!.step_index).toBe(2);
+    expect(first.rows[0]!.transcript).toEqual([{ role: "assistant", content: "mid" }]);
+
+    // Second claim while the first lease is live: the lease-free predicate no
+    // longer matches, so it updates NOTHING — the single-flight rejection.
+    const second = await pool.query(RESUME_CLAIM_SQL, [conversationId, "300", "owner-B"]);
+    expect(second.rowCount).toBe(0);
+
+    // The lease + owner reflect the FIRST claimer; the second never overwrote them.
+    const leased = await pool.query<{ resuming_lease_owner: string; resuming_lease: string | null }>(
+      `SELECT resuming_lease_owner, resuming_lease FROM agent_runs WHERE conversation_id = $1`,
+      [conversationId],
+    );
+    expect(leased.rows[0]!.resuming_lease_owner).toBe("owner-A");
+    expect(leased.rows[0]!.resuming_lease).not.toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0144: an expired lease is reclaimable (the TTL self-heal)", async () => {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO conversations DEFAULT VALUES RETURNING id`,
+    );
+    const conversationId = rows[0]!.id;
+    const runId = "44444444-4444-4444-4444-444444444444";
+
+    await pool.query(RUNNING_UPSERT_SQL, [
+      runId, conversationId, "org-1", "running", 1,
+      JSON.stringify([{ role: "assistant", content: "mid" }]),
+    ]);
+    // Stamp an ALREADY-EXPIRED lease held by a resumer that died mid-resume.
+    await pool.query(
+      `UPDATE agent_runs SET resuming_lease = now() - interval '1 minute', resuming_lease_owner = 'dead-resumer' WHERE id = $1`,
+      [runId],
+    );
+
+    // A fresh claim must reclaim it (the expired-lease predicate matches) and
+    // take over the owner token — the run self-heals rather than wedging forever.
+    const reclaim = await pool.query(RESUME_CLAIM_SQL, [conversationId, "300", "owner-C"]);
+    expect(reclaim.rowCount).toBe(1);
+    const after = await pool.query<{ resuming_lease_owner: string }>(
+      `SELECT resuming_lease_owner FROM agent_runs WHERE id = $1`,
+      [runId],
+    );
+    expect(after.rows[0]!.resuming_lease_owner).toBe("owner-C");
   }, PG_TEST_TIMEOUT_MS);
 });
 

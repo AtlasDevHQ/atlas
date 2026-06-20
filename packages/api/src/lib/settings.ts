@@ -424,6 +424,22 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "workspace",
   },
   {
+    // Single-resumer lease TTL for crash-resume (#3747). A resume claims the run
+    // for this many seconds; a second concurrent resume is rejected while the
+    // lease is live. The TTL self-heals a resumer that died mid-resume — the run
+    // becomes re-claimable once it lapses. Must out-live one full agent turn
+    // (the loop's wall-clock budget is 180s), so the default is 300s.
+    key: "ATLAS_DURABILITY_RESUME_LEASE_SECONDS",
+    section: "Agent",
+    label: "Resume Lease TTL (seconds)",
+    description:
+      "How long a crash-resume holds the single-resumer lease on an interrupted turn. A concurrent resume of the same run is rejected while the lease is live; the lease self-heals once it expires. Default 300s (longer than one agent turn).",
+    type: "number",
+    default: "300",
+    envVar: "ATLAS_DURABILITY_RESUME_LEASE_SECONDS",
+    scope: "workspace",
+  },
+  {
     key: "ATLAS_PROVIDER",
     section: "Agent",
     label: "LLM Provider",

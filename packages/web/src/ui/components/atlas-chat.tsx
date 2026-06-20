@@ -14,6 +14,9 @@ import { useConversations, transformMessages } from "../hooks/use-conversations"
 import { useStarterPromptsQuery } from "../hooks/use-starter-prompts-query";
 import { ErrorBanner } from "./chat/error-banner";
 import { ContextWarningBanner } from "./chat/context-warning-banner";
+import { ResumeBanner } from "./chat/resume-banner";
+import { useRunStatus } from "../hooks/use-run-status";
+import { useResumeHandler } from "../hooks/use-resume-handler";
 import { ApiKeyBar } from "./chat/api-key-bar";
 import { TypingIndicator } from "./chat/typing-indicator";
 import { ToolPart } from "./chat/tool-part";
@@ -189,6 +192,11 @@ export function AtlasChat({
   // (empty) client messages. While the load is pending this stays null so a
   // quick send starts a fresh conversation instead of corrupting the target.
   const boundConversationIdRef = useRef<string | null>(null);
+  // #3749 — the latest durable run id captured from the `x-run-id` response
+  // header (set on a fresh turn and on a resume). Captured for future
+  // correlation/telemetry; the resume endpoint loads the latest non-terminal run
+  // by conversation id, so this value is not used to target a resume.
+  const runIdRef = useRef<string | null>(null);
   const [transientWarning, setTransientWarning] = useState("");
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [passwordDialogDismissed, setPasswordDialogDismissed] = useState(false);
@@ -297,6 +305,14 @@ export function AtlasChat({
     // #3067 — forward the REST-only focus on every turn (always, even null) so
     // a clear actually nulls the row instead of inheriting the stale focus.
     getRestFocusDatasourceId: () => selectedRestFocus,
+    // #3749 — onRunId: capture the active run id for correlation/telemetry only
+    // (not used to target a resume). getResumeConversationId: a resume targets the
+    // bound CONVERSATION (not the run id); the affordance only shows once a
+    // conversation is mounted, so it's non-null whenever resume fires.
+    onRunId: (id) => {
+      runIdRef.current = id;
+    },
+    getResumeConversationId: () => boundConversationIdRef.current,
   });
 
   const managedSession = authClient.useSession();
@@ -516,7 +532,7 @@ export function AtlasChat({
   // { type: `data-${string}`; id?: string; data: unknown } — our callback matches.
   // The cast is needed because the default UIMessage generic doesn't declare our custom
   // data part type at compile time.
-  const { messages, setMessages, sendMessage, status, error } = useChat({
+  const { messages, setMessages, sendMessage, regenerate, status, error } = useChat({
     transport,
     onData: onData as never,
   });
@@ -531,6 +547,35 @@ export function AtlasChat({
   }, [warningCtl.handleData]);
 
   const isLoading = status === "streaming" || status === "submitted";
+
+  // #3749 — durable run status for the open conversation. Fetched once its
+  // history has committed (not mid-load) so the affordance reflects the mounted
+  // thread, and only for a signed-in managed session (self-hosted/no-DB returns
+  // `none` and renders nothing anyway). Drives the resume / waiting-on-approval
+  // banner below the message thread.
+  const runStatusCtl = useRunStatus({
+    apiUrl,
+    getHeaders,
+    getCredentials,
+    conversationId: loadingConversation ? null : conversationId,
+    enabled: authResolved && isSignedIn,
+  });
+
+  // #3749 — resume orchestration lives in `useResumeHandler` (unit-tested): the
+  // re-entrancy guard, the `regenerate`-with-marker call (no phantom user
+  // message), the optimistic banner clear, and the refetch-on-settle that clears
+  // a completed resume / restores a still-resumable affordance on failure.
+  const { resuming, resume: handleResume } = useResumeHandler({
+    regenerate,
+    clearRunStatus: runStatusCtl.clear,
+    refetchRunStatus: runStatusCtl.refetch,
+    isLoading,
+    resetPendingWarnings: warningCtl.resetPending,
+    onError: (message) => {
+      setTransientWarning(message);
+      setTimeout(() => setTransientWarning(""), 5000);
+    },
+  });
 
   // Adaptive empty-chat starter surface — backend composes the ranked
   // prompt list from favorites / popular / library tiers. TanStack Query
@@ -1363,6 +1408,18 @@ export function AtlasChat({
                           }
                         : undefined
                     }
+                  />
+                )}
+
+                {/* #3749 — durability affordance: an interrupted turn offers a
+                    one-click Resume; a parked turn shows a waiting-on-approval
+                    state. Suppressed while an error banner is up (the error path
+                    owns recovery then) and on a fresh chat (no run to resume). */}
+                {!error && !loadingConversation && (
+                  <ResumeBanner
+                    runStatus={runStatusCtl.runStatus}
+                    onResume={handleResume}
+                    resuming={resuming}
                   />
                 )}
 

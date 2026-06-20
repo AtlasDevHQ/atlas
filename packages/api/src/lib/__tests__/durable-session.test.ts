@@ -70,6 +70,7 @@ const {
   getResumeLeaseSeconds,
   getMaxParkMinutes,
   loadAndLeaseResumableRun,
+  loadLatestRunStatus,
   releaseResumeLease,
   DEFAULT_RETENTION_DAYS,
   DEFAULT_RESUME_LEASE_SECONDS,
@@ -642,5 +643,68 @@ describe("releaseResumeLease", () => {
     hasInternalDB = false;
     releaseResumeLease({ runId: "run-9", leaseOwner: "owner-token-1" });
     expect(execCalls).toHaveLength(0);
+  });
+});
+
+describe("loadLatestRunStatus (#3749)", () => {
+  it("reports the latest run as running with its run id (interrupted — resume)", async () => {
+    queryRows = [{ id: "run-7", status: "running", parked_reason: null }];
+    const result = await loadLatestRunStatus("conv-1");
+    expect(result).toEqual({ status: "running", runId: "run-7", parkedReason: null });
+
+    // Read-only peek: a single SELECT of the latest row, NO lease UPDATE.
+    expect(execCalls).toHaveLength(0);
+    const call = queryCalls[0]!;
+    expect(call.sql).toContain("FROM agent_runs");
+    expect(call.sql).toContain("WHERE conversation_id = $1");
+    expect(call.sql).toContain("ORDER BY updated_at DESC");
+    expect(call.sql).toContain("LIMIT 1");
+    expect(call.params).toEqual(["conv-1"]);
+    // It must NOT filter on status (it reports whatever the latest run is) — a
+    // status filter would hide a terminal latest run behind an older running one.
+    expect(call.sql).not.toContain("status = 'running'");
+  });
+
+  it("reports the latest run as parked and surfaces the approval ref (waiting on approval)", async () => {
+    queryRows = [{ id: "run-8", status: "parked", parked_reason: "req-42" }];
+    const result = await loadLatestRunStatus("conv-1");
+    expect(result).toEqual({ status: "parked", runId: "run-8", parkedReason: "req-42" });
+  });
+
+  it("reports a terminal latest run (done) so the client shows no resume affordance", async () => {
+    queryRows = [{ id: "run-9", status: "done", parked_reason: null }];
+    expect(await loadLatestRunStatus("conv-1")).toEqual({ status: "done", runId: "run-9", parkedReason: null });
+  });
+
+  it("reports failed for a failed latest run", async () => {
+    queryRows = [{ id: "run-9", status: "failed", parked_reason: null }];
+    expect((await loadLatestRunStatus("conv-1")).status).toBe("failed");
+  });
+
+  it("reports none when the conversation has no runs at all", async () => {
+    queryRows = [];
+    expect(await loadLatestRunStatus("conv-1")).toEqual({ status: "none" });
+  });
+
+  it("reports none when no internal DB is configured (durability never wrote a row)", async () => {
+    hasInternalDB = false;
+    expect(await loadLatestRunStatus("conv-1")).toEqual({ status: "none" });
+    expect(queryCalls).toHaveLength(0);
+  });
+
+  it("reports none (fail-soft) on a DB read blip — never throws, logs a warn", async () => {
+    // The load-time status probe is a non-critical enhancement: a read blip must
+    // not break opening a conversation, so it degrades to "no affordance" rather
+    // than surfacing an error. The warn keeps the blip audible.
+    queryThrow = new Error("boom");
+    expect(await loadLatestRunStatus("conv-1")).toEqual({ status: "none" });
+    expect(warnCalls.some((w) => w.msg === "Failed to load latest run status")).toBe(true);
+  });
+
+  it("coerces an unexpected status string to none rather than trusting it", async () => {
+    // A row whose status isn't one of the four known lifecycle values (schema
+    // drift / corruption) must not leak a bogus status to the client.
+    queryRows = [{ id: "run-x", status: "weird", parked_reason: null }];
+    expect(await loadLatestRunStatus("conv-1")).toEqual({ status: "none" });
   });
 });

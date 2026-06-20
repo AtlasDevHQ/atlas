@@ -45,6 +45,17 @@ mock.module("@atlas/api/lib/durable-resume", () => ({
   finishResume: mockFinishResume,
 }));
 
+// --- Latest-run-status probe (#3749) ---
+import type { LatestRunStatus } from "@atlas/api/lib/durable-session";
+import * as realDurableSession from "@atlas/api/lib/durable-session";
+const mockLoadLatestRunStatus: Mock<() => Promise<LatestRunStatus>> = mock(() =>
+  Promise.resolve({ status: "running" as const, runId: "run-abc", parkedReason: null }),
+);
+mock.module("@atlas/api/lib/durable-session", () => ({
+  ...realDurableSession,
+  loadLatestRunStatus: mockLoadLatestRunStatus,
+}));
+
 // --- Agent ---
 const mockRunAgent = mock(() =>
   Promise.resolve({
@@ -345,5 +356,80 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
     expect(res.status).toBeGreaterThanOrEqual(500);
     // The lease must be released even though the stream object never existed.
     expect(mockFinishResume).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3749 — GET /api/v1/chat/:conversationId/run-status. The read-only probe the
+// web chat calls on load to decide which durability affordance to render.
+// ---------------------------------------------------------------------------
+
+function runStatusRequest(): Request {
+  return new Request(`http://localhost/api/v1/chat/${CONV_ID}/run-status`, { method: "GET" });
+}
+
+describe("GET /api/v1/chat/:conversationId/run-status", () => {
+  beforeEach(() => {
+    process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+    mockAuthenticateRequest.mockReset();
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: {
+        id: "u-1",
+        mode: "managed" as const,
+        label: "u-1@useatlas.dev",
+        role: "admin",
+        activeOrganizationId: "org-1",
+        claims: {},
+      },
+    });
+    mockGetConversation.mockReset();
+    mockGetConversation.mockResolvedValue({ ok: true, data: { id: CONV_ID, messages: [] } });
+    mockLoadLatestRunStatus.mockReset();
+    mockLoadLatestRunStatus.mockResolvedValue({ status: "running" as const, runId: "run-abc", parkedReason: null });
+  });
+
+  it("returns the latest run's status (running → resume affordance) for an owned conversation", async () => {
+    const res = await app.fetch(runStatusRequest());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; runId?: string; parkedReason?: string | null };
+    expect(body).toEqual({ status: "running", runId: "run-abc", parkedReason: null });
+    // Probed by the SAME conversation id the route was called with.
+    expect(mockLoadLatestRunStatus).toHaveBeenCalledWith(CONV_ID);
+  });
+
+  it("surfaces a parked run with its approval ref (waiting on approval)", async () => {
+    mockLoadLatestRunStatus.mockResolvedValue({ status: "parked" as const, runId: "run-8", parkedReason: "req-42" });
+    const res = await app.fetch(runStatusRequest());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "parked", runId: "run-8", parkedReason: "req-42" });
+  });
+
+  it("returns none for a conversation with no run (no affordance)", async () => {
+    mockLoadLatestRunStatus.mockResolvedValue({ status: "none" as const });
+    const res = await app.fetch(runStatusRequest());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "none" });
+  });
+
+  it("fails closed (404) when conversation ownership re-check fails — never probes run state", async () => {
+    // A user who lost access: the run id / parked ref must not leak across tenancy.
+    mockGetConversation.mockResolvedValue({ ok: false, reason: "not_found" });
+    const res = await app.fetch(runStatusRequest());
+    expect(res.status).toBe(404);
+    expect(mockLoadLatestRunStatus).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 when unauthenticated — never probes run state", async () => {
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: false as const,
+      status: 401,
+      error: "no token",
+      mode: "none" as const,
+    } as AuthResult);
+    const res = await app.fetch(runStatusRequest());
+    expect(res.status).toBe(401);
+    expect(mockLoadLatestRunStatus).not.toHaveBeenCalled();
   });
 });

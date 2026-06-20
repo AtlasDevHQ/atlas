@@ -159,16 +159,16 @@ export function finishResume(handle: Pick<ResumeHandle, "runId" | "leaseOwner">)
  *   client reattaches via the resume endpoint to continue the turn in its own
  *   live security context. `conversationId` is surfaced so the caller can
  *   correlate / notify.
- * - `"not_found"` — no parked run is waiting on this approval request (already
- *   resolved, expired and swept, or the turn never parked — e.g. durability was
- *   off when it ran). Benign: the decision is still recorded on the queue.
- * - `"disabled"` — no internal DB / durability off, so there is no checkpoint to
- *   resume. Same observable outcome as `not_found` for the caller.
+ * - `"not_found"` — nothing to resume: no parked run is waiting on this approval
+ *   request (already resolved, expired and swept, or the turn never parked), OR
+ *   there is no internal DB / durability is off (the loader returns `null` for
+ *   that case too). Benign: the decision is still recorded on the queue. Folded
+ *   into one outcome because the sole caller (the review endpoint) discards the
+ *   result — it has no branch to justify distinguishing the two.
  */
 export type ResolveApprovalParkResult =
   | { readonly status: "resumed"; readonly conversationId: string; readonly runId: string }
-  | { readonly status: "not_found" }
-  | { readonly status: "disabled" };
+  | { readonly status: "not_found" };
 
 /**
  * Resolve an approval-queue decision against the turn it parked (#3748). Loads

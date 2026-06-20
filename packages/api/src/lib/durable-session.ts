@@ -33,7 +33,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("durable-session");
 
-/** Run lifecycle statuses. `running` is written per-step (1b); `parked` arrives with resume. */
+/** Run lifecycle statuses. `running` is written per-step (1b); `parked` is written on approval-park (#3748). */
 export const AGENT_RUN_STATUS = {
   RUNNING: "running",
   PARKED: "parked",
@@ -606,6 +606,12 @@ export interface ParkedRun {
  * parked run exists (already resolved/expired, or never parked), or on a DB
  * error — the caller treats both as "nothing to resume" (fail-soft: a degraded
  * checkpoint store costs resumability, never the approval decision itself).
+ *
+ * Tenancy: looked up by the approval-request UUID alone (not org-scoped). The
+ * sole caller (the admin review endpoint) reaches here only AFTER
+ * `reviewApprovalRequest` authorized the request against the reviewer's org, and
+ * the parked run's `org_id` equals that approval's org — so cross-tenant
+ * resolution is already prevented upstream.
  */
 export async function loadParkedRunByApprovalRef(approvalRequestId: string): Promise<ParkedRun | null> {
   if (!hasInternalDB()) return null;
@@ -671,11 +677,18 @@ export const PARKED_RESOLVE_SQL = `UPDATE agent_runs
         WHERE id = $1 AND status = 'parked'
         RETURNING id`;
 
-export async function resolveParkedRun(args: {
-  runId: string;
-  transcript: ModelMessage[];
-  stepIndex: number;
-}): Promise<boolean> {
+/**
+ * Arguments for {@link resolveParkedRun}. A single object (not positional) for
+ * the same anti-transposition reason as {@link releaseResumeLease}, and named
+ * like the sibling `*Args` write types.
+ */
+export interface ResolveParkedRunArgs {
+  readonly runId: string;
+  readonly transcript: ModelMessage[];
+  readonly stepIndex: number;
+}
+
+export async function resolveParkedRun(args: ResolveParkedRunArgs): Promise<boolean> {
   if (!hasInternalDB()) return false;
   try {
     const rows = await internalQuery<{ id: string }>(PARKED_RESOLVE_SQL, [

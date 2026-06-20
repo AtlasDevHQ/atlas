@@ -155,9 +155,9 @@ export function findApprovalParkSignal(
 /**
  * Build the resolved tool-result value that REPLACES the needs-approval marker
  * once a reviewer approves/denies the parked request. The agent reads this on
- * resume: an approval tells it to re-run the gated query (now unblocked by the
- * `hasApprovedRequest` row the approval wrote), a denial tells it to surface the
- * rejection to the user and not retry.
+ * resume: an approval tells it to re-run the gated query (now unblocked because
+ * the approval flipped the queue row to `approved`, which `hasApprovedRequest`
+ * reads), a denial tells it to surface the rejection to the user and not retry.
  */
 function buildDecisionResult(
   approvalRequestId: string,

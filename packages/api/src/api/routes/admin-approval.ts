@@ -22,6 +22,7 @@ import { APPROVAL_STATUSES, APPROVAL_RULE_ORIGINS } from "@useatlas/types";
 import { ApprovalRuleSchema, ApprovalRequestSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { resolveApprovalPark } from "@atlas/api/lib/durable-resume";
+import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
@@ -33,6 +34,8 @@ import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const approvalDomainError = domainError(ApprovalError, { validation: 400, not_found: 404, conflict: 409, expired: 410 });
+
+const log = createLogger("admin-approval");
 
 // ---------------------------------------------------------------------------
 // Request body schemas — response shapes live in @useatlas/schemas.
@@ -511,14 +514,23 @@ adminApproval.openapi(reviewRoute, async (c) => {
     // #3748 — if a turn parked on this request (durable-sessions approval-park),
     // resolve it: rewrite the parked transcript with the decision and re-arm the
     // run for resume. Fail-soft and decoupled from the review — the decision is
-    // already recorded on the queue above, and the resolver never throws (a
-    // missing parked run, a disabled durability store, or a DB blip all map to
-    // "nothing to resume"). The gated query is NOT executed here; execution
-    // happens on resume in the requester's live security context (ADR-0020).
+    // already recorded + audited on the queue above. The resolver is internally
+    // fail-soft (a missing parked run, a disabled durability store, or a DB blip
+    // all map to "nothing to resume"), but the `.catch` is a belt-and-suspenders
+    // guard so even an UNEXPECTED throw can never turn a recorded decision into a
+    // 500 — it logs and the review still returns 200. The gated query is NOT
+    // executed here; execution happens on resume in the requester's live security
+    // context (ADR-0020).
     yield* Effect.promise(() =>
       resolveApprovalPark(itemId, body.action, {
         reviewerLabel: reviewerEmail,
         comment: body.comment ?? null,
+      }).catch((err) => {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), itemId, action: body.action },
+          "approval-park resolution failed after review was recorded (resume not armed)",
+        );
+        return { status: "not_found" as const };
       }),
     );
 

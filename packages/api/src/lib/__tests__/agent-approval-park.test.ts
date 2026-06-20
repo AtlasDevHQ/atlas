@@ -25,7 +25,7 @@ import { tool, type ModelMessage, type UIMessage } from "ai";
 import { z } from "zod";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 import * as realInternal from "@atlas/api/lib/db/internal";
-import { applyApprovalDecision } from "@atlas/api/lib/approvals/evaluate";
+import { applyApprovalDecision, findApprovalParkSignal } from "@atlas/api/lib/approvals/evaluate";
 
 process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test";
 
@@ -229,11 +229,10 @@ describe("approval-park control inversion at the runAgent seam (#3748)", () => {
     expect((parked[0]!.params as unknown[])[6]).toBe(PARK_REQ_ID);
     expect(terminalWrites()).toHaveLength(0);
 
-    // The parked transcript carries the needs-approval tool result (what the
-    // resolver later rewrites).
+    // The parked transcript carries the SAME needs-approval marker the resolver
+    // later keys on — self-contained against a future transcript-shape change.
     const transcript = transcriptOf(parked[0]!);
-    const toolMsg = transcript.find((m) => m.role === "tool");
-    expect(toolMsg).toBeDefined();
+    expect(findApprovalParkSignal(transcript)?.approvalRequestId).toBe(PARK_REQ_ID);
   });
 
   it("does not write a parked row when durability is off (default)", async () => {

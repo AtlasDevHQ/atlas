@@ -92,6 +92,24 @@ const mockExpireStaleRequests: Mock<(orgId: string) => ReturnType<typeof Effect.
   () => Effect.succeed(0),
 );
 
+// #3748 — review (approve/deny) returns the reviewed request; the route then
+// calls resolveApprovalPark to re-arm any parked turn waiting on it.
+const mockReviewApprovalRequest: Mock<(...args: unknown[]) => ReturnType<typeof Effect.succeed>> = mock(
+  () => Effect.succeed({ id: "req-1", status: "approved", origin: null } as never),
+);
+const mockResolveApprovalPark: Mock<(...args: unknown[]) => Promise<{ status: string }>> = mock(
+  async () => ({ status: "not_found" }),
+);
+
+// Mock the durable-resume seam the review route calls. All value exports
+// stubbed (the route only uses resolveApprovalPark; prepare/finishResume are
+// the rest of the module's surface).
+mock.module("@atlas/api/lib/durable-resume", () => ({
+  prepareResume: async () => ({ status: "none" as const }),
+  finishResume: () => {},
+  resolveApprovalPark: mockResolveApprovalPark,
+}));
+
 // Force enterprise on so `ConditionalEELayer` lazy-imports the mocked
 // `@atlas/ee/layers` aggregator below.
 // Module-top env setup — must be set before the dynamic imports below
@@ -141,7 +159,7 @@ mock.module("@atlas/ee/layers", () => {
           deleteApprovalRule: () => Effect.succeed(true),
           listApprovalRequests: mockListApprovalRequests as never,
           getApprovalRequest: () => Effect.succeed(null),
-          reviewApprovalRequest: () => Effect.succeed({} as never),
+          reviewApprovalRequest: mockReviewApprovalRequest as never,
           expireStaleRequests: mockExpireStaleRequests as never,
           getPendingCount: () => Effect.succeed(0),
         } as never);
@@ -276,5 +294,77 @@ describe("POST /expire — org scope (F-13)", () => {
     const res = await adminApproval.request("/expire", { method: "POST" });
     expect(res.status).toBe(400);
     expect(mockExpireStaleRequests).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /queue/:id — review → approval-park resolution (#3748)
+//
+// The review endpoint records the decision (reviewApprovalRequest) and then
+// re-arms any parked turn waiting on it (resolveApprovalPark). This is the only
+// end-to-end seam from a human decision to a parked turn, so pin: (a) the
+// resolver is invoked with the right (itemId, action, reviewer) after a
+// successful review, and (b) it is fail-soft — a resolver throw must NOT turn an
+// already-recorded decision into a 500.
+// ---------------------------------------------------------------------------
+
+function reviewRequest(id: string, body: { action: string; comment?: string }) {
+  return adminApproval.request(`/queue/${id}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("POST /queue/:id — approval-park resolution (#3748)", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockAuthenticateRequest.mockReset();
+    mockAuthenticateRequest.mockImplementation(defaultAuthResponse);
+    mockReviewApprovalRequest.mockClear();
+    mockReviewApprovalRequest.mockImplementation(() =>
+      Effect.succeed({ id: "req-1", status: "approved", origin: null } as never),
+    );
+    mockResolveApprovalPark.mockClear();
+    mockResolveApprovalPark.mockImplementation(async () => ({ status: "not_found" }));
+  });
+
+  it("approve: records the decision and re-arms the parked turn with (id, action, reviewer)", async () => {
+    const res = await reviewRequest("req-123", { action: "approve", comment: "ok for audit" });
+    expect(res.status).toBe(200);
+    expect(mockReviewApprovalRequest).toHaveBeenCalledTimes(1);
+    expect(mockResolveApprovalPark).toHaveBeenCalledTimes(1);
+    const [itemId, action, opts] = mockResolveApprovalPark.mock.calls[0]!;
+    expect(itemId).toBe("req-123");
+    expect(action).toBe("approve");
+    expect(opts).toEqual({ reviewerLabel: "admin@test.dev", comment: "ok for audit" });
+  });
+
+  it("deny: forwards the deny decision to the resolver", async () => {
+    const res = await reviewRequest("req-456", { action: "deny", comment: "prod frozen" });
+    expect(res.status).toBe(200);
+    expect(mockResolveApprovalPark.mock.calls[0]![1]).toBe("deny");
+    expect(mockResolveApprovalPark.mock.calls[0]![2]).toEqual({
+      reviewerLabel: "admin@test.dev",
+      comment: "prod frozen",
+    });
+  });
+
+  it("passes comment: null to the resolver when none is supplied", async () => {
+    await reviewRequest("req-789", { action: "approve" });
+    expect(mockResolveApprovalPark.mock.calls[0]![2]).toEqual({
+      reviewerLabel: "admin@test.dev",
+      comment: null,
+    });
+  });
+
+  it("is fail-soft: a resolver throw does NOT fail the already-recorded review (still 200)", async () => {
+    mockResolveApprovalPark.mockImplementationOnce(async () => {
+      throw new Error("durable store exploded");
+    });
+    const res = await reviewRequest("req-boom", { action: "approve" });
+    // The decision was recorded; the resume-arm failure is swallowed + logged.
+    expect(res.status).toBe(200);
+    expect(mockReviewApprovalRequest).toHaveBeenCalledTimes(1);
   });
 });

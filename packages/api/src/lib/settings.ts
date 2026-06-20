@@ -448,7 +448,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Agent",
     label: "Max Park Duration (minutes)",
     description:
-      "How long an agent turn may stay parked awaiting a human approval decision before the sweep fails it. Default 1440 minutes (24h), matching the approval-request expiry.",
+      "How long an agent turn may stay parked awaiting a human approval decision before the sweep fails it. Default 1440 minutes (24h), matching the approval-request expiry default.",
     type: "number",
     default: "1440",
     envVar: "ATLAS_DURABILITY_MAX_PARK_MINUTES",

@@ -12,6 +12,7 @@
 import { Effect, Layer } from "effect";
 import { DurableSession, type DurableSessionShape } from "@atlas/api/lib/effect/services";
 import {
+  recordRunCheckpoint,
   recordTerminalAgentRun,
   sweepTerminalAgentRuns,
 } from "@atlas/api/lib/durable-session";
@@ -21,6 +22,7 @@ export const DurableSessionLive: Layer.Layer<DurableSession> = Layer.succeed(
   DurableSession,
   {
     available: true,
+    recordCheckpoint: (args) => recordRunCheckpoint(args),
     recordTerminal: (args) => recordTerminalAgentRun(args),
     sweepTerminal: (retentionDays) =>
       Effect.promise(() => sweepTerminalAgentRuns(retentionDays)),
@@ -35,6 +37,7 @@ export const NoopDurableSessionLayer: Layer.Layer<DurableSession> = Layer.succee
   DurableSession,
   {
     available: false,
+    recordCheckpoint: () => {},
     recordTerminal: () => {},
     sweepTerminal: () => Effect.succeed(0),
   } satisfies DurableSessionShape,

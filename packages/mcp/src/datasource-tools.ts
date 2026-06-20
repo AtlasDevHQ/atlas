@@ -52,7 +52,7 @@ import { MCP_PROVISIONABLE_CATALOG_SLUGS } from "@atlas/api/lib/datasources/prov
 import type { DatasourceInstallerOutcome } from "@atlas/api/lib/datasources/mcp-lifecycle";
 import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
 import type { McpTransport, McpDeployMode } from "./telemetry.js";
-import { envelope, toEnvelopeResult } from "./error-envelope.js";
+import { envelope, toEnvelopeResult, toJsonContent } from "./error-envelope.js";
 import { createMcpDispatch, errorMessage } from "./mcp-dispatch.js";
 import { elicitMaskedForm } from "./elicitation.js";
 import { withProgressAndCancellation, OperationCancelledError } from "./progress.js";
@@ -106,12 +106,6 @@ export interface RegisterDatasourceToolsOptions {
   clientId?: string;
   /** #3504 — OAuth token scopes, threaded onto each dispatch's RequestContext. */
   scopes?: readonly string[];
-}
-
-function toJsonContent(value: unknown): CallToolResult {
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
-  };
 }
 
 /**
@@ -223,33 +217,27 @@ export function registerDatasourceTools(
   // (which falls back to `actor.id` purely for OTel attribution when no org is
   // bound), this is the REAL workspace the dispatch gate keys on — so every
   // mutation operates on the same id the gate (and gate-1 kill-switch /
-  // approval) evaluated. A mutating tool with no bound org is refused via
-  // {@link requireBoundOrg} rather than silently keyed on `actor.id`.
+  // approval) evaluated. Mutating tools declare `requiresBoundOrg: true`, which
+  // the dispatcher enforces ONCE (#3609) — a no-org session is refused with a
+  // `forbidden` envelope before any mutating body runs, rather than silently
+  // keyed on `actor.id`.
   const boundOrgId = actor.activeOrganizationId;
 
   /**
-   * Resolve the bound workspace for a MUTATING tool, or a `forbidden` block.
-   * Keeps mutations and the dispatch gate on ONE workspace identity
-   * (`actor.activeOrganizationId`) — a no-org session (trusted-transport
-   * `system:mcp`) can't mutate, and can't slip past the gate-1 kill-switch /
-   * approval gate that key on the same id.
+   * The bound workspace for a MUTATING tool body. The `requiresBoundOrg: true`
+   * dispatch requirement (enforced once in `mcp-dispatch.ts`, #3609) guarantees
+   * a bound workspace before the body runs, so this never throws in practice —
+   * the throw is a defensive backstop for a future mutating tool that forgets to
+   * declare `requiresBoundOrg`, and it keeps mutations and the dispatch gate on
+   * ONE workspace identity (`actor.activeOrganizationId`).
    */
-  function requireBoundOrg():
-    | { readonly ok: true; readonly orgId: string }
-    | { readonly ok: false; readonly block: CallToolResult } {
+  function boundOrg(): string {
     if (!boundOrgId) {
-      return {
-        ok: false,
-        block: toEnvelopeResult(
-          envelope(
-            "forbidden",
-            "This MCP session is not bound to a workspace; datasource changes require a bound workspace.",
-            { hint: "Set ATLAS_MCP_ORG_ID (and ATLAS_MCP_USER_ID) on the MCP server." },
-          ),
-        ),
-      };
+      throw new Error(
+        "Mutating datasource tool reached its body without a bound workspace — the requiresBoundOrg dispatch requirement is missing.",
+      );
     }
-    return { ok: true, orgId: boundOrgId };
+    return boundOrgId;
   }
 
   /**
@@ -369,7 +357,7 @@ export function registerDatasourceTools(
     async ({ include_archived, filter }): Promise<CallToolResult> =>
       dispatch(
         "list_datasources",
-        { checksBilling: true, requiresWrite: false, minRole: DATASOURCE_MIN_ROLE },
+        { checksBilling: true, requiresWrite: false, requiresBoundOrg: false, minRole: DATASOURCE_MIN_ROLE },
         async () => {
           // Developer-mode view: these are admin tools (gate-3 requires admin),
           // and create_datasource lands a datasource as `draft` — a published
@@ -410,7 +398,7 @@ export function registerDatasourceTools(
     async ({ id }): Promise<CallToolResult> =>
       dispatch(
         "test_datasource",
-        { checksBilling: true, requiresWrite: false, minRole: DATASOURCE_MIN_ROLE },
+        { checksBilling: true, requiresWrite: false, requiresBoundOrg: false, minRole: DATASOURCE_MIN_ROLE },
         async () => {
           if (!(await lifecycle()).isDatasourceRegistered(id)) {
             return toEnvelopeResult(
@@ -450,11 +438,14 @@ export function registerDatasourceTools(
     async ({ id }): Promise<CallToolResult> =>
       dispatch(
         "archive_datasource",
-        { checksBilling: true, requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
-        async () => {
-          const org = requireBoundOrg();
-          return org.ok ? archiveOrRestore(org.orgId, id, "archive") : org.block;
+        {
+          checksBilling: true,
+          requiresWrite: true,
+          requiresBoundOrg: true,
+          minRole: DATASOURCE_MIN_ROLE,
+          actionCategory: "datasource",
         },
+        async () => archiveOrRestore(boundOrg(), id, "archive"),
       ),
   );
 
@@ -474,11 +465,14 @@ export function registerDatasourceTools(
     async ({ id }): Promise<CallToolResult> =>
       dispatch(
         "restore_datasource",
-        { checksBilling: true, requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
-        async () => {
-          const org = requireBoundOrg();
-          return org.ok ? archiveOrRestore(org.orgId, id, "restore") : org.block;
+        {
+          checksBilling: true,
+          requiresWrite: true,
+          requiresBoundOrg: true,
+          minRole: DATASOURCE_MIN_ROLE,
+          actionCategory: "datasource",
         },
+        async () => archiveOrRestore(boundOrg(), id, "restore"),
       ),
   );
 
@@ -501,6 +495,7 @@ export function registerDatasourceTools(
         {
           checksBilling: true,
           requiresWrite: true,
+          requiresBoundOrg: true,
           minRole: DATASOURCE_MIN_ROLE,
           // Gate 1 (#3509): the datasource action-policy kill-switch blocks
           // this outright when the workspace disables datasource actions.
@@ -514,13 +509,12 @@ export function registerDatasourceTools(
           },
         },
         async () => {
-          const org = requireBoundOrg();
-          if (!org.ok) return org.block;
+          const orgId = boundOrg();
           // Resolve the catalog slug first so a non-existent id returns a
           // clean `unknown_entity` rather than an installer defect. (The
           // approval gate already ran in `dispatch`; reaching here means the
           // requester is approved or no rule matched.)
-          const catalogSlug = await (await lifecycle()).resolveDatasourceCatalogSlug(org.orgId, id);
+          const catalogSlug = await (await lifecycle()).resolveDatasourceCatalogSlug(orgId, id);
           if (catalogSlug === null) {
             return toEnvelopeResult(
               envelope("unknown_entity", `Datasource "${id}" not found.`, {
@@ -532,7 +526,7 @@ export function registerDatasourceTools(
           // drains the pool. The reversible path is archive_datasource.
           const outcome = await (await lifecycle()).runDatasourceInstaller((installer) =>
             installer.uninstallDatasource(
-              org.orgId as WorkspaceId,
+              orgId as WorkspaceId,
               catalogSlug,
               id,
               { hard: true },
@@ -586,11 +580,15 @@ export function registerDatasourceTools(
         // Gate 0 billing + gate 1 (#3509) datasource kill-switch + mcp:write +
         // admin. NOT approval-gated (provisioning is additive, lands draft);
         // the human-in-the-loop is the masked credential entry below.
-        { checksBilling: true, requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
+        {
+          checksBilling: true,
+          requiresWrite: true,
+          requiresBoundOrg: true,
+          minRole: DATASOURCE_MIN_ROLE,
+          actionCategory: "datasource",
+        },
         async (requestId) => {
-          const org = requireBoundOrg();
-          if (!org.ok) return org.block;
-          const orgId = org.orgId;
+          const orgId = boundOrg();
           const lib = await lifecycle();
 
           // Capability check BEFORE prompting for credentials — don't ask the
@@ -721,11 +719,15 @@ export function registerDatasourceTools(
         // Gate 0 billing + gate 1 kill-switch + mcp:write + admin. NOT
         // approval-gated — additive, the human-in-the-loop is the masked
         // spec-URL/credential entry below.
-        { checksBilling: true, requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
+        {
+          checksBilling: true,
+          requiresWrite: true,
+          requiresBoundOrg: true,
+          minRole: DATASOURCE_MIN_ROLE,
+          actionCategory: "datasource",
+        },
         async (requestId) => {
-          const org = requireBoundOrg();
-          if (!org.ok) return org.block;
-          const orgId = org.orgId;
+          const orgId = boundOrg();
           const lib = await lifecycle();
 
           // The openapi-generic config_schema (spec URL + auth_kind + auth_value
@@ -797,15 +799,20 @@ export function registerDatasourceTools(
     async ({ id }, extra): Promise<CallToolResult> =>
       dispatch(
         "profile_datasource",
-        { checksBilling: true, requiresWrite: true, minRole: DATASOURCE_MIN_ROLE, actionCategory: "datasource" },
+        {
+          checksBilling: true,
+          requiresWrite: true,
+          requiresBoundOrg: true,
+          minRole: DATASOURCE_MIN_ROLE,
+          actionCategory: "datasource",
+        },
         async () => {
-          const org = requireBoundOrg();
-          if (!org.ok) return org.block;
+          const orgId = boundOrg();
           // #3667 — ONE RESOLVER. Profiling rides the SAME connection resolution
           // querying uses (registry / createFromConfig / OAuth LazyPluginLoader);
           // there is no URL-shape gate to fail closed. The live connection carries
           // its own creds — only the connectionId + progress counts surface here.
-          const resolved = await (await lifecycle()).resolveLiveConnection(org.orgId, id);
+          const resolved = await (await lifecycle()).resolveLiveConnection(orgId, id);
           if (resolved.kind === "not_found") {
             return toEnvelopeResult(
               envelope("unknown_entity", `Datasource "${id}" not found.`, {
@@ -845,7 +852,7 @@ export function registerDatasourceTools(
                   // #3546 — persist the generated layer to the org store as drafts
                   // so the whitelist survives a restart and is visible to the API
                   // process (web `/chat`), not just this MCP process.
-                  orgId: org.orgId,
+                  orgId,
                   progress,
                 });
               },

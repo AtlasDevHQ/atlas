@@ -628,6 +628,87 @@ describe("no bound workspace → mutations refused (consistency with gate orgId)
     expect(mockElicit).not.toHaveBeenCalled();
     expect(mockProvision).not.toHaveBeenCalled();
   });
+
+  // #3609 — `requireBoundOrg`'s per-body guard was promoted to a declarative
+  // `requiresBoundOrg: true` requirement enforced ONCE in the dispatcher. The
+  // refusal envelope (code + message + hint) must stay byte-identical to the
+  // pre-refactor block so agents that branch on it don't regress.
+  it("#3609 — a no-bound-org mutation is refused with the identical forbidden envelope", async () => {
+    const client = await createTestClient(NO_ORG_ACTOR);
+    const res = await client.callTool({ name: "archive_datasource", arguments: { id: "prod-us" } });
+    const err = parseAtlasMcpToolError(getContentText(res.content));
+    expect(err?.code).toBe("forbidden");
+    expect(err?.message).toBe(
+      "This MCP session is not bound to a workspace; datasource changes require a bound workspace.",
+    );
+    expect(err?.hint).toBe("Set ATLAS_MCP_ORG_ID (and ATLAS_MCP_USER_ID) on the MCP server.");
+    // The bound-org refusal short-circuits BEFORE the tool body's lib calls.
+    expect(mockRunInstaller).not.toHaveBeenCalled();
+  });
+
+  // #3609 — `requiresBoundOrg` is now a REQUIRED, dispatcher-enforced flag (a
+  // dispatcher-only concern, no longer handed to the gate), so assert the
+  // BEHAVIOR it guarantees rather than peeking at what the gate received: every
+  // mutating tool refuses a no-org session with the byte-identical `forbidden`
+  // envelope, and read tools proceed to their body with no bound workspace.
+  it("#3609 — every mutating tool refuses a no-org session with the identical envelope; read tools proceed", async () => {
+    const client = await createTestClient(NO_ORG_ACTOR);
+    const mutating = [
+      ["archive_datasource", { id: "prod-us" }],
+      ["restore_datasource", { id: "prod-us" }],
+      ["delete_datasource", { id: "prod-us" }],
+      ["create_datasource", { db_type: "postgres", install_id: "new-pg" }],
+      ["create_rest_datasource", {}],
+      ["profile_datasource", { id: "prod-us" }],
+    ] as const;
+    for (const [tool, args] of mutating) {
+      const res = await client.callTool({ name: tool, arguments: args });
+      const err = parseAtlasMcpToolError(getContentText(res.content));
+      expect(err?.code).toBe("forbidden");
+      expect(err?.message).toBe(
+        "This MCP session is not bound to a workspace; datasource changes require a bound workspace.",
+      );
+      expect(err?.hint).toBe("Set ATLAS_MCP_ORG_ID (and ATLAS_MCP_USER_ID) on the MCP server.");
+    }
+    // Read tools carry no bound-workspace precondition — they reach their body
+    // even with no bound org (no `forbidden` refusal).
+    const list = await client.callTool({ name: "list_datasources", arguments: {} });
+    expect(parseAtlasMcpToolError(getContentText(list.content))?.code).not.toBe("forbidden");
+    expect(mockListDatasources).toHaveBeenCalled();
+    const test = await client.callTool({ name: "test_datasource", arguments: { id: "prod-us" } });
+    expect(parseAtlasMcpToolError(getContentText(test.content))?.code).not.toBe("forbidden");
+  });
+
+  // #3609 — the bound-org refusal sits AFTER the gate in dispatch order, so for
+  // a no-org DESTRUCTIVE tool the gate's verdict (e.g. the gate-4 approval
+  // identity guard) surfaces FIRST. Pin the ordering against a future reorder:
+  // a non-null gate block wins over the dispatcher's bound-org envelope.
+  it("#3609 — a gate block surfaces before the bound-org refusal (dispatch order preserved)", async () => {
+    gateReturn = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            code: "forbidden",
+            message:
+              "This action requires approval but the requester identity could not be determined.",
+          }),
+        },
+      ],
+      isError: true,
+    };
+    const client = await createTestClient(NO_ORG_ACTOR);
+    const res = await client.callTool({ name: "delete_datasource", arguments: { id: "prod-us" } });
+    const err = parseAtlasMcpToolError(getContentText(res.content));
+    // The GATE verdict surfaces, NOT the dispatcher's bound-org refusal — both
+    // are `forbidden`, so the message is what distinguishes the order.
+    expect(err?.message).toBe(
+      "This action requires approval but the requester identity could not be determined.",
+    );
+    expect(err?.message).not.toBe(
+      "This MCP session is not bound to a workspace; datasource changes require a bound workspace.",
+    );
+  });
 });
 
 // ── Happy paths + envelope mapping (gate returns null) ────────────────

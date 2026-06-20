@@ -1,7 +1,11 @@
 /**
- * Plugin SDK helpers — factory function, createPlugin, and type guards.
+ * Plugin SDK helpers — factory function, createPlugin, type guards, and the
+ * shared sandbox-plugin infrastructure (`collectSemanticFiles`,
+ * `runHealthCheckWithTimeout`).
  */
 
+import * as fs from "fs";
+import * as path from "path";
 import type {
   AtlasPlugin,
   AtlasPluginBase,
@@ -10,6 +14,7 @@ import type {
   AtlasInteractionPlugin,
   AtlasActionPlugin,
   AtlasSandboxPlugin,
+  PluginHealthResult,
 } from "./types";
 
 const VALID_TYPES: Set<string> = new Set(["datasource", "context", "interaction", "action", "sandbox"]);
@@ -277,4 +282,237 @@ export function isSandboxPlugin(
   plugin: AtlasPlugin,
 ): plugin is AtlasSandboxPlugin {
   return plugin.types.includes("sandbox");
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox helpers — shared infrastructure for AtlasSandboxPlugin authors
+// ---------------------------------------------------------------------------
+
+/** Minimal logger surface used by the sandbox helpers (pino/PluginLogger compatible). */
+export interface SandboxHelperLogger {
+  warn(msg: string): void;
+}
+
+/** A single semantic-layer file collected for upload into a sandbox. */
+export interface CollectedSemanticFile {
+  /** POSIX-style path under the sandbox dir, e.g. `"semantic/entities/users.yml"`. */
+  path: string;
+  /**
+   * Raw file bytes (binary-safe — the collector does no encoding round-trip).
+   * Typed as the portable `Uint8Array` so the published SDK surface carries no
+   * Node `Buffer` global; the runtime value IS a Node `Buffer`, so call sites
+   * that want string content use `Buffer.from(content).toString("utf-8")` (or
+   * `new TextDecoder().decode(content)`).
+   */
+  content: Uint8Array;
+}
+
+/**
+ * Recursively collect every file under `localDir` into `{ path, content }`
+ * tuples, rooting each remote path at `sandboxDir`. The semantic tree is the
+ * payload a sandbox plugin uploads into its microVM so the explore tool can
+ * `cat`/`grep`/`ls` it.
+ *
+ * **Security — symlink-escape guard (single-sourced, #3373):** a symlink whose
+ * real target resolves OUTSIDE the semantic root is skipped (and logged),
+ * never uploaded. Containment is checked with `path.relative` against the
+ * realpath-resolved root, so prefix collisions (`${root}_evil/…`) and `..`
+ * traversal are both rejected — a bare `startsWith(root)` would not catch the
+ * former. Unreadable directories/files (and an unreadable/missing root) are
+ * skipped with a warning rather than throwing, so a partially-readable tree
+ * still yields the files it can. Symlink cycles (a directory symlink resolving
+ * to an already-walked directory, e.g. a self-link back to the root) are broken
+ * via a visited-realpath set, so a self-referential tree terminates instead of
+ * re-uploading the same files until the OS aborts with `ELOOP`.
+ *
+ * @param localDir   Absolute path to the local semantic directory to walk.
+ * @param sandboxDir Remote path prefix for the returned `path` values.
+ * @param logger     Optional logger; `warn` is called for each skipped entry.
+ */
+export function collectSemanticFiles(
+  localDir: string,
+  sandboxDir: string,
+  logger?: SandboxHelperLogger,
+): CollectedSemanticFile[] {
+  const results: CollectedSemanticFile[] = [];
+
+  // Resolve the root once so the containment check compares real paths. If the
+  // root can't be resolved (missing/unreadable), behave like an unreadable
+  // directory: warn and return nothing.
+  let semanticRoot: string;
+  try {
+    semanticRoot = fs.realpathSync(localDir);
+  } catch (err) {
+    logger?.warn(
+      `[plugin-sdk] Skipping unreadable semantic root ${localDir}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return results;
+  }
+
+  function isInsideSemanticRoot(realPath: string): boolean {
+    const rel = path.relative(semanticRoot, realPath);
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  }
+
+  // Real directories already walked, keyed by realpath. Seeded with the root so
+  // a directory symlink resolving back to an ancestor (a cycle) is skipped
+  // instead of re-walked. Only directory symlinks are tracked — a tree of real
+  // directories cannot cycle, so non-symlink recursion stays as before (and
+  // distinct symlinks to the same in-root dir keep their prior dup behavior).
+  const visitedDirs = new Set<string>([semanticRoot]);
+
+  function walk(dir: string, relative: string): void {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      logger?.warn(
+        `[plugin-sdk] Skipping unreadable directory ${dir}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      const remotePath = `${relative}/${entry.name}`;
+
+      if (entry.isSymbolicLink()) {
+        try {
+          const realPath = fs.realpathSync(entryPath);
+          if (!isInsideSemanticRoot(realPath)) {
+            logger?.warn(
+              `[plugin-sdk] Skipping symlink escaping semantic root: ${entryPath} -> ${realPath}`,
+            );
+            continue;
+          }
+          const stat = fs.statSync(entryPath);
+          if (stat.isDirectory()) {
+            if (visitedDirs.has(realPath)) {
+              // Symlink cycle — this dir's real path was already walked. Skip so
+              // a self-referential tree terminates instead of looping forever.
+              continue;
+            }
+            visitedDirs.add(realPath);
+            walk(entryPath, remotePath);
+          } else if (stat.isFile()) {
+            results.push({ path: remotePath, content: fs.readFileSync(entryPath) });
+          }
+        } catch (err) {
+          logger?.warn(
+            `[plugin-sdk] Skipping unreadable symlink ${entryPath}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      } else if (entry.isDirectory()) {
+        walk(entryPath, remotePath);
+      } else if (entry.isFile()) {
+        try {
+          results.push({ path: remotePath, content: fs.readFileSync(entryPath) });
+        } catch (err) {
+          logger?.warn(
+            `[plugin-sdk] Skipping unreadable file ${entryPath}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+  }
+
+  walk(localDir, sandboxDir);
+  return results;
+}
+
+/** Options for {@link runHealthCheckWithTimeout}. */
+export interface HealthCheckTimeoutOptions {
+  /** Milliseconds before the probe is abandoned and reported as timed out. */
+  timeoutMs: number;
+  /**
+   * Safety-net cleanup, invoked ONLY when the probe times out or throws (never
+   * on a returned result — the probe owns its own happy-path teardown). Must be
+   * idempotent and guarded: it typically destroys a sandbox reference the probe
+   * captured, so it should no-op when that reference is already cleared. Errors
+   * thrown here are logged, never propagated.
+   */
+  cleanup: () => void | Promise<void>;
+  /**
+   * Optional logger; `warn` is called on every failing branch — the probe
+   * timing out, the probe throwing, and `cleanup` throwing. (Success and a
+   * returned unhealthy result are not logged; the latter is the probe's to
+   * report.)
+   */
+  logger?: SandboxHelperLogger;
+}
+
+// Distinct sentinel so a probe that resolves to a string can never be mistaken
+// for the timeout branch.
+const HEALTH_CHECK_TIMEOUT = Symbol("plugin-sdk:health-check-timeout");
+
+/**
+ * Run a sandbox `healthCheck()` probe under a timeout, attaching a measured
+ * `latencyMs` and running cleanup-in-every-failing-branch (single-sourced,
+ * #3373).
+ *
+ * The probe (`fn`) creates whatever it needs, performs the check, tears down
+ * its own resources on the happy path, and returns a `PluginHealthResult`
+ * without `latencyMs` (added here). When the `Promise.race` timeout wins — or
+ * the probe throws — `cleanup` runs to reap any resource the probe captured but
+ * could not release.
+ *
+ * **Why not `await using`?** The timeout can win while the probe is still
+ * mid-create/exec, and the sandbox SDKs expose no `AbortSignal` on create — a
+ * scope-bound disposer would only fire once the (possibly hung) operation
+ * settled, leaking the microVM past the timeout. An explicit, guarded `cleanup`
+ * reference reaped here fires immediately instead.
+ */
+export async function runHealthCheckWithTimeout(
+  fn: () => Promise<Omit<PluginHealthResult, "latencyMs"> & { latencyMs?: never }>,
+  options: HealthCheckTimeoutOptions,
+): Promise<PluginHealthResult> {
+  const { timeoutMs, cleanup, logger } = options;
+  // Fail fast on a misconfigured timeout: setTimeout coerces NaN/negative to 0,
+  // which would silently report every probe as timed-out/unhealthy.
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(
+      `runHealthCheckWithTimeout: timeoutMs must be a positive, finite number (got ${timeoutMs})`,
+    );
+  }
+  const start = performance.now();
+  let timer: ReturnType<typeof setTimeout>;
+
+  const runCleanup = async (): Promise<void> => {
+    try {
+      await cleanup();
+    } catch (err) {
+      logger?.warn(
+        `[plugin-sdk] Health-check cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
+  try {
+    const result = await Promise.race([
+      fn(),
+      new Promise<typeof HEALTH_CHECK_TIMEOUT>((resolve) => {
+        timer = setTimeout(() => resolve(HEALTH_CHECK_TIMEOUT), timeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timer!));
+
+    const latencyMs = Math.round(performance.now() - start);
+    if (result === HEALTH_CHECK_TIMEOUT) {
+      logger?.warn(`[plugin-sdk] Health check timed out after ${timeoutMs}ms`);
+      await runCleanup();
+      return {
+        healthy: false,
+        message: `Health check timed out after ${timeoutMs}ms`,
+        latencyMs,
+      };
+    }
+    return { ...result, latencyMs };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger?.warn(`[plugin-sdk] Health check probe failed: ${message}`);
+    await runCleanup();
+    return {
+      healthy: false,
+      message,
+      latencyMs: Math.round(performance.now() - start),
+    };
+  }
 }

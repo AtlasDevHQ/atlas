@@ -82,9 +82,16 @@ export {
   isInteractionPlugin,
   isActionPlugin,
   isSandboxPlugin,
+  collectSemanticFiles,
+  runHealthCheckWithTimeout,
 } from "./helpers";
 
-export type { CreatePluginOptions } from "./helpers";
+export type {
+  CreatePluginOptions,
+  CollectedSemanticFile,
+  SandboxHelperLogger,
+  HealthCheckTimeoutOptions,
+} from "./helpers";
 
 export { gateOnSemanticWhitelist, warnIfStructuralOnly } from "./semantic-whitelist";
 export type { SemanticWhitelistSubject, SemanticWhitelistGate } from "./semantic-whitelist";

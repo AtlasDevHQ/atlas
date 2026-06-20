@@ -278,14 +278,17 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
               // declared outputSchema types before assigning to structuredContent
               // so SDK output-schema validation can't throw on a malformed
               // internal payload (e.g. non-string approval_request_id).
-              const { executeSqlOutputSchema: schema } = await import(
+              const { executeSqlOutputSchema: schema, withResumeHint } = await import(
                 "./structured-output.js"
               );
               const raw = {
                 approval_required: true,
                 approval_request_id: obj.approval_request_id,
                 matched_rules: obj.matched_rules,
-                message: obj.message,
+                // #3750 — tell the MCP client how to resume: re-call the
+                // identical tool once approved (the executeSQL gate's
+                // hasApprovedRequest dedup lets the re-call through).
+                message: withResumeHint(obj.message),
               };
               const parsed = schema.safeParse(raw);
               const approval = parsed.success ? parsed.data : {
@@ -293,9 +296,10 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
                 ...(typeof obj.approval_request_id === "string"
                   ? { approval_request_id: obj.approval_request_id }
                   : {}),
-                ...(typeof obj.message === "string"
-                  ? { message: obj.message }
-                  : {}),
+                // Resume hint is always present (withResumeHint tolerates a
+                // missing upstream message) so even the fallback shape tells
+                // the client how to continue.
+                message: withResumeHint(obj.message),
               };
               return {
                 content: [

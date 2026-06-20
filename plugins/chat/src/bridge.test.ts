@@ -1733,6 +1733,30 @@ describe("ephemeral error delivery", () => {
     }
   });
 
+  it("accepts an onBridgeReady callback at the strict-schema layer (#3750)", async () => {
+    // Regression guard for the Boot-Smoke failure: the strict `.strict()`
+    // ChatConfigSchema rejects unknown keys, so a field added to the TS
+    // ChatPluginConfig interface but NOT to this schema crashes config load
+    // before HTTP binds. The schema must accept `onBridgeReady`.
+    const { ChatConfigSchema } = await import("./config");
+    const result = ChatConfigSchema.safeParse({
+      catalog: SLACK_CATALOG,
+      executeQuery: () => Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
+      onBridgeReady: () => {},
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a non-function onBridgeReady at the strict-schema layer (#3750)", async () => {
+    const { ChatConfigSchema } = await import("./config");
+    const result = ChatConfigSchema.safeParse({
+      catalog: SLACK_CATALOG,
+      executeQuery: () => Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
+      onBridgeReady: "not a function",
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("EphemeralConfig validates correctly", async () => {
     const { ChatConfigSchema } = await import("./config");
 
@@ -2121,6 +2145,77 @@ describe("sendDirectMessage contract", () => {
 
     const result = await bridge.sendDirectMessage("slack", "U999", "hello");
     expect(result).toBeNull();
+    expect(errorLogged).toBe(true);
+  });
+
+  // #3750 — postToThread: continue a parked turn's thread after approval.
+  it("postToThread posts via adapter.postMessage(threadId) and returns the messageId", async () => {
+    const { createChatBridge } = await import("./bridge");
+    const mockStateAdapter = (await import("./state")).createStateAdapter({ backend: "memory" }, null);
+    const mockLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
+    const postCalls: { threadId: string; message: unknown }[] = [];
+    const mockAdapter = {
+      name: "slack",
+      postMessage: async (threadId: string, message: unknown) => {
+        postCalls.push({ threadId, message });
+        return { id: "msg_thread_1", raw: {} };
+      },
+    };
+    const bridge = createChatBridge(
+      {
+        catalog: [], executeQuery: async () => ({
+          answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 },
+        }),
+      },
+      mockLogger as import("@useatlas/plugin-sdk").PluginLogger,
+      mockStateAdapter,
+      { slack: mockAdapter as unknown as import("chat").Adapter },
+    );
+
+    const result = await bridge.postToThread("slack", "C1:1700.0001", "Here is the approved result.");
+    expect(result).toEqual({ messageId: "msg_thread_1" });
+    expect(postCalls).toHaveLength(1);
+    expect(postCalls[0].threadId).toBe("C1:1700.0001");
+    expect(postCalls[0].message).toEqual({ markdown: "Here is the approved result." });
+  });
+
+  it("postToThread returns null when the adapter is not configured", async () => {
+    const { createChatBridge } = await import("./bridge");
+    const mockStateAdapter = (await import("./state")).createStateAdapter({ backend: "memory" }, null);
+    const mockLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
+    const bridge = createChatBridge(
+      {
+        catalog: [], executeQuery: async () => ({
+          answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 },
+        }),
+      },
+      mockLogger as import("@useatlas/plugin-sdk").PluginLogger,
+      mockStateAdapter,
+      {},
+    );
+    expect(await bridge.postToThread("slack", "C1:1.1", "hi")).toBeNull();
+  });
+
+  it("postToThread returns null (never throws) when the adapter rejects the post", async () => {
+    const { createChatBridge } = await import("./bridge");
+    const mockStateAdapter = (await import("./state")).createStateAdapter({ backend: "memory" }, null);
+    let errorLogged = false;
+    const mockLogger = { info: () => {}, warn: () => {}, error: () => { errorLogged = true; }, debug: () => {} };
+    const mockAdapter = {
+      name: "slack",
+      postMessage: async () => { throw new Error("thread archived"); },
+    };
+    const bridge = createChatBridge(
+      {
+        catalog: [], executeQuery: async () => ({
+          answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 },
+        }),
+      },
+      mockLogger as import("@useatlas/plugin-sdk").PluginLogger,
+      mockStateAdapter,
+      { slack: mockAdapter as unknown as import("chat").Adapter },
+    );
+    expect(await bridge.postToThread("slack", "C1:1.1", "hi")).toBeNull();
     expect(errorLogged).toBe(true);
   });
 });

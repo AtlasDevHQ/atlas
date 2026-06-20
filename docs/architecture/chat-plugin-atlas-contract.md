@@ -94,6 +94,45 @@ stays the self-host fallback unchanged. ⚠ row to watch: any change to the shap
 overlay (e.g. nesting, or a non-string value) breaks the `{ ...process.env, ...overlay }`
 merge contract — the overlay must stay a flat `Record<string, string>`.
 
+### Durable approval-park resume delivery — `ChatPluginConfig.onBridgeReady` + `chat:resume-pending:<conversationId>` (#3750)
+
+Durable sessions (#3742 family) let an agent turn **park** on an approval rule and
+resume later. For a turn initiated from a chat thread, #3750 closes the loop:
+instead of a dead-end ":lock: approve via the console" reply, the thread posts a
+"waiting on approval" notice and is **resumed in-place** once a reviewer resolves
+the request — the continued answer (or a denial) is posted back in the original
+thread. The mechanism rides two boundary points, both **host-side / Atlas-owned**:
+
+| Boundary field | Host wiring | Atlas resolver / store | Fail-loud? | Status |
+|---|---|---|---|---|
+| `ChatPluginConfig.onBridgeReady` (top-level config callback; invoked with the narrow `ChatResumeBridge` after `initialize()`, and `null` on `teardown()`) | wired in `deploy/api/atlas.config.ts` → `registerChatResumeDeliverer(...)` / `clearChatResumeDeliverer()` | `lib/chat-plugin/resume-delivery-registry.ts` (process-local port, mirrors `proactive/announcer-registry.ts`; `NULL_RESUME_DELIVERER` fallback so self-host w/o chat never fails a review). Deliverer re-enters the loop via `lib/chat-plugin/resume-turn.ts:resumeChatTurn()` and posts via `ChatBridge.postToThread()` | ✓ — `onBridgeReady` throw is caught at init (warn, plugin still boots); the deliverer never throws (maps failures to a `failed` outcome the review handler logs at error) | ✓ verified |
+| `ChatBridge.postToThread(platform, threadId, message)` (new bridge method; narrow subset exposed to the host as `ChatResumeBridge`) | bridge impl in `plugins/chat/src/bridge.ts` posts via `adapter.postMessage(threadId, …)` — the same adapter primitive the in-handler `thread.post()` wrapper ultimately calls | called by the registered deliverer (built by `buildChatResumeDeliverer`), wired in `deploy/api/atlas.config.ts` | ✓ — returns `null` (never throws) when the adapter is unconfigured or rejects the post; the deliverer treats `null` as a `failed` delivery | ✓ verified |
+| `chat_cache.value` key `chat:resume-pending:<conversationId>` → `{ platform, threadId, orgId, externalId, externalUserId? }` (**Atlas-extension field**, category 1) | written at park by `lib/chat-plugin/executeQuery.ts` (the `pendingApproval` branch) via `lib/chat-plugin/resume-pending-store.ts:saveResumePending()` | read by `lib/chat-plugin/resume-delivery.ts:deliverChatResumeIfPending()` (`loadResumePending`), deleted on terminal delivery (`clearResumePending`); TTL = max-park window (`getMaxParkMinutes`) so a swept-to-`failed` parked run leaves no dangling row | ✓ — `saveResumePending` is fail-soft (returns false + warns; the turn still parks, just without auto-resume); `loadResumePending` null-returns + warns on a malformed row | ✓ verified |
+
+**Why these are host-side (no `@chat-adapter/*` change).** The chat-adapter never reads
+the `chat:resume-pending:*` key (only Atlas host code writes/reads/deletes it). `saveResumePending`'s
+upsert does a full `value = EXCLUDED.value` overwrite — NOT the `value || EXCLUDED.value`
+JSONB merge the `slack:installation:*` key uses — and Atlas owns both sides of this key,
+so there is no cross-writer to preserve fields for. `onBridgeReady` is a top-level `chatPlugin({ ... })`
+host callback in the same family as `announcementCoordinator` ("host-only — not exposed
+to the plugin"): additive + host-optional (the plugin works unchanged when omitted —
+self-host without durable resume). The security boundary lives in `resumeChatTurn`,
+which re-resolves auth/connection/RLS **live** (rebuilds the original bot actor, re-runs
+the billing gate, claims the single-resumer lease) before re-entering `runAgent({ resume })`
+— a user who lost access while parked fails closed exactly as the web resume route does
+(ADR-0020). ⚠ row to watch: any change to the `ChatResumeBridge` shape (a wider bridge
+surface, or a non-string post payload) — keep it the minimal `postToThread` subset so the
+host wires resume delivery without depending on the full `ChatBridge`.
+
+**MCP note (no boundary):** the MCP surface needs no resume delivery — MCP has no agent
+loop or durable run (each tool call is one synchronous dispatch; the MCP client is the
+loop). A parked MCP `executeSQL`/`runMetric` call surfaces `approval_required` +
+`approval_request_id` (already, pre-#3750) and "resumes" when the client **re-calls** the
+identical tool after approval — the gate's `hasApprovedRequest` dedup lets the re-call
+through, re-resolving auth/scoping live on that fresh dispatch. #3750 only adds an explicit
+resume-hint string (`MCP_APPROVAL_RESUME_HINT`) to those results so the LLM client knows to
+retry the same call. No MCP/chat-adapter boundary field changed.
+
 ### Future platforms (post-1.5.2)
 
 `plugins/chat/src/adapter-registry.ts` keeps catalog rows for Teams, Discord, gchat, Telegram, GitHub, Linear, WhatsApp. Telegram (#2748) is the first to ship a real `StaticBotInstallHandler` — the keystone slice for the remaining Phase D platforms. Each platform that gains an install flow gets a new section in this table — one row per Atlas-extension field. Track:

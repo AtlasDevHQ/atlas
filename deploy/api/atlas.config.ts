@@ -77,6 +77,15 @@ import { WorkspaceInstallGate } from "./packages/api/src/lib/integrations/instal
 // surfaces here, so the relative-import constraint stays satisfied.
 import { createChatPluginExecuteQuery } from "./packages/api/src/lib/chat-plugin/executeQuery";
 import { resolveOperatorAdapterEnv } from "./packages/api/src/lib/integrations/operator-credentials/resolver";
+// #3750 — chat resume-on-approval delivery. `onBridgeReady` hands us the
+// bridge so we can register a deliverer (built by `buildChatResumeDeliverer`)
+// that re-enters the agent loop (re-resolving auth/scoping LIVE) and posts the
+// continued answer back in-thread when a parked turn's approval is resolved.
+import {
+  registerChatResumeDeliverer,
+  clearChatResumeDeliverer,
+} from "./packages/api/src/lib/chat-plugin/resume-delivery-registry";
+import { buildChatResumeDeliverer } from "./packages/api/src/lib/chat-plugin/resume-deliverer-factory";
 
 // Dedicated runtime for the proactive classifier + answer adapters.
 // Built inside the workspace by `getProactiveAiRuntime()` so this file
@@ -885,6 +894,27 @@ export default defineConfig({
       // no process restart. Precedence: DB row → env → unset (env stays the
       // self-host fallback). See `lib/integrations/operator-credentials/`.
       resolveAdapterEnv: () => resolveOperatorAdapterEnv(),
+      // #3750 — durable approval-park resume for chat threads. On init the
+      // plugin hands us the bridge; we register a deliverer that, when an
+      // approval-review handler resolves a parked chat turn, re-enters the
+      // agent loop under the original chat actor (re-resolving auth/scoping
+      // LIVE — ADR-0020) and posts the continued answer back in-thread. On
+      // teardown the plugin calls back with `null` so the deliverer is cleared
+      // (no stale bridge reference across a refresh).
+      onBridgeReady: (bridge) => {
+        if (!bridge) {
+          clearChatResumeDeliverer();
+          return;
+        }
+        // The deliverer's resume→post mapping lives in a unit-tested factory;
+        // here we only inject the bridge's thread-post capability.
+        registerChatResumeDeliverer(
+          buildChatResumeDeliverer({
+            postToThread: (platform, threadId, message) =>
+              bridge.postToThread(platform, threadId, message),
+          }),
+        );
+      },
       // ── Proactive listener wiring (#2607) ─────────────────────────
       // Wires every callback the proactive listener consumes to host
       // helpers under `packages/api/src/lib/proactive/`. After this

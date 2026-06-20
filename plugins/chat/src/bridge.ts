@@ -431,6 +431,26 @@ export interface ChatBridge {
     channelId: string,
     message: string | { card: CardElement; fallbackText: string },
   ): Promise<{ messageId: string } | null>;
+  /**
+   * Post a message into an existing thread (#3750).
+   *
+   * Used by the host's chat resume-deliverer to continue a parked turn's
+   * thread once its approval is resolved. `threadId` is the canonical
+   * cross-platform thread anchor the bridge handlers already operate on
+   * (Slack `channel:thread_ts`, Telegram `chat:message_thread_id`, …); the
+   * post goes through the adapter's native `postMessage(threadId, …)` — the
+   * same primitive the in-handler `thread.post()` wrapper ultimately calls —
+   * so the reply lands in the originating thread rather than at channel root.
+   *
+   * Returns `{ messageId }` on success, `null` when the adapter is not
+   * configured or the post fails. Never throws — the deliverer treats the
+   * outcome as data so an approval-review handler can't 500 on a post.
+   */
+  postToThread(
+    platform: ChatPlatform,
+    threadId: string,
+    message: string | { card: CardElement; fallbackText: string },
+  ): Promise<{ messageId: string } | null>;
   /** Shut down the Chat SDK instance and clean up resources. */
   shutdown(): Promise<void>;
 }
@@ -2025,6 +2045,35 @@ export function createChatBridge(
             channelId,
           },
           "postChannelAnnouncement: adapter rejected channel post",
+        );
+        return null;
+      }
+    },
+
+    async postToThread(
+      platform: ChatPlatform,
+      threadId: string,
+      message: string | { card: CardElement; fallbackText: string },
+    ): Promise<{ messageId: string } | null> {
+      const adapter = adapters[platform];
+      if (!adapter) {
+        log.warn({ platform, threadId }, "postToThread: adapter not configured");
+        return null;
+      }
+
+      try {
+        const postableMessage = typeof message === "string"
+          ? { markdown: message }
+          : { card: message.card, fallbackText: message.fallbackText };
+        // Native thread post — same primitive an in-handler `thread.post()`
+        // uses; `threadId` carries the platform's thread anchor.
+        const sent = await adapter.postMessage(threadId, postableMessage);
+        log.info({ platform, threadId, messageId: sent.id }, "Thread resume reply posted");
+        return { messageId: sent.id };
+      } catch (err) {
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)), platform, threadId },
+          "postToThread: adapter rejected thread post",
         );
         return null;
       }

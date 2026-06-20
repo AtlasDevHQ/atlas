@@ -56,7 +56,7 @@ import {
   toStructuredContent,
 } from "./error-envelope.js";
 import { createMcpDispatch } from "./mcp-dispatch.js";
-import { runMetricOutputShape } from "./structured-output.js";
+import { runMetricOutputShape, withResumeHint } from "./structured-output.js";
 import { withProgressAndCancellation } from "./progress.js";
 
 // Modest input bounds — MCP clients (including hostile ones in BYOC
@@ -505,7 +505,9 @@ export function registerSemanticTools(
                 approval_required: true,
                 approval_request_id: result.approval_request_id,
                 matched_rules: result.matched_rules,
-                message: result.message,
+                // #3750 — resume hint: re-run this exact runMetric call once
+                // approved (parity with executeSQL's approval branch).
+                message: withResumeHint(result.message),
               });
             }
 

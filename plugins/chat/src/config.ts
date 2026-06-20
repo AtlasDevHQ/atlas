@@ -171,6 +171,31 @@ export interface ChatQueryResult {
   pendingActions?: PendingAction[];
 }
 
+/**
+ * Narrow bridge capability exposed to the host's `onBridgeReady` callback
+ * (#3750) — just enough to post a continued answer back into a thread when a
+ * parked turn's approval is resolved. Kept minimal (a structural subset of
+ * `ChatBridge`) so the host wires resume delivery without depending on the
+ * full bridge surface.
+ */
+export interface ChatResumeBridge {
+  /** Platform slug the bridge knows (`"slack"`, `"telegram"`, …). */
+  postToThread(
+    platform: string,
+    threadId: string,
+    message: string,
+  ): Promise<{ messageId: string } | null>;
+}
+
+/**
+ * Host callback invoked when the bridge finishes initializing (with the
+ * bridge) and on shutdown (with `null`) — #3750. Lets the host register a
+ * resume-deliverer that closes over the bridge so an approval-review handler
+ * (on the host side of the plugin boundary) can continue a parked chat thread.
+ * Additive + host-optional: the plugin works unchanged when it's absent.
+ */
+export type OnBridgeReady = (bridge: ChatResumeBridge | null) => void;
+
 /** Adapter-specific credential configuration. */
 export interface SlackAdapterConfig {
   /** Single-workspace bot token (`xoxb-…`). Omit in multi-workspace deploys. */
@@ -607,6 +632,18 @@ export interface ChatPluginConfig {
    * kill switches, admin UI, meter, and feedback.
    */
   proactive?: ProactiveConfig;
+
+  /**
+   * Bridge-ready callback (#3750) — invoked at the end of `initialize()` with
+   * the (narrow) bridge handle, and on `teardown()` with `null`. The host uses
+   * it to (de)register a chat resume-deliverer that posts a parked turn's
+   * continued answer back in-thread once its approval is resolved. Additive +
+   * host-optional: the plugin works unchanged when omitted (self-host without
+   * durable approval-park resume). Top-level (not under `proactive` — resume
+   * delivery is independent of the proactive listener). Host wiring:
+   * `deploy/api/atlas.config.ts` → `registerChatResumeDeliverer`.
+   */
+  onBridgeReady?: OnBridgeReady;
 }
 
 /** Proactive chat configuration. */
@@ -1071,6 +1108,13 @@ export const ChatConfigSchema = z.object({
   // key and boot crashes before HTTP binds (caught by Boot Smoke).
   resolveAdapterEnv: zCallback<NonNullable<ChatPluginConfig["resolveAdapterEnv"]>>(
     "resolveAdapterEnv must be a function returning Promise<Record<string, string | undefined>>",
+  ).optional(),
+  // #3750 — bridge-ready callback for chat resume-on-approval delivery.
+  // Optional callback; the host (`@atlas/api`) wires it to (de)register the
+  // chat resume-deliverer. Must be in this `.strict()` schema or config load
+  // rejects the key and boot crashes before HTTP binds (caught by Boot Smoke).
+  onBridgeReady: zCallback<NonNullable<ChatPluginConfig["onBridgeReady"]>>(
+    "onBridgeReady must be a function",
   ).optional(),
 }).strict().refine(
   (c) => {

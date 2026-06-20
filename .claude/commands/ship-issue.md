@@ -75,7 +75,7 @@ External reviewers (review bots AND humans) post *after* `/pr` and are **slower 
    - **Actionable finding** (a code concern, or a summary flagging real behavior/risk) → treat like a panel finding: fix it, `git commit -o <files>`, push. The push re-triggers the reviewers on the new SHA → **back to step 1.** This is the back-and-forth — iterate until no reviewer has an open actionable finding.
    - **Ambiguous / architecturally significant fix** → `AskUserQuestion`; don't guess.
    - **Approvability / "needs human review" / policy sign-off with no code ask** → **acknowledge only.** Quote it in the report. It does **NOT** block the merge and is **NOT** a halt — `main` deploys to staging, not prod (`prod` is `/release`-gated behind a human). Never sit waiting on a human-approval verdict.
-3. **Converged** when, on the head SHA: required CI green, internal panel was clean, and every external reviewer is either re-reviewed-clean or carries only an acknowledged non-actionable verdict → **merge.**
+3. **Converged** when, on the head SHA: required CI green, internal panel was clean, and every external reviewer is either re-reviewed-clean or carries only an acknowledged non-actionable verdict → **merge.** (A required check that goes red after a push is serviced the same way — fix, `git commit -o`, push, re-sweep — not a new path.)
 
 Cap the back-and-forth at **3 reviewer rounds** like the panel; if it won't converge, STOP and ask.
 

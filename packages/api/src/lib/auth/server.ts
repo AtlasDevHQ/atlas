@@ -49,6 +49,7 @@ import { getWebOrigin } from "@atlas/api/lib/web-origin";
 // surface (and its tests) keep a single import site.
 import { resolvePasskeyRpId } from "@atlas/api/lib/auth/rpid";
 import { resolveOAuthValidAudiences } from "@atlas/api/lib/auth/oauth-audiences";
+import { ATLAS_OAUTH_SCOPES } from "@atlas/api/lib/auth/oauth-scopes";
 export { resolvePasskeyRpId, DEFAULT_RP_ID } from "@atlas/api/lib/auth/rpid";
 import {
   assertInvitationRoleAllowed,
@@ -1283,33 +1284,12 @@ function encodeAttributeValue(raw: string): string {
 // OAuth 2.1 provider configuration (#2024)
 // ---------------------------------------------------------------------------
 
-/**
- * Scopes advertised by the OAuth 2.1 authorization server. Standard OIDC
- * scopes plus Atlas-specific MCP scopes for the hosted MCP endpoint.
- *
- * The MCP authorization spec (2025-03-26) requires the resource server to
- * declare scopes in `/.well-known/oauth-protected-resource`; the `mcp:*`
- * scopes here are the ones Atlas-shaped MCP clients (Claude Desktop,
- * ChatGPT, Cursor, etc.) request when connecting to a hosted MCP endpoint.
- *
- * Order matters for the consent UI — declare the high-frequency scopes
- * first so the rendered list matches user expectations.
- */
-export const ATLAS_OAUTH_SCOPES = [
-  "openid",
-  "profile",
-  "email",
-  "offline_access",
-  // mcp:read = query workspace data through the MCP endpoint. Required
-  // for any agent that wants to use Atlas as a data source.
-  "mcp:read",
-  // mcp:write = reserved for future write paths (run mutations, edit
-  // semantic layer). Currently the hosted MCP surface is read-only, so
-  // a token without mcp:write still works for every shipping MCP tool.
-  // Declared so clients can request it now and the gate flips when we
-  // add write tools.
-  "mcp:write",
-] as const;
+// `ATLAS_OAUTH_SCOPES` was extracted to `./oauth-scopes` (#3824) so consumers
+// that only need the scope SSOT (e.g. the /auth.md discovery route, pulled into
+// the app graph) can read it without importing this 3k-line Better Auth module.
+// Re-exported here so the Better Auth `scopes` config below (which spreads it)
+// and existing importers of `@atlas/api/lib/auth/server` keep working unchanged.
+export { ATLAS_OAUTH_SCOPES };
 
 // `resolveOAuthValidAudiences` (+ its `brandMcpAudience` helper) was extracted
 // to `./oauth-audiences` (#3687) so the boot-time `McpSpineGuardLive` can assert

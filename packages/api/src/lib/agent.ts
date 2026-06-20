@@ -1153,6 +1153,17 @@ export async function runAgent({
   // + completed steps' assistant/tool messages); it supersedes `messages` so the
   // model continues from the last completed step rather than restarting. A fresh
   // turn converts the UI messages as before.
+  //
+  // #3762 — compact-on-resume needs NO dedicated branch here: `modelMessages`
+  // (the rehydrated transcript) is handed to `streamText` as `messages`, and the
+  // compaction trigger lives in `prepareStep` below, which the AI SDK invokes
+  // before EVERY step — including step 0, whose input messages on a resumed turn
+  // ARE this transcript (no prior response messages yet). So a days-long resumed
+  // turn whose rehydrated transcript already exceeds the window is compacted by
+  // that step-0 trigger BEFORE the first re-entered model call, exactly as the
+  // PRD requires — the shared-seam architecture of #3759 subsumes it (the window
+  // it trips against is resolved per turn model by #3760). Locked at the resume
+  // seam by agent-compaction-resume.test.ts.
   const modelMessages = resume
     ? resume.transcript
     : await convertToModelMessages(messages);

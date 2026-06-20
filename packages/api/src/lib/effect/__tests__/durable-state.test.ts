@@ -11,7 +11,8 @@ import * as realInternal from "@atlas/api/lib/db/internal";
 
 let hasInternalDB = true;
 const execCalls: Array<{ sql: string; params?: unknown[] }> = [];
-let queryRows: Array<{ namespace: string; value: unknown }> = [];
+const queryCalls: Array<{ sql: string; params?: unknown[] }> = [];
+let queryRows: Array<Record<string, unknown>> = [];
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
@@ -19,7 +20,10 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalExecute: (sql: string, params?: unknown[]) => {
     execCalls.push({ sql, params });
   },
-  internalQuery: async () => queryRows,
+  internalQuery: async (sql: string, params?: unknown[]) => {
+    queryCalls.push({ sql, params });
+    return queryRows;
+  },
 }));
 
 const { DurableState } = await import("@atlas/api/lib/effect/services");
@@ -30,6 +34,7 @@ const { DurableStateLive, NoopDurableStateLayer, durableStateLayer } = await imp
 beforeEach(() => {
   hasInternalDB = true;
   execCalls.length = 0;
+  queryCalls.length = 0;
   queryRows = [];
 });
 
@@ -72,10 +77,23 @@ describe("DurableStateLive", () => {
     expect(execCalls[0]!.params).toEqual(["conv-1", "org-1", "a", JSON.stringify(1)]);
     expect(execCalls[1]!.params).toEqual(["conv-1", "org-1", "b", JSON.stringify("two")]);
   });
+
+  it("sweepExpired deletes memory for expired sessions and returns the count (#3757)", async () => {
+    queryRows = [{ conversation_id: "conv-a" }, { conversation_id: "conv-b" }];
+    const count = await Effect.runPromise(
+      Effect.gen(function* () {
+        const ds = yield* DurableState;
+        return yield* ds.sweepExpired(7);
+      }).pipe(Effect.provide(DurableStateLive)),
+    );
+    expect(count).toBe(2);
+    expect(queryCalls[0]!.sql).toContain("DELETE FROM agent_session_memory");
+    expect(queryCalls[0]!.params).toEqual(["7"]);
+  });
 });
 
 describe("NoopDurableStateLayer", () => {
-  it("reports unavailable, loads empty, commits nothing", async () => {
+  it("reports unavailable, loads empty, commits nothing, sweeps nothing", async () => {
     const loaded = await Effect.runPromise(
       Effect.gen(function* () {
         const ds = yield* DurableState;
@@ -85,12 +103,15 @@ describe("NoopDurableStateLayer", () => {
           orgId: null,
           slots: [{ namespace: "a", value: 1 }],
         });
+        // The memory sweep is inert on the Noop layer — returns 0, never queries.
+        expect(yield* ds.sweepExpired(30)).toBe(0);
         return yield* ds.load("conv-1");
       }).pipe(Effect.provide(NoopDurableStateLayer)),
     );
 
     expect(loaded.size).toBe(0);
     expect(execCalls).toHaveLength(0);
+    expect(queryCalls).toHaveLength(0);
   });
 });
 

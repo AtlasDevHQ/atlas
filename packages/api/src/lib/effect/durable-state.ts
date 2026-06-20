@@ -11,7 +11,11 @@
 
 import { Effect, Layer } from "effect";
 import { DurableState, type DurableStateShape } from "@atlas/api/lib/effect/services";
-import { commitSessionMemory, loadSessionMemory } from "@atlas/api/lib/durable-state";
+import {
+  commitSessionMemory,
+  loadSessionMemory,
+  sweepExpiredSessionMemory,
+} from "@atlas/api/lib/durable-state";
 
 /** Real, internal-DB-backed durable memory store. */
 export const DurableStateLive: Layer.Layer<DurableState> = Layer.succeed(
@@ -20,6 +24,8 @@ export const DurableStateLive: Layer.Layer<DurableState> = Layer.succeed(
     available: true,
     load: (conversationId) => Effect.promise(() => loadSessionMemory(conversationId)),
     commit: (args) => commitSessionMemory(args),
+    sweepExpired: (retentionDays) =>
+      Effect.promise(() => sweepExpiredSessionMemory(retentionDays)),
   } satisfies DurableStateShape,
 );
 
@@ -34,6 +40,7 @@ export const NoopDurableStateLayer: Layer.Layer<DurableState> = Layer.succeed(
     available: false,
     load: () => Effect.succeed(new Map<string, unknown>()),
     commit: () => {},
+    sweepExpired: () => Effect.succeed(0),
   } satisfies DurableStateShape,
 );
 

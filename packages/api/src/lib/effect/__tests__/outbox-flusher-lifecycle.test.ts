@@ -66,15 +66,19 @@ mock.module("@atlas/api/lib/logger", () => ({
 const { makeSchedulerLive, Migration } = await import("../layers");
 const { SaasCrm, NoopEnterpriseDefaultsLayer } = await import("../services");
 const { NoopDurableSessionLayer } = await import("../durable-session");
+const { NoopDurableStateLayer } = await import("../durable-state");
 const { setActiveFlusherSignal } = await import("@atlas/api/lib/lead-outbox");
 
 // #3446 — `makeSchedulerLive` requires `Migration` as an ordering barrier
 // for the billing-reconcile boot tick; satisfy it immediately here.
 // #3745 — it also requires `DurableSession`; the Noop layer suffices for the
 // outbox-flusher lifecycle tests (the retention-sweep fiber forks but no-ops).
-const testMigrationLayer = Layer.merge(
+// #3757 — it additionally requires `DurableState` for the memory sweep on the
+// same fiber; the Noop layer no-ops it too.
+const testMigrationLayer = Layer.mergeAll(
   Layer.succeed(Migration, { migrated: true }),
   NoopDurableSessionLayer,
+  NoopDurableStateLayer,
 );
 
 // ── Test layer: SaasCrm with available=true + stub dispatcher ───────

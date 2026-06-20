@@ -471,6 +471,42 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "workspace",
   },
   {
+    // #3757 / ADR-0020 — durable working-memory bounds. A session's working
+    // memory must stay BOUNDED: a write whose slot count would exceed this cap is
+    // REJECTED (surfaced to the caller), never truncated. Workspace-scoped +
+    // hot-reloadable — `getMemoryMaxSlots(orgId)` (lib/durable-state.ts) reads it
+    // per-turn at store build, so an admin can tighten/loosen the bound from
+    // Admin → Settings with no redeploy. Overwriting an existing slot never
+    // counts against this; only adding a NEW slot does.
+    key: "ATLAS_MEMORY_MAX_SLOTS",
+    section: "Agent",
+    label: "Working Memory Max Slots",
+    description:
+      "Maximum number of named working-memory slots a single session may hold. A write that would add a new slot past this cap is rejected (never truncated). Default 64.",
+    type: "number",
+    default: "64",
+    envVar: "ATLAS_MEMORY_MAX_SLOTS",
+    scope: "workspace",
+  },
+  {
+    // #3757 / ADR-0020 — per-value size cap for durable working memory. A write
+    // whose serialized (JSON, UTF-8) value exceeds this many bytes is rejected
+    // before persistence. Workspace-scoped + hot-reloadable via
+    // `getMemoryMaxValueBytes(orgId)` (lib/durable-state.ts), same per-turn read
+    // as the slot cap. Default 16384 (16 KiB) — generous for a remembered fact
+    // (a table name, a filter set, a prior-result summary), tight enough that
+    // memory can't become a bulk data sink.
+    key: "ATLAS_MEMORY_MAX_VALUE_BYTES",
+    section: "Agent",
+    label: "Working Memory Max Value Size (bytes)",
+    description:
+      "Maximum serialized size (bytes, JSON/UTF-8) of a single working-memory slot value. A larger write is rejected before persistence (never truncated). Default 16384 (16 KiB).",
+    type: "number",
+    default: "16384",
+    envVar: "ATLAS_MEMORY_MAX_VALUE_BYTES",
+    scope: "workspace",
+  },
+  {
     key: "ATLAS_PROVIDER",
     section: "Agent",
     label: "LLM Provider",

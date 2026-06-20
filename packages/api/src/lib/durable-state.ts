@@ -38,6 +38,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { SessionMemorySlot, SessionMemoryView } from "@useatlas/types";
 import { hasInternalDB, internalExecute, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSettingAuto } from "@atlas/api/lib/settings";
+import { findSecretLike } from "@atlas/api/lib/memory-secret-scan";
+// The retention-window default is owned by the durable-session module (the
+// runs sweep). Memory rides the SAME window, so it reuses that constant rather
+// than a second magic number that could drift. Type/value-only import — no
+// cyclic risk (durable-session never imports durable-state).
+import { DEFAULT_RETENTION_DAYS } from "@atlas/api/lib/durable-session";
 
 const log = createLogger("durable-state");
 
@@ -48,6 +55,103 @@ const log = createLogger("durable-state");
  * shadowing) an internal one.
  */
 export const RESERVED_NAMESPACE_PREFIX = "atlas:";
+
+// ── Bounds & safety: caps + secrets prohibition (#3757, ADR-0020, slice 4) ─────
+//
+// Working memory must stay BOUNDED (so a session can't accumulate unbounded
+// state) and must never become a credential exfiltration surface. Both controls
+// run at WRITE/STAGING time in `LiveDurableStateStore.set`, NOT at commit: the
+// commit is fire-and-forget (rides the `internalExecute` circuit breaker, never
+// throws), so a rejection there could not surface to the caller. Staging is
+// reached synchronously from a tool's `defineDurableState(...).set()` inside
+// `runWithDurableState`, so a thrown rejection propagates up through the tool's
+// `execute` to the agent/caller — exactly the "surfaced, never truncated"
+// contract the issue requires.
+
+/** Settings key: max number of slots a single session may hold. */
+export const MEMORY_MAX_SLOTS_SETTING = "ATLAS_MEMORY_MAX_SLOTS";
+/** Settings key: max serialized byte length of a single slot value. */
+export const MEMORY_MAX_VALUE_BYTES_SETTING = "ATLAS_MEMORY_MAX_VALUE_BYTES";
+
+/** Fallback slot cap when the setting is unset/unparseable. */
+export const DEFAULT_MEMORY_MAX_SLOTS = 64;
+/** Fallback per-value byte cap when the setting is unset/unparseable (16 KiB). */
+export const DEFAULT_MEMORY_MAX_VALUE_BYTES = 16_384;
+
+/**
+ * Clamp a raw settings string to a sane positive integer, else `fallback`.
+ * Mirrors the durability knobs' `clampPositiveInt` (lib/durable-session.ts) so a
+ * non-positive / unparseable override can never weaken a cap to 0 or NaN.
+ */
+function clampPositiveInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+/**
+ * Resolve the per-session slot cap from the settings registry, clamped to a sane
+ * positive integer. Workspace > platform > env > default (the `getSettingAuto`
+ * tier chain), so an operator/admin can tune it from Admin → Settings with no
+ * redeploy. The READ stays inline at the resolver (the settings-reader parity
+ * check — check-settings-readers.sh — sees the const-bound key next to its
+ * reader).
+ */
+export function getMemoryMaxSlots(orgId?: string): number {
+  return clampPositiveInt(getSettingAuto(MEMORY_MAX_SLOTS_SETTING, orgId), DEFAULT_MEMORY_MAX_SLOTS);
+}
+
+/** Resolve the per-value byte cap from the settings registry, clamped positive. */
+export function getMemoryMaxValueBytes(orgId?: string): number {
+  return clampPositiveInt(
+    getSettingAuto(MEMORY_MAX_VALUE_BYTES_SETTING, orgId),
+    DEFAULT_MEMORY_MAX_VALUE_BYTES,
+  );
+}
+
+/**
+ * Thrown when a slot write would exceed a configured cap (value bytes or slot
+ * count). Distinct from {@link DurableStateContextError} so a caller / tool can
+ * tell "you violated a bound" from "you used the handle wrong". The message is
+ * value-free (it names the cap, never the rejected value).
+ */
+export class DurableStateLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DurableStateLimitError";
+  }
+}
+
+/**
+ * Thrown when a slot write carries a value that looks like a secret/credential
+ * ({@link findSecretLike}). Rejected BEFORE persistence so memory never becomes
+ * an exfiltration surface. The message names the credential SHAPE that tripped,
+ * never the value, so the rejection itself can't leak the secret into a log.
+ */
+export class DurableStateSecretError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DurableStateSecretError";
+  }
+}
+
+/** UTF-8 byte length of a string (a multi-byte char counts its full encoded length). */
+const utf8ByteLength =
+  typeof Buffer !== "undefined"
+    ? (s: string): number => Buffer.byteLength(s, "utf8")
+    : (s: string): number => new TextEncoder().encode(s).length;
+
+/**
+ * The cap + secret bounds a Live store enforces on every write. Resolved ONCE
+ * per turn at {@link buildDurableStateStore} (so the per-workspace settings
+ * override is honored, and a write within a turn doesn't re-read settings on the
+ * hot path), then carried by the store.
+ */
+interface MemoryBounds {
+  readonly maxSlots: number;
+  readonly maxValueBytes: number;
+}
 
 // ── SQL (exported for the real-Postgres tests so they exercise the EXACT SQL) ──
 
@@ -68,10 +172,11 @@ export const SESSION_MEMORY_LOAD_SQL =
  * whose `step_index = GREATEST` guard makes it reorder-safe, this row is keyed on
  * the conversation and spans turns, so a per-turn step index can't serve as that
  * guard. If two same-slot writes within a turn land out of order the earlier
- * value can win (a lost update). Bounded + acceptable for slice 1 (off by
- * default; same-slot repeat-within-a-turn is the only exposure); a
- * conversation-global monotonic guard is deferred to the bounds/safety slice
- * (#3757).
+ * value can win (a lost update). Bounded + acceptable (off by default; same-slot
+ * repeat-within-a-turn is the only exposure). A conversation-global monotonic
+ * guard remains future work — out of scope for the bounds/safety slice (#3757),
+ * whose contract is caps + secrets + tenant scoping + lifecycle sweep, not write
+ * ordering.
  */
 export const SESSION_MEMORY_UPSERT_SQL =
   `INSERT INTO agent_session_memory (conversation_id, org_id, namespace, value, updated_at)
@@ -127,6 +232,7 @@ class LiveDurableStateStore implements DurableStateStore {
     readonly conversationId: string,
     readonly orgId: string | null,
     initial: Map<string, unknown>,
+    private readonly bounds: MemoryBounds,
   ) {
     // Defensive copy: the store owns its slot map for the turn's lifetime, so a
     // caller's map can't alias internal state (today `buildDurableStateStore`
@@ -139,7 +245,49 @@ class LiveDurableStateStore implements DurableStateStore {
     return this.slots.get(namespace);
   }
 
+  /**
+   * Stage a slot value after enforcing the bounds (#3757). The order is
+   * deliberate: the rejecting checks run BEFORE any mutation, so a rejected
+   * write leaves the store byte-identical (no partial/truncated state):
+   *   1. secrets — a credential-shaped value never persists;
+   *   2. size — the serialized value must fit the per-value byte cap;
+   *   3. slot count — a NEW slot must not push the session past the slot cap
+   *      (overwriting an EXISTING slot never grows the count, so it is exempt).
+   * Each violation throws (surfaced to the caller via the tool's `execute`),
+   * never truncates. Serialization here is the same `JSON.stringify` the commit
+   * path uses, so the measured size matches what would be persisted; a value
+   * that can't serialize (a cycle) is rejected as a limit violation rather than
+   * deferring the throw to the fire-and-forget commit where it would be lost.
+   */
   set(namespace: string, value: unknown): void {
+    const secret = findSecretLike(value);
+    if (secret) {
+      throw new DurableStateSecretError(
+        `Durable memory rejected slot "${namespace}": value looks like a credential (${secret.kind}) and cannot be stored`,
+      );
+    }
+
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(value ?? null) ?? "null";
+    } catch (err) {
+      throw new DurableStateLimitError(
+        `Durable memory rejected slot "${namespace}": value is not serializable (${err instanceof Error ? err.message : String(err)})`,
+      );
+    }
+    const bytes = utf8ByteLength(serialized);
+    if (bytes > this.bounds.maxValueBytes) {
+      throw new DurableStateLimitError(
+        `Durable memory rejected slot "${namespace}": value is ${bytes} bytes, over the ${this.bounds.maxValueBytes}-byte limit`,
+      );
+    }
+
+    if (!this.slots.has(namespace) && this.slots.size >= this.bounds.maxSlots) {
+      throw new DurableStateLimitError(
+        `Durable memory rejected slot "${namespace}": the session already holds ${this.slots.size} slots, at the ${this.bounds.maxSlots}-slot limit`,
+      );
+    }
+
     this.slots.set(namespace, value);
     this.dirty.add(namespace);
   }
@@ -392,7 +540,16 @@ export async function buildDurableStateStore(args: {
     return NOOP_DURABLE_STATE_STORE;
   }
   const initial = await loadSessionMemory(args.conversationId);
-  return new LiveDurableStateStore(args.conversationId, args.orgId, initial);
+  // Resolve the caps ONCE per turn against the session's org (so the per-
+  // workspace settings override is honored), then carry them on the store so a
+  // write doesn't re-read settings on the hot path. Hot-reload is per-turn — a
+  // mid-turn settings change applies on the next turn's build (#3757).
+  const orgId = args.orgId ?? undefined;
+  const bounds: MemoryBounds = {
+    maxSlots: getMemoryMaxSlots(orgId),
+    maxValueBytes: getMemoryMaxValueBytes(orgId),
+  };
+  return new LiveDurableStateStore(args.conversationId, args.orgId, initial, bounds);
 }
 
 // ── Deterministic prompt threading (#3755, ADR-0020, slice 2) ──────────────────
@@ -613,6 +770,80 @@ export async function listSessionMemory(orgId: string): Promise<SessionMemoryVie
       "Failed to list durable session memory",
     );
     return [];
+  }
+}
+
+// ── Session sweep (#3757) — memory rides the agent_runs retention window ───────
+//
+// "Swept with its session": a session's working memory must not outlive the
+// session. It already FK-cascades on `conversations` deletion (migration 0145),
+// but the durable-session RETENTION sweep deletes terminal `agent_runs` rows
+// while the conversation lives on — so memory would survive the runs it belongs
+// to. This sweep closes that gap on the SAME hourly fiber + SAME retention
+// window as `sweepTerminalAgentRuns` (no separate sweeper/scheduler): it deletes
+// memory for sessions whose runs are ALL terminal (no `running`/`parked` run is
+// live) and whose newest run is past the window. It runs BEFORE the runs sweep
+// in the tick (layers.ts) so the terminal runs are still present to date the
+// session; a session with a live run keeps its memory (still in use).
+
+/**
+ * Delete working memory for sessions past the retention window — those whose
+ * `agent_runs` are ALL terminal (`done`/`failed`) and whose most-recent run is
+ * older than the window. A session with ANY non-terminal (`running`/`parked`)
+ * run is never swept (its memory is still the live working set). Returns the
+ * number of memory rows deleted, or -1 on error (mirrors
+ * {@link sweepTerminalAgentRuns}). No-op without an internal DB.
+ *
+ * A conversation with NO `agent_runs` rows at all (durability was off, so memory
+ * was never written either, OR the runs were already swept) is intentionally not
+ * matched here — there is nothing to age it against. Such memory is cleaned up
+ * by the FK cascade when the conversation itself is deleted.
+ */
+// Exported (the SQL) for the real-Postgres sweep test so it exercises the EXACT
+// interval/DELETE the helper runs, not a hand-copied reimplementation.
+export const SESSION_MEMORY_SWEEP_SQL =
+  `DELETE FROM agent_session_memory m
+     WHERE EXISTS (
+             SELECT 1 FROM agent_runs r
+              WHERE r.conversation_id = m.conversation_id
+            )
+       AND NOT EXISTS (
+             SELECT 1 FROM agent_runs r
+              WHERE r.conversation_id = m.conversation_id
+                AND r.status IN ('running', 'parked')
+            )
+       AND ($1 || ' days')::interval < now() - (
+             SELECT max(r.updated_at) FROM agent_runs r
+              WHERE r.conversation_id = m.conversation_id
+            )
+   RETURNING m.conversation_id`;
+
+export async function sweepExpiredSessionMemory(retentionDays: number): Promise<number> {
+  if (!hasInternalDB()) return 0;
+  const days =
+    Number.isFinite(retentionDays) && retentionDays > 0 ? retentionDays : DEFAULT_RETENTION_DAYS;
+  try {
+    const rows = await internalQuery<{ conversation_id: string }>(SESSION_MEMORY_SWEEP_SQL, [
+      String(days),
+    ]);
+    // RETURNING is one row per deleted memory SLOT (the table is keyed on
+    // (conversation_id, namespace)), so this is a count of ROWS, not sessions —
+    // a session with N slots contributes N. Log the noun accurately; the return
+    // value is documented as "memory rows deleted".
+    const count = rows.length;
+    if (count > 0) {
+      log.info(
+        { rowCount: count, retentionDays: days },
+        "Swept expired working-memory rows for terminal sessions past retention window",
+      );
+    }
+    return count;
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Failed to sweep expired session memory",
+    );
+    return -1;
   }
 }
 

@@ -37,6 +37,7 @@ const {
   listSessionMemory,
   resetSessionMemory,
   renderDurableMemoryBlock,
+  sweepExpiredSessionMemory,
   DURABLE_MEMORY_BLOCK_HEADING,
   NOOP_DURABLE_STATE_STORE,
   DurableStateContextError,
@@ -542,6 +543,43 @@ describe("resetSessionMemory — tenant-scoped, idempotent clear", () => {
       throw new Error("delete boom");
     };
     expect(await resetSessionMemory({ conversationId: "conv-1", orgId: "org-1" })).toBe(0);
+  });
+});
+
+// ── Session sweep (#3757) — memory rides the agent_runs retention window ───────
+
+describe("sweepExpiredSessionMemory — swept with its session", () => {
+  it("no-ops to 0 and never queries without an internal DB", async () => {
+    hasInternalDB = false;
+    expect(await sweepExpiredSessionMemory(30)).toBe(0);
+    expect(queryCalls).toHaveLength(0);
+  });
+
+  it("deletes memory for expired sessions and returns the count", async () => {
+    queryImpl = async () => [{ conversation_id: "conv-a" }, { conversation_id: "conv-b" }];
+    const count = await sweepExpiredSessionMemory(7);
+    expect(count).toBe(2);
+    expect(queryCalls).toHaveLength(1);
+    const { sql, params } = queryCalls[0]!;
+    expect(sql).toContain("DELETE FROM agent_session_memory");
+    // Targets sessions whose runs are all terminal + past the window; a session
+    // with a live (running/parked) run is never swept (its memory is still in use).
+    expect(sql).toContain("agent_runs");
+    expect(sql).toContain("'running'");
+    expect(sql).toContain("'parked'");
+    expect(params).toEqual(["7"]);
+  });
+
+  it("falls back to the default window for a non-positive retention value", async () => {
+    await sweepExpiredSessionMemory(0);
+    expect((queryCalls[0]!.params as unknown[])[0]).toBe("30");
+  });
+
+  it("returns -1 (never throws) on a DB error", async () => {
+    queryImpl = async () => {
+      throw new Error("sweep boom");
+    };
+    expect(await sweepExpiredSessionMemory(30)).toBe(-1);
   });
 });
 

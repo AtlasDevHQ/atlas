@@ -280,15 +280,20 @@ describe("makeSchedulerLive", () => {
   const { NoopEnterpriseDefaultsLayer } = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { NoopDurableSessionLayer } = require("@atlas/api/lib/effect/durable-session") as typeof import("@atlas/api/lib/effect/durable-session");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { NoopDurableStateLayer } = require("@atlas/api/lib/effect/durable-state") as typeof import("@atlas/api/lib/effect/durable-state");
 
   // #3446 — `makeSchedulerLive` requires `Migration` as an ordering
   // barrier for the billing-reconcile boot tick; tests satisfy it with
   // the immediate test layer. #3745 — it also requires `DurableSession`;
   // the Noop layer suffices (the retention-sweep fiber forks but no-ops).
+  // #3757 — it additionally requires `DurableState` for the memory sweep on
+  // the same fiber; the Noop layer no-ops it too.
   const schedulerDeps = Layer.mergeAll(
     NoopEnterpriseDefaultsLayer,
     makeTestMigrationLayer(),
     NoopDurableSessionLayer,
+    NoopDurableStateLayer,
   );
 
   test("returns 'none' backend when no scheduler configured", async () => {
@@ -355,7 +360,12 @@ describe("makeSchedulerLive", () => {
     const config = {} as Parameters<typeof makeSchedulerLive>[0];
     const layer = makeSchedulerLive(config).pipe(
       Layer.provide(
-        Layer.mergeAll(NoopEnterpriseDefaultsLayer, gatedMigrationLayer, NoopDurableSessionLayer),
+        Layer.mergeAll(
+          NoopEnterpriseDefaultsLayer,
+          gatedMigrationLayer,
+          NoopDurableSessionLayer,
+          NoopDurableStateLayer,
+        ),
       ),
     );
 
@@ -502,6 +512,29 @@ describe("makeSchedulerLive", () => {
       });
     });
   }
+
+  // ── agent_runs retention tick: sweep ORDER guard (#3757) ──────────────────
+  // The memory sweep MUST run before the runs sweep in `agentRunsRetentionTick`:
+  // `sweepExpiredSessionMemory` dates each session by its newest `agent_runs`
+  // row, so the terminal runs must still exist when it runs. If a refactor
+  // reordered the two lines, the runs sweep would delete the terminal rows first
+  // and the memory sweep's EXISTS/max(updated_at) clauses would match nothing —
+  // silently orphaning memory, with every other test still green. The fiber is
+  // inline-forked (not exposed via the Scheduler Tag), so — exactly as the
+  // per-tick span guards above do — this is a structural source scan, the
+  // pragmatic guard the repo already uses for this fiber.
+  describe("memory sweep precedes the runs sweep (#3757)", () => {
+    test("durableState.sweepExpired is sequenced before durableSession.sweepTerminal", () => {
+      const memoryIdx = layersSource.indexOf("durableState.sweepExpired(");
+      const terminalIdx = layersSource.indexOf("durableSession.sweepTerminal(");
+      // Both call sites must exist...
+      expect(memoryIdx).toBeGreaterThan(-1);
+      expect(terminalIdx).toBeGreaterThan(-1);
+      // ...and the memory sweep must come first in source order (the tick runs
+      // its yields sequentially, so source order is execution order).
+      expect(memoryIdx).toBeLessThan(terminalIdx);
+    });
+  });
 });
 
 // ── DpaGuardLive (#1969) ───────────────────────────────────────────

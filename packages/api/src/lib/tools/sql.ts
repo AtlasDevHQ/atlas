@@ -1532,9 +1532,12 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
         // pre-#3764 `async`/`try-catch` body caught both; we must too, or a
         // sync throw would escape the fail-closed gate as a 500.
         Effect.catchAllCause((cause) => {
-          const err = Cause.squash(cause);
+          // Log the squashed Error object (a `FiberFailure` for a defect — an
+          // Error subclass) so pino's `err` serializer keeps the stack, matching
+          // the CREATE handler below + the P4 normalization (don't strip via
+          // `.message`).
           log.error(
-            { err: err instanceof Error ? err.message : String(err), connectionId: connId },
+            { err: Cause.squash(cause), connectionId: connId },
             "Approval check failed — blocking query (fail-closed)",
           );
           return Effect.succeed({
@@ -1889,9 +1892,10 @@ async function executeSqlForConnection({
           // which `catchAll` would miss — block fail-closed on both (see the
           // live-path region above for the full rationale).
           Effect.catchAllCause((cause) => {
-            const err = Cause.squash(cause);
+            // Log the squashed Error object (stack-preserving) to match the
+            // live-path CHECK handler + the CREATE handler below (#3764 P4).
             log.error(
-              { err: err instanceof Error ? err.message : String(err), connectionId: connId },
+              { err: Cause.squash(cause), connectionId: connId },
               "Approval check failed — blocking query (fail-closed)",
             );
             return Effect.succeed({

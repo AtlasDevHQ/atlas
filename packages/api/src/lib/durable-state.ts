@@ -826,9 +826,16 @@ export async function sweepExpiredSessionMemory(retentionDays: number): Promise<
     const rows = await internalQuery<{ conversation_id: string }>(SESSION_MEMORY_SWEEP_SQL, [
       String(days),
     ]);
+    // RETURNING is one row per deleted memory SLOT (the table is keyed on
+    // (conversation_id, namespace)), so this is a count of ROWS, not sessions —
+    // a session with N slots contributes N. Log the noun accurately; the return
+    // value is documented as "memory rows deleted".
     const count = rows.length;
     if (count > 0) {
-      log.info({ count, retentionDays: days }, "Swept working memory for sessions past retention window");
+      log.info(
+        { rowCount: count, retentionDays: days },
+        "Swept expired working-memory rows for terminal sessions past retention window",
+      );
     }
     return count;
   } catch (err) {

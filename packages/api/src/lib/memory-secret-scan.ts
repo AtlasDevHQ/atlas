@@ -73,12 +73,33 @@ const SHAPE_PATTERNS: ReadonlyArray<{ kind: SecretLikeKind; re: RegExp }> = [
   },
   // Connection string with an inline password: scheme://user:pass@host.
   { kind: "connection-string-password", re: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:[^\s:@/]+@/i },
-  // Explicit password / secret / token assignment carrying a non-placeholder value.
-  {
-    kind: "inline-credential-assignment",
-    re: /\b(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\s*[=:]\s*\S{6,}/i,
-  },
 ];
+
+/**
+ * The inline `password = …` / `api_key: …` assignment shape is the ONE pattern
+ * that legitimately collides with ordinary analyst memory: a remembered SQL
+ * query compares a credential-NAMED column (`WHERE api_key = '2026-q1-prod'`),
+ * which is a predicate, not a leaked secret. It is therefore kept SEPARATE from
+ * {@link SHAPE_PATTERNS} (whose patterns match credential VALUE shapes that never
+ * appear as SQL column names) and is suppressed when the surrounding string
+ * {@link looksLikeSql}. A bare `password=…` key/value line (no SQL context) still
+ * trips it — #3757 AC: reject leaked credentials, but never an analyst's SQL.
+ */
+const INLINE_CREDENTIAL_ASSIGNMENT =
+  /\b(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\s*[=:]\s*\S{6,}/i;
+
+/**
+ * Heuristic: does `s` read as a SQL statement? Looks for a SQL verb AND a
+ * structural keyword (FROM/WHERE/SET/INTO/VALUES) so a sentence that merely
+ * contains the word "select" or "where" isn't misread as SQL. Used only to
+ * suppress the inline-credential-assignment match (above) — a remembered query
+ * that compares an `api_key`/`password` column is a predicate, not a secret.
+ */
+function looksLikeSql(s: string): boolean {
+  const hasVerb = /\b(?:select|insert|update|delete|with|merge)\b/i.test(s);
+  const hasStructure = /\b(?:from|where|set|into|values|join)\b/i.test(s);
+  return hasVerb && hasStructure;
+}
 
 /** Lower bound for the high-entropy fallback. Below this length even a random token is too short to be a meaningful secret (and a UUID is 36). */
 const HIGH_ENTROPY_MIN_LENGTH = 40;
@@ -117,6 +138,13 @@ function isHighEntropyToken(token: string): boolean {
 function scanString(s: string): SecretLikeMatch | null {
   for (const { kind, re } of SHAPE_PATTERNS) {
     if (re.test(s)) return { kind };
+  }
+  // The inline `key = value` assignment shape fires UNLESS the string is a SQL
+  // statement (where `api_key = '…'` is a column predicate, not a secret). The
+  // value-shape patterns above already ran, so a real credential VALUE pasted
+  // inside SQL (e.g. a literal `sk-live-…`) is still caught by its own pattern.
+  if (!looksLikeSql(s) && INLINE_CREDENTIAL_ASSIGNMENT.test(s)) {
+    return { kind: "inline-credential-assignment" };
   }
   // High-entropy fallback: check each whitespace-delimited token, so a secret
   // embedded in a longer string (a log line) is still caught, while a prose

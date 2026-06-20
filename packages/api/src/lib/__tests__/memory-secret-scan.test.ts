@@ -107,4 +107,29 @@ describe("findSecretLike — ordinary analyst memory is allowed", () => {
     ).toBeNull();
     expect(findSecretLike("us-east-prod, eu-west-prod, ap-south-staging, eu-central-prod")).toBeNull();
   });
+
+  it("does not flag a remembered SQL query that COMPARES a credential-named COLUMN", () => {
+    // The inline-credential-assignment shape (`api_key = …`, `password = …`)
+    // legitimately appears in analyst SQL as a column predicate, not a secret.
+    // A remembered query must not be rejected (#3757 AC: no SQL false positives).
+    for (const sql of [
+      "SELECT id FROM sessions WHERE api_key = '2026-q1-prod'",
+      "SELECT * FROM users WHERE access_token = 'current_user_token'",
+      "SELECT id FROM accounts WHERE password = 'changeme'",
+      "select name from cfg where secret = 'foobar' order by name",
+      "UPDATE jobs SET auth_token = 'pending' WHERE status = 'queued'",
+    ]) {
+      expect(findSecretLike(sql)).toBeNull();
+    }
+  });
+});
+
+describe("findSecretLike — inline credential assignment still caught WITHOUT SQL context", () => {
+  it("flags a bare credential assignment (no surrounding SQL keywords)", () => {
+    // The SQL guard must not blind the detector to a genuinely leaked secret
+    // pasted as a key=value line. These carry NO SELECT/FROM/WHERE context.
+    expect(findSecretLike("password=hunter2-not-a-place-holder")).not.toBeNull();
+    expect(findSecretLike("api_key: prod-9f3a-do-not-share-2026")).not.toBeNull();
+    expect(findSecretLike("AUTH_TOKEN = a8Xk2Lm9Qw7Rt4Yv1Zb")).not.toBeNull();
+  });
 });

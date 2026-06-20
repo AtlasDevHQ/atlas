@@ -868,6 +868,7 @@ export async function runAgent({
   presentationMode,
   resume,
   runId: callerRunId,
+  subagent,
 }: {
   messages: UIMessage[];
   tools?: ToolRegistry;
@@ -889,6 +890,20 @@ export async function runAgent({
    * callers (SDK, tests) may only supply `warnings`.
    */
   contextWarnings?: ChatContextWarning[];
+  /**
+   * #3756 — subagent memory isolation (PRD #3752). When `true`, this run is a
+   * DELEGATED CHILD: its durable working memory is forced to the Noop store
+   * regardless of `conversationId`, so the child starts with EMPTY memory and
+   * can neither read nor write the parent's per-session slots. Working memory
+   * never crosses the parent/subagent boundary — a child can't leak or clobber
+   * parent state, and the parent is unaffected by anything the child writes.
+   * Absent / `false` ⇒ a normal (parent / top-level) run — behavior unchanged.
+   *
+   * Memory is the only per-session state this gates; the durable-session
+   * checkpoint (the `agent_runs` row) is keyed on the run id, which a subagent
+   * supplies independently, so it is already child-scoped and unaffected here.
+   */
+  subagent?: boolean;
   /** Override the default agent step limit (e.g. for demo mode). */
   maxSteps?: number;
   /** Pre-resolved AI model from Effect Context (P10c). */
@@ -1376,10 +1391,17 @@ export async function runAgent({
   // (`commitMemory` below). Load is fail-soft (empty store on failure), so a
   // degraded memory store never costs the turn its answer.
   const durabilityActive = Boolean(conversationId) && isDurabilityEnabled(orgId);
+  // #3756 — subagent memory isolation. A delegated child run forces the Noop
+  // memory store regardless of the conversation/durability state: it starts with
+  // empty slots and never persists into the parent's session, so working memory
+  // never crosses the parent/subagent boundary (PRD #3752). This gates ONLY the
+  // working-memory store — the durable-session checkpoint below stays keyed on
+  // the run id (already child-scoped), so subagent crash-resumability is intact.
   const memoryStore = await buildDurableStateStore({
     conversationId: conversationId ?? null,
     orgId: orgId ?? null,
     active: durabilityActive,
+    subagent: subagent ?? false,
   });
 
   const rawTools = activeRegistry.getAll();
@@ -1961,6 +1983,12 @@ export function runAgentEffect(params: {
   conversationId?: string;
   warnings?: string[];
   maxSteps?: number;
+  /**
+   * #3756 — run as a delegated subagent (isolated, empty working memory). Mirrors
+   * the `runAgent` flag so an Effect-based delegated caller can request isolation
+   * through this seam too, rather than silently inheriting a parent-scoped store.
+   */
+  subagent?: boolean;
 }): Effect.Effect<ReturnType<typeof streamText>, Error, AtlasAiModel> {
   return Effect.gen(function* () {
     const aiModel = yield* AtlasAiModel;

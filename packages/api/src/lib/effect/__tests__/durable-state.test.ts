@@ -113,3 +113,54 @@ describe("durableStateLayer selector", () => {
     expect(available).toBe(false);
   });
 });
+
+// #3756 — subagent memory isolation, asserted with `Layer.provide` test layers
+// (no top-level singleton mutation). The production isolation gate lives in the
+// non-Effect `buildDurableStateStore` (a subagent run is forced onto the Noop
+// store); the Effect-side analogue of that store is `NoopDurableStateLayer`.
+// These cases pin the PROPERTY a subagent relies on — under the Noop layer a
+// load returns empty and a commit reaches no `internalExecute`, EVEN when the
+// parent session has persisted slots — by running the same Effect program under
+// the parent's Live layer and the child's Noop layer in distinct `Layer.provide`
+// scopes. They do not drive a `runAgent` subagent turn (that seam is covered by
+// `agent-durable-memory.test.ts`); they verify the layer the gate selects.
+describe("subagent isolation (#3756)", () => {
+  it("a subagent reads empty even when the parent's session has persisted slots", async () => {
+    // The parent's session persisted a slot — the Live layer loads it.
+    queryRows = [{ namespace: "region", value: "EU" }];
+    const readSlot = (conversationId: string) =>
+      Effect.gen(function* () {
+        const ds = yield* DurableState;
+        const slots = yield* ds.load(conversationId);
+        return slots.get("region");
+      });
+
+    // Parent run (Live layer) reads its own slot...
+    const parentValue = await Effect.runPromise(
+      readSlot("parent-conv").pipe(Effect.provide(DurableStateLive)),
+    );
+    expect(parentValue).toBe("EU");
+
+    // ...the delegated subagent (Noop layer) reads EMPTY for the same slot.
+    const childValue = await Effect.runPromise(
+      readSlot("parent-conv").pipe(Effect.provide(NoopDurableStateLayer)),
+    );
+    expect(childValue).toBeUndefined();
+  });
+
+  it("a subagent's commit is dropped — it never writes the parent's session", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const ds = yield* DurableState;
+        // A child writes the SAME slot name as the parent's — under the Noop
+        // (subagent) layer the commit must reach no internalExecute at all.
+        ds.commit({
+          conversationId: "parent-conv",
+          orgId: "org-1",
+          slots: [{ namespace: "region", value: "US" }],
+        });
+      }).pipe(Effect.provide(NoopDurableStateLayer)),
+    );
+    expect(execCalls).toHaveLength(0);
+  });
+});

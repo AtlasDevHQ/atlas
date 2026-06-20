@@ -298,6 +298,43 @@ describe("buildDurableStateStore — gating", () => {
     });
     expect(store.available).toBe(true);
   });
+
+  // #3756 — subagent isolation. A delegated child run must start with EMPTY
+  // memory and never persist into the parent's session, so `subagent: true`
+  // forces the Noop store UNCONDITIONALLY — before consulting the conversation
+  // key or the internal DB. The child can therefore neither load the parent's
+  // slots (reads empty) nor reach back into them (the Noop store's `set` is a
+  // no-op, so nothing is ever staged to commit).
+  it("returns the Noop store for a subagent run, even with an active conversation + internal DB", async () => {
+    const store = await buildDurableStateStore({
+      conversationId: "parent-conv",
+      orgId: "org-1",
+      active: true,
+      subagent: true,
+    });
+    expect(store).toBe(NOOP_DURABLE_STATE_STORE);
+    expect(store.available).toBe(false);
+    // No parent session key survives onto the child store (defense-in-depth: the
+    // child store is never even constructed with the parent's conversation id).
+    expect(store.conversationId).toBeNull();
+  });
+
+  it("loads nothing for a subagent run — the parent's persisted slots never query", async () => {
+    // Even if the parent's session has slots, a subagent build must not load
+    // them: it never reaches the load query at all.
+    queryImpl = async () => [{ namespace: "region", value: "EU" }];
+    const store = await buildDurableStateStore({
+      conversationId: "parent-conv",
+      orgId: "org-1",
+      active: true,
+      subagent: true,
+    });
+    expect(queryCalls).toHaveLength(0);
+    runWithDurableState(store, () => {
+      // The child reads empty — the parent's "region" slot is invisible.
+      expect(defineDurableState<string>("region").get()).toBeUndefined();
+    });
+  });
 });
 
 describe("loadSessionMemory — fail-soft", () => {

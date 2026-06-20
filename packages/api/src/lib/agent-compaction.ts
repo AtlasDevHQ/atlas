@@ -77,6 +77,12 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
 const MIN_PINNED_RECENT_STEPS = 1;
 const MAX_PINNED_RECENT_STEPS = 100;
 const MIN_CONTEXT_WINDOW_TOKENS = 1_000;
+// Ceiling on the override too: an absurdly-large value (e.g. 999999999999)
+// would push the trigger past anything the coarse estimator ever reports,
+// silently disabling compaction. 10M comfortably covers every real window
+// (Gemini's 2M is the current largest) with headroom; out-of-range-HIGH
+// overrides fall through to the catalog just like too-small / non-numeric ones.
+const MAX_CONTEXT_WINDOW_TOKENS = 10_000_000;
 
 // ── Per-model context-window catalog (#3760) ─────────────────────────
 //
@@ -100,8 +106,14 @@ interface ContextWindowRule {
 
 const CONTEXT_WINDOW_RULES: readonly ContextWindowRule[] = [
   // OpenAI long-context families first (more specific than bare "gpt").
-  { match: ["gpt-4.1", "gpt-4-1"], windowTokens: 1_000_000 },
+  //
+  // The 128k GPT-4-Turbo ids (`gpt-4-1106*`, `gpt-4-0125*`) MUST be matched
+  // before the 1M GPT-4.1 rule: the 4.1 dash-form needle `gpt-4-1` is a prefix
+  // of `gpt-4-1106`, so first-match order is what keeps Turbo at 128k while the
+  // real GPT-4.1 (`gpt-4.1`, or a bare `gpt-4-1` with nothing after) still
+  // resolves to 1M below.
   { match: ["gpt-4o", "gpt-4-turbo", "gpt-4-1106", "gpt-4-0125"], windowTokens: 128_000 },
+  { match: ["gpt-4.1", "gpt-4-1"], windowTokens: 1_000_000 },
   { match: ["o1", "o3", "o4-mini"], windowTokens: 200_000 },
   { match: ["gpt-4-32k"], windowTokens: 32_768 },
   { match: ["gpt-4"], windowTokens: 8_192 },
@@ -221,7 +233,11 @@ function resolveContextWindow(
   // workspace > platform > env precedence). Blank string ⇒ "use the catalog".
   if (overrideRaw !== undefined && overrideRaw.trim() !== "") {
     const override = parseInt(overrideRaw, 10);
-    if (Number.isFinite(override) && override >= MIN_CONTEXT_WINDOW_TOKENS) {
+    if (
+      Number.isFinite(override) &&
+      override >= MIN_CONTEXT_WINDOW_TOKENS &&
+      override <= MAX_CONTEXT_WINDOW_TOKENS
+    ) {
       return { contextWindowTokens: override, contextWindowSource: "override" };
     }
     warnInvalidOnce(
@@ -239,12 +255,12 @@ function resolveContextWindow(
 
   // Tier 3 — safe default. The catalog has no entry for this model and there is
   // no override; the turn proceeds on the default window rather than failing.
-  if (modelId) {
-    log.debug(
-      { modelId, defaultWindow: DEFAULT_CONTEXT_WINDOW_TOKENS },
-      "No context-window entry for model; using safe default window for compaction trigger",
-    );
-  }
+  // Logged unconditionally — a blank/undefined modelId is self-documenting in the
+  // payload (it's the value that produced the miss), so the empty case isn't silent.
+  log.debug(
+    { modelId, defaultWindow: DEFAULT_CONTEXT_WINDOW_TOKENS },
+    "No context-window entry for model; using safe default window for compaction trigger",
+  );
   return { contextWindowTokens: DEFAULT_CONTEXT_WINDOW_TOKENS, contextWindowSource: "default" };
 }
 

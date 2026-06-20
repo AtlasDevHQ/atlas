@@ -310,6 +310,28 @@ describe("resolveModelContextWindow — static catalog (#3760)", () => {
     expect(resolveModelContextWindow("gpt-4.1")).toBe(1_000_000);
   });
 
+  it("does not let the gpt-4.1 1M rule swallow the gpt-4-1106 Turbo (128k) id (F1 collision)", () => {
+    // `gpt-4-1106*` is a 128k GPT-4-Turbo id whose prefix `gpt-4-1` once
+    // substring-matched the 1M GPT-4.1 rule — 8× too large, compaction too late.
+    expect(resolveModelContextWindow("gpt-4-1106-preview")).toBe(128_000);
+    expect(resolveModelContextWindow("gpt-4-1106")).toBe(128_000);
+    expect(resolveModelContextWindow("gpt-4-0125-preview")).toBe(128_000);
+    // …while the real GPT-4.1 (dot AND dash form) still resolves to 1M.
+    expect(resolveModelContextWindow("gpt-4.1")).toBe(1_000_000);
+    expect(resolveModelContextWindow("gpt-4.1-mini")).toBe(1_000_000);
+    expect(resolveModelContextWindow("openai/gpt-4-1")).toBe(1_000_000);
+  });
+
+  it("pins the load-bearing first-match ordering for collision-prone families (F4)", () => {
+    // Gemini: the pro/flash pair is the most collision-prone — `gemini-1.5-pro`
+    // (2M) must beat the broader `gemini-1.5`/`gemini` (1M) rule that follows it.
+    expect(resolveModelContextWindow("gemini-1.5-pro")).toBe(2_000_000);
+    expect(resolveModelContextWindow("gemini-1.5-flash")).toBe(1_000_000);
+    // OpenAI GPT-4 ladder: bare `gpt-4` (8k) vs the more-specific `gpt-4-32k`.
+    expect(resolveModelContextWindow("gpt-4")).toBe(8_192);
+    expect(resolveModelContextWindow("gpt-4-32k")).toBe(32_768);
+  });
+
   it("matches case-insensitively", () => {
     expect(resolveModelContextWindow("CLAUDE-OPUS-4-8")).toBe(200_000);
   });
@@ -402,6 +424,25 @@ describe("resolveCompactionSettings — per-model window + override (#3760)", ()
 
   it("ignores an invalid override and resolves from the catalog instead", () => {
     process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "not-a-number";
+    const s = resolveCompactionSettings("gpt-4o");
+    expect(s.contextWindowTokens).toBe(128_000);
+    expect(s.contextWindowSource).toBe("catalog");
+  });
+
+  it("ignores a numeric-but-too-small override and falls through to the catalog (F4)", () => {
+    // A real number below MIN_CONTEXT_WINDOW_TOKENS is distinct from not-a-number:
+    // it parses fine but is out of range, so it must fall through to the catalog.
+    process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "500";
+    const s = resolveCompactionSettings("gpt-4o");
+    expect(s.contextWindowTokens).toBe(128_000);
+    expect(s.contextWindowSource).toBe("catalog");
+  });
+
+  it("ignores an absurdly-large override and falls through to the catalog (F2 ceiling)", () => {
+    // No upper bound once let an absurd value silently disable compaction (the
+    // trigger never crosses). An out-of-range-HIGH override now falls through to
+    // the catalog like the too-small / not-a-number cases.
+    process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "999999999999";
     const s = resolveCompactionSettings("gpt-4o");
     expect(s.contextWindowTokens).toBe(128_000);
     expect(s.contextWindowSource).toBe("catalog");

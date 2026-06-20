@@ -8,7 +8,7 @@
  */
 import { describe, expect, test, afterEach, mock } from "bun:test";
 import { renderHook, waitFor, act, cleanup } from "@testing-library/react";
-import { useRunStatus } from "@/ui/hooks/use-run-status";
+import { useRunStatus, MAX_CONSECUTIVE_POLL_ERRORS } from "@/ui/hooks/use-run-status";
 import type { RunStatusResponse } from "@/ui/lib/types";
 
 const realFetch = globalThis.fetch;
@@ -345,5 +345,96 @@ describe("useRunStatus (#3749)", () => {
     // keeps running until it catches the re-arm and auto-resumes — exactly once.
     await waitFor(() => expect(onParkedResolved).toHaveBeenCalledTimes(1), { timeout: 2000 });
     await waitFor(() => expect(result.current.runStatus?.status).toBe("running"));
+  });
+
+  test(`gives up the poll after ${MAX_CONSECUTIVE_POLL_ERRORS} consecutive failures (no busy-poll on a down endpoint)`, async () => {
+    // First fetch succeeds (parked → poll starts); every poll tick thereafter
+    // fails. After MAX_CONSECUTIVE_POLL_ERRORS back-to-back failures the poll
+    // stops; the parked banner stays up (status not cleared).
+    let call = 0;
+    globalThis.fetch = mock(async () => {
+      call += 1;
+      if (call === 1) {
+        return new Response(JSON.stringify({ status: "parked", runId: "run-1", parkedReason: "req-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error("endpoint down");
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() =>
+      useRunStatus({ ...baseOpts, conversationId: "conv-1", enabled: true, pollIntervalMs: 20 }),
+    );
+    await waitFor(() => expect(result.current.runStatus?.status).toBe("parked"));
+    // Wait for the ceiling to be hit: 1 initial + MAX failing ticks, plus margin.
+    await waitFor(
+      () => {
+        const calls = (globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls.length;
+        expect(calls).toBeGreaterThanOrEqual(1 + MAX_CONSECUTIVE_POLL_ERRORS);
+      },
+      { timeout: 2000 },
+    );
+    // The poll has given up: no further fetches after the ceiling, and the banner
+    // is still parked (a poll error never clears the last-known status).
+    const callsAtGiveUp = (globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls.length;
+    expect(result.current.runStatus?.status).toBe("parked");
+    await new Promise((r) => setTimeout(r, 120));
+    expect((globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls.length).toBe(callsAtGiveUp);
+  });
+
+  test("refetch() issued before a conversation switch does not commit over the new conversation", async () => {
+    // A slow refetch for conv-1 is held open; the conversation switches to conv-2
+    // (which resolves). When conv-1's refetch finally resolves, the stale guard
+    // must drop it so conv-2's status survives.
+    let resolveConv1Refetch: (r: Response) => void = () => {};
+    let conv1Calls = 0;
+    globalThis.fetch = mock((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/conv-1/")) {
+        conv1Calls += 1;
+        // First conv-1 call (the mount fetch) resolves immediately as parked; the
+        // later refetch (2nd) is held open to land after the switch.
+        if (conv1Calls === 1) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ status: "parked", runId: "run-1", parkedReason: "req-1" }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        return new Promise<Response>((res) => { resolveConv1Refetch = res; });
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ status: "done", runId: "run-2", parkedReason: null }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }) as unknown as typeof fetch;
+
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string }) => useRunStatus({ ...baseOpts, conversationId: id, enabled: true, pollIntervalMs: 10000 }),
+      { initialProps: { id: "conv-1" } },
+    );
+    await waitFor(() => expect(result.current.runStatus?.runId).toBe("run-1"));
+
+    // Fire a refetch for conv-1 (held open), then switch to conv-2.
+    let refetchPromise: Promise<void> = Promise.resolve();
+    act(() => { refetchPromise = result.current.refetch(); });
+    rerender({ id: "conv-2" });
+    await waitFor(() => expect(result.current.runStatus?.runId).toBe("run-2"));
+
+    // conv-1's refetch now resolves (stale) — it must NOT overwrite conv-2.
+    await act(async () => {
+      resolveConv1Refetch(
+        new Response(JSON.stringify({ status: "running", runId: "run-1", parkedReason: null }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      await refetchPromise;
+    });
+    expect(result.current.runStatus?.runId).toBe("run-2");
   });
 });

@@ -82,6 +82,12 @@ export function useRunStatus(opts: UseRunStatusOptions): UseRunStatusReturn {
   // re-arming the interval each render.
   const onParkedResolvedRef = useRef(opts.onParkedResolved);
   onParkedResolvedRef.current = opts.onParkedResolved;
+  // The currently-mounted conversation, so a `refetch()` issued for one
+  // conversation drops its result if the conversation changed before it resolved
+  // (the effect/poll have their own cleanup-flag guard; `refetch` has no closure
+  // to hang one on, so it compares against this live ref instead).
+  const conversationIdRef = useRef(conversationId);
+  conversationIdRef.current = conversationId;
   // Last committed status, to detect the `parked → running` re-arm transition.
   const prevStatusRef = useRef<RunStatusValue | null>(null);
   // Consecutive poll-tick failures, so a transient blip retries but a hard-down
@@ -211,9 +217,15 @@ export function useRunStatus(opts: UseRunStatusOptions): UseRunStatusReturn {
   }, [runStatus?.status, fetchInto, pollIntervalMs]);
 
   // Discard `fetchInto`'s success boolean (only the poll's failure-ceiling uses
-  // it) so `refetch` keeps its `Promise<void>` contract.
+  // it) so `refetch` keeps its `Promise<void>` contract. Guard against staleness:
+  // snapshot the conversation at call time and drop the result if the mounted
+  // conversation changed before it resolved — otherwise a `refetch()` in flight
+  // across a conversation switch (e.g. fired from a resume's `.finally`) could
+  // commit the old conversation's status over the new one and corrupt the
+  // `parked → running` baseline.
   const refetch = useCallback(async () => {
-    await fetchInto();
+    const issuedFor = conversationIdRef.current;
+    await fetchInto(() => conversationIdRef.current !== issuedFor);
   }, [fetchInto]);
   const clear = useCallback(() => {
     prevStatusRef.current = null;

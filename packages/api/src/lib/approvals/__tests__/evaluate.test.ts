@@ -226,8 +226,12 @@ describe("findApprovalParkSignal (#3748 approval-park detection)", () => {
 describe("applyApprovalDecision (#3748 transcript rewrite)", () => {
   it("approve replaces the needs-approval result with an approved, re-run-the-query marker", () => {
     const before = parkedTranscript("req-42");
-    const after = applyApprovalDecision(before, "req-42", "approve", { reviewerLabel: "admin@x.com" });
+    const { transcript: after, changed } = applyApprovalDecision(before, "req-42", "approve", {
+      reviewerLabel: "admin@x.com",
+    });
 
+    // A matching marker was found and rewritten.
+    expect(changed).toBe(true);
     // The rewritten transcript is no longer a park (detection now finds nothing).
     expect(findApprovalParkSignal(after)).toBeUndefined();
 
@@ -241,7 +245,10 @@ describe("applyApprovalDecision (#3748 transcript rewrite)", () => {
   });
 
   it("deny replaces it with a denial marker that tells the agent not to retry", () => {
-    const after = applyApprovalDecision(parkedTranscript("req-42"), "req-42", "deny", { comment: "prod is frozen" });
+    const { transcript: after, changed } = applyApprovalDecision(parkedTranscript("req-42"), "req-42", "deny", {
+      comment: "prod is frozen",
+    });
+    expect(changed).toBe(true);
     const toolMsg = after.find((m) => m.role === "tool")!;
     const part = (toolMsg.content as unknown[])[0] as { output: { value: Record<string, unknown> } };
     expect(part.output.value.approval_resolved).toBe("denied");
@@ -257,9 +264,11 @@ describe("applyApprovalDecision (#3748 transcript rewrite)", () => {
     expect(before).toEqual(snapshot);
   });
 
-  it("is a no-op when the request id does not match any needs-approval result", () => {
+  it("reports changed=false and is a no-op when the request id does not match any needs-approval result", () => {
     const before = parkedTranscript("req-42");
-    const after = applyApprovalDecision(before, "req-other", "approve");
+    const { transcript: after, changed } = applyApprovalDecision(before, "req-other", "approve");
+    // No matching marker → the resolver uses this to fail closed (leave parked).
+    expect(changed).toBe(false);
     // Unchanged → still a park on the original id.
     expect(findApprovalParkSignal(after)?.approvalRequestId).toBe("req-42");
   });

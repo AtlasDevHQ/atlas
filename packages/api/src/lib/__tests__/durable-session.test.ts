@@ -373,6 +373,7 @@ describe("loadParkedRunByApprovalRef (#3748)", () => {
         conversation_id: "conv-1",
         org_id: "org-1",
         step_index: 3,
+        parked_reason: "req-42",
         transcript: [{ role: "user", content: "hi" }],
       },
     ];
@@ -382,10 +383,12 @@ describe("loadParkedRunByApprovalRef (#3748)", () => {
     expect(parked!.conversationId).toBe("conv-1");
     expect(parked!.orgId).toBe("org-1");
     expect(parked!.stepIndex).toBe(3);
+    expect(parked!.parkedReason).toBe("req-42");
     expect(parked!.transcript).toEqual([{ role: "user", content: "hi" }]);
 
     const call = queryCalls[0]!;
     expect(call.sql).toContain("FROM agent_runs");
+    expect(call.sql).toContain("parked_reason");
     expect(call.sql).toContain("WHERE parked_reason = $1 AND status = 'parked'");
     expect(call.params).toEqual(["req-42"]);
   });
@@ -410,12 +413,12 @@ describe("loadParkedRunByApprovalRef (#3748)", () => {
 describe("resolveParkedRun (#3748)", () => {
   it("writes the rewritten transcript and flips parked → running, clearing parked_reason", async () => {
     queryRows = [{ id: "run-9" }];
-    const ok = await resolveParkedRun({
+    const outcome = await resolveParkedRun({
       runId: "run-9",
       transcript: [{ role: "tool", content: "approved" }] as unknown as ModelMessage[],
       stepIndex: 3,
     });
-    expect(ok).toBe(true);
+    expect(outcome).toBe("resolved");
     const call = queryCalls[0]!;
     expect(call.sql).toContain("UPDATE agent_runs");
     expect(call.sql).toContain("status = 'running'");
@@ -429,26 +432,26 @@ describe("resolveParkedRun (#3748)", () => {
     ]);
   });
 
-  it("returns false when no parked row was updated (already resolved / double-review)", async () => {
+  it("returns noop when no parked row was updated (already resolved / double-review)", async () => {
     queryRows = [];
     expect(
       await resolveParkedRun({ runId: "run-9", transcript: [], stepIndex: 0 }),
-    ).toBe(false);
+    ).toBe("noop");
   });
 
-  it("returns false (never throws) on a DB error", async () => {
+  it("returns error (never throws) on a DB error", async () => {
     queryThrow = new Error("boom");
     expect(
       await resolveParkedRun({ runId: "run-9", transcript: [], stepIndex: 0 }),
-    ).toBe(false);
+    ).toBe("error");
     expect(warnCalls.some((w) => w.msg === "Failed to resolve parked agent run")).toBe(true);
   });
 
-  it("is a no-op returning false when no internal DB is configured", async () => {
+  it("is a no-op returning noop when no internal DB is configured", async () => {
     hasInternalDB = false;
     expect(
       await resolveParkedRun({ runId: "run-9", transcript: [], stepIndex: 0 }),
-    ).toBe(false);
+    ).toBe("noop");
     expect(queryCalls).toHaveLength(0);
   });
 });

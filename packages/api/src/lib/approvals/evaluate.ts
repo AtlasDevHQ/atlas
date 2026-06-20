@@ -83,7 +83,12 @@ export const APPROVAL_REQUEST_ID_RESULT_KEY = "approval_request_id";
 export interface ApprovalParkSignal {
   /** The approval-queue request id the gate created — stored as `parked_reason`. */
   readonly approvalRequestId: string;
-  /** The tool-call id whose result is the needs-approval marker. */
+  /**
+   * The tool-call id whose result is the needs-approval marker. Carried for
+   * diagnostics / future transcript surgery (e.g. surfacing which call parked);
+   * the loop and resolver key off {@link ApprovalParkSignal.approvalRequestId},
+   * so this is intentionally not read on the hot path today.
+   */
   readonly toolCallId: string;
 }
 
@@ -190,21 +195,40 @@ function buildDecisionResult(
   };
 }
 
+/** Outcome of {@link applyApprovalDecision}: the rewritten transcript plus whether anything changed. */
+export interface ApprovalDecisionRewrite {
+  /**
+   * A NEW transcript with the needs-approval result replaced — or the original
+   * array unchanged when `changed` is false (the source is never mutated).
+   */
+  readonly transcript: ModelMessage[];
+  /**
+   * True iff a needs-approval result matching `approvalRequestId` was found and
+   * rewritten. False means the transcript carried no such marker — the caller
+   * MUST treat this as a fail-closed signal (do not arm a resume against a
+   * transcript that still reads "needs approval"), not as a benign no-op.
+   */
+  readonly changed: boolean;
+}
+
 /**
  * Return a NEW transcript with the needs-approval tool result for
- * `approvalRequestId` replaced by a resolved decision result. The original
+ * `approvalRequestId` replaced by a resolved decision result, plus a `changed`
+ * flag reporting whether a matching marker was actually found. The original
  * transcript is not mutated (a fresh array is returned, and only the one changed
  * tool message is rebuilt). When no matching needs-approval result is found the
- * transcript is returned unchanged (defensive — a double-resolution is a no-op).
+ * transcript is returned unchanged and `changed` is false — the resolver uses
+ * that to fail closed (leave the run parked) rather than arm an un-rewritten turn.
  */
 export function applyApprovalDecision(
   transcript: readonly ModelMessage[],
   approvalRequestId: string,
   decision: ApprovalDecision,
   opts?: { reviewerLabel?: string | null; comment?: string | null },
-): ModelMessage[] {
+): ApprovalDecisionRewrite {
   const decisionValue = buildDecisionResult(approvalRequestId, decision, opts);
-  return transcript.map((msg) => {
+  let rewrote = false;
+  const rewritten = transcript.map((msg) => {
     if (!msg || msg.role !== "tool" || !Array.isArray(msg.content)) return msg;
     let changed = false;
     const content = msg.content.map((part) => {
@@ -217,10 +241,12 @@ export function applyApprovalDecision(
         value[APPROVAL_REQUEST_ID_RESULT_KEY] === approvalRequestId
       ) {
         changed = true;
+        rewrote = true;
         return { ...(part as object), output: { type: "json" as const, value: decisionValue } };
       }
       return part;
     });
     return changed ? ({ ...msg, content } as ModelMessage) : msg;
   });
+  return { transcript: rewritten, changed: rewrote };
 }

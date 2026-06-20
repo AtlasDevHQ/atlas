@@ -89,22 +89,28 @@ export function isDurabilityEnabled(orgId?: string): boolean {
   return getSettingAuto(DURABILITY_ENABLED_SETTING, orgId) === "true";
 }
 
+/**
+ * Resolve a settings-backed positive-integer knob, falling back to `fallback`
+ * when the setting is unset or not a sane positive integer. The single home for
+ * the "parse + clamp to a positive int, else default" rule the durability knobs
+ * share, so a new knob can't drift (e.g. forget the `<= 0` clamp).
+ */
+function resolvePositiveIntSetting(settingKey: string, fallback: number, orgId?: string): number {
+  const raw = getSettingAuto(settingKey, orgId);
+  if (raw === undefined) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
 /** Resolve the retention window (days), clamped to a sane positive integer. */
 export function getRetentionDays(orgId?: string): number {
-  const raw = getSettingAuto(DURABILITY_RETENTION_DAYS_SETTING, orgId);
-  if (raw === undefined) return DEFAULT_RETENTION_DAYS;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_RETENTION_DAYS;
-  return parsed;
+  return resolvePositiveIntSetting(DURABILITY_RETENTION_DAYS_SETTING, DEFAULT_RETENTION_DAYS, orgId);
 }
 
 /** Resolve the resume-lease TTL (seconds), clamped to a sane positive integer (#3747). */
 export function getResumeLeaseSeconds(orgId?: string): number {
-  const raw = getSettingAuto(RESUME_LEASE_TTL_SETTING, orgId);
-  if (raw === undefined) return DEFAULT_RESUME_LEASE_SECONDS;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_RESUME_LEASE_SECONDS;
-  return parsed;
+  return resolvePositiveIntSetting(RESUME_LEASE_TTL_SETTING, DEFAULT_RESUME_LEASE_SECONDS, orgId);
 }
 
 /**
@@ -113,11 +119,7 @@ export function getResumeLeaseSeconds(orgId?: string): number {
  * tier (no orgId) — same as {@link getRetentionDays}.
  */
 export function getMaxParkMinutes(orgId?: string): number {
-  const raw = getSettingAuto(MAX_PARK_MINUTES_SETTING, orgId);
-  if (raw === undefined) return DEFAULT_MAX_PARK_MINUTES;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_PARK_MINUTES;
-  return parsed;
+  return resolvePositiveIntSetting(MAX_PARK_MINUTES_SETTING, DEFAULT_MAX_PARK_MINUTES, orgId);
 }
 
 /**
@@ -594,6 +596,13 @@ export interface ParkedRun {
   readonly conversationId: string;
   readonly orgId: string | null;
   readonly stepIndex: number;
+  /**
+   * The approval-queue ref this run parked on (the `parked_reason` column). A
+   * parked row ALWAYS has one — it is the only link from a decision back to the
+   * suspended turn — so it is non-null here (the load filters `status = 'parked'`,
+   * and the `chk_agent_runs_parked_reason` CHECK forbids a reason-less parked row).
+   */
+  readonly parkedReason: string;
   /** Transcript-as-of-park (carries the needs-approval tool result to rewrite). */
   readonly transcript: ModelMessage[];
 }
@@ -621,9 +630,10 @@ export async function loadParkedRunByApprovalRef(approvalRequestId: string): Pro
       conversation_id: string;
       org_id: string | null;
       step_index: number;
+      parked_reason: string | null;
       transcript: unknown;
     }>(
-      `SELECT id, conversation_id, org_id, step_index, transcript
+      `SELECT id, conversation_id, org_id, step_index, parked_reason, transcript
          FROM agent_runs
         WHERE parked_reason = $1 AND status = 'parked'
         ORDER BY updated_at DESC
@@ -640,6 +650,9 @@ export async function loadParkedRunByApprovalRef(approvalRequestId: string): Pro
         0,
         typeof row.step_index === "number" ? row.step_index : Number(row.step_index) || 0,
       ),
+      // Non-null for a `status = 'parked'` row (the WHERE matched it on `$1`, and
+      // the CHECK forbids a reason-less parked row); fall back to the queried ref.
+      parkedReason: row.parked_reason ?? approvalRequestId,
       transcript: Array.isArray(row.transcript) ? (row.transcript as ModelMessage[]) : [],
     };
   } catch (err) {
@@ -661,10 +674,14 @@ export async function loadParkedRunByApprovalRef(approvalRequestId: string): Pro
  * is why the decision does NOT execute the gated query here.
  *
  * The `status = 'parked'` guard makes a double-resolution (e.g. an approve+deny
- * race, or a retried review) a no-op rather than resurrecting a run that already
- * resumed. Returns `true` when a row was resolved, `false` otherwise. Awaited
- * (not fire-and-forget) so the caller learns whether the resume was armed.
+ * race, or a retried review) a `"noop"` rather than resurrecting a run that
+ * already resumed. Awaited (not fire-and-forget) so the caller learns whether
+ * the resume was armed; the three-way outcome lets it tell a benign no-op
+ * (`"noop"` — nothing to arm) apart from a real failure to arm (`"error"` — a DB
+ * write blip the caller should surface as actionable, since a recorded decision
+ * then never resumes the requester's turn).
  */
+export type ResolveParkedRunOutcome = "resolved" | "noop" | "error";
 // Exported for the real-Postgres resolution test (migrate-pg.test.ts) so it
 // exercises the EXACT UPDATE (with its `status = 'parked'` double-resolution
 // guard) the helper runs.
@@ -688,20 +705,20 @@ export interface ResolveParkedRunArgs {
   readonly stepIndex: number;
 }
 
-export async function resolveParkedRun(args: ResolveParkedRunArgs): Promise<boolean> {
-  if (!hasInternalDB()) return false;
+export async function resolveParkedRun(args: ResolveParkedRunArgs): Promise<ResolveParkedRunOutcome> {
+  if (!hasInternalDB()) return "noop";
   try {
     const rows = await internalQuery<{ id: string }>(PARKED_RESOLVE_SQL, [
       args.runId,
       JSON.stringify(args.transcript ?? []),
       args.stepIndex,
     ]);
-    return rows.length > 0;
+    return rows.length > 0 ? "resolved" : "noop";
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err.message : String(err), runId: args.runId },
       "Failed to resolve parked agent run",
     );
-    return false;
+    return "error";
   }
 }

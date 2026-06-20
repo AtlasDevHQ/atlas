@@ -2635,7 +2635,7 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     return rows[0]!.id;
   }
 
-  it("0143/0144 (#3748): the parked upsert flips a run to parked with parked_reason", async () => {
+  it("#3748: the parked upsert flips a run to parked with parked_reason", async () => {
     const conversationId = await newConversation();
     const runId = "55555555-5555-5555-5555-555555555555";
     await pool.query(RUNNING_UPSERT_SQL, [
@@ -2657,7 +2657,7 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     expect(row.rows[0]!.transcript).toEqual([{ role: "tool", content: "needs-approval" }]);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("0143/0144 (#3748): the crash-resume claim never picks up a parked run", async () => {
+  it("#3748: the crash-resume claim never picks up a parked run", async () => {
     const conversationId = await newConversation();
     const runId = "66666666-6666-6666-6666-666666666666";
     await pool.query(PARKED_UPSERT_SQL, [
@@ -2676,7 +2676,7 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     expect(claim2.rowCount).toBe(1);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("0143/0144 (#3748): resolution flips parked → running, rewrites transcript, clears parked_reason", async () => {
+  it("#3748: resolution flips parked → running, rewrites transcript, clears parked_reason", async () => {
     const conversationId = await newConversation();
     const runId = "77777777-7777-7777-7777-777777777777";
     await pool.query(PARKED_UPSERT_SQL, [
@@ -2710,7 +2710,7 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     expect(afterSecond.rows[0]!.transcript).toEqual([{ role: "tool", content: "approved" }]);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("0143/0144 (#3748): the max-park sweep fails only parked runs past the window", async () => {
+  it("#3748: the max-park sweep fails only parked runs past the window", async () => {
     const conversationId = await newConversation();
     const staleRun = "88888888-8888-8888-8888-888888888888";
     const freshRun = "99999999-9999-9999-9999-999999999999";
@@ -2744,6 +2744,71 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     expect(byId.get(staleRun)!.parked_reason).toBeNull(); // cleared on sweep
     expect(byId.get(freshRun)!.status).toBe("parked"); // still inside the window
     expect(byId.get(runningRun)!.status).toBe("running"); // never a sweep target
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("#3748: the max-park sweep respects the window boundary (strict <, no off-by-one)", async () => {
+    const conversationId = await newConversation();
+    const justOutside = "cccccccc-cccc-cccc-cccc-cccccccccccc"; // 61 min — must sweep
+    const justInside = "dddddddd-dddd-dddd-dddd-dddddddddddd"; // 59 min — must NOT sweep
+
+    for (const [runId, ref, ageMinutes] of [
+      [justOutside, "req-61", 61],
+      [justInside, "req-59", 59],
+    ] as const) {
+      await pool.query(PARKED_UPSERT_SQL, [
+        runId, conversationId, "org-1", "parked", 1, JSON.stringify([]), ref,
+      ]);
+      await pool.query(
+        `UPDATE agent_runs SET updated_at = now() - ($2 || ' minutes')::interval WHERE id = $1`,
+        [runId, String(ageMinutes)],
+      );
+    }
+
+    // One sweep with a 60-minute window: the SQL is `updated_at < now() - 60min`
+    // (strict `<`), so only the 61-min run crosses the boundary.
+    const swept = await pool.query(PARKED_SWEEP_SQL, ["60"]);
+    expect(swept.rowCount).toBe(1);
+
+    const rows = await pool.query<{ id: string; status: string }>(
+      `SELECT id, status FROM agent_runs WHERE id = ANY($1::uuid[])`,
+      [[justOutside, justInside]],
+    );
+    const byId = new Map(rows.rows.map((r) => [r.id, r.status]));
+    expect(byId.get(justOutside)).toBe("failed"); // past the window → swept
+    expect(byId.get(justInside)).toBe("parked"); // inside the window → kept
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("#3748 (0146): the parked⟺parked_reason CHECK rejects a reason-less parked row", async () => {
+    const conversationId = await newConversation();
+    const runId = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+
+    // A `parked` row MUST carry the approval-queue ref — the only link back to the
+    // suspended turn. A direct insert without one violates chk_agent_runs_parked_reason.
+    await expect(
+      pool.query(
+        `INSERT INTO agent_runs (id, conversation_id, org_id, status, step_index, transcript)
+           VALUES ($1, $2, 'org-1', 'parked', 1, '[]'::jsonb)`,
+        [runId, conversationId],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+
+    // Flipping an existing running row to parked without a reason is likewise rejected
+    // (so a buggy write path can't strand a reason-less, un-resolvable parked zombie).
+    await pool.query(RUNNING_UPSERT_SQL, [
+      runId, conversationId, "org-1", "running", 1, JSON.stringify([]),
+    ]);
+    await expect(
+      pool.query(`UPDATE agent_runs SET status = 'parked' WHERE id = $1`, [runId]),
+    ).rejects.toMatchObject({ code: "23514" });
+
+    // The CHECK only constrains `parked` — a running/done/failed row may have a NULL
+    // parked_reason, so the row above is untouched and still running.
+    const after = await pool.query<{ status: string; parked_reason: string | null }>(
+      `SELECT status, parked_reason FROM agent_runs WHERE id = $1`,
+      [runId],
+    );
+    expect(after.rows[0]!.status).toBe("running");
+    expect(after.rows[0]!.parked_reason).toBeNull();
   }, PG_TEST_TIMEOUT_MS);
 });
 

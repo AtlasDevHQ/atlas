@@ -255,9 +255,13 @@ describe("approval-park control inversion at the runAgent seam (#3748)", () => {
 
     // 2) Admin approves → the resolver rewrites the transcript and `hasApproved-
     //    Request` flips true (modelled by `approved = true`).
-    const approvedTranscript = applyApprovalDecision(parkedTranscript, PARK_REQ_ID, "approve", {
+    const { transcript: approvedTranscript } = applyApprovalDecision(parkedTranscript, PARK_REQ_ID, "approve", {
       reviewerLabel: "admin@x.com",
     });
+    // The reviewer-side rewrite is pure — it executes NOTHING (the gated query
+    // never runs in the reviewer's context; execution is deferred to resume in the
+    // requester's context). dbQueryCount stays 0 until the requester reattaches.
+    expect(dbQueryCount).toBe(0);
     approved = true;
     internalCalls.length = 0;
     doStreamCalls = 0;
@@ -285,7 +289,7 @@ describe("approval-park control inversion at the runAgent seam (#3748)", () => {
 
     // Admin denies → the resolver rewrites the result to a denial. `approved`
     // stays false: a denied query must never execute even if the model retries.
-    const deniedTranscript = applyApprovalDecision(parkedTranscript, PARK_REQ_ID, "deny", {
+    const { transcript: deniedTranscript } = applyApprovalDecision(parkedTranscript, PARK_REQ_ID, "deny", {
       comment: "prod is frozen",
     });
     internalCalls.length = 0;

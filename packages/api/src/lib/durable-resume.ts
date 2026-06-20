@@ -159,16 +159,22 @@ export function finishResume(handle: Pick<ResumeHandle, "runId" | "leaseOwner">)
  *   client reattaches via the resume endpoint to continue the turn in its own
  *   live security context. `conversationId` is surfaced so the caller can
  *   correlate / notify.
- * - `"not_found"` — nothing to resume: no parked run is waiting on this approval
- *   request (already resolved, expired and swept, or the turn never parked), OR
- *   there is no internal DB / durability is off (the loader returns `null` for
- *   that case too). Benign: the decision is still recorded on the queue. Folded
- *   into one outcome because the sole caller (the review endpoint) discards the
- *   result — it has no branch to justify distinguishing the two.
+ * - `"none"` — nothing to resume, benignly: no parked run is waiting on this
+ *   approval request (already resolved by a concurrent review, expired and swept,
+ *   or the turn never parked), or there is no internal DB / durability is off.
+ *   The decision is recorded on the queue; there is simply no turn to re-arm.
+ * - `"failed"` — a parked run WAS waiting on this request but it could NOT be
+ *   re-armed: either the stored transcript carried no matching needs-approval
+ *   marker (corruption / encoding drift — we fail closed rather than arm an
+ *   un-rewritten turn) or the resolve write hit a DB error. This is
+ *   operator-actionable: a human's recorded decision will otherwise never resume
+ *   the requester's turn (it stays parked until the max-park sweep fails it), so
+ *   the caller surfaces it at error severity. `runId` identifies the stuck run.
  */
 export type ResolveApprovalParkResult =
   | { readonly status: "resumed"; readonly conversationId: string; readonly runId: string }
-  | { readonly status: "not_found" };
+  | { readonly status: "none" }
+  | { readonly status: "failed"; readonly runId: string };
 
 /**
  * Resolve an approval-queue decision against the turn it parked (#3748). Loads
@@ -182,8 +188,10 @@ export type ResolveApprovalParkResult =
  * Security: the gated query is NOT executed here — execution happens on resume,
  * in the requester's live context (auth/whitelist/RLS re-resolved fresh), never
  * the reviewer's (ADR-0020 invariant). Fail-soft: a failure to arm the resume
- * must not fail the review (the decision is already on the queue), so the caller
- * treats any non-`resumed` result as "decision recorded, nothing to resume".
+ * must not fail the review (the decision is already on the queue) — but it is
+ * NOT silent. A `"none"` outcome is benign (nothing was waiting); a `"failed"`
+ * outcome means a recorded decision will otherwise never resume the requester's
+ * turn, so it is surfaced at error severity for an operator to act on.
  *
  * @param approvalRequestId - The reviewed approval-queue request id.
  * @param decision - `"approve"` or `"deny"`.
@@ -199,26 +207,62 @@ export async function resolveApprovalPark(
   const parked = await loadParkedRunByApprovalRef(approvalRequestId);
   if (!parked) {
     // No internal DB, durability off, or no matching parked run. The loader
-    // already logged DB errors; nothing to resume in every case.
-    return { status: "not_found" };
+    // already logged any DB error; in every case there is no turn to re-arm.
+    return { status: "none" };
   }
 
-  const rewritten = applyApprovalDecision(parked.transcript, approvalRequestId, decision, opts);
-  const resolved = await resolveParkedRun({
+  // Source the rewrite key from the loaded row's `parked_reason` (the SSOT link),
+  // which the WHERE clause guarantees equals `approvalRequestId`.
+  const { transcript: rewritten, changed } = applyApprovalDecision(
+    parked.transcript,
+    parked.parkedReason,
+    decision,
+    opts,
+  );
+  if (!changed) {
+    // A parked run was waiting, but its transcript had no matching needs-approval
+    // marker (corruption / encoding drift). Fail CLOSED: do not flip it back to
+    // `running` carrying a stale "needs approval" result (which would just re-park
+    // on resume). Leave it parked for the max-park sweep to fail, and surface it.
+    log.error(
+      { approvalRequestId, runId: parked.runId, conversationId: parked.conversationId, decision },
+      "Approval-park resolution found a parked run but no matching marker to rewrite — left parked, not armed",
+    );
+    return { status: "failed", runId: parked.runId };
+  }
+
+  const outcome = await resolveParkedRun({
     runId: parked.runId,
     transcript: rewritten,
     stepIndex: parked.stepIndex,
   });
 
-  if (!resolved) {
-    // The row was already resolved (a concurrent/duplicate review) or the write
-    // failed (logged in resolveParkedRun). Either way there is nothing armed.
-    return { status: "not_found" };
+  switch (outcome) {
+    case "resolved":
+      log.info(
+        { approvalRequestId, runId: parked.runId, conversationId: parked.conversationId, decision },
+        "Resolved approval-park — transcript rewritten, run re-armed for resume",
+      );
+      return { status: "resumed", conversationId: parked.conversationId, runId: parked.runId };
+    case "error":
+      // The decision is recorded on the queue, but the re-arm write failed
+      // (resolveParkedRun logged the DB cause). The requester's turn stays parked
+      // until the sweep fails it — operator-actionable, not a benign no-op.
+      log.error(
+        { approvalRequestId, runId: parked.runId, conversationId: parked.conversationId, decision },
+        "Approval-park resolution failed to re-arm a parked run after a recorded decision — left parked",
+      );
+      return { status: "failed", runId: parked.runId };
+    case "noop":
+      // The row was already resolved (a concurrent/duplicate review). Benign.
+      log.info(
+        { approvalRequestId, runId: parked.runId, decision },
+        "Approval-park already resolved by a concurrent review — nothing to re-arm",
+      );
+      return { status: "none" };
+    default: {
+      const _exhaustive: never = outcome;
+      return _exhaustive;
+    }
   }
-
-  log.info(
-    { approvalRequestId, runId: parked.runId, conversationId: parked.conversationId, decision },
-    "Resolved approval-park — transcript rewritten, run re-armed for resume",
-  );
-  return { status: "resumed", conversationId: parked.conversationId, runId: parked.runId };
 }

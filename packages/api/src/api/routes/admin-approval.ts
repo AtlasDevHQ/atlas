@@ -514,25 +514,33 @@ adminApproval.openapi(reviewRoute, async (c) => {
     // #3748 — if a turn parked on this request (durable-sessions approval-park),
     // resolve it: rewrite the parked transcript with the decision and re-arm the
     // run for resume. Fail-soft and decoupled from the review — the decision is
-    // already recorded + audited on the queue above. The resolver is internally
-    // fail-soft (a missing parked run, a disabled durability store, or a DB blip
-    // all map to "nothing to resume"), but the `.catch` is a belt-and-suspenders
-    // guard so even an UNEXPECTED throw can never turn a recorded decision into a
-    // 500 — it logs and the review still returns 200. The gated query is NOT
-    // executed here; execution happens on resume in the requester's live security
-    // context (ADR-0020).
-    yield* Effect.promise(() =>
+    // already recorded + audited on the queue above, so the review ALWAYS returns
+    // 200. The resolver returns a three-way outcome we act on rather than discard:
+    // `resumed`/`none` are benign, but `failed` means a parked turn could not be
+    // re-armed (stale transcript or DB blip) and a recorded decision will never
+    // resume unless an operator intervenes — so it is logged at error severity,
+    // not swallowed. The `.catch` is a belt-and-suspenders guard so even an
+    // UNEXPECTED throw can never turn a recorded decision into a 500. The gated
+    // query is NOT executed here; execution happens on resume in the requester's
+    // live security context (ADR-0020).
+    const armOutcome = yield* Effect.promise(() =>
       resolveApprovalPark(itemId, body.action, {
         reviewerLabel: reviewerEmail,
         comment: body.comment ?? null,
       }).catch((err) => {
-        log.warn(
+        log.error(
           { err: err instanceof Error ? err.message : String(err), itemId, action: body.action },
-          "approval-park resolution failed after review was recorded (resume not armed)",
+          "approval-park resolution threw after review was recorded (resume not armed)",
         );
-        return { status: "not_found" as const };
+        return { status: "failed" as const, runId: "unknown" };
       }),
     );
+    if (armOutcome.status === "failed") {
+      log.error(
+        { itemId, action: body.action, runId: armOutcome.runId },
+        "approval-park: decision recorded but the parked turn was NOT re-armed — it will stay parked until the max-park sweep fails it; investigate",
+      );
+    }
 
     return c.json({ request: result }, 200);
   }), { label: "review approval request", domainErrors: [approvalDomainError] });

@@ -12,7 +12,7 @@
 import { describe, expect, it, beforeEach, mock } from "bun:test";
 import type { ModelMessage } from "ai";
 import * as realDurable from "@atlas/api/lib/durable-session";
-import type { ResumeClaim, ParkedRun } from "@atlas/api/lib/durable-session";
+import type { ResumeClaim, ParkedRun, ResolveParkedRunOutcome } from "@atlas/api/lib/durable-session";
 
 let durabilityEnabled = true;
 let leaseSeconds = 300;
@@ -21,7 +21,7 @@ const releaseCalls: Array<{ runId: string; leaseOwner: string }> = [];
 let lastClaimArgs: { conversationId: string; leaseSeconds: number } | null = null;
 // #3748 — approval-park resolution mocks.
 let nextParkedRun: ParkedRun | null = null;
-let resolveResult = true;
+let resolveResult: ResolveParkedRunOutcome = "resolved";
 const resolveCalls: Array<{ runId: string; transcript: ModelMessage[]; stepIndex: number }> = [];
 let lastLoadParkRef: string | null = null;
 
@@ -55,7 +55,7 @@ beforeEach(() => {
   releaseCalls.length = 0;
   lastClaimArgs = null;
   nextParkedRun = null;
-  resolveResult = true;
+  resolveResult = "resolved";
   resolveCalls.length = 0;
   lastLoadParkRef = null;
 });
@@ -67,6 +67,7 @@ function parkedRun(approvalRequestId: string): ParkedRun {
     conversationId: "conv-1",
     orgId: "org-1",
     stepIndex: 2,
+    parkedReason: approvalRequestId,
     transcript: [
       { role: "user", content: "show revenue" },
       {
@@ -185,19 +186,46 @@ describe("resolveApprovalPark (#3748)", () => {
     expect(String(part.output.value.message)).toContain("prod frozen");
   });
 
-  it("returns not_found and never writes when no parked run is waiting", async () => {
+  it("returns none and never writes when no parked run is waiting (benign)", async () => {
     nextParkedRun = null;
     const result = await resolveApprovalPark("req-x", "approve");
-    expect(result.status).toBe("not_found");
+    expect(result.status).toBe("none");
     expect(resolveCalls).toHaveLength(0);
   });
 
-  it("returns not_found when the re-arm UPDATE matched nothing (concurrent / double review)", async () => {
+  it("returns none when the re-arm UPDATE matched nothing (concurrent / double review)", async () => {
     nextParkedRun = parkedRun("req-42");
-    resolveResult = false;
+    resolveResult = "noop";
     const result = await resolveApprovalPark("req-42", "approve");
-    expect(result.status).toBe("not_found");
+    // A no-op re-arm (already resolved by a concurrent review) is benign, not failed.
+    expect(result.status).toBe("none");
     // It still attempted the write — the row was just already resolved.
+    expect(resolveCalls).toHaveLength(1);
+  });
+
+  it("fails CLOSED (returns failed, never writes) when the parked transcript has no matching marker", async () => {
+    // A parked run is waiting (parked_reason = req-42), but its stored transcript
+    // carries a DIFFERENT marker (req-stale) — corruption / encoding drift. The
+    // resolver must NOT flip it back to `running` carrying a stale needs-approval
+    // result (which would just re-park on resume): it leaves the run parked for
+    // the sweep and surfaces `failed`.
+    nextParkedRun = { ...parkedRun("req-stale"), parkedReason: "req-42" };
+    const result = await resolveApprovalPark("req-42", "approve");
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.runId).toBe("run-9");
+    // Never attempted the re-arm write — fail closed, not arm-then-hope.
+    expect(resolveCalls).toHaveLength(0);
+  });
+
+  it("returns failed when the re-arm write errors (DB blip after a recorded decision)", async () => {
+    nextParkedRun = parkedRun("req-42");
+    resolveResult = "error";
+    const result = await resolveApprovalPark("req-42", "approve");
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") throw new Error("unreachable");
+    expect(result.runId).toBe("run-9");
+    // It DID attempt the write — the failure is a real DB error, surfaced as actionable.
     expect(resolveCalls).toHaveLength(1);
   });
 });

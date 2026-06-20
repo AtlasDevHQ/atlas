@@ -316,8 +316,9 @@
     },
     "packages/plugin-sdk": {
       "name": "@useatlas/plugin-sdk",
-      "version": "0.0.14",
+      "version": "0.0.15",
       "devDependencies": {
+        "@types/node": "^25.9.1",
         "ai": "^6.0.193",
         "hono": "^4.12.23",
         "typescript": "^6.0.3",

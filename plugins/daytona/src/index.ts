@@ -24,15 +24,17 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import {
+  createPlugin,
+  collectSemanticFiles,
+  runHealthCheckWithTimeout,
+} from "@useatlas/plugin-sdk";
 import type {
   AtlasSandboxPlugin,
   PluginExploreBackend,
   PluginExecResult,
   PluginHealthResult,
 } from "@useatlas/plugin-sdk";
-import * as path from "path";
-import * as fs from "fs";
 
 // ---------------------------------------------------------------------------
 // Config schema
@@ -99,67 +101,10 @@ function createDaytonaClient(DaytonaClass: any, config: DaytonaSandboxConfig): a
   });
 }
 
-// ---------------------------------------------------------------------------
-// Semantic file collection (copied from explore-sandbox.ts)
-// ---------------------------------------------------------------------------
-
-function collectSemanticFiles(
-  localDir: string,
-  sandboxDir: string,
-  logger?: { warn(msg: string): void },
-): { path: string; content: Buffer }[] {
-  const results: { path: string; content: Buffer }[] = [];
-
-  function walk(dir: string, relative: string) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (err) {
-      logger?.warn(`[daytona-sandbox] Skipping unreadable directory ${dir}: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-    for (const entry of entries) {
-      const localPath = path.join(dir, entry.name);
-      const remotePath = `${relative}/${entry.name}`;
-
-      if (entry.isSymbolicLink()) {
-        try {
-          const realPath = fs.realpathSync(localPath);
-          if (!realPath.startsWith(localDir)) {
-            logger?.warn(`[daytona-sandbox] Skipping symlink escaping semantic root: ${localPath} -> ${realPath}`);
-            continue;
-          }
-          const stat = fs.statSync(localPath);
-          if (stat.isDirectory()) {
-            walk(localPath, remotePath);
-          } else if (stat.isFile()) {
-            results.push({
-              path: remotePath,
-              content: fs.readFileSync(localPath),
-            });
-          }
-        } catch (err) {
-          logger?.warn(`[daytona-sandbox] Skipping unreadable symlink ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
-          continue;
-        }
-      } else if (entry.isDirectory()) {
-        walk(localPath, remotePath);
-      } else if (entry.isFile()) {
-        try {
-          results.push({
-            path: remotePath,
-            content: fs.readFileSync(localPath),
-          });
-        } catch (err) {
-          logger?.warn(`[daytona-sandbox] Skipping unreadable file ${localPath}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    }
-  }
-
-  walk(localDir, sandboxDir);
-  return results;
-}
+// The semantic-tree walker (with its symlink-escape guard) now lives in
+// @useatlas/plugin-sdk — `collectSemanticFiles` — returning binary-safe
+// `{ path, content: Uint8Array }` tuples (a Node Buffer at runtime) that
+// daytona uploads via fs.uploadFile.
 
 // ---------------------------------------------------------------------------
 // Plugin builder
@@ -295,13 +240,10 @@ export function buildDaytonaSandboxPlugin(
     // Note: each health check creates a Daytona sandbox instance.
     // Avoid calling at high frequency to minimize API costs.
     async healthCheck(): Promise<PluginHealthResult> {
-      const start = performance.now();
-      const TIMEOUT = 30_000;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let sandbox: any = null;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let daytonaRef: any = null;
-      let timer: ReturnType<typeof setTimeout>;
 
       const cleanupSandbox = async () => {
         if (sandbox && daytonaRef) {
@@ -314,60 +256,42 @@ export function buildDaytonaSandboxPlugin(
         }
       };
 
-      try {
-        const result = await Promise.race([
-          (async () => {
-            const DaytonaClass = loadDaytonaSdk();
-            daytonaRef = createDaytonaClient(DaytonaClass, config);
+      return runHealthCheckWithTimeout(
+        async () => {
+          const DaytonaClass = loadDaytonaSdk();
+          daytonaRef = createDaytonaClient(DaytonaClass, config);
 
-            try {
-              sandbox = await daytonaRef.create();
-            } catch (err) {
-              return {
-                healthy: false as const,
-                message: `Failed to create sandbox: ${err instanceof Error ? err.message : String(err)}`,
-              };
+          try {
+            sandbox = await daytonaRef.create();
+          } catch (err) {
+            return {
+              healthy: false,
+              message: `Failed to create sandbox: ${err instanceof Error ? err.message : String(err)}`,
+            };
+          }
+
+          try {
+            const response = await sandbox.process.executeCommand(
+              "echo daytona-ok",
+              "/home/daytona",
+              undefined,
+              config.timeoutSec,
+            );
+
+            if (response.exitCode === 0 && (response.result ?? "").includes("daytona-ok")) {
+              return { healthy: true };
             }
 
-            try {
-              const response = await sandbox.process.executeCommand(
-                "echo daytona-ok",
-                "/home/daytona",
-                undefined,
-                config.timeoutSec,
-              );
-
-              if (response.exitCode === 0 && (response.result ?? "").includes("daytona-ok")) {
-                return { healthy: true as const };
-              }
-
-              return {
-                healthy: false as const,
-                message: `Health check command failed (exit ${response.exitCode})`,
-              };
-            } finally {
-              await cleanupSandbox();
-            }
-          })(),
-          new Promise<"timeout">((resolve) => {
-            timer = setTimeout(() => resolve("timeout"), TIMEOUT);
-          }),
-        ]).finally(() => clearTimeout(timer!));
-
-        const latencyMs = Math.round(performance.now() - start);
-        if (result === "timeout") {
-          await cleanupSandbox();
-          return { healthy: false, message: `Health check timed out after ${TIMEOUT}ms`, latencyMs };
-        }
-        return { ...result, latencyMs };
-      } catch (err) {
-        await cleanupSandbox();
-        return {
-          healthy: false,
-          message: err instanceof Error ? err.message : String(err),
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
+            return {
+              healthy: false,
+              message: `Health check command failed (exit ${response.exitCode})`,
+            };
+          } finally {
+            await cleanupSandbox();
+          }
+        },
+        { timeoutMs: 30_000, cleanup: cleanupSandbox, logger: log },
+      );
     },
   };
 }

@@ -56,8 +56,8 @@
     "@useatlas/plugin-sdk": ">=0.0.1"
   },
   "devDependencies": {
-    "ai": "^6.0.193",
-    "effect": "^3.21.2",
+    "ai": "^6.0.207",
+    "effect": "^3.21.3",
     "zod": "^4.4.3",
     "@useatlas/plugin-sdk": "workspace:*"
   }

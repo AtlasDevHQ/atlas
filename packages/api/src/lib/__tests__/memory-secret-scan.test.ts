@@ -58,7 +58,11 @@ describe("findSecretLike — credential SHAPES are rejected", () => {
 
   it("flags a long high-entropy token even without a known prefix", () => {
     // 40+ chars, mixed case + digits, no whitespace — the shape of a raw secret.
+    // A random base62 token runs ~5.2–6.0 bits/char, well clear of the 4.5
+    // threshold (which DW identifiers at ~4.2–4.3 sit below), so raising the
+    // threshold to admit table names must NOT let a real secret through.
     expect(findSecretLike("Zk8Qw3Lm7Rt9Yv2Xb5Nc1Pd4Fg6Hj0Sa8Ue3Wq7Ko9")).not.toBeNull();
+    expect(findSecretLike("Ah7Kd92mZq4Xn5Rb8Lw3Tc6Vy1Pf0Gj4Hs7Mu2Eo9Iq")).not.toBeNull();
   });
 
   it("walks into nested objects and arrays", () => {
@@ -95,10 +99,23 @@ describe("findSecretLike — ordinary analyst memory is allowed", () => {
   });
 
   it("does not flag a content hash an analyst might remember (hex digest / git sha)", () => {
-    // Hex digests sit at ~4.0 bits/char from a 16-symbol alphabet — the threshold
-    // is set so these realistic remembered values pass, not just short ones.
+    // Hex digests sit at ~3.8–4.0 bits/char from a 16-symbol alphabet — below the
+    // entropy threshold, so these realistic remembered values pass.
     expect(findSecretLike("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")).toBeNull();
     expect(findSecretLike("a70849d88f3c2e1b4d5a6c7e8f9012345678abcd")).toBeNull();
+  });
+
+  it("does not flag a long snake_case data-warehouse identifier with digits", () => {
+    // Underscore-separated table/column names with a year/version suffix run
+    // 40+ chars and land at ~4.2–4.3 bits/char — they MUST pass the entropy
+    // fallback (a remembered table name is ordinary analyst memory, #3757 AC).
+    for (const id of [
+      "daily_revenue_summary_by_product_category_2024",
+      "fact_daily_active_users_by_region_2026_q01_v2",
+      "dim_customer_lifetime_value_cohort_2025_2026_v3",
+    ]) {
+      expect(findSecretLike(id)).toBeNull();
+    }
   });
 
   it("does not flag a long SQL string or a dashed slug list", () => {

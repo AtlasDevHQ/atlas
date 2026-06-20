@@ -103,8 +103,20 @@ function looksLikeSql(s: string): boolean {
 
 /** Lower bound for the high-entropy fallback. Below this length even a random token is too short to be a meaningful secret (and a UUID is 36). */
 const HIGH_ENTROPY_MIN_LENGTH = 40;
-/** Shannon-entropy threshold (bits/char) for the fallback. Random base62 ≈ 5.95; English prose ≈ 4.0–4.5; a UUID's hex+dashes ≈ 3.8. */
-const HIGH_ENTROPY_MIN_BITS_PER_CHAR = 4.0;
+/**
+ * Shannon-entropy threshold (bits/char) for the fallback. Set to admit ordinary
+ * analyst memory while still catching a raw secret:
+ *   - a random base62 secret ≈ 5.2–6.0 → caught (well above the bar);
+ *   - a long snake_case data-warehouse identifier with a year/version suffix
+ *     (e.g. `daily_revenue_summary_by_product_category_2024`) ≈ 4.2–4.3 → passes;
+ *   - a git SHA / hex digest ≈ 3.8–4.0 → passes;
+ *   - English prose ≈ 4.0–4.5 (but it has spaces, so it's split into short
+ *     low-length tokens that never reach the length bound anyway).
+ * 4.5 sits in the gap between the DW-identifier ceiling (~4.3) and the
+ * random-secret floor (~5.2). Raised from 4.0 after a remembered table name
+ * tripped the old bar (#3757 review).
+ */
+const HIGH_ENTROPY_MIN_BITS_PER_CHAR = 4.5;
 /** A high-entropy candidate must be a single unbroken token of credential-alphabet chars. */
 const TOKEN_RE = /^[A-Za-z0-9_\-+/.=]+$/;
 

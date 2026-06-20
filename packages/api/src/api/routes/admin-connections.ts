@@ -113,6 +113,11 @@ async function runInstaller<A>(
     return yield* body(installer);
   });
 
+  // #3764 — accepted: the per-call `Effect.provide(WorkspaceInstallerLive)`
+  // lives at the route boundary (this bridge), not deep in lib code.
+  // `WorkspaceInstallerLive` is a dependency-free, finalizer-free `Layer.effect`,
+  // so re-providing it per request is cheap and the route stays its own
+  // composition root rather than reaching into the app `ManagedRuntime`.
   const exit = await Effect.runPromiseExit(
     program.pipe(Effect.provide(WorkspaceInstallerLive)),
   );

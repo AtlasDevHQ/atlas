@@ -15,7 +15,7 @@
 
 import { tool } from "ai";
 import { z } from "zod";
-import { Effect } from "effect";
+import { Cause, Effect } from "effect";
 import { Parser } from "node-sql-parser";
 import { connections, detectDBType, getRegionAwareConnection, isConnectionVisibleInMode, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
 import type { DBConnection, DBType } from "@atlas/api/lib/db/connection";
@@ -1495,92 +1495,124 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
 
     // Approval gate — fail closed.
     if (classification) {
-      const approvalOutcome = yield* Effect.tryPromise({
-        try: async (): Promise<UserQueryOutcome | null> => {
-          let approvalMatch:
-            | { required: boolean; matchedRules: { id: string; name: string }[]; identityMissing?: boolean };
-          let approvalGate: ApprovalGateShape;
-          try {
-            approvalGate = await loadApprovalGate();
-            const checkReqCtx = getRequestContext();
-            const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
-            const checkUserId = checkReqCtx?.user?.id;
-            const checkOrigin = checkReqCtx?.agentOrigin;
-            approvalMatch = await Effect.runPromise(approvalGate.checkApprovalRequired(
-              checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
-              {
-                ...(checkUserId ? { requesterId: checkUserId } : {}),
-                ...(checkOrigin ? { origin: checkOrigin } : {}),
-              },
-            ));
-          } catch (err) {
-            log.error(
-              { err: err instanceof Error ? err.message : String(err), connectionId: connId },
-              "Approval check failed — blocking query (fail-closed)",
-            );
-            return {
-              kind: "approval_unavailable" as const,
-              message: "Approval system unavailable — query blocked. Contact your administrator.",
-            };
-          }
+      // #3764 — compose the gate's per-method Effects with `yield*` instead of
+      // dropping out to `async`/`Effect.runPromise` per call. `loadApprovalGate()`
+      // resolves the EE-bound gate via the shared enterprise runtime (a legit
+      // Promise→Effect boundary, NOT the re-entry smell), then the gate's
+      // already-resolved Effects thread onto the surrounding pipeline fiber.
+      //
+      // Two distinct fail-closed regions are preserved exactly:
+      //   1. CHECK (gate load + checkApprovalRequired) → on failure, surface
+      //      `approval_unavailable` (block the query, don't bypass governance).
+      //   2. CREATE (hasApprovedRequest + createApprovalRequest) → on failure,
+      //      surface `QueryExecutionError` ("Approval workflow failed: …") so a
+      //      governance-write failure blocks rather than silently executes.
+      const check = yield* Effect.gen(function* () {
+        const approvalGate = yield* Effect.tryPromise({
+          try: () => loadApprovalGate(),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        });
+        const checkReqCtx = getRequestContext();
+        const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
+        const checkUserId = checkReqCtx?.user?.id;
+        const checkOrigin = checkReqCtx?.agentOrigin;
+        const approvalMatch = yield* approvalGate.checkApprovalRequired(
+          checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
+          {
+            ...(checkUserId ? { requesterId: checkUserId } : {}),
+            ...(checkOrigin ? { origin: checkOrigin } : {}),
+          },
+        );
+        return { approvalGate, approvalMatch } as const;
+      }).pipe(
+        // `catchAllCause` (not `catchAll`): `checkApprovalRequired`'s typed
+        // error channel is `never`, so its only failure mode is a SYNCHRONOUS
+        // throw (a packaging glitch / unexpected DB schema inside the EE
+        // helper), which surfaces as a DEFECT — invisible to `catchAll`. The
+        // pre-#3764 `async`/`try-catch` body caught both; we must too, or a
+        // sync throw would escape the fail-closed gate as a 500.
+        Effect.catchAllCause((cause) => {
+          // Log the squashed Error object (a `FiberFailure` for a defect — an
+          // Error subclass) so pino's `err` serializer keeps the stack, matching
+          // the CREATE handler below + the P4 normalization (don't strip via
+          // `.message`).
+          log.error(
+            { err: Cause.squash(cause), connectionId: connId },
+            "Approval check failed — blocking query (fail-closed)",
+          );
+          return Effect.succeed({
+            kind: "approval_unavailable" as const,
+            message: "Approval system unavailable — query blocked. Contact your administrator.",
+          });
+        }),
+      );
+      // The catch branch returns the failure outcome with no `approvalGate`;
+      // discriminate on its presence to know the check succeeded.
+      if (!("approvalGate" in check)) return check;
+      const { approvalGate, approvalMatch } = check;
 
-          if (approvalMatch?.required) {
-            const reqCtxForApproval = getRequestContext();
-            const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
-            const userId = reqCtxForApproval?.user?.id;
-            const userEmail = reqCtxForApproval?.user?.label ?? null;
+      if (approvalMatch?.required) {
+        const reqCtxForApproval = getRequestContext();
+        const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
+        const userId = reqCtxForApproval?.user?.id;
+        const userEmail = reqCtxForApproval?.user?.label ?? null;
 
-            if (!userId || !approvalOrgId) {
-              log.warn(
-                { connectionId: connId, orgId: approvalOrgId, identityMissing: approvalMatch.identityMissing === true },
-                "Approval required but user identity unavailable — blocking query",
-              );
-              return {
-                kind: "approval_identity_missing" as const,
-                message: "This query requires approval but the requester identity could not be determined. Please sign in and try again.",
-              };
-            }
+        if (!userId || !approvalOrgId) {
+          log.warn(
+            { connectionId: connId, orgId: approvalOrgId, identityMissing: approvalMatch.identityMissing === true },
+            "Approval required but user identity unavailable — blocking query",
+          );
+          return {
+            kind: "approval_identity_missing" as const,
+            message: "This query requires approval but the requester identity could not be determined. Please sign in and try again.",
+          };
+        }
 
-            const alreadyApproved = await Effect.runPromise(approvalGate.hasApprovedRequest(approvalOrgId, userId, normalizedSql, connId));
-            if (!alreadyApproved) {
-              const firstRule = approvalMatch.matchedRules[0];
-              const approvalReq = await Effect.runPromise(approvalGate.createApprovalRequest({
-                orgId: approvalOrgId,
-                ruleId: firstRule.id,
-                ruleName: firstRule.name,
-                requesterId: userId,
-                requesterEmail: userEmail,
-                querySql: normalizedSql,
-                explanation,
-                connectionId: connId,
-                tablesAccessed: classification.tablesAccessed,
-                columnsAccessed: classification.columnsAccessed,
-                origin: reqCtxForApproval?.agentOrigin ?? null,
-              }));
-              logQueryAudit({
-                sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-                error: `Approval required: ${firstRule.name}`,
-                sourceId: connId, sourceType: dbType, targetHost,
-              });
-              return {
-                kind: "approval_required" as const,
-                approvalRequestId: approvalReq.id,
-                matchedRules: approvalMatch.matchedRules.map((r) => r.name),
-                message:
-                  `This query requires approval before execution. Rule: "${firstRule.name}". ` +
-                  `An approval request has been submitted (ID: ${approvalReq.id}).`,
-              };
-            }
-          }
-          return null;
-        },
-        catch: (err) => {
-          const message = err instanceof Error ? err.message : String(err);
-          log.error({ err, connectionId: connId }, "Approval workflow failed — blocking query");
-          return new QueryExecutionError({ message: `Approval workflow failed: ${message}` });
-        },
-      });
-      if (approvalOutcome !== null) return approvalOutcome;
+        const createOutcome = yield* Effect.gen(function* () {
+          const alreadyApproved = yield* approvalGate.hasApprovedRequest(approvalOrgId, userId, normalizedSql, connId);
+          if (alreadyApproved) return null;
+          const firstRule = approvalMatch.matchedRules[0];
+          const approvalReq = yield* approvalGate.createApprovalRequest({
+            orgId: approvalOrgId,
+            ruleId: firstRule.id,
+            ruleName: firstRule.name,
+            requesterId: userId,
+            requesterEmail: userEmail,
+            querySql: normalizedSql,
+            explanation,
+            connectionId: connId,
+            tablesAccessed: classification.tablesAccessed,
+            columnsAccessed: classification.columnsAccessed,
+            origin: reqCtxForApproval?.agentOrigin ?? null,
+          });
+          logQueryAudit({
+            sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+            error: `Approval required: ${firstRule.name}`,
+            sourceId: connId, sourceType: dbType, targetHost,
+          });
+          return {
+            kind: "approval_required" as const,
+            approvalRequestId: approvalReq.id,
+            matchedRules: approvalMatch.matchedRules.map((r) => r.name),
+            message:
+              `This query requires approval before execution. Rule: "${firstRule.name}". ` +
+              `An approval request has been submitted (ID: ${approvalReq.id}).`,
+          } satisfies UserQueryOutcome;
+        }).pipe(
+          // `catchAllCause`, like the check region: map BOTH typed failures
+          // (createApprovalRequest's ApprovalError | EnterpriseError | Error)
+          // AND defects (a sync throw inside the gate) to a typed
+          // `QueryExecutionError` so a governance-write failure blocks the
+          // query rather than escaping — the pre-#3764 outer `catch` did both.
+          Effect.catchAllCause((cause) => {
+            const err = Cause.squash(cause);
+            const message = err instanceof Error ? err.message : String(err);
+            log.error({ err, connectionId: connId }, "Approval workflow failed — blocking query");
+            return Effect.fail(new QueryExecutionError({ message: `Approval workflow failed: ${message}` }));
+          }),
+        );
+        if (createOutcome !== null) return createOutcome;
+      }
     }
 
     // Source-slot wrapper: plugin beforeQuery → re-validate → RLS → LIMIT → execute.
@@ -1819,114 +1851,132 @@ async function executeSqlForConnection({
       // rule exists in the database; the Phase 2 user-identity gate
       // below routes that into the "approve via the Atlas web app" error.
       if (classification) {
-        const approvalResult = yield* Effect.tryPromise({
-          try: async () => {
-            let approvalMatch:
-              | { required: boolean; matchedRules: { id: string; name: string }[]; identityMissing?: boolean };
-            let approvalGate: ApprovalGateShape;
-            try {
-              approvalGate = await loadApprovalGate();
-              const checkReqCtx = getRequestContext();
-              const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
-              const checkUserId = checkReqCtx?.user?.id;
-              // #2072 — propagate the request's agent origin so
-              // origin-scoped rules only fire on the matching transport.
-              // Routes stamp this on `withRequestContext`; an unstamped
-              // route (or a legacy caller) reaches checkApprovalRequired
-              // with `origin: undefined` and only triggers `'any'`
-              // rules — scope isolation rather than governance bypass,
-              // since the `'any'` migration default still fires.
-              const checkOrigin = checkReqCtx?.agentOrigin;
-              // Pass requesterId so the defensive identity-missing check
-              // distinguishes "scheduler/Slack/MCP forgot to bind anything"
-              // (fail-closed) from "demo / single-user mode bound a user
-              // but no org" (pass-through, no rule can match anyway).
-              approvalMatch = await Effect.runPromise(approvalGate.checkApprovalRequired(
-                checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
-                {
-                  ...(checkUserId ? { requesterId: checkUserId } : {}),
-                  ...(checkOrigin ? { origin: checkOrigin } : {}),
-                },
-              ));
-            } catch (err) {
-              log.error(
-                { err: err instanceof Error ? err.message : String(err), connectionId: connId },
-                "Approval check failed — blocking query (fail-closed)",
-              );
-              return {
-                success: false,
-                error: "Approval system unavailable — query blocked. Contact your administrator.",
-                executionMs: 0,
-              };
-            }
+        // #3764 — same `yield*` composition as the live path above: resolve the
+        // EE-bound gate via `loadApprovalGate()` (Promise→Effect boundary) and
+        // thread its already-resolved Effects onto the pipeline fiber rather
+        // than re-entering via `Effect.runPromise` per call. The two
+        // fail-closed regions are preserved: a CHECK failure (gate load /
+        // checkApprovalRequired) → `approval system unavailable`; a CREATE
+        // failure → `QueryExecutionError` (governance bypass is worse than a
+        // failed query). `identityMissing` is a value branch, not a failure.
+        const check = yield* Effect.gen(function* () {
+          const approvalGate = yield* Effect.tryPromise({
+            try: () => loadApprovalGate(),
+            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+          });
+          const checkReqCtx = getRequestContext();
+          const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
+          const checkUserId = checkReqCtx?.user?.id;
+          // #2072 — propagate the request's agent origin so
+          // origin-scoped rules only fire on the matching transport.
+          // Routes stamp this on `withRequestContext`; an unstamped
+          // route (or a legacy caller) reaches checkApprovalRequired
+          // with `origin: undefined` and only triggers `'any'`
+          // rules — scope isolation rather than governance bypass,
+          // since the `'any'` migration default still fires.
+          const checkOrigin = checkReqCtx?.agentOrigin;
+          // Pass requesterId so the defensive identity-missing check
+          // distinguishes "scheduler/Slack/MCP forgot to bind anything"
+          // (fail-closed) from "demo / single-user mode bound a user
+          // but no org" (pass-through, no rule can match anyway).
+          const approvalMatch = yield* approvalGate.checkApprovalRequired(
+            checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
+            {
+              ...(checkUserId ? { requesterId: checkUserId } : {}),
+              ...(checkOrigin ? { origin: checkOrigin } : {}),
+            },
+          );
+          return { approvalGate, approvalMatch } as const;
+        }).pipe(
+          // `catchAllCause`: a sync throw from the gate surfaces as a defect,
+          // which `catchAll` would miss — block fail-closed on both (see the
+          // live-path region above for the full rationale).
+          Effect.catchAllCause((cause) => {
+            // Log the squashed Error object (stack-preserving) to match the
+            // live-path CHECK handler + the CREATE handler below (#3764 P4).
+            log.error(
+              { err: Cause.squash(cause), connectionId: connId },
+              "Approval check failed — blocking query (fail-closed)",
+            );
+            return Effect.succeed({
+              success: false as const,
+              error: "Approval system unavailable — query blocked. Contact your administrator.",
+              executionMs: 0,
+            });
+          }),
+        );
+        if (!("approvalGate" in check)) return check;
+        const { approvalGate, approvalMatch } = check;
 
-            // Phase 2: create request (hard fail — governance bypass is worse than a failed query)
-            if (approvalMatch?.required) {
-              const reqCtxForApproval = getRequestContext();
-              const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
-              const userId = reqCtxForApproval?.user?.id;
-              const userEmail = reqCtxForApproval?.user?.label ?? null;
+        // Phase 2: create request (hard fail — governance bypass is worse than a failed query)
+        if (approvalMatch?.required) {
+          const reqCtxForApproval = getRequestContext();
+          const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
+          const userId = reqCtxForApproval?.user?.id;
+          const userEmail = reqCtxForApproval?.user?.label ?? null;
 
-              if (!userId || !approvalOrgId) {
-                log.warn(
-                  { connectionId: connId, orgId: approvalOrgId, identityMissing: approvalMatch.identityMissing === true },
-                  "Approval required but user identity unavailable — blocking query",
-                );
-                return {
-                  success: false,
-                  error: "This query requires approval but the requester identity could not be determined. Please sign in and try again.",
-                  executionMs: 0,
-                };
-              }
+          if (!userId || !approvalOrgId) {
+            log.warn(
+              { connectionId: connId, orgId: approvalOrgId, identityMissing: approvalMatch.identityMissing === true },
+              "Approval required but user identity unavailable — blocking query",
+            );
+            return {
+              success: false,
+              error: "This query requires approval but the requester identity could not be determined. Please sign in and try again.",
+              executionMs: 0,
+            };
+          }
 
-              const alreadyApproved = await Effect.runPromise(approvalGate.hasApprovedRequest(approvalOrgId, userId, normalizedSql, connId));
-              if (!alreadyApproved) {
-                const firstRule = approvalMatch.matchedRules[0];
-                const approvalReq = await Effect.runPromise(approvalGate.createApprovalRequest({
-                  orgId: approvalOrgId,
-                  ruleId: firstRule.id,
-                  ruleName: firstRule.name,
-                  requesterId: userId,
-                  requesterEmail: userEmail,
-                  querySql: normalizedSql,
-                  explanation,
-                  connectionId: connId,
-                  tablesAccessed: classification.tablesAccessed,
-                  columnsAccessed: classification.columnsAccessed,
-                  // #2072 — stamp the agent origin on the queue row
-                  // for the audit dimension (queryable via direct SQL
-                  // until an origin filter ships in /admin/audit).
-                  origin: reqCtxForApproval?.agentOrigin ?? null,
-                }));
-                logQueryAudit({
-                  sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-                  error: `Approval required: ${firstRule.name}`,
-                  sourceId: connId, sourceType: dbType, targetHost,
-                  parentAuditId,
-                });
-                return {
-                  success: false,
-                  approval_required: true,
-                  approval_request_id: approvalReq.id,
-                  matched_rules: approvalMatch.matchedRules.map((r: { name: string }) => r.name),
-                  message: `This query requires approval before execution. Rule: "${firstRule.name}". ` +
-                    `An approval request has been submitted (ID: ${approvalReq.id}). ` +
-                    `An admin must approve it before the query can run.`,
-                  executionMs: 0,
-                };
-              }
-            }
-            return null; // proceed to execution
-          },
-          catch: (err) => {
+          const createResult = yield* Effect.gen(function* () {
+            const alreadyApproved = yield* approvalGate.hasApprovedRequest(approvalOrgId, userId, normalizedSql, connId);
+            if (alreadyApproved) return null;
+            const firstRule = approvalMatch.matchedRules[0];
+            const approvalReq = yield* approvalGate.createApprovalRequest({
+              orgId: approvalOrgId,
+              ruleId: firstRule.id,
+              ruleName: firstRule.name,
+              requesterId: userId,
+              requesterEmail: userEmail,
+              querySql: normalizedSql,
+              explanation,
+              connectionId: connId,
+              tablesAccessed: classification.tablesAccessed,
+              columnsAccessed: classification.columnsAccessed,
+              // #2072 — stamp the agent origin on the queue row
+              // for the audit dimension (queryable via direct SQL
+              // until an origin filter ships in /admin/audit).
+              origin: reqCtxForApproval?.agentOrigin ?? null,
+            });
+            logQueryAudit({
+              sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+              error: `Approval required: ${firstRule.name}`,
+              sourceId: connId, sourceType: dbType, targetHost,
+              parentAuditId,
+            });
+            return {
+              success: false,
+              approval_required: true,
+              approval_request_id: approvalReq.id,
+              matched_rules: approvalMatch.matchedRules.map((r: { name: string }) => r.name),
+              message: `This query requires approval before execution. Rule: "${firstRule.name}". ` +
+                `An approval request has been submitted (ID: ${approvalReq.id}). ` +
+                `An admin must approve it before the query can run.`,
+              executionMs: 0,
+            };
+          }).pipe(
             // Phase 2 failure — governance bypass is worse than a failed query.
-            // Surface as a typed error so it reaches the agent as {success: false}.
-            const message = err instanceof Error ? err.message : String(err);
-            log.error({ err, connectionId: connId }, "Approval request creation failed — blocking query");
-            return new QueryExecutionError({ message: `Approval workflow failed: ${message}` });
-          },
-        });
-        if (approvalResult !== null) return approvalResult;
+            // `catchAllCause` so a sync throw (defect) from the gate is mapped
+            // too, not just typed failures. Surface as a typed error so it
+            // reaches the agent as {success: false}.
+            Effect.catchAllCause((cause) => {
+              const err = Cause.squash(cause);
+              const message = err instanceof Error ? err.message : String(err);
+              log.error({ err, connectionId: connId }, "Approval request creation failed — blocking query");
+              return Effect.fail(new QueryExecutionError({ message: `Approval workflow failed: ${message}` }));
+            }),
+          );
+          if (createResult !== null) return createResult;
+        }
       }
 
       // Step 4: Cache check (short-circuit on hit)

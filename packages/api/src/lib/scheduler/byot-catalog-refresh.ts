@@ -665,6 +665,25 @@ function emitCycleAudit(result: ByotRefreshCycleResult): void {
 // ---------------------------------------------------------------------------
 // Lifecycle (setInterval-based, mirrors ee/audit/purge-scheduler.ts)
 // ---------------------------------------------------------------------------
+//
+// #3764 — deliberately NOT on `engine.ts`'s `Effect.runFork` + `Schedule`
+// fiber pattern, by the same reasoning as `openapi-install-rediscover.ts` +
+// `openapi-spec-refresh.ts` + `ee/audit/purge-scheduler.ts` (which all share
+// this `setInterval` + `unref()` shape and cross-reference each other):
+//   • The cycle is self-contained and idempotent — it emits an audit row and
+//     mutates catalog staleness; there are no per-tick "running" rows that a
+//     mid-flight interrupt must clean up. `engine.ts` needs the fiber pattern
+//     ONLY because its `Effect.onInterrupt` finalizer must release orphaned
+//     `task_run` rows on shutdown (see engine.ts:306). Nothing here is
+//     interrupt-sensitive, so the fiber pattern would add machinery for a
+//     guarantee we don't need.
+//   • `_timer.unref()` keeps the timer from pinning the process — the desired
+//     posture for a best-effort background refresher.
+//   • `{ concurrency: 1 }` inside the cycle (see `runByotCatalogRefreshCycle`)
+//     already prevents a slow cycle from overlapping the next tick.
+// `Effect.runPromise` here boots a fresh default-runtime fiber per cycle, which
+// is fine: each cycle is a fully self-contained program, not a re-entry into a
+// surrounding Effect.
 
 let _timer: ReturnType<typeof setInterval> | null = null;
 let _running = false;

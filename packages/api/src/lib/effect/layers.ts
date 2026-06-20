@@ -41,6 +41,7 @@ import { Context, Duration, Effect, Layer, Schedule } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { withEffectSpan } from "@atlas/api/lib/tracing";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { normalizeError } from "@atlas/api/lib/effect/errors";
 import { InternalDB, makeInternalDBLive, hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
 import {
@@ -292,11 +293,11 @@ export const TelemetryLive: Layer.Layer<Telemetry> = Layer.scoped(
           // Defaults service.name to "atlas-api" (or OTEL_SERVICE_NAME).
           return await initTelemetry();
         },
-        catch: (err) => (err instanceof Error ? err.message : String(err)),
+        catch: normalizeError,
       }).pipe(
-        Effect.catchAll((errMsg) => {
+        Effect.catchAll((err) => {
           log.error(
-            { err: new Error(errMsg) },
+            { err },
             "Failed to initialize OpenTelemetry — tracing disabled for this process",
           );
           return Effect.succeed(null);
@@ -309,10 +310,10 @@ export const TelemetryLive: Layer.Layer<Telemetry> = Layer.scoped(
       shutdownFn
         ? Effect.tryPromise({
             try: () => shutdownFn!(),
-            catch: (err) => (err instanceof Error ? err.message : String(err)),
+            catch: normalizeError,
           }).pipe(
-            Effect.catchAll((errMsg) => {
-              log.error({ err: new Error(errMsg) }, "Failed to shut down OTel SDK");
+            Effect.catchAll((err) => {
+              log.error({ err }, "Failed to shut down OTel SDK");
               return Effect.void;
             }),
           )
@@ -408,18 +409,18 @@ export const MigrationLive: Layer.Layer<Migration, never, InternalDB> = Layer.ef
         await runBootMigrations();
         return { migrated: true } satisfies MigrationShape;
       },
-      catch: (err) => (err instanceof Error ? err.message : String(err)),
+      catch: normalizeError,
     }).pipe(
-      Effect.catchAll((errMsg) => {
+      Effect.catchAll((err) => {
         log.error(
-          { err: new Error(errMsg) },
+          { err },
           "Boot migration failed",
         );
         // Carry the underlying error message through the Migration Tag
         // so `MigrationGuardLive` can surface it on the boot-failure
         // log line in SaaS — review-flagged "MigrationsRequiredError
         // shouldn't punt to 'see prior log'" (#1988 PR review).
-        return Effect.succeed({ migrated: false, error: errMsg } satisfies MigrationShape);
+        return Effect.succeed({ migrated: false, error: err.message } satisfies MigrationShape);
       }),
     );
 
@@ -1163,10 +1164,10 @@ export const AuthBootstrapLive: Layer.Layer<
         );
         await runPostMigrationBootstrap();
       },
-      catch: (err) => (err instanceof Error ? err.message : String(err)),
+      catch: normalizeError,
     }).pipe(
-      Effect.catchAll((errMsg) => {
-        log.error({ err: new Error(errMsg) }, "Post-migration bootstrap failed");
+      Effect.catchAll((err) => {
+        log.error({ err }, "Post-migration bootstrap failed");
         return Effect.void;
       }),
     );
@@ -1204,11 +1205,11 @@ export const PoolWarmupLive: Layer.Layer<
         const { connections } = await import("@atlas/api/lib/db/connection");
         await connections.warmup();
       },
-      catch: (err) => (err instanceof Error ? err.message : String(err)),
+      catch: normalizeError,
     }).pipe(
-      Effect.catchAll((errMsg) => {
+      Effect.catchAll((err) => {
         log.error(
-          { err: new Error(errMsg) },
+          { err },
           "Pool warmup failed — datasource may be unreachable",
         );
         return Effect.void;
@@ -1310,10 +1311,10 @@ export const SemanticSyncLive: Layer.Layer<SemanticSync> = Layer.effect(
         await reconcileAllOrgs();
         return true;
       },
-      catch: (err) => (err instanceof Error ? err.message : String(err)),
+      catch: normalizeError,
     }).pipe(
-      Effect.catchAll((errMsg) => {
-        log.error({ err: new Error(errMsg) }, "Semantic sync failed");
+      Effect.catchAll((err) => {
+        log.error({ err }, "Semantic sync failed");
         return Effect.succeed(false);
       }),
     );
@@ -1370,10 +1371,10 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.scoped(
         const { loadSettings } = await import("@atlas/api/lib/settings");
         return loadSettings();
       },
-      catch: (err) => (err instanceof Error ? err.message : String(err)),
+      catch: normalizeError,
     }).pipe(
-      Effect.catchAll((errMsg) => {
-        log.error({ err: new Error(errMsg) }, "Settings load failed");
+      Effect.catchAll((err) => {
+        log.error({ err }, "Settings load failed");
         return Effect.succeed(0);
       }),
     );
@@ -1883,7 +1884,7 @@ export function makeSchedulerLive(
         Effect.catchAll((err) =>
           Effect.sync(() => {
             log.debug(
-              { err: err instanceof Error ? err.message : String(err) },
+              { err },
               "Audit purge scheduler did not start — enterprise required or backend error",
             );
           }),

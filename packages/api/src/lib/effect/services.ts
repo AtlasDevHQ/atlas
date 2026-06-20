@@ -33,6 +33,7 @@ import type { ToolRegistry as ToolRegistryClass } from "@atlas/api/lib/tools/reg
 import type { RecordRunCheckpointArgs, RecordTerminalRunArgs } from "@atlas/api/lib/durable-session";
 import type { DurableStateSlot } from "@atlas/api/lib/durable-state";
 import { createLogger } from "@atlas/api/lib/logger";
+import { normalizeError } from "@atlas/api/lib/effect/errors";
 import type {
   PluginRegistry as PluginRegistryClass,
   PluginLike,
@@ -298,11 +299,10 @@ export function makeConnectionRegistryLive(
           (id) =>
             Effect.tryPromise({
               try: () => impl.healthCheck(id),
-              catch: (err) =>
-                err instanceof Error ? err.message : String(err),
+              catch: normalizeError,
             }).pipe(
-              Effect.catchAll((errMsg) => {
-                log.warn({ connectionId: id, err: errMsg }, "Periodic health check failed");
+              Effect.catchAll((err) => {
+                log.warn({ connectionId: id, err }, "Periodic health check failed");
                 return Effect.void;
               }),
             ),
@@ -527,10 +527,10 @@ function buildPluginService(impl: PluginRegistryClass) {
     // --- Health check fiber (replaces on-demand-only checks) ---
     const healthCheckCycle = Effect.tryPromise({
       try: () => impl.healthCheckAll(),
-      catch: (err) => (err instanceof Error ? err.message : String(err)),
+      catch: normalizeError,
     }).pipe(
-      Effect.catchAll((errMsg) => {
-        pluginLog.warn({ err: errMsg }, "Periodic plugin health check failed");
+      Effect.catchAll((err) => {
+        pluginLog.warn({ err }, "Periodic plugin health check failed");
         return Effect.void;
       }),
     );
@@ -546,10 +546,10 @@ function buildPluginService(impl: PluginRegistryClass) {
       Effect.gen(function* () {
         yield* Effect.tryPromise({
           try: () => impl.teardownAll(),
-          catch: (err) => (err instanceof Error ? err.message : String(err)),
+          catch: normalizeError,
         }).pipe(
-          Effect.catchAll((errMsg) => {
-            pluginLog.error({ err: errMsg }, "PluginRegistry teardownAll failed during shutdown");
+          Effect.catchAll((err) => {
+            pluginLog.error({ err }, "PluginRegistry teardownAll failed during shutdown");
             return Effect.void;
           }),
         );
@@ -759,11 +759,11 @@ export function makeWiredPluginRegistryLive(
       if (config.runMigrations) {
         yield* Effect.tryPromise({
           try: () => config.runMigrations!(impl.getAll()),
-          catch: (err) => (err instanceof Error ? err.message : String(err)),
+          catch: normalizeError,
         }).pipe(
-          Effect.catchAll((errMsg) => {
-            pluginLog.error({ err: errMsg }, "Plugin schema migrations failed — aborting startup");
-            return Effect.fail(new Error(`Plugin schema migrations failed: ${errMsg}`));
+          Effect.catchAll((err) => {
+            pluginLog.error({ err }, "Plugin schema migrations failed — aborting startup");
+            return Effect.fail(new Error(`Plugin schema migrations failed: ${err.message}`));
           }),
         );
       }
@@ -771,10 +771,10 @@ export function makeWiredPluginRegistryLive(
       // --- Initialize all ---
       const { succeeded, failed } = yield* Effect.tryPromise({
         try: () => impl.initializeAll(config.context),
-        catch: (err) => (err instanceof Error ? err.message : String(err)),
+        catch: normalizeError,
       }).pipe(
-        Effect.catchAll((errMsg) => {
-          pluginLog.error({ err: errMsg }, "Plugin initializeAll threw unexpectedly");
+        Effect.catchAll((err) => {
+          pluginLog.error({ err }, "Plugin initializeAll threw unexpectedly");
           return Effect.succeed({ succeeded: [] as string[], failed: [] as string[] });
         }),
       );
@@ -799,10 +799,10 @@ export function makeWiredPluginRegistryLive(
             connRegistry as unknown as ConnectionRegistryClass,
           );
         },
-        catch: (err) => (err instanceof Error ? err.message : String(err)),
+        catch: normalizeError,
       }).pipe(
-        Effect.catchAll((errMsg) => {
-          pluginLog.error({ err: errMsg }, "Datasource wiring failed entirely");
+        Effect.catchAll((err) => {
+          pluginLog.error({ err }, "Datasource wiring failed entirely");
           return Effect.succeed({ wired: [] as string[], failed: [] as Array<{ pluginId: string; error: string }>, dialectHints: [] as Array<{ pluginId: string; dialect: string }>, entityFailures: [] as Array<{ pluginId: string; error: string }> });
         }),
       );
@@ -818,10 +818,10 @@ export function makeWiredPluginRegistryLive(
             const { setDialectHints } = await import("@atlas/api/lib/plugins/tools");
             setDialectHints(dsResult.dialectHints);
           },
-          catch: (err) => (err instanceof Error ? err.message : String(err)),
+          catch: normalizeError,
         }).pipe(
-          Effect.catchAll((errMsg) => {
-            pluginLog.error({ err: errMsg }, "Failed to set plugin dialect hints");
+          Effect.catchAll((err) => {
+            pluginLog.error({ err }, "Failed to set plugin dialect hints");
             return Effect.void;
           }),
         );
@@ -837,10 +837,10 @@ export function makeWiredPluginRegistryLive(
             );
             return wireActionPlugins(impl, toolRegistry as never);
           },
-          catch: (err) => (err instanceof Error ? err.message : String(err)),
+          catch: normalizeError,
         }).pipe(
-          Effect.catchAll((errMsg) => {
-            pluginLog.error({ err: errMsg }, "Action wiring failed entirely");
+          Effect.catchAll((err) => {
+            pluginLog.error({ err }, "Action wiring failed entirely");
             return Effect.succeed({ wired: [] as string[], failed: [] as Array<{ pluginId: string; error: string }> });
           }),
         );
@@ -887,10 +887,10 @@ export function makeWiredPluginRegistryLive(
               const { setPluginTools } = await import("@atlas/api/lib/plugins/tools");
               setPluginTools(toolRegistry);
             },
-            catch: (err) => (err instanceof Error ? err.message : String(err)),
+            catch: normalizeError,
           }).pipe(
-            Effect.catchAll((errMsg) => {
-              pluginLog.error({ err: errMsg }, "Tool-shadow check / setPluginTools failed");
+            Effect.catchAll((err) => {
+              pluginLog.error({ err }, "Tool-shadow check / setPluginTools failed");
               return Effect.void;
             }),
           );
@@ -907,10 +907,10 @@ export function makeWiredPluginRegistryLive(
           );
           return wireMcpToolPlugins(impl, pluginMcpToolRegistry);
         },
-        catch: (err) => (err instanceof Error ? err.message : String(err)),
+        catch: normalizeError,
       }).pipe(
-        Effect.catchAll((errMsg) => {
-          pluginLog.error({ err: errMsg }, "Plugin MCP tool wiring failed entirely");
+        Effect.catchAll((err) => {
+          pluginLog.error({ err }, "Plugin MCP tool wiring failed entirely");
           return Effect.succeed({
             wired: [] as Array<{ pluginId: string; qualifiedName: string }>,
             failed: [] as Array<{ pluginId: string; tool?: string; error: string }>,
@@ -935,10 +935,10 @@ export function makeWiredPluginRegistryLive(
           );
           return wireContextPlugins(impl);
         },
-        catch: (err) => (err instanceof Error ? err.message : String(err)),
+        catch: normalizeError,
       }).pipe(
-        Effect.catchAll((errMsg) => {
-          pluginLog.error({ err: errMsg }, "Context wiring failed entirely");
+        Effect.catchAll((err) => {
+          pluginLog.error({ err }, "Context wiring failed entirely");
           return Effect.succeed({ fragments: [] as string[], failed: [] as Array<{ pluginId: string; error: string }> });
         }),
       );
@@ -951,10 +951,10 @@ export function makeWiredPluginRegistryLive(
             const { setContextFragments } = await import("@atlas/api/lib/plugins/tools");
             setContextFragments(ctxResult.fragments);
           },
-          catch: (err) => (err instanceof Error ? err.message : String(err)),
+          catch: normalizeError,
         }).pipe(
-          Effect.catchAll((errMsg) => {
-            pluginLog.error({ err: errMsg }, "Failed to set plugin context fragments");
+          Effect.catchAll((err) => {
+            pluginLog.error({ err }, "Failed to set plugin context fragments");
             return Effect.void;
           }),
         );
@@ -969,10 +969,10 @@ export function makeWiredPluginRegistryLive(
             );
             return wireInteractionPlugins(impl, config.app);
           },
-          catch: (err) => (err instanceof Error ? err.message : String(err)),
+          catch: normalizeError,
         }).pipe(
-          Effect.catchAll((errMsg) => {
-            pluginLog.error({ err: errMsg }, "Interaction wiring failed entirely");
+          Effect.catchAll((err) => {
+            pluginLog.error({ err }, "Interaction wiring failed entirely");
             return Effect.succeed({ wired: [] as string[], failed: [] as Array<{ pluginId: string; error: string }> });
           }),
         );
@@ -996,11 +996,11 @@ export function makeWiredPluginRegistryLive(
             }
           }
         },
-        catch: (err) => (err instanceof Error ? err.message : String(err)),
+        catch: normalizeError,
       }).pipe(
-        Effect.catchAll((errMsg) => {
+        Effect.catchAll((err) => {
           pluginLog.error(
-            { err: errMsg },
+            { err },
             "Failed to wire plugin cache backend — falling back to in-memory LRU",
           );
           return Effect.void;

@@ -378,6 +378,51 @@ describe("F-54/F-55 executeSQL approval gate", () => {
     expect(mockCreateApprovalRequest).toHaveBeenCalled();
   });
 
+  it("Phase 2 fail-CLOSED: synchronous throw from createApprovalRequest blocks the query", async () => {
+    // #3764 — the CREATE region composes the gate's hasApprovedRequest +
+    // createApprovalRequest Effects via `yield*` and recovers via
+    // `Effect.catchAllCause` (NOT `catchAll`). A synchronous throw inside the
+    // EE create helper surfaces as a DEFECT, not a typed failure; `catchAll`
+    // would let it escape as an uncaught 500 (and risk fail-OPEN). This pins
+    // that a sync throw on the write path is blocked, mirroring the Phase 1
+    // check-region test above. Governance bypass is worse than a failed query.
+    mockCheckApprovalRequired.mockImplementation(() =>
+      Effect.succeed({ required: true, matchedRules: [{ id: "rule-1", name: "PII tables" }] }),
+    );
+    mockHasApprovedRequest.mockImplementation(() => Effect.succeed(false));
+    mockCreateApprovalRequest.mockImplementation(() => {
+      throw new Error("simulated DB outage during approval request creation");
+    });
+    const result = await executeTool(
+      { sql: "SELECT id FROM companies", explanation: "test" },
+      toolCtx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Approval workflow failed");
+  });
+
+  it("Phase 2 fail-CLOSED: rejected Effect from createApprovalRequest also blocks", async () => {
+    mockCheckApprovalRequired.mockImplementation(() =>
+      Effect.succeed({ required: true, matchedRules: [{ id: "rule-1", name: "PII tables" }] }),
+    );
+    mockHasApprovedRequest.mockImplementation(() => Effect.succeed(false));
+    // The mock's typed return pins the error channel to `never` (happy-path
+    // shape); a failing Effect is the real gate's `ApprovalError | … | Error`
+    // channel, so cast to the declared return type to model a rejection.
+    mockCreateApprovalRequest.mockImplementation(
+      () =>
+        Effect.fail(new Error("simulated transient write failure")) as unknown as ReturnType<
+          typeof mockCreateApprovalRequest
+        >,
+    );
+    const result = await executeTool(
+      { sql: "SELECT id FROM companies", explanation: "test" },
+      toolCtx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Approval workflow failed");
+  });
+
   it("passes requesterId to checkApprovalRequired so demo / single-user mode passes through cleanly", async () => {
     requestContextValue = {
       requestId: "test-approval",

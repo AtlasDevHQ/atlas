@@ -1772,6 +1772,9 @@ integrations.openapi(disconnectRoute, async (c) =>
       Effect.gen(function* () {
         const installer = yield* WorkspaceInstaller;
         yield* installer.uninstall(workspaceId, platform);
+        // #3764 — accepted: per-route boundary provide of the dependency-free,
+        // finalizer-free WorkspaceInstallerLive; the route stays its own
+        // composition root.
       }).pipe(Effect.provide(WorkspaceInstallerLive)),
       { label: "platform disconnect" },
     );

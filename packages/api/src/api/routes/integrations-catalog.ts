@@ -226,6 +226,8 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
     // with the InternalDB shim so the route can call into it without
     // pulling the AppLayer's ManagedRuntime down here. Same pattern as
     // `admin-proactive-analytics.ts` (#2622) for `AnswerMeterLive`.
+    // #3764 — accepted: this per-route boundary provide is the intended shape
+    // (route as its own composition root), not a lib-level provide to lift.
     const rows = await Effect.runPromise(
       Effect.gen(function* () {
         const facade = yield* PillarCatalogQuery;

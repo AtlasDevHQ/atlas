@@ -462,6 +462,9 @@ adminIntegrations.openapi(disconnectSlackRoute, async (c) => {
         yield* installer.uninstall(orgId as WorkspaceId, "slack");
         return "ok" as const;
       }).pipe(
+        // #3764 — accepted: per-route boundary provide of the dependency-free,
+        // finalizer-free WorkspaceInstallerLive; the route stays its own
+        // composition root rather than reaching into the app ManagedRuntime.
         Effect.provide(WorkspaceInstallerLive),
         Effect.catchTag("InstallNotFoundError", () =>
           Effect.succeed("not_found" as const),

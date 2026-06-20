@@ -229,6 +229,9 @@ const mode = new OpenAPIHono<AuthEnv>();
 mode.use("/", standardAuth);
 mode.use("/", requestContext);
 
+// #3764 — accepted: this layer is provided at the route boundary (per call,
+// below) rather than via the app ManagedRuntime. The route is its own small
+// composition root; the merged Live layers are dependency-free/finalizer-free.
 const modeRouteLayer = Layer.merge(ContentModeRegistryLive, makeInternalDBShimLayer());
 
 mode.openapi(getModeRoute, async (c) => {

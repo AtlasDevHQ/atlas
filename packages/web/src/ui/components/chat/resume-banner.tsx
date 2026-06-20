@@ -87,9 +87,9 @@ export function ResumeBanner({
         <AlertTitle>Waiting on approval</AlertTitle>
         <AlertDescription className="text-amber-800/90 dark:text-amber-200/80">
           <p>
-            This turn paused for a reviewer to approve an action. It will
-            continue automatically once the request is approved — no action
-            needed here.
+            This turn paused for a reviewer to approve an action. Once it&apos;s
+            approved you&apos;ll be able to resume the turn from here — reload the
+            conversation if this banner doesn&apos;t update on its own.
           </p>
         </AlertDescription>
       </Alert>

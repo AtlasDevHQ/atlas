@@ -36,8 +36,8 @@ export interface UseRunStatusReturn {
  * #3749 — read a conversation's latest durable-run status so the chat surface
  * can offer to resume an interrupted turn (`running`), show a waiting-on-approval
  * state (`parked`), or render nothing (`done`/`failed`/`none`). Fetched on
- * conversation change and re-fetchable on demand (poll after an approval
- * resolves). Fail-soft: any error collapses to `null` (no affordance shown).
+ * conversation change and re-fetchable on demand (`refetch`, e.g. after a resume
+ * stream settles). Fail-soft: any error collapses to `null` (no affordance shown).
  */
 export function useRunStatus(opts: UseRunStatusOptions): UseRunStatusReturn {
   const { apiUrl, getHeaders, getCredentials, conversationId, enabled } = opts;
@@ -50,65 +50,55 @@ export function useRunStatus(opts: UseRunStatusOptions): UseRunStatusReturn {
   const getCredentialsRef = useRef(getCredentials);
   getCredentialsRef.current = getCredentials;
 
-  const fetchStatus = useCallback(async (): Promise<void> => {
-    if (!enabled || !conversationId) {
-      setRunStatus(null);
-      return;
-    }
-    const api = createAtlasFetch({
-      apiUrl,
-      getHeaders: () => getHeadersRef.current(),
-      getCredentials: () => getCredentialsRef.current(),
-    });
-    try {
-      const data = await api.get<RunStatusResponse>(
-        `/api/v1/chat/${conversationId}/run-status`,
-      );
-      setRunStatus(data);
-    } catch (err: unknown) {
-      // Non-critical: degrade to no affordance rather than surfacing an error.
-      console.warn(
-        "Failed to load run status:",
-        err instanceof Error ? err.message : String(err),
-      );
-      setRunStatus(null);
-    }
-  }, [apiUrl, conversationId, enabled]);
-
-  // Fetch on conversation change. A stale in-flight response for a previous
-  // conversation must not commit over the current one, so a cancelled flag
-  // gates the setState.
-  useEffect(() => {
-    let cancelled = false;
-    if (!enabled || !conversationId) {
-      setRunStatus(null);
-      return;
-    }
-    const api = createAtlasFetch({
-      apiUrl,
-      getHeaders: () => getHeadersRef.current(),
-      getCredentials: () => getCredentialsRef.current(),
-    });
-    api
-      .get<RunStatusResponse>(`/api/v1/chat/${conversationId}/run-status`)
-      .then((data) => {
-        if (!cancelled) setRunStatus(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
+  // Single fetch-and-commit path shared by the on-change effect and `refetch`.
+  // `isStale` lets the caller drop a late response: the effect passes its
+  // cleanup-driven `cancelled` flag so a previous conversation's in-flight load
+  // can't commit over the current one (and an unmount can't setState). A bare
+  // `refetch()` passes the always-fresh default. Fail-soft: any error collapses
+  // to `null` (no affordance) — a load-time enhancement must never block opening
+  // a conversation.
+  const fetchInto = useCallback(
+    async (isStale: () => boolean = () => false): Promise<void> => {
+      if (!enabled || !conversationId) {
+        if (!isStale()) setRunStatus(null);
+        return;
+      }
+      const api = createAtlasFetch({
+        apiUrl,
+        getHeaders: () => getHeadersRef.current(),
+        getCredentials: () => getCredentialsRef.current(),
+      });
+      try {
+        const data = await api.get<RunStatusResponse>(
+          `/api/v1/chat/${conversationId}/run-status`,
+        );
+        if (!isStale()) setRunStatus(data);
+      } catch (err: unknown) {
+        if (!isStale()) {
           console.warn(
             "Failed to load run status:",
             err instanceof Error ? err.message : String(err),
           );
           setRunStatus(null);
         }
-      });
+      }
+    },
+    [apiUrl, conversationId, enabled],
+  );
+
+  // Fetch on conversation change. A stale in-flight response for a previous
+  // conversation must not commit over the current one, so the cleanup flag is
+  // threaded through `fetchInto` as `isStale`.
+  useEffect(() => {
+    let cancelled = false;
+    void fetchInto(() => cancelled);
     return () => {
       cancelled = true;
     };
-  }, [apiUrl, conversationId, enabled]);
+  }, [fetchInto]);
 
+  const refetch = useCallback(() => fetchInto(), [fetchInto]);
   const clear = useCallback(() => setRunStatus(null), []);
 
-  return { runStatus, refetch: fetchStatus, clear };
+  return { runStatus, refetch, clear };
 }

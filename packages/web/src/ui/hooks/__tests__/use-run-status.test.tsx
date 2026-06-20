@@ -1,8 +1,10 @@
 /**
  * #3749 — `useRunStatus`: load-time durable-run-status fetch driving the resume /
  * waiting-on-approval affordance. Covers the happy fetch, the disabled gate
- * (no conversation / pre-auth), and fail-soft (a fetch error collapses to `null`
- * so opening a conversation is never blocked).
+ * (no conversation / pre-auth), fail-soft (a fetch error collapses to `null` so
+ * opening a conversation is never blocked), `refetch`/`clear`, and the shared
+ * stale-guard (a previous conversation's late response never commits over the
+ * current one).
  */
 import { describe, expect, test, afterEach, mock } from "bun:test";
 import { renderHook, waitFor, act } from "@testing-library/react";
@@ -117,5 +119,45 @@ describe("useRunStatus (#3749)", () => {
     await waitFor(() => expect(result.current.runStatus?.status).toBe("running"));
     act(() => result.current.clear());
     expect(result.current.runStatus).toBeNull();
+  });
+
+  test("a stale response for a previous conversation never commits over the current one", async () => {
+    // conv-1's load is slow (its promise is held open); the hook then switches to
+    // conv-2, which resolves first. When conv-1 finally resolves, its (stale)
+    // result must NOT overwrite conv-2's — the shared isStale guard drops it.
+    let resolveConv1: (r: Response) => void = () => {};
+    globalThis.fetch = mock((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/conv-1/")) {
+        return new Promise<Response>((res) => { resolveConv1 = res; });
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ status: "running", runId: "run-2", parkedReason: null }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }) as unknown as typeof fetch;
+
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string }) => useRunStatus({ ...baseOpts, conversationId: id, enabled: true }),
+      { initialProps: { id: "conv-1" } },
+    );
+
+    // Switch to conv-2 while conv-1 is still in flight; conv-2 resolves.
+    rerender({ id: "conv-2" });
+    await waitFor(() => expect(result.current.runStatus?.runId).toBe("run-2"));
+
+    // conv-1's stale response now lands — it must be dropped, conv-2 stays.
+    await act(async () => {
+      resolveConv1(
+        new Response(JSON.stringify({ status: "parked", runId: "run-1", parkedReason: "req-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      await Promise.resolve();
+    });
+    expect(result.current.runStatus?.runId).toBe("run-2");
   });
 });

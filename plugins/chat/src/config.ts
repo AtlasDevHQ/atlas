@@ -1109,6 +1109,13 @@ export const ChatConfigSchema = z.object({
   resolveAdapterEnv: zCallback<NonNullable<ChatPluginConfig["resolveAdapterEnv"]>>(
     "resolveAdapterEnv must be a function returning Promise<Record<string, string | undefined>>",
   ).optional(),
+  // #3750 — bridge-ready callback for chat resume-on-approval delivery.
+  // Optional callback; the host (`@atlas/api`) wires it to (de)register the
+  // chat resume-deliverer. Must be in this `.strict()` schema or config load
+  // rejects the key and boot crashes before HTTP binds (caught by Boot Smoke).
+  onBridgeReady: zCallback<NonNullable<ChatPluginConfig["onBridgeReady"]>>(
+    "onBridgeReady must be a function",
+  ).optional(),
 }).strict().refine(
   (c) => {
     // Warn if streaming.enabled is explicitly true but executeQueryStream is missing

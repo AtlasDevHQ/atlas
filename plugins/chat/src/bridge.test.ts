@@ -1733,6 +1733,30 @@ describe("ephemeral error delivery", () => {
     }
   });
 
+  it("accepts an onBridgeReady callback at the strict-schema layer (#3750)", async () => {
+    // Regression guard for the Boot-Smoke failure: the strict `.strict()`
+    // ChatConfigSchema rejects unknown keys, so a field added to the TS
+    // ChatPluginConfig interface but NOT to this schema crashes config load
+    // before HTTP binds. The schema must accept `onBridgeReady`.
+    const { ChatConfigSchema } = await import("./config");
+    const result = ChatConfigSchema.safeParse({
+      catalog: SLACK_CATALOG,
+      executeQuery: () => Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
+      onBridgeReady: () => {},
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a non-function onBridgeReady at the strict-schema layer (#3750)", async () => {
+    const { ChatConfigSchema } = await import("./config");
+    const result = ChatConfigSchema.safeParse({
+      catalog: SLACK_CATALOG,
+      executeQuery: () => Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
+      onBridgeReady: "not a function",
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("EphemeralConfig validates correctly", async () => {
     const { ChatConfigSchema } = await import("./config");
 

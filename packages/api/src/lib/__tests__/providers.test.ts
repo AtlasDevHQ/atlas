@@ -7,6 +7,7 @@ const {
   getDefaultProvider,
   getModel,
   getModelForConfig,
+  getSummaryModel,
   resolveModelId,
   getMissingModelConfig,
 } = await import("@atlas/api/lib/providers");
@@ -234,6 +235,58 @@ describe("resolveModelId — SSOT default (#3098)", () => {
     delete process.env.VERCEL;
     process.env.ATLAS_DEPLOY_MODE = "saas";
     expect(resolveModelId(undefined, undefined)).toBe("anthropic/claude-sonnet-4.6");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getSummaryModel — cheaper compaction summary model (#3761). Resolves a
+// SEPARATE model id on the SAME provider/credentials as the turn; only the
+// model id changes.
+// ---------------------------------------------------------------------------
+
+describe("getSummaryModel (#3761)", () => {
+  test("platform path: resolves the summary id on the active provider (workspaceConfig=null)", () => {
+    process.env.ATLAS_PROVIDER = "anthropic";
+    delete process.env.ATLAS_MODEL;
+    // No workspace config ⇒ getModelForConfig(undefined, summaryId) on the env
+    // provider. The resolved model carries exactly the summary id we asked for.
+    const model = getSummaryModel({ summaryModelId: "claude-haiku-4-5", workspaceConfig: null });
+    expect(typeof model === "string" ? model : model.modelId).toBe("claude-haiku-4-5");
+  });
+
+  test("workspace path: swaps only the model id, keeping the workspace provider + key", () => {
+    // A BYOT workspace on its own Anthropic key: the summary runs on the SAME
+    // provider/credentials, with just the model field replaced by the cheaper id.
+    const model = getSummaryModel({
+      summaryModelId: "claude-haiku-4-5",
+      workspaceConfig: {
+        model: "claude-opus-4-8", // the turn model — must be overridden
+        baseUrl: null,
+        bedrockRegion: null,
+        credentials: { provider: "anthropic", apiKey: "sk-ant-test" },
+      },
+    });
+    expect(typeof model === "string" ? model : model.modelId).toBe("claude-haiku-4-5");
+    // …and the provider stays the workspace's Anthropic SDK — a regression that
+    // dropped `credentials` and fell back to a default provider while keeping the
+    // right model id would pass the modelId check alone, so assert the provider.
+    expect(typeof model === "string" ? "" : model.provider).toContain("anthropic");
+  });
+
+  test("workspace path: provider field tracks the workspace config, not a constant", () => {
+    // The same call on an OpenAI BYOT workspace must resolve the OpenAI SDK —
+    // proving the assertion above isn't passing because `provider` is hard-coded.
+    const model = getSummaryModel({
+      summaryModelId: "gpt-4o-mini",
+      workspaceConfig: {
+        model: "gpt-4o", // the turn model — must be overridden
+        baseUrl: null,
+        bedrockRegion: null,
+        credentials: { provider: "openai", apiKey: "sk-openai-test" },
+      },
+    });
+    expect(typeof model === "string" ? model : model.modelId).toBe("gpt-4o-mini");
+    expect(typeof model === "string" ? "" : model.provider).toContain("openai");
   });
 });
 

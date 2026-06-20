@@ -410,6 +410,39 @@ export function getModelForConfig(
   };
 }
 
+/**
+ * Resolve the model used for the compaction summarization call (#3761).
+ *
+ * Names a SEPARATE — typically cheaper — model for the summary, distinct from
+ * the active turn model. The summary always runs on the SAME provider and
+ * credentials as the turn; only the model id changes:
+ * - When the turn resolved from a workspace model config (SaaS BYOT), rebuild
+ *   the same workspace config with `model` swapped for `summaryModelId`, so the
+ *   workspace's own provider + API key drive the cheaper call.
+ * - Otherwise (platform / env-resolved provider), reuse {@link getModelForConfig}
+ *   with the active provider and the summary model id override.
+ *
+ * Callers only invoke this when the `ATLAS_COMPACTION_SUMMARY_MODEL` knob is set
+ * to a non-empty id that differs from the turn model; an unset knob keeps the
+ * Compaction 1 behavior (summarize on the turn model) without touching this
+ * function. Resolution failures are the caller's concern — the compaction seam
+ * falls back to the turn model rather than erroring the turn.
+ */
+export function getSummaryModel(opts: {
+  summaryModelId: string;
+  /**
+   * The turn's workspace model config when it resolved from one (SaaS BYOT);
+   * `null` for the platform / env-resolved path.
+   */
+  workspaceConfig: WorkspaceModelConfig | null;
+}): LanguageModel {
+  const { summaryModelId, workspaceConfig } = opts;
+  if (workspaceConfig) {
+    return getModelFromWorkspaceConfig({ ...workspaceConfig, model: summaryModelId });
+  }
+  return getModelForConfig(undefined, summaryModelId).model;
+}
+
 // ── Workspace-level model resolution ────────────────────────────────
 
 /**
@@ -442,6 +475,22 @@ function workspaceProviderType(provider: ModelConfigProvider): ProviderType {
 }
 
 /**
+ * A resolved workspace-level model configuration: the provider credentials plus
+ * the model id and connection details. Shared by {@link getModelFromWorkspaceConfig}
+ * (which builds the turn model from it) and {@link getSummaryModel} (which rebuilds
+ * it with only `model` swapped for the cheaper #3761 summary model), so the two
+ * agree on the shape via one named type rather than one borrowing the other's
+ * parameter list.
+ */
+export interface WorkspaceModelConfig {
+  model: string;
+  baseUrl: string | null;
+  /** Required for provider='bedrock'; ignored for every other provider. */
+  bedrockRegion: string | null;
+  credentials: WorkspaceCredentials;
+}
+
+/**
  * Create a LanguageModel from a workspace-level model configuration.
  * Uses the provider's SDK with the workspace's own API key and settings.
  *
@@ -451,13 +500,7 @@ function workspaceProviderType(provider: ModelConfigProvider): ProviderType {
  * re-entry error the catalog refresh's `malformed_bedrock_bundle`
  * envelope points at.
  */
-export function getModelFromWorkspaceConfig(config: {
-  model: string;
-  baseUrl: string | null;
-  /** Required for provider='bedrock'; ignored for every other provider. */
-  bedrockRegion: string | null;
-  credentials: WorkspaceCredentials;
-}): LanguageModel {
+export function getModelFromWorkspaceConfig(config: WorkspaceModelConfig): LanguageModel {
   const { credentials } = config;
   switch (credentials.provider) {
     case "anthropic": {

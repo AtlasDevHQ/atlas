@@ -23,13 +23,22 @@
  *   the window explicitly via the `ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS`
  *   settings knob, which takes precedence over the catalog.
  *
+ * - #3761: an optional cheaper summary model (the `ATLAS_COMPACTION_SUMMARY_MODEL`
+ *   knob names a SEPARATE model for the summarization call, resolved on the same
+ *   provider via the providers layer; unset ⇒ the turn model, as before) AND a
+ *   client-facing stream marker so a summarized history is not a silent surprise.
+ *   The summarize helpers below take the model as a parameter, so the seam in
+ *   `agent.ts` passes whichever model resolution selected; the marker builder
+ *   ({@link buildCompactionMarker}) lives in the Client-facing stream marker
+ *   section.
+ *
  * Still out of scope:
- * - The summary runs on the active TURN model; a cheaper dedicated summary model
- *   is #3761.
  * - Single pass per step, no second loop: if the older slice is so large that
  *   summary + pinned-N steps still exceed the window, the turn can still over-
- *   fill it. The cheaper summary model (#3761) shrinks that gap; a re-trigger
- *   loop remains out of scope.
+ *   fill it. The cheaper summary model (#3761) lowers the COST of each pass but
+ *   not the summary SIZE (output is capped the same regardless of model), so it
+ *   does not close this gap; a re-trigger loop that re-compacts when summary +
+ *   pinned-N still overflow remains out of scope.
  *
  * All knobs resolve through the settings registry (workspace > platform > env >
  * default, hot-reloadable) — see `ATLAS_COMPACTION_*` in `settings.ts`.
@@ -403,7 +412,82 @@ export function compactionSpanAttributes(input: CompactionSpanInput): Attributes
   };
 }
 
-// ── Summarization on the turn model ──────────────────────────────────
+// ── Client-facing stream marker (#3761) ──────────────────────────────
+//
+// In addition to the server-side log line + OTel span attributes above (which
+// only an operator can see), a compaction pass writes ONE marker onto the UI
+// message stream so the analyst knows their history was summarized instead of
+// being surprised by a silently-condensed transcript. The marker rides the same
+// request-scoped `data-*` channel the Python tool uses for progress events
+// (`getStreamWriter()` in `agent.ts`), so it needs no chat-route wiring; a turn
+// that does NOT compact writes nothing.
+
+/**
+ * Wire `type` of the compaction stream part. Clients match `part.type` against
+ * this on the AI-SDK `onData` channel (same `data-${string}` family as
+ * `data-context-warning` / `data-python-progress`) to surface a "history was
+ * summarized" notice.
+ */
+export const COMPACTION_STREAM_PART_TYPE = "data-compaction" as const;
+
+/**
+ * Payload of the {@link COMPACTION_STREAM_PART_TYPE} stream part. `ran` is a
+ * constant discriminator (the part is only ever emitted when a pass ran); the
+ * counts let a client show how much was folded vs. kept verbatim. Shares the
+ * token + summarized-count fields with the operator-side span attributes
+ * ({@link compactionSpanAttributes}) so the two signals agree on the overlap;
+ * the marker additionally reports `pinnedMessages`, and the span additionally
+ * reports `before`/`afterMessages` — the field sets are NOT identical.
+ *
+ * NOTE (#3761 scope): this is a wire DTO the client surfaces, but it lives in
+ * `@atlas/api` and ships no runtime parser. The client-side guard
+ * (`parseCompactionMarker`) + a move to `@useatlas/types` — mirroring the
+ * `ChatContextWarning` / `parseContextWarning` pattern — lands with the first
+ * web consumer (the "history was summarized" banner), out of this emit-only
+ * slice. Until then a consumer matches on {@link COMPACTION_STREAM_PART_TYPE}
+ * and validates the shape itself.
+ */
+export interface CompactionStreamMarker {
+  readonly ran: true;
+  /** Older messages folded into the generated summary this pass. */
+  readonly summarizedMessages: number;
+  /** Most-recent messages pinned verbatim (never summarized) this pass. */
+  readonly pinnedMessages: number;
+  /** Estimated assembled-context tokens before the pass. */
+  readonly beforeTokens: number;
+  /** Estimated assembled-context tokens after the pass. */
+  readonly afterTokens: number;
+}
+
+/**
+ * Inputs for {@link buildCompactionMarker} — the marker's fields minus its
+ * constant `ran` discriminator. Derived from {@link CompactionStreamMarker} via
+ * `Omit` so adding a wire field automatically demands it here, with no
+ * hand-maintained twin to drift.
+ */
+export type CompactionMarkerInput = Omit<CompactionStreamMarker, "ran">;
+
+/**
+ * Build the client-facing compaction marker. Pure (same precedent as
+ * {@link compactionSpanAttributes}) so the wire contract is unit-testable
+ * without driving a live stream. Only ever called inside the "a pass ran"
+ * branch — `ran` is always `true`.
+ */
+export function buildCompactionMarker(input: CompactionMarkerInput): CompactionStreamMarker {
+  return {
+    ran: true,
+    summarizedMessages: input.summarizedMessages,
+    pinnedMessages: input.pinnedMessages,
+    beforeTokens: input.beforeTokens,
+    afterTokens: input.afterTokens,
+  };
+}
+
+// ── Summarization ────────────────────────────────────────────────────
+//
+// The summarize helpers take the `LanguageModel` as a parameter, so the
+// `agent.ts` seam passes either the active turn model (default) or the cheaper
+// dedicated summary model when `ATLAS_COMPACTION_SUMMARY_MODEL` is set (#3761).
 
 const SUMMARY_SYSTEM_PROMPT = `You compress the earlier portion of a data-analyst AI agent's working transcript so the agent can keep going within its context window. Produce a faithful, information-dense summary that preserves everything the agent needs to continue the current task:
 - The user's original question(s) and any clarifications or constraints they gave.
@@ -446,8 +530,9 @@ function renderTranscript(messages: readonly ModelMessage[]): string {
 const SUMMARY_TIMEOUT_MS = 25_000;
 
 /**
- * Summarize older history using the active turn model (this slice runs on the
- * turn model; a dedicated cheaper model is #3761).
+ * Summarize older history on the supplied model. The caller passes the active
+ * turn model by default, or the cheaper dedicated summary model when
+ * `ATLAS_COMPACTION_SUMMARY_MODEL` is configured (#3761).
  */
 export async function summarizeOlderHistory(
   model: LanguageModel,
@@ -469,8 +554,8 @@ export async function summarizeOlderHistory(
  * aged past the pin boundary since the last pass. Keeps per-step summarization
  * input bounded by (prior summary + delta) instead of re-reading the whole
  * older slice each step — older history grows monotonically within a turn, so
- * the delta is just the steps that crossed the boundary. Same turn model and
- * timeout discipline as {@link summarizeOlderHistory}.
+ * the delta is just the steps that crossed the boundary. Same model parameter
+ * and timeout discipline as {@link summarizeOlderHistory}.
  */
 export async function summarizeIncremental(
   model: LanguageModel,

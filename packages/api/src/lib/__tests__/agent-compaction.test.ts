@@ -21,7 +21,9 @@ import {
   pinBoundaryIndex,
   compactOlderHistory,
   compactionSpanAttributes,
+  buildCompactionMarker,
   COMPACTION_SUMMARY_PREFIX,
+  COMPACTION_STREAM_PART_TYPE,
   type CompactionSettings,
 } from "@atlas/api/lib/agent-compaction";
 import { setSetting, _resetSettingsCache } from "@atlas/api/lib/settings";
@@ -203,6 +205,35 @@ describe("compactionSpanAttributes", () => {
       "atlas.compaction.after_messages": 5,
       "atlas.compaction.summarized_messages": 4,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Client-facing stream marker (#3761)
+// ---------------------------------------------------------------------------
+
+describe("buildCompactionMarker", () => {
+  it("builds a marker with the ran discriminator and the pass counts", () => {
+    expect(
+      buildCompactionMarker({
+        beforeTokens: 900,
+        afterTokens: 300,
+        summarizedMessages: 4,
+        pinnedMessages: 5,
+      }),
+    ).toEqual({
+      ran: true,
+      summarizedMessages: 4,
+      pinnedMessages: 5,
+      beforeTokens: 900,
+      afterTokens: 300,
+    });
+  });
+
+  it("pins the wire part type clients match on", () => {
+    // The literal is a public contract — clients dispatch on `part.type`, so a
+    // rename is a breaking wire change and must be caught here.
+    expect(COMPACTION_STREAM_PART_TYPE).toBe("data-compaction");
   });
 });
 

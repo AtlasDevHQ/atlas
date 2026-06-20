@@ -42,6 +42,8 @@ mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
   getProviderType: () => "anthropic" as const,
   getModelFromWorkspaceConfig: () => mockModel,
+  // #3761 — compaction summary-model resolver (added so the named import in agent.ts links).
+  getSummaryModel: () => mockModel,
   getWorkspaceProviderType: () => "anthropic" as const,
   getDefaultProvider: () => "anthropic" as const,
   isGatewayAnthropicModel: (modelId: string) => modelId.includes("anthropic") || modelId.includes("claude"),

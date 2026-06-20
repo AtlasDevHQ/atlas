@@ -31,6 +31,7 @@ import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { markOrgActive } from "@atlas/api/lib/db/org-activity";
 import { checkAgentBillingGate } from "@atlas/api/lib/billing/agent-gate";
 import { prepareResume, finishResume } from "@atlas/api/lib/durable-resume";
+import { loadLatestRunStatus } from "@atlas/api/lib/durable-session";
 import {
   createConversation,
   verifyGroupBelongsToOrg,
@@ -61,6 +62,7 @@ import { setStreamWriter, clearStreamWriter } from "@atlas/api/lib/tools/python-
 import { getSetting } from "@atlas/api/lib/settings";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema } from "./shared-schemas";
+import { RunStatusResponseSchema } from "@useatlas/schemas";
 
 const DEFAULT_CONVERSATION_STEP_CAP = 500;
 const DEFAULT_AGENT_MAX_STEPS = 25;
@@ -549,6 +551,38 @@ const chatResumeRoute = createRoute({
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
     503: { description: "Resume temporarily unavailable", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// #3749 — latest-run-status probe. A read-only GET the web chat calls on
+// load/reconnect to detect whether the conversation's latest turn is interrupted
+// (`running` → offer resume), parked awaiting approval (`parked` → show a
+// waiting state), or terminal/absent (`done`/`failed`/`none` → render nothing).
+// Distinct from the resume POST: this claims no lease and never mutates.
+// ---------------------------------------------------------------------------
+
+const chatRunStatusRoute = createRoute({
+  method: "get",
+  path: "/{conversationId}/run-status",
+  tags: ["Chat"],
+  summary: "Latest durable-run status for a conversation",
+  description:
+    "Returns the lifecycle status of the conversation's most recent durable agent run so a client can, on load/reconnect, offer to resume an interrupted turn (`running`), show a waiting-on-approval state (`parked`), or render nothing for a terminal run (`done`/`failed`) or a conversation with no run to surface (`none`). " +
+    "Read-only — claims no resume lease and never mutates. Conversation ownership is re-resolved live against the request's auth scope; a user without access gets `404`.",
+  request: {
+    params: z.object({ conversationId: z.string().uuid() }),
+  },
+  responses: {
+    200: {
+      description: "The latest run's status. A deployment with no internal database (or a conversation with no run) returns `{ status: \"none\" }`, not a 404.",
+      content: { "application/json": { schema: RunStatusResponseSchema } },
+    },
+    400: { description: "Invalid conversation id", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Conversation not found", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -1943,6 +1977,55 @@ chat.openapi(chatResumeRoute, async (c) => {
       },
     );
   }), { label: "chat-resume" });
+});
+
+chat.openapi(chatRunStatusRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const req = c.req.raw;
+    const { requestId } = yield* RequestContext;
+
+    // Auth — same dispatch as the chat + resume routes. Error bodies conform to
+    // `ErrorSchema` (`{ error, message, requestId? }`) since the route declares a
+    // typed 200 JSON response: a status probe is a cheap read, so it omits the
+    // `retryable` / SSO-redirect envelope the streaming routes carry.
+    const authAttempt = yield* Effect.tryPromise({
+      try: () => authenticateRequest(req),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.either);
+    if (authAttempt._tag === "Left") {
+      log.error({ err: authAttempt.left, requestId }, "Auth dispatch failed (run-status)");
+      return c.json({ error: "auth_error", message: "Authentication system error", requestId }, 500);
+    }
+    const authResult: AuthResult = authAttempt.right;
+    if (!authResult.authenticated) {
+      return c.json(
+        { error: "auth_error", message: authResult.error ?? "Authentication required", requestId },
+        authResult.status as 401 | 403 | 500,
+      );
+    }
+
+    const orgId = authResult.user?.activeOrganizationId;
+    const conversationId = c.req.param("conversationId");
+
+    // No internal DB ⇒ durability never checkpointed a run, so there is no run
+    // to surface AND no way to verify ownership. Return the `none` sentinel (no
+    // data leaked) so the client simply renders no affordance.
+    if (!hasInternalDB()) {
+      return c.json({ status: "none" as const }, 200);
+    }
+
+    // Conversation OWNERSHIP — re-resolved LIVE against the request's auth scope,
+    // exactly like the resume route. A user without access to the conversation
+    // gets a 404 and never learns its run state (the run id / parked ref are not
+    // leaked across a tenancy boundary).
+    const existing = yield* Effect.promise(() => getConversation(conversationId, authResult.user?.id, orgId));
+    if (!existing.ok) {
+      return c.json({ error: "not_found", message: "Conversation not found.", requestId }, 404);
+    }
+
+    const latest = yield* Effect.promise(() => loadLatestRunStatus(conversationId));
+    return c.json(latest, 200);
+  }), { label: "chat-run-status" });
 });
 
 export { chat };

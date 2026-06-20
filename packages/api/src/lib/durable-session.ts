@@ -564,6 +564,75 @@ export async function loadAndLeaseResumableRun(
 }
 
 /**
+ * The latest run's lifecycle state for a conversation, as surfaced to the web
+ * chat client at load/reconnect time (#3749). Unlike {@link loadAndLeaseResumableRun}
+ * this is a pure READ — it claims no lease and never mutates — so the client can
+ * decide whether to render a resume affordance (`running`), a waiting-on-approval
+ * state (`parked`), or nothing (`done`/`failed`/`none`) before any resume is
+ * attempted. `none` means there is no run to surface: no internal DB, durability
+ * never wrote a row, a read blip (fail-soft), or an unrecognized status value.
+ */
+export type LatestRunStatus =
+  | { readonly status: AgentRunStatus; readonly runId: string; readonly parkedReason: string | null }
+  | { readonly status: "none" };
+
+// Read-only peek at the most-recently-touched run for a conversation. NOT
+// status-filtered: it reports whatever the latest run is, so a terminal latest
+// run correctly yields "no affordance" instead of being masked by an older
+// `running` row. Mirrors the ORDER BY of the resume probe so "latest" means the
+// same row the resume endpoint would act on.
+export const LATEST_RUN_STATUS_SQL = `SELECT id, status, parked_reason FROM agent_runs
+        WHERE conversation_id = $1
+        ORDER BY updated_at DESC
+        LIMIT 1`;
+
+const KNOWN_RUN_STATUSES: ReadonlySet<string> = new Set(Object.values(AGENT_RUN_STATUS));
+
+/**
+ * Read the latest run's status for a conversation so the web chat can detect, on
+ * load/reconnect, whether to offer resume (`running`), show a waiting-on-approval
+ * state (`parked`), or render nothing (`done`/`failed`/`none`) (#3749).
+ *
+ * Fail-soft: this is a non-critical load-time enhancement, so a no-DB, no-row, or
+ * read-error case all degrade to `{ status: "none" }` (no affordance) rather than
+ * surfacing an error and blocking the conversation open — the blip is logged. An
+ * unrecognized status string (schema drift / corruption) is likewise coerced to
+ * `none` so a bogus value never reaches the client.
+ *
+ * Caller is responsible for conversation ownership (the read is keyed on
+ * conversation id only) exactly as the resume endpoint is — this never authorizes.
+ */
+export async function loadLatestRunStatus(conversationId: string): Promise<LatestRunStatus> {
+  if (!hasInternalDB()) return { status: "none" };
+  try {
+    const rows = await internalQuery<{ id: string; status: string; parked_reason: string | null }>(
+      LATEST_RUN_STATUS_SQL,
+      [conversationId],
+    );
+    const row = rows[0];
+    if (!row) return { status: "none" };
+    if (!KNOWN_RUN_STATUSES.has(row.status)) {
+      log.warn(
+        { conversationId, runId: row.id, status: row.status },
+        "Latest run carries an unrecognized status — coercing to none",
+      );
+      return { status: "none" };
+    }
+    return {
+      status: row.status as AgentRunStatus,
+      runId: row.id,
+      parkedReason: row.parked_reason ?? null,
+    };
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), conversationId },
+      "Failed to load latest run status",
+    );
+    return { status: "none" };
+  }
+}
+
+/**
  * Release a resume lease — best-effort, fire-and-forget. Clears the lease only
  * while THIS resumer still owns it (`resuming_lease_owner = $2`): a TTL-expired
  * resumer whose release fires late can't wipe a lease a second resumer already

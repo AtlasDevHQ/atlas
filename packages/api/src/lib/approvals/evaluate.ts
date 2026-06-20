@@ -173,6 +173,11 @@ function buildDecisionResult(
   const comment = opts?.comment ? ` Reviewer comment: ${opts.comment}` : "";
   if (decision === "approve") {
     return {
+      // `success: false` is intentional even though the request was APPROVED: the
+      // gated query did NOT execute here (the approval only unblocks it). This
+      // result is not a terminal failure — `message` directs the model to re-run
+      // the same call on resume, which now passes the gate (`hasApprovedRequest`
+      // reads the queue row the approval flipped to `approved`).
       success: false,
       [APPROVAL_REQUIRED_RESULT_KEY]: false,
       approval_resolved: "approved",

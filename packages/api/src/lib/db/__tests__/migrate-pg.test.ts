@@ -2657,6 +2657,30 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     expect(row.rows[0]!.transcript).toEqual([{ role: "tool", content: "needs-approval" }]);
   }, PG_TEST_TIMEOUT_MS);
 
+  it("#3748: the parked upsert never resurrects a terminal run (out-of-order write guard)", async () => {
+    const conversationId = await newConversation();
+    const runId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+    // A turn that already finished `done` (the terminal write landed first).
+    await pool.query(TERMINAL_UPSERT_SQL, [
+      runId, conversationId, "org-1", "done", 3,
+      JSON.stringify([{ role: "assistant", content: "final answer" }]),
+    ]);
+    // A stale/reordered `parked` write for the same run must be a no-op — the
+    // `WHERE status NOT IN ('done','failed')` guard stops it resurrecting the row.
+    await pool.query(PARKED_UPSERT_SQL, [
+      runId, conversationId, "org-1", "parked", 2,
+      JSON.stringify([{ role: "tool", content: "needs-approval" }]),
+      "req-late",
+    ]);
+    const row = await pool.query<{ status: string; parked_reason: string | null; transcript: unknown }>(
+      `SELECT status, parked_reason, transcript FROM agent_runs WHERE id = $1`,
+      [runId],
+    );
+    expect(row.rows[0]!.status).toBe("done"); // unchanged — not flipped back to parked
+    expect(row.rows[0]!.parked_reason).toBeNull();
+    expect(row.rows[0]!.transcript).toEqual([{ role: "assistant", content: "final answer" }]);
+  }, PG_TEST_TIMEOUT_MS);
+
   it("#3748: the crash-resume claim never picks up a parked run", async () => {
     const conversationId = await newConversation();
     const runId = "66666666-6666-6666-6666-666666666666";

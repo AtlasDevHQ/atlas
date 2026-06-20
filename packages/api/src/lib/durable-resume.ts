@@ -204,12 +204,23 @@ export async function resolveApprovalPark(
   decision: ApprovalDecision,
   opts?: { reviewerLabel?: string | null; comment?: string | null },
 ): Promise<ResolveApprovalParkResult> {
-  const parked = await loadParkedRunByApprovalRef(approvalRequestId);
-  if (!parked) {
-    // No internal DB, durability off, or no matching parked run. The loader
-    // already logged any DB error; in every case there is no turn to re-arm.
+  const loaded = await loadParkedRunByApprovalRef(approvalRequestId);
+  if (loaded.status === "error") {
+    // Could not even reach the DB to look up the parked run (the loader logged
+    // the cause at warn). A recorded decision may have a turn stuck behind this
+    // blip, so surface it as actionable rather than silently benign — it stays
+    // parked until the next review retries or the max-park sweep fails it.
+    log.error(
+      { approvalRequestId, decision },
+      "Approval-park resolution could not load the parked run (DB error) — cannot re-arm",
+    );
+    return { status: "failed", runId: "unknown" };
+  }
+  if (loaded.status === "none") {
+    // No internal DB, durability off, or no matching parked run — nothing to re-arm.
     return { status: "none" };
   }
+  const parked = loaded.run;
 
   // Source the rewrite key from the loaded row's `parked_reason` (the SSOT link),
   // which the WHERE clause guarantees equals `approvalRequestId`.

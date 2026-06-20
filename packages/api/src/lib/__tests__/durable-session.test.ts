@@ -377,14 +377,16 @@ describe("loadParkedRunByApprovalRef (#3748)", () => {
         transcript: [{ role: "user", content: "hi" }],
       },
     ];
-    const parked = await loadParkedRunByApprovalRef("req-42");
-    expect(parked).not.toBeNull();
-    expect(parked!.runId).toBe("run-9");
-    expect(parked!.conversationId).toBe("conv-1");
-    expect(parked!.orgId).toBe("org-1");
-    expect(parked!.stepIndex).toBe(3);
-    expect(parked!.parkedReason).toBe("req-42");
-    expect(parked!.transcript).toEqual([{ role: "user", content: "hi" }]);
+    const result = await loadParkedRunByApprovalRef("req-42");
+    expect(result.status).toBe("found");
+    if (result.status !== "found") throw new Error("unreachable");
+    const parked = result.run;
+    expect(parked.runId).toBe("run-9");
+    expect(parked.conversationId).toBe("conv-1");
+    expect(parked.orgId).toBe("org-1");
+    expect(parked.stepIndex).toBe(3);
+    expect(parked.parkedReason).toBe("req-42");
+    expect(parked.transcript).toEqual([{ role: "user", content: "hi" }]);
 
     const call = queryCalls[0]!;
     expect(call.sql).toContain("FROM agent_runs");
@@ -393,20 +395,29 @@ describe("loadParkedRunByApprovalRef (#3748)", () => {
     expect(call.params).toEqual(["req-42"]);
   });
 
-  it("returns null when no parked run matches", async () => {
+  it("returns none (not error) when no parked run matches", async () => {
     queryRows = [];
-    expect(await loadParkedRunByApprovalRef("req-x")).toBeNull();
+    expect((await loadParkedRunByApprovalRef("req-x")).status).toBe("none");
   });
 
-  it("returns null (never throws) on a DB error", async () => {
+  it("returns error (never throws) on a DB read blip — distinct from none", async () => {
     queryThrow = new Error("boom");
-    expect(await loadParkedRunByApprovalRef("req-x")).toBeNull();
+    // A read-side failure must be distinguishable from "nothing here" so the
+    // resolver can surface it as actionable rather than silently benign.
+    expect((await loadParkedRunByApprovalRef("req-x")).status).toBe("error");
     expect(warnCalls.some((w) => w.msg === "Failed to load parked run for approval resolution")).toBe(true);
   });
 
+  it("returns none when no internal DB is configured", async () => {
+    hasInternalDB = false;
+    expect((await loadParkedRunByApprovalRef("req-x")).status).toBe("none");
+    expect(queryCalls).toHaveLength(0);
+  });
+
   it("clamps a corrupt negative step_index to 0", async () => {
-    queryRows = [{ id: "r", conversation_id: "c", org_id: null, step_index: -2, transcript: [] }];
-    expect((await loadParkedRunByApprovalRef("req-1"))!.stepIndex).toBe(0);
+    queryRows = [{ id: "r", conversation_id: "c", org_id: null, step_index: -2, parked_reason: "req-1", transcript: [] }];
+    const result = await loadParkedRunByApprovalRef("req-1");
+    expect(result.status === "found" ? result.run.stepIndex : -999).toBe(0);
   });
 });
 

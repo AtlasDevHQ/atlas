@@ -90,13 +90,14 @@ export function isDurabilityEnabled(orgId?: string): boolean {
 }
 
 /**
- * Resolve a settings-backed positive-integer knob, falling back to `fallback`
- * when the setting is unset or not a sane positive integer. The single home for
- * the "parse + clamp to a positive int, else default" rule the durability knobs
- * share, so a new knob can't drift (e.g. forget the `<= 0` clamp).
+ * Clamp a raw settings string to a sane positive integer, else `fallback`. The
+ * single home for the "parse + clamp to a positive int, else default" rule the
+ * durability knobs share, so a new knob can't drift (e.g. forget the `<= 0`
+ * clamp). The `getSettingAuto` READ stays inline at each call site below so the
+ * settings-reader parity check (check-settings-readers.sh, #3382) can see each
+ * key named next to its reader.
  */
-function resolvePositiveIntSetting(settingKey: string, fallback: number, orgId?: string): number {
-  const raw = getSettingAuto(settingKey, orgId);
+function clampPositiveInt(raw: string | undefined, fallback: number): number {
   if (raw === undefined) return fallback;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -105,12 +106,12 @@ function resolvePositiveIntSetting(settingKey: string, fallback: number, orgId?:
 
 /** Resolve the retention window (days), clamped to a sane positive integer. */
 export function getRetentionDays(orgId?: string): number {
-  return resolvePositiveIntSetting(DURABILITY_RETENTION_DAYS_SETTING, DEFAULT_RETENTION_DAYS, orgId);
+  return clampPositiveInt(getSettingAuto(DURABILITY_RETENTION_DAYS_SETTING, orgId), DEFAULT_RETENTION_DAYS);
 }
 
 /** Resolve the resume-lease TTL (seconds), clamped to a sane positive integer (#3747). */
 export function getResumeLeaseSeconds(orgId?: string): number {
-  return resolvePositiveIntSetting(RESUME_LEASE_TTL_SETTING, DEFAULT_RESUME_LEASE_SECONDS, orgId);
+  return clampPositiveInt(getSettingAuto(RESUME_LEASE_TTL_SETTING, orgId), DEFAULT_RESUME_LEASE_SECONDS);
 }
 
 /**
@@ -119,7 +120,7 @@ export function getResumeLeaseSeconds(orgId?: string): number {
  * tier (no orgId) — same as {@link getRetentionDays}.
  */
 export function getMaxParkMinutes(orgId?: string): number {
-  return resolvePositiveIntSetting(MAX_PARK_MINUTES_SETTING, DEFAULT_MAX_PARK_MINUTES, orgId);
+  return clampPositiveInt(getSettingAuto(MAX_PARK_MINUTES_SETTING, orgId), DEFAULT_MAX_PARK_MINUTES);
 }
 
 /**
@@ -207,11 +208,19 @@ export const TERMINAL_UPSERT_SQL = `${AGENT_RUN_INSERT}
 /**
  * Parked upsert (#3748, ADR-0020 phase 3). A turn that hit an approval-required
  * action flips its row to `parked` carrying the approval-queue ref in
- * `parked_reason` and the full transcript-as-of-park. Like the terminal upsert
- * it overwrites unconditionally — the park IS the authoritative end of this
- * stream (the loop made no further model calls). The extra `$7` param is the
- * `parked_reason` the running/terminal upserts don't carry, so this is its own
- * statement rather than a reuse of {@link AGENT_RUN_INSERT}.
+ * `parked_reason` and the full transcript-as-of-park — the park IS the
+ * authoritative end of this stream (the loop made no further model calls), so it
+ * overwrites status + transcript within the conflict branch.
+ *
+ * Lifecycle guard (`WHERE agent_runs.status NOT IN ('done', 'failed')`): like
+ * {@link RUNNING_UPSERT_SQL}, the lifecycle is one-directional and
+ * `internalExecute` is fire-and-forget + unordered. The `terminalWritten` flag
+ * in the loop already stops a terminal and a parked write from BOTH being queued
+ * for one run, but the guard is the durable backstop: a `parked` write that
+ * somehow lands after a terminal (`done`/`failed`) write can never resurrect the
+ * row back to `parked`. The extra `$7` param is the `parked_reason` the
+ * running/terminal upserts don't carry, so this is its own statement rather than
+ * a reuse of {@link AGENT_RUN_INSERT}.
  */
 export const PARKED_UPSERT_SQL = `INSERT INTO agent_runs (id, conversation_id, org_id, status, step_index, transcript, parked_reason, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, now())
@@ -220,7 +229,8 @@ export const PARKED_UPSERT_SQL = `INSERT INTO agent_runs (id, conversation_id, o
          step_index = GREATEST(agent_runs.step_index, EXCLUDED.step_index),
          transcript = EXCLUDED.transcript,
          parked_reason = EXCLUDED.parked_reason,
-         updated_at = now()`;
+         updated_at = now()
+       WHERE agent_runs.status NOT IN ('done', 'failed')`;
 
 /**
  * Shared write body for both checkpoint helpers (fire-and-forget).
@@ -608,13 +618,29 @@ export interface ParkedRun {
 }
 
 /**
+ * Outcome of {@link loadParkedRunByApprovalRef}.
+ *
+ * - `"found"` — a parked run is waiting; `run` carries it.
+ * - `"none"` — no parked run is waiting (already resolved/expired, never parked,
+ *   or no internal DB / durability off). Benign: nothing to re-arm.
+ * - `"error"` — the DB could not be reached to even check. Distinct from `"none"`
+ *   so the caller can surface a read-side blip as actionable (`failed`) rather
+ *   than silently treating a stuck-but-unreadable parked run as "nothing here".
+ */
+export type LoadParkedRunResult =
+  | { readonly status: "found"; readonly run: ParkedRun }
+  | { readonly status: "none" }
+  | { readonly status: "error" };
+
+/**
  * Load the parked run that is waiting on a given approval-queue request, keyed
  * on the `parked_reason` the park write stamped (#3748). `agent_runs` and the
  * approval queue are decoupled at the schema level, so `parked_reason` IS the
- * link from a decision back to the suspended turn. Returns `null` when no such
- * parked run exists (already resolved/expired, or never parked), or on a DB
- * error — the caller treats both as "nothing to resume" (fail-soft: a degraded
- * checkpoint store costs resumability, never the approval decision itself).
+ * link from a decision back to the suspended turn. Returns a three-way result so
+ * the caller can tell "nothing to re-arm" (`none`) apart from "could not reach
+ * the DB to check" (`error`) — a read-side blip must not masquerade as benign,
+ * or an approved request could sit stuck until the 24h sweep with no actionable
+ * log. (The write side, `resolveParkedRun`, already distinguishes its `error`.)
  *
  * Tenancy: looked up by the approval-request UUID alone (not org-scoped). The
  * sole caller (the admin review endpoint) reaches here only AFTER
@@ -622,8 +648,8 @@ export interface ParkedRun {
  * the parked run's `org_id` equals that approval's org — so cross-tenant
  * resolution is already prevented upstream.
  */
-export async function loadParkedRunByApprovalRef(approvalRequestId: string): Promise<ParkedRun | null> {
-  if (!hasInternalDB()) return null;
+export async function loadParkedRunByApprovalRef(approvalRequestId: string): Promise<LoadParkedRunResult> {
+  if (!hasInternalDB()) return { status: "none" };
   try {
     const rows = await internalQuery<{
       id: string;
@@ -641,26 +667,29 @@ export async function loadParkedRunByApprovalRef(approvalRequestId: string): Pro
       [approvalRequestId],
     );
     const row = rows[0];
-    if (!row) return null;
+    if (!row) return { status: "none" };
     return {
-      runId: row.id,
-      conversationId: row.conversation_id,
-      orgId: row.org_id,
-      stepIndex: Math.max(
-        0,
-        typeof row.step_index === "number" ? row.step_index : Number(row.step_index) || 0,
-      ),
-      // Non-null for a `status = 'parked'` row (the WHERE matched it on `$1`, and
-      // the CHECK forbids a reason-less parked row); fall back to the queried ref.
-      parkedReason: row.parked_reason ?? approvalRequestId,
-      transcript: Array.isArray(row.transcript) ? (row.transcript as ModelMessage[]) : [],
+      status: "found",
+      run: {
+        runId: row.id,
+        conversationId: row.conversation_id,
+        orgId: row.org_id,
+        stepIndex: Math.max(
+          0,
+          typeof row.step_index === "number" ? row.step_index : Number(row.step_index) || 0,
+        ),
+        // Non-null for a `status = 'parked'` row (the WHERE matched it on `$1`, and
+        // the CHECK forbids a reason-less parked row); fall back to the queried ref.
+        parkedReason: row.parked_reason ?? approvalRequestId,
+        transcript: Array.isArray(row.transcript) ? (row.transcript as ModelMessage[]) : [],
+      },
     };
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err.message : String(err), approvalRequestId },
       "Failed to load parked run for approval resolution",
     );
-    return null;
+    return { status: "error" };
   }
 }
 

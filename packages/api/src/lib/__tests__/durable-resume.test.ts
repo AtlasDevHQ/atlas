@@ -12,7 +12,12 @@
 import { describe, expect, it, beforeEach, mock } from "bun:test";
 import type { ModelMessage } from "ai";
 import * as realDurable from "@atlas/api/lib/durable-session";
-import type { ResumeClaim, ParkedRun, ResolveParkedRunOutcome } from "@atlas/api/lib/durable-session";
+import type {
+  ResumeClaim,
+  ParkedRun,
+  ResolveParkedRunOutcome,
+  LoadParkedRunResult,
+} from "@atlas/api/lib/durable-session";
 
 let durabilityEnabled = true;
 let leaseSeconds = 300;
@@ -20,7 +25,7 @@ let nextClaim: ResumeClaim = { status: "none" };
 const releaseCalls: Array<{ runId: string; leaseOwner: string }> = [];
 let lastClaimArgs: { conversationId: string; leaseSeconds: number } | null = null;
 // #3748 — approval-park resolution mocks.
-let nextParkedRun: ParkedRun | null = null;
+let nextLoadResult: LoadParkedRunResult = { status: "none" };
 let resolveResult: ResolveParkedRunOutcome = "resolved";
 const resolveCalls: Array<{ runId: string; transcript: ModelMessage[]; stepIndex: number }> = [];
 let lastLoadParkRef: string | null = null;
@@ -38,7 +43,7 @@ mock.module("@atlas/api/lib/durable-session", () => ({
   },
   loadParkedRunByApprovalRef: async (approvalRequestId: string) => {
     lastLoadParkRef = approvalRequestId;
-    return nextParkedRun;
+    return nextLoadResult;
   },
   resolveParkedRun: async (args: { runId: string; transcript: ModelMessage[]; stepIndex: number }) => {
     resolveCalls.push(args);
@@ -54,7 +59,7 @@ beforeEach(() => {
   nextClaim = { status: "none" };
   releaseCalls.length = 0;
   lastClaimArgs = null;
-  nextParkedRun = null;
+  nextLoadResult = { status: "none" };
   resolveResult = "resolved";
   resolveCalls.length = 0;
   lastLoadParkRef = null;
@@ -152,7 +157,7 @@ describe("finishResume", () => {
 
 describe("resolveApprovalPark (#3748)", () => {
   it("approve: rewrites the transcript and re-arms the run, returning resumed", async () => {
-    nextParkedRun = parkedRun("req-42");
+    nextLoadResult = { status: "found", run: parkedRun("req-42") };
     const result = await resolveApprovalPark("req-42", "approve", { reviewerLabel: "admin@x.com" });
 
     expect(result.status).toBe("resumed");
@@ -176,7 +181,7 @@ describe("resolveApprovalPark (#3748)", () => {
   });
 
   it("deny: rewrites the transcript to a denial and re-arms the run", async () => {
-    nextParkedRun = parkedRun("req-42");
+    nextLoadResult = { status: "found", run: parkedRun("req-42") };
     const result = await resolveApprovalPark("req-42", "deny", { comment: "prod frozen" });
 
     expect(result.status).toBe("resumed");
@@ -187,14 +192,23 @@ describe("resolveApprovalPark (#3748)", () => {
   });
 
   it("returns none and never writes when no parked run is waiting (benign)", async () => {
-    nextParkedRun = null;
+    nextLoadResult = { status: "none" };
     const result = await resolveApprovalPark("req-x", "approve");
     expect(result.status).toBe("none");
     expect(resolveCalls).toHaveLength(0);
   });
 
+  it("returns failed (never writes) when the parked run could not be loaded (DB read blip)", async () => {
+    // A read-side DB error must NOT slip through as benign `none` — a recorded
+    // decision may have a turn stuck behind it. Surface as actionable `failed`.
+    nextLoadResult = { status: "error" };
+    const result = await resolveApprovalPark("req-42", "approve");
+    expect(result.status).toBe("failed");
+    expect(resolveCalls).toHaveLength(0);
+  });
+
   it("returns none when the re-arm UPDATE matched nothing (concurrent / double review)", async () => {
-    nextParkedRun = parkedRun("req-42");
+    nextLoadResult = { status: "found", run: parkedRun("req-42") };
     resolveResult = "noop";
     const result = await resolveApprovalPark("req-42", "approve");
     // A no-op re-arm (already resolved by a concurrent review) is benign, not failed.
@@ -209,7 +223,7 @@ describe("resolveApprovalPark (#3748)", () => {
     // resolver must NOT flip it back to `running` carrying a stale needs-approval
     // result (which would just re-park on resume): it leaves the run parked for
     // the sweep and surfaces `failed`.
-    nextParkedRun = { ...parkedRun("req-stale"), parkedReason: "req-42" };
+    nextLoadResult = { status: "found", run: { ...parkedRun("req-stale"), parkedReason: "req-42" } };
     const result = await resolveApprovalPark("req-42", "approve");
     expect(result.status).toBe("failed");
     if (result.status !== "failed") throw new Error("unreachable");
@@ -219,7 +233,7 @@ describe("resolveApprovalPark (#3748)", () => {
   });
 
   it("returns failed when the re-arm write errors (DB blip after a recorded decision)", async () => {
-    nextParkedRun = parkedRun("req-42");
+    nextLoadResult = { status: "found", run: parkedRun("req-42") };
     resolveResult = "error";
     const result = await resolveApprovalPark("req-42", "approve");
     expect(result.status).toBe("failed");

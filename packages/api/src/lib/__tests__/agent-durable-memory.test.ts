@@ -170,14 +170,21 @@ function memToolModel(input: { write?: string }): InstanceType<typeof MockLangua
 
 async function driveTurn(
   model: InstanceType<typeof MockLanguageModelV3>,
-  opts?: { resume?: { runId: string; transcript: ModelMessage[]; priorStepIndex: number } },
+  opts?: {
+    resume?: { runId: string; transcript: ModelMessage[]; priorStepIndex: number };
+    /** #3756 — drive the run as a delegated subagent (isolated, empty memory). */
+    subagent?: boolean;
+    /** Override the session key (the parent uses the default `conv-1`). */
+    conversationId?: string;
+  },
 ): Promise<void> {
   mockModel = model;
   const result = await runAgent({
     messages: userMessages("hi"),
-    conversationId: "conv-1",
+    conversationId: opts?.conversationId ?? "conv-1",
     tools: memToolRegistry,
     ...(opts?.resume ? { resume: opts.resume } : {}),
+    ...(opts?.subagent ? { subagent: true } : {}),
   });
   try {
     await result.consumeStream?.();
@@ -333,5 +340,68 @@ describe("durable working memory at the runAgent seam (#3754)", () => {
     const terminals = terminalWrites();
     expect(terminals).toHaveLength(1);
     expect((terminals[0]!.params as unknown[])[3]).toBe("done");
+  });
+});
+
+describe("subagent memory isolation at the runAgent seam (#3756)", () => {
+  beforeEach(() => {
+    internalCalls.length = 0;
+    memoryRows.length = 0;
+    capturedReads.length = 0;
+    hasInternalDB = true;
+    failMemoryWrite = false;
+    process.env.ATLAS_DURABILITY_ENABLED = "true";
+  });
+
+  it("a subagent reads EMPTY for a slot the parent wrote (child starts clean)", async () => {
+    // Parent turn writes `note` into its session (conv-1).
+    await driveTurn(memToolModel({ write: "parent-secret" }));
+    expect(memoryRows.find((r) => r.namespace === "note")?.value).toBe("parent-secret");
+
+    // A delegated subagent — same conversation key, but isolated — reads the slot.
+    capturedReads.length = 0;
+    await driveTurn(memToolModel({}), { subagent: true });
+
+    // The child saw EMPTY: the parent's "parent-secret" never crossed the boundary.
+    expect(capturedReads).toEqual([undefined]);
+    expect(capturedReads).not.toContain("parent-secret");
+  });
+
+  it("a subagent's write never reaches the parent's session (parent's value preserved)", async () => {
+    // Parent writes its slot.
+    await driveTurn(memToolModel({ write: "parent-value" }));
+    expect(memoryRows.find((r) => r.namespace === "note")?.value).toBe("parent-value");
+    const writesAfterParent = memoryWrites().length;
+
+    // The subagent writes the SAME slot name with a different value.
+    await driveTurn(memToolModel({ write: "child-value" }), { subagent: true });
+
+    // No new persistence happened for the child — the parent's row is untouched.
+    expect(memoryWrites().length).toBe(writesAfterParent);
+    expect(memoryRows.find((r) => r.namespace === "note")?.value).toBe("parent-value");
+
+    // And the parent, on its next turn, still reads its own value — the child
+    // injected nothing into the parent's memory.
+    capturedReads.length = 0;
+    await driveTurn(memToolModel({}));
+    expect(capturedReads).toContain("parent-value");
+    expect(capturedReads).not.toContain("child-value");
+  });
+
+  it("a subagent persists no memory, yet still checkpoints its own run (memory-only gate)", async () => {
+    // A fresh subagent run that writes a slot must not upsert any memory row —
+    // the child's store is the Noop store, whose `set` is a no-op, so nothing is
+    // ever staged and `commitMemory` short-circuits on `available === false`.
+    await driveTurn(memToolModel({ write: "ephemeral" }), { subagent: true });
+    expect(memoryWrites()).toHaveLength(0);
+    expect(memoryRows).toHaveLength(0);
+    // The child's own read of the slot it just "wrote" is still empty (dropped).
+    expect(capturedReads).toEqual([undefined]);
+    // The gate is scoped to working memory ONLY: the subagent's durable-session
+    // checkpoint (keyed on the run id, not the session) still lands, so a
+    // subagent's own crash-resumability is intact. A regression that over-broadened
+    // the `subagent` gate to also suppress run checkpoints would fail here.
+    expect(terminalWrites()).toHaveLength(1);
+    expect((terminalWrites()[0]!.params as unknown[])[3]).toBe("done");
   });
 });

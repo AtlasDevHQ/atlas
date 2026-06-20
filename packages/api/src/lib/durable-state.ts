@@ -362,13 +362,33 @@ export function commitSessionMemory(args: {
  * DB — loads the session's persisted slots into a Live store; otherwise returns
  * the shared {@link NOOP_DURABLE_STATE_STORE} so tools reading the handle behave
  * identically to today.
+ *
+ * SUBAGENT ISOLATION (#3756, PRD #3752): working memory is per-session and
+ * NEVER crosses the parent/subagent boundary. A delegated child run passes
+ * `subagent: true`, which forces the Noop store UNCONDITIONALLY — short-circuited
+ * before the conversation/internal-DB checks AND before any load query — so the
+ * child:
+ *   - starts EMPTY: it never loads the parent's persisted slots (a read of a
+ *     parent-written slot returns the declared default / `undefined`), and
+ *   - cannot reach back: the Noop store's `set` is a no-op (nothing is ever
+ *     staged dirty) and the agent loop's commit path early-returns on the store's
+ *     `available === false`, so no upsert is ever issued.
+ * The isolation is structural at this build seam — a subagent run never
+ * CONSTRUCTS a `LiveDurableStateStore`, so the parent's session key never reaches
+ * a child store; there is no representable child store keyed to a parent session.
  */
 export async function buildDurableStateStore(args: {
   conversationId: string | null;
   orgId: string | null;
   active: boolean;
+  /**
+   * `true` for a delegated subagent run — forces the Noop store so the child
+   * starts empty and can never read or write the parent's session memory
+   * (#3756). Absent / `false` ⇒ a normal (parent / top-level) run.
+   */
+  subagent?: boolean;
 }): Promise<DurableStateStore> {
-  if (!args.active || !args.conversationId || !hasInternalDB()) {
+  if (args.subagent || !args.active || !args.conversationId || !hasInternalDB()) {
     return NOOP_DURABLE_STATE_STORE;
   }
   const initial = await loadSessionMemory(args.conversationId);

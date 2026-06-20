@@ -1,11 +1,13 @@
 Middle ground between `/ship-issue` (one) and `/ship-milestone` (the whole thing on a heartbeat): pick the top N `ready-for-agent` issues from the current milestone — the way `/next` does — and dispatch a `/ship-issue` worker for each. Bounded batch: no heartbeat, no auto-refill, no closeout/release.
 
-**Input:** `$ARGUMENTS` — optional. Forms:
+**Input:** `$ARGUMENTS` — optional. Forms (the batch is hard-capped at **5** — see *Cap* below):
 - *(empty)* → pick the top **3** unblocked issues from the active milestone
-- a number `5` → pick the top **5**
-- explicit issue numbers `1201 1202 1207` → ship exactly those
+- a number `N` from **1–5** → pick the top **N**
+- explicit issue numbers `1201 1202 1207` → ship exactly those, **up to 5**
 
 **You type:** `/ship-batch` · `/ship-batch 5` · `/ship-batch 1201 1202 1207`
+
+**Cap — enforced at parse time:** this batch dispatches **at most 5** workers; that count IS the concurrency cap in Step 2. If the input asks for more — a number `> 5`, or more than 5 explicit issue numbers — **do not truncate and do not dispatch.** Stop and tell the user to split into batches of ≤ 5 (or run `/ship-milestone` to grind the whole milestone on a heartbeat). Never silently drop issues the user explicitly named — explicit-issue input skips the Step 1 confirmation, so an over-cap batch has no other backstop.
 
 This is L1.5 — `/next`'s selection + `/ship-issue`'s dispatch, capped. Use it when you want to knock out a chunk of a milestone and stop, not grind the whole thing.
 

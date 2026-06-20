@@ -82,6 +82,7 @@ When Atlas opens to a community, `/triage` runs first (move new issues through t
 | Milestone is fully shipped | `/closeout` (Atlas) — docs audit, changelog, close GH milestone |
 | Handing the in-flight session to another agent / clone / day | `/handoff` (Matt Pocock — compacts the session into a handoff doc) |
 | Need a recurring run of any of the above | `/loop` or `/schedule` (Claude Code) |
+| Want the phases to drive themselves (agents prompting agents) | See `docs/agents/loops.md` — L0–L3 loop designs over the `Agent` + `subscribe_pr_activity` primitives |
 
 `/handoff` is the missing piece in Atlas's existing flow. Before splitting work across parallel sessions or stepping away mid-task, `/handoff` produces a doc the next session can pick up cold.
 

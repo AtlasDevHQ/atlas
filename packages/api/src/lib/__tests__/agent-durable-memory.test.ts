@@ -243,6 +243,15 @@ function terminalWrites() {
 
 const origFlag = process.env.ATLAS_DURABILITY_ENABLED;
 
+// One module-scope cleanup covers BOTH describe blocks (the #3754 seam block and
+// the #3756 subagent-isolation block below both set the flag in `beforeEach`), so
+// the flag is restored once after the whole file — never left "true" for a later
+// file in the same process.
+afterAll(() => {
+  if (origFlag === undefined) delete process.env.ATLAS_DURABILITY_ENABLED;
+  else process.env.ATLAS_DURABILITY_ENABLED = origFlag;
+});
+
 describe("durable working memory at the runAgent seam (#3754)", () => {
   beforeEach(() => {
     internalCalls.length = 0;
@@ -251,11 +260,6 @@ describe("durable working memory at the runAgent seam (#3754)", () => {
     hasInternalDB = true;
     failMemoryWrite = false;
     process.env.ATLAS_DURABILITY_ENABLED = "true";
-  });
-
-  afterAll(() => {
-    if (origFlag === undefined) delete process.env.ATLAS_DURABILITY_ENABLED;
-    else process.env.ATLAS_DURABILITY_ENABLED = origFlag;
   });
 
   it("reads back in turn 2 a slot written in turn 1 (per-session scope)", async () => {

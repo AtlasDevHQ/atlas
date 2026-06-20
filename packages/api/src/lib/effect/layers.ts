@@ -79,6 +79,7 @@ import {
   makeWiredPluginRegistryLive,
   type PluginWiringConfig,
   DurableSession,
+  DurableState,
 } from "./services";
 import { durableSessionLayer } from "./durable-session";
 import { durableStateLayer } from "./durable-state";
@@ -1457,7 +1458,7 @@ export class Scheduler extends Context.Tag("Scheduler")<
  */
 export function makeSchedulerLive(
   config: ResolvedConfig,
-): Layer.Layer<Scheduler, never, AuditPurgeScheduler | SaasCrm | Migration | DurableSession> {
+): Layer.Layer<Scheduler, never, AuditPurgeScheduler | SaasCrm | Migration | DurableSession | DurableState> {
   return Layer.scoped(
     Scheduler,
     Effect.gen(function* () {
@@ -2265,6 +2266,7 @@ export function makeSchedulerLive(
       // orgId → platform/env/default) so an operator setting change takes
       // effect without a restart. Hourly, like the share-token sweep.
       const durableSession = yield* DurableSession;
+      const durableState = yield* DurableState;
       // Per-tick catch (inside repeat) so the loop survives a transient fault
       // and keeps sweeping — same resilience shape as the share-token sweep.
       // #3748 — the same tick also fails `parked` runs past the max-park window
@@ -2272,6 +2274,12 @@ export function makeSchedulerLive(
       // the operator-global window per-tick so a settings change takes effect
       // without a restart.
       const agentRunsRetentionTick = Effect.gen(function* () {
+        // #3757 — sweep working memory BEFORE the runs sweep, on the SAME window:
+        // the memory sweep dates a session by its newest `agent_runs` row, so the
+        // terminal runs must still be present when it runs. The runs sweep then
+        // deletes those terminal rows. Memory is thus swept WITH its session
+        // (no separate sweeper). A session with a live run keeps its memory.
+        yield* durableState.sweepExpired(getRetentionDays());
         yield* durableSession.sweepTerminal(getRetentionDays());
         yield* durableSession.sweepParked(getMaxParkMinutes());
       }).pipe(
@@ -3393,10 +3401,12 @@ export function buildAppLayer(
   //
   // `durableSession` is provided so the retention-sweep fiber (#3745) can
   // resolve the `DurableSession` Tag — Noop when there is no internal DB, so
-  // the fiber forks but sweeps nothing.
+  // the fiber forks but sweeps nothing. `durableState` (#3757) is provided for
+  // the same fiber's memory sweep — it rides the SAME tick + retention window,
+  // so terminal/expired sessions take their working memory with them.
   const schedulerLayer = makeSchedulerLive(config).pipe(
     Layer.provide(
-      Layer.mergeAll(EnterpriseLayer, settingsLayer, migrationLayer, durableSession),
+      Layer.mergeAll(EnterpriseLayer, settingsLayer, migrationLayer, durableSession, durableState),
     ),
   );
 

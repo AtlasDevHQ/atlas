@@ -164,6 +164,15 @@ export interface DurableStateShape {
    * No-op on the Noop layer.
    */
   commit(args: { conversationId: string; orgId: string | null; slots: DurableStateSlot[] }): void;
+  /**
+   * Delete working memory for sessions past the retention window (#3757) — those
+   * whose `agent_runs` are all terminal and whose newest run is older than the
+   * window. Memory "swept with its session": rides the SAME hourly fiber + window
+   * as {@link DurableSessionShape.sweepTerminal}. Returns the number of memory
+   * rows deleted (0 on the Noop layer, -1 on a DB error). Driven by the
+   * retention-sweep scheduler fiber.
+   */
+  sweepExpired(retentionDays: number): Effect.Effect<number>;
 }
 
 export class DurableState extends Context.Tag("DurableState")<

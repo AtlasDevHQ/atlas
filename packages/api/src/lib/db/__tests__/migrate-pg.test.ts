@@ -14,6 +14,10 @@ import {
   PARKED_SWEEP_SQL,
   PARKED_RESOLVE_SQL,
 } from "@atlas/api/lib/durable-session";
+import {
+  SESSION_MEMORY_UPSERT_SQL,
+  SESSION_MEMORY_SWEEP_SQL,
+} from "@atlas/api/lib/durable-state";
 
 // Real-Postgres migration smoke. Skips cleanly when TEST_DATABASE_URL
 // is unset so local dev that hasn't run `bun run db:up` is unaffected.
@@ -2833,6 +2837,100 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     );
     expect(after.rows[0]!.status).toBe("running");
     expect(after.rows[0]!.parked_reason).toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
+
+  // #3757 (ADR-0020 slice 4) — working memory is swept WITH its session. The
+  // sweep dates a session by its newest `agent_runs` row, deletes memory for
+  // sessions whose runs are all terminal + past the window, and NEVER touches a
+  // session with a live (running/parked) run. Exercises the EXACT
+  // SESSION_MEMORY_SWEEP_SQL the helper runs against real Postgres (the EXISTS /
+  // NOT EXISTS / max(updated_at) interval math a mock pool can't validate).
+  async function seedMemory(conversationId: string, namespace: string, value: unknown) {
+    await pool.query(SESSION_MEMORY_UPSERT_SQL, [
+      conversationId,
+      "org-1",
+      namespace,
+      JSON.stringify(value ?? null),
+    ]);
+  }
+
+  it("#3757: sweeps memory for an expired terminal session, keeps a fresh one", async () => {
+    const expired = await newConversation();
+    const fresh = await newConversation();
+
+    // Expired session: one terminal run aged past a 7-day window + a memory slot.
+    await pool.query(TERMINAL_UPSERT_SQL, [
+      "10000000-0000-0000-0000-000000000001", expired, "org-1", "done", 1, JSON.stringify([]),
+    ]);
+    await pool.query(
+      `UPDATE agent_runs SET updated_at = now() - interval '8 days' WHERE conversation_id = $1`,
+      [expired],
+    );
+    await seedMemory(expired, "region", "EU");
+
+    // Fresh session: a terminal run inside the window + a memory slot.
+    await pool.query(TERMINAL_UPSERT_SQL, [
+      "10000000-0000-0000-0000-000000000002", fresh, "org-1", "done", 1, JSON.stringify([]),
+    ]);
+    await seedMemory(fresh, "table", "orders");
+
+    const swept = await pool.query<{ conversation_id: string }>(SESSION_MEMORY_SWEEP_SQL, ["7"]);
+    expect(swept.rows.map((r) => r.conversation_id)).toEqual([expired]);
+
+    // The expired session's memory is gone; the fresh session's memory survives.
+    const remaining = await pool.query<{ conversation_id: string }>(
+      `SELECT conversation_id FROM agent_session_memory WHERE conversation_id = ANY($1::uuid[]) ORDER BY conversation_id`,
+      [[expired, fresh]],
+    );
+    expect(remaining.rows.map((r) => r.conversation_id)).toEqual([fresh]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("#3757: never sweeps memory for a session with a live (running/parked) run, even if old", async () => {
+    const stillRunning = await newConversation();
+    const stillParked = await newConversation();
+
+    // A session whose newest run is `running`, aged well past the window: its
+    // memory is the LIVE working set and must NOT be swept.
+    await pool.query(RUNNING_UPSERT_SQL, [
+      "20000000-0000-0000-0000-000000000001", stillRunning, "org-1", "running", 1, JSON.stringify([]),
+    ]);
+    await pool.query(
+      `UPDATE agent_runs SET updated_at = now() - interval '30 days' WHERE conversation_id = $1`,
+      [stillRunning],
+    );
+    await seedMemory(stillRunning, "ctx", "live");
+
+    // A session parked awaiting approval, also old: still non-terminal → kept.
+    await pool.query(PARKED_UPSERT_SQL, [
+      "20000000-0000-0000-0000-000000000002", stillParked, "org-1", "parked", 1, JSON.stringify([]), "req-x",
+    ]);
+    await pool.query(
+      `UPDATE agent_runs SET updated_at = now() - interval '30 days' WHERE conversation_id = $1`,
+      [stillParked],
+    );
+    await seedMemory(stillParked, "ctx", "awaiting");
+
+    const swept = await pool.query(SESSION_MEMORY_SWEEP_SQL, ["7"]);
+    expect(swept.rowCount).toBe(0);
+
+    const remaining = await pool.query<{ conversation_id: string }>(
+      `SELECT DISTINCT conversation_id FROM agent_session_memory WHERE conversation_id = ANY($1::uuid[]) ORDER BY conversation_id`,
+      [[stillRunning, stillParked].sort()],
+    );
+    expect(remaining.rowCount).toBe(2); // both kept
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("#3757: the FK cascade also removes memory when the conversation is deleted", async () => {
+    const conversationId = await newConversation();
+    await seedMemory(conversationId, "region", "EU");
+    // Deleting the conversation cascades to its memory (migration 0145 FK) — the
+    // second leg of "swept with its session" for the conversation-delete path.
+    await pool.query(`DELETE FROM conversations WHERE id = $1`, [conversationId]);
+    const remaining = await pool.query(
+      `SELECT 1 FROM agent_session_memory WHERE conversation_id = $1`,
+      [conversationId],
+    );
+    expect(remaining.rowCount).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
 });
 

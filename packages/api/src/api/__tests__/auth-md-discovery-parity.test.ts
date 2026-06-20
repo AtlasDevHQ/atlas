@@ -98,6 +98,18 @@ describe("auth-md discovery parity — collectViolations across region fixtures"
     expect(violations).toEqual([]);
   });
 
+  it("returns no violations for an empty fixtures slice (no doc to compare)", () => {
+    // Regression guard: with no fixtures the host-independent scope check used
+    // to run against an empty `""` document and report every advertised scope
+    // as "absent from /auth.md" — a false positive. An empty slice is a misuse,
+    // not a parity failure, so the contract is: no fixtures → no violations.
+    const violations = collectViolations({
+      fixtures: [],
+      advertisedScopes: ADVERTISED_SCOPES,
+    });
+    expect(violations).toEqual([]);
+  });
+
   it("flags a host drift that lives only in the SECOND (eu) fixture", () => {
     // The eu doc names the infra api-eu host where the brand-mirror mcp-eu host
     // is expected — proving host parity runs per-fixture, not just on the first.

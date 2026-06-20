@@ -369,20 +369,31 @@ export function endpointParityViolations(label: string, doc: string): string[] {
 /**
  * Run every parity check across all host fixtures + the host-independent scope
  * check, and return the combined violation list. Pure: the caller owns I/O.
+ *
+ * With no fixtures there is nothing to compare against, so there are no
+ * violations — return early. Without this guard the host-independent scope
+ * check would run against an empty `""` document (`fixtures[0]` is undefined)
+ * and report *every* advertised scope as "named in .well-known but absent from
+ * /auth.md" — a false positive, since there is no document to be absent from.
+ * `main()` always passes a non-empty `HOST_FIXTURES`, but this function is
+ * exported, so the empty-input contract is stated explicitly.
  */
 export function collectViolations(input: {
   fixtures: readonly { label: string; doc: string; hosts: ResolvedHosts }[];
   advertisedScopes: readonly string[];
 }): string[] {
+  if (input.fixtures.length === 0) return [];
+
   const out: string[] = [];
   for (const f of input.fixtures) {
     out.push(...hostParityViolations(f.label, f.doc, f.hosts));
     out.push(...endpointParityViolations(f.label, f.doc));
   }
   // Scope parity is host-independent — the `mcp:*` set the prose names doesn't
-  // vary by region — so check it once against the first fixture's doc.
-  const firstDoc = input.fixtures[0]?.doc ?? "";
-  out.push(...scopeParityViolations(firstDoc, input.advertisedScopes));
+  // vary by region — so check it once against the first fixture's doc. The
+  // early return above guarantees at least one fixture, so `fixtures[0]` is
+  // present (no empty-doc fallback needed).
+  out.push(...scopeParityViolations(input.fixtures[0].doc, input.advertisedScopes));
   return out;
 }
 

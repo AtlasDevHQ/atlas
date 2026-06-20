@@ -34,7 +34,7 @@ Agent(
            convergence per Step 5 — sweep reviews + comments + the PR body, address
            actionable findings back-and-forth, acknowledge (never block on) approvability /
            needs-human verdicts. Merge only when green AND own-branch AND external reviews
-           converged. Halt and report if a review can't converge, a gate is broken, or
+           converged (wait out any in-progress 'eyes' review first — never merge or ask while a bot is mid-review). Halt and report if a review can't converge, a gate is broken, or
            anything is ambiguous. Report the PR + each reviewer's verdict + outcome."
 )
 ```

@@ -71,11 +71,20 @@ External reviewers (review bots AND humans) post *after* `/pr` and are **slower 
    gh api repos/AtlasDevHQ/atlas/pulls/<N>/comments     # inline review threads
    ```
    ⚠️ Some bots edit their summary **into the PR body** between markers (Greptile: `<!-- greptile_comment -->`) — `reviews`/`comments` both miss it; only `--json body` catches it. Ignore your own (author) output and stale verdicts on superseded SHAs — only the latest per reviewer on the head SHA counts; a flag may already be fixed by a later commit, so reconcile against the merged diff, don't assume it's live.
+
+   ⚠️ **Don't sweep a review that's still running, and NEVER surface a merge decision while a bot still has "eyes" on the PR.** An in-progress review hasn't reached a verdict — reading it now gets a stale/empty result, and merging *or* asking the human while it's mid-review is exactly the premature call we're avoiding (#3839). Greptile shows its state in the **body block**: 👀 while reviewing, 👍 when done, and a `Last reviewed commit` tag at the bottom naming the SHA it actually reviewed. Greptile has finished the **current head iff that SHA equals `headRefOid`** (a fresh push re-triggers it, so the tag lags — eyes up — until it catches up):
+   ```bash
+   HEAD_SHA=$(gh pr view <N> -R AtlasDevHQ/atlas --json headRefOid -q .headRefOid)
+   GREPTILE_SHA=$(gh pr view <N> -R AtlasDevHQ/atlas --json body -q '.body' \
+     | grep -i 'Last reviewed commit' | grep -oE '/commit/[0-9a-f]{40}' | grep -oE '[0-9a-f]{40}' | tail -1)
+   # eyes still up while GREPTILE_SHA != HEAD_SHA (or the block is absent right after a push)
+   ```
+   If any review bot is still mid-review on the head SHA, it is **not converged** — wait it out (bounded: poll ~every 30–60s, up to ~10 min), then re-sweep. Do **not** merge and do **not** `AskUserQuestion` while eyes are up. If it still hasn't landed after the bound, proceed advisory and say so in the report — `main` is staging, a late bot review is fixed forward, never a block.
 2. **Categorize each reviewer's latest output:**
    - **Actionable finding** (a code concern, or a summary flagging real behavior/risk) → treat like a panel finding: fix it, `git commit -o <files>`, push. The push re-triggers the reviewers on the new SHA → **back to step 1.** This is the back-and-forth — iterate until no reviewer has an open actionable finding.
    - **Ambiguous / architecturally significant fix** → `AskUserQuestion`; don't guess.
    - **Approvability / "needs human review" / policy sign-off with no code ask** → **acknowledge only.** Quote it in the report. It does **NOT** block the merge and is **NOT** a halt — `main` deploys to staging, not prod (`prod` is `/release`-gated behind a human). Never sit waiting on a human-approval verdict.
-3. **Converged** when, on the head SHA: required CI green, internal panel was clean, and every external reviewer is either re-reviewed-clean or carries only an acknowledged non-actionable verdict → **merge.** (A required check that goes red after a push is serviced the same way — fix, `git commit -o`, push, re-sweep — not a new path.)
+3. **Converged** when, on the head SHA: required CI green, internal panel was clean, **every review bot has actually finished reviewing the head SHA (no lingering "eyes" — e.g. Greptile's `Last reviewed commit` == `headRefOid`),** and every external reviewer is either re-reviewed-clean or carries only an acknowledged non-actionable verdict → **merge.** (A required check that goes red after a push is serviced the same way — fix, `git commit -o`, push, re-sweep — not a new path.)
 
 Cap the back-and-forth at **3 reviewer rounds** like the panel; if it won't converge, STOP and ask.
 

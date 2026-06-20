@@ -41,6 +41,7 @@ import { starterPrompts } from "./routes/starter-prompts";
 import { subProcessorSubscriptions } from "./routes/sub-processor-subscriptions";
 import { contact } from "./routes/contact";
 import { wellKnown } from "./routes/well-known";
+import { authMd } from "./routes/auth-md";
 
 const log = createLogger("api");
 const tracer = trace.getTracer("atlas");
@@ -201,6 +202,12 @@ app.route("/api/v1/contact", contact);
 // hosted MCP endpoint. Public, CORS-permissive — these are discovery
 // documents that any client must be able to fetch unauthenticated.
 app.route("/.well-known", wellKnown);
+
+// /auth.md — agent-onboarding discovery document (#3824). A descriptive
+// Markdown file that narrates Atlas's real registration flow (DCR + PKCE +
+// start_trial) for any auth.md-aware agent. Public, CORS-permissive,
+// SaaS/managed-gated (404 off managed auth) — mirrors the .well-known router.
+app.route("/auth.md", authMd);
 
 // Onboarding routes — self-serve signup flow (test-connection, complete setup).
 try {

@@ -49,20 +49,35 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
 ```
 All gates must pass. Fix anything red (these are usually small). Run full `bun run test` once here even if `--affected` was green.
 
-**Step 5 — Open the PR and watch it**
+**Step 5 — Open the PR, then service it to convergence**
 
 ```
 /pr
 ```
-`/pr` branches/commits/pushes and opens the PR with `Closes #<N>`. Then **subscribe to its activity so this session services CI + review bots**:
+`/pr` branches/commits/pushes and opens the PR with `Closes #<N>`. Then **keep this session alive to service CI + every external reviewer**:
 
 ```
 subscribe_pr_activity for the new PR
 ```
-On each event:
-- actionable + unambiguous → push the fix, re-kick CI
-- ambiguous / architectural → `AskUserQuestion`
-- green on the head SHA AND panel was clean → merge
+
+External reviewers (review bots AND humans) post *after* `/pr` and are **slower than required CI** — so do NOT merge the instant CI greens. Give them a round, then sweep them explicitly before every merge attempt.
+
+**The external-review loop — reviewer-agnostic.** Read whatever reviewers are installed; never hardcode names (today Macroscope + Greptile; tomorrow Codex, Claude, Cline, a human — same handling):
+
+1. **Sweep every reviewer on the current head SHA.** They post in *three different places* — miss one and you miss the review:
+   ```bash
+   gh pr view <N> -R AtlasDevHQ/atlas --json reviews,latestReviews,headRefOid,body
+   gh api repos/AtlasDevHQ/atlas/issues/<N>/comments   # bot summaries (Macroscope, …) post here
+   gh api repos/AtlasDevHQ/atlas/pulls/<N>/comments     # inline review threads
+   ```
+   ⚠️ Some bots edit their summary **into the PR body** between markers (Greptile: `<!-- greptile_comment -->`) — `reviews`/`comments` both miss it; only `--json body` catches it. Ignore your own (author) output and stale verdicts on superseded SHAs — only the latest per reviewer on the head SHA counts; a flag may already be fixed by a later commit, so reconcile against the merged diff, don't assume it's live.
+2. **Categorize each reviewer's latest output:**
+   - **Actionable finding** (a code concern, or a summary flagging real behavior/risk) → treat like a panel finding: fix it, `git commit -o <files>`, push. The push re-triggers the reviewers on the new SHA → **back to step 1.** This is the back-and-forth — iterate until no reviewer has an open actionable finding.
+   - **Ambiguous / architecturally significant fix** → `AskUserQuestion`; don't guess.
+   - **Approvability / "needs human review" / policy sign-off with no code ask** → **acknowledge only.** Quote it in the report. It does **NOT** block the merge and is **NOT** a halt — `main` deploys to staging, not prod (`prod` is `/release`-gated behind a human). Never sit waiting on a human-approval verdict.
+3. **Converged** when, on the head SHA: required CI green, internal panel was clean, and every external reviewer is either re-reviewed-clean or carries only an acknowledged non-actionable verdict → **merge.** (A required check that goes red after a push is serviced the same way — fix, `git commit -o`, push, re-sweep — not a new path.)
+
+Cap the back-and-forth at **3 reviewer rounds** like the panel; if it won't converge, STOP and ask.
 
 **HARD HALTS (never autonomous):**
 - **Fork PR** (`isCrossRepository: true`) → STOP, surface provenance, get human sign-off. Never `--admin` past `fork-pr-gate`.
@@ -79,7 +94,7 @@ git worktree remove ../atlas-wt-<slug>
 
 **Step 7 — Report**
 
-PR URL · issue closed · CI/merge status · panel rounds it took · anything you halted on.
+PR URL · issue closed · CI/merge status · panel rounds it took · **each external reviewer's verdict** (addressed / acknowledged) · anything you halted on.
 
 ---
 

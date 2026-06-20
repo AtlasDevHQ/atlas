@@ -7,6 +7,92 @@ import { applyBrandColor, OKLCH_RE } from "./use-dark-mode";
 
 const API_KEY_STORAGE_KEY = "atlas-api-key";
 
+/**
+ * #3749 — per-send body marker that routes a chat request to the durable-resume
+ * endpoint instead of `/chat`. Set on the `body` of a `regenerate(...)` call
+ * (resume continues the interrupted turn, so it adds no new user message). The
+ * transport's `prepareSendMessagesRequest` strips it and rewrites the target URL
+ * to `POST /chat/{conversationId}/resume`.
+ */
+export const ATLAS_RESUME_MARKER = "__atlasResume" as const;
+
+/**
+ * #3749 — decide whether a chat send carries the resume marker and, if so,
+ * resolve the durable-resume request shape. Pure (no refs / no React) so the
+ * routing decision is unit-testable in isolation. Returns the `{ api, body }`
+ * override that re-targets `POST /chat/{conversationId}/resume` (no body — the
+ * server re-enters the interrupted turn from its checkpoint), or `null` to fall
+ * through to a normal `/chat` request. A marked call with no conversation id to
+ * resume against (defensive — the affordance is gated on a mounted conversation)
+ * also falls through.
+ */
+export function resolveResumeRequest(
+  apiUrl: string,
+  callBody: Record<string, unknown> | undefined,
+  resumeConversationId: string | null,
+): { api: string; body: Record<string, never> } | null {
+  if (!callBody || !callBody[ATLAS_RESUME_MARKER]) return null;
+  if (!resumeConversationId) return null;
+  return {
+    api: `${apiUrl}/api/v1/chat/${resumeConversationId}/resume`,
+    body: {},
+  };
+}
+
+/**
+ * #3749 — decide whether an `x-conversation-id` / `x-run-id` response header
+ * should fire its capture callback: present, and different from the last value
+ * we surfaced (so a multi-request stream doesn't re-fire on every chunk's
+ * response). Pure so the dedupe rule is unit-testable. Returns the captured id
+ * to surface, or `null` to do nothing.
+ */
+export function nextCapturedId(
+  headerValue: string | null,
+  lastValue: string | null,
+): string | null {
+  if (headerValue && headerValue !== lastValue) return headerValue;
+  return null;
+}
+
+/** The Atlas routing fields layered onto a normal `/chat` request body. */
+export interface ChatRoutingInputs {
+  conversationId?: string | null;
+  connectionId?: string | null;
+  connectionGroupId?: string | null;
+  routingMode?: "auto" | "pin" | "all" | null;
+  /** Always sent when present (even `[]`) so a re-include clears the row (#3066). */
+  restExcludedDatasourceIds?: readonly string[] | undefined;
+  /** Always sent when present (even `null`) so a clear nulls the row (#3067). */
+  restFocusDatasourceId?: string | null | undefined;
+}
+
+/**
+ * #3749 — build the normal `/chat` request body. Extracted as a pure function
+ * so the field-inclusion rules (omit-when-absent for the routing scope, but
+ * always-send for the REST exclude-set/focus even at their empty values) are
+ * unit-testable without rendering the hook. Sets `messages` explicitly since the
+ * AI SDK stops auto-merging the message list once `prepareSendMessagesRequest`
+ * is supplied. The per-call `body` is NOT forwarded (only the resume marker ever
+ * rides it, and that's consumed before this builds).
+ */
+export function buildChatRequestBody(
+  messages: unknown,
+  inputs: ChatRoutingInputs,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { messages };
+  if (inputs.conversationId) body.conversationId = inputs.conversationId;
+  if (inputs.connectionId) body.connectionId = inputs.connectionId;
+  if (inputs.connectionGroupId) body.connectionGroupId = inputs.connectionGroupId;
+  if (inputs.routingMode) body.routingMode = inputs.routingMode;
+  if (inputs.restExcludedDatasourceIds !== undefined) {
+    body.restExcludedDatasourceIds = [...inputs.restExcludedDatasourceIds];
+  }
+  if (inputs.restFocusDatasourceId !== undefined) {
+    body.restFocusDatasourceId = inputs.restFocusDatasourceId;
+  }
+  return body;
+}
+
 // Module-level cache — survives client-side navigation (component unmount/remount).
 let _cachedAuthMode: AuthMode | null = null;
 let _cachedBrandColor: string | null = null;
@@ -18,6 +104,21 @@ export interface UseAtlasTransportOptions {
   getConversationId: () => string | null;
   /** Called when a new conversation ID is captured from x-conversation-id response header */
   onNewConversationId: (id: string) => void;
+  /**
+   * #3749 — called when a run ID is captured from the `x-run-id` response header
+   * (present on both a fresh turn and a resume). The chat surface tracks the
+   * latest run id so a subsequent reload can correlate an interrupted/parked run.
+   * Optional: SDK/API callers that don't surface durability affordances omit it.
+   */
+  onRunId?: (runId: string) => void;
+  /**
+   * #3749 — returns the conversation id to resume against, used to build the
+   * `POST /chat/{conversationId}/resume` URL when a resume is triggered (a
+   * `regenerate({ body: { __atlasResume: true } })` call). Returns `null` when
+   * there is no conversation to resume (the resume affordance is gated on a
+   * mounted conversation, so this is non-null whenever resume actually fires).
+   */
+  getResumeConversationId?: () => string | null;
   /**
    * #2345 — per-turn execution target override. Returns the connection
    * id selected by the chat header env/member picker, or `null` to fall
@@ -74,6 +175,17 @@ export function useAtlasTransport(
 
   const onNewConversationIdRef = useRef(opts.onNewConversationId);
   onNewConversationIdRef.current = opts.onNewConversationId;
+
+  // #3749 — run-id capture + resume-target getter. Refs (not deps) for the same
+  // reason as the conversation-id callbacks: the transport is rebuilt only on
+  // auth/url change, never on these changing between turns.
+  const onRunIdRef = useRef(opts.onRunId);
+  onRunIdRef.current = opts.onRunId;
+  const getResumeConversationIdRef = useRef(opts.getResumeConversationId);
+  getResumeConversationIdRef.current = opts.getResumeConversationId;
+  // Track the last run id we surfaced so a multi-request stream doesn't re-fire
+  // the callback on every chunk's response — same dedupe shape as conversationId.
+  const lastRunIdRef = useRef<string | null>(null);
 
   // Internal ref — synced from getter every render, eagerly written on capture
   const conversationIdRef = useRef<string | null>(null);
@@ -258,47 +370,43 @@ export function useAtlasTransport(
       api: `${apiUrl}/api/v1/chat`,
       headers,
       credentials: isCrossOrigin ? "include" : undefined,
-      body: () => {
-        const body: Record<string, unknown> = {};
-        if (conversationIdRef.current) {
-          body.conversationId = conversationIdRef.current;
-        }
-        // #2345 — route the active env/member selection. Sent only
-        // when the picker has a value; the server falls back to the
-        // conversation's stored values (or legacy single-connection
-        // routing) when these fields are absent.
-        const connectionId = getConnectionIdRef.current?.();
-        if (connectionId) {
-          body.connectionId = connectionId;
-        }
-        const connectionGroupId = getConnectionGroupIdRef.current?.();
-        if (connectionGroupId) {
-          body.connectionGroupId = connectionGroupId;
-        }
-        // #2518 — Auto/Pin/All routing mode. Omitted when null so the
-        // server's NULL→"pin" back-compat default applies to legacy
-        // conversations that never went through the new picker.
-        const routingMode = getRoutingModeRef.current?.();
-        if (routingMode) {
-          body.routingMode = routingMode;
-        }
-        // #3066 — REST exclude-set. ALWAYS sent when the getter is present
-        // (even `[]`), so a re-include actually clears the row instead of
-        // inheriting the stale set. API/SDK callers that don't supply the
-        // getter omit the field and the server falls back to the row value.
-        const restExcluded = getRestExcludedDatasourceIdsRef.current?.();
-        if (restExcluded !== undefined) {
-          body.restExcludedDatasourceIds = [...restExcluded];
-        }
-        // #3067 — REST-only focus. ALWAYS sent when the getter is present (even
-        // `null`), so a clear actually nulls the row instead of inheriting the
-        // stale focus (the #3073 transport-omits-null bug class). Absent getter
-        // → field omitted (the server falls back to the row's value).
-        const restFocus = getRestFocusDatasourceIdRef.current?.();
-        if (restFocus !== undefined) {
-          body.restFocusDatasourceId = restFocus;
-        }
-        return body;
+      // `prepareSendMessagesRequest` (not the static `body`) so a per-call body
+      // marker can re-target the request to the durable-resume endpoint (#3749).
+      // The normal path returns the same fields the `body` builder used to.
+      prepareSendMessagesRequest: ({ messages, body: callBody }) => {
+        // #3749 — resume re-target. A `regenerate({ body: { __atlasResume: true }})`
+        // call carries the marker; rewrite the URL to the resume endpoint, which
+        // takes the conversation id in the path and NO body (it re-enters the
+        // interrupted turn from its server-side checkpoint). The marker never
+        // reaches the server. Falls through to a normal request when there's no
+        // conversation to resume against (defensive — the affordance is gated on
+        // a mounted conversation, so this is non-null whenever resume fires).
+        const resume = resolveResumeRequest(
+          apiUrl,
+          callBody as Record<string, unknown> | undefined,
+          getResumeConversationIdRef.current?.() ?? null,
+        );
+        if (resume) return resume;
+
+        // Snapshot the routing getters at fetch time. Inclusion rules live in
+        // `buildChatRequestBody`:
+        //   - conversationId / connectionId / connectionGroupId / routingMode
+        //     (#2345/#2518) are omitted when absent — the server falls back to
+        //     the conversation's stored values / legacy single-connection routing.
+        //   - restExcludedDatasourceIds (#3066) / restFocusDatasourceId (#3067)
+        //     are ALWAYS sent when the getter is present (even `[]` / `null`) so a
+        //     re-include/clear actually resets the row instead of inheriting the
+        //     stale value (the #3073 transport-omits-null bug class).
+        return {
+          body: buildChatRequestBody(messages, {
+            conversationId: conversationIdRef.current,
+            connectionId: getConnectionIdRef.current?.(),
+            connectionGroupId: getConnectionGroupIdRef.current?.(),
+            routingMode: getRoutingModeRef.current?.(),
+            restExcludedDatasourceIds: getRestExcludedDatasourceIdsRef.current?.(),
+            restFocusDatasourceId: getRestFocusDatasourceIdRef.current?.(),
+          }),
+        };
       },
       fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
         let response: Response;
@@ -315,6 +423,14 @@ export function useAtlasTransport(
         if (convId && convId !== conversationIdRef.current) {
           conversationIdRef.current = convId; // Write immediately so the next request in this stream uses the new ID (before React re-renders)
           onNewConversationIdRef.current(convId);
+        }
+        // #3749 — capture the run id (present on a fresh turn AND a resume) so the
+        // chat surface can correlate the active run. Deduped via `nextCapturedId`
+        // so a multi-request stream doesn't re-fire the callback on every chunk.
+        const runId = nextCapturedId(response.headers.get("x-run-id"), lastRunIdRef.current);
+        if (runId) {
+          lastRunIdRef.current = runId;
+          onRunIdRef.current?.(runId);
         }
         return response;
       }) as typeof fetch,

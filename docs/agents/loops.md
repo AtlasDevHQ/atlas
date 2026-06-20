@@ -142,7 +142,9 @@ and orphan-worktree cleanup is the teardown step.
 ### The internal-review panel
 
 The point of the inner loop is to review **before** the PR opens, with fresh-context agents
-rather than the implementer reading its own diff — and not to block on external review bots.
+rather than the implementer reading its own diff. It front-loads the catch so the post-`/pr`
+back-and-forth with external reviewers (§ below) stays short — it does not *replace* those
+reviewers, which are still swept and serviced to convergence after the PR opens.
 The reviewer panel is vendored from anthropics/claude-code's `pr-review-toolkit`, **tuned to
 Atlas's standards**, and lives in `.claude/agents/` (see `.claude/agents/README.md`):
 
@@ -160,9 +162,17 @@ re-reviewing the new diff until the panel is clean. Then `/ci` and `/pr`. The ex
 the four specialist axes the generic pass spreads thin, and because each is tuned to Atlas's
 checklist it produces gate-relevant findings instead of generic-reviewer noise.
 
-External bots + CI run **after** `/pr` opens and are serviced asynchronously via
-`subscribe_pr_activity` — a backstop for what the panel missed (cross-PR interactions,
-real-Postgres `-pg` shards, CodeQL), never a blocker the loop sits and waits on.
+External reviewers (review bots AND humans) + CI run **after** `/pr` opens and are serviced
+asynchronously via `subscribe_pr_activity` — a backstop for what the panel missed (cross-PR
+interactions, real-Postgres `-pg` shards, CodeQL). The L0 loop is **reviewer-agnostic**: it
+sweeps whatever reviewers are installed (Macroscope, Greptile, Codex, Claude, Cline, a human…)
+on the head SHA before every merge — across reviews, comments, **and the PR body** (some bots,
+e.g. Greptile, edit their summary into the body between markers, where `--json reviews,comments`
+misses it) — and **goes back-and-forth on actionable findings** until they converge, same
+discipline as the internal panel. What it does NOT do is *block on a human-approval verdict*:
+an approvability / "needs human review" / policy sign-off with no code ask is acknowledged
+(quoted in the report) and never stalls the merge, because `main` only deploys to staging —
+`prod` is `/release`-gated behind a human.
 
 ---
 

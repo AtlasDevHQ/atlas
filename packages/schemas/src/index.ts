@@ -18,4 +18,5 @@ export * from "./sandbox";
 export * from "./security";
 export * from "./semantic-entity-yaml";
 export * from "./session-memory";
+export * from "./durable-run";
 export * from "./sla";

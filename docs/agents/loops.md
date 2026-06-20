@@ -28,12 +28,17 @@ new machinery.
   `git worktree add … && cd … && bun install --frozen-lockfile` step. That is a thread
   that can spin up threads — it just *prints* the prompts today instead of *launching*
   them. The `Agent` tool with `isolation: "worktree"` is the launcher.
-- **The PR-watch loop is a first-class primitive.** `/pr` creates the PR;
+- **The PR-watch loop is a harness primitive.** `/pr` creates the PR; the harness's
   `subscribe_pr_activity` wakes the session on review comments and CI; the harness drives
   investigate → fix → push → re-kick until the PR is MERGED or CLOSED. No polling, no
   `sleep`.
 
 So the dispatcher and the reviewer-feedback loop are mostly wiring, not invention.
+
+> **A note on names.** `subscribe_pr_activity` and `send_later` (below) are *harness/runtime*
+> primitives, not repo commands or skills — don't grep `.claude/` for them. The one piece L0
+> still has to build is the wire that makes `/pr` *end* by subscribing (see L0); the
+> subscription capability itself is the harness's.
 
 ---
 
@@ -49,7 +54,8 @@ makes an overnight loop safe to run:
   `gh pr checks --watch` to go green on the head SHA; it does not force merges because it
   is impatient (#2206).
 - **Branch protection on `main` is on.** Required checks (`ci`, `api-tests (1/4)`–`(4/4)`,
-  Deploy Validation, CodeQL, Symlink Stub Build, `fork-pr-gate`) gate every merge.
+  Deploy Validation, `Analyze (javascript-typescript)`, Symlink Stub Build, `fork-pr-gate`)
+  gate every merge.
 
 The design rule that falls out: **a loop may run fully autonomous up to the merge gate on
 its own-branch PRs, and must halt for a human at every boundary the merge-discipline rules
@@ -147,9 +153,9 @@ Atlas's standards**, and lives in `.claude/agents/` (see `.claude/agents/README.
 | `pr-test-analyzer` | untested error paths, brittle tests, missing `-pg` fixtures | CLAUDE.md § Testing |
 | `comment-analyzer` | comment rot, restate-the-obvious, idiom mismatch | comment-density + `// intentionally ignored:` conventions |
 
-The dispatcher fans these out in **parallel** (`Agent`, fresh context) against the
+The L2 loop fans these out in **parallel** (`Agent`, fresh context) against the
 implementer's diff, collects findings, and hands them back to the implementer to address —
-re-reviewing the new diff until the panel is clean. Then `/ci` and `/pr`. The repo's tuned
+re-reviewing the new diff until the panel is clean. Then `/ci` and `/pr`. The existing
 `/code-review` and `/simplify` skills remain the canonical generic passes — the panel adds
 the four specialist axes the generic pass spreads thin, and because each is tuned to Atlas's
 checklist it produces gate-relevant findings instead of generic-reviewer noise.

@@ -37,6 +37,8 @@ Agent(
 
 **Concurrency cap: 3 in flight.** More than that and the worktrees thrash and reviews queue. Independent issues run in parallel; dependent ones wait in the frontier.
 
+> ⚠️ **Verify isolation — don't trust `isolation: "worktree"` alone for background workers.** On this shared checkout, `isolation: "worktree"` + `run_in_background` has let two agents race in the same tree. Each worker's `/ship-issue` Step 0 creates its own `git worktree`, but confirm `git worktree list` shows a distinct path + HEAD per worker before any of them edit or commit — and prefer issues that touch different directories to cut contention.
+
 **Step 3 — Heartbeat: drive to completion**
 
 Do NOT `sleep` or poll in a busy loop. You're woken by (a) background worker completions and (b) `subscribe_pr_activity` events. On each wake:

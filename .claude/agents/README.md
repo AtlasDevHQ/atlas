@@ -15,7 +15,7 @@ match Atlas's actual conventions (Pino `log.warn`/`console.debug`, `requestId` o
 not the upstream's Sentry/Statsig/`errorIds.ts` references.
 
 We deliberately did **not** vendor the toolkit's generic `code-reviewer` and `code-simplifier`
-agents: the repo's own `/code-review` and `/simplify` skills already know Atlas's conventions
+agents: the existing `/code-review` and `/simplify` skills already cover Atlas's conventions
 and remain the canonical generic passes. These four add the specialist axes a single generic
 pass spreads thin.
 
@@ -33,7 +33,7 @@ findings, they do not edit code.
 
 ## Usage
 
-- **In the loop:** the L2 dispatcher fans all four out in parallel against the implementer's
+- **In the loop:** the L2 loop fans all four out in parallel against the implementer's
   diff, then hands findings back to address before `/ci` + `/pr`.
 - **Ad hoc:** they auto-trigger by `description` match, or invoke one explicitly, e.g.
   "use silent-failure-hunter on this diff".

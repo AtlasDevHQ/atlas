@@ -49,6 +49,8 @@ Agent(
 
 Dispatch all N at once (the batch size IS the concurrency cap — keep it ≤ 5; beyond that worktrees thrash and reviews queue). Independent picks in Step 1 means they won't collide.
 
+> ⚠️ **Verify isolation — don't trust `isolation: "worktree"` alone for background workers.** On this shared checkout, `isolation: "worktree"` + `run_in_background` has let two agents race in the same tree. Each worker's `/ship-issue` Step 0 creates its own `git worktree`; confirm `git worktree list` shows a distinct path + HEAD per worker before any of them edit or commit.
+
 **Step 3 — Collect (NO refill)**
 
 Wait for the workers to finish (you're woken on completion). Unlike `/ship-milestone`, **do not re-resolve the frontier or dispatch newly-unblocked issues** — this batch is fixed at N. When all N have reached a terminal state (merged, or halted-for-human), report and stop.

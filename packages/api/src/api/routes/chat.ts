@@ -541,6 +541,7 @@ const chatResumeRoute = createRoute({
       description: "SSE stream of the resumed turn (same protocol as POST /chat).",
       content: { "text/event-stream": { schema: z.string() } },
     },
+    400: { description: "No analytics datasource configured", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: ErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Conversation not found, or nothing to resume", content: { "application/json": { schema: ErrorSchema } } },
@@ -1746,6 +1747,57 @@ chat.openapi(chatResumeRoute, async (c) => {
         }
         const handle = prepared.handle;
 
+        // F-77 — reserve against the aggregate per-conversation step ceiling
+        // BEFORE running the resumed agent loop, exactly as the chat handler does
+        // for a fresh turn. Without this gate a client could drive unbounded steps
+        // by repeatedly resuming the same run: each resumed `streamText` gets a
+        // fresh per-request budget (see the `stopWhen` note in agent.ts), so this
+        // conversation cap is the ONLY backstop on a resumed flow. The reservation
+        // charges the row by the worst-case step budget atomically (so concurrent
+        // resumes can't all pass at `cap − 1`) and the unused portion is refunded
+        // on stream finish. Reserved AFTER the lease claim so the `none`/`leased`/
+        // `error` early returns never charge the row; the budget-exceeded 429
+        // releases the just-claimed lease before returning so it can't wedge the
+        // run until TTL. `no_db` / `error` fail open so a transient internal-DB
+        // glitch never 429s the resume surface.
+        let reservedStepBudget: number | null = null;
+        const stepCap = getConversationStepCap(orgId);
+        if (stepCap > 0) {
+          const stepBudget = getReservationStepBudget(orgId);
+          const reservation = await reserveConversationBudget(conversationId, stepBudget, stepCap);
+          if (reservation.status === "exceeded") {
+            log.warn(
+              { requestId, conversationId, totalSteps: reservation.totalSteps, cap: stepCap },
+              "Conversation budget exceeded — rejecting resume",
+            );
+            // Audit so abuse detection picks up workspaces grinding the cap via resume.
+            logAdminAction({
+              actionType: ADMIN_ACTIONS.conversation.budgetExceeded,
+              targetType: "conversation",
+              targetId: conversationId,
+              status: "failure",
+              scope: "workspace",
+              metadata: { totalSteps: reservation.totalSteps, cap: stepCap },
+            });
+            // Release the lease we just claimed — the resume is rejected, so a
+            // held lease would only block a (future, under-budget) retry until TTL.
+            finishResume(handle);
+            return c.json(
+              {
+                error: "conversation_budget_exceeded",
+                message: "This conversation has reached its step limit. Start a new conversation to continue.",
+                retryable: false,
+                requestId,
+              },
+              429,
+            );
+          }
+          if (reservation.status === "ok") {
+            reservedStepBudget = stepBudget;
+          }
+          // status === "no_db" | "error" → fail open, no reservation charged.
+        }
+
         try {
           // Re-resolve the tool registry LIVE (actions + plugin tools), exactly
           // as the chat route does — the resumed turn's tools (whitelist/RLS
@@ -1777,10 +1829,10 @@ chat.openapi(chatResumeRoute, async (c) => {
 
           // Re-enter the agent loop from the checkpoint. `messages: []` is inert
           // — the `resume.transcript` is the model input; the loop continues from
-          // the last completed step. The resumed step accounting still counts
-          // against the F-77 conversation step cap (the cap is enforced at the
-          // row by `reserveConversationBudget`; resumed steps increment the same
-          // aggregate `total_steps` settled on stream finish).
+          // the last completed step. The resumed step accounting counts against
+          // the F-77 conversation step cap: the reservation above charged the row
+          // by the worst-case step budget; the actual resumed step delta is
+          // settled (and the unused portion refunded) on stream finish below.
           const agentResult = await runAgent({
             messages: [],
             ...(toolRegistry && { tools: toolRegistry }),
@@ -1832,6 +1884,33 @@ chat.openapi(chatResumeRoute, async (c) => {
           // Persist assistant steps after the resumed stream completes (same
           // fire-and-forget contract as the chat route).
           persistAssistantSteps({ conversationId, steps: agentResult.steps, label: "chat-resume" });
+
+          // F-77 — settle the resumed step delta. The reservation above charged
+          // the row by the worst-case step budget; refund the unused portion once
+          // the agent loop resolves so the conversation aggregate reflects real
+          // resumed spend. `agentResult.steps` is this call's NEW steps (the AI-SDK
+          // `streamText` count restarts at 0 on resume), which is exactly the delta
+          // to charge against the per-conversation aggregate. If the stream errors
+          // out we keep the full reservation charged — same conservative accounting
+          // as the chat route. Mirrors the chat handler's settlement.
+          if (reservedStepBudget !== null) {
+            const convIdForSettle = conversationId;
+            const reservedForSettle = reservedStepBudget;
+            void Promise.resolve(agentResult.steps)
+              .then((steps) => {
+                settleConversationSteps(convIdForSettle, reservedForSettle, steps.length);
+              })
+              .catch((err: unknown) => {
+                log.warn(
+                  {
+                    err: err instanceof Error ? err.message : String(err),
+                    requestId,
+                    conversationId: convIdForSettle,
+                  },
+                  "F-77 step-cap settlement skipped on resume — agent stream failed; reservation stays charged",
+                );
+              });
+          }
 
           throw new HTTPException(200, { res: streamResponse });
         } catch (err) {

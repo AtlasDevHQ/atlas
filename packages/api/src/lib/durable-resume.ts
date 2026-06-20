@@ -143,5 +143,5 @@ export async function prepareResume(
  * owner-token guard — releasing a lease another resumer re-claimed is a no-op.
  */
 export function finishResume(handle: Pick<ResumeHandle, "runId" | "leaseOwner">): void {
-  releaseResumeLease(handle.runId, handle.leaseOwner);
+  releaseResumeLease({ runId: handle.runId, leaseOwner: handle.leaseOwner });
 }

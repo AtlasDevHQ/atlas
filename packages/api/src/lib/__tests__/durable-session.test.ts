@@ -389,11 +389,23 @@ describe("loadAndLeaseResumableRun", () => {
     await loadAndLeaseResumableRun("conv-1", 0);
     expect((queryCalls[1]!.params as unknown[])[1]).toBe(String(DEFAULT_RESUME_LEASE_SECONDS));
   });
+
+  it("clamps a corrupt negative step_index to 0 at the read boundary", async () => {
+    queryRowsByCall = [
+      [{ id: "run-9" }],
+      [{ id: "run-9", org_id: null, step_index: -5, transcript: [] }],
+    ];
+    const claim = await loadAndLeaseResumableRun("conv-1", 300);
+    expect(claim.status).toBe("resumable");
+    if (claim.status !== "resumable") throw new Error("unreachable");
+    // A negative offset must never reach the resume math — clamp it non-negative.
+    expect(claim.run.stepIndex).toBe(0);
+  });
 });
 
 describe("releaseResumeLease", () => {
   it("clears the lease only while this resumer still owns it (owner-guarded)", () => {
-    releaseResumeLease("run-9", "owner-token-1");
+    releaseResumeLease({ runId: "run-9", leaseOwner: "owner-token-1" });
     expect(execCalls).toHaveLength(1);
     const call = execCalls[0]!;
     expect(call.sql).toContain("UPDATE agent_runs");
@@ -407,7 +419,7 @@ describe("releaseResumeLease", () => {
 
   it("is a no-op when no internal DB is configured", () => {
     hasInternalDB = false;
-    releaseResumeLease("run-9", "owner-token-1");
+    releaseResumeLease({ runId: "run-9", leaseOwner: "owner-token-1" });
     expect(execCalls).toHaveLength(0);
   });
 });

@@ -401,7 +401,13 @@ export async function loadAndLeaseResumableRun(
         runId: row.id,
         conversationId,
         orgId: row.org_id,
-        stepIndex: typeof row.step_index === "number" ? row.step_index : Number(row.step_index) || 0,
+        // Clamp non-negative at the read boundary: a corrupt negative
+        // `step_index` must not seed a negative resume offset (which would
+        // regress the step counter / starve the per-request budget downstream).
+        stepIndex: Math.max(
+          0,
+          typeof row.step_index === "number" ? row.step_index : Number(row.step_index) || 0,
+        ),
         transcript,
         leaseOwner,
       },
@@ -424,8 +430,19 @@ export async function loadAndLeaseResumableRun(
  * resumer whose release fires late can't wipe a lease a second resumer already
  * re-claimed (which would let a third fork the turn). Never throws; a failed
  * release just leaves the lease to lapse on its TTL.
+ *
+ * Takes a single object param (not two positional strings) so `runId` and
+ * `leaseOwner` can't be silently transposed at a call site — a swap would
+ * UPDATE nothing (the owner guard never matches) and leak the lease until its
+ * TTL with no error.
  */
-export function releaseResumeLease(runId: string, leaseOwner: string): void {
+export function releaseResumeLease({
+  runId,
+  leaseOwner,
+}: {
+  runId: string;
+  leaseOwner: string;
+}): void {
   if (!hasInternalDB()) return;
   try {
     internalExecute(

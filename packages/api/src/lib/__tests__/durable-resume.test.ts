@@ -27,7 +27,7 @@ mock.module("@atlas/api/lib/durable-session", () => ({
     lastClaimArgs = { conversationId, leaseSeconds: secs };
     return nextClaim;
   },
-  releaseResumeLease: (runId: string, leaseOwner: string) => {
+  releaseResumeLease: ({ runId, leaseOwner }: { runId: string; leaseOwner: string }) => {
     releaseCalls.push({ runId, leaseOwner });
   },
 }));

@@ -1407,6 +1407,16 @@ export async function runAgent({
       tools,
       temperature: 0.2,
       maxOutputTokens: 4096,
+      // #3747 — this cap is PER-`streamText`: `stepCountIs` counts the AI-SDK
+      // internal `stepNumber`, which restarts at 0 on a resumed run, so a resumed
+      // turn gets a fresh full N-step per-request budget here. That is intentional
+      // and NOT subtracted by `priorStepIndex`: a turn interrupted near the
+      // per-request cap must still be able to finish its remaining steps on
+      // resume, and subtracting the prior index could starve a legitimate resume
+      // (or, if the prior index exceeded N, stop it dead at zero). The real
+      // ceiling on a resumed flow is the per-CONVERSATION step cap (F-77),
+      // reserved + settled by the chat/resume route around this call — that
+      // aggregate is what bounds unbounded repeat-resume, not this per-request cap.
       stopWhen: stepCountIs(maxStepsOverride ?? getAgentMaxSteps()),
       // Per-step AI-SDK telemetry (#3183 L-2): emit `ai.streamText` /
       // `ai.streamText.doStream` child spans under the enclosing `atlas.agent`

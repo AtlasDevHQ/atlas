@@ -94,14 +94,19 @@ const mockGetConversation = mock((): Promise<{ ok: boolean; reason?: string; dat
   Promise.resolve({ ok: true, data: { id: "conv-1", messages: [] } }),
 );
 const mockPersistAssistantSteps = mock(() => {});
+const mockReserveConversationBudget = mock(
+  (): Promise<{ status: string; totalStepsBefore?: number; totalSteps?: number }> =>
+    Promise.resolve({ status: "ok", totalStepsBefore: 0 }),
+);
+const mockSettleConversationSteps = mock(() => {});
 mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mock(() => Promise.resolve({ id: "conv-1" })),
   addMessage: mock(() => {}),
   persistAssistantSteps: mockPersistAssistantSteps,
   getConversation: mockGetConversation,
   generateTitle: mock((q: string) => q.slice(0, 80)),
-  reserveConversationBudget: mock(() => Promise.resolve({ status: "ok", totalStepsBefore: 0 })),
-  settleConversationSteps: mock(() => {}),
+  reserveConversationBudget: mockReserveConversationBudget,
+  settleConversationSteps: mockSettleConversationSteps,
   listConversations: mock(() => Promise.resolve({ conversations: [], total: 0 })),
   deleteConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   starConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
@@ -196,6 +201,14 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
       text: Promise.resolve("answer"),
     });
     mockPersistAssistantSteps.mockReset();
+    mockReserveConversationBudget.mockReset();
+    mockReserveConversationBudget.mockResolvedValue({ status: "ok", totalStepsBefore: 0 });
+    mockSettleConversationSteps.mockReset();
+    // F-77 — the resume route runs the conversation step-cap gate. Disabled by
+    // default (cap unset) so existing wiring tests don't depend on a cap; the
+    // budget tests set it explicitly.
+    delete process.env.ATLAS_CONVERSATION_STEP_CAP;
+    delete process.env.ATLAS_AGENT_MAX_STEPS;
   });
 
   it("streams 200 with x-run-id + x-conversation-id headers and re-enters runAgent with the handle", async () => {
@@ -269,5 +282,68 @@ describe("POST /api/v1/chat/:conversationId/resume", () => {
     expect(res.status).toBe(401);
     expect(mockPrepareResume).not.toHaveBeenCalled();
     expect(mockRunAgent).not.toHaveBeenCalled();
+  });
+
+  // F-77 — the resume route must charge the same per-conversation step cap as the
+  // chat route, or a client could drive unbounded steps via repeated resumes.
+  it("rejects with conversation_budget_exceeded (429) when the cap is exceeded — never resumes, releases the lease", async () => {
+    process.env.ATLAS_CONVERSATION_STEP_CAP = "10";
+    mockReserveConversationBudget.mockResolvedValue({ status: "exceeded", totalSteps: 10 });
+
+    const res = await app.fetch(resumeRequest());
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { error: string; retryable: boolean };
+    expect(body.error).toBe("conversation_budget_exceeded");
+    expect(body.retryable).toBe(false);
+    // The resumed agent loop must never run when the cap is already spent.
+    expect(mockRunAgent).not.toHaveBeenCalled();
+    // The just-claimed lease is released so a rejected resume can't wedge the run.
+    expect(mockFinishResume).toHaveBeenCalledTimes(1);
+    // No settlement on the rejection path — nothing was charged for an agent run.
+    expect(mockSettleConversationSteps).not.toHaveBeenCalled();
+  });
+
+  it("charges the worst-case budget upfront and settles the resumed step delta on stream finish", async () => {
+    process.env.ATLAS_CONVERSATION_STEP_CAP = "10";
+    process.env.ATLAS_AGENT_MAX_STEPS = "5";
+    mockReserveConversationBudget.mockResolvedValue({ status: "ok", totalStepsBefore: 2 });
+    // Resumed stream resolves with 3 new steps ⇒ settlement refunds 5 − 3 = 2.
+    mockRunAgent.mockResolvedValue({
+      runId: "run-abc",
+      toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+      steps: Promise.resolve([{}, {}, {}]),
+      text: Promise.resolve("answer"),
+    } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+
+    const res = await app.fetch(resumeRequest());
+    expect(res.status).toBe(200);
+    // Reservation charged the row by the worst-case agent step budget upfront.
+    const reserveCalls = mockReserveConversationBudget.mock.calls as unknown as unknown[][];
+    expect(reserveCalls.length).toBe(1);
+    expect(reserveCalls[0]).toEqual([CONV_ID, 5, 10]);
+    // Settlement runs with the resumed delta (this call's new steps), reserved=5.
+    await Promise.resolve();
+    await Promise.resolve();
+    const settleCalls = mockSettleConversationSteps.mock.calls as unknown as unknown[][];
+    expect(settleCalls.length).toBe(1);
+    expect(settleCalls[0]).toEqual([CONV_ID, 5, 3]);
+  });
+
+  // F6 — a regression that drops the lease release would wedge the run until TTL.
+  it("releases the lease on the stream-finish (success) path", async () => {
+    const res = await app.fetch(resumeRequest());
+    expect(res.status).toBe(200);
+    // Drain the (empty) stream so onFinish fires.
+    await res.text();
+    expect(mockFinishResume).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the lease on the build-failure catch path (runAgent throws)", async () => {
+    mockRunAgent.mockRejectedValue(new Error("registry boom"));
+    const res = await app.fetch(resumeRequest());
+    // The failure is classified to a non-stream error response, not a 200 SSE.
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    // The lease must be released even though the stream object never existed.
+    expect(mockFinishResume).toHaveBeenCalledTimes(1);
   });
 });

@@ -106,6 +106,59 @@ describe("durable-state handle — ambient context", () => {
       expect(lastTable.get()).toBe("orders");
     });
   });
+
+  it("update() read-modify-writes over a seeded value", async () => {
+    queryImpl = async () => [{ namespace: "counter", value: 10 }];
+    const store = await buildDurableStateStore({
+      conversationId: "conv-1",
+      orgId: "org-1",
+      active: true,
+    });
+
+    runWithDurableState(store, () => {
+      const counter = defineDurableState<number>("counter");
+      counter.update((prev) => (prev ?? 0) + 5);
+      expect(counter.get()).toBe(15);
+    });
+    expect(store.drainDirty()).toEqual([{ namespace: "counter", value: 15 }]);
+  });
+});
+
+describe("LiveDurableStateStore.drainDirty — only slots written this turn", () => {
+  it("excludes a seeded slot that was only read, includes one that was written", async () => {
+    queryImpl = async () => [{ namespace: "seeded", value: "loaded" }];
+    const store = await buildDurableStateStore({
+      conversationId: "conv-1",
+      orgId: "org-1",
+      active: true,
+    });
+
+    runWithDurableState(store, () => {
+      const seeded = defineDurableState<string>("seeded");
+      const fresh = defineDurableState<string>("fresh");
+      expect(seeded.get()).toBe("loaded"); // read only → must NOT be re-committed
+      fresh.set("new"); // written → must be committed
+    });
+
+    // Only the written slot is dirty — a read of a seeded slot never re-upserts it.
+    expect(store.drainDirty()).toEqual([{ namespace: "fresh", value: "new" }]);
+  });
+
+  it("collapses repeated writes to one slot into a single last-write-wins entry", async () => {
+    const store = await buildDurableStateStore({
+      conversationId: "conv-1",
+      orgId: "org-1",
+      active: true,
+    });
+
+    runWithDurableState(store, () => {
+      const count = defineDurableState<number>("count");
+      count.set(1);
+      count.set(2);
+    });
+
+    expect(store.drainDirty()).toEqual([{ namespace: "count", value: 2 }]);
+  });
 });
 
 describe("Noop store inside a context — behavior identical to today", () => {
@@ -202,5 +255,23 @@ describe("commitSessionMemory — fire-and-forget upserts", () => {
     expect(() =>
       commitSessionMemory({ conversationId: "conv-1", orgId: "org-1", slots: [{ namespace: "a", value: 1 }] }),
     ).not.toThrow();
+  });
+
+  it("skips a single un-serializable slot without stranding the rest of the batch", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular; // JSON.stringify throws on this slot
+    expect(() =>
+      commitSessionMemory({
+        conversationId: "conv-1",
+        orgId: "org-1",
+        slots: [
+          { namespace: "bad", value: circular }, // throws inside the try → skipped
+          { namespace: "good", value: 2 }, // still committed
+        ],
+      }),
+    ).not.toThrow();
+    // The bad slot never reached internalExecute; the good slot still did.
+    expect(execCalls).toHaveLength(1);
+    expect((execCalls[0]!.params as unknown[])[2]).toBe("good");
   });
 });

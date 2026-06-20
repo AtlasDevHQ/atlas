@@ -184,6 +184,43 @@ async function driveTurn(
   }
 }
 
+/**
+ * A model that writes the slot in step 1, then blocks step 2 until `gate`
+ * resolves — simulating a turn interrupted mid-flight after the write, so no
+ * terminal commit can run. Mirrors the durable-session interruption model.
+ */
+function writeThenBlockModel(gate: Promise<void>): InstanceType<typeof MockLanguageModelV3> {
+  let call = 0;
+  return new MockLanguageModelV3({
+    doStream: async () => {
+      call++;
+      if (call === 1) {
+        return {
+          stream: convertArrayToReadableStream([
+            {
+              type: "tool-call",
+              toolCallId: "call-w",
+              toolName: "memTool",
+              input: JSON.stringify({ write: "midflight" }),
+            },
+            { type: "finish", usage: STOP_USAGE, finishReason: { unified: "tool-calls", raw: "tool_use" } },
+          ]),
+        };
+      }
+      await gate;
+      return { stream: convertArrayToReadableStream(FINAL_TEXT_STEP) };
+    },
+  });
+}
+
+async function waitFor(pred: () => boolean, timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitFor timed out");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 function memoryWrites() {
   return internalCalls.filter((c) => c.sql.includes("INSERT INTO agent_session_memory"));
 }
@@ -257,6 +294,33 @@ describe("durable working memory at the runAgent seam (#3754)", () => {
     await driveTurn(memToolModel({ write: "x" }));
     expect(memoryWrites()).toHaveLength(0);
     expect(capturedReads).toEqual([undefined]);
+  });
+
+  it("commits a slot at the per-step checkpoint boundary, before the turn terminates", async () => {
+    // Proves commitMemory is wired into writeCheckpoint (per-step), not only
+    // writeTerminal: an interrupted turn never reaches terminal, so resume-of-an-
+    // interrupted-run depends entirely on the per-step commit. If commitMemory
+    // were removed from writeCheckpoint, no memory write would land while blocked.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = () => r();
+    });
+    mockModel = writeThenBlockModel(gate);
+    const result = await runAgent({
+      messages: userMessages("hi"),
+      conversationId: "conv-1",
+      tools: memToolRegistry,
+    });
+    const consumed = Promise.resolve(result.consumeStream?.()).catch(() => {});
+
+    // While step 2 is blocked, the step-1 write is already persisted...
+    await waitFor(() => memoryWrites().length >= 1);
+    expect(memoryRows.find((r) => r.namespace === "note")?.value).toBe("midflight");
+    // ...and the turn has not terminated yet (no terminal checkpoint).
+    expect(terminalWrites()).toHaveLength(0);
+
+    release();
+    await consumed;
   });
 
   it("never disrupts the turn when a memory write fails (fail-soft)", async () => {

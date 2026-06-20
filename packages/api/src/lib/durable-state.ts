@@ -55,10 +55,22 @@ export const SESSION_MEMORY_LOAD_SQL =
   `SELECT namespace, value FROM agent_session_memory WHERE conversation_id = $1`;
 
 /**
- * Upsert one named slot. `value` is overwritten unconditionally — last write
- * wins within a session. `org_id` is COALESCEd so a later write that happens to
- * carry a null org can never regress a known tenant scope to null (the tenant
- * scope later slices enforce on).
+ * Upsert one named slot. `value` is overwritten unconditionally. `org_id` is
+ * COALESCEd so a later write that happens to carry a null org can never regress a
+ * known tenant scope to null (the tenant scope later slices enforce on).
+ *
+ * ORDERING CAVEAT: writes ride the fire-and-forget `internalExecute` path, which
+ * does NOT order concurrent dispatches. Cross-turn ordering is safe (turn N+1
+ * loads its slots only after turn N has drained + committed). But two writes to
+ * the SAME slot within ONE turn (committed at successive step boundaries) are
+ * independent upserts with no monotonic guard — unlike the transcript checkpoint,
+ * whose `step_index = GREATEST` guard makes it reorder-safe, this row is keyed on
+ * the conversation and spans turns, so a per-turn step index can't serve as that
+ * guard. If two same-slot writes within a turn land out of order the earlier
+ * value can win (a lost update). Bounded + acceptable for slice 1 (off by
+ * default; same-slot repeat-within-a-turn is the only exposure); a
+ * conversation-global monotonic guard is deferred to the bounds/safety slice
+ * (#3757).
  */
 export const SESSION_MEMORY_UPSERT_SQL =
   `INSERT INTO agent_session_memory (conversation_id, org_id, namespace, value, updated_at)
@@ -106,7 +118,11 @@ class LiveDurableStateStore implements DurableStateStore {
     readonly orgId: string | null,
     initial: Map<string, unknown>,
   ) {
-    this.slots = initial;
+    // Defensive copy: the store owns its slot map for the turn's lifetime, so a
+    // caller's map can't alias internal state (today `buildDurableStateStore`
+    // always hands us a fresh map, but the copy keeps that an invariant of the
+    // type, not of the single call site).
+    this.slots = new Map(initial);
   }
 
   get(namespace: string): unknown {
@@ -205,6 +221,16 @@ const declaredSlots = new Set<string>();
  * name, and a duplicate declaration. The returned handle reads/writes the active
  * session's store and throws ({@link DurableStateContextError}) if accessed
  * outside one.
+ *
+ * KNOWN LIMITATION (slice 1): the declared `T` is NOT validated on read. Slots
+ * round-trip through JSONB, and `get()` trusts the persisted value as `T` (an
+ * unchecked cast) — a slot read back from an older deploy, a different declared
+ * type, or hand-edited data could violate `T` at runtime, and non-JSON types
+ * (`Date`, `Map`, `bigint`, `undefined`-valued fields) do not survive the
+ * round-trip. Use JSON-serializable, stable-shaped values. A validating variant
+ * (`{ schema }` → `schema.parse` on read) is future work. Relatedly, an explicit
+ * `set(null)` persists as JSON `null` and reads back as `null`, NOT the declared
+ * `default` (the default fires only when a slot is unset, i.e. truly `undefined`).
  */
 export function defineDurableState<T = unknown>(
   name: string,
@@ -272,10 +298,14 @@ export async function loadSessionMemory(conversationId: string): Promise<Map<str
 }
 
 /**
- * Persist a batch of dirty slots (fire-and-forget). Each slot upsert rides the
- * shared `internalExecute` circuit breaker; a per-slot failure is type-narrowed,
- * logged, and never thrown — a degraded memory store costs continuity, never the
- * current answer (ADR-0020). No-op without an internal DB or with no slots.
+ * Persist a batch of dirty slots (fire-and-forget). Each upsert is dispatched
+ * through `internalExecute`, whose own circuit breaker swallows + logs ASYNC DB
+ * failures (the row is lost, the stream is not disrupted). The per-slot
+ * `try/catch` here guards only the SYNCHRONOUS `JSON.stringify` throw (a circular
+ * slot value), and — because it wraps each iteration — a single un-serializable
+ * slot is logged and skipped without stranding the others in the batch. Either
+ * way a degraded memory store costs continuity, never the current answer
+ * (ADR-0020). No-op without an internal DB or with no slots.
  */
 export function commitSessionMemory(args: {
   conversationId: string;

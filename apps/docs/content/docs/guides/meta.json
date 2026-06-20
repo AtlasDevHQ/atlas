@@ -45,6 +45,7 @@
     "plugin-marketplace",
     "embedding-widget",
     "sharing-conversations",
+    "session-memory",
     "multi-tenancy",
     "caching",
     "model-routing",

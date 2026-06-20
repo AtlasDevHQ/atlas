@@ -38,6 +38,7 @@ import { ChangePasswordDialog } from "./admin/change-password-dialog";
 import { usePasswordStatus } from "@/ui/hooks/use-password-status";
 import { Star, TableProperties, BookOpen, Send, Pin } from "lucide-react";
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
+import { ConversationMemoryControl } from "./conversation-memory-control";
 import { PromptLibrary } from "./chat/prompt-library";
 import { StarterPromptList } from "./chat/starter-prompt-list";
 import type { StarterPrompt } from "@useatlas/types/starter-prompt";
@@ -1123,6 +1124,15 @@ export function AtlasChat({
                   >
                     <TableProperties className="size-4" />
                   </Button>
+                  {/* #3758 — view + reset this conversation's durable working
+                      memory. Only once the conversation is persisted (has an
+                      id); a brand-new chat has nothing remembered yet. */}
+                  {conversationId && (
+                    <ConversationMemoryControl
+                      conversationId={conversationId}
+                      className="size-11 sm:size-8 text-zinc-500 dark:text-zinc-400"
+                    />
+                  )}
                   <ThemeToggle className="size-11 sm:size-8 text-zinc-500 dark:text-zinc-400" />
                   {isSignedIn && <UserMenu />}
                   </>

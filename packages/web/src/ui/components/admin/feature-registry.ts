@@ -66,6 +66,7 @@ export const FEATURE_NAMES = [
   "Security Adoption",
   "Security Posture",
   "Semantic Layer",
+  "Session Memory",
   "Sessions",
   "Settings",
   "SLA Monitoring",

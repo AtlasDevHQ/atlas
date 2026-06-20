@@ -355,3 +355,209 @@ export async function buildDurableStateStore(args: {
   const initial = await loadSessionMemory(args.conversationId);
   return new LiveDurableStateStore(args.conversationId, args.orgId, initial);
 }
+
+// ── Read / reset affordance (admin + in-conversation) — #3758, ADR-0020 ────────
+//
+// The slots a session accumulates are otherwise invisible + sticky: a wrong
+// remembered fact ("the user means EU revenue") rides every subsequent turn with
+// no way to see or clear it. These helpers back two surfaces — an admin
+// view/reset (org-scoped) and an in-conversation reset (the owner clears their
+// own chat). Tenant scoping is enforced by JOINing to `conversations`: a
+// read/reset only touches slots whose owning conversation matches the caller's
+// scope, so neither surface can reach another org's (or another user's) memory.
+// Unlike `commitSessionMemory`, these are AWAITED (not the fire-and-forget
+// circuit-breaker path) so a reset is observable on the very next read — the
+// runAgent seam (`loadSessionMemory` at turn start) then threads nothing.
+// Noop-safe: no internal DB → empty read, zero-clear reset, no throw — behavior
+// identical to today.
+
+/** One persisted slot, as surfaced to the read/reset affordance (wire-shaped). */
+export interface SessionMemorySlotRecord {
+  readonly namespace: string;
+  readonly value: unknown;
+  /** ISO-8601 timestamp of the slot's last write. */
+  readonly updatedAt: string;
+}
+
+/** A session (conversation) and the memory slots it has accumulated — the admin list row. */
+export interface SessionMemoryView {
+  readonly conversationId: string;
+  readonly title: string | null;
+  /** ISO-8601 timestamp of the most recently written slot in the session. */
+  readonly updatedAt: string;
+  readonly slots: SessionMemorySlotRecord[];
+}
+
+/** Ownership scope a scoped read/reset is bound to (see {@link conversationScopeClause}). */
+interface ConversationScope {
+  readonly userId?: string | null;
+  readonly orgId?: string | null;
+  /**
+   * When `true`, scope strictly to `c.org_id = $` (admin surface — never reach a
+   * legacy NULL-org row from another tenant). When falsy, the
+   * `(c.org_id = $ OR c.org_id IS NULL)` fallback applies (the owner surface,
+   * where `userId` already pins the row and NULL-org legacy conversations stay
+   * reachable by their owner).
+   */
+  readonly strictOrg?: boolean;
+}
+
+/**
+ * Build the conversation-ownership WHERE suffix shared by the scoped read/reset,
+ * mirroring `scopeClause` in lib/conversations.ts but against the joined
+ * `conversations c` alias. Soft-deleted conversations are always excluded. With
+ * neither id (auth disabled / self-hosted no-auth) the scope is just the
+ * soft-delete guard — matching the unscoped behavior of the conversations CRUD
+ * helpers when auth is off. The returned `sql` is never empty, so callers append
+ * it after `AND` safely.
+ */
+function conversationScopeClause(
+  startIdx: number,
+  scope: ConversationScope,
+): { sql: string; params: unknown[] } {
+  const parts = ["c.deleted_at IS NULL"];
+  const params: unknown[] = [];
+  let idx = startIdx;
+  if (scope.userId) {
+    parts.push(`c.user_id = $${idx++}`);
+    params.push(scope.userId);
+  }
+  if (scope.orgId) {
+    parts.push(scope.strictOrg ? `c.org_id = $${idx++}` : `(c.org_id = $${idx++} OR c.org_id IS NULL)`);
+    params.push(scope.orgId);
+  }
+  return { sql: parts.join(" AND "), params };
+}
+
+/** Coerce a pg `timestamptz` (a `Date`, or an already-stringified value) to an ISO-8601 string. */
+function toIso(value: unknown): string {
+  return value instanceof Date ? value.toISOString() : String(value);
+}
+
+/**
+ * Read one session's persisted slots, ownership-scoped. Returns `[]` when the
+ * conversation is outside the caller's scope (a cross-org / cross-user read sees
+ * nothing — no existence oracle), already empty, or there is no internal DB.
+ * Fail-soft: a query failure logs + yields `[]`.
+ */
+export async function readSessionMemorySlots(args: {
+  conversationId: string;
+  userId?: string | null;
+  orgId?: string | null;
+  strictOrg?: boolean;
+}): Promise<SessionMemorySlotRecord[]> {
+  if (!hasInternalDB()) return [];
+  const scope = conversationScopeClause(2, args);
+  try {
+    const rows = await internalQuery<{ namespace: string; value: unknown; updatedAt: unknown }>(
+      `SELECT m.namespace, m.value, m.updated_at AS "updatedAt"
+         FROM agent_session_memory m
+         JOIN conversations c ON c.id = m.conversation_id
+        WHERE m.conversation_id = $1 AND ${scope.sql}
+        ORDER BY m.namespace`,
+      [args.conversationId, ...scope.params],
+    );
+    return rows.map((r) => ({ namespace: r.namespace, value: r.value, updatedAt: toIso(r.updatedAt) }));
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), conversationId: args.conversationId },
+      "Failed to read durable session memory slots",
+    );
+    return [];
+  }
+}
+
+/**
+ * List every session in the org that has accumulated memory, each with its
+ * slots — the admin overview, most-recently-active first. Strict org scope
+ * (never another tenant's legacy NULL-org rows). Noop-safe → `[]`; fail-soft →
+ * `[]`.
+ */
+export async function listSessionMemory(orgId: string): Promise<SessionMemoryView[]> {
+  if (!hasInternalDB()) return [];
+  try {
+    const rows = await internalQuery<{
+      conversationId: string;
+      title: string | null;
+      namespace: string;
+      value: unknown;
+      updatedAt: unknown;
+    }>(
+      `SELECT m.conversation_id AS "conversationId", c.title, m.namespace, m.value, m.updated_at AS "updatedAt"
+         FROM agent_session_memory m
+         JOIN conversations c ON c.id = m.conversation_id
+        WHERE c.org_id = $1 AND c.deleted_at IS NULL
+        ORDER BY m.conversation_id, m.namespace`,
+      [orgId],
+    );
+    type MutableView = {
+      conversationId: string;
+      title: string | null;
+      updatedAt: string;
+      slots: SessionMemorySlotRecord[];
+    };
+    const bySession = new Map<string, MutableView>();
+    for (const row of rows) {
+      const updatedAt = toIso(row.updatedAt);
+      let view = bySession.get(row.conversationId);
+      if (!view) {
+        view = { conversationId: row.conversationId, title: row.title, updatedAt, slots: [] };
+        bySession.set(row.conversationId, view);
+      }
+      view.slots.push({ namespace: row.namespace, value: row.value, updatedAt });
+      // The session's updatedAt tracks its most recently written slot. ISO-8601
+      // strings sort lexically, so a plain compare picks the latest.
+      if (updatedAt > view.updatedAt) view.updatedAt = updatedAt;
+    }
+    return [...bySession.values()].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), orgId },
+      "Failed to list durable session memory",
+    );
+    return [];
+  }
+}
+
+/**
+ * Clear a session's slots (all, or a single `namespace`), ownership-scoped +
+ * idempotent. Returns the number of slots cleared — `0` when the conversation is
+ * outside the caller's scope, already empty, the namespace is absent, or there
+ * is no internal DB (so a Noop reset is a clean no-op, never an error). Awaited
+ * (not the fire-and-forget commit path) so the very next read deterministically
+ * sees empty and the next turn threads nothing. Fail-soft → `0`.
+ */
+export async function resetSessionMemory(args: {
+  conversationId: string;
+  userId?: string | null;
+  orgId?: string | null;
+  strictOrg?: boolean;
+  namespace?: string;
+}): Promise<number> {
+  if (!hasInternalDB()) return 0;
+  const scope = conversationScopeClause(2, args);
+  const params: unknown[] = [args.conversationId, ...scope.params];
+  let namespaceClause = "";
+  if (args.namespace !== undefined) {
+    namespaceClause = ` AND m.namespace = $${params.length + 1}`;
+    params.push(args.namespace);
+  }
+  try {
+    const rows = await internalQuery<{ namespace: string }>(
+      `DELETE FROM agent_session_memory m
+         USING conversations c
+        WHERE m.conversation_id = c.id
+          AND m.conversation_id = $1
+          AND ${scope.sql}${namespaceClause}
+       RETURNING m.namespace`,
+      params,
+    );
+    return rows.length;
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), conversationId: args.conversationId },
+      "Failed to reset durable session memory",
+    );
+    return 0;
+  }
+}

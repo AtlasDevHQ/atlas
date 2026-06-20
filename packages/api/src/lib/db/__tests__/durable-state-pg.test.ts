@@ -21,6 +21,9 @@ import { MANAGED_AUTH_MIGRATIONS, _resetPool, type InternalPool } from "@atlas/a
 import {
   SESSION_MEMORY_UPSERT_SQL,
   loadSessionMemory,
+  readSessionMemorySlots,
+  listSessionMemory,
+  resetSessionMemory,
 } from "@atlas/api/lib/durable-state";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
@@ -128,5 +131,93 @@ describeIfPg("durable session memory SQL (real Postgres, #3754)", () => {
     expect(mem.get("a")).toBe(1);
     expect(mem.get("b")).toBe(2);
     expect(mem.size).toBe(2);
+  });
+
+  // ── Read / reset affordance SQL (#3758) — the JOIN scope is a planning-error
+  // surface the in-memory unit mock can't catch. ───────────────────────────────
+
+  /** Insert a scoped conversation (org/user) and seed one slot for it. */
+  async function seedScopedSession(opts: {
+    org: string | null;
+    user: string | null;
+    title?: string | null;
+    namespace?: string;
+    value?: unknown;
+    deleted?: boolean;
+  }): Promise<string> {
+    const conv = await pool.query<{ id: string }>(
+      `INSERT INTO conversations (id, org_id, user_id, title, deleted_at)
+            VALUES (gen_random_uuid(), $1, $2, $3, ${opts.deleted ? "now()" : "NULL"})
+         RETURNING id`,
+      [opts.org, opts.user, opts.title ?? null],
+    );
+    const id = conv.rows[0]!.id;
+    await pool.query(SESSION_MEMORY_UPSERT_SQL, [
+      id,
+      opts.org,
+      opts.namespace ?? "note",
+      JSON.stringify(opts.value ?? "v"),
+    ]);
+    return id;
+  }
+
+  it("readSessionMemorySlots returns an org-scoped session's slots", async () => {
+    const id = await seedScopedSession({ org: "org-1", user: "user-1", namespace: "region", value: "EU" });
+    const slots = await readSessionMemorySlots({ conversationId: id, orgId: "org-1", strictOrg: true });
+    expect(slots).toHaveLength(1);
+    expect(slots[0]!.namespace).toBe("region");
+    expect(slots[0]!.value).toBe("EU");
+    expect(typeof slots[0]!.updatedAt).toBe("string");
+    expect(slots[0]!.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("readSessionMemorySlots returns [] for a cross-org read (tenant isolation)", async () => {
+    const id = await seedScopedSession({ org: "org-1", user: "user-1" });
+    expect(await readSessionMemorySlots({ conversationId: id, orgId: "org-2", strictOrg: true })).toEqual([]);
+  });
+
+  it("readSessionMemorySlots (owner scope) returns [] for a different user", async () => {
+    const id = await seedScopedSession({ org: "org-1", user: "user-1" });
+    expect(await readSessionMemorySlots({ conversationId: id, userId: "user-2", orgId: "org-1" })).toEqual([]);
+    // ...and the owning user does see it.
+    expect(await readSessionMemorySlots({ conversationId: id, userId: "user-1", orgId: "org-1" })).toHaveLength(1);
+  });
+
+  it("listSessionMemory groups an org's sessions and excludes other orgs + soft-deleted", async () => {
+    await seedScopedSession({ org: "org-1", user: "user-1", title: "keep", namespace: "a", value: 1 });
+    await seedScopedSession({ org: "org-2", user: "user-9", title: "other-org" });
+    await seedScopedSession({ org: "org-1", user: "user-1", title: "deleted", deleted: true });
+    const sessions = await listSessionMemory("org-1");
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.title).toBe("keep");
+    expect(sessions[0]!.slots).toHaveLength(1);
+  });
+
+  it("resetSessionMemory clears an org-scoped session and is idempotent", async () => {
+    const id = await seedScopedSession({ org: "org-1", user: "user-1", namespace: "a", value: 1 });
+    await pool.query(SESSION_MEMORY_UPSERT_SQL, [id, "org-1", "b", JSON.stringify(2)]);
+
+    const cleared = await resetSessionMemory({ conversationId: id, orgId: "org-1", strictOrg: true });
+    expect(cleared).toBe(2);
+    // A subsequent read sees empty — the runAgent seam threads nothing.
+    expect(await readSessionMemorySlots({ conversationId: id, orgId: "org-1", strictOrg: true })).toEqual([]);
+    // Idempotent: a second reset clears nothing.
+    expect(await resetSessionMemory({ conversationId: id, orgId: "org-1", strictOrg: true })).toBe(0);
+  });
+
+  it("resetSessionMemory clears nothing for a cross-org request (tenant isolation)", async () => {
+    const id = await seedScopedSession({ org: "org-1", user: "user-1" });
+    expect(await resetSessionMemory({ conversationId: id, orgId: "org-2", strictOrg: true })).toBe(0);
+    // The owning org's slot survives.
+    expect(await readSessionMemorySlots({ conversationId: id, orgId: "org-1", strictOrg: true })).toHaveLength(1);
+  });
+
+  it("resetSessionMemory clears a single namespace, leaving the rest", async () => {
+    const id = await seedScopedSession({ org: "org-1", user: "user-1", namespace: "a", value: 1 });
+    await pool.query(SESSION_MEMORY_UPSERT_SQL, [id, "org-1", "b", JSON.stringify(2)]);
+    const cleared = await resetSessionMemory({ conversationId: id, orgId: "org-1", strictOrg: true, namespace: "a" });
+    expect(cleared).toBe(1);
+    const remaining = await readSessionMemorySlots({ conversationId: id, orgId: "org-1", strictOrg: true });
+    expect(remaining.map((s) => s.namespace)).toEqual(["b"]);
   });
 });

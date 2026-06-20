@@ -59,6 +59,7 @@ export const navGroups: NavGroup[] = [
       { href: "/admin/starter-prompts", label: "Starter Prompts" },
       { href: "/admin/actions", label: "Actions" },
       { href: "/admin/proactive-chat", label: "Proactive Chat" },
+      { href: "/admin/session-memory", label: "Session Memory" },
     ],
   },
   {

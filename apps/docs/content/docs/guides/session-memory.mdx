@@ -1,0 +1,44 @@
+---
+title: Session Memory
+description: View and reset the durable working memory the agent accumulates per conversation.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+As an agent works through a conversation it stashes **durable working memory** — derived facts it
+should carry into later turns without re-deriving them ("the user means EU revenue", "the prod replica
+is lagging"). This memory is per **conversation** (the session), not per turn: a fact written in one
+answer is still there in the next, and survives a crash or resume. It is stored separately from the
+message transcript and threaded back into the agent's context on subsequent turns.
+
+Because remembered facts are sticky, a wrong one would otherwise ride every future answer. Atlas gives
+two ways to see what a session remembers and clear it.
+
+## In the chat — reset the active conversation
+
+Once a conversation has started, a **brain icon** appears in the chat header. Open it to see what Atlas
+remembers for the current conversation, and use **Reset memory** to clear it. After a reset the next
+turn threads no stale value — the agent re-derives anything it needs.
+
+Use this to correct a sticky fact without leaving the chat: if the agent has latched onto the wrong
+interpretation, reset and re-state what you mean.
+
+## In the admin console — view and reset any session
+
+Admins can review and clear memory across the workspace at **Admin → Session Memory**. The page lists
+every conversation in your workspace that has accumulated memory, each expandable to show its individual
+slots (a named value and when it was last written). You can:
+
+- **Reset a whole session** — clear every slot for a conversation.
+- **Reset a single slot** — clear one named value, leaving the rest.
+
+Reads and resets are **tenant-scoped**: an admin only ever sees and clears their own workspace's
+sessions. Every admin reset is recorded in the [audit log](/guides/audit-retention).
+
+<Callout type="info" title="Requires an internal database">
+  Durable working memory is persisted to Atlas's internal Postgres. On a minimal self-host with no
+  internal database configured, there is nothing to remember: the memory view is empty and reset is a
+  no-op — the agent behaves exactly as it does without durable memory. See
+  [ADR-0020](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0020-durable-agent-sessions.md) for
+  the design.
+</Callout>

@@ -125,6 +125,10 @@ jobs:
       - name: Check SaaS env reference ↔ SAAS_ENV_KEYS drift (#3707)
         run: bash scripts/check-saas-env-doc.sh
 
+      - name: Check /auth.md ↔ .well-known discovery parity (#3825)
+        # Runs from packages/api so the guard's `@atlas/api/*` imports resolve.
+        run: cd packages/api && bun scripts/check-auth-md-discovery-parity.ts
+
   lint:
     name: lint
     runs-on: ubuntu-latest

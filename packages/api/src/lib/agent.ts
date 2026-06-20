@@ -51,6 +51,7 @@ import {
 import {
   buildDurableStateStore,
   commitSessionMemory,
+  renderDurableMemoryBlock,
   runWithDurableState,
   type DurableStateStore,
 } from "./durable-state";
@@ -579,6 +580,17 @@ export function buildSystemParam(
    * cache breakpoint as the direct Anthropic provider. Ignored otherwise.
    */
   modelId?: string,
+  /**
+   * #3755 — pre-rendered durable working-memory block (the persisted slot values
+   * for this session). Appended at a single deterministic position — LAST in the
+   * system content, after every other optional section — so the agent carries
+   * forward what it recorded earlier without a tool round-trip, AND so it lives in
+   * the SYSTEM prompt: out-of-band of the message transcript, where a context-
+   * compaction pass (#3759, which only rewrites the message array) can never evict
+   * it (the slice-2 invariant recorded in ADR-0020). Empty string / omitted ⇒
+   * nothing appended (memory off / empty / no internal DB → no change vs. today).
+   */
+  memoryBlock?: string,
 ): string | SystemModelMessage {
   let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext);
 
@@ -592,6 +604,13 @@ export function buildSystemParam(
 
   if (warnings && warnings.length > 0) {
     content += "\n\n## Warnings\n\n" + warnings.map((w) => `- ${w}`).join("\n");
+  }
+
+  // #3755 — durable working memory, threaded LAST so it sits at one stable,
+  // deterministic position regardless of which optional sections above are
+  // present. Empty string ⇒ no block (no behavior change vs. today).
+  if (memoryBlock) {
+    content += "\n\n" + memoryBlock;
   }
 
   const cacheProvider = cacheProviderFor(providerType, modelId);
@@ -1348,10 +1367,20 @@ export async function runAgent({
   const hookedTools = wrapToolsWithHooks(rawTools, { userId: userId ?? undefined, conversationId });
   const tools = wrapToolsWithDurableState(hookedTools, memoryStore);
 
+  // #3755 — render the deterministic working-memory block from the slots loaded
+  // for this session (a fresh turn AND a resumed turn both load via
+  // `buildDurableStateStore` above, so memory re-threads identically on resume).
+  // The Noop store snapshots empty ⇒ "" ⇒ nothing threaded, so an inactive turn
+  // (memory off / no internal DB / nothing written) is byte-identical to today.
+  // Threaded into the SYSTEM prompt below — out-of-band of the compactable
+  // transcript — so a compaction pass can never summarize or evict it (ADR-0020).
+  const memoryBlock = renderDurableMemoryBlock(memoryStore.snapshot());
+
   // System prompt is built once and pinned: it carries the semantic index +
-  // glossary and is passed to the model separately, so it never enters the
-  // message array compaction rewrites (#3759).
-  const systemParam = buildSystemParam(providerType, activeRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext, presentationMode ?? "developer", restRepresentation, resolvedModelId);
+  // glossary AND the durable memory block (#3755), and is passed to the model
+  // separately, so neither ever enters the message array compaction rewrites
+  // (#3759).
+  const systemParam = buildSystemParam(providerType, activeRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext, presentationMode ?? "developer", restRepresentation, resolvedModelId, memoryBlock);
 
   // #3759 — context compaction. Resolved once per turn (knobs hot-reload at the
   // next turn via the settings cache). Off by default ⇒ the prepareStep below

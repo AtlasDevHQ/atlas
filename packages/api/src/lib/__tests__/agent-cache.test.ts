@@ -410,6 +410,44 @@ describe("buildSystemParam", () => {
     expect(msg.content).toContain("## Warnings");
     expect(msg.content).toContain("Test warning");
   });
+
+  // #3755 — durable working-memory block is threaded at a single deterministic
+  // position: LAST in the system content, after every other optional section.
+  // The runAgent-seam tests assert the block is present/absent; these pin the
+  // POSITION the acceptance criterion promises so a re-ordering can't slip past.
+  test("durable memory block is appended LAST — after the warnings section", () => {
+    const result = buildSystemParam(
+      "openai",
+      undefined,
+      ["A warning"], // warnings
+      undefined, // orgSemanticIndex
+      undefined, // learnedPatternsSection
+      undefined, // routingContext
+      undefined, // boundDashboardContext
+      "developer", // presentationMode
+      undefined, // restRepresentation
+      undefined, // modelId
+      "## Working Memory\n\n- `note`: \"orders\"", // memoryBlock
+    );
+    expect(typeof result).toBe("string");
+    const content = result as string;
+    expect(content).toContain("## Working Memory");
+    // Block sits AFTER warnings...
+    expect(content.indexOf("## Working Memory")).toBeGreaterThan(content.indexOf("## Warnings"));
+    // ...and is genuinely the last section (nothing follows it).
+    expect(content.trimEnd().endsWith('- `note`: "orders"')).toBe(true);
+  });
+
+  test("empty durable memory block threads nothing (no change vs today)", () => {
+    const withEmpty = buildSystemParam(
+      "openai", undefined, undefined, undefined, undefined,
+      undefined, undefined, "developer", undefined, undefined, "",
+    );
+    const without = buildSystemParam("openai");
+    // An empty memoryBlock is byte-identical to omitting it entirely.
+    expect(withEmpty).toBe(without);
+    expect(withEmpty as string).not.toContain("## Working Memory");
+  });
 });
 
 // ---------------------------------------------------------------------------

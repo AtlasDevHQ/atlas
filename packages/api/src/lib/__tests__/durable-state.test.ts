@@ -36,6 +36,8 @@ const {
   readSessionMemorySlots,
   listSessionMemory,
   resetSessionMemory,
+  renderDurableMemoryBlock,
+  DURABLE_MEMORY_BLOCK_HEADING,
   NOOP_DURABLE_STATE_STORE,
   DurableStateContextError,
   RESERVED_NAMESPACE_PREFIX,
@@ -178,6 +180,92 @@ describe("Noop store inside a context — behavior identical to today", () => {
       expect(count.get()).toBe(42);
     });
     expect(NOOP_DURABLE_STATE_STORE.drainDirty()).toEqual([]);
+  });
+});
+
+describe("store.snapshot — read-only view of every current slot (#3755)", () => {
+  it("snapshots seeded + written slots; the Noop store snapshots empty", async () => {
+    queryImpl = async () => [{ namespace: "seeded", value: "loaded" }];
+    const store = await buildDurableStateStore({
+      conversationId: "conv-1",
+      orgId: "org-1",
+      active: true,
+    });
+
+    runWithDurableState(store, () => {
+      defineDurableState<string>("fresh").set("new");
+    });
+
+    const snap = store.snapshot();
+    expect(snap.get("seeded")).toBe("loaded"); // seeded from the prior load
+    expect(snap.get("fresh")).toBe("new"); // written this turn
+    expect(snap.size).toBe(2);
+
+    // The Noop store snapshots empty — an inactive turn threads nothing.
+    expect(NOOP_DURABLE_STATE_STORE.snapshot().size).toBe(0);
+  });
+
+  it("returns a defensive copy — mutating the snapshot does not touch the store", async () => {
+    queryImpl = async () => [{ namespace: "a", value: 1 }];
+    const store = await buildDurableStateStore({
+      conversationId: "conv-1",
+      orgId: "org-1",
+      active: true,
+    });
+    const snap = store.snapshot() as Map<string, unknown>;
+    snap.set("a", 999);
+    snap.set("b", 2);
+    // The store's own view is unchanged.
+    expect(store.snapshot().get("a")).toBe(1);
+    expect(store.snapshot().has("b")).toBe(false);
+  });
+});
+
+describe("renderDurableMemoryBlock — deterministic memory block (#3755)", () => {
+  it("returns an empty string for an empty store (threads nothing)", () => {
+    expect(renderDurableMemoryBlock(new Map())).toBe("");
+  });
+
+  it("renders the heading + every slot, sorted by name for stability", () => {
+    // Insertion order is b, a — the load query has no ORDER BY, so the renderer
+    // must sort so the block is byte-stable across loads (cache-friendly).
+    const block = renderDurableMemoryBlock(
+      new Map<string, unknown>([
+        ["lastTable", "orders"],
+        ["filters", { region: "EU" }],
+      ]),
+    );
+    expect(block).toContain(DURABLE_MEMORY_BLOCK_HEADING);
+    // Sorted: `filters` before `lastTable`.
+    expect(block.indexOf("`filters`")).toBeLessThan(block.indexOf("`lastTable`"));
+    // Values are rendered as compact JSON.
+    expect(block).toContain('- `lastTable`: "orders"');
+    expect(block).toContain('- `filters`: {"region":"EU"}');
+  });
+
+  it("renders an explicit null value rather than dropping the slot", () => {
+    const block = renderDurableMemoryBlock(new Map<string, unknown>([["cleared", null]]));
+    expect(block).toContain("- `cleared`: null");
+  });
+
+  it("fail-soft: a circular slot value renders a placeholder, never throws", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    let block!: string;
+    expect(() => {
+      block = renderDurableMemoryBlock(new Map<string, unknown>([["bad", circular]]));
+    }).not.toThrow();
+    expect(block).toContain("- `bad`: [unserializable]");
+  });
+
+  it("renders a placeholder (not a literal 'undefined') for a value JSON.stringify drops", () => {
+    // JSON.stringify of a top-level function/symbol returns the JS value
+    // `undefined` WITHOUT throwing — the `?? "[unserializable]"` guard must catch
+    // it so no stray literal `undefined` lands in the block. (Defensive: a loaded
+    // snapshot is JSONB data, never a function — but the renderer must stay total.)
+    const block = renderDurableMemoryBlock(new Map<string, unknown>([["fn", () => 1]]));
+    expect(block).toContain("- `fn`: [unserializable]");
+    expect(block).not.toContain("undefined");
   });
 });
 

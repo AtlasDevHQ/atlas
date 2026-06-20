@@ -44,6 +44,33 @@ export function toEnvelopeResult(error: AtlasMcpToolError): CallToolResult {
 }
 
 /**
+ * Build a SUCCESS `CallToolResult` whose single `text` content block is the
+ * pretty-printed JSON of `value`. The success counterpart to
+ * {@link toEnvelopeResult}: it lives here so the success envelope shape is
+ * defined ONCE (the datasource + semantic tool files import it) and a change to
+ * how success bodies are serialized lands in a single place (#3609).
+ */
+export function toJsonContent(value: unknown): CallToolResult {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+  };
+}
+
+/**
+ * Like {@link toJsonContent} but also attaches `structuredContent` (#3498).
+ * Used by tools that declare an `outputSchema` (e.g. `runMetric`): the MCP SDK
+ * requires `structuredContent` on every non-error result once an output schema
+ * is present. The text block is retained for clients that don't consume
+ * structured output; both are built from the same object so they can't drift.
+ */
+export function toStructuredContent(value: Record<string, unknown>): CallToolResult {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    structuredContent: value,
+  };
+}
+
+/**
  * Convenience constructor — assemble an envelope from positional args
  * without forcing every call site to spell out the object literal. Empty
  * `hint` / `request_id` / `retry_after` arguments are omitted from the

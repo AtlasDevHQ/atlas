@@ -52,6 +52,8 @@ import {
   classifyExecuteSqlError,
   envelope,
   toEnvelopeResult,
+  toJsonContent,
+  toStructuredContent,
 } from "./error-envelope.js";
 import { createMcpDispatch } from "./mcp-dispatch.js";
 import { runMetricOutputShape } from "./structured-output.js";
@@ -96,27 +98,6 @@ export interface RegisterSemanticToolsOptions {
   clientId?: string;
   /** #3504 — OAuth token scopes, threaded onto each dispatch's RequestContext. */
   scopes?: readonly string[];
-}
-
-function toJsonContent(value: unknown): CallToolResult {
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
-  };
-}
-
-/**
- * Like {@link toJsonContent} but also attaches `structuredContent` (#3498).
- * Used by tools that declare an `outputSchema` (runMetric): the MCP SDK
- * requires `structuredContent` on every non-error result once an output
- * schema is present. The text block is retained for clients that don't
- * consume structured output; both are built from the same object so they
- * can't drift.
- */
-function toStructuredContent(value: Record<string, unknown>): CallToolResult {
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
-    structuredContent: value,
-  };
 }
 
 export function registerSemanticTools(
@@ -164,7 +145,7 @@ export function registerSemanticTools(
     async ({ filter }): Promise<CallToolResult> =>
       dispatch(
         "listEntities",
-        { requiresWrite: false, minRole: "member" },
+        { requiresWrite: false, requiresBoundOrg: false, minRole: "member" },
         async () => {
           // Bind orgId + published mode so MCP discovery reads the same
           // universe `executeSQL`'s published-mode whitelist sees. External MCP
@@ -216,7 +197,7 @@ export function registerSemanticTools(
     async ({ name, names }): Promise<CallToolResult> =>
       dispatch(
         "describeEntity",
-        { requiresWrite: false, minRole: "member" },
+        { requiresWrite: false, requiresBoundOrg: false, minRole: "member" },
         async () => {
           // The MCP raw-shape inputSchema can't express a cross-field
           // "exactly one of" refinement, so enforce it here. Both-or-neither
@@ -314,7 +295,7 @@ export function registerSemanticTools(
     async ({ term }): Promise<CallToolResult> =>
       dispatch(
         "searchGlossary",
-        { requiresWrite: false, minRole: "member" },
+        { requiresWrite: false, requiresBoundOrg: false, minRole: "member" },
         async () => {
           const matches = searchGlossary(term);
 
@@ -412,7 +393,7 @@ export function registerSemanticTools(
         // runMetric executes datasource SQL via executeSQL.execute → gate-0
         // billing (#3437/#3601), like executeSQL. Metadata-only tools above are
         // deliberately not billing-gated. Member-callable read.
-        { requiresWrite: false, minRole: "member", checksBilling: true },
+        { requiresWrite: false, requiresBoundOrg: false, minRole: "member", checksBilling: true },
         async (requestId) => {
           if (filters && Object.keys(filters).length > 0) {
             return toEnvelopeResult(

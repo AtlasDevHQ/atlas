@@ -1280,7 +1280,9 @@ conversations.openapi(getConversationMemoryRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
     }
     // Owner-scoped: the helper JOINs to `conversations` and matches the
-    // caller's userId (+ org), so a conversation they don't own returns []. No
+    // caller's userId when present (+ org), so a conversation they don't own
+    // returns []. (With auth off — no userId — the scope falls back to the
+    // soft-delete guard, mirroring the unscoped conversations CRUD helpers.) No
     // internal DB → [] (the helper short-circuits) — empty, not an error.
     const slots = yield* Effect.promise(() =>
       readSessionMemorySlots({ conversationId: id, userId: user?.id, orgId: user?.activeOrganizationId }),

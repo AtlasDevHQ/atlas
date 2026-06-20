@@ -387,7 +387,7 @@ describe("readSessionMemorySlots — tenant-scoped read", () => {
       { namespace: "lastTable", value: "orders", updatedAt: when },
       { namespace: "region", value: "EU", updatedAt: "2026-06-20T11:00:00.000Z" },
     ];
-    const slots = await readSessionMemorySlots({ conversationId: "conv-1", orgId: "org-1", strictOrg: true });
+    const slots = await readSessionMemorySlots({ conversationId: "conv-1", orgId: "org-1" });
     expect(slots).toEqual([
       { namespace: "lastTable", value: "orders", updatedAt: "2026-06-20T10:00:00.000Z" },
       { namespace: "region", value: "EU", updatedAt: "2026-06-20T11:00:00.000Z" },
@@ -395,7 +395,7 @@ describe("readSessionMemorySlots — tenant-scoped read", () => {
   });
 
   it("JOINs conversations and threads the org scope (admin: strict org, no NULL fallback)", async () => {
-    await readSessionMemorySlots({ conversationId: "conv-1", orgId: "org-1", strictOrg: true });
+    await readSessionMemorySlots({ conversationId: "conv-1", orgId: "org-1" });
     const { sql, params } = queryCalls[0]!;
     expect(sql).toContain("JOIN conversations c");
     expect(sql).toContain("c.deleted_at IS NULL");
@@ -414,7 +414,7 @@ describe("readSessionMemorySlots — tenant-scoped read", () => {
 
   it("returns [] when the scope matches nothing (cross-org read sees no rows)", async () => {
     queryImpl = async () => []; // a wrong-org conversation never matches the JOIN scope
-    expect(await readSessionMemorySlots({ conversationId: "conv-1", orgId: "other-org", strictOrg: true })).toEqual([]);
+    expect(await readSessionMemorySlots({ conversationId: "conv-1", orgId: "other-org" })).toEqual([]);
   });
 
   it("is fail-soft: a query throw yields []", async () => {
@@ -465,7 +465,7 @@ describe("resetSessionMemory — tenant-scoped, idempotent clear", () => {
 
   it("DELETEs scoped to the conversation + org and returns the cleared count", async () => {
     queryImpl = async () => [{ namespace: "a" }, { namespace: "b" }];
-    const cleared = await resetSessionMemory({ conversationId: "conv-1", orgId: "org-1", strictOrg: true });
+    const cleared = await resetSessionMemory({ conversationId: "conv-1", orgId: "org-1" });
     expect(cleared).toBe(2);
     const { sql, params } = queryCalls[0]!;
     expect(sql).toContain("DELETE FROM agent_session_memory m");
@@ -497,7 +497,7 @@ describe("resetSessionMemory — tenant-scoped, idempotent clear", () => {
 
   it("clears nothing for an out-of-scope conversation (cross-org reset matches no rows)", async () => {
     queryImpl = async () => []; // wrong org → JOIN scope excludes every slot
-    expect(await resetSessionMemory({ conversationId: "conv-1", orgId: "other-org", strictOrg: true })).toBe(0);
+    expect(await resetSessionMemory({ conversationId: "conv-1", orgId: "other-org" })).toBe(0);
   });
 
   it("is fail-soft: a delete throw yields 0", async () => {

@@ -114,10 +114,11 @@ adminSessionMemory.openapi(resetRoute, async (c) => {
   const conversationId = c.req.param("conversationId");
   const { namespace } = c.req.valid("query");
   return runHandler(c, "reset session memory", async () => {
+    // Admin scope: org-only (no userId) → strict org match in the helper, so a
+    // forged conversationId from another org clears nothing.
     const cleared = await resetSessionMemory({
       conversationId,
       orgId,
-      strictOrg: true,
       namespace,
     });
 

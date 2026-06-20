@@ -35,6 +35,7 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { SessionMemorySlot, SessionMemoryView } from "@useatlas/types";
 import { hasInternalDB, internalExecute, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 
@@ -448,35 +449,27 @@ export function renderDurableMemoryBlock(slots: ReadonlyMap<string, unknown>): s
 // Noop-safe: no internal DB → empty read, zero-clear reset, no throw — behavior
 // identical to today.
 
-/** One persisted slot, as surfaced to the read/reset affordance (wire-shaped). */
-export interface SessionMemorySlotRecord {
-  readonly namespace: string;
-  readonly value: unknown;
-  /** ISO-8601 timestamp of the slot's last write. */
-  readonly updatedAt: string;
-}
+// The read/reset surfaces produce the shared wire shapes {@link SessionMemorySlot}
+// / {@link SessionMemoryView} from `@useatlas/types` directly — no api-local
+// re-declaration — so the producer is compiler-pinned to the same type the route
+// validates against (`SessionMemoryViewSchema`), and a new wire field can't drift
+// the producer out of sync.
 
-/** A session (conversation) and the memory slots it has accumulated — the admin list row. */
-export interface SessionMemoryView {
-  readonly conversationId: string;
-  readonly title: string | null;
-  /** ISO-8601 timestamp of the most recently written slot in the session. */
-  readonly updatedAt: string;
-  readonly slots: SessionMemorySlotRecord[];
-}
-
-/** Ownership scope a scoped read/reset is bound to (see {@link conversationScopeClause}). */
+/**
+ * Ownership scope a scoped read/reset is bound to (see {@link conversationScopeClause}).
+ *
+ * The two surfaces are distinguished structurally by whether a `userId` is
+ * present, NOT by a remembered flag — so the unsafe state ("admin scope that
+ * forgot to be strict") is unrepresentable:
+ *   - `userId` present (the in-conversation OWNER surface): the row is pinned to
+ *     that user, so the `org_id IS NULL` legacy fallback is safe and applied.
+ *   - `userId` absent (the ADMIN surface, org-only): the org match is STRICT
+ *     (`c.org_id = $`, no NULL fallback) so it can never reach another tenant's
+ *     legacy NULL-org conversation.
+ */
 interface ConversationScope {
   readonly userId?: string | null;
   readonly orgId?: string | null;
-  /**
-   * When `true`, scope strictly to `c.org_id = $` (admin surface — never reach a
-   * legacy NULL-org row from another tenant). When falsy, the
-   * `(c.org_id = $ OR c.org_id IS NULL)` fallback applies (the owner surface,
-   * where `userId` already pins the row and NULL-org legacy conversations stay
-   * reachable by their owner).
-   */
-  readonly strictOrg?: boolean;
 }
 
 /**
@@ -502,7 +495,13 @@ function conversationScopeClause(
   }
   if (scope.orgId) {
     const ph = startIdx + params.length;
-    parts.push(scope.strictOrg ? `c.org_id = $${ph}` : `(c.org_id = $${ph} OR c.org_id IS NULL)`);
+    // The `org_id IS NULL` legacy fallback is sound ONLY when a userId also pins
+    // the row (owner surface). An org-only scope (admin) stays strict, so it can
+    // never reach another tenant's legacy NULL-org conversation — the strictness
+    // derives from the surface, not a caller-supplied flag that could be forgotten.
+    parts.push(
+      scope.userId ? `(c.org_id = $${ph} OR c.org_id IS NULL)` : `c.org_id = $${ph}`,
+    );
     params.push(scope.orgId);
   }
   return { sql: parts.join(" AND "), params };
@@ -523,8 +522,7 @@ export async function readSessionMemorySlots(args: {
   conversationId: string;
   userId?: string | null;
   orgId?: string | null;
-  strictOrg?: boolean;
-}): Promise<SessionMemorySlotRecord[]> {
+}): Promise<SessionMemorySlot[]> {
   if (!hasInternalDB()) return [];
   const scope = conversationScopeClause(2, args);
   try {
@@ -573,7 +571,7 @@ export async function listSessionMemory(orgId: string): Promise<SessionMemoryVie
       conversationId: string;
       title: string | null;
       updatedAt: string;
-      slots: SessionMemorySlotRecord[];
+      slots: SessionMemorySlot[];
     };
     const bySession = new Map<string, MutableView>();
     for (const row of rows) {
@@ -610,7 +608,6 @@ export async function resetSessionMemory(args: {
   conversationId: string;
   userId?: string | null;
   orgId?: string | null;
-  strictOrg?: boolean;
   namespace?: string;
 }): Promise<number> {
   if (!hasInternalDB()) return 0;

@@ -28,6 +28,22 @@ import {
 import type { SessionMemorySlot } from "@/ui/lib/types";
 import { Brain, Loader2, Trash2 } from "lucide-react";
 
+/**
+ * Pull an actionable message off a non-ok response. The API attaches a
+ * `{ error, message, requestId }` envelope to every error (a `requestId` on
+ * 500s), so prefer the server's message + correlation ref over a generic
+ * string. Defensive: a non-JSON body falls back to `fallback`.
+ */
+async function errorFromResponse(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await res.json()) as { message?: string; error?: string; requestId?: string };
+    const message = body.message ?? body.error ?? fallback;
+    return body.requestId ? `${message} (ref: ${body.requestId.slice(0, 8)})` : message;
+  } catch {
+    return fallback;
+  }
+}
+
 /** Render a slot value as a compact, truncated preview. */
 function valuePreview(value: unknown): string {
   let text: string;
@@ -64,7 +80,7 @@ export function ConversationMemoryControl({
     try {
       const res = await fetch(memoryUrl, { credentials });
       if (!res.ok) {
-        setError("Couldn't load this conversation's memory.");
+        setError(await errorFromResponse(res, "Couldn't load this conversation's memory."));
         setSlots([]);
         return;
       }
@@ -93,7 +109,7 @@ export function ConversationMemoryControl({
     try {
       const res = await fetch(memoryUrl, { method: "DELETE", credentials });
       if (!res.ok) {
-        setError("Couldn't reset this conversation's memory.");
+        setError(await errorFromResponse(res, "Couldn't reset this conversation's memory."));
         return;
       }
       // A reset clears every slot — the next read (and the next turn) sees empty.

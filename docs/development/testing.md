@@ -8,6 +8,17 @@ The project uses an isolated test runner — each file runs in its own subproces
 
 The custom `scripts/test-isolated.ts` subprocess-per-file runner is still in use until slice 6 (#2802) lands, because `bun test --parallel` reuses workers across files, so OS-level state (env, cwd, file handles, signal listeners) leaks between files.
 
+## `test:others` is auto-discovered
+
+`bun run test` is `test:api && test:others`:
+
+- **`test:api`** runs `@atlas/api` first and on its own — the heaviest suite, so a failure there short-circuits the local `bun run test` fast. (In CI, `api-tests` and `test-others` are independent parallel jobs, so this ordering is a local-only property.)
+- **`test:others`** runs `scripts/test-others.ts`, which **discovers** every other workspace package that declares a `test` script (from the `workspaces` globs in the root `package.json`) and runs each in its own `bun run --filter '<pkg>' test` process, serially, fail-fast.
+
+There is **no hand-maintained package list** — adding a new workspace package with a `test` script means it is picked up automatically and can no longer silently skip the full suite. (The old `test:others` was a `&&` chain of ~32 invocations; forgetting to append a new package was silent both locally and in CI — it bit `railway-sandbox` in #3369 and left `chat` + `email-digest` uncovered until #3372.)
+
+`bun run scripts/test-others.ts --list` prints the discovered set without running anything — use it to eyeball coverage. `@atlas/api` is the single intentional exclusion (it runs via `test:api`); everything else is auto-discovered. This is orthogonal to the per-package isolated runners, so it doesn't entangle with the #2802 `bun test --parallel` cutover.
+
 ## Fast local feedback loop
 
 ```bash

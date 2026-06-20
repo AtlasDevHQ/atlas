@@ -582,12 +582,12 @@ export function buildSystemParam(
   modelId?: string,
   /**
    * #3755 — pre-rendered durable working-memory block (the persisted slot values
-   * for this session). Appended at a single deterministic position — the END of
-   * the system content, after warnings — so the agent carries forward what it
-   * recorded earlier without a tool round-trip, AND so it lives in the SYSTEM
-   * prompt: out-of-band of the message transcript, where a context-compaction
-   * pass (#3759, which only rewrites the message array) can never evict it
-   * (ADR-0020, the critical invariant of the slice). Empty string / omitted ⇒
+   * for this session). Appended at a single deterministic position — LAST in the
+   * system content, after every other optional section — so the agent carries
+   * forward what it recorded earlier without a tool round-trip, AND so it lives in
+   * the SYSTEM prompt: out-of-band of the message transcript, where a context-
+   * compaction pass (#3759, which only rewrites the message array) can never evict
+   * it (the slice-2 invariant recorded in ADR-0020). Empty string / omitted ⇒
    * nothing appended (memory off / empty / no internal DB → no change vs. today).
    */
   memoryBlock?: string,

@@ -109,7 +109,9 @@ export interface DurableStateStore {
    * Read-only view of EVERY current slot (not just dirty ones), for deterministic
    * prompt threading (#3755). The agent loop renders this into the memory block
    * once per turn via {@link renderDurableMemoryBlock}. Empty on the Noop store,
-   * so an inactive turn threads nothing.
+   * so an inactive turn threads nothing. The map is a defensive copy (mutating it
+   * does not touch the store), but slot VALUES are shared by reference — read-only
+   * by contract, never mutate them in place.
    */
   snapshot(): ReadonlyMap<string, unknown>;
 }
@@ -390,11 +392,15 @@ const DURABLE_MEMORY_BLOCK_PREAMBLE =
  * serializable value yields a placeholder rather than throwing and stranding the
  * whole prompt (`JSON.stringify` is the only throw site). `?? null` keeps an
  * explicit `undefined` valid, mirroring {@link commitSessionMemory}; compact JSON
- * is unambiguous across strings, numbers, and nested objects alike.
+ * is unambiguous across strings, numbers, and nested objects alike. The `?? "…"`
+ * also covers the non-throwing case where `JSON.stringify` returns the JS value
+ * `undefined` (a top-level function/symbol) so a stray literal `"undefined"`
+ * never lands in the block — defensive only: a loaded snapshot is JSONB-parsed
+ * data, which is never a function/symbol.
  */
 function renderSlotValue(value: unknown): string {
   try {
-    return JSON.stringify(value ?? null);
+    return JSON.stringify(value ?? null) ?? "[unserializable]";
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err.message : String(err) },

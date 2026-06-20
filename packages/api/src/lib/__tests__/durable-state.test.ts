@@ -249,6 +249,16 @@ describe("renderDurableMemoryBlock — deterministic memory block (#3755)", () =
     }).not.toThrow();
     expect(block).toContain("- `bad`: [unserializable]");
   });
+
+  it("renders a placeholder (not a literal 'undefined') for a value JSON.stringify drops", () => {
+    // JSON.stringify of a top-level function/symbol returns the JS value
+    // `undefined` WITHOUT throwing — the `?? "[unserializable]"` guard must catch
+    // it so no stray literal `undefined` lands in the block. (Defensive: a loaded
+    // snapshot is JSONB data, never a function — but the renderer must stay total.)
+    const block = renderDurableMemoryBlock(new Map<string, unknown>([["fn", () => 1]]));
+    expect(block).toContain("- `fn`: [unserializable]");
+    expect(block).not.toContain("undefined");
+  });
 });
 
 describe("buildDurableStateStore — gating", () => {

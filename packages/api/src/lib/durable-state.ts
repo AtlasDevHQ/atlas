@@ -494,13 +494,15 @@ function conversationScopeClause(
 ): { sql: string; params: unknown[] } {
   const parts = ["c.deleted_at IS NULL"];
   const params: unknown[] = [];
-  let idx = startIdx;
+  // Each placeholder index is `startIdx + (params already pushed)`, derived just
+  // before pushing — no mutable counter, so adding/removing a clause can't desync.
   if (scope.userId) {
-    parts.push(`c.user_id = $${idx++}`);
+    parts.push(`c.user_id = $${startIdx + params.length}`);
     params.push(scope.userId);
   }
   if (scope.orgId) {
-    parts.push(scope.strictOrg ? `c.org_id = $${idx++}` : `(c.org_id = $${idx++} OR c.org_id IS NULL)`);
+    const ph = startIdx + params.length;
+    parts.push(scope.strictOrg ? `c.org_id = $${ph}` : `(c.org_id = $${ph} OR c.org_id IS NULL)`);
     params.push(scope.orgId);
   }
   return { sql: parts.join(" AND "), params };

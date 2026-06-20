@@ -112,6 +112,10 @@ let mockModel: InstanceType<typeof MockLanguageModelV3>;
 // THIS model instead of the turn model. `null` ⇒ the seam summarizes on the turn
 // model (the unset-knob default). Reset per test.
 let summaryMockModel: InstanceType<typeof MockLanguageModelV3> | null = null;
+// #3761 — when true, the providers mock's `getSummaryModel` THROWS, so a test
+// can exercise the fail-soft fallback (a bad summary-model id must degrade to
+// the turn model, never error the turn). Reset per test.
+let summaryModelResolutionThrows = false;
 
 mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
@@ -121,8 +125,14 @@ mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic" as const,
   isGatewayAnthropicModel: (modelId: string) => modelId.includes("anthropic") || modelId.includes("claude"),
   // #3761 — resolve the summary model. Returns the configured cheaper model when
-  // a test set one, else the turn model (mirrors the real fallback contract).
-  getSummaryModel: () => summaryMockModel ?? mockModel,
+  // a test set one, else the turn model (mirrors the real fallback contract);
+  // throws when a test opts into the resolution-failure path.
+  getSummaryModel: () => {
+    if (summaryModelResolutionThrows) {
+      throw new Error("unknown summary model id (test)");
+    }
+    return summaryMockModel ?? mockModel;
+  },
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({
@@ -535,6 +545,7 @@ describe("agent compaction — cheaper summary model (#3761)", () => {
     summarizerPrompts = [];
     summaryModelDoGenerateCalls = 0;
     summaryMockModel = null;
+    summaryModelResolutionThrows = false;
     recordedSpans.length = 0;
     invalidateExploreBackend();
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
@@ -551,6 +562,7 @@ describe("agent compaction — cheaper summary model (#3761)", () => {
       else delete process.env[k];
     }
     summaryMockModel = null;
+    summaryModelResolutionThrows = false;
     _resetSettingsCache();
   });
 
@@ -631,6 +643,28 @@ describe("agent compaction — cheaper summary model (#3761)", () => {
     expect(summaryModelDoGenerateCalls).toBeGreaterThanOrEqual(1);
     expect(summarizerCalls).toBe(0);
   });
+
+  it("falls back to the turn model (never errors the turn) when summary-model resolution throws", async () => {
+    enable();
+    process.env.ATLAS_COMPACTION_SUMMARY_MODEL = "broken-model-id";
+    _resetSettingsCache();
+    // The configured id can't be resolved → getSummaryModel throws. The seam's
+    // fail-soft catch must degrade to the turn model rather than killing the turn.
+    summaryModelResolutionThrows = true;
+    summaryMockModel = buildSummaryModel("never-built");
+
+    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    const steps = await result.steps;
+
+    // The turn completed normally (4 SQL steps + 1 text step), not an error.
+    expect(steps.length).toBe(5);
+    // The summary ran on the TURN model (the fallback), and the separate model
+    // was never invoked.
+    expect(summarizerCalls).toBeGreaterThanOrEqual(1);
+    expect(summaryModelDoGenerateCalls).toBe(0);
+    // The injected summary still lands in context — compaction still happened.
+    expect(JSON.stringify(capturedPrompts)).toContain(COMPACTION_SUMMARY_PREFIX);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -648,6 +682,7 @@ describe("agent compaction — client stream marker (#3761)", () => {
     summarizerPrompts = [];
     summaryModelDoGenerateCalls = 0;
     summaryMockModel = null;
+    summaryModelResolutionThrows = false;
     recordedSpans.length = 0;
     invalidateExploreBackend();
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
@@ -664,6 +699,7 @@ describe("agent compaction — client stream marker (#3761)", () => {
       else delete process.env[k];
     }
     clearStreamWriter(REQ_ID);
+    summaryModelResolutionThrows = false;
     _resetSettingsCache();
   });
 
@@ -722,6 +758,35 @@ describe("agent compaction — client stream marker (#3761)", () => {
     // Do not enable compaction — the seam is skipped entirely.
     const parts = await runCapturingMarkers("Analyze companies");
     expect(parts.some((p) => p.type === COMPACTION_STREAM_PART_TYPE)).toBe(false);
+  });
+
+  it("a throwing writer (closed stream) never disrupts the compacting turn", async () => {
+    process.env.ATLAS_COMPACTION_ENABLED = "true";
+    process.env.ATLAS_COMPACTION_FILL_FRACTION = "0.1";
+    process.env.ATLAS_COMPACTION_PINNED_RECENT_STEPS = "2";
+    process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "1000";
+    _resetSettingsCache();
+
+    // A writer whose write() throws (e.g. the client aborted) must be absorbed
+    // by the marker's fail-soft catch — the turn still completes.
+    const throwingWriter = {
+      write: () => {
+        throw new Error("stream closed (test)");
+      },
+      merge: () => {},
+      onError: () => {},
+    } as unknown as Parameters<typeof setStreamWriter>[1];
+
+    const steps = await withRequestContext({ requestId: REQ_ID }, async () => {
+      setStreamWriter(REQ_ID, throwingWriter);
+      const result = await runAgent({ messages: userMessages("Analyze companies") });
+      return result.steps;
+    });
+
+    // Compaction ran (summarizer fired) and the turn finished its 5 steps despite
+    // the writer throwing on every marker write.
+    expect(steps.length).toBe(5);
+    expect(summarizerCalls).toBeGreaterThanOrEqual(1);
   });
 
   it("an enabled turn that never crosses the threshold writes NO marker", async () => {

@@ -1658,9 +1658,12 @@ export async function runAgent({
                     });
                   }
                 } catch (err) {
+                  // Best-effort: a closed/aborted client stream is the dominant
+                  // cause, but the catch covers any writer throw — the logged
+                  // `err` carries the actual cause, so don't over-assert it here.
                   log.debug(
                     { err: err instanceof Error ? err.message : String(err) },
-                    "compaction stream marker not delivered (writer closed)",
+                    "compaction stream marker not delivered",
                   );
                 }
               }

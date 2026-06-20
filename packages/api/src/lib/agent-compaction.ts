@@ -29,13 +29,16 @@
  *   client-facing stream marker so a summarized history is not a silent surprise.
  *   The summarize helpers below take the model as a parameter, so the seam in
  *   `agent.ts` passes whichever model resolution selected; the marker builder
- *   ({@link buildCompactionMarker}) lives in the Observability section.
+ *   ({@link buildCompactionMarker}) lives in the Client-facing stream marker
+ *   section.
  *
  * Still out of scope:
  * - Single pass per step, no second loop: if the older slice is so large that
  *   summary + pinned-N steps still exceed the window, the turn can still over-
- *   fill it. The cheaper summary model (#3761) shrinks that gap; a re-trigger
- *   loop remains out of scope.
+ *   fill it. The cheaper summary model (#3761) lowers the COST of each pass but
+ *   not the summary SIZE (output is capped the same regardless of model), so it
+ *   does not close this gap; a re-trigger loop that re-compacts when summary +
+ *   pinned-N still overflow remains out of scope.
  *
  * All knobs resolve through the settings registry (workspace > platform > env >
  * default, hot-reloadable) — see `ATLAS_COMPACTION_*` in `settings.ts`.
@@ -430,8 +433,19 @@ export const COMPACTION_STREAM_PART_TYPE = "data-compaction" as const;
 /**
  * Payload of the {@link COMPACTION_STREAM_PART_TYPE} stream part. `ran` is a
  * constant discriminator (the part is only ever emitted when a pass ran); the
- * counts let a client show how much was folded vs. kept verbatim. Mirrors the
- * span-attribute shape so the operator-side and client-side signals agree.
+ * counts let a client show how much was folded vs. kept verbatim. Shares the
+ * token + summarized-count fields with the operator-side span attributes
+ * ({@link compactionSpanAttributes}) so the two signals agree on the overlap;
+ * the marker additionally reports `pinnedMessages`, and the span additionally
+ * reports `before`/`afterMessages` — the field sets are NOT identical.
+ *
+ * NOTE (#3761 scope): this is a wire DTO the client surfaces, but it lives in
+ * `@atlas/api` and ships no runtime parser. The client-side guard
+ * (`parseCompactionMarker`) + a move to `@useatlas/types` — mirroring the
+ * `ChatContextWarning` / `parseContextWarning` pattern — lands with the first
+ * web consumer (the "history was summarized" banner), out of this emit-only
+ * slice. Until then a consumer matches on {@link COMPACTION_STREAM_PART_TYPE}
+ * and validates the shape itself.
  */
 export interface CompactionStreamMarker {
   readonly ran: true;

@@ -7,12 +7,16 @@
  * current one).
  */
 import { describe, expect, test, afterEach, mock } from "bun:test";
-import { renderHook, waitFor, act } from "@testing-library/react";
+import { renderHook, waitFor, act, cleanup } from "@testing-library/react";
 import { useRunStatus } from "@/ui/hooks/use-run-status";
 import type { RunStatusResponse } from "@/ui/lib/types";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
+  // Unmount every rendered hook so a parked test's polling interval is torn down
+  // before the next test — a leaked interval + the shared `fetch` mock otherwise
+  // cross-contaminates fetch-call counts and the parked→running transition.
+  cleanup();
   globalThis.fetch = realFetch;
 });
 
@@ -159,5 +163,93 @@ describe("useRunStatus (#3749)", () => {
       await Promise.resolve();
     });
     expect(result.current.runStatus?.runId).toBe("run-2");
+  });
+
+  // ── Polling — AC3 for a passively-waiting user ──────────────────────────────
+  // A parked turn resumes once an admin approves; the server re-arms it
+  // parked→running (`resolveApprovalPark`) but does NOT push to the browser. So
+  // while non-terminal the hook polls; on the parked→running flip it fires
+  // `onParkedResolved` (the chat auto-resumes) so no manual reload is needed.
+
+  /** Queue run-status payloads; each fetch returns the next (last repeats). */
+  function mockFetchSequence(bodies: unknown[]) {
+    let i = 0;
+    globalThis.fetch = mock(async () => {
+      const body = bodies[Math.min(i, bodies.length - 1)];
+      i += 1;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+  }
+
+  test("polls a parked run and fires onParkedResolved when the server flips it to running (AC3)", async () => {
+    // First load: parked. A later poll observes the approval-park re-arm (running).
+    mockFetchSequence([
+      { status: "parked", runId: "run-1", parkedReason: "req-1" },
+      { status: "parked", runId: "run-1", parkedReason: "req-1" },
+      { status: "running", runId: "run-1", parkedReason: null },
+    ]);
+    const onParkedResolved = mock(() => {});
+    const { result } = renderHook(() =>
+      useRunStatus({
+        ...baseOpts,
+        conversationId: "conv-1",
+        enabled: true,
+        onParkedResolved,
+        // Comfortably above testing-library's ~50ms waitFor cadence so the
+        // initial `parked` commit is observable before the first poll tick
+        // advances the sequence to `running`.
+        pollIntervalMs: 80,
+      }),
+    );
+    await waitFor(() => expect(result.current.runStatus?.status).toBe("parked"));
+    // Polling drives the parked→running transition and the auto-resume callback,
+    // exactly once, without any manual refetch/reload.
+    await waitFor(() => expect(onParkedResolved).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.runStatus?.status).toBe("running"));
+  });
+
+  test("stops polling once the run reaches a terminal state (no further fetches)", async () => {
+    // parked → done: the poll that observes `done` is the last; nothing fires
+    // after, and `onParkedResolved` is NOT called (no resumable transition).
+    mockFetchSequence([
+      { status: "parked", runId: "run-1", parkedReason: "req-1" },
+      { status: "done", runId: "run-1", parkedReason: null },
+    ]);
+    const onParkedResolved = mock(() => {});
+    const { result } = renderHook(() =>
+      useRunStatus({
+        ...baseOpts,
+        conversationId: "conv-1",
+        enabled: true,
+        onParkedResolved,
+        pollIntervalMs: 20,
+      }),
+    );
+    await waitFor(() => expect(result.current.runStatus?.status).toBe("done"));
+    const callsAtTerminal = (globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls.length;
+    // Give several poll intervals a chance to (wrongly) fire.
+    await new Promise((r) => setTimeout(r, 100));
+    expect((globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls.length).toBe(callsAtTerminal);
+    expect(onParkedResolved).not.toHaveBeenCalled();
+  });
+
+  test("cleans up the poll on unmount (no fetch after teardown)", async () => {
+    mockFetchSequence([{ status: "parked", runId: "run-1", parkedReason: "req-1" }]);
+    const { result, unmount } = renderHook(() =>
+      useRunStatus({
+        ...baseOpts,
+        conversationId: "conv-1",
+        enabled: true,
+        pollIntervalMs: 20,
+      }),
+    );
+    await waitFor(() => expect(result.current.runStatus?.status).toBe("parked"));
+    unmount();
+    const callsAtUnmount = (globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls.length;
+    await new Promise((r) => setTimeout(r, 100));
+    expect((globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls.length).toBe(callsAtUnmount);
   });
 });

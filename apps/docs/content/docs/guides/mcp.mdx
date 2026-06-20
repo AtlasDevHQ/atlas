@@ -810,6 +810,10 @@ The MCP SDK handles dispatch automatically — clients pointed at the URL above 
 
 ### Authentication
 
+<Callout type="info" title="One file, human- and machine-readable">
+Atlas hosts the whole agent-registration story — the OAuth 2.1 + DCR + PKCE flow, the discovery documents, the scopes, and the `start_trial` self-serve path — as a single document at [`mcp.useatlas.dev/auth.md`](https://mcp.useatlas.dev/auth.md). It's the canonical end-to-end description of how an agent registers with Atlas: an integrator can read it, and an `auth.md`-aware agent can fetch it at that conventional path to self-navigate the flow. The sections below restate the same flow in context; the hosted file is the source of truth.
+</Callout>
+
 Atlas's authorization server lives at `/api/auth`. Three discovery documents drive the OAuth flow:
 
 | Document | URL |

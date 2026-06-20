@@ -10,12 +10,16 @@
 import { describe, expect, it, beforeEach, mock } from "bun:test";
 import type { ModelMessage } from "ai";
 import * as realInternal from "@atlas/api/lib/db/internal";
+import * as realLogger from "@atlas/api/lib/logger";
 
 let hasInternalDB = true;
 const execCalls: Array<{ sql: string; params?: unknown[] }> = [];
 const queryCalls: Array<{ sql: string; params?: unknown[] }> = [];
 let queryRows: Array<{ id: string }> = [];
 let queryThrow: Error | null = null;
+// Captures the fail-soft warn the write helpers must emit so a circular
+// transcript (or any synchronous throw) is observable, not silently swallowed.
+const warnCalls: Array<{ obj: unknown; msg: unknown }> = [];
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
@@ -30,12 +34,25 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   },
 }));
 
+mock.module("@atlas/api/lib/logger", () => ({
+  ...realLogger,
+  createLogger: () => ({
+    warn: (obj: unknown, msg?: unknown) => {
+      warnCalls.push({ obj, msg });
+    },
+    info: () => {},
+    error: () => {},
+    debug: () => {},
+  }),
+}));
+
 let settingValue: Record<string, string | undefined> = {};
 mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string) => settingValue[key],
 }));
 
 const {
+  recordRunCheckpoint,
   recordTerminalAgentRun,
   sweepTerminalAgentRuns,
   isDurabilityEnabled,
@@ -47,14 +64,16 @@ beforeEach(() => {
   hasInternalDB = true;
   execCalls.length = 0;
   queryCalls.length = 0;
+  warnCalls.length = 0;
   queryRows = [];
   queryThrow = null;
   settingValue = {};
 });
 
 describe("recordTerminalAgentRun", () => {
-  it("writes a single INSERT INTO agent_runs with status + transcript params", () => {
+  it("upserts a single agent_runs row keyed on run id with status + transcript params", () => {
     recordTerminalAgentRun({
+      runId: "run-1",
       conversationId: "conv-1",
       orgId: "org-9",
       status: "done",
@@ -65,8 +84,14 @@ describe("recordTerminalAgentRun", () => {
     expect(execCalls).toHaveLength(1);
     const call = execCalls[0]!;
     expect(call.sql).toContain("INSERT INTO agent_runs");
-    expect(call.sql).toContain("$5::jsonb");
+    // In-place update keyed on the run id (one row per turn), not append.
+    expect(call.sql).toContain("ON CONFLICT (id) DO UPDATE");
+    // Terminal write always wins the status; step index never regresses.
+    expect(call.sql).toContain("status = EXCLUDED.status");
+    expect(call.sql).toContain("step_index = GREATEST(agent_runs.step_index, EXCLUDED.step_index)");
+    expect(call.sql).toContain("$6::jsonb");
     expect(call.params).toEqual([
+      "run-1",
       "conv-1",
       "org-9",
       "done",
@@ -78,6 +103,7 @@ describe("recordTerminalAgentRun", () => {
   it("is a no-op when no internal DB is configured", () => {
     hasInternalDB = false;
     recordTerminalAgentRun({
+      runId: "run-1",
       conversationId: "conv-1",
       orgId: null,
       status: "failed",
@@ -92,13 +118,14 @@ describe("recordTerminalAgentRun", () => {
     // is a belt-and-suspenders guard for a nullish value crossing an untyped
     // boundary. Cast to exercise that runtime defense.
     recordTerminalAgentRun({
+      runId: "run-1",
       conversationId: "conv-1",
       orgId: null,
       status: "done",
       stepIndex: 0,
       transcript: null as unknown as ModelMessage[],
     });
-    expect((execCalls[0]!.params as unknown[])[4]).toBe("[]");
+    expect((execCalls[0]!.params as unknown[])[5]).toBe("[]");
   });
 
   it("never throws and writes nothing when JSON.stringify fails (circular transcript)", () => {
@@ -109,6 +136,7 @@ describe("recordTerminalAgentRun", () => {
     circular.self = circular;
     expect(() =>
       recordTerminalAgentRun({
+        runId: "run-1",
         conversationId: "conv-1",
         orgId: null,
         status: "done",
@@ -117,6 +145,76 @@ describe("recordTerminalAgentRun", () => {
       }),
     ).not.toThrow();
     expect(execCalls).toHaveLength(0);
+    // Fail-soft, not silent: the catch must log a type-narrowed warn so the
+    // dropped checkpoint is observable.
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]!.msg).toBe("Failed to record terminal agent run checkpoint");
+    expect((warnCalls[0]!.obj as { err: unknown }).err).toBeTypeOf("string");
+  });
+});
+
+describe("recordRunCheckpoint", () => {
+  it("upserts a `running` checkpoint keyed on run id, advancing step index in place", () => {
+    recordRunCheckpoint({
+      runId: "run-1",
+      conversationId: "conv-1",
+      orgId: "org-9",
+      stepIndex: 2,
+      transcript: [{ role: "user", content: "hi" }],
+    });
+
+    expect(execCalls).toHaveLength(1);
+    const call = execCalls[0]!;
+    expect(call.sql).toContain("INSERT INTO agent_runs");
+    // In-place update keyed on the run id — one row per turn, not append.
+    expect(call.sql).toContain("ON CONFLICT (id) DO UPDATE");
+    // Monotonic step index: a reordered fire-and-forget write can't regress it.
+    expect(call.sql).toContain("step_index = GREATEST(agent_runs.step_index, EXCLUDED.step_index)");
+    // Transcript is reorder-safe too: only overwritten when the incoming
+    // checkpoint is at least as advanced as the stored row.
+    expect(call.sql).toContain("WHEN EXCLUDED.step_index >= agent_runs.step_index THEN EXCLUDED.transcript");
+    // Guard: a stale checkpoint must never resurrect a terminated/parked row.
+    expect(call.sql).toContain("WHERE agent_runs.status NOT IN ('done', 'failed', 'parked')");
+    expect(call.sql).toContain("$6::jsonb");
+    expect(call.params).toEqual([
+      "run-1",
+      "conv-1",
+      "org-9",
+      "running",
+      2,
+      JSON.stringify([{ role: "user", content: "hi" }]),
+    ]);
+  });
+
+  it("is a no-op when no internal DB is configured", () => {
+    hasInternalDB = false;
+    recordRunCheckpoint({
+      runId: "run-1",
+      conversationId: "conv-1",
+      orgId: null,
+      stepIndex: 1,
+      transcript: [],
+    });
+    expect(execCalls).toHaveLength(0);
+  });
+
+  it("never throws and writes nothing when JSON.stringify fails (circular transcript)", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(() =>
+      recordRunCheckpoint({
+        runId: "run-1",
+        conversationId: "conv-1",
+        orgId: null,
+        stepIndex: 1,
+        transcript: [circular] as unknown as ModelMessage[],
+      }),
+    ).not.toThrow();
+    expect(execCalls).toHaveLength(0);
+    // Fail-soft, not silent: the catch must log a type-narrowed warn.
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]!.msg).toBe("Failed to record agent run checkpoint");
+    expect((warnCalls[0]!.obj as { err: unknown }).err).toBeTypeOf("string");
   });
 });
 

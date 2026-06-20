@@ -617,6 +617,33 @@ describe("agent compaction — compact-on-resume seam (#3762)", () => {
     expect(JSON.stringify(capturedPrompts)).not.toContain(COMPACTION_SUMMARY_PREFIX);
   });
 
+  // AC4 (no internal DB, compaction ENABLED) — the durable-checkpoint Noop path
+  // (no DB ⇒ checkpoints/resume-state no-op) must NOT be entangled with the
+  // compaction seam. #3762's AC4 is "compaction disabled OR no internal DB", so
+  // the two degradations are independent: with NO internal DB but compaction
+  // turned ON, a resumed over-threshold transcript must STILL compact before
+  // re-entry and complete — compaction lives at the prepareStep seam and never
+  // reads the internal DB, so the absent durable layer can't disable it.
+  it("with compaction enabled but no internal database, the resumed turn still compacts", async () => {
+    hasInternalDB = false;
+    enableCompaction();
+    const transcript = rehydratedTranscript(6);
+
+    const result = await runAgent({
+      messages: userMessages("Analyze companies"),
+      conversationId: "conv-resume-nodb-enabled",
+      resume: { runId: RESUMED_RUN_ID, transcript, priorStepIndex: 6 },
+    });
+    const steps = await result.steps;
+
+    // Compaction fired and the turn completed — the missing durable layer (Noop)
+    // did not disable the compaction seam.
+    expect(steps.length).toBe(1);
+    expect(sqlQueryCount).toBe(0);
+    expect(summarizerCalls).toBeGreaterThanOrEqual(1);
+    expect(JSON.stringify(capturedPrompts)).toContain(COMPACTION_SUMMARY_PREFIX);
+  });
+
   // AC5 — compact-on-resume emits the same observability signals as live-turn
   // compaction: the OTel span attribute, the operator log line (covered by the
   // shared seam), and the client-facing stream marker.

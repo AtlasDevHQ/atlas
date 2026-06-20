@@ -81,6 +81,7 @@ import {
   DurableSession,
 } from "./services";
 import { durableSessionLayer } from "./durable-session";
+import { durableStateLayer } from "./durable-state";
 import { getRetentionDays } from "@atlas/api/lib/durable-session";
 import {
   recoverInFlight as recoverOutboxInFlight,
@@ -3243,6 +3244,13 @@ export function buildAppLayer(
   // at write time in the agent loop, not here.
   const durableSession = durableSessionLayer(hasInternalDB());
 
+  // DurableState (#3754, ADR-0020) — per-session agent working memory. Same
+  // `hasInternalDB()` gate / Noop-layer shape as DurableSession. The agent loop
+  // calls the plain helpers directly; the Tag is exposed app-wide for Effect
+  // callers + `Layer.provide` test injection. Per-workspace `ATLAS_DURABILITY_ENABLED`
+  // is checked at turn time in the agent loop, not here.
+  const durableState = durableStateLayer(hasInternalDB());
+
   // MigrationLive depends on InternalDB — provide it
   const migrationLayer = MigrationLive.pipe(Layer.provide(internalDBLayer));
 
@@ -3500,6 +3508,7 @@ export function buildAppLayer(
     settingsLayer,
     schedulerLayer,
     durableSession,
+    durableState,
     dpaGuardLayer,
     enterpriseGuardLayer,
     encryptionKeyGuardLayer,

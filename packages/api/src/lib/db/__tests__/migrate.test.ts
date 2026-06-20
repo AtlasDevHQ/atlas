@@ -166,7 +166,8 @@ describe("runMigrations", () => {
     //   Plus 0142 (user.normalizedEmail business-email/one-trial teeth, #3650) = 143.
     //   Plus 0143 (agent_runs durable-session checkpoint store, ADR-0020, #3745) = 144.
     //   Plus 0144 (agent_runs resume lease owner column + index, ADR-0020, #3747) = 145.
-    expect(count).toBe(145);
+    //   Plus 0145 (agent_session_memory durable working-memory store, ADR-0020, #3754) = 146.
+    expect(count).toBe(146);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -340,6 +341,7 @@ describe("runMigrations", () => {
         "0142_user_normalized_email.sql",
         "0143_agent_runs.sql",
         "0144_agent_runs_resume_lease.sql",
+        "0145_agent_session_memory.sql",
       ],
     });
 

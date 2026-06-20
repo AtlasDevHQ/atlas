@@ -11,8 +11,10 @@ giving up the safety boundaries Atlas already enforces. The loops are listed low
 first.
 
 **Shipped commands:** `/review-panel` (the shared review primitive), `/ship-issue <#N>`
-(L0 — one issue to merged), `/ship-milestone "<name>"` (L2 — grind a whole milestone).
-L1 (dispatcher) and L3 (heartbeat) are still design-only.
+(L0 — one issue to merged), `/ship-batch [N]` (pick the top N ready issues from the active
+milestone — `/next`-style — and ship them as a bounded batch), `/ship-milestone "<name>"`
+(L2 — grind a whole milestone on a heartbeat). L1 (dispatcher) and L3 (heartbeat) are still
+design-only.
 
 ---
 

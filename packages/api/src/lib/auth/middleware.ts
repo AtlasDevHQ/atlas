@@ -450,17 +450,31 @@ async function checkSSOEnforcement(
   authMode: SSOEnforceableMode,
 ): Promise<AuthResult | null> {
   try {
-    const sso = await runEnterprise(
+    // Resolve the policy and run the enforcement lookup inside ONE
+    // enterprise-runtime entry — `isSSOEnforcedForDomain` is composed with
+    // `yield*` instead of a second ad-hoc `Effect.runPromise`, so the lookup
+    // shares the request fiber/tracing context with the Tag resolution
+    // (#3764). The test override (`_ssoEnforcementOverride`) replaces only the
+    // DB-backed lookup, so it's applied after the Effect resolves the domain.
+    const resolved = await runEnterprise(
       Effect.gen(function* () {
-        return yield* SSOPolicy;
+        const sso = yield* SSOPolicy;
+        const domain = sso.extractEmailDomain(userLabel);
+        // No domain, or a test override is installed: skip the DB-backed
+        // lookup here (the override replaces it below). Otherwise compose
+        // the enforcement lookup into the same Effect.
+        if (!domain || _ssoEnforcementOverride) {
+          return { domain, enforcement: null as SSOEnforcementResult };
+        }
+        return { domain, enforcement: yield* sso.isSSOEnforcedForDomain(domain) };
       }),
     );
-    const domain = sso.extractEmailDomain(userLabel);
+    const domain = resolved.domain;
     if (!domain) return null;
 
     const enforcement = _ssoEnforcementOverride
       ? await _ssoEnforcementOverride(domain)
-      : await Effect.runPromise(sso.isSSOEnforcedForDomain(domain));
+      : resolved.enforcement;
     if (!enforcement || !enforcement.enforced) return null;
 
     log.warn(

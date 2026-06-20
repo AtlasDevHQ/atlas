@@ -25,7 +25,7 @@
  * from its `message`.
  */
 
-import { Cause, Effect } from "effect";
+import { Cause, Effect, ManagedRuntime } from "effect";
 import type { AtlasMode } from "@useatlas/types/auth";
 import type { WorkspaceId } from "@useatlas/types";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
@@ -90,6 +90,28 @@ const log = createLogger("datasources:mcp-lifecycle");
 // `api/routes/admin-connections.ts`. `readFilter` is a pure function of the
 // static `CONTENT_MODE_TABLES` tuple, so `Effect.runSync` is safe (no I/O).
 const contentModeRegistry = makeService(CONTENT_MODE_TABLES);
+
+// Shared, process-lifetime runtimes for the two dependency-free Live layers
+// this module's MCP-transport bridges run against (#3764). Built once and
+// reused so the `Effect.provide(...Live)` lives at a single composition point
+// instead of being re-applied inline on every `runDatasourceInstaller` /
+// `profileLiveDatasource` call. Mirrors `enterprise-layer.ts`'s
+// `getEnterpriseRuntime()`: both `WorkspaceInstallerLive` (`Layer.effect`) and
+// `SemanticGeneratorLive` (`Layer.succeed`) are stateless with no scoped
+// finalizers, so leaking the runtime at process exit is fine. Lazy so a test's
+// `mock.module(".../workspace-installer")` (or `.../semantic-generator`) takes
+// effect before the first build.
+let _installerRuntime: ManagedRuntime.ManagedRuntime<WorkspaceInstaller, never> | null = null;
+function getInstallerRuntime(): ManagedRuntime.ManagedRuntime<WorkspaceInstaller, never> {
+  if (_installerRuntime === null) _installerRuntime = ManagedRuntime.make(WorkspaceInstallerLive);
+  return _installerRuntime;
+}
+
+let _semanticGeneratorRuntime: ManagedRuntime.ManagedRuntime<SemanticGenerator, never> | null = null;
+function getSemanticGeneratorRuntime(): ManagedRuntime.ManagedRuntime<SemanticGenerator, never> {
+  if (_semanticGeneratorRuntime === null) _semanticGeneratorRuntime = ManagedRuntime.make(SemanticGeneratorLive);
+  return _semanticGeneratorRuntime;
+}
 
 // ── List ──────────────────────────────────────────────────────────────
 
@@ -303,9 +325,7 @@ export async function runDatasourceInstaller<A>(
     return yield* body(installer);
   });
 
-  const exit = await Effect.runPromiseExit(
-    program.pipe(Effect.provide(WorkspaceInstallerLive)),
-  );
+  const exit = await getInstallerRuntime().runPromiseExit(program);
 
   if (exit._tag === "Success") return { kind: "ok", value: exit.value };
 
@@ -1258,7 +1278,7 @@ async function profileLiveDatasourceImpl(opts: {
     return { result, persisted: null };
   });
 
-  const exit = await Effect.runPromiseExit(program.pipe(Effect.provide(SemanticGeneratorLive)));
+  const exit = await getSemanticGeneratorRuntime().runPromiseExit(program);
   if (exit._tag === "Success") {
     return {
       kind: "ok",

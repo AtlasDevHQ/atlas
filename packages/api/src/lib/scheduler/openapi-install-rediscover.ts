@@ -657,6 +657,16 @@ export const runOpenApiInstallRediscoverCycle = (
 // ---------------------------------------------------------------------------
 // Lifecycle (setInterval-based, mirrors byot-catalog-refresh.ts + openapi-spec-refresh.ts)
 // ---------------------------------------------------------------------------
+//
+// #3764 — deliberately NOT on `engine.ts`'s `Effect.runFork` + `Schedule`
+// fiber pattern, by the same reasoning as `byot-catalog-refresh.ts` +
+// `openapi-spec-refresh.ts` + `ee/audit/purge-scheduler.ts` (all sharing this
+// `setInterval` + `unref()` shape): the cycle is self-contained and idempotent
+// (re-probes install status), with no per-tick rows a mid-flight interrupt
+// must release — so it doesn't need `engine.ts`'s `Effect.onInterrupt`
+// task_run cleanup (engine.ts:306). `_inFlight` already prevents overlap and
+// `unref()` keeps the timer from pinning the process; `Effect.runPromise` per
+// cycle is a self-contained program, not a re-entry into a surrounding Effect.
 
 let _timer: ReturnType<typeof setInterval> | null = null;
 let _running = false;

@@ -247,6 +247,8 @@ adminProactiveEvents.get("/", async (c) =>
         },
         200,
       );
+      // #3764 — accepted: per-route boundary provide of a small, finalizer-free
+      // Live layer; the route stays its own composition root.
     }).pipe(Effect.provide(AnswerMeterLive)),
     { label: "proactive events drill-down" },
   ),

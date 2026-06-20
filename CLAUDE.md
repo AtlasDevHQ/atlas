@@ -61,7 +61,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Layer.effect vs Layer.scoped** — `Layer.scoped` when the service has a finalizer (cleanup on shutdown); `Layer.effect` for stateless
 - [ ] **Tagged errors via Data.TaggedError** — Never plain `Error` subclasses with `_tag`. Use `Data.TaggedError("ErrorName")<{ ... }>`
 - [ ] **runHandler for route handlers** — `runHandler(c, "label", async () => { ... })` bridges Hono → Effect Context and centralizes error-to-HTTP mapping
-- [ ] **No `catch: (err) => err`** — In `Effect.tryPromise`, always normalize: `catch: (err) => err instanceof Error ? err : new Error(String(err))`
+- [ ] **No `catch: (err) => err`** — In `Effect.tryPromise`, always normalize: `catch: (err) => err instanceof Error ? err : new Error(String(err))`. **Carve-out:** `lib/effect/semantic-generator.ts`'s profile `tryPromise` intentionally uses `catch: (err) => err` to preserve the raw rejection's identity (a cooperative `OperationCancelledError` from the MCP progress bridge) so the downstream `catchAll` can route cancellation → defect; normalizing there would erase the identity and surface a spurious `validation_failed`. Don't "fix" it
 - [ ] **satisfies on service returns** — Always `satisfies FooShape` on returned service objects
 - [ ] **Effect test layers + no top-level singleton mutation** — Prefer `Layer.provide` test layers over `mock.module()`; never mutate a registry/singleton at test module top-level. See [docs/development/testing.md](docs/development/testing.md)
 

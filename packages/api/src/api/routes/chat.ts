@@ -30,6 +30,7 @@ import {
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { markOrgActive } from "@atlas/api/lib/db/org-activity";
 import { checkAgentBillingGate } from "@atlas/api/lib/billing/agent-gate";
+import { prepareResume, finishResume } from "@atlas/api/lib/durable-resume";
 import {
   createConversation,
   verifyGroupBelongsToOrg,
@@ -513,6 +514,41 @@ const chatRoute = createRoute({
       description: "Request timed out",
       content: { "application/json": { schema: ErrorSchema } },
     },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// #3747 — crash-resume route. Re-enters an interrupted turn from its last
+// `running` checkpoint and streams over the SAME UI-message protocol the chat
+// route returns. The client reattaches with the conversation id + the `x-run-id`
+// it captured from the original turn's response.
+// ---------------------------------------------------------------------------
+
+const chatResumeRoute = createRoute({
+  method: "post",
+  path: "/{conversationId}/resume",
+  tags: ["Chat"],
+  summary: "Resume an interrupted agent turn (streaming)",
+  description:
+    "Re-enters the latest non-terminal (crash-interrupted) agent run for a conversation from its last checkpoint and streams the continuation over the Vercel AI SDK UI message stream protocol — completed tool calls are already in the stored transcript and are NOT re-executed. " +
+    "Security (auth, connection, table whitelist, RLS) is re-resolved live at resume time, never from the checkpoint. " +
+    "The response carries `x-conversation-id` and `x-run-id`. A second concurrent resume of the same run is rejected (409) by a single-resumer lease.",
+  request: {
+    params: z.object({ conversationId: z.string().uuid() }),
+  },
+  responses: {
+    200: {
+      description: "SSE stream of the resumed turn (same protocol as POST /chat).",
+      content: { "text/event-stream": { schema: z.string() } },
+    },
+    400: { description: "No analytics datasource configured", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Conversation not found, or nothing to resume", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Already resuming (single-resumer lease held)", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Resume temporarily unavailable", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -1479,6 +1515,10 @@ chat.openapi(chatRoute, async (c) => {
               "Cache-Control": "no-cache, no-transform",
               ...corsResponseHeaders(c.req.header("Origin") ?? ""),
               ...(conversationId ? { "x-conversation-id": conversationId } : {}),
+              // #3747 — the run id for this turn, so a client can reattach to a
+              // crash-interrupted turn via POST /chat/:conversationId/resume with
+              // conversation id + run id (mirrors `x-conversation-id`).
+              ...(agentResult.runId ? { "x-run-id": agentResult.runId } : {}),
             },
           });
   
@@ -1590,6 +1630,319 @@ chat.openapi(chatRoute, async (c) => {
       },
     );
   }), { label: "chat" });
+});
+
+// ---------------------------------------------------------------------------
+// #3747 — crash-resume handler
+// ---------------------------------------------------------------------------
+
+chat.openapi(chatResumeRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const req = c.req.raw;
+    const { requestId } = yield* RequestContext;
+
+    // Auth — same dispatch as the chat route; identity drives every downstream gate.
+    const authAttempt = yield* Effect.tryPromise({
+      try: () => authenticateRequest(req),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.either);
+    if (authAttempt._tag === "Left") {
+      log.error({ err: authAttempt.left, requestId }, "Auth dispatch failed (resume)");
+      return c.json({ error: "auth_error", message: "Authentication system error", retryable: false, requestId }, 500);
+    }
+    const authResult: AuthResult = authAttempt.right;
+    if (!authResult.authenticated) {
+      const errorBody: Record<string, unknown> = { error: "auth_error", message: authResult.error, retryable: false, requestId };
+      if (authResult.ssoRedirectUrl) errorBody.ssoRedirectUrl = authResult.ssoRedirectUrl;
+      return c.json(errorBody, authResult.status as 401 | 403 | 500);
+    }
+
+    // Rate limit — share the chat carve-out bucket so a resume can't dodge it.
+    const ip = getClientIP(req);
+    const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
+    const rateCheck = checkRateLimit(rateLimitKey, { bucket: "chat", orgId: authResult.user?.activeOrganizationId });
+    if (!rateCheck.allowed) {
+      const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
+      return c.json(
+        { error: "rate_limited", message: "Too many requests. Please wait before trying again.", retryAfterSeconds, retryable: true, requestId },
+        { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+      );
+    }
+
+    // IP allowlist — re-resolved live (the user may have lost access while interrupted).
+    const orgId = authResult.user?.activeOrganizationId;
+    if (orgId) {
+      const policy = yield* IpAllowlistPolicy;
+      const ipCheck = yield* policy.checkIPAllowlist(orgId, ip);
+      if (!ipCheck.allowed) {
+        log.warn({ requestId, orgId, ip }, "IP not in workspace allowlist (resume)");
+        return c.json({ error: "ip_not_allowed", message: "Your IP address is not in the workspace's allowlist.", retryable: false, requestId }, 403);
+      }
+    }
+
+    // Billing gate — a resumed turn spends model budget exactly like a fresh one,
+    // so it must clear the same status/abuse/plan-limit enforcement.
+    const gateCheck = yield* Effect.promise(() => checkAgentBillingGate(orgId));
+    if (!gateCheck.allowed) {
+      const blockBody = {
+        error: gateCheck.errorCode,
+        message: gateCheck.errorMessage,
+        retryable: gateCheck.retryable,
+        requestId,
+        ...(gateCheck.retryAfterSeconds !== undefined && { retryAfterSeconds: gateCheck.retryAfterSeconds }),
+        ...(gateCheck.usage && { usage: gateCheck.usage }),
+      };
+      if (gateCheck.retryAfterSeconds !== undefined) {
+        return c.json(blockBody, { status: gateCheck.httpStatus, headers: { "Retry-After": String(gateCheck.retryAfterSeconds) } });
+      }
+      return c.json(blockBody, gateCheck.httpStatus);
+    }
+
+    const atlasMode = resolveMode(req.headers.get("cookie"), req.headers.get("x-atlas-mode"), authResult);
+    const conversationId = c.req.param("conversationId");
+
+    return withRequestContext(
+      { requestId, user: authResult.user, atlasMode, agentOrigin: "chat", actor: { kind: "human" } },
+      async () => {
+        // Datasource guard — a resumed turn still needs a live datasource.
+        const { resolveDatasourceUrl } = await import("@atlas/api/lib/db/connection");
+        if (!resolveDatasourceUrl()) {
+          return c.json(
+            { error: "no_datasource", message: "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to query your data.", retryable: false, requestId },
+            400,
+          );
+        }
+
+        // Conversation OWNERSHIP — re-verified LIVE against the request's auth
+        // scope (org/user). This is the fail-closed gate: a user who lost access
+        // to the conversation while the turn was interrupted gets a 404 here,
+        // never a resumed stream. The checkpoint is never trusted for authz.
+        if (!hasInternalDB()) {
+          return c.json({ error: "not_found", message: "Conversation not found.", retryable: false, requestId }, 404);
+        }
+        const existing = await getConversation(conversationId, authResult.user?.id, orgId);
+        if (!existing.ok) {
+          return c.json({ error: "not_found", message: "Conversation not found.", retryable: false, requestId }, 404);
+        }
+
+        // Claim the single-resumer lease on the latest interrupted run.
+        const prepared = await prepareResume(conversationId, orgId);
+        if (prepared.status === "leased") {
+          return c.json(
+            { error: "resume_in_progress", message: "This turn is already being resumed. Try again shortly.", retryable: true, requestId },
+            409,
+          );
+        }
+        if (prepared.status === "none" || prepared.status === "disabled") {
+          return c.json(
+            { error: "nothing_to_resume", message: "There is no interrupted turn to resume for this conversation.", retryable: false, requestId },
+            404,
+          );
+        }
+        if (prepared.status === "error") {
+          return c.json(
+            { error: "resume_unavailable", message: "Could not load the interrupted turn right now. Please retry shortly.", retryable: true, requestId },
+            503,
+          );
+        }
+        const handle = prepared.handle;
+
+        // F-77 — reserve against the aggregate per-conversation step ceiling
+        // BEFORE running the resumed agent loop, exactly as the chat handler does
+        // for a fresh turn. Without this gate a client could drive unbounded steps
+        // by repeatedly resuming the same run: each resumed `streamText` gets a
+        // fresh per-request budget (see the `stopWhen` note in agent.ts), so this
+        // conversation cap is the ONLY backstop on a resumed flow. The reservation
+        // charges the row by the worst-case step budget atomically (so concurrent
+        // resumes can't all pass at `cap − 1`) and the unused portion is refunded
+        // on stream finish. Reserved AFTER the lease claim so the `none`/`leased`/
+        // `error` early returns never charge the row; the budget-exceeded 429
+        // releases the just-claimed lease before returning so it can't wedge the
+        // run until TTL. `no_db` / `error` fail open so a transient internal-DB
+        // glitch never 429s the resume surface.
+        let reservedStepBudget: number | null = null;
+        const stepCap = getConversationStepCap(orgId);
+        if (stepCap > 0) {
+          const stepBudget = getReservationStepBudget(orgId);
+          const reservation = await reserveConversationBudget(conversationId, stepBudget, stepCap);
+          if (reservation.status === "exceeded") {
+            log.warn(
+              { requestId, conversationId, totalSteps: reservation.totalSteps, cap: stepCap },
+              "Conversation budget exceeded — rejecting resume",
+            );
+            // Audit so abuse detection picks up workspaces grinding the cap via resume.
+            logAdminAction({
+              actionType: ADMIN_ACTIONS.conversation.budgetExceeded,
+              targetType: "conversation",
+              targetId: conversationId,
+              status: "failure",
+              scope: "workspace",
+              metadata: { totalSteps: reservation.totalSteps, cap: stepCap },
+            });
+            // Release the lease we just claimed — the resume is rejected, so a
+            // held lease would only block a (future, under-budget) retry until TTL.
+            finishResume(handle);
+            return c.json(
+              {
+                error: "conversation_budget_exceeded",
+                message: "This conversation has reached its step limit. Start a new conversation to continue.",
+                retryable: false,
+                requestId,
+              },
+              429,
+            );
+          }
+          if (reservation.status === "ok") {
+            reservedStepBudget = stepBudget;
+          }
+          // status === "no_db" | "error" → fail open, no reservation charged.
+        }
+
+        try {
+          // Re-resolve the tool registry LIVE (actions + plugin tools), exactly
+          // as the chat route does — the resumed turn's tools (whitelist/RLS
+          // resolved inside executeSQL at call time) are bound to the live
+          // request, never the checkpoint.
+          let toolRegistry: import("@atlas/api/lib/tools/registry").ToolRegistry | undefined;
+          const includeActions = process.env.ATLAS_ACTIONS_ENABLED === "true";
+          if (includeActions) {
+            try {
+              const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
+              const result = await buildRegistry({ includeActions });
+              toolRegistry = result.registry;
+            } catch (err) {
+              log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to build tool registry on resume — falling back to default tools");
+            }
+          }
+          try {
+            const { getPluginTools } = await import("@atlas/api/lib/plugins/tools");
+            const pluginTools = getPluginTools();
+            if (pluginTools) {
+              const { ToolRegistry, defaultRegistry } = await import("@atlas/api/lib/tools/registry");
+              const base = toolRegistry ?? defaultRegistry;
+              toolRegistry = ToolRegistry.merge(base, pluginTools);
+              toolRegistry.freeze();
+            }
+          } catch (err) {
+            log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Failed to merge plugin tools on resume — continuing without");
+          }
+
+          // Re-enter the agent loop from the checkpoint. `messages: []` is inert
+          // — the `resume.transcript` is the model input; the loop continues from
+          // the last completed step. The resumed step accounting counts against
+          // the F-77 conversation step cap: the reservation above charged the row
+          // by the worst-case step budget; the actual resumed step delta is
+          // settled (and the unused portion refunded) on stream finish below.
+          const agentResult = await runAgent({
+            messages: [],
+            ...(toolRegistry && { tools: toolRegistry }),
+            conversationId,
+            resume: {
+              runId: handle.runId,
+              transcript: handle.transcript,
+              priorStepIndex: handle.priorStepIndex,
+            },
+          });
+
+          const stream = createUIMessageStream({
+            execute: ({ writer }) => {
+              setStreamWriter(requestId, writer);
+              writer.merge(
+                agentResult.toUIMessageStream({
+                  onError: (error) => {
+                    log.error({ err: error instanceof Error ? error : new Error(String(error)), requestId }, "Mid-stream error (resume)");
+                    return buildMidStreamErrorFrame(error, requestId);
+                  },
+                }),
+              );
+            },
+            onFinish: () => {
+              clearStreamWriter(requestId);
+              // Release the single-resumer lease so a follow-up resume (e.g. a
+              // second interruption) can re-claim. Best-effort, owner-guarded.
+              finishResume(handle);
+            },
+            onError: (error) => {
+              clearStreamWriter(requestId);
+              finishResume(handle);
+              log.error({ err: error instanceof Error ? error : new Error(String(error)), requestId }, "Stream error (resume)");
+              return buildMidStreamErrorFrame(error, requestId);
+            },
+          });
+
+          const streamResponse = createUIMessageStreamResponse({
+            stream,
+            headers: {
+              "X-Accel-Buffering": "no",
+              "Cache-Control": "no-cache, no-transform",
+              ...corsResponseHeaders(c.req.header("Origin") ?? ""),
+              "x-conversation-id": conversationId,
+              "x-run-id": handle.runId,
+            },
+          });
+
+          // Persist assistant steps after the resumed stream completes (same
+          // fire-and-forget contract as the chat route).
+          persistAssistantSteps({ conversationId, steps: agentResult.steps, label: "chat-resume" });
+
+          // F-77 — settle the resumed step delta. The reservation above charged
+          // the row by the worst-case step budget; refund the unused portion once
+          // the agent loop resolves so the conversation aggregate reflects real
+          // resumed spend. `agentResult.steps` is this call's NEW steps (the AI-SDK
+          // `streamText` count restarts at 0 on resume), which is exactly the delta
+          // to charge against the per-conversation aggregate. If the stream errors
+          // out we keep the full reservation charged — same conservative accounting
+          // as the chat route. Mirrors the chat handler's settlement.
+          if (reservedStepBudget !== null) {
+            const convIdForSettle = conversationId;
+            const reservedForSettle = reservedStepBudget;
+            void Promise.resolve(agentResult.steps)
+              .then((steps) => {
+                settleConversationSteps(convIdForSettle, reservedForSettle, steps.length);
+              })
+              .catch((err: unknown) => {
+                log.warn(
+                  {
+                    err: err instanceof Error ? err.message : String(err),
+                    requestId,
+                    conversationId: convIdForSettle,
+                  },
+                  "F-77 step-cap settlement skipped on resume — agent stream failed; reservation stays charged",
+                );
+              });
+          }
+
+          throw new HTTPException(200, { res: streamResponse });
+        } catch (err) {
+          if (err instanceof HTTPException) throw err;
+          // The lease is held — release it so a failed resume doesn't wedge the
+          // run until TTL. (The stream-path release above only fires once the
+          // stream object exists; a failure building it lands here.)
+          finishResume(handle);
+          const errObj = err instanceof Error ? err : new Error(String(err));
+          const cls = classifyChatError(err, requestId);
+          const httpStatus = statusForClassifierCode(cls.code);
+          const retryable = isRetryableError(cls.code);
+          log.error({ err: errObj, category: cls.code }, "Resume error: %s", cls.code);
+          const userMessage =
+            cls.code === "internal_error"
+              ? `An unexpected error occurred. Quote ref ${requestId.slice(0, 8)} when reporting this issue.`
+              : cls.message;
+          const body = {
+            error: cls.code,
+            message: userMessage,
+            retryable,
+            ...(cls.retryAfterSeconds !== undefined && { retryAfterSeconds: cls.retryAfterSeconds }),
+            requestId,
+          };
+          if (cls.retryAfterSeconds !== undefined) {
+            return c.json(body, { status: httpStatus, headers: { "Retry-After": String(cls.retryAfterSeconds) } });
+          }
+          return c.json(body, httpStatus);
+        }
+      },
+    );
+  }), { label: "chat-resume" });
 });
 
 export { chat };

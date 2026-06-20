@@ -52,9 +52,21 @@ export type TerminalAgentRunStatus =
 export const DURABILITY_ENABLED_SETTING = "ATLAS_DURABILITY_ENABLED";
 /** Settings key for the terminal-run retention window, in days. */
 export const DURABILITY_RETENTION_DAYS_SETTING = "ATLAS_DURABILITY_RETENTION_DAYS";
+/** Settings key for the resume-lease TTL, in seconds (#3747). */
+export const RESUME_LEASE_TTL_SETTING = "ATLAS_DURABILITY_RESUME_LEASE_SECONDS";
 
 /** Fallback retention window when the setting is unset/unparseable. */
 export const DEFAULT_RETENTION_DAYS = 30;
+
+/**
+ * Default resume-lease TTL. A live resume must out-live one full agent turn,
+ * so the lease can't expire under the resumer and let a concurrent resume fork
+ * the turn: the agent loop's own wall-clock budget is 180s (`totalMs`), so a
+ * 300s lease covers a worst-case turn plus stream teardown with headroom. The
+ * lease is best-effort-released at stream end; the TTL is the self-heal for a
+ * resumer that dies mid-resume (the row unwedges once it lapses).
+ */
+export const DEFAULT_RESUME_LEASE_SECONDS = 300;
 
 /**
  * Whether durability is enabled for this workspace. Reads the hot-reloadable
@@ -72,6 +84,15 @@ export function getRetentionDays(orgId?: string): number {
   if (raw === undefined) return DEFAULT_RETENTION_DAYS;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_RETENTION_DAYS;
+  return parsed;
+}
+
+/** Resolve the resume-lease TTL (seconds), clamped to a sane positive integer (#3747). */
+export function getResumeLeaseSeconds(orgId?: string): number {
+  const raw = getSettingAuto(RESUME_LEASE_TTL_SETTING, orgId);
+  if (raw === undefined) return DEFAULT_RESUME_LEASE_SECONDS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_RESUME_LEASE_SECONDS;
   return parsed;
 }
 
@@ -246,5 +267,194 @@ export async function sweepTerminalAgentRuns(retentionDays: number): Promise<num
       "Failed to sweep terminal agent runs",
     );
     return -1;
+  }
+}
+
+// ── Crash-resume (#3747, ADR-0020 phase 2) ──────────────────────────────────
+
+/**
+ * A leased, resumable run loaded from the checkpoint store. The transcript is
+ * the accumulated `ModelMessage[]` as of `stepIndex` — the input messages plus
+ * every completed step's assistant/tool messages. Re-entering `streamText` with
+ * it makes the model CONTINUE (the completed tool calls are already in the
+ * messages array) rather than re-execute. `orgId` is the run's stored tenant,
+ * surfaced for telemetry only — security is re-resolved LIVE at resume time from
+ * the request's auth context, never from this field (ADR-0020 invariant).
+ */
+export interface ResumableRun {
+  /** The run id — reused so resumed checkpoints target the SAME row. */
+  readonly runId: string;
+  readonly conversationId: string;
+  readonly orgId: string | null;
+  /** Completed-step count as of the loaded checkpoint; the resume continues at stepIndex+1. */
+  readonly stepIndex: number;
+  /** Accumulated transcript as of `stepIndex`. */
+  readonly transcript: ModelMessage[];
+  /** The lease token this resume holds — pass to {@link releaseResumeLease} to free it. */
+  readonly leaseOwner: string;
+}
+
+/**
+ * Outcome of an attempt to claim a resumable run.
+ *
+ * - `"resumable"` — a non-terminal run existed and we won its lease; the run is
+ *   carried.
+ * - `"none"` — no non-terminal run exists for this conversation (nothing to
+ *   resume — the last turn finished cleanly, or durability was never on).
+ * - `"leased"` — a non-terminal run exists but another resume already holds a
+ *   live lease on it; this is the single-flight rejection.
+ * - `"no_db"` — no internal DB (durability is a no-op).
+ * - `"error"` — the claim query failed; the caller fails closed (does NOT
+ *   resume) so a transient DB blip can never silently start a second stream.
+ */
+export type ResumeClaim =
+  | { readonly status: "resumable"; readonly run: ResumableRun }
+  | { readonly status: "none" }
+  | { readonly status: "leased" }
+  | { readonly status: "no_db" }
+  | { readonly status: "error" };
+
+/**
+ * Atomically find and lease the latest non-terminal run for a conversation.
+ *
+ * The single-flight guard lives in ONE statement (a CTE-driven conditional
+ * UPDATE), so there is no TOCTOU window between "find the resumable run" and
+ * "claim its lease": two concurrent resumes of the same run race on the row
+ * lock and exactly one wins the UPDATE. The loser sees the row already leased
+ * (its `WHERE` no longer matches) and gets `"leased"`.
+ *
+ * The lease is claimable when `resuming_lease IS NULL` (never leased) OR
+ * `resuming_lease < now()` (a stale lease from a resumer that died mid-resume —
+ * the TTL self-heal). Winning stamps a fresh `leaseOwner` token and a
+ * `now() + ttl` expiry. `leaseSeconds` is the caller-resolved TTL.
+ *
+ * Returns the run's stored transcript + step index + run id for re-entry, plus
+ * the lease token the caller must pass to {@link releaseResumeLease}. The org id
+ * is surfaced for telemetry only — the caller re-resolves auth/whitelist/RLS
+ * LIVE, never from the stored row.
+ */
+// Exported for the real-Postgres single-flight test (migrate-pg.test.ts) so it
+// exercises the EXACT claim SQL the helper runs, not a hand-copied one.
+//
+// Existence probe: is there ANY non-terminal run for this conversation?
+// Distinguishes "nothing to resume" (`none`) from "exists but already leased"
+// (`leased`) so the caller rejects a double-attach distinctly from a clean no-op.
+export const RESUME_EXISTS_SQL = `SELECT id FROM agent_runs
+        WHERE conversation_id = $1 AND status IN ('running', 'parked')
+        ORDER BY updated_at DESC
+        LIMIT 1`;
+
+// Atomic lease claim. The CTE picks the latest non-terminal CLAIMABLE row
+// (lease free or expired) FOR UPDATE SKIP LOCKED — a concurrent claimer skips
+// the locked row rather than blocking — and the UPDATE only fires when the lease
+// is free/expired. RETURNING the transcript means the read and the claim are the
+// same statement, so there is no TOCTOU window: exactly one of two concurrent
+// resumes wins the row, the other gets zero rows back (→ `leased`).
+export const RESUME_CLAIM_SQL = `WITH target AS (
+         SELECT id FROM agent_runs
+          WHERE conversation_id = $1 AND status IN ('running', 'parked')
+            AND (resuming_lease IS NULL OR resuming_lease < now())
+          ORDER BY updated_at DESC
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED
+       )
+       UPDATE agent_runs a
+          SET resuming_lease = now() + ($2 || ' seconds')::interval,
+              resuming_lease_owner = $3,
+              updated_at = now()
+         FROM target
+        WHERE a.id = target.id
+        RETURNING a.id, a.org_id, a.step_index, a.transcript`;
+
+export async function loadAndLeaseResumableRun(
+  conversationId: string,
+  leaseSeconds: number,
+): Promise<ResumeClaim> {
+  if (!hasInternalDB()) return { status: "no_db" };
+  const ttl = Number.isFinite(leaseSeconds) && leaseSeconds > 0 ? leaseSeconds : DEFAULT_RESUME_LEASE_SECONDS;
+  const leaseOwner = crypto.randomUUID();
+  try {
+    const existing = await internalQuery<{ id: string }>(RESUME_EXISTS_SQL, [conversationId]);
+    if (existing.length === 0) return { status: "none" };
+
+    const claimed = await internalQuery<{
+      id: string;
+      org_id: string | null;
+      step_index: number;
+      transcript: unknown;
+    }>(RESUME_CLAIM_SQL, [conversationId, String(ttl), leaseOwner]);
+
+    if (claimed.length === 0) {
+      // A non-terminal run exists (the SELECT above found one) but the claim
+      // updated nothing — another resume holds a live lease (or locked the row).
+      // Single-flight rejection.
+      return { status: "leased" };
+    }
+
+    const row = claimed[0]!;
+    const transcript = Array.isArray(row.transcript)
+      ? (row.transcript as ModelMessage[])
+      : [];
+    return {
+      status: "resumable",
+      run: {
+        runId: row.id,
+        conversationId,
+        orgId: row.org_id,
+        // Clamp non-negative at the read boundary: a corrupt negative
+        // `step_index` must not seed a negative resume offset (which would
+        // regress the step counter / starve the per-request budget downstream).
+        stepIndex: Math.max(
+          0,
+          typeof row.step_index === "number" ? row.step_index : Number(row.step_index) || 0,
+        ),
+        transcript,
+        leaseOwner,
+      },
+    };
+  } catch (err) {
+    // Fail closed: a claim failure must NOT resume (a transient DB blip can't be
+    // allowed to silently start a second concurrent stream). The caller maps
+    // `error` to a 503-style retry, never a resume.
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), conversationId },
+      "Failed to load/lease resumable run",
+    );
+    return { status: "error" };
+  }
+}
+
+/**
+ * Release a resume lease — best-effort, fire-and-forget. Clears the lease only
+ * while THIS resumer still owns it (`resuming_lease_owner = $2`): a TTL-expired
+ * resumer whose release fires late can't wipe a lease a second resumer already
+ * re-claimed (which would let a third fork the turn). Never throws; a failed
+ * release just leaves the lease to lapse on its TTL.
+ *
+ * Takes a single object param (not two positional strings) so `runId` and
+ * `leaseOwner` can't be silently transposed at a call site — a swap would
+ * UPDATE nothing (the owner guard never matches) and leak the lease until its
+ * TTL with no error.
+ */
+export function releaseResumeLease({
+  runId,
+  leaseOwner,
+}: {
+  runId: string;
+  leaseOwner: string;
+}): void {
+  if (!hasInternalDB()) return;
+  try {
+    internalExecute(
+      `UPDATE agent_runs
+          SET resuming_lease = NULL, resuming_lease_owner = NULL, updated_at = now()
+        WHERE id = $1 AND resuming_lease_owner = $2`,
+      [runId, leaseOwner],
+    );
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), runId },
+      "Failed to release resume lease (will lapse on TTL)",
+    );
   }
 }

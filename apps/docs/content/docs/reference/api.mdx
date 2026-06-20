@@ -211,7 +211,7 @@ while (true) {
 </Tab>
 </Tabs>
 
-The response streams as SSE events. The `x-conversation-id` response header contains the conversation ID for follow-up messages (only present when `DATABASE_URL` is configured).
+The response streams as SSE events. The `x-conversation-id` response header contains the conversation ID for follow-up messages (only present when `DATABASE_URL` is configured). The `x-run-id` response header carries the identifier of the turn (a single agent run). If durable sessions are enabled and a turn is interrupted (deploy, crash, timeout), the client can re-attach to it via `POST /api/v1/chat/{conversationId}/resume` using the conversation ID and run ID — the agent continues from its last checkpoint rather than restarting, so completed tool calls are not re-executed. A second concurrent resume of the same run is rejected with `409`.
 
 **SSE event stream (abbreviated):**
 
@@ -426,7 +426,7 @@ See [Environment Variables](/reference/environment-variables) for configuration.
 
 ## CORS
 
-CORS is configured via `ATLAS_CORS_ORIGIN` (defaults to `*`). When an explicit origin is set, credentials (cookies) are allowed. The `Retry-After` and `x-conversation-id` headers are exposed to the client.
+CORS is configured via `ATLAS_CORS_ORIGIN` (defaults to `*`). When an explicit origin is set, credentials (cookies) are allowed. The `Retry-After`, `x-conversation-id`, and `x-run-id` headers are exposed to the client.
 
 For cross-origin managed auth deployments, see the [cross-origin section](/deployment/authentication#cross-origin-deployment) in the authentication guide.
 

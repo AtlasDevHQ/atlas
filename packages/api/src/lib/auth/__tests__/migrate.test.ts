@@ -392,6 +392,9 @@ describe("migrateAuthTables", () => {
             // so it doesn't need to appear here. 0143 touches `conversations`
             // (Atlas-internal, not Better Auth), so it runs and must be listed.
             { name: "0143_agent_runs.sql" },
+            // 0144 alters `agent_runs` (Atlas-internal), not Better Auth — runs
+            // in every auth mode, so it must be listed too.
+            { name: "0144_agent_runs_resume_lease.sql" },
           ],
         };
       }

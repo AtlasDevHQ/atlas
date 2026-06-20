@@ -804,6 +804,8 @@ export async function runAgent({
   aiModel: injectedAiModel,
   boundDashboardContext,
   presentationMode,
+  resume,
+  runId: callerRunId,
 }: {
   messages: UIMessage[];
   tools?: ToolRegistry;
@@ -852,6 +854,42 @@ export async function runAgent({
    * caller's behavior unchanged.
    */
   presentationMode?: "developer" | "conversational";
+  /**
+   * #3747 — crash-resume re-entry (ADR-0020 phase 2). When supplied, the agent
+   * RE-ENTERS an interrupted turn instead of starting a fresh one:
+   *
+   * - `runId` reuses the interrupted turn's durable row id, so the resumed
+   *   per-step + terminal checkpoints target the SAME `agent_runs` row (one
+   *   logical row per turn — resume does not mint a new run).
+   * - `transcript` is the stored `ModelMessage[]` as of the last completed step
+   *   (input messages + every completed step's assistant/tool messages). It is
+   *   handed to `streamText` directly, so the model CONTINUES from the last
+   *   completed step — the completed tool calls are already in the messages and
+   *   do NOT re-execute. When `resume` is set, `messages` is ignored for the
+   *   model input (the transcript supersedes it); the caller passes the loaded
+   *   transcript here, not the original UI messages.
+   * - `priorStepIndex` is the completed-step count of the checkpoint being
+   *   resumed. The loop seeds its observed-step counter from it so a failure
+   *   before the first resumed step records the correct (non-regressing) index,
+   *   and the monotonic `GREATEST` upsert guarantees steps ≤ N are never
+   *   replayed in the durable row.
+   *
+   * Absent (the default) ⇒ a fresh turn: a new `runId`, `convertToModelMessages`
+   * on `messages`, step counting from 0 — every pre-#3747 caller is unchanged.
+   */
+  resume?: {
+    readonly runId: string;
+    readonly transcript: ModelMessage[];
+    readonly priorStepIndex: number;
+  };
+  /**
+   * #3747 — caller-supplied run id for a FRESH turn, so the chat route can set
+   * the `x-run-id` reattach header on the response (the client reattaches with
+   * conversation id + run id). Ignored when `resume` is set (the resumed run id
+   * wins). Absent ⇒ the loop mints a UUID as before. The resolved run id is
+   * surfaced back on the returned object as `runId` for the route to read.
+   */
+  runId?: string;
 }) {
   // Capture context eagerly — AsyncLocalStorage may have exited by the time onFinish fires
   const reqCtx = getRequestContext();
@@ -1046,7 +1084,13 @@ export async function runAgent({
   }
 
   // Resolve async work before entering otelContext.with() (sync callback).
-  const modelMessages = await convertToModelMessages(messages);
+  // #3747 — on resume, the stored transcript IS the model input (input messages
+  // + completed steps' assistant/tool messages); it supersedes `messages` so the
+  // model continues from the last completed step rather than restarting. A fresh
+  // turn converts the UI messages as before.
+  const modelMessages = resume
+    ? resume.transcript
+    : await convertToModelMessages(messages);
 
   // #2517 — load active-group routing context so the system prompt can
   // teach the agent when to set `scope` on `executeSQL`. Falls back to
@@ -1279,9 +1323,24 @@ export async function runAgent({
   // `terminalWritten` makes the terminal write idempotent across the
   // onFinish/onError/catch seams (first terminal status wins — one row per turn).
   const durabilityActive = Boolean(conversationId) && isDurabilityEnabled(orgId);
-  const runId = crypto.randomUUID();
+  // #3747 — on resume, reuse the interrupted turn's run id so the resumed
+  // checkpoints target the SAME durable row (one logical row per turn); a fresh
+  // turn uses the caller-supplied id (for the `x-run-id` header) or mints one.
+  // The monotonic `GREATEST` step-index upsert means a resumed write can never
+  // regress the row below the checkpoint we resumed from.
+  const runId = resume ? resume.runId : (callerRunId ?? crypto.randomUUID());
   let terminalWritten = false;
-  let observedSteps = 0;
+  // #3747 — seed the observed-step counter from the resumed checkpoint's step
+  // count so a failure before the first resumed step records the correct
+  // (non-regressing) `failed` index, and so resumed step accounting continues
+  // from N rather than restarting at 0. A fresh turn starts at 0.
+  let observedSteps = resume ? resume.priorStepIndex : 0;
+  // #3747 — the AI SDK's `stepNumber` / `steps.length` count only the steps THIS
+  // `streamText` call runs; on resume they restart at 0 / 1, having no knowledge
+  // of the prior steps already in the transcript. Offset them by the resumed
+  // checkpoint's step count so the durable `step_index` continues monotonically
+  // (N → N+1 → …) and never regresses below what we resumed from. 0 for a fresh turn.
+  const stepIndexOffset = resume ? resume.priorStepIndex : 0;
   // Response messages (assistant text, tool calls, tool results) generated this
   // turn. In AI SDK 6, `onStepFinish`'s `response.messages` is the CUMULATIVE
   // running transcript (every step 0..N), NOT just the latest step's messages —
@@ -1348,6 +1407,16 @@ export async function runAgent({
       tools,
       temperature: 0.2,
       maxOutputTokens: 4096,
+      // #3747 — this cap is PER-`streamText`: `stepCountIs` counts the AI-SDK
+      // internal `stepNumber`, which restarts at 0 on a resumed run, so a resumed
+      // turn gets a fresh full N-step per-request budget here. That is intentional
+      // and NOT subtracted by `priorStepIndex`: a turn interrupted near the
+      // per-request cap must still be able to finish its remaining steps on
+      // resume, and subtracting the prior index could starve a legitimate resume
+      // (or, if the prior index exceeded N, stop it dead at zero). The real
+      // ceiling on a resumed flow is the per-CONVERSATION step cap (F-77),
+      // reserved + settled by the chat/resume route around this call — that
+      // aggregate is what bounds unbounded repeat-resume, not this per-request cap.
       stopWhen: stepCountIs(maxStepsOverride ?? getAgentMaxSteps()),
       // Per-step AI-SDK telemetry (#3183 L-2): emit `ai.streamText` /
       // `ai.streamText.doStream` child spans under the enclosing `atlas.agent`
@@ -1465,8 +1534,10 @@ export async function runAgent({
       onStepFinish: ({ stepNumber, finishReason, usage, response }) => {
         // Track the highest observed step so a `failed` checkpoint (onError /
         // outer catch) can record how far the turn got. `stepNumber` is
-        // 0-based; +1 gives the count of completed steps.
-        observedSteps = stepNumber + 1;
+        // 0-based; +1 gives the count of completed steps. #3747 — add
+        // `stepIndexOffset` so a resumed run's step index continues from the
+        // checkpoint it resumed (N+1, N+2, …) rather than restarting at 1.
+        observedSteps = stepIndexOffset + stepNumber + 1;
         // Snapshot this step's cumulative running transcript — AI SDK 6 hands us
         // every step's messages (0..N) in `response.messages`, not just step N —
         // then upsert a mid-flight `running` checkpoint (#3746) keyed on the
@@ -1516,7 +1587,12 @@ export async function runAgent({
         // terminal status attributes land on the still-open span.
         const status: TerminalAgentRunStatus =
           finishReason === "error" ? AGENT_RUN_STATUS.FAILED : AGENT_RUN_STATUS.DONE;
-        writeTerminal(status, steps.length, [...modelMessages, ...response.messages]);
+        // #3747 — offset `steps.length` (this call's new steps) by the resumed
+        // checkpoint's step count so the terminal `step_index` reflects the
+        // turn's TOTAL completed steps, not just the resumed portion. The
+        // terminal transcript is the resumed transcript (`modelMessages`) plus
+        // this call's response messages — the full continued turn, no duplication.
+        writeTerminal(status, stepIndexOffset + steps.length, [...modelMessages, ...response.messages]);
         endSpan(SpanStatusCode.OK);
 
         // Persist token usage to internal DB (fire-and-forget).
@@ -1581,7 +1657,10 @@ export async function runAgent({
     throw err;
   }
 
-  return result;
+  // #3747 — surface the turn's run id so the chat/resume route can set the
+  // `x-run-id` reattach header. Attached as a non-enumerable-ish extra property
+  // on the streamText result; existing callers ignore it.
+  return Object.assign(result, { runId });
 }
 
 // ── Effect-based agent runner (P10c) ────────────────────────────────

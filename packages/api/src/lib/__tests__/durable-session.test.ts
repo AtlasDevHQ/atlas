@@ -15,7 +15,12 @@ import * as realLogger from "@atlas/api/lib/logger";
 let hasInternalDB = true;
 const execCalls: Array<{ sql: string; params?: unknown[] }> = [];
 const queryCalls: Array<{ sql: string; params?: unknown[] }> = [];
-let queryRows: Array<{ id: string }> = [];
+let queryRows: Array<Record<string, unknown>> = [];
+// Optional per-call response queue: when set, each `internalQuery` call shifts
+// the next array off it (the lease helper issues two queries — existence SELECT
+// then claim UPDATE — and needs distinct results). Falls back to `queryRows`
+// when the queue is exhausted/unset so existing single-query tests are unchanged.
+let queryRowsByCall: Array<Array<Record<string, unknown>>> | null = null;
 let queryThrow: Error | null = null;
 // Captures the fail-soft warn the write helpers must emit so a circular
 // transcript (or any synchronous throw) is observable, not silently swallowed.
@@ -30,6 +35,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: async (sql: string, params?: unknown[]) => {
     queryCalls.push({ sql, params });
     if (queryThrow) throw queryThrow;
+    if (queryRowsByCall && queryRowsByCall.length > 0) return queryRowsByCall.shift()!;
     return queryRows;
   },
 }));
@@ -57,7 +63,11 @@ const {
   sweepTerminalAgentRuns,
   isDurabilityEnabled,
   getRetentionDays,
+  getResumeLeaseSeconds,
+  loadAndLeaseResumableRun,
+  releaseResumeLease,
   DEFAULT_RETENTION_DAYS,
+  DEFAULT_RESUME_LEASE_SECONDS,
 } = await import("@atlas/api/lib/durable-session");
 
 beforeEach(() => {
@@ -66,6 +76,7 @@ beforeEach(() => {
   queryCalls.length = 0;
   warnCalls.length = 0;
   queryRows = [];
+  queryRowsByCall = null;
   queryThrow = null;
   settingValue = {};
 });
@@ -281,5 +292,134 @@ describe("getRetentionDays", () => {
     expect(getRetentionDays()).toBe(DEFAULT_RETENTION_DAYS);
     settingValue = { ATLAS_DURABILITY_RETENTION_DAYS: "abc" };
     expect(getRetentionDays()).toBe(DEFAULT_RETENTION_DAYS);
+  });
+});
+
+describe("getResumeLeaseSeconds", () => {
+  it("returns the default when unset", () => {
+    expect(getResumeLeaseSeconds()).toBe(DEFAULT_RESUME_LEASE_SECONDS);
+  });
+
+  it("parses a positive integer setting", () => {
+    settingValue = { ATLAS_DURABILITY_RESUME_LEASE_SECONDS: "120" };
+    expect(getResumeLeaseSeconds()).toBe(120);
+  });
+
+  it("falls back to the default for a non-positive or unparseable value", () => {
+    settingValue = { ATLAS_DURABILITY_RESUME_LEASE_SECONDS: "0" };
+    expect(getResumeLeaseSeconds()).toBe(DEFAULT_RESUME_LEASE_SECONDS);
+    settingValue = { ATLAS_DURABILITY_RESUME_LEASE_SECONDS: "nope" };
+    expect(getResumeLeaseSeconds()).toBe(DEFAULT_RESUME_LEASE_SECONDS);
+  });
+});
+
+describe("loadAndLeaseResumableRun", () => {
+  it("returns no_db when no internal DB is configured", async () => {
+    hasInternalDB = false;
+    const claim = await loadAndLeaseResumableRun("conv-1", 300);
+    expect(claim.status).toBe("no_db");
+    expect(queryCalls).toHaveLength(0);
+  });
+
+  it("returns none when no non-terminal run exists", async () => {
+    // First query (existence SELECT) returns no rows.
+    queryRowsByCall = [[]];
+    const claim = await loadAndLeaseResumableRun("conv-1", 300);
+    expect(claim.status).toBe("none");
+    // Only the existence SELECT runs — no claim UPDATE when there's nothing to claim.
+    expect(queryCalls).toHaveLength(1);
+    expect(queryCalls[0]!.sql).toContain("SELECT id FROM agent_runs");
+  });
+
+  it("claims the lease and returns the run when a non-terminal run is free", async () => {
+    queryRowsByCall = [
+      [{ id: "run-9" }], // existence SELECT
+      [
+        {
+          id: "run-9",
+          org_id: "org-1",
+          step_index: 2,
+          transcript: [{ role: "user", content: "hi" }],
+        },
+      ], // claim UPDATE ... RETURNING
+    ];
+    const claim = await loadAndLeaseResumableRun("conv-1", 300);
+    expect(claim.status).toBe("resumable");
+    if (claim.status !== "resumable") throw new Error("unreachable");
+    expect(claim.run.runId).toBe("run-9");
+    expect(claim.run.orgId).toBe("org-1");
+    expect(claim.run.stepIndex).toBe(2);
+    expect(claim.run.transcript).toEqual([{ role: "user", content: "hi" }]);
+    // A fresh per-resume lease token was minted.
+    expect(claim.run.leaseOwner).toMatch(/^[0-9a-f-]{36}$/);
+
+    // The claim is an atomic CTE UPDATE with the single-flight guard.
+    const claimQuery = queryCalls[1]!;
+    expect(claimQuery.sql).toContain("UPDATE agent_runs");
+    expect(claimQuery.sql).toContain("resuming_lease IS NULL OR resuming_lease < now()");
+    expect(claimQuery.sql).toContain("FOR UPDATE SKIP LOCKED");
+    expect(claimQuery.sql).toContain("resuming_lease_owner = $3");
+    // TTL + owner token are bound params (no SQL interpolation).
+    expect((claimQuery.params as unknown[])[1]).toBe("300");
+    expect((claimQuery.params as unknown[])[2]).toBe(claim.run.leaseOwner);
+  });
+
+  it("returns leased (single-flight rejection) when a run exists but the claim wins nothing", async () => {
+    queryRowsByCall = [
+      [{ id: "run-9" }], // existence SELECT — a non-terminal run IS present
+      [], // claim UPDATE updated nothing — another resumer holds a live lease
+    ];
+    const claim = await loadAndLeaseResumableRun("conv-1", 300);
+    expect(claim.status).toBe("leased");
+  });
+
+  it("fails closed (error, never resumes) when the claim query throws", async () => {
+    queryThrow = new Error("connection reset");
+    const claim = await loadAndLeaseResumableRun("conv-1", 300);
+    expect(claim.status).toBe("error");
+    // Fail-soft logging, not a silent swallow.
+    expect(warnCalls.some((w) => w.msg === "Failed to load/lease resumable run")).toBe(true);
+  });
+
+  it("clamps a non-positive TTL to the default before binding it", async () => {
+    queryRowsByCall = [
+      [{ id: "run-9" }],
+      [{ id: "run-9", org_id: null, step_index: 0, transcript: [] }],
+    ];
+    await loadAndLeaseResumableRun("conv-1", 0);
+    expect((queryCalls[1]!.params as unknown[])[1]).toBe(String(DEFAULT_RESUME_LEASE_SECONDS));
+  });
+
+  it("clamps a corrupt negative step_index to 0 at the read boundary", async () => {
+    queryRowsByCall = [
+      [{ id: "run-9" }],
+      [{ id: "run-9", org_id: null, step_index: -5, transcript: [] }],
+    ];
+    const claim = await loadAndLeaseResumableRun("conv-1", 300);
+    expect(claim.status).toBe("resumable");
+    if (claim.status !== "resumable") throw new Error("unreachable");
+    // A negative offset must never reach the resume math — clamp it non-negative.
+    expect(claim.run.stepIndex).toBe(0);
+  });
+});
+
+describe("releaseResumeLease", () => {
+  it("clears the lease only while this resumer still owns it (owner-guarded)", () => {
+    releaseResumeLease({ runId: "run-9", leaseOwner: "owner-token-1" });
+    expect(execCalls).toHaveLength(1);
+    const call = execCalls[0]!;
+    expect(call.sql).toContain("UPDATE agent_runs");
+    expect(call.sql).toContain("resuming_lease = NULL");
+    expect(call.sql).toContain("resuming_lease_owner = NULL");
+    // The owner guard is what keeps a TTL-expired late release from wiping a
+    // re-claimed live lease.
+    expect(call.sql).toContain("resuming_lease_owner = $2");
+    expect(call.params).toEqual(["run-9", "owner-token-1"]);
+  });
+
+  it("is a no-op when no internal DB is configured", () => {
+    hasInternalDB = false;
+    releaseResumeLease({ runId: "run-9", leaseOwner: "owner-token-1" });
+    expect(execCalls).toHaveLength(0);
   });
 });

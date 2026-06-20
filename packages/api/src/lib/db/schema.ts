@@ -2593,7 +2593,13 @@ export const agentRuns = pgTable(
     stepIndex: integer("step_index").notNull().default(0),
     transcript: jsonb("transcript").notNull(),
     parkedReason: text("parked_reason"),
+    // resuming_lease (expiry) + resuming_lease_owner (holder token) are the
+    // single-resumer guard for crash-resume (#3747, migration 0144). resuming_lease
+    // is the lease EXPIRY instant; resuming_lease_owner is a per-resume token so a
+    // release is safe under TTL expiry (a stale resumer can't clear a re-claimed
+    // live lease). resuming_lease is defined in 0143; the owner column is added by 0144.
     resumingLease: timestamp("resuming_lease", { withTimezone: true }),
+    resumingLeaseOwner: text("resuming_lease_owner"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -2603,6 +2609,11 @@ export const agentRuns = pgTable(
     // Non-terminal runs are the hot working set for resume + the park reaper,
     // a small slice of a table dominated by terminal rows awaiting the sweep.
     index("idx_agent_runs_active").on(t.status).where(sql`status IN ('running', 'parked')`),
+    // Resume-lease lookup (#3747, 0144): the claimable-run-for-this-conversation
+    // scan, partial on the same non-terminal predicate so it stays a small hot index.
+    index("idx_agent_runs_resume_lease")
+      .on(t.conversationId, t.resumingLease)
+      .where(sql`status IN ('running', 'parked')`),
     check("chk_agent_runs_status", sql`status IN ('running', 'parked', 'done', 'failed')`),
   ],
 );

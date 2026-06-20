@@ -432,10 +432,9 @@ export function getSummaryModel(opts: {
   summaryModelId: string;
   /**
    * The turn's workspace model config when it resolved from one (SaaS BYOT);
-   * `null` for the platform / env-resolved path. Typed structurally against
-   * {@link getModelFromWorkspaceConfig} so this module needs no new import.
+   * `null` for the platform / env-resolved path.
    */
-  workspaceConfig: Parameters<typeof getModelFromWorkspaceConfig>[0] | null;
+  workspaceConfig: WorkspaceModelConfig | null;
 }): LanguageModel {
   const { summaryModelId, workspaceConfig } = opts;
   if (workspaceConfig) {
@@ -476,6 +475,22 @@ function workspaceProviderType(provider: ModelConfigProvider): ProviderType {
 }
 
 /**
+ * A resolved workspace-level model configuration: the provider credentials plus
+ * the model id and connection details. Shared by {@link getModelFromWorkspaceConfig}
+ * (which builds the turn model from it) and {@link getSummaryModel} (which rebuilds
+ * it with only `model` swapped for the cheaper #3761 summary model), so the two
+ * agree on the shape via one named type rather than one borrowing the other's
+ * parameter list.
+ */
+export interface WorkspaceModelConfig {
+  model: string;
+  baseUrl: string | null;
+  /** Required for provider='bedrock'; ignored for every other provider. */
+  bedrockRegion: string | null;
+  credentials: WorkspaceCredentials;
+}
+
+/**
  * Create a LanguageModel from a workspace-level model configuration.
  * Uses the provider's SDK with the workspace's own API key and settings.
  *
@@ -485,13 +500,7 @@ function workspaceProviderType(provider: ModelConfigProvider): ProviderType {
  * re-entry error the catalog refresh's `malformed_bedrock_bundle`
  * envelope points at.
  */
-export function getModelFromWorkspaceConfig(config: {
-  model: string;
-  baseUrl: string | null;
-  /** Required for provider='bedrock'; ignored for every other provider. */
-  bedrockRegion: string | null;
-  credentials: WorkspaceCredentials;
-}): LanguageModel {
+export function getModelFromWorkspaceConfig(config: WorkspaceModelConfig): LanguageModel {
   const { credentials } = config;
   switch (credentials.provider) {
     case "anthropic": {

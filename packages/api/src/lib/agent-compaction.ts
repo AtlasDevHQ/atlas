@@ -459,13 +459,13 @@ export interface CompactionStreamMarker {
   readonly afterTokens: number;
 }
 
-/** Inputs for {@link buildCompactionMarker}. */
-export interface CompactionMarkerInput {
-  readonly beforeTokens: number;
-  readonly afterTokens: number;
-  readonly summarizedMessages: number;
-  readonly pinnedMessages: number;
-}
+/**
+ * Inputs for {@link buildCompactionMarker} — the marker's fields minus its
+ * constant `ran` discriminator. Derived from {@link CompactionStreamMarker} via
+ * `Omit` so adding a wire field automatically demands it here, with no
+ * hand-maintained twin to drift.
+ */
+export type CompactionMarkerInput = Omit<CompactionStreamMarker, "ran">;
 
 /**
  * Build the client-facing compaction marker. Pure (same precedent as

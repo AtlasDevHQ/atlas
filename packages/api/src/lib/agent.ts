@@ -1410,18 +1410,30 @@ export async function runAgent({
   // so it always summarizes on the injected model). Fail-soft: a resolution
   // failure logs and falls back to the turn model — never errors the turn.
   let summaryModel: LanguageModel = model;
+  // The separate summary model's id when one is actually IN USE (resolved OK and
+  // distinct from the turn model); undefined when summarizing on the turn model.
+  // Hoisted to the turn scope so the outer compaction catch below can attribute a
+  // summarize failure to it: a typo'd `ATLAS_COMPACTION_SUMMARY_MODEL` resolves to
+  // a provider handle WITHOUT throwing here (the SDK validates lazily), so the bad
+  // id only fails later inside `generateText` on every pass — naming it in that
+  // catch is the only breadcrumb pointing at the misconfigured knob.
+  let summaryModelId: string | undefined;
   if (compactionSettings.enabled && !injectedAiModel) {
-    const summaryModelId = getSetting("ATLAS_COMPACTION_SUMMARY_MODEL", orgId)?.trim();
-    if (summaryModelId && summaryModelId !== resolvedModelId) {
+    const configuredSummaryModelId = getSetting("ATLAS_COMPACTION_SUMMARY_MODEL", orgId)?.trim();
+    if (configuredSummaryModelId && configuredSummaryModelId !== resolvedModelId) {
       try {
-        summaryModel = getSummaryModel({ summaryModelId, workspaceConfig });
+        summaryModel = getSummaryModel({ summaryModelId: configuredSummaryModelId, workspaceConfig });
+        summaryModelId = configuredSummaryModelId;
         log.info(
-          { summaryModelId, turnModelId: resolvedModelId },
+          { summaryModelId: configuredSummaryModelId, turnModelId: resolvedModelId },
           "compaction: summarizing on a separate model",
         );
       } catch (err) {
+        // Synchronous resolution failure (unknown provider, missing key). Degrade
+        // to the turn model; `summaryModelId` stays undefined so the outer catch
+        // doesn't mis-attribute a later turn-model failure to a separate model.
         log.warn(
-          { err: err instanceof Error ? err.message : String(err), summaryModelId },
+          { err: err instanceof Error ? err.message : String(err), summaryModelId: configuredSummaryModelId },
           "compaction summary model resolution failed — summarizing on the turn model",
         );
         summaryModel = model;
@@ -1669,36 +1681,47 @@ export async function runAgent({
                 // no-op. Emitted ONLY inside this "a pass ran" branch — a turn
                 // that does not compact writes no marker. Fail-soft + type-narrowed
                 // so a closed/throwing writer never disrupts the turn.
-                try {
-                  const writer = getStreamWriter();
-                  if (writer) {
+                const writer = getStreamWriter();
+                if (writer) {
+                  // Build the marker OUTSIDE the writer fail-soft. It's a pure
+                  // literal that cannot throw today, but keeping construction out
+                  // of the try ensures a future throw here surfaces as a real
+                  // error instead of being masked as a benign "not delivered".
+                  const marker = buildCompactionMarker({
+                    beforeTokens,
+                    afterTokens,
+                    summarizedMessages: compacted.summarizedMessageCount,
+                    pinnedMessages: compacted.pinnedMessageCount,
+                  });
+                  try {
                     writer.write({
                       type: COMPACTION_STREAM_PART_TYPE,
-                      data: buildCompactionMarker({
-                        beforeTokens,
-                        afterTokens,
-                        summarizedMessages: compacted.summarizedMessageCount,
-                        pinnedMessages: compacted.pinnedMessageCount,
-                      }),
+                      data: marker,
                       // Transient: a notification, not assistant answer content —
                       // delivered to the client's `onData` but not persisted into
                       // the stored message history.
                       transient: true,
                     });
+                  } catch (err) {
+                    // Best-effort: a closed/aborted client stream is the dominant
+                    // cause; the logged `err` carries the actual cause.
+                    log.debug(
+                      { err: err instanceof Error ? err.message : String(err) },
+                      "compaction stream marker not delivered",
+                    );
                   }
-                } catch (err) {
-                  // Best-effort: a closed/aborted client stream is the dominant
-                  // cause, but the catch covers any writer throw — the logged
-                  // `err` carries the actual cause, so don't over-assert it here.
-                  log.debug(
-                    { err: err instanceof Error ? err.message : String(err) },
-                    "compaction stream marker not delivered",
-                  );
                 }
               }
             } catch (err) {
               log.warn(
-                { err: err instanceof Error ? err.message : String(err) },
+                {
+                  err: err instanceof Error ? err.message : String(err),
+                  // #3761 — attribute a persistent failure to a configured separate
+                  // summary model (a typo'd id resolves to a handle without throwing,
+                  // then fails here every pass) rather than a generic provider blip.
+                  // Undefined ⇒ summarizing on the turn model.
+                  summaryModelId,
+                },
                 "context compaction pass failed — continuing with full context",
               );
             }

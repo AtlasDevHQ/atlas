@@ -267,6 +267,26 @@ describe("getSummaryModel (#3761)", () => {
       },
     });
     expect(typeof model === "string" ? model : model.modelId).toBe("claude-haiku-4-5");
+    // …and the provider stays the workspace's Anthropic SDK — a regression that
+    // dropped `credentials` and fell back to a default provider while keeping the
+    // right model id would pass the modelId check alone, so assert the provider.
+    expect(typeof model === "string" ? "" : model.provider).toContain("anthropic");
+  });
+
+  test("workspace path: provider field tracks the workspace config, not a constant", () => {
+    // The same call on an OpenAI BYOT workspace must resolve the OpenAI SDK —
+    // proving the assertion above isn't passing because `provider` is hard-coded.
+    const model = getSummaryModel({
+      summaryModelId: "gpt-4o-mini",
+      workspaceConfig: {
+        model: "gpt-4o", // the turn model — must be overridden
+        baseUrl: null,
+        bedrockRegion: null,
+        credentials: { provider: "openai", apiKey: "sk-openai-test" },
+      },
+    });
+    expect(typeof model === "string" ? model : model.modelId).toBe("gpt-4o-mini");
+    expect(typeof model === "string" ? "" : model.provider).toContain("openai");
   });
 });
 

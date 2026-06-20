@@ -54,9 +54,20 @@ export const DURABILITY_ENABLED_SETTING = "ATLAS_DURABILITY_ENABLED";
 export const DURABILITY_RETENTION_DAYS_SETTING = "ATLAS_DURABILITY_RETENTION_DAYS";
 /** Settings key for the resume-lease TTL, in seconds (#3747). */
 export const RESUME_LEASE_TTL_SETTING = "ATLAS_DURABILITY_RESUME_LEASE_SECONDS";
+/** Settings key for the max time a turn may stay parked awaiting approval, in minutes (#3748). */
+export const MAX_PARK_MINUTES_SETTING = "ATLAS_DURABILITY_MAX_PARK_MINUTES";
 
 /** Fallback retention window when the setting is unset/unparseable. */
 export const DEFAULT_RETENTION_DAYS = 30;
+
+/**
+ * Default max-park duration. A turn parks awaiting a human approval decision;
+ * past this it is swept to `failed` so a never-decided request can't pin a row
+ * forever. 1440 minutes (24h) mirrors the approval-queue's own 24h
+ * `expires_at` default — by the time the queue entry expires, the parked run
+ * the requester was waiting on is reaped on the same clock.
+ */
+export const DEFAULT_MAX_PARK_MINUTES = 1440;
 
 /**
  * Default resume-lease TTL. A live resume must out-live one full agent turn,
@@ -97,6 +108,19 @@ export function getResumeLeaseSeconds(orgId?: string): number {
 }
 
 /**
+ * Resolve the max-park duration (minutes), clamped to a sane positive integer
+ * (#3748). The sweep is operator-global, so this reads the platform/env/default
+ * tier (no orgId) — same as {@link getRetentionDays}.
+ */
+export function getMaxParkMinutes(orgId?: string): number {
+  const raw = getSettingAuto(MAX_PARK_MINUTES_SETTING, orgId);
+  if (raw === undefined) return DEFAULT_MAX_PARK_MINUTES;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_PARK_MINUTES;
+  return parsed;
+}
+
+/**
  * Shared write shape for an agent-run checkpoint. The single source of truth for
  * the upsert columns — referenced (via `import type`) by `DurableSessionShape`'s
  * methods so the Effect Tag contract can't drift from the helpers.
@@ -129,6 +153,12 @@ export type RecordRunCheckpointArgs = AgentRunWrite;
 /** Arguments for a terminal (`done`/`failed`) checkpoint write (#3745, phase 1a). */
 export interface RecordTerminalRunArgs extends AgentRunWrite {
   status: TerminalAgentRunStatus;
+}
+
+/** Arguments for a `parked` checkpoint write (#3748, phase 3). */
+export interface RecordParkedRunArgs extends AgentRunWrite {
+  /** Approval-queue request id this turn parked on, stored in `parked_reason`. */
+  parkedReason: string;
 }
 
 // Exported for the real-Postgres upsert-behavior tests (migrate-pg.test.ts) so
@@ -170,6 +200,24 @@ export const TERMINAL_UPSERT_SQL = `${AGENT_RUN_INSERT}
          status = EXCLUDED.status,
          step_index = GREATEST(agent_runs.step_index, EXCLUDED.step_index),
          transcript = EXCLUDED.transcript,
+         updated_at = now()`;
+
+/**
+ * Parked upsert (#3748, ADR-0020 phase 3). A turn that hit an approval-required
+ * action flips its row to `parked` carrying the approval-queue ref in
+ * `parked_reason` and the full transcript-as-of-park. Like the terminal upsert
+ * it overwrites unconditionally — the park IS the authoritative end of this
+ * stream (the loop made no further model calls). The extra `$7` param is the
+ * `parked_reason` the running/terminal upserts don't carry, so this is its own
+ * statement rather than a reuse of {@link AGENT_RUN_INSERT}.
+ */
+export const PARKED_UPSERT_SQL = `INSERT INTO agent_runs (id, conversation_id, org_id, status, step_index, transcript, parked_reason, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, now())
+       ON CONFLICT (id) DO UPDATE SET
+         status = EXCLUDED.status,
+         step_index = GREATEST(agent_runs.step_index, EXCLUDED.step_index),
+         transcript = EXCLUDED.transcript,
+         parked_reason = EXCLUDED.parked_reason,
          updated_at = now()`;
 
 /**
@@ -240,6 +288,39 @@ export function recordTerminalAgentRun(args: RecordTerminalRunArgs): void {
 }
 
 /**
+ * Persist a `parked` checkpoint (fire-and-forget, #3748). Flips the per-turn row
+ * to `parked` with the approval-queue ref in `parked_reason` and the full
+ * transcript-as-of-park, after the agent loop stopped at the gated step. Mirrors
+ * {@link recordTerminalAgentRun}'s fail-soft contract (gated on `hasInternalDB`,
+ * routed through the shared `internalExecute` circuit breaker, type-narrowed
+ * catch, never throws) but carries the extra `parked_reason` param.
+ */
+export function recordParkedAgentRun(args: RecordParkedRunArgs): void {
+  if (!hasInternalDB()) return;
+  try {
+    internalExecute(PARKED_UPSERT_SQL, [
+      args.runId,
+      args.conversationId,
+      args.orgId,
+      AGENT_RUN_STATUS.PARKED,
+      args.stepIndex,
+      JSON.stringify(args.transcript ?? []),
+      args.parkedReason,
+    ]);
+  } catch (err) {
+    log.warn(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        conversationId: args.conversationId,
+        runId: args.runId,
+        parkedReason: args.parkedReason,
+      },
+      "Failed to record parked agent run checkpoint",
+    );
+  }
+}
+
+/**
  * Delete terminal (`done`/`failed`) runs whose last update is older than the
  * retention window. Non-terminal (`running`/`parked`) runs are never touched —
  * they are the live working set for resume. Returns the number of rows deleted,
@@ -265,6 +346,43 @@ export async function sweepTerminalAgentRuns(retentionDays: number): Promise<num
     log.warn(
       { err: err instanceof Error ? err.message : String(err) },
       "Failed to sweep terminal agent runs",
+    );
+    return -1;
+  }
+}
+
+/**
+ * Fail `parked` runs whose last update (the park time) is older than the
+ * max-park window (#3748). A turn parks awaiting a human approval decision; if
+ * the decision never lands, the run would pin a non-terminal row forever — so
+ * it is swept to `failed` (NOT deleted), which both releases it from the live
+ * working set and lets the existing terminal retention sweep reap it later on
+ * the normal clock. Returns the number of rows failed, or -1 on error (mirrors
+ * {@link sweepTerminalAgentRuns}).
+ */
+// Exported for the real-Postgres sweep test (migrate-pg.test.ts) so it exercises
+// the EXACT interval/UPDATE the helper runs, not a hand-copied reimplementation.
+export const PARKED_SWEEP_SQL = `UPDATE agent_runs
+          SET status = 'failed', parked_reason = NULL, updated_at = now()
+        WHERE status = 'parked'
+          AND updated_at < now() - ($1 || ' minutes')::interval
+        RETURNING id`;
+
+export async function sweepExpiredParkedRuns(maxParkMinutes: number): Promise<number> {
+  if (!hasInternalDB()) return 0;
+  const minutes =
+    Number.isFinite(maxParkMinutes) && maxParkMinutes > 0 ? maxParkMinutes : DEFAULT_MAX_PARK_MINUTES;
+  try {
+    const rows = await internalQuery<{ id: string }>(PARKED_SWEEP_SQL, [String(minutes)]);
+    const count = rows.length;
+    if (count > 0) {
+      log.info({ count, maxParkMinutes: minutes }, "Failed parked agent runs past max-park duration");
+    }
+    return count;
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Failed to sweep expired parked agent runs",
     );
     return -1;
   }
@@ -336,23 +454,32 @@ export type ResumeClaim =
 // Exported for the real-Postgres single-flight test (migrate-pg.test.ts) so it
 // exercises the EXACT claim SQL the helper runs, not a hand-copied one.
 //
-// Existence probe: is there ANY non-terminal run for this conversation?
-// Distinguishes "nothing to resume" (`none`) from "exists but already leased"
-// (`leased`) so the caller rejects a double-attach distinctly from a clean no-op.
+// Existence probe: is there a crash-resumable (`running`) run for this
+// conversation? Distinguishes "nothing to resume" (`none`) from "exists but
+// already leased" (`leased`) so the caller rejects a double-attach distinctly
+// from a clean no-op.
+//
+// #3748 — `parked` is deliberately EXCLUDED. A parked run is intentionally
+// suspended awaiting a human approval decision, not a crash victim; auto-
+// resuming it would let the model answer "still pending" and burn the park.
+// Resolution (`resolveParkedRun`) flips it back to `running` once the decision
+// lands, at which point this probe (and the claim below) picks it up.
 export const RESUME_EXISTS_SQL = `SELECT id FROM agent_runs
-        WHERE conversation_id = $1 AND status IN ('running', 'parked')
+        WHERE conversation_id = $1 AND status = 'running'
         ORDER BY updated_at DESC
         LIMIT 1`;
 
-// Atomic lease claim. The CTE picks the latest non-terminal CLAIMABLE row
-// (lease free or expired) FOR UPDATE SKIP LOCKED — a concurrent claimer skips
-// the locked row rather than blocking — and the UPDATE only fires when the lease
-// is free/expired. RETURNING the transcript means the read and the claim are the
-// same statement, so there is no TOCTOU window: exactly one of two concurrent
-// resumes wins the row, the other gets zero rows back (→ `leased`).
+// Atomic lease claim. The CTE picks the latest crash-resumable (`running`)
+// CLAIMABLE row (lease free or expired) FOR UPDATE SKIP LOCKED — a concurrent
+// claimer skips the locked row rather than blocking — and the UPDATE only fires
+// when the lease is free/expired. RETURNING the transcript means the read and
+// the claim are the same statement, so there is no TOCTOU window: exactly one of
+// two concurrent resumes wins the row, the other gets zero rows back
+// (→ `leased`). `parked` is excluded for the same reason as the existence probe
+// above (#3748).
 export const RESUME_CLAIM_SQL = `WITH target AS (
          SELECT id FROM agent_runs
-          WHERE conversation_id = $1 AND status IN ('running', 'parked')
+          WHERE conversation_id = $1 AND status = 'running'
             AND (resuming_lease IS NULL OR resuming_lease < now())
           ORDER BY updated_at DESC
           LIMIT 1
@@ -456,5 +583,112 @@ export function releaseResumeLease({
       { err: err instanceof Error ? err.message : String(err), runId },
       "Failed to release resume lease (will lapse on TTL)",
     );
+  }
+}
+
+// ── Approval-park resolution (#3748, ADR-0020 phase 3) ──────────────────────
+
+/** A parked run loaded for approval resolution. */
+export interface ParkedRun {
+  readonly runId: string;
+  readonly conversationId: string;
+  readonly orgId: string | null;
+  readonly stepIndex: number;
+  /** Transcript-as-of-park (carries the needs-approval tool result to rewrite). */
+  readonly transcript: ModelMessage[];
+}
+
+/**
+ * Load the parked run that is waiting on a given approval-queue request, keyed
+ * on the `parked_reason` the park write stamped (#3748). `agent_runs` and the
+ * approval queue are decoupled at the schema level, so `parked_reason` IS the
+ * link from a decision back to the suspended turn. Returns `null` when no such
+ * parked run exists (already resolved/expired, or never parked), or on a DB
+ * error — the caller treats both as "nothing to resume" (fail-soft: a degraded
+ * checkpoint store costs resumability, never the approval decision itself).
+ */
+export async function loadParkedRunByApprovalRef(approvalRequestId: string): Promise<ParkedRun | null> {
+  if (!hasInternalDB()) return null;
+  try {
+    const rows = await internalQuery<{
+      id: string;
+      conversation_id: string;
+      org_id: string | null;
+      step_index: number;
+      transcript: unknown;
+    }>(
+      `SELECT id, conversation_id, org_id, step_index, transcript
+         FROM agent_runs
+        WHERE parked_reason = $1 AND status = 'parked'
+        ORDER BY updated_at DESC
+        LIMIT 1`,
+      [approvalRequestId],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      runId: row.id,
+      conversationId: row.conversation_id,
+      orgId: row.org_id,
+      stepIndex: Math.max(
+        0,
+        typeof row.step_index === "number" ? row.step_index : Number(row.step_index) || 0,
+      ),
+      transcript: Array.isArray(row.transcript) ? (row.transcript as ModelMessage[]) : [],
+    };
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), approvalRequestId },
+      "Failed to load parked run for approval resolution",
+    );
+    return null;
+  }
+}
+
+/**
+ * Commit an approval decision to a parked run: write the rewritten transcript
+ * (the needs-approval tool result replaced by an approved/denied result) and
+ * flip the row `parked` → `running`, clearing `parked_reason` (#3748). The run
+ * is now an ordinary mid-flight checkpoint the resume endpoint claims and
+ * continues IN THE REQUESTER'S live context — security (auth/whitelist/RLS) is
+ * re-resolved fresh at resume, never from this row (ADR-0020 invariant), which
+ * is why the decision does NOT execute the gated query here.
+ *
+ * The `status = 'parked'` guard makes a double-resolution (e.g. an approve+deny
+ * race, or a retried review) a no-op rather than resurrecting a run that already
+ * resumed. Returns `true` when a row was resolved, `false` otherwise. Awaited
+ * (not fire-and-forget) so the caller learns whether the resume was armed.
+ */
+// Exported for the real-Postgres resolution test (migrate-pg.test.ts) so it
+// exercises the EXACT UPDATE (with its `status = 'parked'` double-resolution
+// guard) the helper runs.
+export const PARKED_RESOLVE_SQL = `UPDATE agent_runs
+          SET status = 'running',
+              transcript = $2::jsonb,
+              parked_reason = NULL,
+              step_index = GREATEST(step_index, $3),
+              updated_at = now()
+        WHERE id = $1 AND status = 'parked'
+        RETURNING id`;
+
+export async function resolveParkedRun(args: {
+  runId: string;
+  transcript: ModelMessage[];
+  stepIndex: number;
+}): Promise<boolean> {
+  if (!hasInternalDB()) return false;
+  try {
+    const rows = await internalQuery<{ id: string }>(PARKED_RESOLVE_SQL, [
+      args.runId,
+      JSON.stringify(args.transcript ?? []),
+      args.stepIndex,
+    ]);
+    return rows.length > 0;
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), runId: args.runId },
+      "Failed to resolve parked agent run",
+    );
+    return false;
   }
 }

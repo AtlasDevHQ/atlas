@@ -6,7 +6,14 @@ import { z } from "zod";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { buildStaleCatalogQuery } from "@atlas/api/lib/scheduler/byot-catalog-query";
-import { RUNNING_UPSERT_SQL, TERMINAL_UPSERT_SQL, RESUME_CLAIM_SQL } from "@atlas/api/lib/durable-session";
+import {
+  RUNNING_UPSERT_SQL,
+  TERMINAL_UPSERT_SQL,
+  RESUME_CLAIM_SQL,
+  PARKED_UPSERT_SQL,
+  PARKED_SWEEP_SQL,
+  PARKED_RESOLVE_SQL,
+} from "@atlas/api/lib/durable-session";
 
 // Real-Postgres migration smoke. Skips cleanly when TEST_DATABASE_URL
 // is unset so local dev that hasn't run `bun run db:up` is unaffected.
@@ -2615,6 +2622,128 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
       [runId],
     );
     expect(after.rows[0]!.resuming_lease_owner).toBe("owner-C");
+  }, PG_TEST_TIMEOUT_MS);
+
+  // #3748 (ADR-0020 phase 3) — approval-park, executed against real Postgres.
+  // Pins the parked upsert, the max-park sweep (interval math), the resolution
+  // flip, and — the load-bearing behavior change — that the crash-resume claim
+  // does NOT pick up a `parked` run (it awaits a human decision, not a crash).
+  async function newConversation(): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO conversations DEFAULT VALUES RETURNING id`,
+    );
+    return rows[0]!.id;
+  }
+
+  it("0143/0144 (#3748): the parked upsert flips a run to parked with parked_reason", async () => {
+    const conversationId = await newConversation();
+    const runId = "55555555-5555-5555-5555-555555555555";
+    await pool.query(RUNNING_UPSERT_SQL, [
+      runId, conversationId, "org-1", "running", 1,
+      JSON.stringify([{ role: "assistant", content: "mid" }]),
+    ]);
+    await pool.query(PARKED_UPSERT_SQL, [
+      runId, conversationId, "org-1", "parked", 1,
+      JSON.stringify([{ role: "tool", content: "needs-approval" }]),
+      "req-42",
+    ]);
+    const row = await pool.query<{ status: string; parked_reason: string; transcript: unknown }>(
+      `SELECT status, parked_reason, transcript FROM agent_runs WHERE id = $1`,
+      [runId],
+    );
+    expect(row.rowCount).toBe(1);
+    expect(row.rows[0]!.status).toBe("parked");
+    expect(row.rows[0]!.parked_reason).toBe("req-42");
+    expect(row.rows[0]!.transcript).toEqual([{ role: "tool", content: "needs-approval" }]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0143/0144 (#3748): the crash-resume claim never picks up a parked run", async () => {
+    const conversationId = await newConversation();
+    const runId = "66666666-6666-6666-6666-666666666666";
+    await pool.query(PARKED_UPSERT_SQL, [
+      runId, conversationId, "org-1", "parked", 1,
+      JSON.stringify([{ role: "tool", content: "needs-approval" }]),
+      "req-77",
+    ]);
+    // A parked run is awaiting a human approval decision — the claim must skip it.
+    const claim = await pool.query(RESUME_CLAIM_SQL, [conversationId, "300", "owner-A"]);
+    expect(claim.rowCount).toBe(0);
+    // It only becomes claimable once resolution flips it back to running.
+    await pool.query(PARKED_RESOLVE_SQL, [
+      runId, JSON.stringify([{ role: "tool", content: "approved" }]), 1,
+    ]);
+    const claim2 = await pool.query(RESUME_CLAIM_SQL, [conversationId, "300", "owner-B"]);
+    expect(claim2.rowCount).toBe(1);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0143/0144 (#3748): resolution flips parked → running, rewrites transcript, clears parked_reason", async () => {
+    const conversationId = await newConversation();
+    const runId = "77777777-7777-7777-7777-777777777777";
+    await pool.query(PARKED_UPSERT_SQL, [
+      runId, conversationId, "org-1", "parked", 2,
+      JSON.stringify([{ role: "tool", content: "needs-approval" }]),
+      "req-88",
+    ]);
+    const first = await pool.query(PARKED_RESOLVE_SQL, [
+      runId, JSON.stringify([{ role: "tool", content: "approved" }]), 2,
+    ]);
+    expect(first.rowCount).toBe(1);
+    const row = await pool.query<{ status: string; parked_reason: string | null; transcript: unknown }>(
+      `SELECT status, parked_reason, transcript FROM agent_runs WHERE id = $1`,
+      [runId],
+    );
+    expect(row.rows[0]!.status).toBe("running");
+    expect(row.rows[0]!.parked_reason).toBeNull();
+    expect(row.rows[0]!.transcript).toEqual([{ role: "tool", content: "approved" }]);
+
+    // Double-resolution is a no-op: the `status = 'parked'` guard matches nothing
+    // now (the row is already running), so a retried/concurrent review can't
+    // resurrect it or clobber the resumed transcript.
+    const second = await pool.query(PARKED_RESOLVE_SQL, [
+      runId, JSON.stringify([{ role: "tool", content: "STALE" }]), 2,
+    ]);
+    expect(second.rowCount).toBe(0);
+    const afterSecond = await pool.query<{ transcript: unknown }>(
+      `SELECT transcript FROM agent_runs WHERE id = $1`,
+      [runId],
+    );
+    expect(afterSecond.rows[0]!.transcript).toEqual([{ role: "tool", content: "approved" }]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0143/0144 (#3748): the max-park sweep fails only parked runs past the window", async () => {
+    const conversationId = await newConversation();
+    const staleRun = "88888888-8888-8888-8888-888888888888";
+    const freshRun = "99999999-9999-9999-9999-999999999999";
+    const runningRun = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
+    // A parked run that parked 2 hours ago (past a 60-minute window).
+    await pool.query(PARKED_UPSERT_SQL, [
+      staleRun, conversationId, "org-1", "parked", 1, JSON.stringify([]), "req-old",
+    ]);
+    await pool.query(
+      `UPDATE agent_runs SET updated_at = now() - interval '2 hours' WHERE id = $1`,
+      [staleRun],
+    );
+    // A freshly parked run (inside the window) and a running run (never swept).
+    await pool.query(PARKED_UPSERT_SQL, [
+      freshRun, conversationId, "org-1", "parked", 1, JSON.stringify([]), "req-new",
+    ]);
+    await pool.query(RUNNING_UPSERT_SQL, [
+      runningRun, conversationId, "org-1", "running", 1, JSON.stringify([]),
+    ]);
+
+    const swept = await pool.query(PARKED_SWEEP_SQL, ["60"]);
+    expect(swept.rowCount).toBe(1); // only the stale parked run
+
+    const statuses = await pool.query<{ id: string; status: string; parked_reason: string | null }>(
+      `SELECT id, status, parked_reason FROM agent_runs WHERE id = ANY($1::uuid[]) ORDER BY id`,
+      [[staleRun, freshRun, runningRun]],
+    );
+    const byId = new Map(statuses.rows.map((r) => [r.id, r]));
+    expect(byId.get(staleRun)!.status).toBe("failed");
+    expect(byId.get(staleRun)!.parked_reason).toBeNull(); // cleared on sweep
+    expect(byId.get(freshRun)!.status).toBe("parked"); // still inside the window
+    expect(byId.get(runningRun)!.status).toBe("running"); // never a sweep target
   }, PG_TEST_TIMEOUT_MS);
 });
 

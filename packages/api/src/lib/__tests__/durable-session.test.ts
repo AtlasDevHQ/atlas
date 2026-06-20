@@ -60,14 +60,20 @@ mock.module("@atlas/api/lib/settings", () => ({
 const {
   recordRunCheckpoint,
   recordTerminalAgentRun,
+  recordParkedAgentRun,
   sweepTerminalAgentRuns,
+  sweepExpiredParkedRuns,
+  loadParkedRunByApprovalRef,
+  resolveParkedRun,
   isDurabilityEnabled,
   getRetentionDays,
   getResumeLeaseSeconds,
+  getMaxParkMinutes,
   loadAndLeaseResumableRun,
   releaseResumeLease,
   DEFAULT_RETENTION_DAYS,
   DEFAULT_RESUME_LEASE_SECONDS,
+  DEFAULT_MAX_PARK_MINUTES,
 } = await import("@atlas/api/lib/durable-session");
 
 beforeEach(() => {
@@ -261,6 +267,207 @@ describe("sweepTerminalAgentRuns", () => {
     queryThrow = new Error("connection reset");
     const count = await sweepTerminalAgentRuns(30);
     expect(count).toBe(-1);
+  });
+});
+
+describe("recordParkedAgentRun (#3748)", () => {
+  it("upserts a `parked` row carrying the approval ref in parked_reason ($7)", () => {
+    recordParkedAgentRun({
+      runId: "run-1",
+      conversationId: "conv-1",
+      orgId: "org-9",
+      stepIndex: 4,
+      transcript: [{ role: "user", content: "hi" }],
+      parkedReason: "req-42",
+    });
+
+    expect(execCalls).toHaveLength(1);
+    const call = execCalls[0]!;
+    expect(call.sql).toContain("INSERT INTO agent_runs");
+    expect(call.sql).toContain("parked_reason");
+    expect(call.sql).toContain("ON CONFLICT (id) DO UPDATE");
+    // Park is the authoritative end-of-stream — overwrites unconditionally.
+    expect(call.sql).toContain("status = EXCLUDED.status");
+    expect(call.sql).toContain("parked_reason = EXCLUDED.parked_reason");
+    expect(call.params).toEqual([
+      "run-1",
+      "conv-1",
+      "org-9",
+      "parked",
+      4,
+      JSON.stringify([{ role: "user", content: "hi" }]),
+      "req-42",
+    ]);
+  });
+
+  it("is a no-op when no internal DB is configured", () => {
+    hasInternalDB = false;
+    recordParkedAgentRun({
+      runId: "run-1",
+      conversationId: "conv-1",
+      orgId: null,
+      stepIndex: 0,
+      transcript: [],
+      parkedReason: "req-1",
+    });
+    expect(execCalls).toHaveLength(0);
+  });
+
+  it("never throws and writes nothing when JSON.stringify fails (circular transcript)", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(() =>
+      recordParkedAgentRun({
+        runId: "run-1",
+        conversationId: "conv-1",
+        orgId: null,
+        stepIndex: 0,
+        transcript: [circular] as unknown as ModelMessage[],
+        parkedReason: "req-1",
+      }),
+    ).not.toThrow();
+    expect(execCalls).toHaveLength(0);
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]!.msg).toBe("Failed to record parked agent run checkpoint");
+  });
+});
+
+describe("sweepExpiredParkedRuns (#3748)", () => {
+  it("fails only parked runs past the max-park window and returns the count", async () => {
+    queryRows = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    const count = await sweepExpiredParkedRuns(60);
+
+    expect(count).toBe(3);
+    expect(queryCalls).toHaveLength(1);
+    const call = queryCalls[0]!;
+    expect(call.sql).toContain("UPDATE agent_runs");
+    expect(call.sql).toContain("SET status = 'failed'");
+    expect(call.sql).toContain("WHERE status = 'parked'");
+    // Measured in minutes off the park time (updated_at).
+    expect(call.sql).toContain("minutes");
+    expect(call.params).toEqual(["60"]);
+  });
+
+  it("returns 0 and issues no query when no internal DB is configured", async () => {
+    hasInternalDB = false;
+    expect(await sweepExpiredParkedRuns(60)).toBe(0);
+    expect(queryCalls).toHaveLength(0);
+  });
+
+  it("falls back to the default window for a non-positive value", async () => {
+    await sweepExpiredParkedRuns(0);
+    expect((queryCalls[0]!.params as unknown[])[0]).toBe(String(DEFAULT_MAX_PARK_MINUTES));
+  });
+
+  it("returns -1 (never throws) on a DB error", async () => {
+    queryThrow = new Error("connection reset");
+    expect(await sweepExpiredParkedRuns(60)).toBe(-1);
+  });
+});
+
+describe("loadParkedRunByApprovalRef (#3748)", () => {
+  it("loads the parked run keyed on parked_reason and maps the row", async () => {
+    queryRows = [
+      {
+        id: "run-9",
+        conversation_id: "conv-1",
+        org_id: "org-1",
+        step_index: 3,
+        transcript: [{ role: "user", content: "hi" }],
+      },
+    ];
+    const parked = await loadParkedRunByApprovalRef("req-42");
+    expect(parked).not.toBeNull();
+    expect(parked!.runId).toBe("run-9");
+    expect(parked!.conversationId).toBe("conv-1");
+    expect(parked!.orgId).toBe("org-1");
+    expect(parked!.stepIndex).toBe(3);
+    expect(parked!.transcript).toEqual([{ role: "user", content: "hi" }]);
+
+    const call = queryCalls[0]!;
+    expect(call.sql).toContain("FROM agent_runs");
+    expect(call.sql).toContain("WHERE parked_reason = $1 AND status = 'parked'");
+    expect(call.params).toEqual(["req-42"]);
+  });
+
+  it("returns null when no parked run matches", async () => {
+    queryRows = [];
+    expect(await loadParkedRunByApprovalRef("req-x")).toBeNull();
+  });
+
+  it("returns null (never throws) on a DB error", async () => {
+    queryThrow = new Error("boom");
+    expect(await loadParkedRunByApprovalRef("req-x")).toBeNull();
+    expect(warnCalls.some((w) => w.msg === "Failed to load parked run for approval resolution")).toBe(true);
+  });
+
+  it("clamps a corrupt negative step_index to 0", async () => {
+    queryRows = [{ id: "r", conversation_id: "c", org_id: null, step_index: -2, transcript: [] }];
+    expect((await loadParkedRunByApprovalRef("req-1"))!.stepIndex).toBe(0);
+  });
+});
+
+describe("resolveParkedRun (#3748)", () => {
+  it("writes the rewritten transcript and flips parked → running, clearing parked_reason", async () => {
+    queryRows = [{ id: "run-9" }];
+    const ok = await resolveParkedRun({
+      runId: "run-9",
+      transcript: [{ role: "tool", content: "approved" }] as unknown as ModelMessage[],
+      stepIndex: 3,
+    });
+    expect(ok).toBe(true);
+    const call = queryCalls[0]!;
+    expect(call.sql).toContain("UPDATE agent_runs");
+    expect(call.sql).toContain("status = 'running'");
+    expect(call.sql).toContain("parked_reason = NULL");
+    // Guard: only a still-parked row is resolvable (double-resolution is a no-op).
+    expect(call.sql).toContain("WHERE id = $1 AND status = 'parked'");
+    expect(call.params).toEqual([
+      "run-9",
+      JSON.stringify([{ role: "tool", content: "approved" }]),
+      3,
+    ]);
+  });
+
+  it("returns false when no parked row was updated (already resolved / double-review)", async () => {
+    queryRows = [];
+    expect(
+      await resolveParkedRun({ runId: "run-9", transcript: [], stepIndex: 0 }),
+    ).toBe(false);
+  });
+
+  it("returns false (never throws) on a DB error", async () => {
+    queryThrow = new Error("boom");
+    expect(
+      await resolveParkedRun({ runId: "run-9", transcript: [], stepIndex: 0 }),
+    ).toBe(false);
+    expect(warnCalls.some((w) => w.msg === "Failed to resolve parked agent run")).toBe(true);
+  });
+
+  it("is a no-op returning false when no internal DB is configured", async () => {
+    hasInternalDB = false;
+    expect(
+      await resolveParkedRun({ runId: "run-9", transcript: [], stepIndex: 0 }),
+    ).toBe(false);
+    expect(queryCalls).toHaveLength(0);
+  });
+});
+
+describe("getMaxParkMinutes (#3748)", () => {
+  it("returns the default when unset", () => {
+    expect(getMaxParkMinutes()).toBe(DEFAULT_MAX_PARK_MINUTES);
+  });
+
+  it("parses a positive integer setting", () => {
+    settingValue = { ATLAS_DURABILITY_MAX_PARK_MINUTES: "30" };
+    expect(getMaxParkMinutes()).toBe(30);
+  });
+
+  it("falls back to the default for a non-positive or unparseable value", () => {
+    settingValue = { ATLAS_DURABILITY_MAX_PARK_MINUTES: "0" };
+    expect(getMaxParkMinutes()).toBe(DEFAULT_MAX_PARK_MINUTES);
+    settingValue = { ATLAS_DURABILITY_MAX_PARK_MINUTES: "soon" };
+    expect(getMaxParkMinutes()).toBe(DEFAULT_MAX_PARK_MINUTES);
   });
 });
 

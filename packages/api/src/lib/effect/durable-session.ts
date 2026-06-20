@@ -15,6 +15,7 @@ import {
   recordRunCheckpoint,
   recordTerminalAgentRun,
   sweepTerminalAgentRuns,
+  sweepExpiredParkedRuns,
 } from "@atlas/api/lib/durable-session";
 
 /** Real, internal-DB-backed durable store. */
@@ -26,6 +27,8 @@ export const DurableSessionLive: Layer.Layer<DurableSession> = Layer.succeed(
     recordTerminal: (args) => recordTerminalAgentRun(args),
     sweepTerminal: (retentionDays) =>
       Effect.promise(() => sweepTerminalAgentRuns(retentionDays)),
+    sweepParked: (maxParkMinutes) =>
+      Effect.promise(() => sweepExpiredParkedRuns(maxParkMinutes)),
   } satisfies DurableSessionShape,
 );
 
@@ -40,6 +43,7 @@ export const NoopDurableSessionLayer: Layer.Layer<DurableSession> = Layer.succee
     recordCheckpoint: () => {},
     recordTerminal: () => {},
     sweepTerminal: () => Effect.succeed(0),
+    sweepParked: () => Effect.succeed(0),
   } satisfies DurableSessionShape,
 );
 

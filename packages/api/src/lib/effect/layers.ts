@@ -82,7 +82,7 @@ import {
 } from "./services";
 import { durableSessionLayer } from "./durable-session";
 import { durableStateLayer } from "./durable-state";
-import { getRetentionDays } from "@atlas/api/lib/durable-session";
+import { getRetentionDays, getMaxParkMinutes } from "@atlas/api/lib/durable-session";
 import {
   recoverInFlight as recoverOutboxInFlight,
   drainOutbox as drainOutboxQueue,
@@ -2267,8 +2267,13 @@ export function makeSchedulerLive(
       const durableSession = yield* DurableSession;
       // Per-tick catch (inside repeat) so the loop survives a transient fault
       // and keeps sweeping — same resilience shape as the share-token sweep.
+      // #3748 — the same tick also fails `parked` runs past the max-park window
+      // (a turn awaiting a human approval decision that never landed), reading
+      // the operator-global window per-tick so a settings change takes effect
+      // without a restart.
       const agentRunsRetentionTick = Effect.gen(function* () {
         yield* durableSession.sweepTerminal(getRetentionDays());
+        yield* durableSession.sweepParked(getMaxParkMinutes());
       }).pipe(
         Effect.catchAllCause((cause) =>
           Effect.sync(() => {

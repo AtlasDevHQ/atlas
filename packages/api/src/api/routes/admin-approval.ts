@@ -21,6 +21,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { APPROVAL_STATUSES, APPROVAL_RULE_ORIGINS } from "@useatlas/types";
 import { ApprovalRuleSchema, ApprovalRequestSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { resolveApprovalPark } from "@atlas/api/lib/durable-resume";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
@@ -506,6 +507,20 @@ adminApproval.openapi(reviewRoute, async (c) => {
       // apart from a forensics query that explicitly wrote null.
       metadata: { requestId: itemId, origin: result.origin ?? "unknown_origin" },
     });
+
+    // #3748 — if a turn parked on this request (durable-sessions approval-park),
+    // resolve it: rewrite the parked transcript with the decision and re-arm the
+    // run for resume. Fail-soft and decoupled from the review — the decision is
+    // already recorded on the queue above, and the resolver never throws (a
+    // missing parked run, a disabled durability store, or a DB blip all map to
+    // "nothing to resume"). The gated query is NOT executed here; execution
+    // happens on resume in the requester's live security context (ADR-0020).
+    yield* Effect.promise(() =>
+      resolveApprovalPark(itemId, body.action, {
+        reviewerLabel: reviewerEmail,
+        comment: body.comment ?? null,
+      }),
+    );
 
     return c.json({ request: result }, 200);
   }), { label: "review approval request", domainErrors: [approvalDomainError] });

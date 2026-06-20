@@ -30,8 +30,11 @@ import {
   getResumeLeaseSeconds,
   isDurabilityEnabled,
   loadAndLeaseResumableRun,
+  loadParkedRunByApprovalRef,
   releaseResumeLease,
+  resolveParkedRun,
 } from "@atlas/api/lib/durable-session";
+import { applyApprovalDecision, type ApprovalDecision } from "@atlas/api/lib/approvals/evaluate";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("durable-resume");
@@ -144,4 +147,78 @@ export async function prepareResume(
  */
 export function finishResume(handle: Pick<ResumeHandle, "runId" | "leaseOwner">): void {
   releaseResumeLease({ runId: handle.runId, leaseOwner: handle.leaseOwner });
+}
+
+// ── Approval-park resolution (#3748, ADR-0020 phase 3) ──────────────────────
+
+/**
+ * Outcome of resolving an approval-park decision.
+ *
+ * - `"resumed"` — the parked run was found, its transcript rewritten with the
+ *   decision, and the row flipped back to `running` (resumable). The requester's
+ *   client reattaches via the resume endpoint to continue the turn in its own
+ *   live security context. `conversationId` is surfaced so the caller can
+ *   correlate / notify.
+ * - `"not_found"` — no parked run is waiting on this approval request (already
+ *   resolved, expired and swept, or the turn never parked — e.g. durability was
+ *   off when it ran). Benign: the decision is still recorded on the queue.
+ * - `"disabled"` — no internal DB / durability off, so there is no checkpoint to
+ *   resume. Same observable outcome as `not_found` for the caller.
+ */
+export type ResolveApprovalParkResult =
+  | { readonly status: "resumed"; readonly conversationId: string; readonly runId: string }
+  | { readonly status: "not_found" }
+  | { readonly status: "disabled" };
+
+/**
+ * Resolve an approval-queue decision against the turn it parked (#3748). Loads
+ * the parked run keyed on the approval-queue ref (`parked_reason`), rewrites the
+ * stored transcript so the needs-approval tool result becomes an approved
+ * (re-run unblocked by `hasApprovedRequest`) or denied result, and flips the run
+ * back to `running` so it is resumable. This is the "append the tool result /
+ * trigger a resume" step the approval review handler invokes after recording the
+ * decision on the queue.
+ *
+ * Security: the gated query is NOT executed here — execution happens on resume,
+ * in the requester's live context (auth/whitelist/RLS re-resolved fresh), never
+ * the reviewer's (ADR-0020 invariant). Fail-soft: a failure to arm the resume
+ * must not fail the review (the decision is already on the queue), so the caller
+ * treats any non-`resumed` result as "decision recorded, nothing to resume".
+ *
+ * @param approvalRequestId - The reviewed approval-queue request id.
+ * @param decision - `"approve"` or `"deny"`.
+ * @param opts.reviewerLabel - Reviewer's display label, woven into the agent-
+ *   facing decision message (telemetry/UX only — not an authorization input).
+ * @param opts.comment - Optional reviewer comment surfaced to the agent.
+ */
+export async function resolveApprovalPark(
+  approvalRequestId: string,
+  decision: ApprovalDecision,
+  opts?: { reviewerLabel?: string | null; comment?: string | null },
+): Promise<ResolveApprovalParkResult> {
+  const parked = await loadParkedRunByApprovalRef(approvalRequestId);
+  if (!parked) {
+    // No internal DB, durability off, or no matching parked run. The loader
+    // already logged DB errors; nothing to resume in every case.
+    return { status: "not_found" };
+  }
+
+  const rewritten = applyApprovalDecision(parked.transcript, approvalRequestId, decision, opts);
+  const resolved = await resolveParkedRun({
+    runId: parked.runId,
+    transcript: rewritten,
+    stepIndex: parked.stepIndex,
+  });
+
+  if (!resolved) {
+    // The row was already resolved (a concurrent/duplicate review) or the write
+    // failed (logged in resolveParkedRun). Either way there is nothing armed.
+    return { status: "not_found" };
+  }
+
+  log.info(
+    { approvalRequestId, runId: parked.runId, conversationId: parked.conversationId, decision },
+    "Resolved approval-park — transcript rewritten, run re-armed for resume",
+  );
+  return { status: "resumed", conversationId: parked.conversationId, runId: parked.runId };
 }

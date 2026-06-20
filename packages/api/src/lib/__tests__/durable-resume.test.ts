@@ -10,14 +10,20 @@
  */
 
 import { describe, expect, it, beforeEach, mock } from "bun:test";
+import type { ModelMessage } from "ai";
 import * as realDurable from "@atlas/api/lib/durable-session";
-import type { ResumeClaim } from "@atlas/api/lib/durable-session";
+import type { ResumeClaim, ParkedRun } from "@atlas/api/lib/durable-session";
 
 let durabilityEnabled = true;
 let leaseSeconds = 300;
 let nextClaim: ResumeClaim = { status: "none" };
 const releaseCalls: Array<{ runId: string; leaseOwner: string }> = [];
 let lastClaimArgs: { conversationId: string; leaseSeconds: number } | null = null;
+// #3748 — approval-park resolution mocks.
+let nextParkedRun: ParkedRun | null = null;
+let resolveResult = true;
+const resolveCalls: Array<{ runId: string; transcript: ModelMessage[]; stepIndex: number }> = [];
+let lastLoadParkRef: string | null = null;
 
 mock.module("@atlas/api/lib/durable-session", () => ({
   ...realDurable,
@@ -30,9 +36,17 @@ mock.module("@atlas/api/lib/durable-session", () => ({
   releaseResumeLease: ({ runId, leaseOwner }: { runId: string; leaseOwner: string }) => {
     releaseCalls.push({ runId, leaseOwner });
   },
+  loadParkedRunByApprovalRef: async (approvalRequestId: string) => {
+    lastLoadParkRef = approvalRequestId;
+    return nextParkedRun;
+  },
+  resolveParkedRun: async (args: { runId: string; transcript: ModelMessage[]; stepIndex: number }) => {
+    resolveCalls.push(args);
+    return resolveResult;
+  },
 }));
 
-const { prepareResume, finishResume } = await import("@atlas/api/lib/durable-resume");
+const { prepareResume, finishResume, resolveApprovalPark } = await import("@atlas/api/lib/durable-resume");
 
 beforeEach(() => {
   durabilityEnabled = true;
@@ -40,7 +54,38 @@ beforeEach(() => {
   nextClaim = { status: "none" };
   releaseCalls.length = 0;
   lastClaimArgs = null;
+  nextParkedRun = null;
+  resolveResult = true;
+  resolveCalls.length = 0;
+  lastLoadParkRef = null;
 });
+
+/** A parked run whose transcript ends in the executeSQL needs-approval marker. */
+function parkedRun(approvalRequestId: string): ParkedRun {
+  return {
+    runId: "run-9",
+    conversationId: "conv-1",
+    orgId: "org-1",
+    stepIndex: 2,
+    transcript: [
+      { role: "user", content: "show revenue" },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "executeSQL",
+            output: {
+              type: "json",
+              value: { success: false, approval_required: true, approval_request_id: approvalRequestId },
+            },
+          },
+        ],
+      } as unknown as ModelMessage,
+    ],
+  };
+}
 
 describe("prepareResume", () => {
   it("returns disabled (and never touches the store) when durability is off", async () => {
@@ -101,5 +146,58 @@ describe("finishResume", () => {
   it("releases the lease held by the handle", () => {
     finishResume({ runId: "run-9", leaseOwner: "lease-token" });
     expect(releaseCalls).toEqual([{ runId: "run-9", leaseOwner: "lease-token" }]);
+  });
+});
+
+describe("resolveApprovalPark (#3748)", () => {
+  it("approve: rewrites the transcript and re-arms the run, returning resumed", async () => {
+    nextParkedRun = parkedRun("req-42");
+    const result = await resolveApprovalPark("req-42", "approve", { reviewerLabel: "admin@x.com" });
+
+    expect(result.status).toBe("resumed");
+    if (result.status !== "resumed") throw new Error("unreachable");
+    expect(result.conversationId).toBe("conv-1");
+    expect(result.runId).toBe("run-9");
+    // Loaded by the approval-queue ref (the parked_reason link).
+    expect(lastLoadParkRef).toBe("req-42");
+
+    // The transcript handed to resolveParkedRun no longer carries the
+    // needs-approval marker — it was rewritten to an approved result.
+    expect(resolveCalls).toHaveLength(1);
+    const written = resolveCalls[0]!;
+    expect(written.runId).toBe("run-9");
+    expect(written.stepIndex).toBe(2);
+    const toolMsg = written.transcript.find((m) => m.role === "tool")!;
+    const part = (toolMsg.content as unknown[])[0] as { output: { value: Record<string, unknown> } };
+    expect(part.output.value.approval_resolved).toBe("approved");
+    expect(part.output.value.approval_required).toBe(false);
+    expect(String(part.output.value.message)).toContain("admin@x.com");
+  });
+
+  it("deny: rewrites the transcript to a denial and re-arms the run", async () => {
+    nextParkedRun = parkedRun("req-42");
+    const result = await resolveApprovalPark("req-42", "deny", { comment: "prod frozen" });
+
+    expect(result.status).toBe("resumed");
+    const toolMsg = resolveCalls[0]!.transcript.find((m) => m.role === "tool")!;
+    const part = (toolMsg.content as unknown[])[0] as { output: { value: Record<string, unknown> } };
+    expect(part.output.value.approval_resolved).toBe("denied");
+    expect(String(part.output.value.message)).toContain("prod frozen");
+  });
+
+  it("returns not_found and never writes when no parked run is waiting", async () => {
+    nextParkedRun = null;
+    const result = await resolveApprovalPark("req-x", "approve");
+    expect(result.status).toBe("not_found");
+    expect(resolveCalls).toHaveLength(0);
+  });
+
+  it("returns not_found when the re-arm UPDATE matched nothing (concurrent / double review)", async () => {
+    nextParkedRun = parkedRun("req-42");
+    resolveResult = false;
+    const result = await resolveApprovalPark("req-42", "approve");
+    expect(result.status).toBe("not_found");
+    // It still attempted the write — the row was just already resolved.
+    expect(resolveCalls).toHaveLength(1);
   });
 });

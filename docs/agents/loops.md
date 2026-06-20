@@ -7,8 +7,12 @@ review comments back, merge, run `/tidy`, run `/next` again. Every arrow between
 is a manual handoff.
 
 This doc captures how to close those arrows — to let agents prompt agents — without
-giving up the safety boundaries Atlas already enforces. It is a **design reference**,
-not yet a set of shipped commands. The loops are listed lowest-risk first.
+giving up the safety boundaries Atlas already enforces. The loops are listed lowest-risk
+first.
+
+**Shipped commands:** `/review-panel` (the shared review primitive), `/ship-issue <#N>`
+(L0 — one issue to merged), `/ship-milestone "<name>"` (L2 — grind a whole milestone).
+L1 (dispatcher) and L3 (heartbeat) are still design-only.
 
 ---
 

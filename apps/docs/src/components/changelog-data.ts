@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.20",
+    title: "Long-Running Turn Bundle",
+    date: "2026-06-20",
+    summary:
+      "Atlas can now survive the long, multi-step turns that real analysis sometimes needs. Three capabilities land together, each off by default and each degrading cleanly to today's behavior when no internal database is configured. Durable sessions checkpoint an agent turn step by step, so a crashed or interrupted run resumes where it left off — and a turn that hits an approval gate now parks instead of failing, then auto-resumes once approved, across the web chat, MCP, and chat-platform surfaces. Context compaction keeps long turns inside the model's context window by summarizing older history on the fly, with per-model window sizing and a cheaper summary model. Durable working memory lets an agent keep per-session state across steps, with deterministic prompt threading, an admin and in-conversation read/reset affordance, subagent isolation, and safety bounds — size caps, a secrets prohibition, and tenant-scoped writes. The release also bundles a hosted agent-onboarding discovery file so a cold AI client can find its way in.",
+    highlights: [
+      "Durable sessions — agent turns checkpoint per step and resume after a crash or interruption instead of starting over (#3742)",
+      "Approval-park + auto-resume — a turn that hits an approval gate parks and resumes once approved, across web chat, MCP, and chat plugins (#3748, #3749, #3750)",
+      "Context compaction — long turns stay within the context window by summarizing older history, with per-model window sizing and a cheaper summary model (#3751)",
+      "Durable working memory — per-session agent state with deterministic prompt threading, a read/reset affordance, subagent isolation, and size/secret/tenant safety bounds (#3752)",
+      "Agent onboarding discovery — a hosted /auth.md tells a cold AI client how to sign up and connect, drift-guarded against the .well-known docs and surfaced from the docs site and landing page (#3824)",
+      "All three durability workstreams are off by default and degrade to today's behavior with no internal database",
+    ],
+  },
+  {
     version: "v0.0.19",
     title: "Self-serve MCP Trial Signup",
     date: "2026-06-19",

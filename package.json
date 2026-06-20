@@ -135,7 +135,7 @@
     "mysql2": "^3.22.4",
     "nanoid": "^5.1.11",
     "next": "^16.2.9",
-    "nodemailer": "^8.0.11",
+    "nodemailer": "^9.0.1",
     "obsidian": "^1.13.1",
     "radix-ui": "^1.6.0",
     "react-dom": "^19.2.6",

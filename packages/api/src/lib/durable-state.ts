@@ -105,6 +105,15 @@ export interface DurableStateStore {
   set(namespace: string, value: unknown): void;
   /** Return + clear the slots changed since the last drain (commit boundary). */
   drainDirty(): DurableStateSlot[];
+  /**
+   * Read-only view of EVERY current slot (not just dirty ones), for deterministic
+   * prompt threading (#3755). The agent loop renders this into the memory block
+   * once per turn via {@link renderDurableMemoryBlock}. Empty on the Noop store,
+   * so an inactive turn threads nothing. The map is a defensive copy (mutating it
+   * does not touch the store), but slot VALUES are shared by reference — read-only
+   * by contract, never mutate them in place.
+   */
+  snapshot(): ReadonlyMap<string, unknown>;
 }
 
 /** Real, internal-DB-backed store: an in-memory slot map with dirty tracking. */
@@ -143,7 +152,15 @@ class LiveDurableStateStore implements DurableStateStore {
     this.dirty.clear();
     return out;
   }
+
+  snapshot(): ReadonlyMap<string, unknown> {
+    // Defensive copy so a caller can't mutate the store's slot map for the turn.
+    return new Map(this.slots);
+  }
 }
+
+/** Shared empty snapshot for the Noop store — reused so it allocates nothing per turn. */
+const EMPTY_SLOTS_SNAPSHOT: ReadonlyMap<string, unknown> = new Map();
 
 /**
  * Shared no-op store selected when memory is off or no internal DB is present.
@@ -158,6 +175,7 @@ export const NOOP_DURABLE_STATE_STORE: DurableStateStore = Object.freeze({
   get: () => undefined,
   set: () => {},
   drainDirty: () => [],
+  snapshot: () => EMPTY_SLOTS_SNAPSHOT,
 });
 
 // ── Ambient context + handle ───────────────────────────────────────────────────
@@ -354,4 +372,63 @@ export async function buildDurableStateStore(args: {
   }
   const initial = await loadSessionMemory(args.conversationId);
   return new LiveDurableStateStore(args.conversationId, args.orgId, initial);
+}
+
+// ── Deterministic prompt threading (#3755, ADR-0020, slice 2) ──────────────────
+
+/**
+ * Heading of the working-memory block threaded into the system prompt. Exported
+ * so a test can pin the deterministic position without matching prose.
+ */
+export const DURABLE_MEMORY_BLOCK_HEADING = "## Working Memory";
+
+const DURABLE_MEMORY_BLOCK_PREAMBLE =
+  "Values you recorded earlier in this conversation, carried forward automatically. " +
+  "Treat them as authoritative and use them directly — do NOT re-derive or re-look-up " +
+  "anything already recorded here.";
+
+/**
+ * Render a single slot value for the memory block. Fail-soft: a circular / non-
+ * serializable value yields a placeholder rather than throwing and stranding the
+ * whole prompt (`JSON.stringify` is the only throw site). `?? null` keeps an
+ * explicit `undefined` valid, mirroring {@link commitSessionMemory}; compact JSON
+ * is unambiguous across strings, numbers, and nested objects alike. The `?? "…"`
+ * also covers the non-throwing case where `JSON.stringify` returns the JS value
+ * `undefined` (a top-level function/symbol) so a stray literal `"undefined"`
+ * never lands in the block — defensive only: a loaded snapshot is JSONB-parsed
+ * data, which is never a function/symbol.
+ */
+function renderSlotValue(value: unknown): string {
+  try {
+    return JSON.stringify(value ?? null) ?? "[unserializable]";
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Durable memory slot value is not serializable — rendering placeholder",
+    );
+    return "[unserializable]";
+  }
+}
+
+/**
+ * Render the deterministic working-memory block for prompt assembly (#3755).
+ *
+ * Returns the block as one markdown section, or `""` when there are no slots — an
+ * empty store (Noop / no internal DB / nothing written yet) threads NOTHING, so
+ * the assembled prompt is byte-identical to today (no empty block). Slots are
+ * sorted by name so the block is STABLE regardless of load/insertion order (the
+ * load query carries no `ORDER BY`); a stable rendering keeps the prompt cache
+ * warm across turns that don't mutate memory.
+ *
+ * The agent loop threads this into the SYSTEM prompt — passed to the model
+ * separately from the message transcript — so a context-compaction pass (#3759),
+ * which only rewrites the message array, can never summarize or evict it. That
+ * out-of-band placement is the critical invariant of this slice (ADR-0020).
+ */
+export function renderDurableMemoryBlock(slots: ReadonlyMap<string, unknown>): string {
+  if (slots.size === 0) return "";
+  const lines = [...slots.keys()]
+    .sort()
+    .map((name) => `- \`${name}\`: ${renderSlotValue(slots.get(name))}`);
+  return `${DURABLE_MEMORY_BLOCK_HEADING}\n\n${DURABLE_MEMORY_BLOCK_PREAMBLE}\n\n${lines.join("\n")}`;
 }

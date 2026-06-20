@@ -44,8 +44,12 @@ Agent(
   description: "ship #<N>",
   prompt: "Run /ship-issue <N>. Follow it exactly — worktree isolation, craft loop,
            /review-panel until clean (max 3 rounds), /ci, /pr, subscribe_pr_activity,
-           merge only when green AND own-branch. Halt and report if a review can't
-           converge, a gate is broken, or anything is ambiguous. Report PR + outcome."
+           then service EVERY external reviewer (any bot/human, reviewer-agnostic) to
+           convergence per Step 5 — sweep reviews + comments + the PR body, address
+           actionable findings back-and-forth, acknowledge (never block on) approvability /
+           needs-human verdicts. Merge only when green AND own-branch AND external reviews
+           converged. Halt and report if a review can't converge, a gate is broken, or
+           anything is ambiguous. Report PR + each reviewer's verdict + outcome."
 )
 ```
 

@@ -84,7 +84,7 @@ const log = createLogger("well-known");
  * function intentionally stops naming the regional surface so new
  * clients walk forward, not back.
  */
-function buildResourceUri(req: Request): string {
+export function buildResourceUri(req: Request): string {
   const base =
     process.env.ATLAS_PUBLIC_API_URL?.trim() ||
     process.env.BETTER_AUTH_URL?.trim() ||
@@ -125,17 +125,34 @@ function brandedMcpHost(base: string): string | null {
 }
 
 /**
- * Build the authorization server URI — the issuer the protected-resource
- * metadata points at. Atlas's auth server lives at `${baseURL}/api/auth`
- * so we append that suffix to the resolved base.
+ * Resolve the public API base the auth server (and the `.well-known`
+ * discovery documents) are served from, e.g. `https://api.useatlas.dev`.
+ * Same resolution precedence as `buildResourceUri` / `buildAuthServerUri`.
+ *
+ * Exported so the `/auth.md` route (#3824) can name the discovery-document
+ * URLs at exactly the host the metadata is served from, without re-deriving
+ * the base by string-stripping the issuer URI.
  */
-function buildAuthServerUri(req: Request): string {
+export function buildIssuerBaseUri(req: Request): string {
   const base =
     process.env.ATLAS_PUBLIC_API_URL?.trim() ||
     process.env.BETTER_AUTH_URL?.trim() ||
     new URL(req.url).origin;
-  const trimmed = base.replace(/\/+$/, "");
-  return `${trimmed}/api/auth`;
+  return base.replace(/\/+$/, "");
+}
+
+/**
+ * Build the authorization server URI — the issuer the protected-resource
+ * metadata points at. Atlas's auth server lives at `${baseURL}/api/auth`
+ * so we append that suffix to the resolved base.
+ *
+ * Exported (alongside `buildResourceUri` / `buildIssuerBaseUri`) so the
+ * `/auth.md` discovery route (#3824) feeds its prose builder the SAME
+ * resolved hosts this router advertises — the human-readable file then
+ * cannot drift from machine discovery.
+ */
+export function buildAuthServerUri(req: Request): string {
+  return `${buildIssuerBaseUri(req)}/api/auth`;
 }
 
 // ---------------------------------------------------------------------------

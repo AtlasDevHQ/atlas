@@ -63,6 +63,25 @@ export interface AgentQueryResult {
    * and visible in the admin billing page.
    */
   planWarning?: PlanLimitWarning;
+  /**
+   * #3750 — the durable run id minted (or resumed) for this agent turn,
+   * surfaced from {@link runAgent}'s returned `runId`. Present whenever the
+   * agent loop ran. Async-approval surfaces (chat platforms) pair it with
+   * `conversationId` to re-arm and resume the turn once a parked approval is
+   * resolved (durable-sessions #3748/#3750). Callers that don't resume
+   * (the synchronous `/query` route) simply ignore it. A run id always
+   * exists, but a *resumable* parked checkpoint only exists when durability
+   * is enabled AND a `conversationId` was supplied — so resume callers must
+   * also check `conversationId` + `pendingApproval`.
+   */
+  runId?: string;
+  /**
+   * #3750 — the conversation the turn ran under, echoed back so async
+   * resume callers needn't thread it separately. Equals
+   * `ExecuteAgentQueryOptions.conversationId` when one was supplied; absent
+   * otherwise (a conversation-less turn has no durable checkpoint to resume).
+   */
+  conversationId?: string;
 }
 
 export interface ExecuteAgentQueryOptions {
@@ -372,6 +391,11 @@ export async function executeAgentQuery(
       ...(pendingActions.length > 0 && { pendingActions }),
       ...(pendingApproval ? { pendingApproval } : {}),
       ...(gate.warning ? { planWarning: gate.warning } : {}),
+      // #3750 — surface the durable run id + conversation so async-approval
+      // surfaces can re-arm and resume a parked turn. `result.runId` is always
+      // set by runAgent (Object.assign at the loop's return).
+      ...(result.runId ? { runId: result.runId } : {}),
+      ...(options?.conversationId ? { conversationId: options.conversationId } : {}),
     };
   });
 }

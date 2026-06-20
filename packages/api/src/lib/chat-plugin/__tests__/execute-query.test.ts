@@ -84,6 +84,15 @@ mock.module("@atlas/api/lib/agent-query", () => ({
   executeAgentQuery: mockExecuteAgentQuery,
 }));
 
+// #3750 — the park-side coordinate write. Captured so the approval tests can
+// assert WHAT coordinates get persisted (and that nothing is written when the
+// turn isn't durably resumable).
+const mockSaveResumePending: Mock<(conversationId: string, coords: Record<string, unknown>) => Promise<boolean>> =
+  mock(async () => true);
+mock.module("@atlas/api/lib/chat-plugin/resume-pending-store", () => ({
+  saveResumePending: mockSaveResumePending,
+}));
+
 const mockGetInstallation: Mock<(teamId: string) => Promise<{ org_id: string | null } | null>> =
   mock((teamId) => {
     if (teamId === "T999") return Promise.resolve(null);
@@ -446,6 +455,117 @@ describe("chat-plugin executeQuery host helper", () => {
     // the canonical notice the user sees.
     expect(result.answer).toContain("Atlas admin console");
     expect(result.answer).not.toContain("free-form text");
+    // No durable run id ⇒ not auto-resumable ⇒ no coordinate written.
+    expect(mockSaveResumePending).not.toHaveBeenCalled();
+  });
+
+  it("posts a waiting-state notice + persists resume coordinates when the parked turn is durably resumable (#3750)", async () => {
+    const { runExecuteQuery } = await import("../executeQuery");
+    mockSaveResumePending.mockClear();
+    mockSaveResumePending.mockResolvedValueOnce(true);
+
+    mockExecuteAgentQuery.mockImplementationOnce(async (question, requestId, options) => {
+      capturedAgentCalls.push({
+        question,
+        ...(requestId !== undefined ? { requestId } : {}),
+        ...(options !== undefined ? { options } : {}),
+      });
+      return {
+        answer: "free-form text that should be REPLACED",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 5 },
+        // A real approval-queue id AND a durable run id ⇒ auto-resumable.
+        runId: "run-77",
+        conversationId: "conv-new",
+        pendingApproval: {
+          requestId: "req-99",
+          ruleName: "PII-Read",
+          matchedRules: ["PII-Read"],
+          message: "Needs approval",
+        },
+      };
+    });
+
+    const result = await runExecuteQuery("show me PII", {
+      threadId: "slack:C1-1.2",
+      adapter: { name: "slack" },
+      rawMessage: { team_id: "T0ABC", user: "U42", channel: "C1", ts: "1.2" },
+    });
+
+    // Waiting-state copy — promises in-thread continuation, NOT the dead-end
+    // "approve via console" notice.
+    expect(result.answer).toContain("Waiting on a reviewer");
+    expect(result.answer).toContain("this thread");
+    expect(result.answer).not.toContain("Atlas admin console");
+    expect(result.answer).not.toContain("free-form text");
+
+    // Coordinates persisted with the thread anchor + actor binding, keyed by
+    // the turn's conversation (an id minted by the conversation layer).
+    expect(mockSaveResumePending).toHaveBeenCalledTimes(1);
+    const [conversationId, coords] = mockSaveResumePending.mock.calls[0]!;
+    expect(typeof conversationId).toBe("string");
+    expect(conversationId).toBeTruthy();
+    expect(coords).toMatchObject({
+      platform: "slack",
+      threadId: "slack:C1-1.2",
+      orgId: "org-xyz",
+      externalId: "T0ABC",
+      externalUserId: "U42",
+    });
+  });
+
+  it("Telegram parked turn also persists resume coordinates (AC2 names Telegram) (#3750)", async () => {
+    // Telegram resolves tenant via internalQuery (chat_id → workspace_id).
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("workspace_plugins")) {
+        return Promise.resolve([{ workspace_id: "org-tg" }]);
+      }
+      return Promise.resolve([]);
+    });
+    mockSaveResumePending.mockClear();
+    mockSaveResumePending.mockResolvedValueOnce(true);
+
+    mockExecuteAgentQuery.mockImplementationOnce(async (question, requestId, options) => {
+      capturedAgentCalls.push({
+        question,
+        ...(requestId !== undefined ? { requestId } : {}),
+        ...(options !== undefined ? { options } : {}),
+      });
+      return {
+        answer: "replaced",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 5 },
+        runId: "run-tg",
+        pendingApproval: {
+          requestId: "req-tg",
+          ruleName: "PII-Read",
+          matchedRules: ["PII-Read"],
+          message: "Needs approval",
+        },
+      };
+    });
+
+    const { runExecuteQuery } = await import("../executeQuery");
+    const result = await runExecuteQuery("show me PII", {
+      threadId: "telegram:12345-7",
+      adapter: { name: "telegram" },
+      rawMessage: { message_id: 7, chat: { id: 12345 }, from: { id: 99 } },
+    });
+
+    expect(result.answer).toContain("Waiting on a reviewer");
+    expect(mockSaveResumePending).toHaveBeenCalledTimes(1);
+    const coords = mockSaveResumePending.mock.calls[0]![1];
+    expect(coords).toMatchObject({
+      platform: "telegram",
+      threadId: "telegram:12345-7",
+      orgId: "org-tg",
+      externalId: "12345",
+      externalUserId: "99",
+    });
   });
 
   it("forwards pendingActions through to the bridge so ephemeral approval prompts can be posted", async () => {

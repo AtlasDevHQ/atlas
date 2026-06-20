@@ -115,6 +115,16 @@ mock.module("@atlas/api/lib/durable-resume", () => ({
   resolveApprovalPark: mockResolveApprovalPark,
 }));
 
+// #3750 — the chat resume-delivery glue the route invokes after a `resumed`
+// re-arm. Mocked so the route test stays at the DB-free seam (the glue itself
+// is covered in lib/chat-plugin/__tests__/resume-delivery.test.ts).
+const mockDeliverChatResume: Mock<(conversationId: string, decision: string) => Promise<string>> = mock(
+  async () => "no_pending",
+);
+mock.module("@atlas/api/lib/chat-plugin/resume-delivery", () => ({
+  deliverChatResumeIfPending: mockDeliverChatResume,
+}));
+
 // Force enterprise on so `ConditionalEELayer` lazy-imports the mocked
 // `@atlas/ee/layers` aggregator below.
 // Module-top env setup — must be set before the dynamic imports below
@@ -332,6 +342,8 @@ describe("POST /queue/:id — approval-park resolution (#3748)", () => {
     );
     mockResolveApprovalPark.mockClear();
     mockResolveApprovalPark.mockImplementation(async () => ({ status: "none" }));
+    mockDeliverChatResume.mockClear();
+    mockDeliverChatResume.mockImplementation(async () => "no_pending");
     loggedErrors.length = 0;
   });
 
@@ -393,5 +405,46 @@ describe("POST /queue/:id — approval-park resolution (#3748)", () => {
     const res = await reviewRequest("req-quiet", { action: "approve" });
     expect(res.status).toBe(200);
     expect(loggedErrors).toHaveLength(0);
+  });
+
+  // #3750 — when a parked turn is re-armed, the route triggers chat resume
+  // delivery for its conversation (a no-op for web turns / no coordinates).
+  it("triggers chat resume delivery with the re-armed conversation when resolveApprovalPark resumes", async () => {
+    mockResolveApprovalPark.mockImplementationOnce(async () => ({
+      status: "resumed",
+      conversationId: "conv-slack-1",
+      runId: "run-1",
+    }));
+    const res = await reviewRequest("req-chat", { action: "approve" });
+    expect(res.status).toBe(200);
+    expect(mockDeliverChatResume).toHaveBeenCalledTimes(1);
+    expect(mockDeliverChatResume.mock.calls[0]![0]).toBe("conv-slack-1");
+    expect(mockDeliverChatResume.mock.calls[0]![1]).toBe("approve");
+  });
+
+  it("does NOT trigger chat resume delivery when nothing was re-armed (none)", async () => {
+    mockResolveApprovalPark.mockImplementationOnce(async () => ({ status: "none" }));
+    await reviewRequest("req-none", { action: "approve" });
+    expect(mockDeliverChatResume).not.toHaveBeenCalled();
+  });
+
+  it("does NOT trigger chat resume delivery when the re-arm failed", async () => {
+    mockResolveApprovalPark.mockImplementationOnce(async () => ({ status: "failed", runId: "run-x" }));
+    await reviewRequest("req-failed", { action: "approve" });
+    expect(mockDeliverChatResume).not.toHaveBeenCalled();
+  });
+
+  it("is fail-soft: a chat resume-delivery throw does NOT fail the recorded review (still 200)", async () => {
+    mockResolveApprovalPark.mockImplementationOnce(async () => ({
+      status: "resumed",
+      conversationId: "conv-2",
+      runId: "run-2",
+    }));
+    mockDeliverChatResume.mockImplementationOnce(async () => {
+      throw new Error("delivery exploded");
+    });
+    const res = await reviewRequest("req-deliver-boom", { action: "approve" });
+    expect(res.status).toBe(200);
+    expect(loggedErrors.some((e) => e.msg.includes("chat resume delivery threw"))).toBe(true);
   });
 });

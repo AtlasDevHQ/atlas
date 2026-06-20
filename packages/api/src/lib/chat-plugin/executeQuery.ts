@@ -67,6 +67,7 @@ import { ClaimRequiredError, ClaimCheckFailedError } from "@atlas/api/lib/billin
 import { createLogger } from "@atlas/api/lib/logger";
 import { checkRateLimit } from "@atlas/api/lib/auth/middleware";
 import { botActorUser, type ChatBotPlatform } from "@atlas/api/lib/auth/actor";
+import { saveResumePending } from "@atlas/api/lib/chat-plugin/resume-pending-store";
 import { getInstallation } from "@atlas/api/lib/slack/store";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { DISCORD_GUILD_ID_RE } from "@atlas/api/lib/integrations/install/discord-static-bot-handler";
@@ -539,6 +540,16 @@ async function runSlackExecuteQuery(
     priorMessages: priorMessages ?? null,
     presentationMode: ctx.presentationMode,
     tenantLabel: { teamId, threadId },
+    // #3750 — coordinates to resume THIS thread if the turn parks on an
+    // approval rule. `threadId` is the bridge's canonical anchor; the actor
+    // binding (teamId + externalUserId) lets the resume re-enter as the same
+    // requester so the approval dedup clears on re-run.
+    resumeCoordinates: {
+      platform: "slack",
+      threadId,
+      externalId: teamId,
+      ...(externalUserId ? { externalUserId } : {}),
+    },
   });
 }
 
@@ -645,6 +656,13 @@ async function runTelegramExecuteQuery(
     priorMessages: priorMessages ?? null,
     presentationMode: ctx.presentationMode,
     tenantLabel: { chatIdFingerprint: fingerprintChatId(chatId), threadId },
+    // #3750 — resume THIS thread if the turn parks (AC2 names Telegram).
+    resumeCoordinates: {
+      platform: "telegram",
+      threadId,
+      externalId: chatId,
+      ...(externalUserId ? { externalUserId } : {}),
+    },
   });
 }
 
@@ -843,6 +861,13 @@ async function runDiscordExecuteQuery(
       guildIdFingerprint: fingerprintGuildId(guildId),
       threadId,
     },
+    // #3750 — resume THIS thread if the turn parks.
+    resumeCoordinates: {
+      platform: "discord",
+      threadId,
+      externalId: guildId,
+      ...(externalUserId ? { externalUserId } : {}),
+    },
   });
 }
 
@@ -1013,6 +1038,13 @@ async function runGchatExecuteQuery(
     tenantLabel: {
       workspaceIdFingerprint: fingerprintGchatWorkspaceId(workspaceIdent),
       threadId,
+    },
+    // #3750 — resume THIS thread if the turn parks.
+    resumeCoordinates: {
+      platform: "gchat",
+      threadId,
+      externalId: workspaceIdent,
+      ...(externalUserId ? { externalUserId } : {}),
     },
   });
 }
@@ -1190,6 +1222,13 @@ async function runTeamsExecuteQuery(
       tenantIdFingerprint: fingerprintTenantId(tenantId),
       threadId,
     },
+    // #3750 — resume THIS thread if the turn parks.
+    resumeCoordinates: {
+      platform: "teams",
+      threadId,
+      externalId: tenantId,
+      ...(externalUserId ? { externalUserId } : {}),
+    },
   });
 }
 
@@ -1335,6 +1374,20 @@ interface RunAgentArgs {
   readonly presentationMode: ChatExecuteQueryContext["presentationMode"];
   /** Free-form log context — e.g. `{ teamId }` for Slack, `{ chatIdFingerprint }` for Telegram. */
   readonly tenantLabel: Record<string, unknown>;
+  /**
+   * #3750 — coordinates to deliver a resumed answer back to this thread if the
+   * turn parks on an approval rule. Threaded from the per-platform branch
+   * (which alone knows the thread anchor + bot-actor binding). When present and
+   * the turn parks with a real (non-null) approval-queue id and a durable run,
+   * `runAgentAndMap` persists them so the approval-review handler can resume
+   * the thread on resolution. Omit on surfaces that can't be auto-resumed.
+   */
+  readonly resumeCoordinates?: {
+    readonly platform: ChatBotPlatform;
+    readonly threadId: string;
+    readonly externalId: string;
+    readonly externalUserId?: string;
+  };
 }
 
 /**
@@ -1355,6 +1408,7 @@ async function runAgentAndMap(args: RunAgentArgs): Promise<ChatQueryResult> {
     priorMessages,
     presentationMode,
     tenantLabel,
+    resumeCoordinates,
   } = args;
 
   // Rehydrate history from the Atlas `conversations` table when the
@@ -1468,19 +1522,52 @@ async function runAgentAndMap(args: RunAgentArgs): Promise<ChatQueryResult> {
   // the message on `answer` means it surfaces in-thread identically to
   // the legacy slack.ts path.
   if (queryResult.pendingApproval) {
+    // #3750 — when the turn parked durably (a real approval-queue id AND a
+    // durable run id, gated by a supplied conversationId), persist this
+    // thread's coordinates so the approval-review handler can resume the
+    // thread on resolution and post the continued answer in-place. The
+    // waiting-state copy then promises that auto-continuation. When any of
+    // those is missing (durability off, no conversation, or the defensive
+    // identity-missing path that yields a null requestId), there is no
+    // resumable run — fall back to the plain "approve via console" notice.
+    const approvalRequestId = queryResult.pendingApproval.requestId;
+    const runId = queryResult.runId;
+    // A resumable coordinate is only written for an actor bound to a real org.
+    // Without one, `resumeChatTurn`'s billing gate would re-resolve against an
+    // empty org (which `checkAgentBillingGate` treats as allowed) — so a
+    // missing org must fail CLOSED to the manual "approve via console" path,
+    // never persist a coordinate that resumes under a bypassed gate.
+    const resumeOrgId = actor.activeOrganizationId;
+    let autoResumable = false;
+    if (resumeCoordinates && conversationId && approvalRequestId && runId && resumeOrgId) {
+      autoResumable = await saveResumePending(conversationId, {
+        platform: resumeCoordinates.platform,
+        threadId: resumeCoordinates.threadId,
+        orgId: resumeOrgId,
+        externalId: resumeCoordinates.externalId,
+        ...(resumeCoordinates.externalUserId !== undefined
+          ? { externalUserId: resumeCoordinates.externalUserId }
+          : {}),
+      });
+    }
     log.info(
       {
-        approvalRequestId: queryResult.pendingApproval.requestId,
+        approvalRequestId,
+        runId,
+        autoResumable,
         requestId,
         ...tenantLabel,
       },
       "Chat plugin executeQuery held for approval",
     );
     return {
-      answer:
-        `:lock: This query requires approval before it can run. ` +
-        `Rule: *${queryResult.pendingApproval.ruleName}*. ` +
-        `Approve via the Atlas admin console.`,
+      answer: autoResumable
+        ? `:hourglass_flowing_sand: This query needs approval before it can run. ` +
+          `Rule: *${queryResult.pendingApproval.ruleName}*. ` +
+          `Waiting on a reviewer — I'll continue here in this thread once it's approved.`
+        : `:lock: This query requires approval before it can run. ` +
+          `Rule: *${queryResult.pendingApproval.ruleName}*. ` +
+          `Approve via the Atlas admin console.`,
       sql: [],
       data: [],
       steps: 0,
@@ -1642,6 +1729,13 @@ async function runWhatsAppExecuteQuery(
     tenantLabel: {
       phoneNumberIdFingerprint: fingerprintPhoneNumberId(phoneNumberId),
       threadId,
+    },
+    // #3750 — resume THIS thread if the turn parks.
+    resumeCoordinates: {
+      platform: "whatsapp",
+      threadId,
+      externalId: phoneNumberId,
+      ...(externalUserId ? { externalUserId } : {}),
     },
   });
 }

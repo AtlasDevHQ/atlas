@@ -38,6 +38,38 @@ const approvalFields = {
 } as const;
 
 /**
+ * #3750 — MCP "resume" hint appended to an `approval_required` message.
+ *
+ * MCP has no agent loop or durable run: each tool call is a single
+ * synchronous dispatch and the MCP CLIENT (Claude Desktop, etc.) is the
+ * loop. So the resume mechanism for a parked MCP tool call is to RE-CALL
+ * the same tool once the request is approved — the executeSQL approval gate
+ * recognises the prior approval via `hasApprovedRequest` (keyed on the same
+ * org/requester/SQL/connection) and lets the re-call through, re-resolving
+ * auth/whitelist/RLS live on that fresh dispatch (the same fail-closed
+ * guarantee as the web resume path). The hint makes that protocol explicit
+ * so the LLM client knows to retry the identical call rather than mutate it
+ * (a mutated call would not match the approved request and would re-park).
+ *
+ * Kept as a string appended to `message` (not a new structured field) so the
+ * `approval_required` output schema stays unchanged.
+ */
+export const MCP_APPROVAL_RESUME_HINT =
+  "To resume once approved, re-run this exact call (same arguments). " +
+  "Atlas recognises the prior approval and continues; changing the arguments starts a new approval.";
+
+/**
+ * Append {@link MCP_APPROVAL_RESUME_HINT} to an `approval_required` message,
+ * tolerating a missing/non-string upstream message. Idempotent — never
+ * double-appends if the hint is already present.
+ */
+export function withResumeHint(message: unknown): string {
+  const base = typeof message === "string" && message.length > 0 ? message : "";
+  if (base.includes(MCP_APPROVAL_RESUME_HINT)) return base;
+  return base ? `${base} ${MCP_APPROVAL_RESUME_HINT}` : MCP_APPROVAL_RESUME_HINT;
+}
+
+/**
  * `executeSQL` output. Data branch: `explanation` + the
  * `{ columns, rows, row_count, truncated }` result. Plus the approval
  * governance branch.

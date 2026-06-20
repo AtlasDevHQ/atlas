@@ -30,6 +30,8 @@ mock.module("@atlas/api/lib/agent", () => ({
       ...(ctx?.actor !== undefined ? { actor: ctx.actor } : {}),
     });
     return {
+      // #3750 — the real runAgent Object.assigns a `runId` onto its result.
+      runId: "run-mock-1",
       text: Promise.resolve("done"),
       steps: Promise.resolve([
         {
@@ -119,5 +121,24 @@ describe("executeAgentQuery actor binding", () => {
     expect(result.pendingApproval?.requestId).toBe("req-1");
     expect(result.pendingApproval?.ruleName).toBe("Block PII reads");
     expect(result.pendingApproval?.matchedRules).toEqual(["Block PII reads"]);
+  });
+
+  it("#3750: surfaces the durable runId from runAgent and echoes conversationId for async-approval resume", async () => {
+    const actor = createAtlasUser("user-r", "managed", "user-r@example.com", { activeOrganizationId: "org-r" });
+    const result = await executeAgentQuery("parked query", "req-3", {
+      actor,
+      conversationId: "conv-abc",
+    });
+    // runId comes from runAgent's returned object; conversationId is echoed
+    // from the option. Together they let a chat surface re-arm + resume.
+    expect(result.runId).toBe("run-mock-1");
+    expect(result.conversationId).toBe("conv-abc");
+  });
+
+  it("#3750: omits conversationId when none was supplied (a conversation-less turn has no resumable checkpoint)", async () => {
+    const actor = createAtlasUser("user-r", "managed", "user-r@example.com", { activeOrganizationId: "org-r" });
+    const result = await executeAgentQuery("no-conversation query", "req-4", { actor });
+    expect(result.runId).toBe("run-mock-1");
+    expect(result.conversationId).toBeUndefined();
   });
 });

@@ -5,7 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { getRequestContext } from "@atlas/api/lib/logger";
 import { parseAtlasMcpToolError } from "@useatlas/types/mcp";
-import { runMetricOutputSchema } from "../structured-output.js";
+import { runMetricOutputSchema, MCP_APPROVAL_RESUME_HINT } from "../structured-output.js";
 
 const TEST_ACTOR = createAtlasUser("u_sem", "managed", "sem@test", {
   role: "admin",
@@ -867,6 +867,9 @@ describe("MCP semantic tools", () => {
     expect(parsed.approval_required).toBe(true);
     expect(parsed.approval_request_id).toBe("appr_xyz");
     expect(parsed.message).toContain("appr_xyz");
+    // #3750 — parity with executeSQL: the message carries the resume hint so
+    // the MCP client knows to re-run the identical call once approved.
+    expect(parsed.message).toContain(MCP_APPROVAL_RESUME_HINT);
   });
 
   it("runMetric falls back to internal_error on opaque executeSQL failures", async () => {

@@ -22,6 +22,7 @@ import { APPROVAL_STATUSES, APPROVAL_RULE_ORIGINS } from "@useatlas/types";
 import { ApprovalRuleSchema, ApprovalRequestSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { resolveApprovalPark } from "@atlas/api/lib/durable-resume";
+import { deliverChatResumeIfPending } from "@atlas/api/lib/chat-plugin/resume-delivery";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import {
@@ -539,6 +540,31 @@ adminApproval.openapi(reviewRoute, async (c) => {
       log.error(
         { itemId, action: body.action, runId: armOutcome.runId },
         "approval-park: decision recorded but the parked turn was NOT re-armed — it will stay parked until the max-park sweep fails it; investigate",
+      );
+    }
+
+    // #3750 — if the re-armed turn originated from a chat thread (Slack/
+    // Telegram/…), resume it and post the continued answer back in-thread. The
+    // resume-pending store carries the platform + thread coordinates written at
+    // park time; the registered chat deliverer re-enters the agent loop (under
+    // the original chat actor, re-resolving auth/scoping LIVE — ADR-0020) and
+    // posts the answer. Fail-soft and fully decoupled from the review: the
+    // decision is already recorded + audited, so any delivery problem is logged
+    // (not 500'd) and the user can fall back to the admin console / a re-ask.
+    // `none`/`no_deliverer` are benign (web turn, self-hosted w/o chat, or the
+    // user already re-asked); only a genuine `failed` is surfaced.
+    if (armOutcome.status === "resumed") {
+      yield* Effect.promise(() =>
+        deliverChatResumeIfPending(armOutcome.conversationId, body.action).catch((err) => {
+          log.error(
+            {
+              err: err instanceof Error ? err.message : String(err),
+              itemId,
+              conversationId: armOutcome.conversationId,
+            },
+            "approval-park: chat resume delivery threw after review was recorded",
+          );
+        }),
       );
     }
 

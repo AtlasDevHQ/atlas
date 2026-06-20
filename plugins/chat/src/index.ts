@@ -897,6 +897,23 @@ function buildChatPlugin(
           msg,
         );
       }
+
+      // #3750 — hand the host the (narrow) bridge so it can register a chat
+      // resume-deliverer that posts a parked turn's continued answer in-thread
+      // once its approval is resolved. Host-optional; the plugin works
+      // unchanged when `onBridgeReady` is absent. Best-effort — a host wiring
+      // error must not fail plugin init.
+      if (typeof config.onBridgeReady === "function" && bridge) {
+        try {
+          config.onBridgeReady(bridge);
+        } catch (err) {
+          ctx.logger.warn(
+            { err: err instanceof Error ? err : new Error(String(err)) },
+            "onBridgeReady callback threw — chat resume delivery may be unavailable",
+          );
+        }
+      }
+
       initialized = true;
     },
 
@@ -972,6 +989,19 @@ function buildChatPlugin(
     },
 
     async teardown() {
+      // #3750 — clear the host's resume-deliverer before tearing the bridge
+      // down so a `PluginRegistry.refresh("chat-interaction")` / hot-reload
+      // doesn't leave a deliverer pointing at a shut-down bridge.
+      if (typeof config.onBridgeReady === "function") {
+        try {
+          config.onBridgeReady(null);
+        } catch (err) {
+          (log ?? console).warn(
+            { err: err instanceof Error ? err : new Error(String(err)) },
+            "onBridgeReady(null) callback threw during teardown",
+          );
+        }
+      }
       if (bridge) {
         try {
           await bridge.shutdown();

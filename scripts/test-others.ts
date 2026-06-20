@@ -16,12 +16,17 @@
  * automatically — it can no longer silently skip the full suite.
  *
  * Semantics preserved from the old `&&` chain:
- *   - @atlas/api runs first/separately (via `test:api`, not here).
  *   - Each package runs in its own `bun run --filter` process (per-package
  *     isolation; the isolated-runner packages keep their own runners — see
  *     #2802). We never collapse them into one `bun test` invocation.
  *   - Serial, fail-fast: the first failing package stops the run with its exit
  *     code, exactly like `cmd1 && cmd2 && ...`.
+ *
+ * @atlas/api is not run here. The root `test` script runs `test:api` before
+ * `test:others`, so locally an api failure short-circuits the whole run before
+ * this long tail. (In CI, `api-tests` and `test-others` are independent
+ * parallel jobs — the ordering is a local `bun run test` property, not a
+ * property of this script.)
  *
  * Coordinates with #2802 (bun test --parallel cutover): that work reshapes how
  * each package's own `test` script runs, not the enumeration this script owns,
@@ -31,10 +36,11 @@ import { Glob } from "bun";
 import { resolve } from "node:path";
 
 /**
- * Packages intentionally NOT run here. @atlas/api is the heaviest suite and
- * runs first via `test:api` so a failure there fails the whole run fast,
- * before the long tail of smaller packages. This is the single special-case;
- * everything else is auto-discovered.
+ * Packages intentionally NOT run here — the escape hatch for anything that
+ * shouldn't ride this serial, fail-fast lane. @atlas/api is the only entry: the
+ * root `test` script runs it first via `test:api`. Everything else is
+ * auto-discovered. Discovery asserts each name here is actually present in the
+ * workspace (see below), so a rename can't silently turn this into a no-op.
  */
 const RUN_SEPARATELY = new Set<string>(["@atlas/api"]);
 
@@ -42,6 +48,7 @@ const repoRoot = resolve(import.meta.dir, "..");
 
 interface WorkspacePackage {
   name: string;
+  /** Workspace-relative dir, for log output only — execution keys off `name`. */
   dir: string;
 }
 
@@ -53,6 +60,7 @@ async function discoverTestablePackages(): Promise<WorkspacePackage[]> {
   const patterns = rootPkg.workspaces ?? [];
 
   const byName = new Map<string, WorkspacePackage>();
+  const excludedSeen = new Set<string>();
 
   for (const pattern of patterns) {
     const glob = new Glob(`${pattern}/package.json`);
@@ -72,31 +80,57 @@ async function discoverTestablePackages(): Promise<WorkspacePackage[]> {
       if (!pkg.name) {
         throw new Error(`${rel} declares a "test" script but has no "name"`);
       }
-      if (RUN_SEPARATELY.has(pkg.name)) continue;
+      if (RUN_SEPARATELY.has(pkg.name)) {
+        excludedSeen.add(pkg.name);
+        continue;
+      }
 
       // Workspace globs can overlap; dedupe by package name.
-      byName.set(pkg.name, { name: pkg.name, dir: rel.replace("/package.json", "") });
+      byName.set(pkg.name, { name: pkg.name, dir: rel.replace(/\/package\.json$/, "") });
+    }
+  }
+
+  // Guard against RUN_SEPARATELY rot: if a name we mean to run elsewhere is no
+  // longer a discoverable testable package (e.g. @atlas/api was renamed or lost
+  // its `test` script), fail loudly. Otherwise the rename would silently either
+  // drop the package from both lanes or double-run it here — exactly the kind of
+  // silent gap this script exists to eliminate.
+  for (const name of RUN_SEPARATELY) {
+    if (!excludedSeen.has(name)) {
+      throw new Error(
+        `RUN_SEPARATELY lists "${name}", but no workspace package with that ` +
+          `name and a "test" script was found. It was likely renamed — update ` +
+          `RUN_SEPARATELY (and the matching test:api script) to match.`,
+      );
     }
   }
 
   // Deterministic order for reproducible CI logs. The old chain's relative
-  // order carried no meaning (tests are isolated per package); api-first is
-  // preserved by RUN_SEPARATELY above.
+  // order carried no meaning (tests are isolated per package).
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 async function runPackageTests(pkg: WorkspacePackage): Promise<number> {
-  // One process per package (preserves per-package isolation). Inherit stdio so
-  // each package's test output streams to the CI log, and inherit env so CI-set
-  // vars (e.g. ATLAS_BACKUP_VERIFY_SCRATCH_URL_TEST) reach the child.
-  const proc = Bun.spawn({
-    cmd: ["bun", "run", "--filter", pkg.name, "test"],
-    cwd: repoRoot,
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  return proc.exited;
+  // One process per package (preserves per-package isolation). stdio "inherit"
+  // streams each package's output to the CI log. We pass no `env`, so the child
+  // inherits process.env — CI-set vars (e.g. ATLAS_BACKUP_VERIFY_SCRATCH_URL_TEST)
+  // reach it. Don't add an `env` override here without spreading process.env.
+  try {
+    const proc = Bun.spawn({
+      cmd: ["bun", "run", "--filter", pkg.name, "test"],
+      cwd: repoRoot,
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    return await proc.exited;
+  } catch (err) {
+    // Bun.spawn can throw synchronously (e.g. bun missing from PATH, fork
+    // exhaustion). Keep the failing package's name in the message instead of
+    // letting a bare spawn error bubble to the top-level catch unattributed.
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to launch tests for ${pkg.name}: ${message}`);
+  }
 }
 
 async function main(): Promise<void> {

@@ -389,9 +389,9 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     section: "Context Compaction",
     label: "Compaction Context Window (tokens)",
     description:
-      "Coarse context-window size (tokens) used to compute the compaction trigger. A single configured value in this slice; accurate per-model resolution lands in a follow-up. Default 200000.",
+      "Override the context-window size (tokens) the compaction trigger computes against. Leave blank to resolve it per model from the catalog (e.g. 200k for Claude, 128k for GPT-4o); set a value to pin the window for a model the catalog doesn't cover or to deliberately tighten/loosen the budget. Takes precedence over the catalog.",
     type: "number",
-    default: "200000",
+    default: "",
     envVar: "ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS",
     scope: "workspace",
   },

@@ -1,5 +1,5 @@
 /**
- * Context compaction for long agent turns (PRD #3751, slice 1 / #3759).
+ * Context compaction for long agent turns (PRD #3751, slices #3759 + #3760).
  *
  * When a single agent turn accumulates enough history that the assembled
  * context crosses a configurable fill fraction of the model's context window,
@@ -14,16 +14,22 @@
  * `runAgent` layer (wired via `streamText`'s `prepareStep`), so web / MCP /
  * chat-plugin turns inherit it with no per-surface wiring.
  *
- * Scope of THIS slice:
- * - The context window is resolved COARSELY — a single configured/default value.
- *   Accurate per-model window resolution lands in #3760.
+ * Scope:
+ * - #3759: the fill-fraction trigger + summarize-older-history pass. Default OFF.
+ * - #3760 (this slice): the context window is resolved PER MODEL from a static
+ *   catalog (Anthropic 200k vs OpenAI 128k vs …), so the same fill fraction means
+ *   the same thing on a 128k model as on a 200k one. A model the catalog doesn't
+ *   cover falls back to a safe default (never errors the turn). An admin can pin
+ *   the window explicitly via the `ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS`
+ *   settings knob, which takes precedence over the catalog.
+ *
+ * Still out of scope:
  * - The summary runs on the active TURN model; a cheaper dedicated summary model
  *   is #3761.
- * - Default OFF. With the flag off the loop behaves exactly as before.
  * - Single pass per step, no second loop: if the older slice is so large that
  *   summary + pinned-N steps still exceed the window, the turn can still over-
- *   fill it. Accurate windows (#3760) + the cheaper summary model (#3761) shrink
- *   that gap; a re-trigger loop is out of scope for the thinnest slice.
+ *   fill it. The cheaper summary model (#3761) shrinks that gap; a re-trigger
+ *   loop remains out of scope.
  *
  * All knobs resolve through the settings registry (workspace > platform > env >
  * default, hot-reloadable) — see `ATLAS_COMPACTION_*` in `settings.ts`.
@@ -46,12 +52,24 @@ export interface CompactionSettings {
   readonly fillFraction: number;
   /** How many of the most-recent steps to pin verbatim (never summarize). */
   readonly pinnedRecentSteps: number;
-  /** Coarse context-window size in tokens for this slice (see #3760). */
+  /**
+   * Context-window size in tokens the fill-fraction trigger computes against.
+   * Resolved per model (#3760): the operator override knob if set, else the
+   * static catalog value for the active model, else a safe default.
+   */
   readonly contextWindowTokens: number;
+  /** How {@link contextWindowTokens} was resolved — for observability/tests. */
+  readonly contextWindowSource: "override" | "catalog" | "default";
 }
 
 const DEFAULT_FILL_FRACTION = 0.85;
 const DEFAULT_PINNED_RECENT_STEPS = 6;
+/**
+ * Safe fallback window when the catalog has no entry for the active model and no
+ * override is set. 200k is the most common modern window (Claude, GPT-4-class)
+ * and was the coarse value Compaction 1 (#3759) used unconditionally, so an
+ * uncatalogued model degrades to exactly the old behavior rather than erroring.
+ */
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
 
 // Bounds — clamp/reject obviously-broken operator values, mirroring the
@@ -59,6 +77,76 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
 const MIN_PINNED_RECENT_STEPS = 1;
 const MAX_PINNED_RECENT_STEPS = 100;
 const MIN_CONTEXT_WINDOW_TOKENS = 1_000;
+// Ceiling on the override too: an absurdly-large value (e.g. 999999999999)
+// would push the trigger past anything the coarse estimator ever reports,
+// silently disabling compaction. 10M comfortably covers every real window
+// (Gemini's 2M is the current largest) with headroom; out-of-range-HIGH
+// overrides fall through to the catalog just like too-small / non-numeric ones.
+const MAX_CONTEXT_WINDOW_TOKENS = 10_000_000;
+
+// ── Per-model context-window catalog (#3760) ─────────────────────────
+//
+// The live provider catalogs (`gateway-catalog`, `anthropic-catalog`,
+// `bedrock-catalog`, `openai-catalog`) carry a `contextWindow` field, but it is
+// either network-backed + async (gateway) or `null` from the upstream
+// discovery endpoint (the BYOT providers' `/v1/models` responses don't return
+// it). The compaction trigger runs synchronously inside `prepareStep` on every
+// step, so it can't await a network fetch. This static table is the synchronous
+// source of truth: a model-family → window map matched by substring against the
+// resolved model id, which is robust across the id shapes the providers use
+// (`claude-opus-4-8`, `anthropic/claude-opus-4.8`, `us.anthropic.claude-…`,
+// `gpt-4o`, `gemini-2.0-flash`, …) without an exact-id table that goes stale on
+// every model release. First match wins, so order most-specific first.
+
+interface ContextWindowRule {
+  /** Lowercased substrings; if ANY appears in the (lowercased) model id, matches. */
+  readonly match: readonly string[];
+  readonly windowTokens: number;
+}
+
+const CONTEXT_WINDOW_RULES: readonly ContextWindowRule[] = [
+  // OpenAI long-context families first (more specific than bare "gpt").
+  //
+  // The 128k GPT-4-Turbo ids (`gpt-4-1106*`, `gpt-4-0125*`) MUST be matched
+  // before the 1M GPT-4.1 rule: the 4.1 dash-form needle `gpt-4-1` is a prefix
+  // of `gpt-4-1106`, so first-match order is what keeps Turbo at 128k while the
+  // real GPT-4.1 (`gpt-4.1`, or a bare `gpt-4-1` with nothing after) still
+  // resolves to 1M below.
+  { match: ["gpt-4o", "gpt-4-turbo", "gpt-4-1106", "gpt-4-0125"], windowTokens: 128_000 },
+  { match: ["gpt-4.1", "gpt-4-1"], windowTokens: 1_000_000 },
+  { match: ["o1", "o3", "o4-mini"], windowTokens: 200_000 },
+  { match: ["gpt-4-32k"], windowTokens: 32_768 },
+  { match: ["gpt-4"], windowTokens: 8_192 },
+  { match: ["gpt-3.5-turbo-16k"], windowTokens: 16_384 },
+  { match: ["gpt-3.5"], windowTokens: 16_385 },
+  // Anthropic — Claude 2.x through the 4.x line are all 200k.
+  { match: ["claude"], windowTokens: 200_000 },
+  // Google Gemini — 1.5/2.x long context.
+  { match: ["gemini-1.5-pro", "gemini-2"], windowTokens: 2_000_000 },
+  { match: ["gemini-1.5", "gemini"], windowTokens: 1_000_000 },
+  // Mistral large / open models commonly run 32k.
+  { match: ["mistral-large", "mistral", "mixtral"], windowTokens: 32_768 },
+  // Meta Llama 3.x is 128k.
+  { match: ["llama-3", "llama3", "llama"], windowTokens: 128_000 },
+];
+
+/**
+ * Resolve the active model's context-window size (tokens) from the static
+ * catalog by family-substring match. Returns `null` when no rule matches — the
+ * caller falls back to the safe default rather than erroring. Pure + sync so the
+ * per-step compaction trigger can call it without awaiting a network fetch.
+ *
+ * @param modelId provider model id (any shape: `claude-opus-4-8`,
+ *   `anthropic/claude-opus-4.8`, `us.anthropic.claude-…`, `gpt-4o`, …).
+ */
+export function resolveModelContextWindow(modelId: string | undefined): number | null {
+  if (!modelId) return null;
+  const id = modelId.toLowerCase();
+  for (const rule of CONTEXT_WINDOW_RULES) {
+    if (rule.match.some((needle) => id.includes(needle))) return rule.windowTokens;
+  }
+  return null;
+}
 
 const warnedOnce = new Set<string>();
 function warnInvalidOnce(key: string, raw: string, fallbackMsg: string): void {
@@ -74,11 +162,18 @@ function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
 }
 
 /**
- * Resolve the compaction knobs for a turn. `orgId` threads the workspace tier
- * (the keys are workspace-scoped); when omitted resolution falls back through
- * platform override > env var > registry default, matching `getAgentMaxSteps`.
+ * Resolve the compaction knobs for a turn.
+ *
+ * `modelId` selects the per-model context window (#3760): the override knob
+ * wins if set, else the static catalog value for the model, else a safe
+ * default. `orgId` threads the workspace tier (the keys are workspace-scoped);
+ * when omitted resolution falls back through platform override > env var >
+ * registry default, matching `getAgentMaxSteps`.
  */
-export function resolveCompactionSettings(orgId?: string): CompactionSettings {
+export function resolveCompactionSettings(
+  modelId?: string,
+  orgId?: string,
+): CompactionSettings {
   // Fall back to the request-context org when the caller omits it, matching
   // getAgentMaxSteps — so a future caller that forgets to thread orgId still
   // hits the workspace tier instead of silently resolving platform-wide.
@@ -111,18 +206,62 @@ export function resolveCompactionSettings(orgId?: string): CompactionSettings {
     pinnedRecentSteps = DEFAULT_PINNED_RECENT_STEPS;
   }
 
-  const windowRaw = getSetting("ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS", effectiveOrgId);
-  let contextWindowTokens = windowRaw !== undefined ? parseInt(windowRaw, 10) : DEFAULT_CONTEXT_WINDOW_TOKENS;
-  if (!Number.isFinite(contextWindowTokens) || contextWindowTokens < MIN_CONTEXT_WINDOW_TOKENS) {
+  // Context window (#3760): override knob > static per-model catalog > default.
+  // The knob's registry default is empty, so an unset/blank value means "resolve
+  // from the catalog"; only an explicit operator value pins the window.
+  const { contextWindowTokens, contextWindowSource } = resolveContextWindow(
+    modelId,
+    getSetting("ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS", effectiveOrgId),
+  );
+
+  return { enabled, fillFraction, pinnedRecentSteps, contextWindowTokens, contextWindowSource };
+}
+
+/**
+ * Resolve the context window the trigger computes against: an explicit, valid
+ * operator override pins it; otherwise the static per-model catalog
+ * ({@link resolveModelContextWindow}); otherwise a safe default. A blank/unset
+ * override and a catalog miss both fall through cleanly — never throws, so a
+ * model the catalog doesn't cover degrades to the default instead of erroring
+ * the turn (logged at debug).
+ */
+function resolveContextWindow(
+  modelId: string | undefined,
+  overrideRaw: string | undefined,
+): { contextWindowTokens: number; contextWindowSource: CompactionSettings["contextWindowSource"] } {
+  // Tier 1 — explicit operator override (settings registry already applied
+  // workspace > platform > env precedence). Blank string ⇒ "use the catalog".
+  if (overrideRaw !== undefined && overrideRaw.trim() !== "") {
+    const override = parseInt(overrideRaw, 10);
+    if (
+      Number.isFinite(override) &&
+      override >= MIN_CONTEXT_WINDOW_TOKENS &&
+      override <= MAX_CONTEXT_WINDOW_TOKENS
+    ) {
+      return { contextWindowTokens: override, contextWindowSource: "override" };
+    }
     warnInvalidOnce(
       "ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS",
-      String(windowRaw),
-      `Invalid ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS; using default ${DEFAULT_CONTEXT_WINDOW_TOKENS}`,
+      String(overrideRaw),
+      `Invalid ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS; resolving the window from the model catalog instead`,
     );
-    contextWindowTokens = DEFAULT_CONTEXT_WINDOW_TOKENS;
   }
 
-  return { enabled, fillFraction, pinnedRecentSteps, contextWindowTokens };
+  // Tier 2 — static per-model catalog.
+  const fromCatalog = resolveModelContextWindow(modelId);
+  if (fromCatalog !== null) {
+    return { contextWindowTokens: fromCatalog, contextWindowSource: "catalog" };
+  }
+
+  // Tier 3 — safe default. The catalog has no entry for this model and there is
+  // no override; the turn proceeds on the default window rather than failing.
+  // Logged unconditionally — a blank/undefined modelId is self-documenting in the
+  // payload (it's the value that produced the miss), so the empty case isn't silent.
+  log.debug(
+    { modelId, defaultWindow: DEFAULT_CONTEXT_WINDOW_TOKENS },
+    "No context-window entry for model; using safe default window for compaction trigger",
+  );
+  return { contextWindowTokens: DEFAULT_CONTEXT_WINDOW_TOKENS, contextWindowSource: "default" };
 }
 
 // ── Token estimation (coarse) ────────────────────────────────────────

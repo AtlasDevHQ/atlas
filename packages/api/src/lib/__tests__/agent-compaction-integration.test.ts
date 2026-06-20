@@ -214,9 +214,11 @@ const TEXT_STEP: LanguageModelV3StreamPart[] = [
 
 /**
  * Build a model that emits 4 distinct SQL steps then a text step, capturing
- * each turn-loop prompt and counting summarizer calls.
+ * each turn-loop prompt and counting summarizer calls. `modelId` lets a test
+ * select the per-model context window the compaction trigger resolves (#3760):
+ * `claude-*` → 200k, `gpt-4o` → 128k.
  */
-function buildModel(): InstanceType<typeof MockLanguageModelV3> {
+function buildModel(modelId = "mock-model-id"): InstanceType<typeof MockLanguageModelV3> {
   const steps: LanguageModelV3StreamPart[][] = [
     sqlStep("marker0"),
     sqlStep("marker1"),
@@ -226,6 +228,7 @@ function buildModel(): InstanceType<typeof MockLanguageModelV3> {
   ];
   let idx = 0;
   return new MockLanguageModelV3({
+    modelId,
     doStream: async (options) => {
       capturedPrompts.push(options.prompt);
       const chunks = idx >= steps.length ? steps[steps.length - 1] : steps[idx++];
@@ -369,5 +372,116 @@ describe("agent compaction — runAgent seam (#3759)", () => {
     const span = agentSpan();
     expect(span).toBeDefined();
     expect(span!.attributes["atlas.compaction.ran"]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-model context window at the runAgent seam (#3760)
+// ---------------------------------------------------------------------------
+
+describe("agent compaction — per-model context window at the runAgent seam (#3760)", () => {
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    callId = 0;
+    capturedPrompts = [];
+    summarizerCalls = 0;
+    summarizerPrompts = [];
+    recordedSpans.length = 0;
+    invalidateExploreBackend();
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    delete process.env.ATLAS_TABLE_WHITELIST;
+    delete process.env.ATLAS_SANDBOX_URL;
+    for (const k of COMPACTION_ENV_KEYS) saved[k] = process.env[k];
+    _resetSettingsCache();
+  });
+
+  afterEach(() => {
+    for (const k of COMPACTION_ENV_KEYS) {
+      if (saved[k] !== undefined) process.env[k] = saved[k];
+      else delete process.env[k];
+    }
+    _resetSettingsCache();
+  });
+
+  /**
+   * Enable compaction with a fill fraction tuned to land BETWEEN a 128k window
+   * (gpt-4o) and a 200k window (claude) for the inflated context this test
+   * builds — but leave the window override UNSET so the per-model catalog drives
+   * resolution. With ~50k tokens of context and fraction 0.3: gpt-4o trips at
+   * 0.3×128k = 38.4k (< 50k ⇒ compacts), claude trips at 0.3×200k = 60k
+   * (> 50k ⇒ does NOT compact). Same fraction, same context, opposite outcome —
+   * driven solely by the resolved per-model window.
+   */
+  function enablePerModelCompaction(): void {
+    process.env.ATLAS_COMPACTION_ENABLED = "true";
+    process.env.ATLAS_COMPACTION_FILL_FRACTION = "0.3";
+    process.env.ATLAS_COMPACTION_PINNED_RECENT_STEPS = "2";
+    // No ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS ⇒ catalog-resolved per model.
+    delete process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS;
+    _resetSettingsCache();
+  }
+
+  // ~50k-token user message (≈200k chars / 4) so the assembled context sits
+  // comfortably between the two models' 0.3 thresholds (38.4k vs 60k).
+  const BIG_QUESTION = `Analyze companies. ${"x".repeat(200_000)}`;
+
+  it("a 128k-window model (gpt-4o) compacts where a 200k-window model (claude) does not, for the SAME fraction", async () => {
+    enablePerModelCompaction();
+
+    // Small window — trips the threshold, summarizer runs.
+    mockModel = buildModel("gpt-4o");
+    const small = await runAgent({ messages: userMessages(BIG_QUESTION) });
+    await small.steps;
+    const smallSummarizerCalls = summarizerCalls;
+
+    // Reset capture between the two runs.
+    summarizerCalls = 0;
+    capturedPrompts = [];
+    recordedSpans.length = 0;
+    callId = 0;
+    invalidateExploreBackend();
+    _resetSettingsCache();
+
+    // Large window — same fraction + same context, but 60k threshold not crossed.
+    mockModel = buildModel("claude-opus-4-8");
+    const large = await runAgent({ messages: userMessages(BIG_QUESTION) });
+    await large.steps;
+    const largeSummarizerCalls = summarizerCalls;
+
+    // The per-model window is the ONLY difference: the 128k model compacted,
+    // the 200k model did not — different absolute trigger sizes, same fraction.
+    expect(smallSummarizerCalls).toBeGreaterThanOrEqual(1);
+    expect(largeSummarizerCalls).toBe(0);
+  });
+
+  it("a model absent from the catalog falls back to the safe default window without erroring the turn", async () => {
+    enablePerModelCompaction();
+
+    // Unknown model id ⇒ catalog miss ⇒ safe 200k default (same as claude here).
+    mockModel = buildModel("some-bespoke-local-model");
+    const result = await runAgent({ messages: userMessages(BIG_QUESTION) });
+    const steps = await result.steps;
+
+    // Turn completed (did not error) on the default window; 0.3×200k = 60k not
+    // crossed by ~50k context, so no compaction — and crucially, no throw.
+    expect(steps.length).toBe(5);
+    expect(summarizerCalls).toBe(0);
+  });
+
+  it("the override knob pins the window and takes precedence over the catalog", async () => {
+    enablePerModelCompaction();
+    // Pin a tiny window so even claude (catalog 200k) trips immediately.
+    process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "1000";
+    _resetSettingsCache();
+
+    mockModel = buildModel("claude-opus-4-8");
+    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    await result.steps;
+
+    // With the catalog's 200k window, 0.3 would NOT trip on a tiny context; the
+    // 1000-token override pins the budget low enough that it does.
+    expect(summarizerCalls).toBeGreaterThanOrEqual(1);
+    expect(JSON.stringify(capturedPrompts)).toContain(COMPACTION_SUMMARY_PREFIX);
   });
 });

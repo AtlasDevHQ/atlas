@@ -21,6 +21,8 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { APPROVAL_STATUSES, APPROVAL_RULE_ORIGINS } from "@useatlas/types";
 import { ApprovalRuleSchema, ApprovalRequestSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { resolveApprovalPark } from "@atlas/api/lib/durable-resume";
+import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
@@ -32,6 +34,8 @@ import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const approvalDomainError = domainError(ApprovalError, { validation: 400, not_found: 404, conflict: 409, expired: 410 });
+
+const log = createLogger("admin-approval");
 
 // ---------------------------------------------------------------------------
 // Request body schemas — response shapes live in @useatlas/schemas.
@@ -506,6 +510,37 @@ adminApproval.openapi(reviewRoute, async (c) => {
       // apart from a forensics query that explicitly wrote null.
       metadata: { requestId: itemId, origin: result.origin ?? "unknown_origin" },
     });
+
+    // #3748 — if a turn parked on this request (durable-sessions approval-park),
+    // resolve it: rewrite the parked transcript with the decision and re-arm the
+    // run for resume. Fail-soft and decoupled from the review — the decision is
+    // already recorded + audited on the queue above, so the review ALWAYS returns
+    // 200. The resolver returns a three-way outcome we act on rather than discard:
+    // `resumed`/`none` are benign, but `failed` means a parked turn could not be
+    // re-armed (stale transcript or DB blip) and a recorded decision will never
+    // resume unless an operator intervenes — so it is logged at error severity,
+    // not swallowed. The `.catch` is a belt-and-suspenders guard so even an
+    // UNEXPECTED throw can never turn a recorded decision into a 500. The gated
+    // query is NOT executed here; execution happens on resume in the requester's
+    // live security context (ADR-0020).
+    const armOutcome = yield* Effect.promise(() =>
+      resolveApprovalPark(itemId, body.action, {
+        reviewerLabel: reviewerEmail,
+        comment: body.comment ?? null,
+      }).catch((err) => {
+        log.error(
+          { err: err instanceof Error ? err.message : String(err), itemId, action: body.action },
+          "approval-park resolution threw after review was recorded (resume not armed)",
+        );
+        return { status: "failed" as const, runId: "unknown" };
+      }),
+    );
+    if (armOutcome.status === "failed") {
+      log.error(
+        { itemId, action: body.action, runId: armOutcome.runId },
+        "approval-park: decision recorded but the parked turn was NOT re-armed — it will stay parked until the max-park sweep fails it; investigate",
+      );
+    }
 
     return c.json({ request: result }, 200);
   }), { label: "review approval request", domainErrors: [approvalDomainError] });

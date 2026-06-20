@@ -456,6 +456,21 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "workspace",
   },
   {
+    // Max time a turn may stay parked awaiting a human approval decision (#3748).
+    // The scheduler sweep fails parked runs past this window (a decision that
+    // never landed). Default 1440 minutes (24h) matches the approval-queue's own
+    // 24h request expiry, so the parked turn is reaped on the same clock.
+    key: "ATLAS_DURABILITY_MAX_PARK_MINUTES",
+    section: "Agent",
+    label: "Max Park Duration (minutes)",
+    description:
+      "How long an agent turn may stay parked awaiting a human approval decision before the sweep fails it. Default 1440 minutes (24h), matching the approval-request expiry default.",
+    type: "number",
+    default: "1440",
+    envVar: "ATLAS_DURABILITY_MAX_PARK_MINUTES",
+    scope: "workspace",
+  },
+  {
     key: "ATLAS_PROVIDER",
     section: "Agent",
     label: "LLM Provider",

@@ -123,6 +123,14 @@ export interface DurableSessionShape {
    * fiber.
    */
   sweepTerminal(retentionDays: number): Effect.Effect<number>;
+  /**
+   * Fail `parked` runs older than the max-park window (#3748) — a turn awaiting
+   * a human approval decision that never landed. Flips them to `failed` (the
+   * terminal retention sweep reaps them later). Returns the number failed (0 on
+   * the Noop layer, -1 on a DB error). Driven by the same scheduler fiber as
+   * {@link sweepTerminal}.
+   */
+  sweepParked(maxParkMinutes: number): Effect.Effect<number>;
 }
 
 export class DurableSession extends Context.Tag("DurableSession")<

@@ -2615,6 +2615,14 @@ export const agentRuns = pgTable(
       .on(t.conversationId, t.resumingLease)
       .where(sql`status IN ('running', 'parked')`),
     check("chk_agent_runs_status", sql`status IN ('running', 'parked', 'done', 'failed')`),
+    // #3748 (migration 0146): a `parked` run MUST carry a `parked_reason` (the
+    // approval-queue ref — the only link from a decision back to the suspended
+    // turn); non-parked rows clear it. Makes a reason-less, un-resolvable parked
+    // zombie unrepresentable at the source of truth.
+    check(
+      "chk_agent_runs_parked_reason",
+      sql`status <> 'parked' OR parked_reason IS NOT NULL`,
+    ),
   ],
 );
 

@@ -398,6 +398,9 @@ describe("migrateAuthTables", () => {
             // 0145 creates `agent_session_memory` (Atlas-internal, FKs
             // `conversations`), not Better Auth — runs in every auth mode.
             { name: "0145_agent_session_memory.sql" },
+            // 0146 adds the agent_runs parked⟺parked_reason CHECK (#3748),
+            // Atlas-internal — runs in every auth mode.
+            { name: "0146_agent_runs_parked_reason_check.sql" },
           ],
         };
       }

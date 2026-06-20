@@ -167,7 +167,8 @@ describe("runMigrations", () => {
     //   Plus 0143 (agent_runs durable-session checkpoint store, ADR-0020, #3745) = 144.
     //   Plus 0144 (agent_runs resume lease owner column + index, ADR-0020, #3747) = 145.
     //   Plus 0145 (agent_session_memory durable working-memory store, ADR-0020, #3754) = 146.
-    expect(count).toBe(146);
+    //   Plus 0146 (agent_runs parked⟺parked_reason CHECK, ADR-0020, #3748) = 147.
+    expect(count).toBe(147);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -342,6 +343,7 @@ describe("runMigrations", () => {
         "0143_agent_runs.sql",
         "0144_agent_runs_resume_lease.sql",
         "0145_agent_session_memory.sql",
+        "0146_agent_runs_parked_reason_check.sql",
       ],
     });
 

@@ -45,10 +45,12 @@ import {
   AGENT_RUN_STATUS,
   isDurabilityEnabled,
   recordRunCheckpoint,
+  recordParkedAgentRun,
   recordTerminalAgentRun,
   type AgentRunStatus,
   type TerminalAgentRunStatus,
 } from "./durable-session";
+import { findApprovalParkSignal } from "./approvals/evaluate";
 import {
   buildDurableStateStore,
   commitSessionMemory,
@@ -1549,6 +1551,30 @@ export async function runAgent({
     // call site so the final span reflects the persisted terminal state.
     setDurableSpanAttrs(status, stepIndex);
   };
+  // #3748 — approval-park. When a step's `executeSQL` returns a needs-approval
+  // result, the loop stops (the `stopWhen` park condition below) and this writes
+  // a `parked` checkpoint carrying the approval-queue ref in place of the clean
+  // `done` terminal. Shares the `terminalWritten` idempotency guard with the
+  // `done`/`failed` writers — a park IS the end of this stream, so only one
+  // end-of-turn write lands. `parkedReason` is captured per-step; onFinish reads
+  // it to choose this path over `writeTerminal(done)`.
+  let parkedReason: string | undefined;
+  const writeParked = (reason: string, stepIndex: number, transcript: ModelMessage[]): void => {
+    if (!durabilityActive || terminalWritten) return;
+    terminalWritten = true;
+    recordParkedAgentRun({
+      runId,
+      conversationId: conversationId as string,
+      orgId: orgId ?? null,
+      stepIndex,
+      transcript,
+      parkedReason: reason,
+    });
+    // Flush any slots still dirty at park time onto the same path — a parked
+    // turn that later resumes must see the memory it derived before parking.
+    commitMemory();
+    setDurableSpanAttrs(AGENT_RUN_STATUS.PARKED, stepIndex);
+  };
 
   let result;
   try {
@@ -1569,7 +1595,20 @@ export async function runAgent({
       // ceiling on a resumed flow is the per-CONVERSATION step cap (F-77),
       // reserved + settled by the chat/resume route around this call — that
       // aggregate is what bounds unbounded repeat-resume, not this per-request cap.
-      stopWhen: stepCountIs(maxStepsOverride ?? getAgentMaxSteps()),
+      // #3748 — stop the turn the instant a step surfaces an `executeSQL`
+      // needs-approval result, in addition to the per-request step cap. The loop
+      // makes NO further model call: control inverts to the human reviewer and
+      // onFinish parks the run (the gated step finished, but the turn suspends
+      // here rather than feeding the needs-approval result back to the model).
+      // Self-contained (reads the step's own messages) so it does not depend on
+      // onStepFinish/stopWhen evaluation order.
+      stopWhen: [
+        stepCountIs(maxStepsOverride ?? getAgentMaxSteps()),
+        ({ steps }) => {
+          const last = steps[steps.length - 1];
+          return !!last && findApprovalParkSignal(last.response?.messages) !== undefined;
+        },
+      ],
       // Per-step AI-SDK telemetry (#3183 L-2): emit `ai.streamText` /
       // `ai.streamText.doStream` child spans under the enclosing `atlas.agent`
       // span so a multi-step run no longer collapses into one span — each step's
@@ -1746,6 +1785,13 @@ export async function runAgent({
         // turn's run id. In-place update — one row per turn — so an interruption
         // after this step leaves a recoverable row at step index `observedSteps`.
         latestResponseMessages = [...response.messages];
+        // #3748 — detect an approval-park in this step's transcript so onFinish
+        // can write a `parked` checkpoint (with the queue ref) instead of `done`.
+        // Captured here as well as in `stopWhen` so onFinish has the ref
+        // regardless of callback ordering; the `stopWhen` condition is what
+        // actually halts the loop.
+        const parkSignal = findApprovalParkSignal(latestResponseMessages);
+        if (parkSignal) parkedReason = parkSignal.approvalRequestId;
         writeCheckpoint(observedSteps);
         log.info(
           {
@@ -1794,7 +1840,17 @@ export async function runAgent({
         // turn's TOTAL completed steps, not just the resumed portion. The
         // terminal transcript is the resumed transcript (`modelMessages`) plus
         // this call's response messages — the full continued turn, no duplication.
-        writeTerminal(status, stepIndexOffset + steps.length, [...modelMessages, ...response.messages]);
+        const finalStepIndex = stepIndexOffset + steps.length;
+        const finalTranscript = [...modelMessages, ...response.messages];
+        // #3748 — an approval-park ends the stream cleanly (the model was not
+        // asked to continue), so finishReason is `tool-calls`, not `error`. Park
+        // the run instead of marking it `done`: it lives as a row awaiting a
+        // human decision, holding no connection or running function.
+        if (parkedReason) {
+          writeParked(parkedReason, finalStepIndex, finalTranscript);
+        } else {
+          writeTerminal(status, finalStepIndex, finalTranscript);
+        }
         endSpan(SpanStatusCode.OK);
 
         // Persist token usage to internal DB (fire-and-forget).

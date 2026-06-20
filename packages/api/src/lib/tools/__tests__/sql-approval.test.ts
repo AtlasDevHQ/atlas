@@ -326,6 +326,58 @@ describe("F-54/F-55 executeSQL approval gate", () => {
     expect(result.success).toBe(true);
   });
 
+  it("#3748: a matched rule that is ALREADY APPROVED unblocks the re-run — executes, files no new request", async () => {
+    // The security-load-bearing half of approval-park (#3748): after a reviewer
+    // approves, the queue row flips to `approved`; on resume the agent re-runs the
+    // SAME gated query, which re-hits this gate. With the rule still matching
+    // (`required: true`) but `hasApprovedRequest` now true, the gate MUST let the
+    // query execute rather than park again or file a second approval request.
+    // Pins the "approved-row → re-run unblocked" direction the loop-seam test only
+    // models with a boolean flag.
+    requestContextValue = {
+      requestId: "test-approval",
+      user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
+    };
+    mockCheckApprovalRequired.mockImplementation(() =>
+      Effect.succeed({ required: true, matchedRules: [{ id: "rule-1", name: "PII tables" }] }),
+    );
+    mockHasApprovedRequest.mockImplementation(() => Effect.succeed(true));
+
+    const result = await executeTool(
+      { sql: "SELECT id FROM companies", explanation: "test" },
+      toolCtx,
+    );
+
+    // Unblocked: the query ran and no SECOND approval request was filed.
+    expect(result.success).toBe(true);
+    expect(result.approval_required).toBeUndefined();
+    expect(mockCreateApprovalRequest).not.toHaveBeenCalled();
+  });
+
+  it("#3748: a matched rule that is NOT approved stays blocked — does not execute", async () => {
+    // The complementary direction: an un-approved match must NEVER execute. Guards
+    // against a regression where the gate's approved-check fails open and a parked
+    // turn's gated query slips through before the human decides.
+    requestContextValue = {
+      requestId: "test-approval",
+      user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
+    };
+    mockCheckApprovalRequired.mockImplementation(() =>
+      Effect.succeed({ required: true, matchedRules: [{ id: "rule-1", name: "PII tables" }] }),
+    );
+    mockHasApprovedRequest.mockImplementation(() => Effect.succeed(false));
+    mockCreateApprovalRequest.mockImplementation(() => Effect.succeed({ id: "req-new", status: "pending" }));
+
+    const result = await executeTool(
+      { sql: "SELECT id FROM companies", explanation: "test" },
+      toolCtx,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.approval_required).toBe(true);
+    expect(mockCreateApprovalRequest).toHaveBeenCalled();
+  });
+
   it("passes requesterId to checkApprovalRequired so demo / single-user mode passes through cleanly", async () => {
     requestContextValue = {
       requestId: "test-approval",

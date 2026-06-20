@@ -48,6 +48,12 @@ import {
   type AgentRunStatus,
   type TerminalAgentRunStatus,
 } from "./durable-session";
+import {
+  buildDurableStateStore,
+  commitSessionMemory,
+  runWithDurableState,
+  type DurableStateStore,
+} from "./durable-state";
 import { loadGroupRoutingContext } from "./env-routing/lookup";
 import { logUsageEvent } from "./metering";
 import { buildRetrievalQuery, getRetrievalTurns } from "./learn/pattern-cache";
@@ -783,6 +789,38 @@ function wrapToolsWithHooks(
 }
 
 /**
+ * Wrap each tool's execute so it runs inside the turn's durable-state ambient
+ * context (#3754, ADR-0020). Makes {@link defineDurableState} handles resolve to
+ * the active session's store from within tool execution — regardless of WHEN the
+ * AI SDK invokes the tool as the stream is consumed — because `origExecute` is
+ * called synchronously inside `runWithDurableState`, so its async continuation
+ * inherits the context.
+ *
+ * Applied on EVERY durable-capable turn (a Noop store when memory is inactive):
+ * a memory-aware tool then reads empty / drops writes rather than throwing on a
+ * non-durable turn — identical behavior to today. Tools without an `execute`
+ * (client-side / provider-defined) pass through untouched.
+ */
+function wrapToolsWithDurableState(toolSet: ToolSet, store: DurableStateStore): ToolSet {
+  const wrapped: ToolSet = {};
+  for (const [name, t] of Object.entries(toolSet)) {
+    if (!t.execute) {
+      wrapped[name] = t;
+      continue;
+    }
+    const origExecute = t.execute;
+    wrapped[name] = {
+      ...t,
+      execute: (
+        args: Record<string, unknown>,
+        options: Parameters<NonNullable<typeof t.execute>>[1],
+      ) => runWithDurableState(store, () => origExecute(args, options)),
+    };
+  }
+  return wrapped;
+}
+
+/**
  * Run the Atlas agent loop.
  *
  * @param messages - The conversation history from the chat UI.
@@ -1288,8 +1326,27 @@ export async function runAgent({
     );
   }
 
+  // ── Durable per-session working memory (#3754, ADR-0020) ────────────────────
+  // Part of the durable-sessions substrate: gated on a conversation (the session
+  // key) + the per-workspace durability flag, with the helpers additionally
+  // no-op without an internal DB — so off / no-DB → behavior identical to today.
+  // When active, the session's persisted slots are loaded into a Live store;
+  // otherwise a shared Noop store (reads empty, writes dropped). Tools read/write
+  // it through `defineDurableState` handles via the ambient context established by
+  // `wrapToolsWithDurableState`; the store's dirty slots are committed at step
+  // boundaries on the same fire-and-forget path as the transcript checkpoint
+  // (`commitMemory` below). Load is fail-soft (empty store on failure), so a
+  // degraded memory store never costs the turn its answer.
+  const durabilityActive = Boolean(conversationId) && isDurabilityEnabled(orgId);
+  const memoryStore = await buildDurableStateStore({
+    conversationId: conversationId ?? null,
+    orgId: orgId ?? null,
+    active: durabilityActive,
+  });
+
   const rawTools = activeRegistry.getAll();
-  const tools = wrapToolsWithHooks(rawTools, { userId: userId ?? undefined, conversationId });
+  const hookedTools = wrapToolsWithHooks(rawTools, { userId: userId ?? undefined, conversationId });
+  const tools = wrapToolsWithDurableState(hookedTools, memoryStore);
 
   // System prompt is built once and pinned: it carries the semantic index +
   // glossary and is passed to the model separately, so it never enters the
@@ -1322,7 +1379,7 @@ export async function runAgent({
   // each write rides the shared circuit breaker and never disrupts the stream.
   // `terminalWritten` makes the terminal write idempotent across the
   // onFinish/onError/catch seams (first terminal status wins — one row per turn).
-  const durabilityActive = Boolean(conversationId) && isDurabilityEnabled(orgId);
+  // `durabilityActive` is computed above (shared with durable memory).
   // #3747 — on resume, reuse the interrupted turn's run id so the resumed
   // checkpoints target the SAME durable row (one logical row per turn); a fresh
   // turn uses the caller-supplied id (for the `x-run-id` header) or mints one.
@@ -1371,6 +1428,22 @@ export async function runAgent({
       );
     }
   };
+  // Commit the durable-memory store's dirty slots (#3754) on the SAME
+  // fire-and-forget path as the transcript checkpoint. No-op on the Noop store
+  // (never dirty); `drainDirty` clears, so each commit persists only the slots
+  // changed since the last step boundary. Never throws (commitSessionMemory rides
+  // the internalExecute circuit breaker, type-narrowed catch) — a memory write
+  // failure logs and the turn completes.
+  const commitMemory = (): void => {
+    if (!memoryStore.available) return;
+    const slots = memoryStore.drainDirty();
+    if (slots.length === 0) return;
+    commitSessionMemory({
+      conversationId: conversationId as string,
+      orgId: orgId ?? null,
+      slots,
+    });
+  };
   const writeCheckpoint = (stepIndex: number): void => {
     if (!durabilityActive) return;
     recordRunCheckpoint({
@@ -1380,6 +1453,7 @@ export async function runAgent({
       stepIndex,
       transcript: currentTranscript(),
     });
+    commitMemory();
     setDurableSpanAttrs(AGENT_RUN_STATUS.RUNNING, stepIndex);
   };
   const writeTerminal = (status: TerminalAgentRunStatus, stepIndex: number, transcript: ModelMessage[]): void => {
@@ -1393,6 +1467,8 @@ export async function runAgent({
       stepIndex,
       transcript,
     });
+    // Flush any slots still dirty at turn end onto the same path.
+    commitMemory();
     // Terminal status progression on the span — set before `endSpan` at every
     // call site so the final span reflects the persisted terminal state.
     setDurableSpanAttrs(status, stepIndex);

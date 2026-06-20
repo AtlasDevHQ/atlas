@@ -395,6 +395,9 @@ describe("migrateAuthTables", () => {
             // 0144 alters `agent_runs` (Atlas-internal), not Better Auth — runs
             // in every auth mode, so it must be listed too.
             { name: "0144_agent_runs_resume_lease.sql" },
+            // 0145 creates `agent_session_memory` (Atlas-internal, FKs
+            // `conversations`), not Better Auth — runs in every auth mode.
+            { name: "0145_agent_session_memory.sql" },
           ],
         };
       }

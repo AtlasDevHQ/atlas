@@ -2617,3 +2617,45 @@ export const agentRuns = pgTable(
     check("chk_agent_runs_status", sql`status IN ('running', 'parked', 'done', 'failed')`),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// Durable per-session working memory — named slot store (#3754, ADR-0020)
+// ---------------------------------------------------------------------------
+
+/**
+ * Durable per-session agent working memory. A typed, named per-SESSION store the
+ * agent loop + tools read/update through a `DurableState` handle. The session is
+ * the *conversation* (NOT a single turn): a slot written in one turn is readable
+ * in the next, and after crash/resume — so the key is `conversation_id`, not the
+ * per-turn `agent_runs.id`. One row per (session, named slot).
+ *
+ * CONTENT-MODE EXEMPT (deliberate, same as {@link agentRuns}): this is execution
+ * state — an in-flight agent's scratch memory — not user-surfaced content, so it
+ * carries no draft/published `status` column or ContentModeRegistry filter.
+ *
+ * `conversation_id` FKs `conversations(id)` ON DELETE CASCADE — a session's
+ * memory is meaningless once its conversation is gone. `org_id` is the
+ * Better-Auth organization id (TEXT, no FK — `organization` is not a Drizzle
+ * table); it is the tenant scope later slices (#3756 isolation, #3757 bounds)
+ * enforce on. Mirrors `migrations/0145_agent_session_memory.sql`.
+ */
+export const agentSessionMemory = pgTable(
+  "agent_session_memory",
+  {
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    orgId: text("org_id"),
+    namespace: text("namespace").notNull(),
+    value: jsonb("value").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One row per (session, named slot); the leading PK column also serves the
+    // hot per-conversation load (a session's slots at turn start).
+    primaryKey({ columns: [t.conversationId, t.namespace] }),
+    // Per-tenant scans for the future bounds/sweep + isolation slices.
+    index("idx_agent_session_memory_org").on(t.orgId),
+  ],
+);

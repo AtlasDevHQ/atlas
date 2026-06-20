@@ -31,6 +31,7 @@ import type { PoolMetrics, OrgPoolMetrics } from "@useatlas/types";
 import type { LeadEvent } from "@useatlas/twenty/lead-normalizer";
 import type { ToolRegistry as ToolRegistryClass } from "@atlas/api/lib/tools/registry";
 import type { RecordRunCheckpointArgs, RecordTerminalRunArgs } from "@atlas/api/lib/durable-session";
+import type { DurableStateSlot } from "@atlas/api/lib/durable-state";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   PluginRegistry as PluginRegistryClass,
@@ -127,6 +128,39 @@ export interface DurableSessionShape {
 export class DurableSession extends Context.Tag("DurableSession")<
   DurableSession,
   DurableSessionShape
+>() {}
+
+// ---------------------------------------------------------------------------
+// DurableState — per-session agent working memory (#3754, ADR-0020)
+// ---------------------------------------------------------------------------
+
+export interface DurableStateShape {
+  /**
+   * Whether a real (internal-DB-backed) memory store is wired. `false` for the
+   * Noop layer selected when no internal DB is present (`hasInternalDB()`),
+   * mirroring {@link DurableSessionShape.available}. The agent loop additionally
+   * gates on the per-workspace `ATLAS_DURABILITY_ENABLED` settings flag at turn
+   * time, not here.
+   */
+  readonly available: boolean;
+  /**
+   * Load a session's persisted slots (keyed on conversation id). Fail-soft:
+   * yields an empty map on a load failure or no internal DB. The agent loop
+   * seeds the turn's Live store from this so memory survives turn boundaries +
+   * crash/resume.
+   */
+  load(conversationId: string): Effect.Effect<Map<string, unknown>>;
+  /**
+   * Persist a batch of dirty slots (fire-and-forget). Rides the shared
+   * `internalExecute` circuit breaker, never throws, never disrupts the stream.
+   * No-op on the Noop layer.
+   */
+  commit(args: { conversationId: string; orgId: string | null; slots: DurableStateSlot[] }): void;
+}
+
+export class DurableState extends Context.Tag("DurableState")<
+  DurableState,
+  DurableStateShape
 >() {}
 
 // ── Service interface ────────────────────────────────────────────────

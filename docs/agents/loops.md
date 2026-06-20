@@ -104,8 +104,10 @@ The commands line up one-to-one with the loop body:
 
 ```
 /kickoff  →  for each ready (unblocked) issue:
-               Agent(worktree): implement → /ci → /pr
-               → subscribe_pr_activity → review loop → merge   (= L0)
+               Agent(worktree): implement
+               → internal-review panel (parallel, fresh context) — see below
+               → address findings → re-review until clean
+               → /ci → /pr → subscribe_pr_activity → service CI/bot events → merge   (= L0)
                → /tidy   (check off ROADMAP, close issue, prune the worktree)
              repeat until the milestone has no ready issues
 /closeout →  docs audit + changelog + close GH milestone
@@ -124,6 +126,31 @@ and orphan-worktree cleanup is the teardown step.
   act — keep it that way).
 - **Risk:** medium–high. Highest token burn; a wrong path burns longer. Run it on your own
   branches, never on a milestone full of fork contributions.
+
+### The internal-review panel
+
+The point of the inner loop is to review **before** the PR opens, with fresh-context agents
+rather than the implementer reading its own diff — and not to block on external review bots.
+The reviewer panel is vendored from anthropics/claude-code's `pr-review-toolkit`, **tuned to
+Atlas's standards**, and lives in `.claude/agents/` (see `.claude/agents/README.md`):
+
+| Reviewer | Catches | Atlas rules it enforces |
+| --- | --- | --- |
+| `silent-failure-hunter` | swallowed errors, broad catches, false-negative security fallbacks | CLAUDE.md § Error Handling — log-or-rethrow, type-narrow, `requestId` on 500s |
+| `type-design-analyzer` | weak invariants, `any`, stray `!`, Tag/SSOT drift | CLAUDE.md § Type Safety + § Effect.ts |
+| `pr-test-analyzer` | untested error paths, brittle tests, missing `-pg` fixtures | CLAUDE.md § Testing |
+| `comment-analyzer` | comment rot, restate-the-obvious, idiom mismatch | comment-density + `// intentionally ignored:` conventions |
+
+The dispatcher fans these out in **parallel** (`Agent`, fresh context) against the
+implementer's diff, collects findings, and hands them back to the implementer to address —
+re-reviewing the new diff until the panel is clean. Then `/ci` and `/pr`. The repo's tuned
+`/code-review` and `/simplify` skills remain the canonical generic passes — the panel adds
+the four specialist axes the generic pass spreads thin, and because each is tuned to Atlas's
+checklist it produces gate-relevant findings instead of generic-reviewer noise.
+
+External bots + CI run **after** `/pr` opens and are serviced asynchronously via
+`subscribe_pr_activity` — a backstop for what the panel missed (cross-PR interactions,
+real-Postgres `-pg` shards, CodeQL), never a blocker the loop sits and waits on.
 
 ---
 

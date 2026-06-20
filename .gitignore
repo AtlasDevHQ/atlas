@@ -12,6 +12,7 @@ next-env.d.ts
 tsconfig.tsbuildinfo
 .claude/*
 !.claude/commands/
+!.claude/agents/
 !.claude/settings.json
 !.claude/research/
 !.claude/skills/

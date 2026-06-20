@@ -26,12 +26,13 @@ import type { LanguageModel } from "ai";
 import { Effect, Duration } from "effect";
 import type { ChatContextWarning } from "@useatlas/types";
 import { normalizeError } from "./effect/errors";
-import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, isGatewayAnthropicModel, type ProviderType } from "./providers";
+import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, getSummaryModel, isGatewayAnthropicModel, type ProviderType } from "./providers";
 import { defaultRegistry, ToolRegistry } from "./tools/registry";
 import { resolveWorkspaceRestDatasources, resolveWorkspaceRestDatasourcesOrThrow } from "./openapi/workspace-datasource";
 import type { RestDatasource } from "./openapi/datasource";
 import { buildAgentRepresentation } from "./openapi/representation";
 import { REST_OPERATION_DESCRIPTION, createExecuteRestOperationTool } from "./tools/rest-operation";
+import { getStreamWriter } from "./tools/python-stream";
 import { getContextFragments, getDialectHints } from "./plugins/tools";
 import { connections, detectDBType, type ConnectionMetadata, type DBType } from "./db/connection";
 import { getCrossSourceJoins, type CrossSourceJoin, loadOrgWhitelist, getOrgSemanticIndex } from "./semantic";
@@ -74,6 +75,8 @@ import {
   summarizeOlderHistory,
   summarizeIncremental,
   compactionSpanAttributes,
+  buildCompactionMarker,
+  COMPACTION_STREAM_PART_TYPE,
 } from "./agent-compaction";
 import { ModelRouter } from "./effect/services";
 import { runEnterprise } from "./effect/enterprise-layer";
@@ -953,13 +956,16 @@ export async function runAgent({
   // Resolve model: injected > workspace config (enterprise) > platform env vars
   let model: LanguageModel;
   let providerType: ProviderType;
+  // Hoisted out of the else-branch so the #3761 summary-model resolution below
+  // can rebuild the SAME workspace provider/credentials with a cheaper model id.
+  // Null on the injected and platform-default paths.
+  let workspaceConfig: import("@atlas/api/lib/auth/credentials").RawWorkspaceModelConfig | null = null;
 
   if (injectedAiModel) {
     // Model provided via Effect Context (P10c) — skip provider resolution
     model = injectedAiModel.model;
     providerType = injectedAiModel.providerType;
   } else {
-    let workspaceConfig: import("@atlas/api/lib/auth/credentials").RawWorkspaceModelConfig | null = null;
     if (orgId && hasInternalDB()) {
       // Resolve workspace model config via the `ModelRouter` Tag — EE
       // provides the real implementation; self-hosted (no EE) sees the
@@ -1365,6 +1371,35 @@ export async function runAgent({
   const compactionSettings = resolveCompactionSettings(resolvedModelId, orgId);
   let compactionSummaryMemo: { olderCount: number; text: string } | undefined;
 
+  // #3761 — optional cheaper summary model. When `ATLAS_COMPACTION_SUMMARY_MODEL`
+  // names a model distinct from the turn, the summarization call runs on THAT
+  // model (resolved on the same provider/credentials as the turn via the
+  // providers layer) so reclaiming context costs less than the turn itself.
+  // Unset/blank ⇒ the summary runs on the turn model (the Compaction 1 default).
+  // Only resolved when compaction is enabled and the turn built its own model
+  // (the injected-model path — Effect/tests — has no provider to rebuild from,
+  // so it always summarizes on the injected model). Fail-soft: a resolution
+  // failure logs and falls back to the turn model — never errors the turn.
+  let summaryModel: LanguageModel = model;
+  if (compactionSettings.enabled && !injectedAiModel) {
+    const summaryModelId = getSetting("ATLAS_COMPACTION_SUMMARY_MODEL", orgId)?.trim();
+    if (summaryModelId && summaryModelId !== resolvedModelId) {
+      try {
+        summaryModel = getSummaryModel({ summaryModelId, workspaceConfig });
+        log.info(
+          { summaryModelId, turnModelId: resolvedModelId },
+          "compaction: summarizing on a separate model",
+        );
+      } catch (err) {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), summaryModelId },
+          "compaction summary model resolution failed — summarizing on the turn model",
+        );
+        summaryModel = model;
+      }
+    }
+  }
+
   // ── Durable-session checkpoints (#3745 phase 1a, #3746 phase 1b, ADR-0020) ──
   // A turn occupies exactly ONE durable `agent_runs` row, keyed on a stable
   // per-turn `runId` and advanced IN PLACE:
@@ -1536,10 +1571,11 @@ export async function runAgent({
 
         // #3759 — compaction trigger. When the assembled context (system prompt
         // + messages) crosses the configured fill fraction of the coarse context
-        // window, collapse older history into one generated summary on the turn
-        // model and keep going, instead of letting the turn blow the window.
-        // Fail-soft: a summarization failure logs and continues with full
-        // context — compaction never costs the turn its answer.
+        // window, collapse older history into one generated summary (on the turn
+        // model, or the cheaper #3761 summary model when configured) and keep
+        // going, instead of letting the turn blow the window. Fail-soft: a
+        // summarization failure logs and continues with full context —
+        // compaction never costs the turn its answer.
         if (compactionSettings.enabled) {
           const beforeTokens = estimateContextTokens(systemParam, stepMessages);
           if (shouldCompact(beforeTokens, compactionSettings)) {
@@ -1554,10 +1590,12 @@ export async function runAgent({
                   // Older grew (history only appends within a turn) → roll the
                   // prior summary forward over just the delta, not the whole
                   // slice. First pass (no memo) summarizes the full older slice.
+                  // `summaryModel` is the turn model unless #3761's cheaper
+                  // summary-model knob selected a separate one above.
                   const text =
                     memo && memo.olderCount < older.length
-                      ? await summarizeIncremental(model, memo.text, older.slice(memo.olderCount))
-                      : await summarizeOlderHistory(model, older);
+                      ? await summarizeIncremental(summaryModel, memo.text, older.slice(memo.olderCount))
+                      : await summarizeOlderHistory(summaryModel, older);
                   compactionSummaryMemo = { olderCount: older.length, text };
                   return text;
                 },
@@ -1592,6 +1630,39 @@ export async function runAgent({
                     summarizedMessages: compacted.summarizedMessageCount,
                   }),
                 );
+                // #3761 — client-facing stream marker. The log + span above are
+                // operator-only; this surfaces the same "history was summarized"
+                // signal to the analyst on the live UI message stream so a
+                // compacted transcript isn't a silent surprise. Rides the
+                // request-scoped writer the Python tool uses (`getStreamWriter`),
+                // so no chat-route wiring is needed; absent in non-streaming
+                // contexts (SDK / tests without a registered writer) → a graceful
+                // no-op. Emitted ONLY inside this "a pass ran" branch — a turn
+                // that does not compact writes no marker. Fail-soft + type-narrowed
+                // so a closed/throwing writer never disrupts the turn.
+                try {
+                  const writer = getStreamWriter();
+                  if (writer) {
+                    writer.write({
+                      type: COMPACTION_STREAM_PART_TYPE,
+                      data: buildCompactionMarker({
+                        beforeTokens,
+                        afterTokens,
+                        summarizedMessages: compacted.summarizedMessageCount,
+                        pinnedMessages: compacted.pinnedMessageCount,
+                      }),
+                      // Transient: a notification, not assistant answer content —
+                      // delivered to the client's `onData` but not persisted into
+                      // the stored message history.
+                      transient: true,
+                    });
+                  }
+                } catch (err) {
+                  log.debug(
+                    { err: err instanceof Error ? err.message : String(err) },
+                    "compaction stream marker not delivered (writer closed)",
+                  );
+                }
               }
             } catch (err) {
               log.warn(

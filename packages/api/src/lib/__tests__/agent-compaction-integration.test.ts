@@ -107,6 +107,11 @@ function agentSpan(): RecordedSpan | undefined {
 // ---------------------------------------------------------------------------
 
 let mockModel: InstanceType<typeof MockLanguageModelV3>;
+// #3761 — the separate cheaper summary model. When set, the providers mock's
+// `getSummaryModel` returns it so the compaction summarization call resolves to
+// THIS model instead of the turn model. `null` ⇒ the seam summarizes on the turn
+// model (the unset-knob default). Reset per test.
+let summaryMockModel: InstanceType<typeof MockLanguageModelV3> | null = null;
 
 mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
@@ -115,6 +120,9 @@ mock.module("@atlas/api/lib/providers", () => ({
   getWorkspaceProviderType: () => "anthropic" as const,
   getDefaultProvider: () => "anthropic" as const,
   isGatewayAnthropicModel: (modelId: string) => modelId.includes("anthropic") || modelId.includes("claude"),
+  // #3761 — resolve the summary model. Returns the configured cheaper model when
+  // a test set one, else the turn model (mirrors the real fallback contract).
+  getSummaryModel: () => summaryMockModel ?? mockModel,
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({
@@ -175,8 +183,10 @@ mock.module("@atlas/api/lib/cache/index", () => ({
 
 const { runAgent } = await import("@atlas/api/lib/agent");
 const { invalidateExploreBackend } = await import("@atlas/api/lib/tools/explore");
-const { COMPACTION_SUMMARY_PREFIX } = await import("@atlas/api/lib/agent-compaction");
+const { COMPACTION_SUMMARY_PREFIX, COMPACTION_STREAM_PART_TYPE } = await import("@atlas/api/lib/agent-compaction");
 const { _resetSettingsCache } = await import("@atlas/api/lib/settings");
+const { withRequestContext } = await import("@atlas/api/lib/logger");
+const { setStreamWriter, clearStreamWriter } = await import("@atlas/api/lib/tools/python-stream");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -190,10 +200,12 @@ const MOCK_USAGE = {
 
 /** Captured `prompt` (provider-format messages) from each turn-loop model call. */
 let capturedPrompts: unknown[] = [];
-/** How many times the summarizer (`doGenerate`) ran. */
+/** How many times the summarizer ran ON THE TURN MODEL (`doGenerate`). */
 let summarizerCalls = 0;
-/** Captured `prompt` from each summarizer (`doGenerate`) call. */
+/** Captured `prompt` from each turn-model summarizer (`doGenerate`) call. */
 let summarizerPrompts: unknown[] = [];
+/** #3761 — how many times the summarizer ran on the SEPARATE summary model. */
+let summaryModelDoGenerateCalls = 0;
 
 function sqlStep(marker: string): LanguageModelV3StreamPart[] {
   return [
@@ -248,6 +260,28 @@ function buildModel(modelId = "mock-model-id"): InstanceType<typeof MockLanguage
   });
 }
 
+/**
+ * #3761 — a standalone summary model. Only `doGenerate` is wired (it is never
+ * the turn-loop model, so `doStream` is never reached); each call increments a
+ * counter distinct from the turn model's so a test can assert WHICH model the
+ * summarization call resolved to.
+ */
+function buildSummaryModel(modelId = "summary-model-id"): InstanceType<typeof MockLanguageModelV3> {
+  return new MockLanguageModelV3({
+    modelId,
+    doGenerate: async (options) => {
+      summaryModelDoGenerateCalls++;
+      summarizerPrompts.push(options.prompt);
+      return {
+        content: [{ type: "text", text: "CHEAP SUMMARY MODEL OUTPUT" }],
+        finishReason: { unified: "stop", raw: "end_turn" },
+        usage: MOCK_USAGE,
+        warnings: [],
+      };
+    },
+  });
+}
+
 function userMessages(content: string): UIMessage[] {
   return [{ id: "msg-1", role: "user" as const, parts: [{ type: "text" as const, text: content }] }];
 }
@@ -257,6 +291,7 @@ const COMPACTION_ENV_KEYS = [
   "ATLAS_COMPACTION_FILL_FRACTION",
   "ATLAS_COMPACTION_PINNED_RECENT_STEPS",
   "ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS",
+  "ATLAS_COMPACTION_SUMMARY_MODEL",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -483,5 +518,222 @@ describe("agent compaction — per-model context window at the runAgent seam (#3
     // 1000-token override pins the budget low enough that it does.
     expect(summarizerCalls).toBeGreaterThanOrEqual(1);
     expect(JSON.stringify(capturedPrompts)).toContain(COMPACTION_SUMMARY_PREFIX);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cheaper dedicated summary model at the runAgent seam (#3761)
+// ---------------------------------------------------------------------------
+
+describe("agent compaction — cheaper summary model (#3761)", () => {
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    callId = 0;
+    capturedPrompts = [];
+    summarizerCalls = 0;
+    summarizerPrompts = [];
+    summaryModelDoGenerateCalls = 0;
+    summaryMockModel = null;
+    recordedSpans.length = 0;
+    invalidateExploreBackend();
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    delete process.env.ATLAS_TABLE_WHITELIST;
+    delete process.env.ATLAS_SANDBOX_URL;
+    for (const k of COMPACTION_ENV_KEYS) saved[k] = process.env[k];
+    _resetSettingsCache();
+    mockModel = buildModel();
+  });
+
+  afterEach(() => {
+    for (const k of COMPACTION_ENV_KEYS) {
+      if (saved[k] !== undefined) process.env[k] = saved[k];
+      else delete process.env[k];
+    }
+    summaryMockModel = null;
+    _resetSettingsCache();
+  });
+
+  /** Enable compaction with a tiny window so the system prompt alone trips it. */
+  function enable(): void {
+    process.env.ATLAS_COMPACTION_ENABLED = "true";
+    process.env.ATLAS_COMPACTION_FILL_FRACTION = "0.1";
+    process.env.ATLAS_COMPACTION_PINNED_RECENT_STEPS = "2";
+    process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "1000";
+    _resetSettingsCache();
+  }
+
+  it("summarizes on the configured separate model, not the turn model", async () => {
+    enable();
+    process.env.ATLAS_COMPACTION_SUMMARY_MODEL = "summary-model-id";
+    _resetSettingsCache();
+    summaryMockModel = buildSummaryModel("summary-model-id");
+
+    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    await result.steps;
+
+    // The summarization call resolved to the SEPARATE summary model…
+    expect(summaryModelDoGenerateCalls).toBeGreaterThanOrEqual(1);
+    // …and NOT the turn model (its summarizer counter stays 0).
+    expect(summarizerCalls).toBe(0);
+    // The summary it produced still lands in the turn-loop context verbatim.
+    const prompts = JSON.stringify(capturedPrompts);
+    expect(prompts).toContain(COMPACTION_SUMMARY_PREFIX);
+    expect(prompts).toContain("CHEAP SUMMARY MODEL OUTPUT");
+  });
+
+  it("summarizes on the turn model when the knob is unset (Compaction 1 default)", async () => {
+    enable();
+    // No ATLAS_COMPACTION_SUMMARY_MODEL set.
+    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    await result.steps;
+
+    // The turn model did the summarizing; the separate model was never invoked.
+    expect(summarizerCalls).toBeGreaterThanOrEqual(1);
+    expect(summaryModelDoGenerateCalls).toBe(0);
+  });
+
+  it("treats a summary model equal to the turn model as 'use the turn model'", async () => {
+    enable();
+    mockModel = buildModel("same-model-id");
+    process.env.ATLAS_COMPACTION_SUMMARY_MODEL = "same-model-id";
+    _resetSettingsCache();
+    // Even with a separate mock available, an equal id must not resolve it.
+    summaryMockModel = buildSummaryModel("should-not-be-used");
+
+    const result = await runAgent({ messages: userMessages("Analyze companies") });
+    await result.steps;
+
+    expect(summarizerCalls).toBeGreaterThanOrEqual(1);
+    expect(summaryModelDoGenerateCalls).toBe(0);
+  });
+
+  it("is independent of #3760 — the cheaper-model path works on a catalog-resolved window", async () => {
+    // No explicit window override: the per-model catalog resolves the window
+    // (claude → 200k). A tiny fraction still trips it on the inflated context,
+    // and the separate summary model is used regardless of how the window was
+    // resolved — proving the two knobs compose.
+    process.env.ATLAS_COMPACTION_ENABLED = "true";
+    process.env.ATLAS_COMPACTION_FILL_FRACTION = "0.1";
+    process.env.ATLAS_COMPACTION_PINNED_RECENT_STEPS = "2";
+    delete process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS; // catalog-resolved
+    process.env.ATLAS_COMPACTION_SUMMARY_MODEL = "summary-model-id";
+    _resetSettingsCache();
+
+    mockModel = buildModel("claude-opus-4-8");
+    summaryMockModel = buildSummaryModel("summary-model-id");
+
+    const result = await runAgent({
+      messages: userMessages(`Analyze companies. ${"x".repeat(200_000)}`),
+    });
+    await result.steps;
+
+    expect(summaryModelDoGenerateCalls).toBeGreaterThanOrEqual(1);
+    expect(summarizerCalls).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Client-facing stream marker at the runAgent seam (#3761)
+// ---------------------------------------------------------------------------
+
+describe("agent compaction — client stream marker (#3761)", () => {
+  const saved: Record<string, string | undefined> = {};
+  const REQ_ID = "compaction-marker-test-req";
+
+  beforeEach(() => {
+    callId = 0;
+    capturedPrompts = [];
+    summarizerCalls = 0;
+    summarizerPrompts = [];
+    summaryModelDoGenerateCalls = 0;
+    summaryMockModel = null;
+    recordedSpans.length = 0;
+    invalidateExploreBackend();
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+    delete process.env.ATLAS_TABLE_WHITELIST;
+    delete process.env.ATLAS_SANDBOX_URL;
+    for (const k of COMPACTION_ENV_KEYS) saved[k] = process.env[k];
+    _resetSettingsCache();
+    mockModel = buildModel();
+  });
+
+  afterEach(() => {
+    for (const k of COMPACTION_ENV_KEYS) {
+      if (saved[k] !== undefined) process.env[k] = saved[k];
+      else delete process.env[k];
+    }
+    clearStreamWriter(REQ_ID);
+    _resetSettingsCache();
+  });
+
+  /**
+   * Drive a turn inside a request context with a registered stream writer — the
+   * same seam the chat route uses (`setStreamWriter` + `withRequestContext`) — and
+   * capture every part the agent writes to the stream via `getStreamWriter()`.
+   */
+  async function runCapturingMarkers(
+    content: string,
+  ): Promise<Array<{ type: string; data?: unknown; transient?: boolean }>> {
+    const parts: Array<{ type: string; data?: unknown; transient?: boolean }> = [];
+    const fakeWriter = {
+      write: (p: { type: string; data?: unknown; transient?: boolean }) => {
+        parts.push(p);
+      },
+      merge: () => {},
+      onError: () => {},
+    } as unknown as Parameters<typeof setStreamWriter>[1];
+    await withRequestContext({ requestId: REQ_ID }, async () => {
+      setStreamWriter(REQ_ID, fakeWriter);
+      const result = await runAgent({ messages: userMessages(content) });
+      await result.steps;
+    });
+    return parts;
+  }
+
+  it("a compacting turn writes a data-compaction marker the client can observe", async () => {
+    process.env.ATLAS_COMPACTION_ENABLED = "true";
+    process.env.ATLAS_COMPACTION_FILL_FRACTION = "0.1";
+    process.env.ATLAS_COMPACTION_PINNED_RECENT_STEPS = "2";
+    process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "1000";
+    _resetSettingsCache();
+
+    const parts = await runCapturingMarkers("Analyze companies");
+
+    const markers = parts.filter((p) => p.type === COMPACTION_STREAM_PART_TYPE);
+    expect(markers.length).toBeGreaterThanOrEqual(1);
+
+    const data = markers[0].data as {
+      ran: boolean;
+      summarizedMessages: number;
+      pinnedMessages: number;
+      beforeTokens: number;
+      afterTokens: number;
+    };
+    expect(data.ran).toBe(true);
+    expect(data.summarizedMessages).toBeGreaterThan(0);
+    expect(data.pinnedMessages).toBeGreaterThan(0);
+    expect(data.beforeTokens).toBeGreaterThan(0);
+    // It is a transient notification, not persisted answer content.
+    expect(markers[0].transient).toBe(true);
+  });
+
+  it("a non-compacting turn (flag off, default) writes NO marker", async () => {
+    // Do not enable compaction — the seam is skipped entirely.
+    const parts = await runCapturingMarkers("Analyze companies");
+    expect(parts.some((p) => p.type === COMPACTION_STREAM_PART_TYPE)).toBe(false);
+  });
+
+  it("an enabled turn that never crosses the threshold writes NO marker", async () => {
+    // Enabled but a huge window so the small context never trips the trigger.
+    process.env.ATLAS_COMPACTION_ENABLED = "true";
+    process.env.ATLAS_COMPACTION_FILL_FRACTION = "0.85";
+    process.env.ATLAS_COMPACTION_PINNED_RECENT_STEPS = "2";
+    process.env.ATLAS_COMPACTION_CONTEXT_WINDOW_TOKENS = "10000000";
+    _resetSettingsCache();
+
+    const parts = await runCapturingMarkers("Analyze companies");
+    expect(parts.some((p) => p.type === COMPACTION_STREAM_PART_TYPE)).toBe(false);
+    expect(summarizerCalls).toBe(0);
   });
 });

@@ -410,6 +410,40 @@ export function getModelForConfig(
   };
 }
 
+/**
+ * Resolve the model used for the compaction summarization call (#3761).
+ *
+ * Names a SEPARATE — typically cheaper — model for the summary, distinct from
+ * the active turn model. The summary always runs on the SAME provider and
+ * credentials as the turn; only the model id changes:
+ * - When the turn resolved from a workspace model config (SaaS BYOT), rebuild
+ *   the same workspace config with `model` swapped for `summaryModelId`, so the
+ *   workspace's own provider + API key drive the cheaper call.
+ * - Otherwise (platform / env-resolved provider), reuse {@link getModelForConfig}
+ *   with the active provider and the summary model id override.
+ *
+ * Callers only invoke this when the `ATLAS_COMPACTION_SUMMARY_MODEL` knob is set
+ * to a non-empty id that differs from the turn model; an unset knob keeps the
+ * Compaction 1 behavior (summarize on the turn model) without touching this
+ * function. Resolution failures are the caller's concern — the compaction seam
+ * falls back to the turn model rather than erroring the turn.
+ */
+export function getSummaryModel(opts: {
+  summaryModelId: string;
+  /**
+   * The turn's workspace model config when it resolved from one (SaaS BYOT);
+   * `null` for the platform / env-resolved path. Typed structurally against
+   * {@link getModelFromWorkspaceConfig} so this module needs no new import.
+   */
+  workspaceConfig: Parameters<typeof getModelFromWorkspaceConfig>[0] | null;
+}): LanguageModel {
+  const { summaryModelId, workspaceConfig } = opts;
+  if (workspaceConfig) {
+    return getModelFromWorkspaceConfig({ ...workspaceConfig, model: summaryModelId });
+  }
+  return getModelForConfig(undefined, summaryModelId).model;
+}
+
 // ── Workspace-level model resolution ────────────────────────────────
 
 /**

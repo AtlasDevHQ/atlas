@@ -7,6 +7,7 @@ const {
   getDefaultProvider,
   getModel,
   getModelForConfig,
+  getSummaryModel,
   resolveModelId,
   getMissingModelConfig,
 } = await import("@atlas/api/lib/providers");
@@ -234,6 +235,38 @@ describe("resolveModelId — SSOT default (#3098)", () => {
     delete process.env.VERCEL;
     process.env.ATLAS_DEPLOY_MODE = "saas";
     expect(resolveModelId(undefined, undefined)).toBe("anthropic/claude-sonnet-4.6");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getSummaryModel — cheaper compaction summary model (#3761). Resolves a
+// SEPARATE model id on the SAME provider/credentials as the turn; only the
+// model id changes.
+// ---------------------------------------------------------------------------
+
+describe("getSummaryModel (#3761)", () => {
+  test("platform path: resolves the summary id on the active provider (workspaceConfig=null)", () => {
+    process.env.ATLAS_PROVIDER = "anthropic";
+    delete process.env.ATLAS_MODEL;
+    // No workspace config ⇒ getModelForConfig(undefined, summaryId) on the env
+    // provider. The resolved model carries exactly the summary id we asked for.
+    const model = getSummaryModel({ summaryModelId: "claude-haiku-4-5", workspaceConfig: null });
+    expect(typeof model === "string" ? model : model.modelId).toBe("claude-haiku-4-5");
+  });
+
+  test("workspace path: swaps only the model id, keeping the workspace provider + key", () => {
+    // A BYOT workspace on its own Anthropic key: the summary runs on the SAME
+    // provider/credentials, with just the model field replaced by the cheaper id.
+    const model = getSummaryModel({
+      summaryModelId: "claude-haiku-4-5",
+      workspaceConfig: {
+        model: "claude-opus-4-8", // the turn model — must be overridden
+        baseUrl: null,
+        bedrockRegion: null,
+        credentials: { provider: "anthropic", apiKey: "sk-ant-test" },
+      },
+    });
+    expect(typeof model === "string" ? model : model.modelId).toBe("claude-haiku-4-5");
   });
 });
 

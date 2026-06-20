@@ -396,6 +396,22 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "workspace",
   },
   {
+    // #3761 — optional cheaper summary model. Names a SEPARATE model for the
+    // compaction summarization call so reclaiming context need not cost as much
+    // as the turn itself. Blank ⇒ the summary runs on the active turn model (the
+    // Compaction 1 behavior). The named model is resolved on the SAME provider /
+    // credentials as the turn (only the model id changes) via the providers layer.
+    key: "ATLAS_COMPACTION_SUMMARY_MODEL",
+    section: "Context Compaction",
+    label: "Compaction Summary Model",
+    description:
+      "Optional model id for the compaction summarization call — typically a cheaper/faster model than the turn (e.g. a Haiku/mini tier). Leave blank to summarize on the active turn model. Resolved on the same provider and credentials as the turn; only the model id changes. Workspace-scoped, hot-reloadable.",
+    type: "string",
+    default: "",
+    envVar: "ATLAS_COMPACTION_SUMMARY_MODEL",
+    scope: "workspace",
+  },
+  {
     // #3745 / ADR-0020 — durable agent sessions. When on (and an internal DB is
     // present), each turn writes a terminal `agent_runs` checkpoint. Default
     // OFF: off, or no internal DB, → behavior identical to today. Hot-reloadable

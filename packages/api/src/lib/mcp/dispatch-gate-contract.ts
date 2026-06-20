@@ -80,17 +80,6 @@ export interface McpDispatchGateRequirements {
   readonly actionCategory?: McpActionCategory;
   /** Gate 2: the tool mutates data → require the `mcp:write` scope (hosted). */
   readonly requiresWrite: boolean;
-  /**
-   * A MUTATING tool that must operate on a bound workspace
-   * (`actor.activeOrganizationId`). When `true`, a no-org session is refused
-   * with a `forbidden` envelope before the tool body runs — so the mutation
-   * keys on the SAME org the gates evaluated, never the `actor.id` OTel
-   * fallback. Enforced ONCE in the MCP dispatcher (`mcp-dispatch.ts`, #3609),
-   * downstream of the gate order so a destructive tool's gate-4 approval
-   * identity guard still surfaces first. Omit for read tools and for callers
-   * (e.g. the plugin MCP path) with no bound-workspace precondition.
-   */
-  readonly requiresBoundOrg?: boolean;
   /** Gate 3: minimum RBAC role on the bound actor (e.g. `"admin"`). */
   readonly minRole: AtlasRole;
   /**

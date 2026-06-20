@@ -70,8 +70,24 @@ export interface McpDispatchOptions {
   readonly scopes?: readonly string[];
 }
 
-/** The per-dispatch requirement set, minus `toolName` (supplied per call). */
-export type McpToolRequirements = Omit<McpDispatchGateRequirements, "toolName">;
+/**
+ * The per-dispatch requirement set: the gate-contract fields minus `toolName`
+ * (supplied per call), plus the dispatcher-only `requiresBoundOrg` precondition.
+ *
+ * `requiresBoundOrg` is deliberately NOT a {@link McpDispatchGateRequirements}
+ * field: it is enforced HERE in the dispatcher (downstream of
+ * `runMcpDispatchGate`, #3609), not by the gate composer — so it lives on this
+ * MCP-side type and the shared gate contract the composer (and the plugin MCP
+ * path) speak never advertises a flag they would silently ignore. It is
+ * REQUIRED so every tool states its stance: a MUTATING tool sets `true` (a
+ * no-org session is refused with a `forbidden` envelope before the body runs,
+ * keying the mutation on the SAME org the gates evaluated, never the `actor.id`
+ * OTel fallback); a read tool sets `false`. A new mutating tool therefore can't
+ * silently omit the precondition — the type forces the choice.
+ */
+export type McpToolRequirements = Omit<McpDispatchGateRequirements, "toolName"> & {
+  readonly requiresBoundOrg: boolean;
+};
 
 export interface McpDispatcher {
   /**
@@ -172,6 +188,10 @@ export function createMcpDispatch(opts: McpDispatchOptions): McpDispatcher {
     body: (requestId: string) => Promise<CallToolResult>,
     spanAttributes?: Readonly<Record<string, string | number | boolean>>,
   ): Promise<CallToolResult> {
+    // `requiresBoundOrg` is a dispatcher-only precondition (#3609), not a gate
+    // field — split it off so it is enforced below but never handed to the gate
+    // composer (which speaks only `McpDispatchGateRequirements`).
+    const { requiresBoundOrg, ...gateReqs } = reqs;
     return traceMcpToolCall(
       {
         toolName,
@@ -213,18 +233,27 @@ export function createMcpDispatch(opts: McpDispatchOptions): McpDispatcher {
                   requesterEmail: actor.label,
                   requestId,
                 },
-                { toolName, ...reqs },
+                { toolName, ...gateReqs },
               );
               if (gateBlock) return gateBlock;
 
               // #3609 — declarative bound-workspace precondition for mutating
-              // tools. Enforced ONCE here (downstream of the gate order, so a
+              // tools. A dispatcher-only required flag (not a gate-contract
+              // field), enforced ONCE here — downstream of the gate order, so a
               // destructive tool's gate-4 approval identity guard still surfaces
-              // first) rather than a per-body `requireBoundOrg()` guard a new
+              // first — rather than a per-body `requireBoundOrg()` guard a new
               // mutating tool could forget. A no-org session is refused with the
               // SAME `forbidden` envelope, so the mutation can't silently key on
               // the `actor.id` OTel fallback instead of the gated workspace.
-              if (reqs.requiresBoundOrg && !actor.activeOrganizationId) {
+              if (requiresBoundOrg && !actor.activeOrganizationId) {
+                // Observability parity with the gate-2/gate-3 denials
+                // (`dispatch-gate.ts`): a no-org mutation attempt is the
+                // "probing / misconfigured client" signal, so leave a
+                // server-side breadcrumb alongside the caller-facing envelope.
+                log.warn(
+                  { toolName, requestId },
+                  "MCP mutation refused — session not bound to a workspace",
+                );
                 return toEnvelopeResult(
                   envelope(
                     "forbidden",

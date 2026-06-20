@@ -174,7 +174,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
     async ({ command }): Promise<CallToolResult> =>
       dispatch(
         "explore",
-        { requiresWrite: false, minRole: "member" },
+        { requiresWrite: false, requiresBoundOrg: false, minRole: "member" },
         async (requestId) => {
           const result = await explore.execute!(
             { command },
@@ -237,7 +237,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         // Reaches a datasource → gate-0 billing (#3437/#3601). SELECT-only
         // (the 4-layer validator rejects DML/DDL) so it is read-only — no
         // mcp:write — and member-callable.
-        { requiresWrite: false, minRole: "member", checksBilling: true },
+        { requiresWrite: false, requiresBoundOrg: false, minRole: "member", checksBilling: true },
         async (requestId) => {
           // #3500 — progress + cancellation around the query work.
           // #3575 — `executeSQL.execute` does not read `abortSignal` from the

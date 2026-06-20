@@ -357,7 +357,7 @@ export function registerDatasourceTools(
     async ({ include_archived, filter }): Promise<CallToolResult> =>
       dispatch(
         "list_datasources",
-        { checksBilling: true, requiresWrite: false, minRole: DATASOURCE_MIN_ROLE },
+        { checksBilling: true, requiresWrite: false, requiresBoundOrg: false, minRole: DATASOURCE_MIN_ROLE },
         async () => {
           // Developer-mode view: these are admin tools (gate-3 requires admin),
           // and create_datasource lands a datasource as `draft` — a published
@@ -398,7 +398,7 @@ export function registerDatasourceTools(
     async ({ id }): Promise<CallToolResult> =>
       dispatch(
         "test_datasource",
-        { checksBilling: true, requiresWrite: false, minRole: DATASOURCE_MIN_ROLE },
+        { checksBilling: true, requiresWrite: false, requiresBoundOrg: false, minRole: DATASOURCE_MIN_ROLE },
         async () => {
           if (!(await lifecycle()).isDatasourceRegistered(id)) {
             return toEnvelopeResult(

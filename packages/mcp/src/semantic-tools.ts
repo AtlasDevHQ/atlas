@@ -145,7 +145,7 @@ export function registerSemanticTools(
     async ({ filter }): Promise<CallToolResult> =>
       dispatch(
         "listEntities",
-        { requiresWrite: false, minRole: "member" },
+        { requiresWrite: false, requiresBoundOrg: false, minRole: "member" },
         async () => {
           // Bind orgId + published mode so MCP discovery reads the same
           // universe `executeSQL`'s published-mode whitelist sees. External MCP
@@ -197,7 +197,7 @@ export function registerSemanticTools(
     async ({ name, names }): Promise<CallToolResult> =>
       dispatch(
         "describeEntity",
-        { requiresWrite: false, minRole: "member" },
+        { requiresWrite: false, requiresBoundOrg: false, minRole: "member" },
         async () => {
           // The MCP raw-shape inputSchema can't express a cross-field
           // "exactly one of" refinement, so enforce it here. Both-or-neither
@@ -295,7 +295,7 @@ export function registerSemanticTools(
     async ({ term }): Promise<CallToolResult> =>
       dispatch(
         "searchGlossary",
-        { requiresWrite: false, minRole: "member" },
+        { requiresWrite: false, requiresBoundOrg: false, minRole: "member" },
         async () => {
           const matches = searchGlossary(term);
 
@@ -393,7 +393,7 @@ export function registerSemanticTools(
         // runMetric executes datasource SQL via executeSQL.execute → gate-0
         // billing (#3437/#3601), like executeSQL. Metadata-only tools above are
         // deliberately not billing-gated. Member-callable read.
-        { requiresWrite: false, minRole: "member", checksBilling: true },
+        { requiresWrite: false, requiresBoundOrg: false, minRole: "member", checksBilling: true },
         async (requestId) => {
           if (filters && Object.keys(filters).length > 0) {
             return toEnvelopeResult(

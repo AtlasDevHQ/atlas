@@ -28,12 +28,22 @@ describe("success-content helpers are shared, not copy-pasted (#3609)", () => {
     expect(envelope).toContain("export function toStructuredContent");
   });
 
+  // Catch a re-inlined local definition in EITHER form: a `function toJsonContent`
+  // declaration OR an arrow assigned to a `const`/`let`/`var` of that name. A
+  // bare `.not.toContain("function …")` would miss the arrow form.
+  function definesLocally(source: string, name: string): boolean {
+    return (
+      new RegExp(String.raw`function\s+${name}\b`).test(source) ||
+      new RegExp(String.raw`\b(?:const|let|var)\s+${name}\s*[:=]`).test(source)
+    );
+  }
+
   test("datasource-tools.ts imports toJsonContent and keeps no local copy", () => {
     const source = read("datasource-tools.ts");
     // Imports the shared helper from the envelope module…
     expect(source).toMatch(/import\s+\{[^}]*\btoJsonContent\b[^}]*\}\s+from\s+"\.\/error-envelope\.js"/s);
-    // …and no longer defines its own.
-    expect(source).not.toContain("function toJsonContent");
+    // …and no longer defines its own (function or arrow form).
+    expect(definesLocally(source, "toJsonContent")).toBe(false);
   });
 
   test("semantic-tools.ts imports both helpers and keeps no local copies", () => {
@@ -41,7 +51,7 @@ describe("success-content helpers are shared, not copy-pasted (#3609)", () => {
     expect(source).toMatch(
       /import\s+\{[^}]*\btoJsonContent\b[^}]*\btoStructuredContent\b[^}]*\}\s+from\s+"\.\/error-envelope\.js"/s,
     );
-    expect(source).not.toContain("function toJsonContent");
-    expect(source).not.toContain("function toStructuredContent");
+    expect(definesLocally(source, "toJsonContent")).toBe(false);
+    expect(definesLocally(source, "toStructuredContent")).toBe(false);
   });
 });

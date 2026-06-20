@@ -19,6 +19,8 @@ export type {
   Conversation,
   Message,
   ConversationWithMessages,
+  SessionMemorySlot,
+  SessionMemoryView,
   NotebookStateWire,
   ForkBranchWire,
   ShareMode,

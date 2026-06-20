@@ -805,6 +805,16 @@ export const ADMIN_ACTIONS = {
    */
   conversation: {
     budgetExceeded: "conversation.budget_exceeded",
+    /**
+     * Admin reset of a session's durable working memory (#3758, ADR-0020).
+     * Emitted by `admin-session-memory.ts` when an admin clears another
+     * user's accumulated agent state. Audited because it is a destructive
+     * action on memory the agent threads into future turns. Metadata:
+     * `{ cleared, namespace }` — `namespace: null` is a full-session wipe,
+     * a non-null value is a single-slot clear. Target id is the
+     * conversation id.
+     */
+    memoryReset: "conversation.memory_reset",
   },
   /**
    * Query-result cache lifecycle. `flush` covers the manual purge from

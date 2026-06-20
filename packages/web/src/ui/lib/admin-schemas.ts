@@ -92,6 +92,9 @@ export {
   WorkspaceSLASummarySchema,
   GatewayCatalogModelSchema,
   GatewayCatalogResponseSchema,
+  SessionMemorySlotSchema,
+  SessionMemoryViewSchema,
+  SessionMemoryListResponseSchema,
 } from "@useatlas/schemas";
 
 // ── Platform ─────────────────────────────────────────────────────

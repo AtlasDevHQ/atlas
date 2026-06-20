@@ -40,3 +40,4 @@ export * from "./preferences";
 export * from "./execute-sql";
 export * from "./proactive";
 export * from "./catalog";
+export * from "./session-memory";

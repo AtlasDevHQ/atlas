@@ -4298,6 +4298,226 @@
         "operationId": "deleteConversationsByIdShare"
       }
     },
+    "/api/v1/conversations/{id}/memory": {
+      "get": {
+        "tags": [
+          "Conversations"
+        ],
+        "summary": "Get a conversation's durable working memory",
+        "description": "Returns the durable working-memory slots the agent has accumulated for this conversation. Scoped to the caller. With no internal database the list is empty — never an error.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Working-memory slots",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "slots": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "namespace": {
+                            "type": "string"
+                          },
+                          "value": {},
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "namespace",
+                          "updatedAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "slots"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid conversation ID format",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getConversationsByIdMemory"
+      },
+      "delete": {
+        "tags": [
+          "Conversations"
+        ],
+        "summary": "Reset a conversation's durable working memory",
+        "description": "Clears the durable working-memory slots for this conversation so a sticky remembered fact can be corrected without leaving the chat. Idempotent and scoped to the caller. With no internal database this is a no-op (cleared: 0) — never an error.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Slots cleared (count)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "cleared": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "cleared"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid conversation ID format",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteConversationsByIdMemory"
+      }
+    },
     "/api/public/conversations/{token}": {
       "get": {
         "tags": [
@@ -41069,6 +41289,353 @@
           }
         },
         "operationId": "postAdminApprovalQueueById"
+      }
+    },
+    "/api/v1/admin/session-memory": {
+      "get": {
+        "tags": [
+          "Admin — Session Memory"
+        ],
+        "summary": "List sessions with durable memory",
+        "description": "Returns the sessions (conversations) in the current organization that have accumulated durable working-memory slots, each with its slots. Tenant-scoped.",
+        "responses": {
+          "200": {
+            "description": "Sessions with memory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sessions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "conversationId": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "slots": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "namespace": {
+                                  "type": "string"
+                                },
+                                "value": {},
+                                "updatedAt": {
+                                  "type": "string",
+                                  "format": "date-time"
+                                }
+                              },
+                              "required": [
+                                "namespace",
+                                "updatedAt"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "conversationId",
+                          "title",
+                          "updatedAt",
+                          "slots"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "sessions"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminSessionMemory"
+      }
+    },
+    "/api/v1/admin/session-memory/{conversationId}": {
+      "delete": {
+        "tags": [
+          "Admin — Session Memory"
+        ],
+        "summary": "Reset a session's durable memory",
+        "description": "Clears a session's durable working-memory slots (all, or a single slot via the `namespace` query param). Idempotent and tenant-scoped — a conversation outside the caller's organization clears nothing. The next turn threads no stale value.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "example": "8c4f2b1e-1d2a-4e3b-9c0d-1a2b3c4d5e6f"
+            },
+            "required": true,
+            "name": "conversationId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "When set, clear only this one slot; otherwise clear every slot in the session.",
+              "example": "analyst.lastTable"
+            },
+            "required": false,
+            "description": "When set, clear only this one slot; otherwise clear every slot in the session.",
+            "name": "namespace",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Slots cleared (count)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "cleared": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "cleared"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid query parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminSessionMemoryByConversationId"
       }
     },
     "/api/v1/admin/compliance/classifications": {
@@ -78480,6 +79047,9 @@
     },
     {
       "name": "Admin — Semantic Improve"
+    },
+    {
+      "name": "Admin — Session Memory"
     },
     {
       "name": "Admin — Sessions"

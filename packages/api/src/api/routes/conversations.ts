@@ -38,6 +38,8 @@ import {
   type CrudFailReason,
   type SharedConversationFailReason,
 } from "@atlas/api/lib/conversations";
+import { readSessionMemorySlots, resetSessionMemory } from "@atlas/api/lib/durable-state";
+import { SessionMemorySlotSchema } from "@useatlas/schemas";
 import type { ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_MODES, SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
@@ -738,6 +740,53 @@ const deleteConversationRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
+// Durable working-memory read/reset (#3758, ADR-0020) — the in-conversation
+// affordance. Scoped to the caller (their own conversation). Unlike the other
+// conversation routes, no-internal-DB is NOT a 404 here: the read returns an
+// empty slot list and the reset is a no-op (`cleared: 0`), so the in-chat
+// control degrades silently when durable memory isn't wired (acceptance: Noop =
+// empty read / no-op reset, no error).
+// ---------------------------------------------------------------------------
+
+const getConversationMemoryRoute = createRoute({
+  method: "get",
+  path: "/{id}/memory",
+  tags: ["Conversations"],
+  summary: "Get a conversation's durable working memory",
+  description:
+    "Returns the durable working-memory slots the agent has accumulated for this conversation. Scoped to the caller. With no internal database the list is empty — never an error.",
+  request: { params: IdParamSchema },
+  responses: {
+    200: {
+      description: "Working-memory slots",
+      content: { "application/json": { schema: z.object({ slots: z.array(SessionMemorySlotSchema) }) } },
+    },
+    400: { description: "Invalid conversation ID format", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const resetConversationMemoryRoute = createRoute({
+  method: "delete",
+  path: "/{id}/memory",
+  tags: ["Conversations"],
+  summary: "Reset a conversation's durable working memory",
+  description:
+    "Clears the durable working-memory slots for this conversation so a sticky remembered fact can be corrected without leaving the chat. Idempotent and scoped to the caller. With no internal database this is a no-op (cleared: 0) — never an error.",
+  request: { params: IdParamSchema },
+  responses: {
+    200: {
+      description: "Slots cleared (count)",
+      content: { "application/json": { schema: z.object({ cleared: z.number().int().nonnegative() }) } },
+    },
+    400: { description: "Invalid conversation ID format", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -1217,6 +1266,51 @@ conversations.openapi(deleteConversationRoute, async (c) => {
     }
     return c.body(null, 204);
   }), { label: "delete conversation" });
+});
+
+// ---------------------------------------------------------------------------
+// GET /:id/memory — read this conversation's durable working memory
+// ---------------------------------------------------------------------------
+
+conversations.openapi(getConversationMemoryRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { user } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+    }
+    // Owner-scoped: the helper JOINs to `conversations` and matches the
+    // caller's userId when present (+ org), so a conversation they don't own
+    // returns []. (With auth off — no userId — the scope falls back to the
+    // soft-delete guard, mirroring the unscoped conversations CRUD helpers.) No
+    // internal DB → [] (the helper short-circuits) — empty, not an error.
+    const slots = yield* Effect.promise(() =>
+      readSessionMemorySlots({ conversationId: id, userId: user?.id, orgId: user?.activeOrganizationId }),
+    );
+    return c.json({ slots }, 200);
+  }), { label: "read conversation memory" });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /:id/memory — reset this conversation's durable working memory
+// ---------------------------------------------------------------------------
+
+conversations.openapi(resetConversationMemoryRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { user } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+    }
+    // Idempotent + owner-scoped: clears the caller's own conversation slots so a
+    // sticky remembered fact can be corrected in-chat. Awaited (not the
+    // fire-and-forget commit path) so the next turn loads + threads nothing. No
+    // internal DB → 0 cleared, a clean no-op.
+    const cleared = yield* Effect.promise(() =>
+      resetSessionMemory({ conversationId: id, userId: user?.id, orgId: user?.activeOrganizationId }),
+    );
+    return c.json({ cleared }, 200);
+  }), { label: "reset conversation memory" });
 });
 
 // ---------------------------------------------------------------------------

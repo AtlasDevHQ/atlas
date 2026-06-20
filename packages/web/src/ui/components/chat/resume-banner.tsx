@@ -88,7 +88,7 @@ export function ResumeBanner({
         <AlertDescription className="text-amber-800/90 dark:text-amber-200/80">
           <p>
             This turn paused for a reviewer to approve an action. It will
-            continue automatically once the request is approved — no action
+            continue automatically once the request is reviewed — no action
             needed here.
           </p>
         </AlertDescription>

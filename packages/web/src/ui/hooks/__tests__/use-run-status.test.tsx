@@ -252,4 +252,98 @@ describe("useRunStatus (#3749)", () => {
     await new Promise((r) => setTimeout(r, 100));
     expect((globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls.length).toBe(callsAtUnmount);
   });
+
+  test("an initial `running` load does NOT auto-fire onParkedResolved (only a parked→running flip does)", async () => {
+    // A conversation opened on an already-interrupted (`running`) turn shows the
+    // MANUAL resume button — it must never auto-resume itself (prev baseline is
+    // null, not "parked", so the transition guard stays closed).
+    mockFetchSequence([{ status: "running", runId: "run-1", parkedReason: null }]);
+    const onParkedResolved = mock(() => {});
+    const { result } = renderHook(() =>
+      useRunStatus({ ...baseOpts, conversationId: "conv-1", enabled: true, onParkedResolved, pollIntervalMs: 20 }),
+    );
+    await waitFor(() => expect(result.current.runStatus?.status).toBe("running"));
+    await new Promise((r) => setTimeout(r, 80));
+    expect(onParkedResolved).not.toHaveBeenCalled();
+  });
+
+  test("parked → failed (terminal) stops polling and never fires onParkedResolved", async () => {
+    // The `done` companion is covered above; `failed` shares the path — assert it
+    // explicitly so the doc's "parked → done/failed do not fire" contract holds.
+    mockFetchSequence([
+      { status: "parked", runId: "run-1", parkedReason: "req-1" },
+      { status: "failed", runId: "run-1", parkedReason: null },
+    ]);
+    const onParkedResolved = mock(() => {});
+    const { result } = renderHook(() =>
+      useRunStatus({ ...baseOpts, conversationId: "conv-1", enabled: true, onParkedResolved, pollIntervalMs: 20 }),
+    );
+    await waitFor(() => expect(result.current.runStatus?.status).toBe("failed"));
+    const calls = (globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls.length;
+    await new Promise((r) => setTimeout(r, 100));
+    expect((globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls.length).toBe(calls);
+    expect(onParkedResolved).not.toHaveBeenCalled();
+  });
+
+  test("switching conversation while parked tears down the old poll (no more fetches to the old conversation)", async () => {
+    // conv-1 is parked (polling); switching to conv-2 (also parked) must stop
+    // polling conv-1 — a leaked cross-conversation poll would keep hitting the old
+    // URL and could mis-fire the transition against the now-current conversation.
+    globalThis.fetch = mock((input: RequestInfo | URL) =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify(
+            String(input).includes("/conv-1/")
+              ? { status: "parked", runId: "run-1", parkedReason: "req-1" }
+              : { status: "parked", runId: "run-2", parkedReason: "req-2" },
+          ),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    ) as unknown as typeof fetch;
+
+    const { result, rerender } = renderHook(
+      ({ id }: { id: string }) =>
+        useRunStatus({ ...baseOpts, conversationId: id, enabled: true, pollIntervalMs: 20 }),
+      { initialProps: { id: "conv-1" } },
+    );
+    await waitFor(() => expect(result.current.runStatus?.runId).toBe("run-1"));
+
+    rerender({ id: "conv-2" });
+    await waitFor(() => expect(result.current.runStatus?.runId).toBe("run-2"));
+
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof mock>;
+    const conv1CallsBefore = fetchMock.mock.calls.filter((c) => String(c[0]).includes("/conv-1/")).length;
+    await new Promise((r) => setTimeout(r, 100));
+    const conv1CallsAfter = fetchMock.mock.calls.filter((c) => String(c[0]).includes("/conv-1/")).length;
+    // No NEW conv-1 fetches after the switch — the old poll was torn down.
+    expect(conv1CallsAfter).toBe(conv1CallsBefore);
+  });
+
+  test("a transient poll error keeps the parked banner and still auto-resumes on the later flip (HIGH fix)", async () => {
+    // The most likely moment for a blip is during a long park. A poll error must
+    // NOT clear the parked status (which would hide the banner and kill the poll);
+    // the poll survives and still catches the parked→running re-arm.
+    let call = 0;
+    globalThis.fetch = mock(async () => {
+      call += 1;
+      // 1st: parked (initial). 2nd: transient error. 3rd+: running (re-armed).
+      if (call === 2) throw new Error("transient blip");
+      const body =
+        call >= 3
+          ? { status: "running", runId: "run-1", parkedReason: null }
+          : { status: "parked", runId: "run-1", parkedReason: "req-1" };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const onParkedResolved = mock(() => {});
+    const { result } = renderHook(() =>
+      useRunStatus({ ...baseOpts, conversationId: "conv-1", enabled: true, onParkedResolved, pollIntervalMs: 30 }),
+    );
+    await waitFor(() => expect(result.current.runStatus?.status).toBe("parked"));
+    // Despite the blip on the 2nd fetch, the banner stays parked and the poll
+    // keeps running until it catches the re-arm and auto-resumes — exactly once.
+    await waitFor(() => expect(onParkedResolved).toHaveBeenCalledTimes(1), { timeout: 2000 });
+    await waitFor(() => expect(result.current.runStatus?.status).toBe("running"));
+  });
 });

@@ -552,7 +552,7 @@ export function AtlasChat({
   // handler when a poll sees a parked turn re-armed to `running`, but the handler
   // is produced AFTER it (it depends on `runStatusCtl`). A ref breaks the cycle:
   // `useRunStatus` fires this stable wrapper, which dispatches to the latest
-  // `handleResume` set just below.
+  // `handleResume` (kept current by the effect below it).
   const handleResumeRef = useRef<() => void>(() => {});
   const handleParkedResolved = useCallback(() => handleResumeRef.current(), []);
 
@@ -587,7 +587,12 @@ export function AtlasChat({
     },
   });
   // Point the auto-resume seam at the freshly-built handler (see the ref above).
-  handleResumeRef.current = handleResume;
+  // In an effect, not during render: a render the React scheduler discards must
+  // not leave the ref pointing at a stale `handleResume` (the same concurrent-
+  // rendering guard the `warningHandlerRef` seam uses above).
+  useEffect(() => {
+    handleResumeRef.current = handleResume;
+  }, [handleResume]);
 
   // Adaptive empty-chat starter surface — backend composes the ranked
   // prompt list from favorites / popular / library tiers. TanStack Query

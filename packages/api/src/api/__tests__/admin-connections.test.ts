@@ -70,6 +70,17 @@ const mocks = createApiTestMocks({
         { id: "warehouse", dbType: "postgres", description: "Warehouse" },
         { id: "other-org-conn", dbType: "mysql", description: "Other org connection" },
       ],
+      // The list route reads through `describeForWorkspace(orgId)` (#3844) so
+      // a published plugin datasource — which lives ONLY in the per-workspace
+      // direct-plugin map — appears alongside native pools. The fixture unions
+      // the bare entries with one such plugin pool (`clickhouse-staging`) so a
+      // test can assert it survives the `visible ∩ describe` intersection.
+      describeForWorkspace: () => [
+        { id: "default", dbType: "postgres", description: "Default config connection" },
+        { id: "warehouse", dbType: "postgres", description: "Warehouse" },
+        { id: "other-org-conn", dbType: "mysql", description: "Other org connection" },
+        { id: "clickhouse-staging", dbType: "clickhouse", description: "ClickHouse" },
+      ],
       healthCheck: mockHealthCheck,
       register: mockRegister,
       unregister: mock(() => false),
@@ -437,6 +448,37 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       expect(warehouse).toBeDefined();
       expect(warehouse.groupId).toBeNull();
       expect(warehouse.groupName).toBeNull();
+    });
+
+    it("#3844 — a published plugin datasource (clickhouse) appears in the list", async () => {
+      // The plugin pool registers ONLY in the per-workspace direct-plugin map,
+      // never in the bare `entries` — so it's absent from `describe()` but
+      // present in `describeForWorkspace()`. `getVisibleConnectionIds` lists it
+      // (it owns a `workspace_plugins` row), so the `visible ∩ describe`
+      // intersection in the route keeps it only because the route now reads the
+      // workspace-scoped describe. Pre-fix it was dropped (invisible-but-queryable).
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sqlIs.visibility(sql)) {
+          return Promise.resolve([{ install_id: "warehouse" }, { install_id: "clickhouse-staging" }]);
+        }
+        if (sqlIs.decoration(sql)) {
+          return Promise.resolve([
+            { install_id: "warehouse", group_id: null },
+            { install_id: "clickhouse-staging", group_id: null },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const clickhouse = body.connections.find((c: { id: string }) => c.id === "clickhouse-staging");
+      expect(clickhouse).toBeDefined();
+      expect(clickhouse.dbType).toBe("clickhouse");
+      // It owns a workspace_plugins row, so it counts toward the plan/billing.
+      expect(clickhouse.billable).toBe(true);
     });
   });
 

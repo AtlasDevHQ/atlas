@@ -459,6 +459,14 @@ interface WorkspaceBaseEntry {
  * native per-workspace configs do).
  */
 interface WorkspacePluginEntry {
+  /**
+   * The (workspace, install_id) this pool belongs to. Stored on the entry so
+   * the workspace-scoped describe paths ({@link ConnectionRegistry.describeForWorkspace}
+   * / {@link ConnectionRegistry.describeAllWorkspacePlugins}) recover them
+   * directly instead of re-parsing the NUL-delimited map key (#3844).
+   */
+  workspaceId: string;
+  installId: string;
   conn: DBConnection;
   dbType: DBType;
   description?: string;
@@ -1045,6 +1053,8 @@ export class ConnectionRegistry {
     const key = this._workspaceKey(workspaceId, installId);
     const existing = this.workspacePluginEntries.get(key);
     this.workspacePluginEntries.set(key, {
+      workspaceId,
+      installId,
       conn,
       dbType,
       description,
@@ -1353,7 +1363,12 @@ export class ConnectionRegistry {
     return Array.from(this.entries.keys());
   }
 
-  /** Metadata for all registered connections. Used by the agent system prompt. */
+  /**
+   * Metadata for the bare/native registrations only. Used by the agent system
+   * prompt and legacy callers. Does NOT include per-(workspace, install_id)
+   * plugin pools — those live in {@link workspacePluginEntries} and are surfaced
+   * by {@link describeForWorkspace} / {@link describeAllWorkspacePlugins}.
+   */
   describe(): ConnectionMetadata[] {
     return Array.from(this.entries.entries()).map(([id, entry]) => ({
       id,
@@ -1361,6 +1376,58 @@ export class ConnectionRegistry {
       description: entry.description,
       ...(entry.lastHealth ? { health: entry.lastHealth } : {}),
     }));
+  }
+
+  /** {@link ConnectionMetadata} for a per-workspace plugin pool (no `lastHealth` tracked on these entries). */
+  private _pluginMeta(entry: WorkspacePluginEntry): ConnectionMetadata {
+    return {
+      id: entry.installId,
+      dbType: entry.dbType,
+      ...(entry.description !== undefined ? { description: entry.description } : {}),
+    };
+  }
+
+  /**
+   * Metadata for everything a single workspace can see: the bare/native
+   * registrations ({@link describe}) unioned with that workspace's DB-stored
+   * plugin pools ({@link workspacePluginEntries}). The admin Connections list
+   * reads through this so a published plugin datasource (clickhouse / snowflake /
+   * bigquery / elasticsearch) — which registers ONLY in the per-workspace
+   * plugin map, never in `entries` — appears alongside native pools (#3844).
+   *
+   * On an install_id collision (a workspace's plugin pool shares an id with a
+   * bare entry — e.g. self-hosted `default`), the plugin pool wins: it's the one
+   * actually routing this workspace's queries. Two workspaces never collide here
+   * because the filter is scoped to `workspaceId`.
+   */
+  describeForWorkspace(workspaceId: string): ConnectionMetadata[] {
+    const byId = new Map<string, ConnectionMetadata>(this.describe().map((m) => [m.id, m]));
+    for (const entry of this.workspacePluginEntries.values()) {
+      if (entry.workspaceId !== workspaceId) continue;
+      byId.set(entry.installId, this._pluginMeta(entry));
+    }
+    return Array.from(byId.values());
+  }
+
+  /**
+   * Metadata for EVERY DB-stored plugin pool across all workspaces. The public
+   * `/api/health` route has no per-request workspace, so its OPERATOR fleet view
+   * (anonymous callers are stripped to the region's own `default`, or nothing if
+   * none is registered, upstream — #3685) enumerates plugin pools the same way
+   * it already enumerates every bare entry.
+   *
+   * Returns one entry per (workspace, install_id) — the array's IDENTITY is the
+   * tuple, but each `ConnectionMetadata.id` carries only the `install_id`. Two
+   * workspaces that both install a plugin named `clickhouse` therefore yield TWO
+   * entries with `id: "clickhouse"`. This is NOT deduplicated: a caller that
+   * collapses the array by `.id` (as `/health` does, `sourcesSection[meta.id]`,
+   * last-write-wins) gets one health row per id, which is the intended
+   * region-fleet display behaviour. Any consumer needing per-workspace identity
+   * must NOT treat `.id` as unique — use {@link describeForWorkspace} (scoped to
+   * one workspace, so collisions can't occur) instead.
+   */
+  describeAllWorkspacePlugins(): ConnectionMetadata[] {
+    return Array.from(this.workspacePluginEntries.values()).map((entry) => this._pluginMeta(entry));
   }
 
   /** Run a health check for a specific connection. */

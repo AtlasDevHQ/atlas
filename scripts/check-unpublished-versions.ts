@@ -104,37 +104,58 @@ function declaredPrefixes(): string[] {
 function stepPrefixes(): string[] {
   const yml = readFileSync(join(repoRoot, ".github/workflows/publish.yml"), "utf8");
   const out = new Set<string>();
-  for (const m of yml.matchAll(/refs\/tags\/([a-z0-9-]+)-v/g)) out.add(m[1]);
+  // Anchored to real `if:` step lines (leading indent then `if:`), like
+  // declaredPrefixes — so a comment that mentions a removed `refs/tags/<x>-v`
+  // can't inject a phantom step prefix and trip the trigger<->step check.
+  for (const m of yml.matchAll(
+    /^\s*if:\s*startsWith\(github\.ref,\s*['"]refs\/tags\/([a-z0-9-]+)-v/gm,
+  )) {
+    out.add(m[1]);
+  }
   return [...out];
 }
 
 /**
- * Publishable workspace packages under packages/ and plugins/: those whose
+ * Publishable workspace packages: every dir under the root `workspaces` globs
+ * (plus `create-atlas`, which is published but not a workspace member) whose
  * package.json is not `private` and not in the internal `@atlas/*` scope.
- * Returns repo-relative dirs (e.g. "plugins/bigquery"). These MUST be covered by
- * PREFIX_TO_DIR — a new one with no mapping would silently never publish.
+ * Returns repo-relative dirs (e.g. "plugins/bigquery", "create-atlas"). These
+ * MUST be covered by PREFIX_TO_DIR — a new one with no mapping would silently
+ * never publish. Deriving from the workspace globs (not a fixed packages/+plugins/
+ * scan) keeps root-level packages in scope.
  */
 function publishablePackageDirs(): string[] {
-  const out: string[] = [];
-  for (const base of ["packages", "plugins"]) {
-    let entries: string[];
-    try {
-      entries = readdirSync(join(repoRoot, base));
-    } catch {
-      continue;
-    }
-    for (const name of entries) {
-      const dir = `${base}/${name}`;
-      let pkg: Pkg;
+  const rootPkg = JSON.parse(
+    readFileSync(join(repoRoot, "package.json"), "utf8"),
+  ) as { workspaces?: string[] };
+
+  const candidates = new Set<string>(["create-atlas"]);
+  for (const entry of rootPkg.workspaces ?? []) {
+    if (entry.endsWith("/*")) {
+      const base = entry.slice(0, -2);
+      let children: string[];
       try {
-        pkg = readPkg(readFileSync(join(repoRoot, dir, "package.json"), "utf8"));
+        children = readdirSync(join(repoRoot, base));
       } catch {
-        continue; // no package.json (e.g. a stray dir) — not a package
+        continue;
       }
-      if (pkg.private) continue;
-      if (!pkg.name || pkg.name.startsWith("@atlas/")) continue;
-      out.push(dir);
+      for (const c of children) candidates.add(`${base}/${c}`);
+    } else {
+      candidates.add(entry);
     }
+  }
+
+  const out: string[] = [];
+  for (const dir of candidates) {
+    let pkg: Pkg;
+    try {
+      pkg = readPkg(readFileSync(join(repoRoot, dir, "package.json"), "utf8"));
+    } catch {
+      continue; // no package.json (a glob dir without one, or a stray entry)
+    }
+    if (pkg.private) continue;
+    if (!pkg.name || pkg.name.startsWith("@atlas/")) continue;
+    out.push(dir);
   }
   return out;
 }

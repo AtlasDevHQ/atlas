@@ -102,6 +102,15 @@ describe("isConfigFieldActive", () => {
     expect(isConfigFieldActive(apiKeyField, { authMode: undefined })).toBe(false);
   });
 
+  it("fails open (active) on a malformed gate — never throws on bad JSONB", () => {
+    // parseConfigSchema only validates `key`, so a hand-edited row could carry
+    // a gate missing `equals` (or `field`). It must fail open, not 500. (#3842)
+    const missingEquals = { key: "x", type: "string", showWhen: { field: "authMode" } } as unknown as ConfigSchemaField;
+    const missingField = { key: "x", type: "string", showWhen: { equals: ["basic"] } } as unknown as ConfigSchemaField;
+    expect(isConfigFieldActive(missingEquals, { authMode: "basic" })).toBe(true);
+    expect(isConfigFieldActive(missingField, {})).toBe(true);
+  });
+
   it("matches any value in a multi-value equals", () => {
     const field: ConfigSchemaField = {
       key: "x",

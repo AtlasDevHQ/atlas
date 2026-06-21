@@ -83,9 +83,18 @@ export function isConfigFieldActive(
   field: ConfigSchemaField,
   config: Record<string, unknown>,
 ): boolean {
-  if (!field.showWhen) return true;
-  const current = config[field.showWhen.field];
-  return field.showWhen.equals.includes(
+  const gate = field.showWhen;
+  if (!gate) return true;
+  // `parseConfigSchema` only validates each entry's `key`, so a hand-edited or
+  // version-skewed JSONB row could carry a malformed gate (missing `field` /
+  // `equals`). Treat any malformed gate as always-active (fail open) rather
+  // than throwing — matches pre-#3842 behavior, where `showWhen` was never
+  // consulted so a malformed gate was a silent no-op. Only the immediate
+  // controller is resolved (no chained `showWhen`), mirroring the admin UI's
+  // `isFieldVisible`; no current schema nests gates.
+  if (typeof gate.field !== "string" || !Array.isArray(gate.equals)) return true;
+  const current = config[gate.field];
+  return gate.equals.includes(
     typeof current === "string" ? current : String(current ?? ""),
   );
 }

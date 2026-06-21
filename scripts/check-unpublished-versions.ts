@@ -25,9 +25,14 @@
 // Network/registry hiccups are non-fatal (warn + skip that package) so a blip
 // can't block merges; a definite "unpublished + not introduced here" is fatal.
 //
+// This script ALSO runs a network-free structural guard (checkWorkflowCoverage)
+// that keeps publish.yml's triggers + steps, the PREFIX_TO_DIR map, and the
+// publishable packages on disk in lockstep — catching a package that is wired in
+// one place but not the others (the silent-no-publish class, #3815).
+//
 // Usage: bun scripts/check-unpublished-versions.ts
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -36,11 +41,13 @@ const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dir, "..");
 
 // SSOT for publishable packages: tag prefix (the part before `-v`) -> package
-// dir, mirroring .github/workflows/publish.yml. `null` = a reserved tag prefix
-// with no package yet. The publish.yml-sync guard below asserts this map covers
-// every prefix publish.yml declares, so a newly publishable package can't be
-// wired into publish.yml without being covered here.
-const PREFIX_TO_DIR: Record<string, string | null> = {
+// dir, mirroring .github/workflows/publish.yml. The workflow-coverage guard
+// (checkWorkflowCoverage, below) keeps this map, publish.yml's `on.push.tags`
+// triggers, publish.yml's per-package steps, and the actual publishable
+// workspace packages all in lockstep — so a new package can't be half-wired and
+// silently never publish, and a tag prefix can't linger without a step and
+// silently no-op when pushed.
+const PREFIX_TO_DIR: Record<string, string> = {
   types: "packages/types",
   "atlas-agent": "create-atlas",
   "atlas-plugin": "create-atlas-plugin",
@@ -62,7 +69,6 @@ const PREFIX_TO_DIR: Record<string, string | null> = {
   "vercel-sandbox": "plugins/vercel-sandbox",
   "railway-sandbox": "plugins/railway-sandbox",
   chat: "plugins/chat",
-  slack: null, // reserved prefix, no package dir yet
   webhook: "plugins/webhook",
   teams: "plugins/teams",
   "email-digest": "plugins/email-digest",
@@ -92,6 +98,137 @@ function declaredPrefixes(): string[] {
   const out = new Set<string>();
   for (const m of yml.matchAll(/^\s*-\s*'([a-z0-9-]+)-v\*'/gm)) out.add(m[1]);
   return [...out];
+}
+
+/** Tag prefixes a publish step is gated on (`if: ...refs/tags/<prefix>-v`). */
+function stepPrefixes(): string[] {
+  const yml = readFileSync(join(repoRoot, ".github/workflows/publish.yml"), "utf8");
+  const out = new Set<string>();
+  // Anchored to real `if:` step lines (leading indent then `if:`), like
+  // declaredPrefixes — so a comment that mentions a removed `refs/tags/<x>-v`
+  // can't inject a phantom step prefix and trip the trigger<->step check.
+  for (const m of yml.matchAll(
+    /^\s*if:\s*startsWith\(github\.ref,\s*['"]refs\/tags\/([a-z0-9-]+)-v/gm,
+  )) {
+    out.add(m[1]);
+  }
+  return [...out];
+}
+
+/**
+ * Publishable workspace packages: every dir under the root `workspaces` globs
+ * (plus `create-atlas`, which is published but not a workspace member) whose
+ * package.json is not `private` and not in the internal `@atlas/*` scope.
+ * Returns repo-relative dirs (e.g. "plugins/bigquery", "create-atlas"). These
+ * MUST be covered by PREFIX_TO_DIR — a new one with no mapping would silently
+ * never publish. Deriving from the workspace globs (not a fixed packages/+plugins/
+ * scan) keeps root-level packages in scope.
+ */
+function publishablePackageDirs(): string[] {
+  const rootPkg = JSON.parse(
+    readFileSync(join(repoRoot, "package.json"), "utf8"),
+  ) as { workspaces?: string[] };
+
+  const candidates = new Set<string>(["create-atlas"]);
+  for (const entry of rootPkg.workspaces ?? []) {
+    if (entry.endsWith("/*")) {
+      const base = entry.slice(0, -2);
+      let children: string[];
+      try {
+        children = readdirSync(join(repoRoot, base));
+      } catch {
+        continue;
+      }
+      for (const c of children) candidates.add(`${base}/${c}`);
+    } else {
+      candidates.add(entry);
+    }
+  }
+
+  const out: string[] = [];
+  for (const dir of candidates) {
+    let pkg: Pkg;
+    try {
+      pkg = readPkg(readFileSync(join(repoRoot, dir, "package.json"), "utf8"));
+    } catch {
+      continue; // no package.json (a glob dir without one, or a stray entry)
+    }
+    if (pkg.private) continue;
+    if (!pkg.name || pkg.name.startsWith("@atlas/")) continue;
+    out.push(dir);
+  }
+  return out;
+}
+
+/**
+ * Network-free structural guard. Keeps four lists in lockstep so a publishable
+ * package can't be half-wired:
+ *   1. publish.yml `on.push.tags` trigger prefixes
+ *   2. publish.yml per-package step prefixes (`if: ...refs/tags/<prefix>-v`)
+ *   3. PREFIX_TO_DIR (the SSOT map)
+ *   4. the actual publishable workspace packages on disk
+ * Returns a list of human-readable problems (empty = all in sync).
+ */
+function checkWorkflowCoverage(): string[] {
+  const problems: string[] = [];
+  const triggers = new Set(declaredPrefixes());
+  const steps = new Set(stepPrefixes());
+  const mapped = new Set(Object.keys(PREFIX_TO_DIR));
+
+  // 1. Every trigger prefix must be in the SSOT map.
+  for (const p of triggers) {
+    if (!mapped.has(p)) {
+      problems.push(
+        `publish.yml declares tag prefix "${p}-v*" but PREFIX_TO_DIR has no entry. Add it pointing at the package dir.`,
+      );
+    }
+  }
+  // 2. Every map entry must be a real trigger (no stale/reserved prefixes).
+  for (const p of mapped) {
+    if (!triggers.has(p)) {
+      problems.push(
+        `PREFIX_TO_DIR has "${p}" but publish.yml's on.push.tags has no "${p}-v*" trigger. Remove the map entry or add the trigger.`,
+      );
+    }
+  }
+  // 3. Triggers and steps must match exactly — a trigger with no step silently
+  //    no-ops on push; a step with no trigger never runs.
+  for (const p of triggers) {
+    if (!steps.has(p)) {
+      problems.push(
+        `publish.yml triggers on "${p}-v*" but has no publish step gated on refs/tags/${p}-v — pushing that tag fires the workflow but publishes nothing.`,
+      );
+    }
+  }
+  for (const p of steps) {
+    if (!triggers.has(p)) {
+      problems.push(
+        `publish.yml has a publish step for "${p}-v*" but no matching on.push.tags trigger — that step can never run.`,
+      );
+    }
+  }
+  // 4. Every publishable package on disk must be covered by the map — a new
+  //    package with no mapping (so no trigger/step) would silently never publish.
+  const mappedDirs = new Set(Object.values(PREFIX_TO_DIR));
+  for (const dir of publishablePackageDirs()) {
+    if (!mappedDirs.has(dir)) {
+      problems.push(
+        `${dir} is a publishable workspace package (not private, not @atlas/*) but no PREFIX_TO_DIR entry points at it — it would never publish. Add a "<prefix>: ${dir}" entry plus the matching publish.yml trigger + step.`,
+      );
+    }
+  }
+  // 5. Every map entry must point at a real package.json — catches a
+  //    renamed/removed package leaving a dangling map entry.
+  for (const [prefix, dir] of Object.entries(PREFIX_TO_DIR)) {
+    try {
+      readPkg(readFileSync(join(repoRoot, dir, "package.json"), "utf8"));
+    } catch {
+      problems.push(
+        `PREFIX_TO_DIR["${prefix}"] points at "${dir}" but there is no package.json there — fix the path or remove the entry (and its publish.yml trigger + step).`,
+      );
+    }
+  }
+  return problems;
 }
 
 function refExists(ref: string): boolean {
@@ -167,15 +304,14 @@ async function publishedVersions(name: string): Promise<string[] | null> {
 }
 
 async function main(): Promise<void> {
-  // ── publish.yml-sync guard ────────────────────────────────────────────
-  const declared = declaredPrefixes();
-  const unmapped = declared.filter((p) => !(p in PREFIX_TO_DIR));
-  if (unmapped.length > 0) {
-    for (const p of unmapped) {
-      console.error(
-        `::error::publish.yml declares tag prefix "${p}-v*" but scripts/check-unpublished-versions.ts has no PREFIX_TO_DIR entry. Add it (point it at the package dir, or null if reserved).`,
-      );
-    }
+  // ── workflow-coverage guard (structural, no network) ──────────────────
+  const coverageProblems = checkWorkflowCoverage();
+  if (coverageProblems.length > 0) {
+    for (const p of coverageProblems) console.error(`::error::${p}`);
+    console.error(
+      "\npublish.yml / PREFIX_TO_DIR / workspace packages are out of lockstep " +
+        "(see scripts/check-unpublished-versions.ts). Fix the mismatches above so no package silently fails to publish.",
+    );
     process.exit(1);
   }
 
@@ -187,9 +323,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const targets = Object.entries(PREFIX_TO_DIR).filter(
-    (e): e is [string, string] => e[1] !== null,
-  );
+  const targets = Object.entries(PREFIX_TO_DIR);
 
   const results = await Promise.all(
     targets.map(async ([prefix, dir]) => {

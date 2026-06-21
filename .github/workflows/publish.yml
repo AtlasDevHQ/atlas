@@ -34,7 +34,6 @@ on:
       - 'railway-sandbox-v*'
       # Plugins — interaction
       - 'chat-v*'
-      - 'slack-v*'
       - 'webhook-v*'
       - 'teams-v*'
       - 'email-digest-v*'

@@ -68,6 +68,37 @@ export function parseConfigSchema(raw: unknown): ConfigSchema {
   return { state: "parsed", fields };
 }
 
+/**
+ * True when `field` is active given the current `config` — i.e. it has no
+ * `showWhen` gate, or its controlling field's current value is one of the
+ * gate's `equals`. Server-side mirror of the admin UI's `isFieldVisible`
+ * (`form-install-modal.tsx`): a `showWhen`-gated field is only required and
+ * type-checked when its branch is active. Without this gate a conditional
+ * `required: true` field (e.g. the Elasticsearch `apiKey` / `awsRegion`
+ * per-auth-mode fields) is wrongly demanded in every branch, making the
+ * datasource un-installable through the form. The controller value is coerced
+ * to a string (absent → `""`) so a missing controller never matches. See #3842.
+ */
+export function isConfigFieldActive(
+  field: ConfigSchemaField,
+  config: Record<string, unknown>,
+): boolean {
+  const gate = field.showWhen;
+  if (!gate) return true;
+  // `parseConfigSchema` only validates each entry's `key`, so a hand-edited or
+  // version-skewed JSONB row could carry a malformed gate (missing `field` /
+  // `equals`). Treat any malformed gate as always-active (fail open) rather
+  // than throwing — matches pre-#3842 behavior, where `showWhen` was never
+  // consulted so a malformed gate was a silent no-op. Only the immediate
+  // controller is resolved (no chained `showWhen`), mirroring the admin UI's
+  // `isFieldVisible`; no current schema nests gates.
+  if (typeof gate.field !== "string" || !Array.isArray(gate.equals)) return true;
+  const current = config[gate.field];
+  return gate.equals.includes(
+    typeof current === "string" ? current : String(current ?? ""),
+  );
+}
+
 /** True iff `entry` has a strict boolean `secret: true` — guards against `"true"` string drift in JSONB. */
 function isSecretField(entry: ConfigSchemaField): boolean {
   return entry.secret === true;

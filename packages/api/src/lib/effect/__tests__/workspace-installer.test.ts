@@ -427,6 +427,62 @@ describe("validateAgainstConfigSchema", () => {
     });
     expect(err).toBeNull();
   });
+
+  // #3842: conditional (`showWhen`-gated) required fields must only be enforced
+  // when their branch is active. ES declares per-auth-mode required fields;
+  // before the fix, basic-auth installs 400'd demanding apiKey + awsRegion.
+  const esSchema = [
+    { key: "url", type: "string", required: true },
+    { key: "authMode", type: "select", required: true },
+    { key: "username", type: "string", required: true, showWhen: { field: "authMode", equals: ["basic"] } },
+    { key: "password", type: "string", required: true, secret: true, showWhen: { field: "authMode", equals: ["basic"] } },
+    { key: "apiKey", type: "string", required: true, secret: true, showWhen: { field: "authMode", equals: ["apiKey"] } },
+    { key: "awsRegion", type: "string", required: true, showWhen: { field: "authMode", equals: ["sigv4"] } },
+  ];
+
+  it("passes basic auth without demanding apiKey/awsRegion (#3842)", () => {
+    const err = mod._testing.validateAgainstConfigSchema("elasticsearch", esSchema, {
+      url: "elasticsearch://host:9200",
+      authMode: "basic",
+      username: "u",
+      password: "p",
+    });
+    expect(err).toBeNull();
+  });
+
+  it("still enforces the active branch's required fields (basic missing password)", () => {
+    const err = mod._testing.validateAgainstConfigSchema("elasticsearch", esSchema, {
+      url: "elasticsearch://host:9200",
+      authMode: "basic",
+      username: "u",
+    });
+    expect(err).not.toBeNull();
+    expect(err?.fieldErrors.password).toBeDefined();
+    // The inactive branches stay silent.
+    expect(err?.fieldErrors.apiKey).toBeUndefined();
+    expect(err?.fieldErrors.awsRegion).toBeUndefined();
+  });
+
+  it("requires apiKey in apiKey mode but not username/awsRegion", () => {
+    const err = mod._testing.validateAgainstConfigSchema("elasticsearch", esSchema, {
+      url: "elasticsearch://host:9200",
+      authMode: "apiKey",
+    });
+    expect(err).not.toBeNull();
+    expect(err?.fieldErrors.apiKey).toBeDefined();
+    expect(err?.fieldErrors.username).toBeUndefined();
+    expect(err?.fieldErrors.awsRegion).toBeUndefined();
+  });
+
+  it("requires awsRegion in sigv4 mode only", () => {
+    const err = mod._testing.validateAgainstConfigSchema("elasticsearch", esSchema, {
+      url: "elasticsearch://host:9200",
+      authMode: "sigv4",
+    });
+    expect(err).not.toBeNull();
+    expect(err?.fieldErrors.awsRegion).toBeDefined();
+    expect(err?.fieldErrors.apiKey).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

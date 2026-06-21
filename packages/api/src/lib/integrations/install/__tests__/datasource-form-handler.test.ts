@@ -191,6 +191,53 @@ describe("DatasourceFormInstallHandler — validation", () => {
   });
 });
 
+// ── Conditional (showWhen) fields — #3842 ────────────────────────────────────
+// ES declares per-auth-mode required fields via `showWhen`. Before the fix the
+// form validator demanded apiKey + awsRegion in EVERY mode, so the datasource
+// was un-installable through the admin UI in any auth mode.
+describe("DatasourceFormInstallHandler — conditional showWhen fields (#3842)", () => {
+  const ES_SCHEMA = [
+    { key: "url", type: "string", label: "Connection URL", required: true, secret: true },
+    { key: "authMode", type: "select", label: "Authentication", required: true },
+    { key: "username", type: "string", label: "Username", required: true, showWhen: { field: "authMode", equals: ["basic"] } },
+    { key: "password", type: "string", label: "Password", required: true, secret: true, showWhen: { field: "authMode", equals: ["basic"] } },
+    { key: "apiKey", type: "string", label: "API key", required: true, secret: true, showWhen: { field: "authMode", equals: ["apiKey"] } },
+    { key: "awsRegion", type: "string", label: "AWS region", required: true, showWhen: { field: "authMode", equals: ["sigv4"] } },
+  ];
+
+  it("accepts basic auth without demanding apiKey/awsRegion", async () => {
+    catalogSchemaOverride = { value: ES_SCHEMA };
+    const handler = newHandler("elasticsearch");
+    // Should not throw — apiKey/awsRegion are gated to inactive branches.
+    await handler.validateConfig(WSID, {
+      url: "elasticsearch://host:9200",
+      authMode: "basic",
+      username: "u",
+      password: "p",
+    });
+  });
+
+  it("still rejects the active branch's missing required field (apiKey mode)", async () => {
+    catalogSchemaOverride = { value: ES_SCHEMA };
+    const handler = newHandler("elasticsearch");
+    let caught: unknown;
+    try {
+      await handler.validateConfig(WSID, {
+        url: "elasticsearch://host:9200",
+        authMode: "apiKey",
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(FormInstallValidationError);
+    const fe = (caught as InstanceType<FormErrCtor>).fieldErrors;
+    expect(fe.apiKey).toBeDefined();
+    // Inactive branches stay silent.
+    expect(fe.username).toBeUndefined();
+    expect(fe.awsRegion).toBeUndefined();
+  });
+});
+
 // ── Persistence + encryption (ClickHouse — the url IS the secret) ─────────────
 
 describe("DatasourceFormInstallHandler — ClickHouse persistence + encryption", () => {

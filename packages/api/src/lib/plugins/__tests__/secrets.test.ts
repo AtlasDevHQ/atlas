@@ -12,6 +12,7 @@ import type { ConfigSchema } from "../secrets";
 import {
   MASKED_PLACEHOLDER,
   checkStrictPluginSecrets,
+  isConfigFieldActive,
   isStrictPluginSecretsEnabled,
   maskSecretFields,
   parseConfigSchema,
@@ -65,6 +66,60 @@ describe("parseConfigSchema", () => {
       expect(result.fields).toHaveLength(1);
       expect(result.fields[0]!.key).toBe("ok");
     }
+  });
+});
+
+describe("isConfigFieldActive", () => {
+  // Mirrors the admin UI's isFieldVisible so server-side validation only
+  // enforces a `showWhen`-gated field when its branch is active. Regression
+  // guard for #3842 (ES un-installable because apiKey/awsRegion were demanded
+  // in every auth mode).
+  const apiKeyField: ConfigSchemaField = {
+    key: "apiKey",
+    type: "string",
+    required: true,
+    showWhen: { field: "authMode", equals: ["apiKey"] },
+  };
+
+  it("treats a field with no showWhen as always active", () => {
+    const url: ConfigSchemaField = { key: "url", type: "string", required: true };
+    expect(isConfigFieldActive(url, {})).toBe(true);
+    expect(isConfigFieldActive(url, { authMode: "basic" })).toBe(true);
+  });
+
+  it("is active when the controller value is in equals", () => {
+    expect(isConfigFieldActive(apiKeyField, { authMode: "apiKey" })).toBe(true);
+  });
+
+  it("is inactive when the controller value is not in equals (the #3842 case)", () => {
+    expect(isConfigFieldActive(apiKeyField, { authMode: "basic" })).toBe(false);
+    expect(isConfigFieldActive(apiKeyField, { authMode: "sigv4" })).toBe(false);
+  });
+
+  it("is inactive when the controller is absent (coerced to \"\")", () => {
+    expect(isConfigFieldActive(apiKeyField, {})).toBe(false);
+    expect(isConfigFieldActive(apiKeyField, { authMode: null })).toBe(false);
+    expect(isConfigFieldActive(apiKeyField, { authMode: undefined })).toBe(false);
+  });
+
+  it("fails open (active) on a malformed gate — never throws on bad JSONB", () => {
+    // parseConfigSchema only validates `key`, so a hand-edited row could carry
+    // a gate missing `equals` (or `field`). It must fail open, not 500. (#3842)
+    const missingEquals = { key: "x", type: "string", showWhen: { field: "authMode" } } as unknown as ConfigSchemaField;
+    const missingField = { key: "x", type: "string", showWhen: { equals: ["basic"] } } as unknown as ConfigSchemaField;
+    expect(isConfigFieldActive(missingEquals, { authMode: "basic" })).toBe(true);
+    expect(isConfigFieldActive(missingField, {})).toBe(true);
+  });
+
+  it("matches any value in a multi-value equals", () => {
+    const field: ConfigSchemaField = {
+      key: "x",
+      type: "string",
+      showWhen: { field: "mode", equals: ["a", "b"] },
+    };
+    expect(isConfigFieldActive(field, { mode: "a" })).toBe(true);
+    expect(isConfigFieldActive(field, { mode: "b" })).toBe(true);
+    expect(isConfigFieldActive(field, { mode: "c" })).toBe(false);
   });
 });
 

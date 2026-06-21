@@ -55,6 +55,7 @@ import {
   decryptSecretFields,
   encryptSecretFields,
   parseConfigSchema,
+  isConfigFieldActive,
 } from "@atlas/api/lib/plugins/secrets";
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import { invokeOnUninstallHook } from "@atlas/api/lib/plugins/uninstall-hook";
@@ -543,6 +544,11 @@ function validateAgainstConfigSchema(
   const formErrors: string[] = [];
 
   for (const field of schema.fields) {
+    // A `showWhen`-gated field is only required/type-checked when its branch is
+    // active — mirror the admin UI's `isFieldVisible` and the form-handler
+    // facade. An inactive conditional `required` field (e.g. ES `apiKey` /
+    // `awsRegion` outside their auth mode) must not block install. (#3842)
+    if (!isConfigFieldActive(field, config)) continue;
     const value = config[field.key];
     const present = value !== undefined && value !== null && value !== "";
     if (field.required === true && !present) {

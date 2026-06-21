@@ -60,6 +60,7 @@ import {
   decryptSecretFields,
   restoreMaskedSecrets,
   parseConfigSchema,
+  isConfigFieldActive,
   type ConfigSchema,
 } from "@atlas/api/lib/plugins/secrets";
 import type { WorkspaceId } from "@useatlas/types";
@@ -311,6 +312,11 @@ function validateAgainstSchema(
   if (schema.state !== "parsed" || schema.fields.length === 0) return {};
   const fieldErrors: Record<string, string[]> = {};
   for (const field of schema.fields) {
+    // A `showWhen`-gated field is only required/type-checked when its branch is
+    // active — mirror the admin UI's `isFieldVisible`. Without this an inactive
+    // conditional `required` field (e.g. ES `apiKey`/`awsRegion` outside their
+    // auth mode) is wrongly demanded, blocking install. (#3842)
+    if (!isConfigFieldActive(field, config)) continue;
     const value = config[field.key];
     const present = value !== undefined && value !== null && value !== "";
     if (field.required === true && !present) {

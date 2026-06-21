@@ -1410,14 +1410,21 @@ export class ConnectionRegistry {
   }
 
   /**
-   * Metadata for EVERY DB-stored plugin pool across all workspaces, flat (keyed
-   * by install_id). The public `/api/health` route has no per-request workspace,
-   * so its OPERATOR fleet view (anonymous callers are stripped to the region's
-   * own `default`, or nothing if none is registered, upstream — #3685)
-   * enumerates plugin pools the same way it already enumerates every bare entry.
-   * Returns one entry per (workspace, install_id); install_id collisions across
-   * workspaces are expected and the last write wins for the flat health map
-   * (latency/status, not routing).
+   * Metadata for EVERY DB-stored plugin pool across all workspaces. The public
+   * `/api/health` route has no per-request workspace, so its OPERATOR fleet view
+   * (anonymous callers are stripped to the region's own `default`, or nothing if
+   * none is registered, upstream — #3685) enumerates plugin pools the same way
+   * it already enumerates every bare entry.
+   *
+   * Returns one entry per (workspace, install_id) — the array's IDENTITY is the
+   * tuple, but each `ConnectionMetadata.id` carries only the `install_id`. Two
+   * workspaces that both install a plugin named `clickhouse` therefore yield TWO
+   * entries with `id: "clickhouse"`. This is NOT deduplicated: a caller that
+   * collapses the array by `.id` (as `/health` does, `sourcesSection[meta.id]`,
+   * last-write-wins) gets one health row per id, which is the intended
+   * region-fleet display behaviour. Any consumer needing per-workspace identity
+   * must NOT treat `.id` as unique — use {@link describeForWorkspace} (scoped to
+   * one workspace, so collisions can't occur) instead.
    */
   describeAllWorkspacePlugins(): ConnectionMetadata[] {
     return Array.from(this.workspacePluginEntries.values()).map((entry) => this._pluginMeta(entry));

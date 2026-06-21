@@ -375,4 +375,19 @@ describe("ConnectionRegistry — DB-stored plugin datasources (#3253 seam)", () 
     expect(ids).toContain("snow");
     registry._reset();
   });
+
+  it("describeAllWorkspacePlugins keeps a per-workspace entry on a cross-workspace install_id collision", () => {
+    // Two workspaces install a plugin under the SAME install_id. The flat fleet
+    // view is keyed by (workspace, install_id), so the array must carry BOTH
+    // entries — it is NOT deduplicated by `.id`. The /health route collapses
+    // them by id (last-write-wins) by design; the registry method itself keeps
+    // both so a future per-workspace consumer isn't silently handed one.
+    const registry = new ConnectionRegistry();
+    registry.registerDirectForWorkspace("ws-a", "clickhouse", fakeConn("a"), "clickhouse");
+    registry.registerDirectForWorkspace("ws-b", "clickhouse", fakeConn("b"), "clickhouse");
+    const all = registry.describeAllWorkspacePlugins();
+    expect(all).toHaveLength(2);
+    expect(all.every((m) => m.id === "clickhouse")).toBe(true);
+    registry._reset();
+  });
 });

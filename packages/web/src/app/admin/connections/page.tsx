@@ -89,6 +89,14 @@ import {
 } from "@/ui/components/admin/compact";
 import { CollapsibleRow } from "@/ui/components/admin/collapsible-row";
 import {
+  type ConnectionFormValues,
+  connectionCreateSchema,
+  connectionEditSchema,
+  TestConnectionButton,
+  NewEnvNameField,
+  PostgresSchemaField,
+} from "./connection-form-fields";
+import {
   AddConnectionPicker,
   type DatasourceFormCandidate,
 } from "./add-connection-picker";
@@ -122,79 +130,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 // ── Connection Form Dialog ───────────────────────────────────────
 
-// Mirrors the backend GROUP_NAME_PATTERN in `lib/db/connection-groups-helpers.ts`.
-// Inlined (rather than imported) so the web bundle doesn't pull from
-// `@atlas/api` — see "Frontend is a pure HTTP client" in CLAUDE.md. A drift here
-// surfaces in tests because the API returns a 400 with the same message.
-const ENV_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$/;
-
-// `ENV_SENTINEL_NONE` / `ENV_SENTINEL_CREATE` (the Environment combobox
-// sentinels) live in ./generate-prompt — shared with the new-group detection
-// for the inline "Generate semantic layer" prompt (#3237) so there's one
-// source of truth.
-
-const envSelectionSchema = z.string();
-
-const connectionCreateSchema = z
-  .object({
-    id: z
-      .string()
-      .min(1, "Connection ID is required")
-      .regex(/^[a-z][a-z0-9_-]*$/, "Lowercase letters, numbers, hyphens, underscores. Must start with a letter."),
-    dbType: z.string().min(1, "Database type is required"),
-    url: z.string().min(1, "Connection URL is required"),
-    schema: z.string(),
-    description: z.string(),
-    envSelection: envSelectionSchema,
-    newGroupName: z.string(),
-  })
-  .superRefine((data, ctx) => {
-    if (data.envSelection === ENV_SENTINEL_CREATE) {
-      const trimmed = data.newGroupName.trim();
-      if (!trimmed) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["newGroupName"],
-          message: "Environment name is required.",
-        });
-      } else if (!ENV_NAME_PATTERN.test(trimmed)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["newGroupName"],
-          message: "Letters, digits, spaces, hyphens, or underscores (max 64 chars). Must start with a letter or digit.",
-        });
-      }
-    }
-  });
-
-const connectionEditSchema = z
-  .object({
-    id: z.string(),
-    dbType: z.string(),
-    url: z.string(), // empty string is valid on edit — empty means keep current URL
-    schema: z.string(),
-    description: z.string(),
-    envSelection: envSelectionSchema,
-    newGroupName: z.string(),
-  })
-  .superRefine((data, ctx) => {
-    if (data.envSelection === ENV_SENTINEL_CREATE) {
-      const trimmed = data.newGroupName.trim();
-      if (!trimmed) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["newGroupName"],
-          message: "Environment name is required.",
-        });
-      } else if (!ENV_NAME_PATTERN.test(trimmed)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["newGroupName"],
-          message: "Letters, digits, spaces, hyphens, or underscores (max 64 chars). Must start with a letter or digit.",
-        });
-      }
-    }
-  });
+// `connectionCreateSchema` / `connectionEditSchema` and the derived
+// `ConnectionFormValues` type live in ./connection-form-fields alongside the
+// field components that consume them — the schema is the single source of
+// truth for the form's value shape.
 
 /** Wire shape for `/api/v1/admin/connection-groups` — subset of the
  * `ConnectionGroup` shape the dialog uses. Post-0096 cutover (#2744)
@@ -269,7 +208,15 @@ function ConnectionFormDialog({
     invalidates: onSuccess,
   });
 
-  const schema = isEdit ? connectionEditSchema : connectionCreateSchema;
+  // Pin both branches to one value type so the form (and the extracted
+  // watch-driven field components) carry a single `ConnectionFormValues`
+  // rather than a `Create | Edit` union. `ConnectionFormValues` is
+  // `z.infer<typeof connectionCreateSchema>`, so the create schema is the
+  // source of truth; this annotation additionally fails the build if
+  // `connectionEditSchema` drops a field the create schema declares.
+  const schema: z.ZodType<ConnectionFormValues, ConnectionFormValues> = isEdit
+    ? connectionEditSchema
+    : connectionCreateSchema;
 
   // Env dropdown only surfaces user-named envs. Auto-`g_<id>` singletons
   // are hidden so the dropdown doesn't leak migration-0062's
@@ -417,15 +364,11 @@ function ConnectionFormDialog({
       }
       className="sm:max-w-md"
       extraFooter={(form) => (
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => handleTest(form.getValues("url"), form.getValues("schema"))}
-          disabled={testMutation.saving || !form.watch("url")}
-        >
-          {testMutation.saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
-          Test
-        </Button>
+        <TestConnectionButton
+          form={form}
+          saving={testMutation.saving}
+          onTest={handleTest}
+        />
       )}
     >
       {(form) => (
@@ -486,26 +429,7 @@ function ConnectionFormDialog({
             )}
           />
 
-          {form.watch("envSelection") === ENV_SENTINEL_CREATE && (
-            <FormField
-              control={form.control}
-              name="newGroupName"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>New Environment Name</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="e.g. Production"
-                      {...field}
-                      autoFocus
-                      data-testid="env-new-name-input"
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          )}
+          <NewEnvNameField form={form} />
 
           <FormField
             control={form.control}
@@ -585,24 +509,7 @@ function ConnectionFormDialog({
             )}
           />
 
-          {form.watch("dbType") === "postgres" && (
-            <FormField
-              control={form.control}
-              name="schema"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Schema</FormLabel>
-                  <FormControl>
-                    <Input placeholder="public" {...field} />
-                  </FormControl>
-                  <FormDesc>
-                    PostgreSQL schema (sets search_path). Leave empty for &quot;public&quot;.
-                  </FormDesc>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          )}
+          <PostgresSchemaField form={form} />
 
           <FormField
             control={form.control}

@@ -88,11 +88,29 @@ export interface ElasticsearchSigV4Auth {
   service: string;
 }
 
+/**
+ * No-auth descriptor — for clusters running with security disabled (a common
+ * dev / self-hosted OpenSearch + Elasticsearch setup). Selected only by an
+ * explicit `authMode: "none"`, never inferred, so a config that simply forgot
+ * its credentials still fails loudly rather than connecting anonymously.
+ */
+export interface ElasticsearchNoAuth {
+  mode: "none";
+}
+
 /** Resolved auth descriptor — picked from config presence by {@link resolveAuth}. */
 export type ElasticsearchAuthDescriptor =
+  | ElasticsearchNoAuth
   | ElasticsearchApiKeyAuth
   | ElasticsearchBasicAuth
   | ElasticsearchSigV4Auth;
+
+/**
+ * Explicit auth-mode selector. When set, it pins the auth strategy (and is the
+ * only way to reach `none`); when absent, {@link resolveAuth} infers the mode
+ * from whichever credentials are present (the legacy static-config behavior).
+ */
+export type ElasticsearchAuthMode = "none" | "apiKey" | "basic" | "sigv4";
 
 /**
  * Raw plugin config (the shape an operator writes / the admin form stores).
@@ -104,6 +122,12 @@ export type ElasticsearchAuthDescriptor =
  * config schema — encrypted at rest.
  */
 export interface ElasticsearchPluginConfig {
+  /**
+   * Explicit auth strategy. When set, pins the mode (and is the only way to
+   * select `none` for a security-disabled cluster); when omitted, the mode is
+   * inferred from whichever credentials are present.
+   */
+  authMode?: ElasticsearchAuthMode;
   /** `elasticsearch://` or `opensearch://` host[:port][/prefix]. HTTPS by default; `?ssl=false` → HTTP. */
   url?: string;
   /** Elastic Cloud ID (`name:base64`) — decoded to the cluster endpoint. Alternative to `url`. */
@@ -577,6 +601,14 @@ export function resolveAuth(
   const password = typeof config.password === "string" ? config.password : "";
   const awsRegion = typeof config.awsRegion === "string" ? config.awsRegion.trim() : "";
 
+  // 0. Explicit no-auth — for a cluster with security disabled. Only an
+  // explicit `authMode: "none"` reaches it; it is never inferred, so a config
+  // that merely forgot its credentials still fails loudly below rather than
+  // silently connecting anonymously.
+  if (config.authMode === "none") {
+    return { mode: "none" };
+  }
+
   // 1. AWS SigV4 — `awsRegion` is the selecting signal. The ambient AWS env
   // chain is consulted only on the static-config path (`allowAmbient`); a
   // DB-stored per-workspace config must carry explicit keys (no operator-env
@@ -786,6 +818,8 @@ export function isCompleteConnectionConfig(config: ElasticsearchPluginConfig): b
 /** Every secret string in a resolved auth descriptor — for error scrubbing. */
 export function collectAuthSecrets(auth: ElasticsearchAuthDescriptor): string[] {
   switch (auth.mode) {
+    case "none":
+      return [];
     case "apiKey":
       return [auth.apiKey];
     case "basic":
@@ -939,6 +973,9 @@ export function createElasticsearchClient(
     const headers: Record<string, string> = { Accept: "application/json" };
     if (body.length > 0) headers["Content-Type"] = "application/json";
     switch (auth.mode) {
+      case "none":
+        // Security-disabled cluster — send no Authorization header.
+        break;
       case "apiKey":
         headers.Authorization = `ApiKey ${auth.apiKey}`;
         break;

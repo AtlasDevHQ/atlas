@@ -351,10 +351,37 @@ export interface ConfigSchemaField {
   required?: boolean;
   /** When true, the value is masked in the UI (e.g. API keys, secrets). */
   secret?: boolean;
-  /** Valid options for "select" type fields. */
-  options?: string[];
+  /**
+   * Valid options for "select" type fields. Either bare values (label = value)
+   * or `{ value, label }` pairs when the stored value should differ from the
+   * displayed label (e.g. `{ value: "apiKey", label: "API key" }`).
+   */
+  options?: Array<string | ConfigSchemaSelectOption>;
   /** Default value. */
   default?: unknown;
+  /**
+   * Conditional visibility: only render this field when another field's current
+   * value is one of `equals`. Drives progressive disclosure in the admin form
+   * (e.g. show the API-key field only when `authMode` is `apiKey`). A hidden
+   * field is never required and its value is dropped from the submitted config.
+   */
+  showWhen?: ConfigSchemaShowWhen;
+}
+
+/** A labeled option for a "select" config field. */
+export interface ConfigSchemaSelectOption {
+  /** Value stored in the config. */
+  value: string;
+  /** Label shown in the UI. */
+  label: string;
+}
+
+/** Conditional-visibility rule for a {@link ConfigSchemaField}. */
+export interface ConfigSchemaShowWhen {
+  /** The `key` of the field this one's visibility depends on. */
+  field: string;
+  /** Show this field only when the controlling field's value is one of these. */
+  equals: string[];
 }
 
 // ---------------------------------------------------------------------------

@@ -87,8 +87,9 @@ export interface ConfigSchemaField {
   description?: string;
   required?: boolean;
   secret?: boolean;
-  options?: string[];
+  options?: Array<string | { value: string; label: string }>;
   default?: unknown;
+  showWhen?: { field: string; equals: string[] };
 }
 
 /**

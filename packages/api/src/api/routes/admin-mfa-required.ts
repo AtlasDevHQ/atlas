@@ -53,6 +53,11 @@
  *
  * Member-role users are NEVER gated. The enrollment surface is available
  * to them voluntarily; the policy is admin-only.
+ *
+ * **Development-env bypass.** When `ATLAS_DEPLOY_ENV=development` the gate is
+ * skipped entirely (see {@link mfaGateDisabledForDevEnv}) so a fresh local admin
+ * reaches the console without enrolling a factor. Keyed on deploy ENV, not MODE:
+ * a self-hosted *production* admin still must enroll.
  */
 
 import type { Context } from "hono";
@@ -60,8 +65,21 @@ import { createMiddleware } from "hono/factory";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { AuthEnv } from "@atlas/api/api/routes/middleware";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
+import { resolveDeployEnv } from "@atlas/api/lib/env-profile";
 
 const log = createLogger("middleware:mfa");
+
+/**
+ * Local-dev carve-out: `ATLAS_DEPLOY_ENV=development` skips the admin-MFA
+ * enrollment gate entirely, so a fresh local admin reaches the admin console
+ * without standing up an authenticator. Production and staging are untouched —
+ * the `/privacy` §9 + `/dpa` Annex II promise only has to hold where real
+ * tenants live. Keep this keyed on the deploy ENV (not deploy MODE): a
+ * self-hosted PRODUCTION admin must still enroll a second factor.
+ */
+function mfaGateDisabledForDevEnv(): boolean {
+  return resolveDeployEnv() === "development";
+}
 
 /**
  * User-level roles that must have a verified second factor on file.
@@ -136,6 +154,7 @@ function isMfaEnrolledFromClaims(claims: Record<string, unknown> | undefined): b
  * results all return `false` — same exemptions as the middleware.
  */
 export function shouldRequireMfaForAuthResult(authResult: AuthResult): boolean {
+  if (mfaGateDisabledForDevEnv()) return false;
   if (!authResult.authenticated) return false;
   if (authResult.mode !== "managed" || !authResult.user) return false;
   const role = authResult.user.role;
@@ -172,6 +191,15 @@ export const mfaRequired = createMiddleware<AuthEnv>(async (c, next) => {
       },
       500,
     );
+  }
+
+  // Local-dev carve-out (ATLAS_DEPLOY_ENV=development): skip the enrollment gate
+  // so a fresh local admin can use the console without a second factor. Prod +
+  // staging still enforce. Mirrors shouldRequireMfaForAuthResult so the gate and
+  // the /me/password-status signal agree.
+  if (mfaGateDisabledForDevEnv()) {
+    await next();
+    return;
   }
 
   // MFA only applies to interactive Better Auth sessions ("managed" mode).

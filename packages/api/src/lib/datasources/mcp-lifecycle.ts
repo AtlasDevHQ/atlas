@@ -560,7 +560,12 @@ export async function loadProvisionConfigFields(
       secret,
       // Carry select options + default so the masked form renders a dropdown
       // (with its default) rather than collapsing every field to free text.
-      ...(Array.isArray(f.options) && f.options.length > 0 ? { options: f.options } : {}),
+      // Normalize `{ value, label }` options to their stored values — the masked
+      // MCP elicitation collects values, and `ProvisionConfigField.options` is a
+      // value list (labels are an admin-form nicety the MCP edge doesn't need).
+      ...(Array.isArray(f.options) && f.options.length > 0
+        ? { options: f.options.map((o) => (typeof o === "string" ? o : o.value)) }
+        : {}),
       ...(typeof f.default === "string" ? { default: f.default } : {}),
     });
   }

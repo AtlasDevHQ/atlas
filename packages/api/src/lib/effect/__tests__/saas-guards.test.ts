@@ -213,10 +213,17 @@ const { SAAS_ENV_KEYS } = await import("../saas-env");
 // still inspects the raw `process.env.ATLAS_DEPLOY_MODE` and several cases
 // below set it — so they must still be cleaned between cases to keep the
 // "succeeds when …" assertions from passing for the wrong reason.
+// `ATLAS_DEPLOY_ENV` is cleaned too: the dev-env relaxation (`relaxSaasGuardForDev`)
+// turns the fail-closed guards into no-ops when it reads `development`, so a
+// leaked value (e.g. bun auto-loading the repo-root `.env`, which ships
+// `ATLAS_DEPLOY_ENV=development`) would flip every "fails boot in SaaS" assertion
+// below to a false pass. Deleting it pins `resolveDeployEnv()` to its `production`
+// default for every guard test unless the case sets it explicitly.
 const GUARD_ENV_KEYS = [
   ...SAAS_ENV_KEYS,
   "ATLAS_DEPLOY_MODE",
   "ATLAS_ENTERPRISE_ENABLED",
+  "ATLAS_DEPLOY_ENV",
 ] as const;
 
 function withCleanEnv<T>(run: () => Promise<T>): Promise<T> {
@@ -2041,6 +2048,67 @@ describe("McpSpineGuardLive", () => {
       mockPolicyStoreThrows = true;
       const exit = await runMcpGuard("self-hosted");
       expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  Dev-env relaxation (relaxSaasGuardForDev)
+// ══════════════════════════════════════════════════════════════════════
+//
+// Local-dev escape hatch: when `ATLAS_DEPLOY_MODE=saas` AND
+// `ATLAS_DEPLOY_ENV=development`, the fail-closed "missing prod infra" guards
+// relax to a no-op so the SaaS code path boots locally without the prod-only
+// secrets. Gated SOLELY on the deploy env being `development` — `production`
+// (the default, pinned by `withCleanEnv` deleting the key) still fails closed.
+describe("relaxSaasGuardForDev (ATLAS_DEPLOY_ENV=development)", () => {
+  test("RateLimitGuard: relaxes in saas+development with ATLAS_RATE_LIMIT_RPM unset", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_DEPLOY_ENV = "development";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RateLimitGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("TurnstileGuard: relaxes in saas+development with TURNSTILE_SECRET_KEY unset", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_DEPLOY_ENV = "development";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            TurnstileGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  // The gate is precise: a non-development deploy env still fails closed, so a
+  // mis-set `ATLAS_DEPLOY_ENV` (e.g. `staging`) on a real region never relaxes.
+  test("does NOT relax in saas+staging — Turnstile still fails closed", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_DEPLOY_ENV = "staging";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            TurnstileGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
     });
   });
 });

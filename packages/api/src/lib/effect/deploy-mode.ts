@@ -34,9 +34,10 @@ function hasInternalDBLocal(): boolean {
  * - `"self-hosted"`: always returns `"self-hosted"`
  * - `"saas"`: requires enterprise enabled, otherwise falls back to
  *   `"self-hosted"`
- * - `"auto"` (default): returns `"saas"` when both enterprise is
- *   enabled AND an internal database is configured, otherwise
- *   `"self-hosted"`
+ * - `"auto"` (default): returns `"self-hosted"` whenever
+ *   `ATLAS_DEPLOY_ENV=development` (the local-dev short-circuit, below);
+ *   otherwise `"saas"` when both enterprise is enabled AND an internal
+ *   database is configured, else `"self-hosted"`
  */
 export function resolveDeployMode(raw?: DeployModeSetting): DeployMode {
   const setting: DeployModeSetting =
@@ -50,7 +51,21 @@ export function resolveDeployMode(raw?: DeployModeSetting): DeployMode {
     return isEnterpriseEnabled() ? "saas" : "self-hosted";
   }
 
-  // "auto" — detect from environment
+  // "auto" — detect from environment.
+  //
+  // Local-dev short-circuit: `ATLAS_DEPLOY_ENV=development` always resolves to
+  // self-hosted. This monorepo always has `@atlas/ee` present and (once
+  // `bun run db:up` runs) an internal DB configured, so the heuristic below
+  // would otherwise auto-resolve every dev checkout to "saas" and hard-fail
+  // boot on the SaaS-only guards — the #1 local-dev face-plant. A real SaaS
+  // region never runs `development` (it sets deployMode explicitly in
+  // deploy/api/atlas.config.ts, #3702), so this only ever rescues local dev.
+  // An operator who genuinely wants SaaS locally sets `ATLAS_DEPLOY_MODE=saas`
+  // explicitly, which takes the `saas` branch above and bypasses this.
+  if (process.env.ATLAS_DEPLOY_ENV === "development") {
+    return "self-hosted";
+  }
+
   return isEnterpriseEnabled() && hasInternalDBLocal()
     ? "saas"
     : "self-hosted";

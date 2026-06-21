@@ -10,7 +10,7 @@
  * a text input that would submit the wrong type.
  */
 
-import type { Control } from "react-hook-form";
+import { type Control, useWatch } from "react-hook-form";
 import {
   FormField,
   FormItem,
@@ -28,7 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { FormFieldDescriptor } from "./form-install-modal";
+import { type FormFieldDescriptor, isFieldVisible } from "./form-install-modal";
 
 export interface ConfigSchemaFieldsProps {
   readonly fields: FormFieldDescriptor[];
@@ -36,9 +36,14 @@ export interface ConfigSchemaFieldsProps {
 }
 
 export function ConfigSchemaFields({ fields, control }: ConfigSchemaFieldsProps) {
+  // Watch all values so `showWhen`-gated fields appear/disappear as the
+  // controlling field (e.g. the auth-mode selector) changes. Filtering before
+  // the map keeps hooks stable (no conditional `useWatch` per field).
+  const values = (useWatch({ control }) ?? {}) as Record<string, unknown>;
+  const visibleFields = fields.filter((field) => isFieldVisible(field, values));
   return (
     <>
-      {fields.map((field) => (
+      {visibleFields.map((field) => (
         <FormField
           key={field.key}
           control={control}
@@ -66,8 +71,8 @@ export function ConfigSchemaFields({ fields, control }: ConfigSchemaFieldsProps)
                     </SelectTrigger>
                     <SelectContent>
                       {field.options.map((option) => (
-                        <SelectItem key={option} value={option}>
-                          {option}
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
                         </SelectItem>
                       ))}
                     </SelectContent>

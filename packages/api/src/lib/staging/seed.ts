@@ -53,6 +53,7 @@ import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createPlatformAdminUser } from "@atlas/api/lib/auth/admin-user-ops";
 import { detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
 import { encryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
+import { hasVersionedPrefix } from "@atlas/api/lib/db/secret-encryption";
 
 const log = createLogger("staging-seed");
 
@@ -315,10 +316,13 @@ async function createStagingOrg(userId: string): Promise<string> {
  * Returns `false` (non-fatal) when:
  *   - the catalog row is missing — migration 0093 / the builtin datasource
  *     seeder has not run (the boot Layer's ordering dependency is meant to
- *     prevent this), or
+ *     prevent this),
  *   - `ATLAS_DATASOURCE_URL` is unset / has an unsupported scheme — there is no
  *     demo dataset to point at, so we skip rather than persist an unqueryable
- *     urless row (the exact state that produced the boot WARN).
+ *     urless row (the exact state that produced the boot WARN), or
+ *   - the resolved url is not Postgres — the `demo-postgres` slug is
+ *     postgres-only, so a non-pg url would persist a `db_type` that contradicts
+ *     the slug and fail the boot resolver; skip rather than write it.
  *
  * Exported (with the `_` prefix that marks the module's test-only surface, like
  * `_resetPool` in `db/internal.ts`) so the skip branches — the exact #3847
@@ -344,6 +348,18 @@ export async function _seedDemoDatasource(orgId: string): Promise<boolean> {
     );
     return false;
   }
+  // The `demo-postgres` catalog slug always resolves to a `postgres` pool
+  // (`catalogSlugToDbType`), so a non-postgres `ATLAS_DATASOURCE_URL` (e.g. a
+  // stray mysql:// value) would persist a `db_type` that contradicts the slug
+  // AND fail the boot bridge's postgres resolver. Warn-and-skip rather than
+  // write the contradictory row.
+  if (dbType !== "postgres") {
+    log.warn(
+      { dbType, slug: STAGING_DEMO_DATASOURCE_SLUG },
+      "Staging seed: ATLAS_DATASOURCE_URL is not a Postgres URL but the demo catalog is postgres-only — skipping datasource install",
+    );
+    return false;
+  }
 
   const rows = await internalQuery<{ id: string; config_schema: unknown }>(
     `SELECT id, config_schema FROM plugin_catalog WHERE slug = $1 AND pillar = 'datasource' LIMIT 1`,
@@ -365,6 +381,21 @@ export async function _seedDemoDatasource(orgId: string): Promise<boolean> {
     { url, description: `Demo ${dbType} datasource`, db_type: dbType },
     schema,
   );
+
+  // Defense-in-depth: `encryptSecretFields` passes values through as PLAINTEXT
+  // when the schema can't mark `url` secret — `state` is `absent`/`corrupt`, or
+  // `parsed` with no `url:{secret:true}` field. The post-0096 demo catalog
+  // declares `url` secret, so this only fires on a drifted / hand-patched
+  // catalog row. Warn loudly (don't block — a non-encrypted demo install still
+  // boots) rather than silently store the DSN unencrypted in
+  // `workspace_plugins.config`.
+  const persistedUrl = config.url;
+  if (typeof persistedUrl !== "string" || !hasVersionedPrefix(persistedUrl)) {
+    log.warn(
+      { schemaState: schema.state, slug: STAGING_DEMO_DATASOURCE_SLUG },
+      "Staging seed: demo datasource url is NOT encrypted at rest — the catalog config_schema does not mark `url` secret (drifted catalog row?). Storing anyway; re-run the builtin datasource catalog seeder to repair.",
+    );
+  }
 
   await internalQuery(
     `INSERT INTO workspace_plugins

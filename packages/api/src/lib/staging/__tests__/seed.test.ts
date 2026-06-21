@@ -112,10 +112,10 @@ describe("ensureStagingSeed — region gate (no DB)", () => {
 
 // ───────────────────────────────────────────────────────────────────
 // 1b. Demo-datasource skip paths — no DB. The #3847 failure mode is
-//     persisting a urless demo install; these two branches refuse to
-//     persist when there's no resolvable dataset, returning a non-fatal
-//     `false` and issuing ZERO queries (they return before any
-//     `internalQuery`). Pure unit tests — no Postgres needed.
+//     persisting a urless / contradictory demo install; these branches
+//     refuse to persist when there's no resolvable postgres dataset,
+//     returning a non-fatal `false` and issuing ZERO queries (they return
+//     before any `internalQuery`). Pure unit tests — no Postgres needed.
 // ───────────────────────────────────────────────────────────────────
 
 describe("_seedDemoDatasource — skip paths (no DB)", () => {
@@ -152,6 +152,21 @@ describe("_seedDemoDatasource — skip paths (no DB)", () => {
 
   it("skips (no INSERT, returns false) when the demo URL has an unsupported scheme", async () => {
     process.env.ATLAS_DATASOURCE_URL = "redis://localhost:6379";
+    delete process.env.ATLAS_DEMO_DATA;
+    const { pool, queries } = createTrackingPool();
+    _resetPool(pool);
+
+    const installed = await _seedDemoDatasource("org_test");
+
+    expect(installed).toBe(false);
+    expect(queries.length).toBe(0);
+  });
+
+  it("skips (no INSERT, returns false) when the demo URL is a valid-but-non-Postgres scheme", async () => {
+    // `mysql://` parses as a supported dbType, but the demo-postgres catalog is
+    // postgres-only — persisting `db_type:"mysql"` under it would contradict the
+    // slug and fail the boot resolver, so we skip before the catalog SELECT.
+    process.env.ATLAS_DATASOURCE_URL = "mysql://user:pw@localhost:3306/demo";
     delete process.env.ATLAS_DEMO_DATA;
     const { pool, queries } = createTrackingPool();
     _resetPool(pool);

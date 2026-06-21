@@ -223,7 +223,20 @@ export function buildZodSchema(
             literals.length >= 2
               ? z.union(literals as [z.ZodLiteral<string>, z.ZodLiteral<string>, ...z.ZodLiteral<string>[]])
               : literals[0];
-          if (!baseRequired) schema = schema.optional();
+          // An OPTIONAL select that the operator never touched still submits ""
+          // (its placeholder state, seeded by buildDefaultValues) — and "" is not
+          // a listed literal, so a bare `.optional()` would reject it with Zod's
+          // opaque `Invalid input: expected "<first option>"` (#3845). Map ""
+          // (unselected) to undefined BEFORE the union so an untouched optional
+          // override passes; the transform makes the field arrive as undefined,
+          // which buildSubmitPayload then drops from the payload. A required select
+          // skips this wrapper, so "" stays non-matching against the literal-union
+          // and is rejected — only a real, listed choice passes.
+          if (!baseRequired) {
+            schema = z
+              .union([z.literal("").transform(() => undefined), schema])
+              .optional();
+          }
         } else {
           schema = baseRequired ? z.string().min(1) : z.string().optional();
         }

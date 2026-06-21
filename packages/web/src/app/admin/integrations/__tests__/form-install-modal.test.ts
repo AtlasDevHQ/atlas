@@ -13,6 +13,7 @@ import { describe, expect, test } from "bun:test";
 import {
   parseConfigSchema,
   buildZodSchema,
+  buildDefaultValues,
   buildSubmitPayload,
   isFieldVisible,
   type FormFieldDescriptor,
@@ -210,5 +211,70 @@ describe("buildZodSchema — conditional required number fields", () => {
     const schema = buildZodSchema(NUM_FIELDS);
     const r = schema.safeParse({ mode: "default", timeout: "" });
     expect(r.success).toBe(true);
+  });
+});
+
+describe("buildZodSchema — optional select left unselected", () => {
+  // Regression for #3845: the Elasticsearch "Engine" field is an OPTIONAL
+  // select (auto-derived from the URL scheme server-side, overridable here).
+  // `buildDefaultValues` seeds an undefaulted field with "", and the Select
+  // submits "" while showing its placeholder. Before the fix, the literal-union
+  // `.optional()` schema rejected "" with the opaque `Invalid input: expected
+  // "elasticsearch"` — an optional override must accept "unselected" instead.
+  const ENGINE_FIELD: FormFieldDescriptor = {
+    key: "engine",
+    type: "select",
+    options: [
+      { value: "elasticsearch", label: "Elasticsearch" },
+      { value: "opensearch", label: "OpenSearch" },
+    ],
+  };
+
+  test('an optional select submitted as "" (unselected) passes and parses to undefined', () => {
+    const schema = buildZodSchema([ENGINE_FIELD]);
+    const r = schema.safeParse({ engine: "" });
+    expect(r.success).toBe(true);
+    // The "" → undefined transform is the load-bearing behavior: an untouched
+    // optional override must not survive into the parsed output as "".
+    expect(r.success && r.data).toEqual({ engine: undefined });
+  });
+
+  test("an optional select still accepts a listed value", () => {
+    const schema = buildZodSchema([ENGINE_FIELD]);
+    expect(schema.safeParse({ engine: "elasticsearch" }).success).toBe(true);
+    expect(schema.safeParse({ engine: "opensearch" }).success).toBe(true);
+  });
+
+  test("an optional select still rejects an off-list value", () => {
+    const schema = buildZodSchema([ENGINE_FIELD]);
+    expect(schema.safeParse({ engine: "mongodb" }).success).toBe(false);
+  });
+
+  // A REQUIRED select left unselected must still fail — the "" tolerance is for
+  // optional fields only, so a genuinely-required choice can't slip past as blank.
+  test('a required select submitted as "" still fails', () => {
+    const schema = buildZodSchema([{ ...ENGINE_FIELD, required: true }]);
+    expect(schema.safeParse({ engine: "" }).success).toBe(false);
+  });
+
+  // Full pipeline at the seam where #3845 actually lived, threaded in the REAL
+  // production order: buildDefaultValues seeds the undefaulted optional select as
+  // "", the schema (regression) accepts it AND its transform yields undefined,
+  // and buildSubmitPayload drops the engine. Critically, react-hook-form's
+  // zodResolver fires the transform BEFORE handleSubmit, so production passes
+  // buildSubmitPayload the PARSED output ({ engine: undefined }), not the raw ""
+  // — feeding parsed.data here exercises the undefined-drop branch the app hits,
+  // not the "" branch. So an untouched engine never reaches the server, matching
+  // the "auto-detected from the URL scheme" copy.
+  test("untouched optional engine: default → schema → payload drops it end-to-end", () => {
+    const defaults = buildDefaultValues([ENGINE_FIELD]);
+    expect(defaults).toEqual({ engine: "" });
+    const schema = buildZodSchema([ENGINE_FIELD]);
+    const parsed = schema.safeParse(defaults);
+    expect(parsed.success).toBe(true);
+    // The transform the resolver applies before handleSubmit sees the values.
+    expect(parsed.success && parsed.data).toEqual({ engine: undefined });
+    // buildSubmitPayload receives the parsed output in production, not raw "".
+    expect(buildSubmitPayload([ENGINE_FIELD], parsed.success ? parsed.data : defaults)).toEqual({});
   });
 });

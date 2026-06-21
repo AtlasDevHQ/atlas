@@ -51,6 +51,8 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createPlatformAdminUser } from "@atlas/api/lib/auth/admin-user-ops";
+import { detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
+import { encryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 
 const log = createLogger("staging-seed");
 
@@ -73,6 +75,18 @@ export const STAGING_ADMIN_EMAIL = "admin@staging.useatlas.dev";
  * staging org points that org at the shared demo data.
  */
 const STAGING_DEMO_DATASOURCE_SLUG = "demo-postgres";
+
+/**
+ * Canonical install_id for a workspace's demo-postgres datasource install.
+ * Every other surface keys the demo install on this exact id — migration
+ * 0096 step 3's backfill, `api/routes/mode.ts`'s `DEMO_ACTIVE_SQL` ("is demo
+ * active"), and `prompts/scoping.ts`. Mirrors `DEMO_CONNECTION_ID` in
+ * `semantic/entities.ts`; declared locally so this module keeps its narrow
+ * (auth-free) static graph. Using `default` here (as the seed previously did)
+ * collided with the real datasource install — which also lives at `default` —
+ * AND hid the demo from the `__demo__`-scoped "demo active" check (#3847).
+ */
+const STAGING_DEMO_INSTALL_ID = "__demo__";
 
 // ── Result + error types ───────────────────────────────────────────
 
@@ -173,7 +187,7 @@ export function ensureStagingSeed(): Effect.Effect<StagingSeedResult, StagingSee
     const userId = yield* step("admin", createAdminUser);
     yield* step("admin", () => verifyAdminEmail(userId));
     const orgId = yield* step("org", () => createStagingOrg(userId));
-    const datasource = yield* step("datasource", () => seedDemoDatasource(orgId));
+    const datasource = yield* step("datasource", () => _seedDemoDatasource(orgId));
     const twenty = yield* step("twenty", () => seedTwentyInstall(orgId));
 
     log.info(
@@ -285,17 +299,54 @@ async function createStagingOrg(userId: string): Promise<string> {
 /**
  * Install the shared `__demo__` NovaMart datasource (`demo-postgres`
  * catalog row) for the staging org. Mirrors the dev-seed workspace_plugins
- * upsert in `lib/auth/migrate.ts`. The demo dataset is operator/env-managed
- * (empty `config_schema`), so the install carries an empty config — the
- * connection URL resolves from `ATLAS_DATASOURCE_URL` at runtime.
+ * upsert in `lib/auth/migrate.ts` (`seedDemoData`): resolve the demo URL from
+ * `ATLAS_DATASOURCE_URL`, encrypt it under the catalog's `config_schema`
+ * (which marks `url` a required secret post-#2744), and persist it at the
+ * canonical `__demo__` install id.
  *
- * Returns `false` (non-fatal) if the catalog row is missing — that means
- * migration 0093 / the builtin datasource seeder has not run, which the
- * boot Layer's ordering dependency is meant to prevent.
+ * Why the url MUST be persisted (not env-resolved at runtime): post-#2744 the
+ * `ConnectionRegistry` boot bridge (`datasource-registry-bridge.ts`) builds
+ * the pool from `workspace_plugins.config`, whose resolver REQUIRES a `url`.
+ * The previous empty-config install (`'{}'`, install_id `'default'`) therefore
+ * failed that resolver on every boot with `DatasourcePoolResolver(postgres):
+ * missing required field url` — a recurring (benign) WARN — and collided with
+ * the real datasource install at `'default'` (#3847).
+ *
+ * Returns `false` (non-fatal) when:
+ *   - the catalog row is missing — migration 0093 / the builtin datasource
+ *     seeder has not run (the boot Layer's ordering dependency is meant to
+ *     prevent this), or
+ *   - `ATLAS_DATASOURCE_URL` is unset / has an unsupported scheme — there is no
+ *     demo dataset to point at, so we skip rather than persist an unqueryable
+ *     urless row (the exact state that produced the boot WARN).
+ *
+ * Exported (with the `_` prefix that marks the module's test-only surface, like
+ * `_resetPool` in `db/internal.ts`) so the skip branches — the exact #3847
+ * failure mode — can be unit-tested in isolation without standing up Better
+ * Auth for the admin/org steps `ensureStagingSeed` runs first.
  */
-async function seedDemoDatasource(orgId: string): Promise<boolean> {
-  const rows = await internalQuery<{ id: string }>(
-    `SELECT id FROM plugin_catalog WHERE slug = $1 AND pillar = 'datasource' LIMIT 1`,
+export async function _seedDemoDatasource(orgId: string): Promise<boolean> {
+  const url = resolveDatasourceUrl();
+  if (!url) {
+    log.warn(
+      "Staging seed: ATLAS_DATASOURCE_URL unset — skipping demo datasource install (no dataset to point at)",
+    );
+    return false;
+  }
+
+  let dbType: string;
+  try {
+    dbType = detectDBType(url);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Staging seed: demo datasource URL has an unsupported scheme — skipping datasource install",
+    );
+    return false;
+  }
+
+  const rows = await internalQuery<{ id: string; config_schema: unknown }>(
+    `SELECT id, config_schema FROM plugin_catalog WHERE slug = $1 AND pillar = 'datasource' LIMIT 1`,
     [STAGING_DEMO_DATASOURCE_SLUG],
   );
   if (rows.length === 0) {
@@ -305,13 +356,23 @@ async function seedDemoDatasource(orgId: string): Promise<boolean> {
     );
     return false;
   }
+
+  // Encrypt the url under the catalog `config_schema` (`url` is a `secret:true`
+  // field) so it lands encrypted-at-rest exactly like an admin / dev-seed
+  // install. The boot bridge's `decryptSecretFields` unwraps it symmetrically.
+  const schema = parseConfigSchema(rows[0].config_schema);
+  const config = encryptSecretFields(
+    { url, description: `Demo ${dbType} datasource`, db_type: dbType },
+    schema,
+  );
+
   await internalQuery(
     `INSERT INTO workspace_plugins
        (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at, status)
-     VALUES ($1, $2, $3, 'default', 'datasource', '{}'::jsonb, true, NOW(), 'published')
+     VALUES ($1, $2, $3, $4, 'datasource', $5::jsonb, true, NOW(), 'published')
      ON CONFLICT (workspace_id, catalog_id, install_id)
-       DO UPDATE SET status = 'published', updated_at = NOW()`,
-    [`cn_${orgId}_demo`, orgId, rows[0].id],
+       DO UPDATE SET config = EXCLUDED.config, status = 'published', updated_at = NOW()`,
+    [`cn_${orgId}_demo`, orgId, rows[0].id, STAGING_DEMO_INSTALL_ID, JSON.stringify(config)],
   );
   return true;
 }

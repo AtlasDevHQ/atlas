@@ -35,6 +35,7 @@ import { resetAuthModeCache } from "@atlas/api/lib/auth/detect";
 import { _setAuthInstance, getAuthInstance } from "@atlas/api/lib/auth/server";
 import { migrateAuthTables, resetMigrationState } from "@atlas/api/lib/auth/migrate";
 import {
+  _seedDemoDatasource,
   ensureStagingSeed,
   STAGING_ADMIN_EMAIL,
   STAGING_ORG_SLUG,
@@ -110,6 +111,59 @@ describe("ensureStagingSeed — region gate (no DB)", () => {
 });
 
 // ───────────────────────────────────────────────────────────────────
+// 1b. Demo-datasource skip paths — no DB. The #3847 failure mode is
+//     persisting a urless demo install; these two branches refuse to
+//     persist when there's no resolvable dataset, returning a non-fatal
+//     `false` and issuing ZERO queries (they return before any
+//     `internalQuery`). Pure unit tests — no Postgres needed.
+// ───────────────────────────────────────────────────────────────────
+
+describe("_seedDemoDatasource — skip paths (no DB)", () => {
+  let savedDatasourceUrl: string | undefined;
+  let savedDemoData: string | undefined;
+
+  beforeEach(() => {
+    savedDatasourceUrl = process.env.ATLAS_DATASOURCE_URL;
+    savedDemoData = process.env.ATLAS_DEMO_DATA;
+  });
+
+  afterEach(() => {
+    if (savedDatasourceUrl !== undefined) process.env.ATLAS_DATASOURCE_URL = savedDatasourceUrl;
+    else delete process.env.ATLAS_DATASOURCE_URL;
+    if (savedDemoData !== undefined) process.env.ATLAS_DEMO_DATA = savedDemoData;
+    else delete process.env.ATLAS_DEMO_DATA;
+    _resetPool();
+  });
+
+  it("skips (no INSERT, returns false) when no demo URL is resolvable", async () => {
+    // `resolveDatasourceUrl()` returns undefined: ATLAS_DATASOURCE_URL unset
+    // and ATLAS_DEMO_DATA not "true".
+    delete process.env.ATLAS_DATASOURCE_URL;
+    delete process.env.ATLAS_DEMO_DATA;
+    const { pool, queries } = createTrackingPool();
+    _resetPool(pool);
+
+    const installed = await _seedDemoDatasource("org_test");
+
+    expect(installed).toBe(false);
+    // Persisting a urless row is exactly #3847 — assert nothing was written.
+    expect(queries.length).toBe(0);
+  });
+
+  it("skips (no INSERT, returns false) when the demo URL has an unsupported scheme", async () => {
+    process.env.ATLAS_DATASOURCE_URL = "redis://localhost:6379";
+    delete process.env.ATLAS_DEMO_DATA;
+    const { pool, queries } = createTrackingPool();
+    _resetPool(pool);
+
+    const installed = await _seedDemoDatasource("org_test");
+
+    expect(installed).toBe(false);
+    expect(queries.length).toBe(0);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────
 // 2. Real Postgres — full seed against Better Auth + Atlas schema.
 // ───────────────────────────────────────────────────────────────────
 
@@ -131,6 +185,7 @@ const ENV_KEYS = [
   "ATLAS_ENCRYPTION_KEY",
   "ATLAS_API_REGION",
   "ATLAS_ADMIN_EMAIL",
+  "ATLAS_DATASOURCE_URL",
   "STAGING_ADMIN_PASSWORD",
   "STAGING_TWENTY_API_KEY",
   "STAGING_TWENTY_BASE_URL",
@@ -170,6 +225,11 @@ describeIfPg("ensureStagingSeed — real Postgres", () => {
     process.env.BETTER_AUTH_URL = "http://localhost:3001";
     process.env.ATLAS_ENCRYPTION_KEY = "staging-seed-test-encryption-key-000001";
     process.env.ATLAS_API_REGION = "staging";
+    // The demo datasource install now persists an ENCRYPTED url resolved from
+    // ATLAS_DATASOURCE_URL (#3847 — empty `{}` config failed the boot resolver
+    // every boot). Point it at the scratch test DB so the seed has a real,
+    // pg-scheme url to encrypt and store.
+    process.env.ATLAS_DATASOURCE_URL = TEST_DB_URL;
     process.env.STAGING_ADMIN_PASSWORD = STAGING_ADMIN_PASSWORD;
     process.env.STAGING_TWENTY_API_KEY = "staging-twenty-api-key";
     process.env.STAGING_TWENTY_BASE_URL = "https://staging-crm.example.com";
@@ -274,6 +334,75 @@ describeIfPg("ensureStagingSeed — real Postgres", () => {
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(rows.some((r) => r.catalog_id.includes("demo-postgres"))).toBe(true);
     expect(rows.every((r) => r.status === "published")).toBe(true);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // Regression for #3847: the demo install must land at the canonical
+  // `__demo__` install id (NOT `default`, which collided with the real
+  // datasource install) and carry an encrypted, url-bearing config that the
+  // boot bridge can resolve — the previous empty-`{}` install failed the boot
+  // resolver every boot with `DatasourcePoolResolver(postgres): missing
+  // required field url`.
+  it("persists the demo install at the canonical __demo__ id with a resolvable url", async () => {
+    const { decryptSecretFields, parseConfigSchema } = await import(
+      "@atlas/api/lib/plugins/secrets"
+    );
+    const { resolveDatasourcePoolConfig } = await import(
+      "@atlas/api/lib/db/datasource-pool-resolver"
+    );
+    // `describeIfPg` only runs this block when TEST_DATABASE_URL is set, so
+    // the demo url the seed persisted is exactly this DSN.
+    const demoUrl = TEST_DB_URL as string;
+
+    const org = await pool.query<{ id: string }>(
+      `SELECT id FROM organization WHERE slug = $1`,
+      [STAGING_ORG_SLUG],
+    );
+    const orgId = org.rows[0]?.id as string;
+
+    const { rows } = await pool.query<{
+      install_id: string;
+      catalog_slug: string;
+      config: Record<string, unknown> | null;
+      config_schema: unknown;
+    }>(
+      `SELECT wp.install_id,
+              pc.slug AS catalog_slug,
+              wp.config,
+              pc.config_schema
+         FROM workspace_plugins wp
+         JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+        WHERE wp.workspace_id = $1
+          AND wp.pillar = 'datasource'
+          AND pc.slug = 'demo-postgres'`,
+      [orgId],
+    );
+
+    // Exactly one demo-postgres install, keyed by the canonical __demo__ id.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.install_id).toBe("__demo__");
+
+    // The persisted url is encrypted at rest, never the plaintext DSN.
+    const rawUrl = rows[0]?.config?.url;
+    expect(typeof rawUrl).toBe("string");
+    expect(rawUrl).not.toBe(demoUrl);
+    expect(rawUrl as string).toMatch(/^enc:/);
+
+    // The exact boot path (decrypt → resolve) must succeed without throwing —
+    // this is what emitted the recurring WARN before the fix.
+    const schema = parseConfigSchema(rows[0]?.config_schema);
+    const decrypted = decryptSecretFields(rows[0]?.config ?? {}, schema);
+    const poolConfig = resolveDatasourcePoolConfig(
+      {
+        workspaceId: orgId,
+        catalogId: "",
+        installId: rows[0]?.install_id as string,
+        pillar: "datasource",
+        catalogSlug: rows[0]?.catalog_slug as string,
+      },
+      decrypted,
+    );
+    expect(poolConfig.dbType).toBe("postgres");
+    expect((poolConfig as { url: string }).url).toBe(demoUrl);
   }, PG_TEST_TIMEOUT_MS);
 
   it("installs the staging Twenty integration for the staging org", async () => {

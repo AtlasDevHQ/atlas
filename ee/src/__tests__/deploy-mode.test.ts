@@ -62,6 +62,10 @@ describe("resolveDeployMode (EE re-export)", () => {
     _hasInternalDB = true;
     delete process.env.ATLAS_DEPLOY_MODE;
     delete process.env.ATLAS_ENTERPRISE_ENABLED;
+    // `auto` now short-circuits to self-hosted when ATLAS_DEPLOY_ENV=development
+    // (the local-dev rescue). Clear it so the `auto → saas` cases below aren't
+    // flipped by an ambient value (e.g. bun auto-loading a repo `.env`).
+    delete process.env.ATLAS_DEPLOY_ENV;
   });
 
   // -- auto mode ------------------------------------------------------------
@@ -88,6 +92,26 @@ describe("resolveDeployMode (EE re-export)", () => {
     enterpriseEnabledConfig = false;
     _hasInternalDB = false;
     expect(resolveDeployMode("auto")).toBe("self-hosted");
+  });
+
+  // -- auto + local-dev short-circuit (ATLAS_DEPLOY_ENV=development) ---------
+
+  it('auto + development → "self-hosted" even when enterprise + internalDB would pick saas', () => {
+    enterpriseEnabledConfig = true;
+    _hasInternalDB = true;
+    process.env.ATLAS_DEPLOY_ENV = "development";
+    // Without the short-circuit this would resolve to "saas" (see the first
+    // auto-mode case) and hard-fail boot on the SaaS guards in local dev.
+    expect(resolveDeployMode("auto")).toBe("self-hosted");
+  });
+
+  it('explicit saas + development → "saas" (the short-circuit is auto-only)', () => {
+    enterpriseEnabledConfig = true;
+    _hasInternalDB = true;
+    process.env.ATLAS_DEPLOY_ENV = "development";
+    // An operator who explicitly opts into SaaS locally still gets SaaS — the
+    // dev short-circuit only governs the unset/auto path.
+    expect(resolveDeployMode("saas")).toBe("saas");
   });
 
   // -- explicit saas --------------------------------------------------------

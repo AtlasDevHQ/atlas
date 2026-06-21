@@ -8,6 +8,7 @@ import {
   parseElasticsearchUrl,
   resolveElasticsearchConfig,
   resolveAuth,
+  collectAuthSecrets,
   decodeCloudId,
   isCompleteConnectionConfig,
   engineSqlProfile,
@@ -243,6 +244,32 @@ describe("resolveElasticsearchConfig", () => {
     expect(resolved.auth.mode).toBe("sigv4");
     expect(resolved.endpoint).toBe("https://search.example.com:9200");
   });
+
+  // No-auth mode — for clusters with the security plugin disabled (a common
+  // self-hosted / dev OpenSearch + Elasticsearch setup).
+  test("authMode 'none' resolves to a no-auth descriptor with no credentials", () => {
+    const resolved = resolveElasticsearchConfig({
+      url: "opensearch://localhost:9200?ssl=false",
+      authMode: "none",
+    });
+    expect(resolved.auth).toEqual({ mode: "none" });
+    expect(resolved.engine).toBe("opensearch");
+  });
+
+  test("authMode 'none' wins even if stray credentials are present (explicit selection)", () => {
+    expect(resolveAuth({ authMode: "none", apiKey: API_KEY, username: "u", password: "p" })).toEqual({
+      mode: "none",
+    });
+  });
+
+  test("no-auth is NEVER inferred — a config without authMode and without creds still throws", () => {
+    // The security guarantee: only an EXPLICIT authMode:"none" connects anonymously.
+    expect(() => resolveAuth({ url: VALID_URL })).toThrow(/no authentication configured/);
+  });
+
+  test("no-auth descriptor carries no secrets to scrub", () => {
+    expect(collectAuthSecrets({ mode: "none" })).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -388,6 +415,24 @@ describe("createElasticsearchClient", () => {
     expect(capturedInit?.method).toBe("GET");
     const headers = capturedInit?.headers as Record<string, string>;
     expect(headers?.Authorization).toBe(`ApiKey ${API_KEY}`);
+    expect(headers?.Accept).toBe("application/json");
+  });
+
+  test("ping issues NO Authorization header for an explicit no-auth (authMode:'none') config", async () => {
+    // The security-load-bearing behavior of a security-disabled cluster: the
+    // request carries no Authorization at all (anonymous), while Accept stays.
+    let capturedInit: RequestInit | undefined;
+    const fetchImpl = mock(async (_url: string, init: RequestInit) => {
+      capturedInit = init;
+      return fetchResponse(CLUSTER_INFO_BODY);
+    });
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, authMode: "none" }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    await client.ping();
+    const headers = capturedInit?.headers as Record<string, string>;
+    expect(headers?.Authorization).toBeUndefined();
     expect(headers?.Accept).toBe("application/json");
   });
 
@@ -854,13 +899,14 @@ describe("adapter-only mode", () => {
 // ---------------------------------------------------------------------------
 
 describe("getConfigSchema", () => {
-  test("marks apiKey as a secret field (no longer unconditionally required — one of three auth modes)", () => {
+  test("marks apiKey secret and gates it behind the apiKey auth mode", () => {
     const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
     const schema = plugin.getConfigSchema!();
     const apiKeyField = schema.find((f) => f.key === "apiKey");
     expect(apiKeyField).toBeDefined();
     expect(apiKeyField?.secret).toBe(true);
-    expect(apiKeyField?.required).toBeFalsy();
+    // Conditionally required: only when the apiKey auth mode is selected.
+    expect(apiKeyField?.showWhen).toEqual({ field: "authMode", equals: ["apiKey"] });
   });
 
   test("marks every credential field secret: true (password + AWS secret/session)", () => {
@@ -872,12 +918,21 @@ describe("getConfigSchema", () => {
     );
   });
 
-  test("offers an engine select with both engines + non-secret AWS region/key-id/service fields", () => {
+  test("offers a labeled engine select, an authMode selector, and non-secret AWS region/key-id/service fields", () => {
     const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
     const schema = plugin.getConfigSchema!();
     const engineField = schema.find((f) => f.key === "engine");
     expect(engineField?.type).toBe("select");
-    expect(engineField?.options).toEqual(["elasticsearch", "opensearch"]);
+    expect(engineField?.options).toEqual([
+      { value: "elasticsearch", label: "Elasticsearch" },
+      { value: "opensearch", label: "OpenSearch" },
+    ]);
+    const authMode = schema.find((f) => f.key === "authMode");
+    expect(authMode?.type).toBe("select");
+    expect(authMode?.required).toBe(true);
+    expect(
+      authMode?.options?.map((o) => (typeof o === "string" ? o : o.value)),
+    ).toEqual(["basic", "apiKey", "sigv4", "none"]);
     for (const key of ["awsRegion", "awsAccessKeyId", "awsService", "username"]) {
       const field = schema.find((f) => f.key === key);
       expect(field, `expected ${key} field`).toBeDefined();
@@ -2100,11 +2155,18 @@ describe("isCompleteConnectionConfig", () => {
     expect(isCompleteConnectionConfig({ cloudId: "n:abc", apiKey: API_KEY })).toBe(true);
   });
 
+  test("true for explicit no-auth with only an endpoint (security-disabled cluster)", () => {
+    expect(isCompleteConnectionConfig({ url: VALID_URL, authMode: "none" })).toBe(true);
+    expect(isCompleteConnectionConfig({ cloudId: "n:abc", authMode: "none" })).toBe(true);
+  });
+
   test("false without an endpoint or without auth", () => {
     expect(isCompleteConnectionConfig({ url: VALID_URL })).toBe(false);
     expect(isCompleteConnectionConfig({ apiKey: API_KEY })).toBe(false);
     expect(isCompleteConnectionConfig({})).toBe(false);
     expect(isCompleteConnectionConfig({ url: VALID_URL, username: "u" })).toBe(false);
+    // Explicit no-auth still needs an endpoint — authMode alone is not complete.
+    expect(isCompleteConnectionConfig({ authMode: "none" })).toBe(false);
   });
 });
 
@@ -2121,6 +2183,11 @@ describe("static-config wiring across auth modes", () => {
       awsAccessKeyId: "AKID",
       awsSecretAccessKey: "secret",
     });
+    expect(typeof plugin.connection.create).toBe("function");
+  });
+
+  test("wires connection.create for an explicit no-auth static config", () => {
+    const plugin = elasticsearchPlugin({ url: VALID_URL, authMode: "none" });
     expect(typeof plugin.connection.create).toBe("function");
   });
 

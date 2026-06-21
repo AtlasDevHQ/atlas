@@ -134,6 +134,14 @@ export interface WorkspacePlanContext {
   /** Narrowed via {@link parsePlanTier} at the SQL boundary — `null` for legacy `team` / NULL plan_tier values. */
   readonly planTier: PlanTier | null;
   readonly isOperator: boolean;
+  /**
+   * Self-hosted deploy: bypass plan gating entirely. Self-hosted Atlas has no
+   * paid tiers — it is always free + unlimited (CLAUDE.md "self-hosted is always
+   * free"; `billing/plans.ts` free = unlimited), so SaaS `min_plan` upsell gates
+   * must never disable a datasource/integration there. Optional (defaults false)
+   * so SaaS callers and test fixtures need not set it.
+   */
+  readonly selfHosted?: boolean;
 }
 
 export interface PillarCatalogQueryShape {
@@ -295,10 +303,12 @@ function rowToWorkspaceInstall(row: InstallRow): WorkspaceInstall {
 function isAccessible(
   workspacePlan: PlanTier | null,
   requiredPlan: string,
-  isOperator: boolean,
+  // True when plan gating is bypassed for this workspace: operator workspaces
+  // (SaaS) AND any self-hosted deploy (no paid tiers — always free + unlimited).
+  bypassPlanGate: boolean,
   context: { slug: string; id: string },
 ): boolean {
-  if (isOperator) return true;
+  if (bypassPlanGate) return true;
   // `requiredPlan` arrives as a raw catalog string — narrow here so an
   // unknown / drifted value (`"team"`, `""`) fails closed once instead
   // of every consumer redoing the membership check.
@@ -348,7 +358,7 @@ export function projectCatalogWithInstalls(input: {
     const planAccessible = isAccessible(
       input.plan.planTier,
       entry.minPlan,
-      input.plan.isOperator,
+      input.plan.isOperator || input.plan.selfHosted === true,
       { slug: entry.slug, id: entry.id },
     );
     const state = resolveInstallStatus({
@@ -529,10 +539,14 @@ function buildPillarCatalogQueryService(
               );
             }
             const isOperator = planRows[0]?.is_operator_workspace === true;
+            // Self-hosted has no paid tiers (always free + unlimited), so plan
+            // gating is bypassed entirely there — a self-hosted operator sees
+            // every datasource/integration regardless of its SaaS `min_plan`.
+            const selfHosted = getConfig()?.deployMode === "self-hosted";
             return projectCatalogWithInstalls({
               catalog: catalogRows.map(rowToCatalogEntry),
               installs: installRows.map(rowToWorkspaceInstall),
-              plan: { planTier, isOperator },
+              plan: { planTier, isOperator, selfHosted },
             });
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),

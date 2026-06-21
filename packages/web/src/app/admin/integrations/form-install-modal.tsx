@@ -29,6 +29,18 @@ import { ConfigSchemaFields } from "./config-schema-fields";
  * catalog endpoint already loosely-types `configSchema` as `unknown`,
  * so the runtime narrowing happens here.
  */
+/** A normalized `{ value, label }` option for a select field. */
+export interface FormSelectOption {
+  value: string;
+  label: string;
+}
+
+/** Conditional-visibility rule: show the field only when `field`'s value is in `equals`. */
+export interface FormShowWhen {
+  field: string;
+  equals: string[];
+}
+
 export interface FormFieldDescriptor {
   key: string;
   type: "string" | "number" | "boolean" | "select";
@@ -36,8 +48,25 @@ export interface FormFieldDescriptor {
   description?: string;
   required?: boolean;
   secret?: boolean;
-  options?: string[];
+  /** Normalized to `{ value, label }` pairs by {@link parseConfigSchema}. */
+  options?: FormSelectOption[];
   default?: unknown;
+  /** Progressive disclosure: only render when the controlling field matches. */
+  showWhen?: FormShowWhen;
+}
+
+/**
+ * True when `field` should be visible given the current form `values` —
+ * i.e. it has no `showWhen` gate, or its controlling field's current value is
+ * one of the gate's `equals`.
+ */
+export function isFieldVisible(
+  field: FormFieldDescriptor,
+  values: Record<string, unknown>,
+): boolean {
+  if (!field.showWhen) return true;
+  const current = values[field.showWhen.field];
+  return field.showWhen.equals.includes(typeof current === "string" ? current : String(current ?? ""));
 }
 
 /**
@@ -78,16 +107,46 @@ export function parseConfigSchema(raw: unknown): FormFieldDescriptor[] {
       });
       continue;
     }
-    let options: string[] | undefined;
+    let options: FormSelectOption[] | undefined;
     if (Array.isArray(e.options)) {
-      const filtered = e.options.filter((o): o is string => typeof o === "string");
-      if (filtered.length !== e.options.length) {
-        console.warn("[FormInstallModal] dropping non-string entries from configSchema `options`", {
+      const normalized: FormSelectOption[] = [];
+      for (const o of e.options) {
+        if (typeof o === "string") {
+          normalized.push({ value: o, label: o });
+        } else if (
+          o &&
+          typeof o === "object" &&
+          typeof (o as Record<string, unknown>).value === "string"
+        ) {
+          const obj = o as Record<string, unknown>;
+          normalized.push({
+            value: obj.value as string,
+            label: typeof obj.label === "string" ? obj.label : (obj.value as string),
+          });
+        } else {
+          console.warn("[FormInstallModal] dropping malformed configSchema `options` entry", {
+            key: e.key,
+            option: o,
+          });
+        }
+      }
+      options = normalized;
+    }
+    let showWhen: FormShowWhen | undefined;
+    if (e.showWhen && typeof e.showWhen === "object") {
+      const sw = e.showWhen as Record<string, unknown>;
+      if (
+        typeof sw.field === "string" &&
+        Array.isArray(sw.equals) &&
+        sw.equals.every((v) => typeof v === "string")
+      ) {
+        showWhen = { field: sw.field, equals: sw.equals as string[] };
+      } else {
+        console.warn("[FormInstallModal] dropping malformed configSchema `showWhen`", {
           key: e.key,
-          options: e.options,
+          showWhen: e.showWhen,
         });
       }
-      options = filtered;
     }
     fields.push({
       key: e.key,
@@ -98,6 +157,7 @@ export function parseConfigSchema(raw: unknown): FormFieldDescriptor[] {
       secret: e.secret === true,
       options,
       default: e.default,
+      showWhen,
     });
   }
   return fields;
@@ -123,10 +183,14 @@ export function buildZodSchema(
 ): z.ZodType<Record<string, unknown>, Record<string, unknown>> {
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const field of fields) {
+    // A `showWhen`-gated field is only required when visible, so it is always
+    // OPTIONAL at the base level (a hidden, empty field must never block submit);
+    // the required-when-visible rule is enforced by the superRefine below.
+    const baseRequired = field.required === true && !field.showWhen;
     let schema: z.ZodTypeAny;
     switch (field.type) {
       case "string":
-        schema = field.required
+        schema = baseRequired
           ? z.string().min(1, `${field.label ?? field.key} is required`)
           : z.string().optional();
         break;
@@ -134,9 +198,15 @@ export function buildZodSchema(
         // `z.coerce.number()` accepts the HTML-form string-as-number
         // and converts to a real number — necessary because <Input
         // type="number"> still produces a string event value.
-        schema = field.required
+        //
+        // On the optional/gated branch a blank input must map to `undefined`
+        // BEFORE coercion: `Number("") === 0`, so a plain `z.coerce.number()`
+        // would silently turn a left-blank `showWhen`-gated required number into
+        // 0 and slip past the superRefine's empty-check. Mapping "" → undefined
+        // lets that conditional-required rule fire as intended.
+        schema = baseRequired
           ? z.coerce.number({ message: `${field.label ?? field.key} is required` })
-          : z.coerce.number().optional();
+          : z.union([z.literal("").transform(() => undefined), z.coerce.number()]).optional();
         break;
       case "boolean":
         schema = z.boolean().optional();
@@ -146,22 +216,38 @@ export function buildZodSchema(
         // free-form string (the server still validates). When present,
         // a literal-union narrows to the listed values.
         if (field.options && field.options.length > 0) {
-          const literals = field.options.map((o) => z.literal(o));
+          const literals = field.options.map((o) => z.literal(o.value));
           // z.union expects at least two literals; if only one is
           // declared we fall back to a literal-of-one (`z.literal`).
           schema =
             literals.length >= 2
               ? z.union(literals as [z.ZodLiteral<string>, z.ZodLiteral<string>, ...z.ZodLiteral<string>[]])
               : literals[0];
-          if (!field.required) schema = schema.optional();
+          if (!baseRequired) schema = schema.optional();
         } else {
-          schema = field.required ? z.string().min(1) : z.string().optional();
+          schema = baseRequired ? z.string().min(1) : z.string().optional();
         }
         break;
     }
     shape[field.key] = schema;
   }
-  return z.object(shape) as unknown as z.ZodType<Record<string, unknown>, Record<string, unknown>>;
+  // Conditional-required: a `showWhen` field marked `required` must be present
+  // only while it is visible (its controlling field's value satisfies the gate).
+  const gatedRequired = fields.filter((f) => f.required === true && f.showWhen);
+  const schema = z.object(shape).superRefine((values, ctx) => {
+    for (const field of gatedRequired) {
+      if (!isFieldVisible(field, values as Record<string, unknown>)) continue;
+      const v = (values as Record<string, unknown>)[field.key];
+      if (v === undefined || v === null || (typeof v === "string" && v.trim() === "")) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field.key],
+          message: `${field.label ?? field.key} is required`,
+        });
+      }
+    }
+  });
+  return schema as unknown as z.ZodType<Record<string, unknown>, Record<string, unknown>>;
 }
 
 /**
@@ -181,6 +267,27 @@ export function buildDefaultValues(fields: FormFieldDescriptor[]): Record<string
       continue;
     }
     out[field.key] = field.default;
+  }
+  return out;
+}
+
+/**
+ * Build the config payload to POST: drop fields hidden by `showWhen` (so a stale
+ * value from a previously-selected branch never leaks) and drop empty strings (so
+ * an unfilled optional field arrives as absent, not `""` — the server's per-field
+ * `.min(1)` validators reject empty strings). Booleans and numbers pass through.
+ */
+export function buildSubmitPayload(
+  fields: FormFieldDescriptor[],
+  values: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (!isFieldVisible(field, values)) continue;
+    const v = values[field.key];
+    if (v === undefined || v === null) continue;
+    if (typeof v === "string" && v.trim() === "") continue;
+    out[field.key] = v;
   }
   return out;
 }
@@ -223,11 +330,12 @@ export function FormInstallModal({
   async function handleSubmit(values: Record<string, unknown>): Promise<void> {
     setSaving(true);
     try {
+      const payload = buildSubmitPayload(fields, values);
       const res = await fetch(`${getApiUrl()}/api/v1/integrations/${encodeURIComponent(slug)}/install-form`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "include",
-        body: JSON.stringify(values),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         let message = `Install failed (${res.status})`;

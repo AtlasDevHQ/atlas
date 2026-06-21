@@ -87,11 +87,52 @@
 
 import { Data, Effect, Layer } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { resolveDeployEnv } from "@atlas/api/lib/env-profile";
 import { Config, Settings } from "./layers";
 import { Migration, PluginRegistry } from "./services";
 import { readSaasEnv, type SaasEnv } from "./saas-env";
 
 const log = createLogger("effect:saas-guards");
+
+/**
+ * Local-dev SaaS escape hatch — an INTENTIONAL, narrowly-gated security footgun.
+ *
+ * The SaaS boot-guard family fails CLOSED on any missing prod-only secret
+ * (Turnstile, rate-limit RPM, billing config, …). That is correct on a
+ * customer-facing region, but it turns local `ATLAS_DEPLOY_MODE=saas` dev into
+ * whack-a-mole: each missing secret crashes boot one at a time, so an operator
+ * running the SaaS code path locally rediscovers the whole env bundle by
+ * attrition. When `ATLAS_DEPLOY_ENV=development`, the "missing prod infra"
+ * guards (the ones that opt in by calling this) relax to a no-op so the API
+ * boots against whatever the dev `.env` already has.
+ *
+ * Gated SOLELY on the deploy *env* being `development` — a coherent single gate:
+ * a `development` deploy is ALREADY in dev shape across the board (email
+ * verification off + onboarding emails off via `env-profile.ts`; admin-MFA gate
+ * off via `admin-mfa-required.ts`), so relaxing the boot guards is consistent
+ * with it. The only footgun is setting `ATLAS_DEPLOY_ENV=development` on a
+ * customer-facing deploy — which would already have disabled those other
+ * protections too, and which a
+ * real region never does (it sets `production` or leaves it unset, and pins
+ * `deployMode` in `deploy/api/atlas.config.ts`, #3702). Each relaxation logs a
+ * loud per-guard warning so it can never pass silently.
+ *
+ * NOT relaxed: the migration, encryption-key, and internal-DB guards — those are
+ * real correctness signals (and pass for free in any working dev box: DB up,
+ * `BETTER_AUTH_SECRET` set, migrations applied), not missing-prod-infra checks.
+ *
+ * MUST be called AFTER each guard's `deployMode !== "saas"` early-return — it
+ * asserts nothing about the deploy mode itself.
+ */
+function relaxSaasGuardForDev(guardName: string): boolean {
+  if (resolveDeployEnv() !== "development") return false;
+  log.warn(
+    `SaaS boot guard '${guardName}' RELAXED — ATLAS_DEPLOY_ENV=development. ` +
+      `Local-dev escape hatch so the SaaS code path boots without prod-only secrets. ` +
+      `NEVER set ATLAS_DEPLOY_ENV=development on a customer-facing deploy.`,
+  );
+  return true;
+}
 
 const ISSUE_REF = "#1978";
 const RATE_LIMIT_ISSUE_REF = "#1983";
@@ -623,6 +664,7 @@ export const RateLimitGuardLive: Layer.Layer<never, RateLimitRequiredError, Conf
   Effect.gen(function* () {
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
+    if (relaxSaasGuardForDev("RateLimit")) return;
 
     const raw = readSaasEnv().ATLAS_RATE_LIMIT_RPM;
     if (raw === undefined || raw === "") {
@@ -672,6 +714,7 @@ export const TurnstileGuardLive: Layer.Layer<never, TurnstileSecretRequiredError
   Effect.gen(function* () {
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
+    if (relaxSaasGuardForDev("Turnstile")) return;
 
     const raw = readSaasEnv().TURNSTILE_SECRET_KEY;
     if (raw === undefined || raw === "") {
@@ -783,6 +826,7 @@ export const ProviderKeyGuardLive: Layer.Layer<never, ProviderKeyMissingError | 
   Effect.gen(function* () {
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
+    if (relaxSaasGuardForDev("ProviderKey")) return;
 
     const { getDefaultProvider, isSupportedProvider, getMissingProviderConfig } = yield* importProviderConfig();
     const envProvider = readSaasEnv().ATLAS_PROVIDER ?? getDefaultProvider();
@@ -829,6 +873,7 @@ export const ProactiveProviderKeyGuardLive: Layer.Layer<never, ProviderKeyMissin
   Effect.gen(function* () {
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
+    if (relaxSaasGuardForDev("ProactiveProviderKey")) return;
     yield* Settings; // sequence after loadSettings warms the in-process cache
 
     const { getDefaultProvider, isSupportedProvider, getMissingProviderConfig } = yield* importProviderConfig();
@@ -1151,6 +1196,7 @@ export const ChatAdapterEnvGuardLive: Layer.Layer<never, ChatAdapterEnvMissingEr
   Effect.gen(function* () {
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
+    if (relaxSaasGuardForDev("ChatAdapterEnv")) return;
 
     const catalog = config.catalog ?? [];
     if (catalog.length === 0) return;
@@ -1309,6 +1355,7 @@ export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidErro
   Effect.gen(function* () {
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
+    if (relaxSaasGuardForDev("BillingConfig")) return;
     yield* Settings; // sequence after loadSettings warms the in-process cache
 
     // Gate on Stripe being configured at all. A SaaS region can legitimately
@@ -1542,6 +1589,7 @@ export const McpSpineGuardLive: Layer.Layer<never, McpSpineIncoherentError, Conf
   Effect.gen(function* () {
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
+    if (relaxSaasGuardForDev("McpSpine")) return;
     yield* Migration; // mcp_action_policy created by migration 0134 — order after migrations
 
     // ── Check 1 (FAIL BOOT): OAuth valid-audiences derivable ─────────────

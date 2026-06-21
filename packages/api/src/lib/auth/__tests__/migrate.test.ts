@@ -401,6 +401,9 @@ describe("migrateAuthTables", () => {
             // 0146 adds the agent_runs parked⟺parked_reason CHECK (#3748),
             // Atlas-internal — runs in every auth mode.
             { name: "0146_agent_runs_parked_reason_check.sql" },
+            // 0147 updates the elasticsearch plugin_catalog config_schema
+            // (Atlas-internal data migration) — runs in every auth mode.
+            { name: "0147_elasticsearch_auth_mode_selector_config_schema.sql" },
           ],
         };
       }

@@ -100,6 +100,24 @@ const okRoute = createRoute({
   },
 });
 
+// Self-contained `ATLAS_DEPLOY_ENV` override — `resolveDeployEnv()` reads it live,
+// so the dev-bypass tests below can flip it per case without top-level mutation.
+// Restores the prior value (or deletes it) so no case leaks env to the next.
+async function withDeployEnv(
+  value: string | undefined,
+  run: () => Promise<void> | void,
+): Promise<void> {
+  const saved = process.env.ATLAS_DEPLOY_ENV;
+  if (value === undefined) delete process.env.ATLAS_DEPLOY_ENV;
+  else process.env.ATLAS_DEPLOY_ENV = value;
+  try {
+    await run();
+  } finally {
+    if (saved === undefined) delete process.env.ATLAS_DEPLOY_ENV;
+    else process.env.ATLAS_DEPLOY_ENV = saved;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -584,5 +602,68 @@ describe("shouldRequireMfaForAuthResult helper", () => {
         },
       }),
     ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ATLAS_DEPLOY_ENV=development dev bypass (mfaGateDisabledForDevEnv).
+// Both enforcement paths skip the gate ONLY when the deploy env is development,
+// so a fresh local admin isn't locked out before enrolling a factor — and a
+// real region (production/staging) still enforces. Keyed on deploy ENV, never
+// MODE: self-hosted production must still gate.
+// ---------------------------------------------------------------------------
+
+describe("development dev-env bypass", () => {
+  const unenrolledAdmin = () =>
+    fakeAuthResult({ role: "admin", twoFactorEnabled: false, passkeyCount: 0 });
+
+  it("middleware passes an un-enrolled admin through in development", async () => {
+    await withDeployEnv("development", async () => {
+      const app = new OpenAPIHono<AuthEnv>();
+      injectAuth(app, unenrolledAdmin());
+      app.use(mfaRequired);
+      app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
+
+      const res = await app.request("/admin/anything");
+      expect(res.status).toBe(200);
+    });
+  });
+
+  it("middleware STILL gates the same admin in production (the default)", async () => {
+    await withDeployEnv("production", async () => {
+      const app = new OpenAPIHono<AuthEnv>();
+      injectAuth(app, unenrolledAdmin());
+      app.use(mfaRequired);
+      app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
+
+      const res = await app.request("/admin/anything");
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("mfa_enrollment_required");
+    });
+  });
+
+  it("middleware STILL gates the same admin in staging (a real region)", async () => {
+    await withDeployEnv("staging", async () => {
+      const app = new OpenAPIHono<AuthEnv>();
+      injectAuth(app, unenrolledAdmin());
+      app.use(mfaRequired);
+      app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
+
+      const res = await app.request("/admin/anything");
+      expect(res.status).toBe(403);
+    });
+  });
+
+  it("shouldRequireMfaForAuthResult returns false in development for an un-enrolled admin", async () => {
+    await withDeployEnv("development", () => {
+      expect(shouldRequireMfaForAuthResult(unenrolledAdmin())).toBe(false);
+    });
+  });
+
+  it("shouldRequireMfaForAuthResult STILL returns true in production for an un-enrolled admin", async () => {
+    await withDeployEnv("production", () => {
+      expect(shouldRequireMfaForAuthResult(unenrolledAdmin())).toBe(true);
+    });
   });
 });

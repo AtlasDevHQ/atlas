@@ -155,6 +155,8 @@ bun run atlas -- diff    # Compare DB schema vs semantic layer
 
 **Quick start:** `bun install` → `cp .env.example .env` → `bun run db:up` → `bun run atlas -- init` → `bun run dev`. Dev admin: **admin@useatlas.dev / atlas-dev**.
 
+> **Local dev runs either deploy mode; `self-hosted` is the trivial default.** `.env` ships `ATLAS_DEPLOY_MODE=self-hosted` + `ATLAS_DEPLOY_ENV=development`. With `development` set, even an unset/`auto` deploy mode now resolves to `self-hosted` (`resolveDeployMode`), so a missing value no longer face-plants the API onto the SaaS-only boot guards. To dev against the SaaS code path, set `ATLAS_DEPLOY_MODE=saas`: in `development` env the SaaS fail-closed boot guards (Turnstile #3795, rate-limit RPM #1983, billing, MCP spine, …) **relax to a no-op** (`relaxSaasGuardForDev` in `saas-guards.ts`) so it boots against your real local `.env` without the prod-only secrets — an **intentional local-dev footgun, gated solely on `development`; never set `ATLAS_DEPLOY_ENV=development` on a customer-facing deploy.** Don't set deploy vars on the `bun run dev` command line (the wrapper subshell drops them); they belong in `.env`. Full runbook + the `VERCEL_*`-breaks-sandbox-tests caveat: [docs/development/local-development.md](docs/development/local-development.md).
+
 ### Operator subcommands (destructive)
 
 The atlas-cli exposes a tenant-data operator surface (promoted from the gitignored `internal/` in #2635). All target the tenant DB at `ATLAS_TEAM_PG_URL` (falling back to `DATABASE_URL`).

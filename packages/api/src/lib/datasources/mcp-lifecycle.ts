@@ -556,11 +556,28 @@ export async function loadProvisionConfigFields(
       key: f.key,
       label: f.label ?? f.key,
       ...(f.description !== undefined ? { description: f.description } : {}),
-      required: f.required === true,
+      // A `showWhen`-gated field is only conditionally required: the admin form's
+      // superRefine enforces required-only-when-visible. The flat MCP elicitation
+      // has no conditional-visibility mechanism, so forwarding `required: true`
+      // would demand every auth branch's credentials at once and make any
+      // non-default mode (apiKey / sigv4 / none) impossible to provision. Drop
+      // `required` for gated fields — the user supplies whatever their mode needs.
+      required: f.required === true && !f.showWhen,
       secret,
       // Carry select options + default so the masked form renders a dropdown
       // (with its default) rather than collapsing every field to free text.
-      ...(Array.isArray(f.options) && f.options.length > 0 ? { options: f.options } : {}),
+      // Normalize `{ value, label }` options to their stored values — the masked
+      // MCP elicitation collects values, and `ProvisionConfigField.options` is a
+      // value list (labels are an admin-form nicety the MCP edge doesn't need).
+      // `o?.value` + the string filter guard a malformed JSONB entry (a `null`
+      // element is `typeof "object"`, so a bare `o.value` would throw).
+      ...(Array.isArray(f.options) && f.options.length > 0
+        ? {
+            options: f.options
+              .map((o) => (typeof o === "string" ? o : o?.value))
+              .filter((v): v is string => typeof v === "string"),
+          }
+        : {}),
       ...(typeof f.default === "string" ? { default: f.default } : {}),
     });
   }

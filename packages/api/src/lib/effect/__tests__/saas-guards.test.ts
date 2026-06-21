@@ -213,10 +213,17 @@ const { SAAS_ENV_KEYS } = await import("../saas-env");
 // still inspects the raw `process.env.ATLAS_DEPLOY_MODE` and several cases
 // below set it — so they must still be cleaned between cases to keep the
 // "succeeds when …" assertions from passing for the wrong reason.
+// `ATLAS_DEPLOY_ENV` is cleaned too: the dev-env relaxation (`relaxSaasGuardForDev`)
+// turns the fail-closed guards into no-ops when it reads `development`, so a
+// leaked value (e.g. bun auto-loading the repo-root `.env`, which ships
+// `ATLAS_DEPLOY_ENV=development`) would flip every "fails boot in SaaS" assertion
+// below to a false pass. Deleting it pins `resolveDeployEnv()` to its `production`
+// default for every guard test unless the case sets it explicitly.
 const GUARD_ENV_KEYS = [
   ...SAAS_ENV_KEYS,
   "ATLAS_DEPLOY_MODE",
   "ATLAS_ENTERPRISE_ENABLED",
+  "ATLAS_DEPLOY_ENV",
 ] as const;
 
 function withCleanEnv<T>(run: () => Promise<T>): Promise<T> {
@@ -2040,6 +2047,145 @@ describe("McpSpineGuardLive", () => {
       // because the guard only enforces spine coherence in SaaS.
       mockPolicyStoreThrows = true;
       const exit = await runMcpGuard("self-hosted");
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  Dev-env relaxation (relaxSaasGuardForDev)
+// ══════════════════════════════════════════════════════════════════════
+//
+// Local-dev escape hatch: when `ATLAS_DEPLOY_MODE=saas` AND
+// `ATLAS_DEPLOY_ENV=development`, the fail-closed "missing prod infra" guards
+// relax to a no-op so the SaaS code path boots locally without the prod-only
+// secrets. Gated SOLELY on the deploy env being `development` — `production`
+// (the default, pinned by `withCleanEnv` deleting the key) still fails closed.
+describe("relaxSaasGuardForDev (ATLAS_DEPLOY_ENV=development)", () => {
+  test("RateLimitGuard: relaxes in saas+development with ATLAS_RATE_LIMIT_RPM unset", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_DEPLOY_ENV = "development";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RateLimitGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("TurnstileGuard: relaxes in saas+development with TURNSTILE_SECRET_KEY unset", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_DEPLOY_ENV = "development";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            TurnstileGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  // The remaining five guards that opt into `relaxSaasGuardForDev` — each fed the
+  // exact misconfig that fails boot in its own describe block, now proven to no-op
+  // under `development`. (The ENFORCE path for each is that same "fails boot in
+  // SaaS" test, which runs at the `production` default `withCleanEnv` pins.)
+  test("ProviderKeyGuard: relaxes in saas+development when the gateway key is missing", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_DEPLOY_MODE = "saas"; // getDefaultProvider() → gateway → needs AI_GATEWAY_API_KEY
+      process.env.ATLAS_DEPLOY_ENV = "development";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ProviderKeyGuardLive.pipe(Layer.provide(makeTestConfigLayer({ deployMode: "saas" }))),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("ProactiveProviderKeyGuard: relaxes in saas+development when the gateway key is missing", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_DEPLOY_MODE = "saas";
+      process.env.ATLAS_DEPLOY_ENV = "development";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ProactiveProviderKeyGuardLive.pipe(
+              Layer.provide(
+                Layer.merge(makeTestConfigLayer({ deployMode: "saas" }), makeTestSettingsLayer()),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("ChatAdapterEnvGuard: relaxes in saas+development when a chat adapter's env is missing", async () => {
+    await withCleanEnv(async () => {
+      setSlackEnv({ SLACK_ENCRYPTION_KEY: undefined }); // the #2672 fail-boot shape
+      process.env.ATLAS_DEPLOY_ENV = "development";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatGuardWithMigration.pipe(
+              Layer.provide(
+                makeTestConfigLayer({
+                  deployMode: "saas",
+                  catalog: [
+                    {
+                      slug: "slack",
+                      type: "chat",
+                      install_model: "oauth",
+                      enabled: true,
+                      saas_eligible: true,
+                    },
+                  ],
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("BillingConfigGuard: relaxes in saas+development with a STRIPE_WEBHOOK_SECRET gap", async () => {
+    await withCleanEnv(() =>
+      withBillingEnv(
+        {
+          STRIPE_SECRET_KEY: "sk_test_abc",
+          STRIPE_STARTER_PRICE_ID: "price_starter",
+          STRIPE_PRO_PRICE_ID: "price_pro",
+          STRIPE_BUSINESS_PRICE_ID: "price_business",
+          // STRIPE_WEBHOOK_SECRET deliberately absent — fails boot in prod (see above)
+        },
+        async () => {
+          process.env.ATLAS_DEPLOY_ENV = "development";
+          const exit = await runBillingGuard("saas");
+          expect(Exit.isSuccess(exit)).toBe(true);
+        },
+      ),
+    );
+  });
+
+  test("McpSpineGuard: relaxes in saas+development when no OAuth audiences are derivable", async () => {
+    await withMcpEnv(async () => {
+      // No ATLAS_PUBLIC_API_URL / audiences set → fails boot in prod (see above).
+      process.env.ATLAS_DEPLOY_ENV = "development";
+      const exit = await runMcpGuard("saas");
       expect(Exit.isSuccess(exit)).toBe(true);
     });
   });

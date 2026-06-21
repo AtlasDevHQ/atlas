@@ -88,11 +88,31 @@ export interface ElasticsearchSigV4Auth {
   service: string;
 }
 
+/**
+ * No-auth descriptor — for clusters running with security disabled (a common
+ * dev / self-hosted OpenSearch + Elasticsearch setup). Selected only by an
+ * explicit `authMode: "none"`, never inferred, so a config that simply forgot
+ * its credentials still fails loudly rather than connecting anonymously.
+ */
+export interface ElasticsearchNoAuth {
+  mode: "none";
+}
+
 /** Resolved auth descriptor — picked from config presence by {@link resolveAuth}. */
 export type ElasticsearchAuthDescriptor =
+  | ElasticsearchNoAuth
   | ElasticsearchApiKeyAuth
   | ElasticsearchBasicAuth
   | ElasticsearchSigV4Auth;
+
+/**
+ * Auth-mode selector. The ONLY value {@link resolveAuth} acts on is `"none"` —
+ * the sole way to reach a security-disabled cluster. For `apiKey`/`basic`/`sigv4`
+ * the resolver still infers the mode from whichever credentials are present (it
+ * does not cross-check them against `authMode`); those values exist to drive the
+ * admin form's progressive-disclosure field visibility, not the resolver.
+ */
+export type ElasticsearchAuthMode = "none" | "apiKey" | "basic" | "sigv4";
 
 /**
  * Raw plugin config (the shape an operator writes / the admin form stores).
@@ -104,6 +124,13 @@ export type ElasticsearchAuthDescriptor =
  * config schema — encrypted at rest.
  */
 export interface ElasticsearchPluginConfig {
+  /**
+   * Auth-mode selector. `"none"` is the only value the resolver acts on — the
+   * sole way to select a security-disabled cluster. For `apiKey`/`basic`/`sigv4`
+   * the mode is still inferred from whichever credentials are present (these
+   * values drive the admin form's field visibility, not {@link resolveAuth}).
+   */
+  authMode?: ElasticsearchAuthMode;
   /** `elasticsearch://` or `opensearch://` host[:port][/prefix]. HTTPS by default; `?ssl=false` → HTTP. */
   url?: string;
   /** Elastic Cloud ID (`name:base64`) — decoded to the cluster endpoint. Alternative to `url`. */
@@ -577,6 +604,14 @@ export function resolveAuth(
   const password = typeof config.password === "string" ? config.password : "";
   const awsRegion = typeof config.awsRegion === "string" ? config.awsRegion.trim() : "";
 
+  // 0. Explicit no-auth — for a cluster with security disabled. Only an
+  // explicit `authMode: "none"` reaches it; it is never inferred, so a config
+  // that merely forgot its credentials still fails loudly below rather than
+  // silently connecting anonymously.
+  if (config.authMode === "none") {
+    return { mode: "none" };
+  }
+
   // 1. AWS SigV4 — `awsRegion` is the selecting signal. The ambient AWS env
   // chain is consulted only on the static-config path (`allowAmbient`); a
   // DB-stored per-workspace config must carry explicit keys (no operator-env
@@ -774,9 +809,15 @@ export function resolveElasticsearchConfig(
  * adapter-only registration). True when an endpoint source (`url`/`cloudId`) AND
  * an auth signal (`apiKey` / `username`+`password` / `awsRegion`) are present.
  * Used to decide static-connection vs SaaS per-workspace registration.
+ *
+ * Explicit `authMode: "none"` (security-disabled cluster) is itself a complete
+ * auth signal — it needs only an endpoint, mirroring `resolveAuth` step 0. A
+ * static `{ url, authMode: "none" }` in `atlas.config.ts` must register a real
+ * connection, not silently fall through to adapter-only.
  */
 export function isCompleteConnectionConfig(config: ElasticsearchPluginConfig): boolean {
   const hasEndpoint = Boolean(config.url || config.cloudId);
+  if (config.authMode === "none") return hasEndpoint;
   const hasAuth = Boolean(
     config.apiKey || (config.username && config.password) || config.awsRegion,
   );
@@ -786,6 +827,8 @@ export function isCompleteConnectionConfig(config: ElasticsearchPluginConfig): b
 /** Every secret string in a resolved auth descriptor — for error scrubbing. */
 export function collectAuthSecrets(auth: ElasticsearchAuthDescriptor): string[] {
   switch (auth.mode) {
+    case "none":
+      return [];
     case "apiKey":
       return [auth.apiKey];
     case "basic":
@@ -939,6 +982,9 @@ export function createElasticsearchClient(
     const headers: Record<string, string> = { Accept: "application/json" };
     if (body.length > 0) headers["Content-Type"] = "application/json";
     switch (auth.mode) {
+      case "none":
+        // Security-disabled cluster — send no Authorization header.
+        break;
       case "apiKey":
         headers.Authorization = `ApiKey ${auth.apiKey}`;
         break;

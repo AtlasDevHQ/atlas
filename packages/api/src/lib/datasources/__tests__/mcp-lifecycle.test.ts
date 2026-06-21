@@ -432,6 +432,108 @@ describe("loadProvisionConfigFields", () => {
     }
   });
 
+  it("normalizes {value,label} select options down to their stored values", async () => {
+    // Progressive-auth catalogs (e.g. Elasticsearch authMode) carry labeled
+    // options. The masked MCP elicitation collects values, so the {value,label}
+    // pairs must map to a bare value list — not labels, not [object Object].
+    internalRows = [
+      {
+        config_schema: [
+          {
+            key: "auth_kind",
+            type: "select",
+            label: "Authentication",
+            required: true,
+            options: [
+              { value: "basic", label: "Username & password" },
+              { value: "apikey", label: "API key" },
+              { value: "none", label: "No auth" },
+            ],
+            default: "basic",
+          },
+        ],
+      },
+    ];
+    const res = await loadProvisionConfigFields("openapi-generic");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      const authKind = res.fields.find((f) => f.key === "auth_kind");
+      expect(authKind?.options).toEqual(["basic", "apikey", "none"]);
+      expect(authKind?.default).toBe("basic");
+    }
+  });
+
+  it("drops `required` from showWhen-gated fields (the flat MCP form can't gate)", async () => {
+    // Progressive-auth schemas mark credentials required only under their
+    // showWhen gate. The flat MCP elicitation has no conditional visibility, so
+    // forwarding required:true would demand every auth branch's creds at once
+    // and make any non-default mode impossible to provision. Gated fields must
+    // surface optional; an ungated required field stays required.
+    internalRows = [
+      {
+        config_schema: [
+          {
+            key: "authMode",
+            type: "select",
+            label: "Authentication",
+            required: true,
+            options: [
+              { value: "basic", label: "Username & password" },
+              { value: "apiKey", label: "API key" },
+            ],
+          },
+          {
+            key: "username",
+            type: "string",
+            label: "Username",
+            required: true,
+            showWhen: { field: "authMode", equals: ["basic"] },
+          },
+          {
+            key: "apiKey",
+            type: "string",
+            label: "API key",
+            required: true,
+            secret: true,
+            showWhen: { field: "authMode", equals: ["apiKey"] },
+          },
+        ],
+      },
+    ];
+    const res = await loadProvisionConfigFields("openapi-generic");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      expect(res.fields.find((f) => f.key === "authMode")?.required).toBe(true);
+      expect(res.fields.find((f) => f.key === "username")?.required).toBe(false);
+      expect(res.fields.find((f) => f.key === "apiKey")?.required).toBe(false);
+    }
+  });
+
+  it("filters a malformed null option entry instead of throwing on null.value", async () => {
+    // A JSONB options array can carry a null (typeof null === "object"), so a
+    // bare o.value would throw — the normalization must drop non-string results.
+    internalRows = [
+      {
+        config_schema: [
+          {
+            key: "auth_kind",
+            type: "select",
+            label: "Authentication",
+            options: ["bearer", null, { value: "basic", label: "Basic" }],
+          },
+        ],
+      },
+    ];
+    const res = await loadProvisionConfigFields("openapi-generic");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      expect(res.fields.find((f) => f.key === "auth_kind")?.options).toEqual([
+        "bearer",
+        "basic",
+      ]);
+    }
+  });
+
   it("returns not_found when the catalog row is missing", async () => {
     internalRows = [];
     const res = await loadProvisionConfigFields("nope");

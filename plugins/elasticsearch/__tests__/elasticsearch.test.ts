@@ -2137,11 +2137,18 @@ describe("isCompleteConnectionConfig", () => {
     expect(isCompleteConnectionConfig({ cloudId: "n:abc", apiKey: API_KEY })).toBe(true);
   });
 
+  test("true for explicit no-auth with only an endpoint (security-disabled cluster)", () => {
+    expect(isCompleteConnectionConfig({ url: VALID_URL, authMode: "none" })).toBe(true);
+    expect(isCompleteConnectionConfig({ cloudId: "n:abc", authMode: "none" })).toBe(true);
+  });
+
   test("false without an endpoint or without auth", () => {
     expect(isCompleteConnectionConfig({ url: VALID_URL })).toBe(false);
     expect(isCompleteConnectionConfig({ apiKey: API_KEY })).toBe(false);
     expect(isCompleteConnectionConfig({})).toBe(false);
     expect(isCompleteConnectionConfig({ url: VALID_URL, username: "u" })).toBe(false);
+    // Explicit no-auth still needs an endpoint — authMode alone is not complete.
+    expect(isCompleteConnectionConfig({ authMode: "none" })).toBe(false);
   });
 });
 
@@ -2158,6 +2165,11 @@ describe("static-config wiring across auth modes", () => {
       awsAccessKeyId: "AKID",
       awsSecretAccessKey: "secret",
     });
+    expect(typeof plugin.connection.create).toBe("function");
+  });
+
+  test("wires connection.create for an explicit no-auth static config", () => {
+    const plugin = elasticsearchPlugin({ url: VALID_URL, authMode: "none" });
     expect(typeof plugin.connection.create).toBe("function");
   });
 

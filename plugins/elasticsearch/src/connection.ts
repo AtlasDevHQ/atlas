@@ -806,9 +806,15 @@ export function resolveElasticsearchConfig(
  * adapter-only registration). True when an endpoint source (`url`/`cloudId`) AND
  * an auth signal (`apiKey` / `username`+`password` / `awsRegion`) are present.
  * Used to decide static-connection vs SaaS per-workspace registration.
+ *
+ * Explicit `authMode: "none"` (security-disabled cluster) is itself a complete
+ * auth signal — it needs only an endpoint, mirroring `resolveAuth` step 0. A
+ * static `{ url, authMode: "none" }` in `atlas.config.ts` must register a real
+ * connection, not silently fall through to adapter-only.
  */
 export function isCompleteConnectionConfig(config: ElasticsearchPluginConfig): boolean {
   const hasEndpoint = Boolean(config.url || config.cloudId);
+  if (config.authMode === "none") return hasEndpoint;
   const hasAuth = Boolean(
     config.apiKey || (config.username && config.password) || config.awsRegion,
   );

@@ -257,16 +257,24 @@ describe("buildZodSchema — optional select left unselected", () => {
     expect(schema.safeParse({ engine: "" }).success).toBe(false);
   });
 
-  // Full pipeline at the seam where #3845 actually lived: buildDefaultValues
-  // seeds the undefaulted optional select as "", the schema must accept that ""
-  // (regression), and buildSubmitPayload must drop the empty engine — so an
-  // untouched engine never reaches the server, matching the "auto-detected from
-  // the URL scheme" copy. Locks all three functions together, not in isolation.
+  // Full pipeline at the seam where #3845 actually lived, threaded in the REAL
+  // production order: buildDefaultValues seeds the undefaulted optional select as
+  // "", the schema (regression) accepts it AND its transform yields undefined,
+  // and buildSubmitPayload drops the engine. Critically, react-hook-form's
+  // zodResolver fires the transform BEFORE handleSubmit, so production passes
+  // buildSubmitPayload the PARSED output ({ engine: undefined }), not the raw ""
+  // — feeding parsed.data here exercises the undefined-drop branch the app hits,
+  // not the "" branch. So an untouched engine never reaches the server, matching
+  // the "auto-detected from the URL scheme" copy.
   test("untouched optional engine: default → schema → payload drops it end-to-end", () => {
     const defaults = buildDefaultValues([ENGINE_FIELD]);
     expect(defaults).toEqual({ engine: "" });
     const schema = buildZodSchema([ENGINE_FIELD]);
-    expect(schema.safeParse(defaults).success).toBe(true);
-    expect(buildSubmitPayload([ENGINE_FIELD], defaults)).toEqual({});
+    const parsed = schema.safeParse(defaults);
+    expect(parsed.success).toBe(true);
+    // The transform the resolver applies before handleSubmit sees the values.
+    expect(parsed.success && parsed.data).toEqual({ engine: undefined });
+    // buildSubmitPayload receives the parsed output in production, not raw "".
+    expect(buildSubmitPayload([ENGINE_FIELD], parsed.success ? parsed.data : defaults)).toEqual({});
   });
 });

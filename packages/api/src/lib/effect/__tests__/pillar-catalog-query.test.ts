@@ -113,6 +113,45 @@ describe("projectCatalogWithInstalls", () => {
       expect(result[0]!.state).toBe("accessible");
     });
 
+    it("self-hosted deploys bypass the plan gate even for above-plan rows", () => {
+      // SaaS `min_plan` gates must never block a datasource on a self-hosted
+      // deploy — self-hosted is always free (CLAUDE.md). A separate bypass
+      // signal from isOperator, ORed into the same gate.
+      const salesforce = makeEntry({
+        id: "catalog:salesforce",
+        slug: "salesforce",
+        minPlan: "business",
+        type: "integration",
+        pillar: "action",
+      });
+      const result = projectCatalogWithInstalls({
+        catalog: [salesforce],
+        installs: [],
+        plan: { planTier: "starter", isOperator: false, selfHosted: true },
+      });
+      expect(result[0]!.planAccessible).toBe(true);
+      expect(result[0]!.state).toBe("accessible");
+    });
+
+    it("selfHosted=false (SaaS) keeps the plan gate active for above-plan rows", () => {
+      // The negative half: a SaaS workspace with the flag explicitly false must
+      // still see the gate, proving the bypass rides on selfHosted, not a leak.
+      const salesforce = makeEntry({
+        id: "catalog:salesforce",
+        slug: "salesforce",
+        minPlan: "business",
+        type: "integration",
+        pillar: "action",
+      });
+      const result = projectCatalogWithInstalls({
+        catalog: [salesforce],
+        installs: [],
+        plan: { planTier: "starter", isOperator: false, selfHosted: false },
+      });
+      expect(result[0]!.planAccessible).toBe(false);
+      expect(result[0]!.state).toBe("upgrade_required");
+    });
+
     it("unknown min_plan values fail closed to upgrade_required", () => {
       const drift = makeEntry({ minPlan: "platinum" });
       const result = projectCatalogWithInstalls({

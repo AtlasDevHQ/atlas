@@ -108,10 +108,11 @@ const log = createLogger("effect:saas-guards");
  *
  * Gated SOLELY on the deploy *env* being `development` — a coherent single gate:
  * a `development` deploy is ALREADY in dev shape across the board (email
- * verification off, onboarding emails off, admin-MFA gate off — see
- * `env-profile.ts`), so relaxing the boot guards is consistent with it. The only
- * footgun is setting `ATLAS_DEPLOY_ENV=development` on a customer-facing deploy —
- * which would already have disabled those other protections too, and which a
+ * verification off + onboarding emails off via `env-profile.ts`; admin-MFA gate
+ * off via `admin-mfa-required.ts`), so relaxing the boot guards is consistent
+ * with it. The only footgun is setting `ATLAS_DEPLOY_ENV=development` on a
+ * customer-facing deploy — which would already have disabled those other
+ * protections too, and which a
  * real region never does (it sets `production` or leaves it unset, and pins
  * `deployMode` in `deploy/api/atlas.config.ts`, #3702). Each relaxation logs a
  * loud per-guard warning so it can never pass silently.

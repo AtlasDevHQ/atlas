@@ -313,6 +313,37 @@ describe("migration 0093 and seed module stay aligned", () => {
     expect(convergeSql).toMatch(/saas_eligible\s*=\s*false/i);
     expect(convergeSql).toMatch(/WHERE\s+slug\s*=\s*'duckdb'/i);
   });
+
+  it("migration 0147 config_schema matches the seed's elasticsearch row exactly (#3841)", () => {
+    // The elasticsearch progressive-auth schema lives in two places: migration
+    // 0147 (the UPDATE that converges existing deploys) and the seed module's
+    // row (the fresh-deploy / delete-and-self-heal re-insert). They must express
+    // identical JSON — otherwise a converged deploy and a fresh deploy render
+    // different install forms. 0147's header explicitly promises this mirror.
+    const sql0147 = readFileSync(
+      join(
+        import.meta.dir,
+        "..",
+        "migrations",
+        "0147_elasticsearch_auth_mode_selector_config_schema.sql",
+      ),
+      "utf8",
+    );
+    const match = sql0147.match(/config_schema\s*=\s*'([\s\S]*?)'::jsonb/);
+    expect(match).not.toBeNull();
+    const migrationSchema = JSON.parse(match![1]!);
+
+    const seedRow = BUILTIN_DATASOURCE_CATALOG_ROWS.find(
+      (r) => r.slug === "elasticsearch",
+    );
+    expect(seedRow).toBeDefined();
+    // Deep structural equality — field order, select options, showWhen rules,
+    // and secret flags all have to line up. JSON round-trip normalizes the seed
+    // row's readonly TS shape to plain JSON for an exact compare.
+    expect(migrationSchema).toEqual(
+      JSON.parse(JSON.stringify(seedRow!.configSchema)),
+    );
+  });
 });
 
 describe("runBuiltinDatasourceCatalogSeedBoot (discriminated outcomes)", () => {

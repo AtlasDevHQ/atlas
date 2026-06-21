@@ -418,6 +418,24 @@ describe("createElasticsearchClient", () => {
     expect(headers?.Accept).toBe("application/json");
   });
 
+  test("ping issues NO Authorization header for an explicit no-auth (authMode:'none') config", async () => {
+    // The security-load-bearing behavior of a security-disabled cluster: the
+    // request carries no Authorization at all (anonymous), while Accept stays.
+    let capturedInit: RequestInit | undefined;
+    const fetchImpl = mock(async (_url: string, init: RequestInit) => {
+      capturedInit = init;
+      return fetchResponse(CLUSTER_INFO_BODY);
+    });
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, authMode: "none" }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    await client.ping();
+    const headers = capturedInit?.headers as Record<string, string>;
+    expect(headers?.Authorization).toBeUndefined();
+    expect(headers?.Accept).toBe("application/json");
+  });
+
   test("ping rejects with a timeout error when the request exceeds timeoutMs", async () => {
     // A fetch that only ever settles by honoring the abort signal — exercises the
     // AbortController + setTimeout timeout branch.

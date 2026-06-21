@@ -106,9 +106,11 @@ export type ElasticsearchAuthDescriptor =
   | ElasticsearchSigV4Auth;
 
 /**
- * Explicit auth-mode selector. When set, it pins the auth strategy (and is the
- * only way to reach `none`); when absent, {@link resolveAuth} infers the mode
- * from whichever credentials are present (the legacy static-config behavior).
+ * Auth-mode selector. The ONLY value {@link resolveAuth} acts on is `"none"` —
+ * the sole way to reach a security-disabled cluster. For `apiKey`/`basic`/`sigv4`
+ * the resolver still infers the mode from whichever credentials are present (it
+ * does not cross-check them against `authMode`); those values exist to drive the
+ * admin form's progressive-disclosure field visibility, not the resolver.
  */
 export type ElasticsearchAuthMode = "none" | "apiKey" | "basic" | "sigv4";
 
@@ -123,9 +125,10 @@ export type ElasticsearchAuthMode = "none" | "apiKey" | "basic" | "sigv4";
  */
 export interface ElasticsearchPluginConfig {
   /**
-   * Explicit auth strategy. When set, pins the mode (and is the only way to
-   * select `none` for a security-disabled cluster); when omitted, the mode is
-   * inferred from whichever credentials are present.
+   * Auth-mode selector. `"none"` is the only value the resolver acts on — the
+   * sole way to select a security-disabled cluster. For `apiKey`/`basic`/`sigv4`
+   * the mode is still inferred from whichever credentials are present (these
+   * values drive the admin form's field visibility, not {@link resolveAuth}).
    */
   authMode?: ElasticsearchAuthMode;
   /** `elasticsearch://` or `opensearch://` host[:port][/prefix]. HTTPS by default; `?ssl=false` → HTTP. */

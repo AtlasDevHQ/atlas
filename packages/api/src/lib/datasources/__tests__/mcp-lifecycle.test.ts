@@ -432,6 +432,37 @@ describe("loadProvisionConfigFields", () => {
     }
   });
 
+  it("normalizes {value,label} select options down to their stored values", async () => {
+    // Progressive-auth catalogs (e.g. Elasticsearch authMode) carry labeled
+    // options. The masked MCP elicitation collects values, so the {value,label}
+    // pairs must map to a bare value list — not labels, not [object Object].
+    internalRows = [
+      {
+        config_schema: [
+          {
+            key: "auth_kind",
+            type: "select",
+            label: "Authentication",
+            required: true,
+            options: [
+              { value: "basic", label: "Username & password" },
+              { value: "apikey", label: "API key" },
+              { value: "none", label: "No auth" },
+            ],
+            default: "basic",
+          },
+        ],
+      },
+    ];
+    const res = await loadProvisionConfigFields("openapi-generic");
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") {
+      const authKind = res.fields.find((f) => f.key === "auth_kind");
+      expect(authKind?.options).toEqual(["basic", "apikey", "none"]);
+      expect(authKind?.default).toBe("basic");
+    }
+  });
+
   it("returns not_found when the catalog row is missing", async () => {
     internalRows = [];
     const res = await loadProvisionConfigFields("nope");

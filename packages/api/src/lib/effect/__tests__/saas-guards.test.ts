@@ -2094,21 +2094,99 @@ describe("relaxSaasGuardForDev (ATLAS_DEPLOY_ENV=development)", () => {
     });
   });
 
-  // The gate is precise: a non-development deploy env still fails closed, so a
-  // mis-set `ATLAS_DEPLOY_ENV` (e.g. `staging`) on a real region never relaxes.
-  test("does NOT relax in saas+staging — Turnstile still fails closed", async () => {
+  // The remaining five guards that opt into `relaxSaasGuardForDev` — each fed the
+  // exact misconfig that fails boot in its own describe block, now proven to no-op
+  // under `development`. (The ENFORCE path for each is that same "fails boot in
+  // SaaS" test, which runs at the `production` default `withCleanEnv` pins.)
+  test("ProviderKeyGuard: relaxes in saas+development when the gateway key is missing", async () => {
     await withCleanEnv(async () => {
-      process.env.ATLAS_DEPLOY_ENV = "staging";
+      process.env.ATLAS_DEPLOY_MODE = "saas"; // getDefaultProvider() → gateway → needs AI_GATEWAY_API_KEY
+      process.env.ATLAS_DEPLOY_ENV = "development";
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
           Effect.provide(
-            TurnstileGuardLive.pipe(
-              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ProviderKeyGuardLive.pipe(Layer.provide(makeTestConfigLayer({ deployMode: "saas" }))),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("ProactiveProviderKeyGuard: relaxes in saas+development when the gateway key is missing", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_DEPLOY_MODE = "saas";
+      process.env.ATLAS_DEPLOY_ENV = "development";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ProactiveProviderKeyGuardLive.pipe(
+              Layer.provide(
+                Layer.merge(makeTestConfigLayer({ deployMode: "saas" }), makeTestSettingsLayer()),
+              ),
             ),
           ),
         ),
       );
-      expect(Exit.isFailure(exit)).toBe(true);
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("ChatAdapterEnvGuard: relaxes in saas+development when a chat adapter's env is missing", async () => {
+    await withCleanEnv(async () => {
+      setSlackEnv({ SLACK_ENCRYPTION_KEY: undefined }); // the #2672 fail-boot shape
+      process.env.ATLAS_DEPLOY_ENV = "development";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatGuardWithMigration.pipe(
+              Layer.provide(
+                makeTestConfigLayer({
+                  deployMode: "saas",
+                  catalog: [
+                    {
+                      slug: "slack",
+                      type: "chat",
+                      install_model: "oauth",
+                      enabled: true,
+                      saas_eligible: true,
+                    },
+                  ],
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("BillingConfigGuard: relaxes in saas+development with a STRIPE_WEBHOOK_SECRET gap", async () => {
+    await withCleanEnv(() =>
+      withBillingEnv(
+        {
+          STRIPE_SECRET_KEY: "sk_test_abc",
+          STRIPE_STARTER_PRICE_ID: "price_starter",
+          STRIPE_PRO_PRICE_ID: "price_pro",
+          STRIPE_BUSINESS_PRICE_ID: "price_business",
+          // STRIPE_WEBHOOK_SECRET deliberately absent — fails boot in prod (see above)
+        },
+        async () => {
+          process.env.ATLAS_DEPLOY_ENV = "development";
+          const exit = await runBillingGuard("saas");
+          expect(Exit.isSuccess(exit)).toBe(true);
+        },
+      ),
+    );
+  });
+
+  test("McpSpineGuard: relaxes in saas+development when no OAuth audiences are derivable", async () => {
+    await withMcpEnv(async () => {
+      // No ATLAS_PUBLIC_API_URL / audiences set → fails boot in prod (see above).
+      process.env.ATLAS_DEPLOY_ENV = "development";
+      const exit = await runMcpGuard("saas");
+      expect(Exit.isSuccess(exit)).toBe(true);
     });
   });
 });

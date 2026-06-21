@@ -139,8 +139,9 @@ const ElasticsearchFieldsSchema = z.object({
     .optional(),
   /** Explicit engine override; wins over the URL scheme. */
   engine: z.enum(["elasticsearch", "opensearch"]).optional(),
-  /** Explicit auth strategy; the only way to select `none`. When omitted, the
-   *  mode is inferred from whichever credentials are present. */
+  /** Auth-mode selector. `none` is the only value the resolver acts on (the sole
+   *  way to select a security-disabled cluster); `apiKey`/`basic`/`sigv4` are
+   *  inferred from the credentials present and exist to drive the admin form. */
   authMode: z.enum(["none", "apiKey", "basic", "sigv4"]).optional(),
   /** API-key auth. Base64-encoded key. Secret — encrypted at rest. */
   apiKey: z.string().min(1, "Elasticsearch apiKey must not be empty").optional(),

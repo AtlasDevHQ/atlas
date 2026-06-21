@@ -352,10 +352,23 @@ health.openapi(healthRoute, async (c) => {
 
     const warnings = [...getStartupWarnings()];
 
-    // Per-source health from ConnectionRegistry
+    // Per-source health from ConnectionRegistry. The bare `describe()`
+    // enumerates only native/bare pools; published plugin datasources
+    // (clickhouse / snowflake / bigquery / elasticsearch) register in a
+    // separate per-workspace map, so we union them in via
+    // `describeAllWorkspacePlugins()` — otherwise the operator fleet view (and
+    // the `NN / NN live` count) silently omitted them (#3844). The breakdown is
+    // operator-gated below (#3685); anonymous callers are stripped to the
+    // region's own `default` (or nothing if none is registered).
     let sourcesSection: Record<string, { status: string; latencyMs?: number; message?: string; checkedAt?: string; dbType: string }> | undefined;
     try {
-      const connMeta = connRegistry2.describe();
+      // Plugin pools first, bare entries last: on a NON-`default` install_id
+      // collision the bare entry's cached health wins the last write into
+      // `sourcesSection[meta.id]`. (`default` is protected independently by the
+      // live-probe precedence below — `liveStatus ?? h?.status` — not by this
+      // order.) Plugin install_ids are clickhouse/snowflake/etc., so a collision
+      // with a bare entry is rare in practice.
+      const connMeta = [...connRegistry2.describeAllWorkspacePlugins(), ...connRegistry2.describe()];
       if (connMeta.length > 0) {
         sourcesSection = {};
         for (const meta of connMeta) {

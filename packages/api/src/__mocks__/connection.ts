@@ -32,6 +32,8 @@ export interface ConnectionsOverrides {
   getForbiddenPatterns?: AnyFn;
   list?: AnyFn;
   describe?: AnyFn;
+  describeForWorkspace?: AnyFn;
+  describeAllWorkspacePlugins?: AnyFn;
   has?: AnyFn;
   _reset?: AnyFn;
   healthCheck?: AnyFn;
@@ -90,6 +92,14 @@ export function createConnectionMock(overrides?: ConnectionMockOverrides) {
     getParserDialect: () => undefined,
     getForbiddenPatterns: () => [] as RegExp[],
     list: () => ["default"],
+    // Default to empty so callers that spread these (admin list, /health
+    // sources, #3844) don't blow up on `undefined`. Tests that exercise the
+    // describe surface override `describe` / `describeForWorkspace`; the
+    // workspace-scoped variants default to bare `describe` so an override of
+    // just `describe` still flows through the workspace path.
+    describe: () => [],
+    describeForWorkspace: (_workspaceId: string) => connections.describe(),
+    describeAllWorkspacePlugins: () => [],
     has: () => true,
     isOrgPoolingEnabled: () => false,
     getForOrg: () => dbConn,
@@ -205,6 +215,8 @@ export function createConnectionTestLayer(
     has: () => true,
     list: () => ["default"],
     describe: () => [],
+    describeForWorkspace: () => [],
+    describeAllWorkspacePlugins: () => [],
     getDBType: () => "postgres" as const,
     getTargetHost: () => "localhost",
     getValidator: () => undefined,

@@ -309,4 +309,70 @@ describe("ConnectionRegistry — DB-stored plugin datasources (#3253 seam)", () 
     expect(registry.unregisterDirectForWorkspace("ws-1", "ch")).toBe(false);
     registry._reset();
   });
+
+  it("describe() omits per-workspace plugin pools (bare entries only)", () => {
+    // describe() is the agent/system-prompt + legacy path: it must keep
+    // enumerating ONLY bare `entries`. The workspace-scoped enumerations below
+    // are what surface plugin pools — #3844 (the admin list / health gap) is a
+    // missing union there, not a change to this method.
+    const registry = new ConnectionRegistry();
+    registry.registerDirect("warehouse", fakeConn("pg"), "postgres", "PG");
+    registry.registerDirectForWorkspace("ws-1", "ch", fakeConn("ch"), "clickhouse", "ClickHouse");
+    expect(registry.describe().map((m) => m.id)).toEqual(["warehouse"]);
+    registry._reset();
+  });
+
+  it("describeForWorkspace unions bare entries with the workspace's plugin pools", () => {
+    // #3844 — a published ClickHouse install registers ONLY in the per-workspace
+    // direct-plugin map, so the admin Connections list (which filters
+    // describe() ∩ visible install_ids) dropped it. The workspace-scoped
+    // describe surfaces it so the intersection keeps it.
+    const registry = new ConnectionRegistry();
+    registry.registerDirect("warehouse", fakeConn("pg"), "postgres", "PG");
+    registry.registerDirectForWorkspace("ws-1", "ch", fakeConn("ch"), "clickhouse", "ClickHouse");
+    const meta = registry.describeForWorkspace("ws-1");
+    const byId = new Map(meta.map((m) => [m.id, m]));
+    expect(byId.has("warehouse")).toBe(true);
+    expect(byId.get("ch")).toMatchObject({ id: "ch", dbType: "clickhouse", description: "ClickHouse" });
+    registry._reset();
+  });
+
+  it("describeForWorkspace: a workspace plugin pool wins an install_id collision with a bare entry", () => {
+    // The documented precedence: when a workspace's plugin pool shares an
+    // install_id with a bare entry (e.g. self-hosted `default`), the plugin
+    // pool is the one actually routing this workspace's queries, so the
+    // describe must surface its dbType — not the bare entry's. Guards the
+    // `byId.set` override order in describeForWorkspace.
+    const registry = new ConnectionRegistry();
+    registry.registerDirect("default", fakeConn("pg"), "postgres", "Native default");
+    registry.registerDirectForWorkspace("ws-1", "default", fakeConn("ch"), "clickhouse", "Plugin default");
+    const meta = registry.describeForWorkspace("ws-1").find((m) => m.id === "default");
+    expect(meta?.dbType).toBe("clickhouse");
+    registry._reset();
+  });
+
+  it("describeForWorkspace scopes plugin pools to the requested workspace", () => {
+    // Two workspaces share an install_id but own distinct plugin pools — each
+    // describe must surface only its own, never the sibling's.
+    const registry = new ConnectionRegistry();
+    registry.registerDirectForWorkspace("ws-a", "ch", fakeConn("a"), "clickhouse");
+    registry.registerDirectForWorkspace("ws-b", "snow", fakeConn("b"), "snowflake");
+    expect(registry.describeForWorkspace("ws-a").map((m) => m.id)).toContain("ch");
+    expect(registry.describeForWorkspace("ws-a").map((m) => m.id)).not.toContain("snow");
+    expect(registry.describeForWorkspace("ws-b").map((m) => m.id)).toContain("snow");
+    expect(registry.describeForWorkspace("ws-b").map((m) => m.id)).not.toContain("ch");
+    registry._reset();
+  });
+
+  it("describeAllWorkspacePlugins enumerates every plugin pool flat (operator /health fleet view)", () => {
+    // /health has no per-request workspace; the operator fleet view enumerates
+    // EVERY plugin pool the same way it already enumerates every bare entry.
+    const registry = new ConnectionRegistry();
+    registry.registerDirectForWorkspace("ws-a", "ch", fakeConn("a"), "clickhouse", "ClickHouse");
+    registry.registerDirectForWorkspace("ws-b", "snow", fakeConn("b"), "snowflake", "Snowflake");
+    const ids = registry.describeAllWorkspacePlugins().map((m) => m.id);
+    expect(ids).toContain("ch");
+    expect(ids).toContain("snow");
+    registry._reset();
+  });
 });

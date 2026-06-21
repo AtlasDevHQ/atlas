@@ -489,7 +489,12 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
   const { orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
-  const connList = connections.describe();
+  // Workspace-scoped describe so published plugin datasources (clickhouse /
+  // snowflake / bigquery / elasticsearch) — which register ONLY in the
+  // per-workspace direct-plugin map, never in the bare `entries` — appear in
+  // the list. Bare `describe()` omitted them, so the `visible` ∩ `connList`
+  // filter below silently dropped every plugin pool (#3844).
+  const connList = connections.describeForWorkspace(orgId);
   const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, getAtlasMode(c));
   const filtered = visible ? connList.filter((conn) => visible.has(conn.id)) : connList;
 

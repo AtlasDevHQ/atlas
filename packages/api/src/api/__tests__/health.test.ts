@@ -49,6 +49,10 @@ mock.module("@atlas/api/lib/startup", () => ({
 
 // Mutable connection metadata — tests push entries to simulate different states
 let connMetadata: ConnectionMetadata[] = [];
+// Mutable per-workspace plugin-pool metadata — the bare `describe()` omits
+// these (they live in the per-workspace direct-plugin map), so the /health
+// `sources` section unions them in via `describeAllWorkspacePlugins()` (#3844).
+let pluginMetadata: ConnectionMetadata[] = [];
 
 const mockDBConnection = {
   query: async () => ({ columns: ["?column?"], rows: [{ "?column?": 1 }] }),
@@ -63,6 +67,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
       getDefault: () => mockDBConnection,
       list: () => connMetadata.map((m) => m.id),
       describe: () => connMetadata,
+      describeAllWorkspacePlugins: () => pluginMetadata,
       getForOrg: () => mockDBConnection,
     },
     resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || null,
@@ -252,6 +257,7 @@ describe("GET /api/health — sources section", () => {
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
     delete process.env.DATABASE_URL;
     connMetadata = [];
+    pluginMetadata = [];
     mockValidateEnvironment.mockReset();
     mockValidateEnvironment.mockResolvedValue([]);
     mockGetStartupWarnings.mockReset();
@@ -357,6 +363,48 @@ describe("GET /api/health — sources section", () => {
     expect(Object.keys(sources)).toContain("default");
     expect(Object.keys(sources)).toContain("warehouse");
     expect((sources.warehouse as Record<string, unknown>).dbType).toBe("mysql");
+  });
+
+  it("#3844 — includes per-workspace plugin pools (clickhouse) in sources", async () => {
+    // The plugin pool lives ONLY in the per-workspace direct-plugin map, absent
+    // from bare `describe()` — so the sources section unions in
+    // `describeAllWorkspacePlugins()`. Without that union the operator fleet
+    // view (and `NN / NN live` count) silently omitted every plugin datasource.
+    connMetadata = [
+      { id: "default", dbType: "postgres", health: { status: "healthy", latencyMs: 3, checkedAt: new Date() } },
+    ];
+    pluginMetadata = [
+      { id: "clickhouse-staging", dbType: "clickhouse", description: "ClickHouse" },
+    ];
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const sources = body.sources as Record<string, unknown>;
+
+    expect(Object.keys(sources)).toContain("clickhouse-staging");
+    const ch = sources["clickhouse-staging"] as Record<string, unknown>;
+    expect(ch.dbType).toBe("clickhouse");
+    // No cached health on plugin entries → "unknown", same as any native
+    // source with no health-check result yet.
+    expect(ch.status).toBe("unknown");
+  });
+
+  it("#3844 — builds the sources section from plugin pools alone (no bare entries)", async () => {
+    // A workspace whose only datasource is a plugin (no `default` registered).
+    // The union must still produce a `sources` section off the plugin pools so
+    // the operator sees them and the count isn't `0 / 0`.
+    connMetadata = [];
+    pluginMetadata = [
+      { id: "snowflake-prod", dbType: "snowflake", description: "Snowflake" },
+    ];
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    const sources = body.sources as Record<string, unknown>;
+
+    expect(sources).toBeDefined();
+    expect(Object.keys(sources)).toEqual(["snowflake-prod"]);
+    expect((sources["snowflake-prod"] as Record<string, unknown>).dbType).toBe("snowflake");
   });
 
   it("returns status 'unknown' when non-default source has no health check result", async () => {

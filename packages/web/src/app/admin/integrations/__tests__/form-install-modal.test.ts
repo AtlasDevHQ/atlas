@@ -175,3 +175,40 @@ describe("buildZodSchema — conditional required", () => {
     expect(r.success).toBe(true);
   });
 });
+
+describe("buildZodSchema — conditional required number fields", () => {
+  // A showWhen-gated required NUMBER field. Regression guard: z.coerce.number()
+  // turns a blank "" into 0 (Number("") === 0), which would slip past the
+  // superRefine empty-check and submit a required-but-blank number as 0. The
+  // optional branch maps "" → undefined so the conditional-required rule fires.
+  const NUM_FIELDS: FormFieldDescriptor[] = [
+    {
+      key: "mode",
+      type: "select",
+      required: true,
+      options: [
+        { value: "default", label: "Default" },
+        { value: "custom", label: "Custom" },
+      ],
+    },
+    { key: "timeout", type: "number", required: true, showWhen: { field: "mode", equals: ["custom"] } },
+  ];
+
+  test('a gated required number left blank fails ("" is not coerced to 0)', () => {
+    const schema = buildZodSchema(NUM_FIELDS);
+    const r = schema.safeParse({ mode: "custom", timeout: "" });
+    expect(r.success).toBe(false);
+  });
+
+  test("a gated required number passes when filled", () => {
+    const schema = buildZodSchema(NUM_FIELDS);
+    const r = schema.safeParse({ mode: "custom", timeout: "30" });
+    expect(r.success).toBe(true);
+  });
+
+  test("a gated required number is not required when its branch is hidden", () => {
+    const schema = buildZodSchema(NUM_FIELDS);
+    const r = schema.safeParse({ mode: "default", timeout: "" });
+    expect(r.success).toBe(true);
+  });
+});

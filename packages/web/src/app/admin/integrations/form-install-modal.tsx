@@ -198,9 +198,15 @@ export function buildZodSchema(
         // `z.coerce.number()` accepts the HTML-form string-as-number
         // and converts to a real number — necessary because <Input
         // type="number"> still produces a string event value.
+        //
+        // On the optional/gated branch a blank input must map to `undefined`
+        // BEFORE coercion: `Number("") === 0`, so a plain `z.coerce.number()`
+        // would silently turn a left-blank `showWhen`-gated required number into
+        // 0 and slip past the superRefine's empty-check. Mapping "" → undefined
+        // lets that conditional-required rule fire as intended.
         schema = baseRequired
           ? z.coerce.number({ message: `${field.label ?? field.key} is required` })
-          : z.coerce.number().optional();
+          : z.union([z.literal("").transform(() => undefined), z.coerce.number()]).optional();
         break;
       case "boolean":
         schema = z.boolean().optional();

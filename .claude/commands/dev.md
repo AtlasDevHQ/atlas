@@ -11,7 +11,7 @@ This command exists because getting local dev to boot — especially SaaS mode �
 
 ## Steps
 
-Run from the repo root (`/home/msywu/oss/atlas/ide`). Containers must be up: `bun run db:up` (Postgres :5432 + sandbox sidecar) — idempotent, run it if `docker ps` doesn't show `ide-postgres-1` healthy.
+Run from the repo root (the checkout root, where the top-level `package.json` + `.env` live). Containers must be up: `bun run db:up` (Postgres :5432 + sandbox sidecar) — idempotent, run it if `docker ps` doesn't show `ide-postgres-1` healthy.
 
 ### 1. Set the mode in `.env` (NOT the command line)
 

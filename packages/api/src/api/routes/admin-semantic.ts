@@ -77,12 +77,23 @@ const EntityBodySchema = z.object({
   measures: z.array(MeasureSchema).optional().default([]),
   joins: z.array(JoinSchema).optional().default([]),
   query_patterns: z.array(QueryPatternSchema).optional().default([]),
+  // Connection-id scope: the write resolves this id → its group_id via
+  // `inlineConnectionGroupSql`. Mutually exclusive with `connectionGroupId`
+  // (see below) — sending both is a 400, never a silent resolution (#3854).
+  // `""` is treated as absent (an empty id resolves to no connection),
+  // unlike `connectionGroupId` where `""` is the explicit legacy-null group.
   connectionId: z.string().optional(),
   // Group scope for multi-environment orgs (#2412). When the entity name
   // exists in more than one group, the FE must pick one or the backend
   // will 409. Empty string deliberately encodes "legacy null-group" so
   // a workspace mixing `__global__` demo rows with named-group rows can
   // still address the demo row explicitly.
+  //
+  // Precedence vs `connectionId` (#3854): the two are MUTUALLY EXCLUSIVE.
+  // Providing `connectionGroupId` writes the row under that group DIRECTLY
+  // (via `upsertDraftEntityForGroup`); providing `connectionId` resolves the
+  // group from the connection. Sending BOTH is rejected with 400 rather than
+  // silently picking one — they can disagree, and guessing hides bugs.
   connectionGroupId: z.string().optional(),
 });
 
@@ -578,12 +589,45 @@ export function registerSemanticEditorRoutes(
         return c.json({ error: "not_available", message: "Semantic entity editor requires an internal database (DATABASE_URL).", requestId }, 501);
       }
 
+      // Precedence (#3854): `connectionId` and `connectionGroupId` are
+      // mutually exclusive scoping inputs. They can disagree (a connection's
+      // resolved group ≠ the named group), so rather than silently pick one
+      // we reject the conflicting pair. `connectionGroupId` provided →
+      // write the group DIRECTLY; `connectionId` provided → resolve the
+      // group from the connection.
+      //
+      // The two fields treat the empty string ASYMMETRICALLY, on purpose:
+      //   • `connectionGroupId: ""` is a real, explicit value — the legacy
+      //     null/unscoped group — so it counts as "present" (a direct group
+      //     write targeting the null scope).
+      //   • `connectionId: ""` is meaningless (no connection resolves from an
+      //     empty id), so it counts as "absent" — it neither triggers the
+      //     conflict guard nor a group-resolving write.
+      //
+      // Checked BEFORE `entityToYaml` so a conflicting request fails fast
+      // without doing the YAML serialization work (Greptile, #3854).
+      const hasConnectionId =
+        body.connectionId !== undefined && body.connectionId !== "";
+      const hasConnectionGroupId = body.connectionGroupId !== undefined;
+      if (hasConnectionId && hasConnectionGroupId) {
+        return c.json(
+          {
+            error: "conflicting_scope",
+            message:
+              "Provide either connectionId or connectionGroupId, not both — they scope the entity differently and may disagree.",
+            requestId,
+          },
+          400,
+        );
+      }
+
       // Convert structured data to YAML
       const yamlContent = await entityToYaml(body);
 
       // Store in DB
       const {
         upsertDraftEntity,
+        upsertDraftEntityForGroup,
         getEntity,
         createVersion,
         generateChangeSummary,
@@ -604,7 +648,19 @@ export function registerSemanticEditorRoutes(
       // published row is preserved until the admin publishes via
       // `/api/v1/admin/publish`. The pending-changes pill in the top bar
       // surfaces the draft count.
-      await upsertDraftEntity(orgId, "entity", name, yamlContent, body.connectionId);
+      //
+      // When `connectionGroupId` is provided, write the group DIRECTLY (the
+      // `scope` resolved above) so the row lands in the requested environment
+      // instead of the default null scope (#3854). Otherwise resolve the
+      // group from `connectionId` (or null when neither is given).
+      if (hasConnectionGroupId) {
+        await upsertDraftEntityForGroup(orgId, "entity", name, yamlContent, scope);
+      } else {
+        // `hasConnectionId` already collapsed `""` → absent, so pass the
+        // normalized id (undefined when empty) — never the raw `""`, which
+        // would resolve to no group via `inlineConnectionGroupSql`.
+        await upsertDraftEntity(orgId, "entity", name, yamlContent, hasConnectionId ? body.connectionId : undefined);
+      }
 
       // Create version snapshot — non-fatal. Narrow the catch so tagged
       // errors (e.g. AmbiguousEntityError) re-throw and surface their

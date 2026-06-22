@@ -416,6 +416,9 @@ describe("createElasticsearchClient", () => {
     const headers = capturedInit?.headers as Record<string, string>;
     expect(headers?.Authorization).toBe(`ApiKey ${API_KEY}`);
     expect(headers?.Accept).toBe("application/json");
+    // #3878: force uncompressed responses so the cluster never negotiates zstd,
+    // which a low-heap OpenSearch (NoDirectBuffers allocator) cannot encode.
+    expect(headers?.["Accept-Encoding"]).toBe("identity");
   });
 
   test("ping issues NO Authorization header for an explicit no-auth (authMode:'none') config", async () => {

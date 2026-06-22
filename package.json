@@ -73,7 +73,7 @@
     "@types/node": "^25.9.4",
     "@types/pg": "^8.20.0",
     "@types/react": "^19.2.15",
-    "@typescript/native-preview": "^7.0.0-dev.20260617.2",
+    "@typescript/native-preview": "^7.0.0-dev.20260620.1",
     "@vercel/og": "0.11.1",
     "eslint": "^10.5.0",
     "jose": "^6.2.3",

@@ -979,7 +979,20 @@ export function createElasticsearchClient(
    * is added only for a non-empty body so GETs stay unsigned-content clean.
    */
   function buildHeaders(method: string, url: string, body: string): Record<string, string> {
-    const headers: Record<string, string> = { Accept: "application/json" };
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      // Force an uncompressed response. The runtime (undici / bun `fetch`)
+      // otherwise advertises `Accept-Encoding: gzip, deflate, br, zstd`.
+      // OpenSearch 2.19 honors zstd, but a memory-constrained cluster runs
+      // Netty's `NoDirectBuffers` allocator, whose `ZstdEncoder` cannot
+      // allocate a direct buffer — the response encode throws, the channel is
+      // closed, and the request hangs until the client times out (#3878).
+      // `identity` sidesteps the whole compression path (and the gzip/br
+      // encoders, which can hit the same allocator) and avoids the
+      // manual-`Accept-Encoding` auto-decompression pitfall. Query results are
+      // small, so the uncompressed-wire cost is negligible.
+      "Accept-Encoding": "identity",
+    };
     if (body.length > 0) headers["Content-Type"] = "application/json";
     switch (auth.mode) {
       case "none":

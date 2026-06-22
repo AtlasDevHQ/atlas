@@ -139,6 +139,20 @@ export async function listConnectionGroupMembers(
  * connection belongs to — group-of-one for a standalone datasource, NULL for
  * the default/unknown connection — so adding a member to a populated group
  * updates the shared group rows rather than duplicating them.
+ *
+ * Group-of-one (#3855): a real datasource install that carries NO explicit
+ * `config.group_id` resolves to its OWN `connectionId` (install_id), not NULL.
+ * NULL is the single flat "default" bucket every group-less connection would
+ * otherwise share, so saving a same-named table (e.g. `test_orders`) from two
+ * different connections collided on the
+ * `(org_id, entity_type, name, coalesce(connection_group_id,'default'))` upsert
+ * key and the second silently clobbered the first (last-write-wins). Keying a
+ * standalone datasource under its own connectionId makes two same-named tables
+ * on different engines distinct rows AND keeps each queryable via
+ * `executeSQL(connectionId=...)` (the whitelist fans an entity's tables out
+ * under its `connection_group_id`). A missing install row (unknown / `default`
+ * connection) still resolves to NULL — the flat default group — preserving
+ * single-DB back-compat.
  */
 export async function resolveGroupIdForConnection(
   orgId: string,
@@ -160,7 +174,11 @@ export async function resolveGroupIdForConnection(
       LIMIT 1`,
     [connectionId, orgId],
   );
-  return rows[0]?.group_id ?? null;
+  // No install row → unknown / `default` connection → flat default group (NULL).
+  if (rows.length === 0) return null;
+  // A real install with an explicit group uses it; one with no group is its own
+  // group-of-one, keyed under its connectionId (#3855).
+  return rows[0].group_id ?? connectionId;
 }
 
 /**
@@ -172,22 +190,26 @@ export async function resolveGroupIdForConnection(
  *
  * `$connParam` is the placeholder for the connection id; `$orgParam`
  * is the placeholder for the org id (already in the outer query's
- * parameter list). If onboarding has pre-created the deterministic
- * single-member group but has not committed the connection row yet, the
- * query falls back to `connection_groups.id = 'g_' || connection_id`.
- * That preserves demo import scope while the connection-visibility join
- * continues to hide the imported rows until the connection commit lands.
- * The subquery returns NULL when neither row is present, which keeps
- * legacy NULL-scope semantics.
+ * parameter list). The subquery returns NULL when no install row is
+ * present (unknown / `default` connection), which keeps legacy NULL-scope
+ * semantics.
+ *
+ * Group-of-one (#3855): when an install row exists but carries no explicit
+ * `config.group_id`, the subquery resolves to the connection's OWN id
+ * (`COALESCE(config->>'group_id', install_id)`) so a standalone datasource is
+ * keyed under its own connectionId rather than the shared NULL/default bucket —
+ * the same resolution {@link resolveGroupIdForConnection} performs, kept in
+ * lockstep so the inline-INSERT write paths and the TS resolver can't disagree.
  */
 function inlineConnectionGroupSql(connParam: string, orgParam: string): string {
   // Post-0096 cutover (#2744 / ADR-0007): the install's group_id lives
   // in `workspace_plugins.config->>'group_id'`. The pre-cutover
   // singleton-group fallback (`connection_groups.id = 'g_' || conn_id`)
   // is gone post pure-collapse — own-workspace beats __global__ via the
-  // ORDER BY priority.
+  // ORDER BY priority. `COALESCE(..., install_id)` is the inline mirror of
+  // the group-of-one resolution: a group-less install keys under its own id.
   return `(
-    SELECT config->>'group_id' AS group_id
+    SELECT COALESCE(config->>'group_id', install_id) AS group_id
       FROM workspace_plugins
      WHERE install_id = ${connParam}
        AND pillar = 'datasource'
@@ -472,6 +494,11 @@ export async function listEntityRows(
   // Post-0096 cutover (#2744 / ADR-0007): connections live in
   // workspace_plugins (pillar='datasource'), group_id is JSONB.
   // OWN_OR_GLOBAL shadow rule preserved — install_id is the new key.
+  // Group-of-one (#3855): a group-less standalone datasource keys its entities
+  // under its OWN `install_id`. The two `install_id` branches surface those
+  // rows (mirroring the `config.group_id` branches but matching group-less
+  // installs); without them a standalone datasource's published entities would
+  // be invisible — neither NULL nor a `config.group_id`.
   const visibilityClause = statusFilter === "published"
     ? `AND (org_id = $1 OR org_id = '__global__')
        AND (
@@ -482,11 +509,27 @@ export async function listEntityRows(
               AND config->>'group_id' IS NOT NULL
          )
          OR connection_group_id IN (
+           SELECT install_id FROM workspace_plugins
+            WHERE workspace_id = $1 AND pillar = 'datasource' AND status = 'published'
+              AND config->>'group_id' IS NULL
+         )
+         OR connection_group_id IN (
            SELECT config->>'group_id' FROM workspace_plugins
             WHERE workspace_id = '__global__'
               AND pillar = 'datasource'
               AND status = 'published'
               AND config->>'group_id' IS NOT NULL
+              AND install_id NOT IN (
+                SELECT install_id FROM workspace_plugins
+                 WHERE workspace_id = $1 AND pillar = 'datasource'
+              )
+         )
+         OR connection_group_id IN (
+           SELECT install_id FROM workspace_plugins
+            WHERE workspace_id = '__global__'
+              AND pillar = 'datasource'
+              AND status = 'published'
+              AND config->>'group_id' IS NULL
               AND install_id NOT IN (
                 SELECT install_id FROM workspace_plugins
                  WHERE workspace_id = $1 AND pillar = 'datasource'
@@ -737,6 +780,15 @@ export async function listEntitiesWithOverlay(
   // Post-0096 cutover (#2744 / ADR-0007): same OWN_OR_GLOBAL shadow
   // rule, pivoted to workspace_plugins (pillar='datasource') with
   // group_id in JSONB.
+  //
+  // Group-of-one (#3855): a group-less standalone datasource keys its entities
+  // under its OWN `install_id` (not `config.group_id`, which is NULL). Those
+  // rows are surfaced by the two `install_id` branches below — mirroring the
+  // `config.group_id` branches but matching `connection_group_id = install_id`
+  // for installs WITHOUT an explicit group. Without these branches the
+  // group-of-one rows would be invisible (they are neither NULL nor a
+  // `config.group_id`), so a standalone datasource's saved entities would
+  // vanish from the whitelist.
   const connectionVisibilitySql = `
     connection_group_id IS NULL
     OR connection_group_id IN (
@@ -746,11 +798,28 @@ export async function listEntitiesWithOverlay(
          AND config->>'group_id' IS NOT NULL
     )
     OR connection_group_id IN (
+      SELECT install_id FROM workspace_plugins
+       WHERE workspace_id = $1 AND pillar = 'datasource'
+         AND status IN ('published', 'draft')
+         AND config->>'group_id' IS NULL
+    )
+    OR connection_group_id IN (
       SELECT config->>'group_id' FROM workspace_plugins
        WHERE workspace_id = '__global__'
          AND pillar = 'datasource'
          AND status IN ('published', 'draft')
          AND config->>'group_id' IS NOT NULL
+         AND install_id NOT IN (
+           SELECT install_id FROM workspace_plugins
+            WHERE workspace_id = $1 AND pillar = 'datasource'
+         )
+    )
+    OR connection_group_id IN (
+      SELECT install_id FROM workspace_plugins
+       WHERE workspace_id = '__global__'
+         AND pillar = 'datasource'
+         AND status IN ('published', 'draft')
+         AND config->>'group_id' IS NULL
          AND install_id NOT IN (
            SELECT install_id FROM workspace_plugins
             WHERE workspace_id = $1 AND pillar = 'datasource'

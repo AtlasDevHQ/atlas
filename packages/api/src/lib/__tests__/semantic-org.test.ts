@@ -114,6 +114,32 @@ describe("loadOrgWhitelist", () => {
     expect(result.get("default")?.has("events")).toBeFalsy();
   });
 
+  it("routes two same-named tables on group-of-one connections to distinct scopes (#3855)", async () => {
+    // #3855 regression at the whitelist layer: a standalone (group-less)
+    // datasource is keyed under its OWN connectionId (group-of-one). Two
+    // `test_orders` entities saved from two different connections
+    // (`mysql-staging`, `clickhouse`) carry distinct `connection_group_id`
+    // values, so `recordTables` keys each under its own group — each queryable
+    // on its own connection, neither leaking into the flat default bucket where
+    // the pre-fix last-write-wins collision happened.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        { ...makeEntityRow("test_orders", "test_orders"), connection_group_id: "mysql-staging" },
+        { ...makeEntityRow("test_orders", "test_orders"), connection_group_id: "clickhouse" },
+      ]),
+    );
+
+    const result = await loadOrgWhitelist("org-1");
+    expect(result.get("mysql-staging")?.has("test_orders")).toBe(true);
+    expect(result.get("clickhouse")?.has("test_orders")).toBe(true);
+    // Never leaks into the flat default bucket where it would collide.
+    expect(result.get("default")?.has("test_orders")).toBeFalsy();
+
+    // executeSQL(connectionId=...) resolves each on its own connection.
+    expect(getOrgWhitelistedTables("org-1", "clickhouse").has("test_orders")).toBe(true);
+    expect(getOrgWhitelistedTables("org-1", "mysql-staging").has("test_orders")).toBe(true);
+  });
+
   it("honors the canonical `group:` field in stored YAML (ADR-0012)", async () => {
     // The DB-backed path resolves the group via readGroupField, so a stored
     // entity that declares `group:` keys the whitelist under that group.

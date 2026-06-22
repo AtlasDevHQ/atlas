@@ -1,7 +1,5 @@
 {
   "compilerOptions": {
-    "ignoreDeprecations": "6.0",
-    "baseUrl": ".",
     "inlineSourceMap": true,
     "inlineSources": true,
     "module": "ESNext",
@@ -9,7 +7,7 @@
     "allowJs": true,
     "strict": true,
     "noImplicitAny": true,
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "lib": ["ES2020", "DOM", "DOM.Iterable"]
   },
   "include": ["src/**/*.ts"]

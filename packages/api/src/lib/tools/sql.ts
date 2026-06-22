@@ -45,6 +45,8 @@ import { EXECUTE_SQL_TOOL_DESCRIPTION } from "./descriptions";
 import { appendRowLimit, hasLimitClause } from "./auto-limit";
 import { resolveRoutingPlan, type RoutingMode, type RoutingReason } from "@atlas/api/lib/env-routing";
 import { loadGroupRoutingContext } from "@atlas/api/lib/env-routing/lookup";
+import { resolveReach, isReachable } from "@atlas/api/lib/group-reach";
+import { loadVisibleGroups } from "@atlas/api/lib/group-reach/lookup";
 import { mergeMemberResults } from "@atlas/api/lib/multi-env-merger";
 import {
   ApprovalGate,
@@ -2338,11 +2340,17 @@ export const executeSQL = tool({
     explanation: z
       .string()
       .describe("Brief explanation of what this query does and why"),
+    group: z
+      .string()
+      .optional()
+      .describe(
+        "Target Connection group (cross-group reach, ADR-0022). Names which datasource group this query runs against — its connection AND its table whitelist resolve to THIS group. Use the group/source name from the semantic tree (`explore`). Omit to use the conversation's current group. A group outside your reach is rejected — the query is NOT silently re-routed to another source; pick a reachable group or omit this. To answer a cross-source question, run one query per relevant group and correlate the results yourself; always report which source(s) you used.",
+      ),
     connectionId: z
       .string()
       .optional()
       .describe(
-        "Target connection ID. Check the entity YAML's `connection` field to determine which source a table belongs to. Omit for the default connection.",
+        "Target connection ID — a specific member WITHIN the targeted group. Check the entity YAML's `connection` field to determine which source a table belongs to. Omit for the group's default connection. For cross-group targeting use `group`, not this.",
       ),
     scope: z
       .string()
@@ -2352,14 +2360,63 @@ export const executeSQL = tool({
       ),
   }),
 
-  execute: async ({ sql, explanation, connectionId, scope }) => {
+  execute: async ({ sql, explanation, group, connectionId, scope }) => {
     // Chat routes stamp the user-selected per-turn connection into
     // RequestContext. The model normally omits `connectionId`, so fall back to
     // that routed context before the legacy default to avoid executing against
     // the wrong environment while conversation metadata says otherwise.
     const reqCtx = getRequestContext();
     const requestContextConnectionId = reqCtx?.connectionId;
-    const currentMember = connectionId ?? requestContextConnectionId ?? "default";
+
+    // Cross-group reach (ADR-0022, slice (a) #3893). When the agent names a
+    // `group`, that is a per-query GROUP target — an axis ABOVE member routing.
+    // The named group must be within the conversation's reach (slice (a): reach
+    // defaults to ALL visible groups; the Focus picker that narrows it lands in
+    // slice (c)). A group outside the reachable set is REJECTED here — a hard
+    // error, never a silent re-route to a different source (the #3867(b) fix at
+    // the execution layer). When `group` is omitted, today's implicit
+    // single-connection binding is the degenerate single-reachable-group case.
+    let groupTargetMember: string | undefined;
+    if (group !== undefined) {
+      const reachOrgId = reqCtx?.user?.activeOrganizationId;
+      const visibleGroups = await loadVisibleGroups(reachOrgId, reqCtx?.atlasMode);
+      // Slice (a): no conversation-scope reach state yet, so reach is always
+      // "all visible". Slice (c) sources this from the conversation's persisted
+      // Group-reach value (`all` | focus-group-id) — and must then surface
+      // `reach.warnings` (a `focus`-on-invisible resolution explains why reach
+      // is empty rather than substituting); under `all` it's always [].
+      const reach = resolveReach({ kind: "all" }, visibleGroups);
+      if (!isReachable(reach, group)) {
+        const reachable = reach.reachableGroups.map((g) => g.id);
+        log.warn(
+          { group, orgId: reachOrgId, reachable },
+          "executeSQL rejected an out-of-reach group target — not re-routing",
+        );
+        return {
+          success: false,
+          explanation,
+          error:
+            `Connection group "${group}" is not within this conversation's reach ` +
+            `(reachable groups: ${reachable.join(", ") || "none"}). ` +
+            `I will not query a different source instead — re-run against a reachable ` +
+            `group, or omit \`group\` to use the conversation's current source.`,
+          executionMs: 0,
+        };
+      }
+      // Resolve the group to a connection to execute against: the group's
+      // primary member (a group-of-one resolves to its own connection id).
+      // `connectionId`, if also supplied, may pin a specific member of THIS
+      // group; otherwise the group's primary is used. The per-group whitelist
+      // resolves via this connection id (members register their group's tables).
+      const target = reach.reachableGroups.find((g) => g.id === group);
+      groupTargetMember =
+        connectionId && target?.members.includes(connectionId)
+          ? connectionId
+          : target?.primary;
+    }
+
+    const currentMember =
+      groupTargetMember ?? connectionId ?? requestContextConnectionId ?? "default";
 
     // #2518 — three-state picker. `routingMode` reaches us via
     // `RequestContext` (stamped by the chat route from the conversation

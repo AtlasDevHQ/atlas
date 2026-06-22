@@ -589,9 +589,6 @@ export function registerSemanticEditorRoutes(
         return c.json({ error: "not_available", message: "Semantic entity editor requires an internal database (DATABASE_URL).", requestId }, 501);
       }
 
-      // Convert structured data to YAML
-      const yamlContent = await entityToYaml(body);
-
       // Precedence (#3854): `connectionId` and `connectionGroupId` are
       // mutually exclusive scoping inputs. They can disagree (a connection's
       // resolved group ≠ the named group), so rather than silently pick one
@@ -606,6 +603,9 @@ export function registerSemanticEditorRoutes(
       //   • `connectionId: ""` is meaningless (no connection resolves from an
       //     empty id), so it counts as "absent" — it neither triggers the
       //     conflict guard nor a group-resolving write.
+      //
+      // Checked BEFORE `entityToYaml` so a conflicting request fails fast
+      // without doing the YAML serialization work (Greptile, #3854).
       const hasConnectionId =
         body.connectionId !== undefined && body.connectionId !== "";
       const hasConnectionGroupId = body.connectionGroupId !== undefined;
@@ -620,6 +620,9 @@ export function registerSemanticEditorRoutes(
           400,
         );
       }
+
+      // Convert structured data to YAML
+      const yamlContent = await entityToYaml(body);
 
       // Store in DB
       const {

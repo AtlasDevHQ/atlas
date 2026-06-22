@@ -167,7 +167,17 @@ meConnectionGroups.openapi(listRoute, async (c) => {
         db_type: string | null;
         description: string | null;
       }>(
-        `SELECT config->>'group_id' AS group_id,
+        // Group-of-one (#3855 / #3856): a standalone datasource with no explicit
+        // `config.group_id` is its OWN group, keyed by its `install_id` — the
+        // same `COALESCE(config->>'group_id', install_id)` resolution
+        // `resolveGroupIdForConnection` performs on the write side. Before this,
+        // the `config->>'group_id' IS NOT NULL` filter hid every group-less
+        // standalone connection from the env picker, so a freshly-installed
+        // datasource never appeared until the admin manually assigned a group.
+        // Keying the group-less install under its own id makes it a visible
+        // group-of-one with itself as the sole member, so the picker + agent
+        // "just work" with no extra steps.
+        `SELECT COALESCE(config->>'group_id', install_id) AS group_id,
                 install_id           AS connection_id,
                 config->>'db_type'   AS db_type,
                 config->>'description' AS description
@@ -176,8 +186,7 @@ meConnectionGroups.openapi(listRoute, async (c) => {
             AND pillar = 'datasource'
             AND catalog_id <> ALL($2)
             AND status != 'archived'
-            AND config->>'group_id' IS NOT NULL
-          ORDER BY config->>'group_id' ASC, install_id ASC`,
+          ORDER BY COALESCE(config->>'group_id', install_id) ASC, install_id ASC`,
         [orgId, restCatalogIds],
       ),
       // REST datasources — group_id may be NULL (workspace-global) or set

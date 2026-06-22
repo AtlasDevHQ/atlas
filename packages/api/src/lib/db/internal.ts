@@ -1182,6 +1182,168 @@ export async function loadSavedConnections(): Promise<number> {
   }
 }
 
+/**
+ * Counts of the fresh registry mutations a {@link reconcileWorkspaceDatasources}
+ * pass performed — best-effort observability, not an accounting guarantee
+ * (per-row failures are logged + skipped, so this may undercount the rows seen).
+ */
+export interface ReconcileResult {
+  readonly registered: number;
+  readonly deregistered: number;
+}
+
+/**
+ * Reconcile the live `ConnectionRegistry` against the CURRENTLY-PERSISTED
+ * datasource installs for a single workspace/org — the hot path that retires
+ * the "publish, then restart the API" dance (#3856).
+ *
+ * Boot-time `loadSavedConnections` registers every non-archived install once,
+ * process-wide. But the atomic publish endpoint (`admin-publish.ts`) only flips
+ * `workspace_plugins.status` in SQL — it never touches the in-memory registry.
+ * So a datasource that an admin newly published (draft → published) is live in
+ * the registry ONLY because its install-time registration happened to survive;
+ * and a datasource the publish flow ARCHIVED keeps serving from a stale pool
+ * until the next boot. This function closes both ends: after a publish commits,
+ * the caller reconciles this org's installs so newly-published datasources go
+ * queryable immediately and archived ones stop serving — with no API restart
+ * and no manual `group_id` SQL.
+ *
+ * Symmetric and idempotent:
+ *   - every non-archived install → `registerDatasourceInstall` (idempotent —
+ *     the bridge's `has()` guards make a re-register a no-op; a plugin pool is
+ *     rebuilt in place);
+ *   - every archived install → `unregisterDatasourceInstall` (returns `false`
+ *     when nothing was registered — a no-op for a row that never went live).
+ *
+ * Per-row failures are caught + logged (never abort the loop) so one
+ * misconfigured install can't strand the rest — exactly the boot-loader
+ * posture. Best-effort by contract: the publish has already COMMITTED before
+ * this runs, so a transient registry failure must not fail the publish (the
+ * next boot's `loadSavedConnections` still reconciles).
+ *
+ * @param orgId - Workspace/org whose datasource installs to reconcile.
+ * @returns Counts of fresh registrations + deregistrations performed.
+ */
+export async function reconcileWorkspaceDatasources(
+  orgId: string,
+): Promise<ReconcileResult> {
+  if (!hasInternalDB()) return { registered: 0, deregistered: 0 };
+
+  const { BUILTIN_DATASOURCE_CATALOG_SLUGS } = await import(
+    "@atlas/api/lib/db/datasource-pool-resolver"
+  );
+  const { registerDatasourceInstall, unregisterDatasourceInstall } = await import(
+    "@atlas/api/lib/db/datasource-registry-bridge"
+  );
+  const { decryptSecretFields, parseConfigSchema } =
+    await import("@atlas/api/lib/plugins/secrets");
+
+  try {
+    type WpRow = {
+      workspace_id: string;
+      install_id: string;
+      catalog_slug: string;
+      config: Record<string, unknown> | null;
+      config_schema: unknown;
+      // The content-mode column (enum + CHECK per migration). Only `archived`
+      // is semantically load-bearing here (drives the deregister branch); any
+      // non-archived value (`draft`/`published`) is treated as "should be live".
+      // The union annotation documents the closed domain and guards the
+      // `=== "archived"` literal at compile time — the `internalQuery<T>` cast
+      // is unchecked, so an out-of-domain value falls into the (idempotent)
+      // re-register branch, which fails safe.
+      status: "draft" | "published" | "archived";
+    };
+    // Unlike `loadSavedConnections`, this scopes to ONE workspace and reads
+    // ALL statuses (incl. `archived`) so the archived rows drive the
+    // deregister branch — the reconcile must be able to evict a pool the
+    // publish just archived, not merely skip it.
+    const rows = await internalQuery<WpRow>(
+      `SELECT wp.workspace_id,
+              wp.install_id,
+              pc.slug AS catalog_slug,
+              wp.config,
+              pc.config_schema,
+              wp.status
+         FROM workspace_plugins wp
+         JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+        WHERE wp.workspace_id = $1
+          AND wp.pillar = 'datasource'
+          AND pc.slug = ANY($2::text[])
+        ORDER BY wp.install_id ASC`,
+      [orgId, BUILTIN_DATASOURCE_CATALOG_SLUGS as readonly string[]],
+    );
+
+    let registered = 0;
+    let deregistered = 0;
+    for (const row of rows) {
+      let stage: "parse" | "decrypt" | "bridge" = "parse";
+      try {
+        if (row.status === "archived") {
+          stage = "bridge";
+          // Deregister is config-free — evict the live pool for this
+          // (workspace, install_id) so an archived datasource fails closed
+          // on the next query instead of at boot/TTL.
+          if (unregisterDatasourceInstall(row.workspace_id, row.install_id)) {
+            deregistered++;
+          }
+          continue;
+        }
+        const schema = parseConfigSchema(row.config_schema);
+        stage = "decrypt";
+        const decryptedConfig = decryptSecretFields(row.config ?? {}, schema);
+        stage = "bridge";
+        const didRegister = await registerDatasourceInstall(
+          {
+            workspaceId: row.workspace_id,
+            catalogId: "",
+            installId: row.install_id,
+            pillar: "datasource",
+            catalogSlug: row.catalog_slug,
+          },
+          decryptedConfig,
+        );
+        if (didRegister) registered++;
+      } catch (err) {
+        log.warn(
+          {
+            stage,
+            orgId,
+            workspaceId: row.workspace_id,
+            installId: row.install_id,
+            catalogSlug: row.catalog_slug,
+            status: row.status,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "Failed to reconcile datasource install after publish — skipping (next boot will retry)",
+        );
+      }
+    }
+
+    if (registered > 0 || deregistered > 0) {
+      log.info(
+        { orgId, registered, deregistered },
+        "Reconciled workspace datasources into the live ConnectionRegistry after publish",
+      );
+    }
+    return { registered, deregistered };
+  } catch (err) {
+    const sqlstate = isPgError(err) ? err.code : undefined;
+    if (sqlstate === "42P01") {
+      log.warn(
+        { orgId, sqlstate, err: err instanceof Error ? err.message : String(err) },
+        "workspace_plugins / plugin_catalog not present — skipping post-publish datasource reconcile",
+      );
+      return { registered: 0, deregistered: 0 };
+    }
+    log.error(
+      { orgId, sqlstate, err: err instanceof Error ? err.message : String(err) },
+      "Failed to reconcile workspace datasources after publish — registry unchanged until next boot",
+    );
+    return { registered: 0, deregistered: 0 };
+  }
+}
+
 /** Postgres SQLSTATE error shape. `pg` driver attaches `.code` to thrown errors. */
 function isPgError(err: unknown): err is Error & { code: string } {
   return (

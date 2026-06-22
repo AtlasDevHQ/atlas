@@ -399,6 +399,59 @@ adminPublish.openapi(publishRoute, async (c) =>
       "Publish succeeded",
     );
 
+    // #3856 — hot-register newly-published datasources (and deregister archived
+    // ones) into the live `ConnectionRegistry`, so a standalone datasource is
+    // agent-queryable immediately after publish with NO api restart and no
+    // manual `group_id` SQL. Boot-time `loadSavedConnections` registered the
+    // process's installs once; publish (a pure status flip + archive cascade
+    // above) never touched the registry, so without this the just-published
+    // connection relied on its install-time registration surviving and a
+    // just-archived one kept serving from a stale pool until the next boot.
+    // Run AFTER commit so the registry reflects the persisted truth, and
+    // best-effort: the publish has already committed, so a transient registry
+    // failure must not turn it into a 500 — log and move on (the next boot's
+    // `loadSavedConnections` reconciles). Reconcile is idempotent + symmetric:
+    // the bridge's `has()` guards make a NATIVE re-register a no-op and a
+    // deregister of a never-live row a no-op (a PLUGIN pool — clickhouse /
+    // snowflake / … — is rebuilt in place via `createFromConfig`, still safe in
+    // effect: the live connection is swapped for an equivalent one).
+    //
+    // Lazy-`import` (not a top-level import) so this route's static module
+    // graph doesn't require the export at load time — several admin-route tests
+    // partial-`mock.module("@atlas/api/lib/db/internal")` with a subset of
+    // exports, and a top-level import would break the admin router's load on
+    // any fixture that omits this one symbol. Same posture `loadSavedConnections`
+    // and `workspace-installer.ts` use for the registry bridge.
+    try {
+      const { reconcileWorkspaceDatasources } = await import(
+        "@atlas/api/lib/db/internal"
+      );
+      const reconcile = await reconcileWorkspaceDatasources(orgId);
+      if (reconcile.registered > 0 || reconcile.deregistered > 0) {
+        log.info(
+          {
+            requestId,
+            orgId,
+            registered: reconcile.registered,
+            deregistered: reconcile.deregistered,
+          },
+          "Publish hot-registered datasources into the live ConnectionRegistry",
+        );
+      }
+    } catch (reconcileErr) {
+      log.warn(
+        {
+          requestId,
+          orgId,
+          err:
+            reconcileErr instanceof Error
+              ? reconcileErr.message
+              : String(reconcileErr),
+        },
+        "Publish committed, but reconciling datasources into the ConnectionRegistry failed — newly-published connections may need an api restart until the next boot",
+      );
+    }
+
     // #3682 — surface any DURABLE partial-profile markers for the org. The
     // publish just promoted these layers to `published`; if one was profiled
     // incompletely (tables failed introspection below the abort threshold), it

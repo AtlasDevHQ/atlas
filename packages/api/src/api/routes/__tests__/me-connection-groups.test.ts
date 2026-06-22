@@ -109,6 +109,7 @@ mock.module("@atlas/api/lib/db/internal", () => {
     createInternalDBTestLayer: notUsed,
     migrateInternalDB: async () => {},
     loadSavedConnections: async () => 0,
+    reconcileWorkspaceDatasources: async () => ({ registered: 0, deregistered: 0 }),
     findPatternBySQL: async () => null,
     insertLearnedPattern: () => {},
     insertSemanticAmendment: async () => {},
@@ -308,13 +309,10 @@ describe("GET /api/v1/me/connection-groups — primaryConnectionId surfacing (po
     expect(ids).toEqual(["prod", "staging"]);
   });
 
-  it("does NOT surface a group when every member is archived (config->>'group_id' IS NOT NULL filter)", async () => {
-    // The post-cutover query filters `config->>'group_id' IS NOT NULL`
-    // AND `status != 'archived'`, so the legacy LEFT JOIN behavior of
-    // returning a one-row-with-NULL-connection_id for an empty group is
-    // gone. Archived-only groups disappear from the picker entirely —
-    // which is the right UX (an empty group with no live members can't
-    // route a query anywhere).
+  it("does NOT surface a group when every member is archived (status != 'archived' filter)", async () => {
+    // The query filters `status != 'archived'`, so archived-only groups
+    // disappear from the picker entirely — which is the right UX (an empty
+    // group with no live members can't route a query anywhere).
     fakeAuth = userAuth();
     rowsForOrg["org-1"] = [];
     const res = await meConnectionGroups.request("/", { method: "GET" });
@@ -354,6 +352,55 @@ describe("GET /api/v1/me/connection-groups — primaryConnectionId surfacing (po
     const res = await meConnectionGroups.request("/", { method: "GET" });
     const body = await getJson(res);
     expect(body.groups[0]?.members[0]?.dbType).toBe("unknown");
+  });
+});
+
+describe("GET /api/v1/me/connection-groups — group-of-one standalone datasource (#3856)", () => {
+  it("the SQL-member query no longer filters out group-less installs (uses COALESCE for group-of-one)", async () => {
+    // #3856: a standalone datasource with no explicit config.group_id must
+    // still surface in the picker — keyed under its own install_id (group-of-one,
+    // mirroring resolveGroupIdForConnection's COALESCE(group_id, install_id)).
+    // The prior `config->>'group_id' IS NOT NULL` filter hid such connections.
+    fakeAuth = userAuth();
+    rowsForOrg["org-1"] = [];
+    await meConnectionGroups.request("/", { method: "GET" });
+
+    const memberQuery = capturedQueries.find((q) =>
+      q.includes("install_id           AS connection_id"),
+    );
+    expect(memberQuery).toBeDefined();
+    const normalized = memberQuery!.replace(/\s+/g, " ");
+    // The group key resolves group-of-one via COALESCE — not a NULL filter.
+    expect(normalized).toContain("COALESCE(config->>'group_id', install_id) AS group_id");
+    expect(normalized).not.toContain("config->>'group_id' IS NOT NULL");
+  });
+
+  it("surfaces a group-less standalone datasource as a group-of-one keyed by its install_id", async () => {
+    // Postgres resolves `COALESCE(config->>'group_id', install_id)` to the
+    // install_id for a group-less row; the mock returns the post-COALESCE shape
+    // the real SQL would produce.
+    fakeAuth = userAuth();
+    rowsForOrg["org-1"] = [
+      {
+        group_id: "clickhouse", // = install_id (group-of-one)
+        connection_id: "clickhouse",
+        db_type: "clickhouse",
+        description: "Standalone ClickHouse",
+      },
+    ];
+    const res = await meConnectionGroups.request("/", { method: "GET" });
+    expect(res.status).toBe(200);
+    const body = await getJson(res);
+    expect(body.groups).toHaveLength(1);
+    expect(body.groups[0]).toMatchObject({ id: "clickhouse", name: "clickhouse" });
+    expect(body.groups[0]?.members).toEqual([
+      {
+        connectionId: "clickhouse",
+        dbType: "clickhouse",
+        description: "Standalone ClickHouse",
+      },
+    ]);
+    expect(body.reason).toBeNull();
   });
 });
 

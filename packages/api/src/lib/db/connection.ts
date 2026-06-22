@@ -17,6 +17,7 @@
 
 import { matchError } from "@useatlas/types";
 import type { AtlasMode } from "@useatlas/types/auth";
+import type { PoolClient as PgPoolClient } from "pg";
 import { Data, Effect, Schedule, Duration, Fiber } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -212,6 +213,86 @@ export interface ConnectionConfig {
 /** Regex for valid SQL identifiers (used for schema name validation). */
 const VALID_SQL_IDENTIFIER = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
+// --- Cold-connect retry (#3867) ---
+//
+// The FIRST analytical query after the API (re)starts can transiently fail
+// while the pool is cold: the very first `pool.connect()` / `pool.getConnection()`
+// races a not-yet-ready socket and rejects with a connection-establishment
+// error (ECONNREFUSED / ETIMEDOUT / a dropped TLS handshake), which surfaced to
+// the user as a bare "Query failed." even though an immediate retry succeeded.
+//
+// We retry the ACQUIRE step exactly once, and ONLY when the failure is a
+// transient connection-establishment error — never a query-execution error
+// (bad SQL, timeout, permission), which must surface as-is. A persistent
+// connect failure is re-thrown after the single retry, so a genuinely
+// unreachable datasource still produces a real error, not a false success.
+
+/** One retry on a cold-connect failure; brief fixed backoff to let the socket settle. */
+const COLD_CONNECT_RETRY_DELAY_MS = 150;
+
+/** Node socket / driver error codes that indicate a transient connection-establishment failure. */
+const TRANSIENT_CONNECT_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EPIPE",
+  "EAI_AGAIN", // transient DNS failure
+  "PROTOCOL_CONNECTION_LOST", // mysql2
+  "ER_CON_COUNT_ERROR", // mysql2 — server momentarily out of connection slots
+]);
+
+/** Substrings of connection-establishment error messages drivers emit without a stable `code`. */
+const TRANSIENT_CONNECT_MESSAGES = [
+  "connection terminated unexpectedly", // pg: socket dropped mid-connect
+  "connection terminated due to connection timeout", // pg connect timeout
+  "timeout exceeded when trying to connect", // pg pool acquire timeout
+  "connect etimedout", // mysql2 connect timeout
+  "the server closed the connection", // generic
+];
+
+/**
+ * Whether an error thrown while ACQUIRING a pooled connection is a transient
+ * connection-establishment failure worth one retry. Matches on the Node error
+ * `code` first (most reliable), then on well-known message substrings for
+ * drivers that don't set a stable code on connect timeouts.
+ *
+ * Deliberately conservative: query-execution failures (syntax, permission,
+ * statement timeout) don't reach this path — it only wraps the acquire step —
+ * but even so we only treat the enumerated transient signals as retryable.
+ */
+export function isTransientConnectError(err: unknown): boolean {
+  const code = (err as { code?: unknown })?.code;
+  if (typeof code === "string" && TRANSIENT_CONNECT_CODES.has(code)) return true;
+  const message = err instanceof Error ? err.message.toLowerCase() : "";
+  return TRANSIENT_CONNECT_MESSAGES.some((m) => message.includes(m));
+}
+
+/**
+ * Acquire a pooled connection, retrying ONCE on a transient cold-connect
+ * failure. The acquire callback is the only thing retried — the caller runs
+ * the actual query on the returned connection, so a query-execution error is
+ * never retried here. A non-transient acquire failure, or a second transient
+ * failure, propagates unchanged.
+ */
+export async function acquireWithColdConnectRetry<T>(
+  acquire: () => Promise<T>,
+  context: { dbType: DBType; targetHost?: string },
+): Promise<T> {
+  try {
+    return await acquire();
+  } catch (err) {
+    if (!isTransientConnectError(err)) throw err;
+    log.warn(
+      { err: errorMessage(err), dbType: context.dbType, targetHost: context.targetHost },
+      "Transient cold-connect failure acquiring pooled connection — retrying once",
+    );
+    await new Promise((r) => setTimeout(r, COLD_CONNECT_RETRY_DELAY_MS));
+    return acquire();
+  }
+}
+
 function createPostgresDB(config: ConnectionConfig): DBConnection {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Pool } = require("pg");
@@ -254,9 +335,18 @@ function createPostgresDB(config: ConnectionConfig): DBConnection {
   // first queries don't all hit pg_namespace redundantly.
   let schemaCheckPromise: Promise<void> | null = null;
 
+  const pgTargetHost = extractTargetHost(config.url);
+
   return {
     async query(sql: string, timeoutMs = 30000, params?: readonly unknown[]) {
-      const client = await pool.connect();
+      // Acquire with a single cold-connect retry (#3867). Only the connect is
+      // retried — the query below runs once, so a query error never retries.
+      // `pool` is untyped (require("pg")), so annotate the acquire return so the
+      // generic infers the pg client shape instead of `unknown`.
+      const client = await acquireWithColdConnectRetry<PgPoolClient>(
+        () => pool.connect(),
+        { dbType: "postgres", targetHost: pgTargetHost },
+      );
       try {
         // Verify the schema exists (once, shared across concurrent callers).
         // Must run BEFORE setting search_path so no query executes against a
@@ -332,6 +422,17 @@ function createPostgresDB(config: ConnectionConfig): DBConnection {
   };
 }
 
+/**
+ * Minimal structural shape of a mysql2 pooled connection — only the members the
+ * query path uses. `pool.getConnection()` is untyped (require("mysql2/promise")),
+ * so this annotates the cold-connect-retry acquire so the generic infers this
+ * instead of `unknown` (the prior code relied on the require's implicit `any`).
+ */
+interface MySqlPoolConnection {
+  execute(sql: string, values?: unknown[]): Promise<[unknown, unknown]>;
+  release(): void;
+}
+
 function createMySQLDB(config: ConnectionConfig): DBConnection {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mysql = require("mysql2/promise");
@@ -343,9 +444,15 @@ function createMySQLDB(config: ConnectionConfig): DBConnection {
     bigNumberStrings: true,
   });
 
+  const mysqlTargetHost = extractTargetHost(config.url);
+
   return {
     async query(sql: string, timeoutMs = 30000, params?: readonly unknown[]) {
-      const conn = await pool.getConnection();
+      // Acquire with a single cold-connect retry (#3867).
+      const conn = await acquireWithColdConnectRetry<MySqlPoolConnection>(
+        () => pool.getConnection(),
+        { dbType: "mysql", targetHost: mysqlTargetHost },
+      );
       try {
         // Defense-in-depth: read-only session prevents DML even if validation has a bug
         await conn.execute('SET SESSION TRANSACTION READ ONLY');

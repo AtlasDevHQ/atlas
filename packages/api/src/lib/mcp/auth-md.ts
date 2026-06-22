@@ -72,8 +72,9 @@ export interface BuildAuthMdOptions {
   readonly scopes: readonly AuthMdScope[];
   /**
    * Path of the unauthenticated onboarding MCP endpoint that hosts the
-   * `start_trial` tool, e.g. `/mcp/onboarding/sse`. Named explicitly so an
-   * agent knows where to call it.
+   * `start_trial` tool, e.g. `/mcp/onboarding` (the canonical Streamable HTTP
+   * path — no `/sse` suffix). Named explicitly so an agent knows where to
+   * call it.
    */
   readonly onboardingPath: string;
   /**
@@ -160,6 +161,11 @@ endpoint** at:
 \`\`\`
 ${onboardingPath}
 \`\`\`
+
+This endpoint speaks the **Streamable HTTP** MCP transport — a single URL that
+handles \`POST\`/\`GET\`/\`DELETE\` with an \`mcp-session-id\` header. It is NOT
+the deprecated HTTP+SSE transport, so point a Streamable HTTP client at it (the
+legacy \`${onboardingPath}/sse\` alias resolves to the same endpoint).
 
 \`start_trial\` is the only capability that endpoint exposes — it cannot
 query data or bind an actor. Call it with:

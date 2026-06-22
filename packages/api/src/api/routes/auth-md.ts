@@ -45,8 +45,14 @@ export const authMd = new Hono();
 /** Public docs base an integrator can follow to go deeper. */
 const ATLAS_DOCS_URL = "https://docs.useatlas.dev";
 
-/** Path of the unauthenticated onboarding MCP endpoint hosting `start_trial`. */
-const ONBOARDING_MCP_PATH = "/mcp/onboarding/sse";
+/**
+ * Path of the unauthenticated onboarding MCP endpoint hosting `start_trial`.
+ * The canonical Streamable HTTP path — no `/sse` suffix, which would connote
+ * the deprecated HTTP+SSE transport this endpoint does NOT speak (#3886). The
+ * legacy `/mcp/onboarding/sse` alias still resolves; auth.md advertises the
+ * canonical one.
+ */
+const ONBOARDING_MCP_PATH = "/mcp/onboarding";
 
 /**
  * Human-readable grants for the MCP scopes, keyed off the canonical scope

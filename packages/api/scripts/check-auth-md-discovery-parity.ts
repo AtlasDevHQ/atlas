@@ -75,7 +75,8 @@ const apiRoot = join(import.meta.dir, "..");
  * host).
  */
 export const ATLAS_DOCS_URL = "https://docs.useatlas.dev";
-const ONBOARDING_MCP_PATH = "/mcp/onboarding/sse";
+// Canonical Streamable HTTP path — mirrors `api/routes/auth-md.ts` (#3886).
+const ONBOARDING_MCP_PATH = "/mcp/onboarding";
 
 /**
  * `.well-known` host fixtures. Each entry drives both the rendered `/auth.md`

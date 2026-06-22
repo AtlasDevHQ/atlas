@@ -484,11 +484,17 @@ describe("onboarding SaaS gating", () => {
     mockDeployMode = "saas";
   });
 
-  it("router has no /sse route off-SaaS (404), present on SaaS (not 404)", async () => {
+  it("/sse returns a structured 404 off-SaaS, serves on SaaS — gate is per-request, route always registered (#3886)", async () => {
+    // The /sse route is ALWAYS registered (so it wins precedence over the hosted
+    // param route regardless of when config resolved); off-SaaS the handler
+    // refuses with a structured 404 rather than the route being absent.
     mockDeployMode = "self-hosted";
     const offRouter = createOnboardingMcpRouter();
     const off = await offRouter.request("/sse", { method: "POST" });
     expect(off.status).toBe(404);
+    const offBody = (await off.json()) as { error?: string; requestId?: string };
+    expect(offBody.error).toBe("not_found");
+    expect(offBody.requestId).toBeTruthy();
 
     mockDeployMode = "saas";
     const onRouter = createOnboardingMcpRouter();
@@ -498,6 +504,27 @@ describe("onboarding SaaS gating", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
     });
     expect(on.status).not.toBe(404);
+  });
+
+  it("a router built off-SaaS still serves once config flips to SaaS — no construction-time gate (#3886)", async () => {
+    // Reproduces the server.ts boot ordering at the unit level: the router is
+    // constructed before config resolves to SaaS, yet must serve once it does.
+    mockDeployMode = "self-hosted";
+    const router = createOnboardingMcpRouter();
+
+    mockDeployMode = "saas";
+    const res = await router.request("/sse", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "probe", version: "1.0" } },
+      }),
+    });
+    expect(res.status).not.toBe(404);
+    expect(res.headers.get("mcp-session-id")).toBeTruthy();
   });
 
   it("returns a structured unknown_session 404 for a bogus mcp-session-id (SaaS)", async () => {

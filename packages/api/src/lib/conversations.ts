@@ -438,12 +438,25 @@ export async function verifyGroupBelongsToOrg(
   try {
     // Post-0096 cutover (#2744 / ADR-0007 pure-collapse): there is no
     // `connection_groups` row — a group is implicit, defined by any
-    // datasource install whose `config->>'group_id'` matches. The group
-    // "belongs to" the caller's org if at least one such install lives
-    // in the caller's workspace (or `__global__`).
+    // datasource install whose group id matches. The group "belongs to"
+    // the caller's org if at least one such install lives in the caller's
+    // workspace (or `__global__`).
+    //
+    // #3879 — the group id is resolved as `COALESCE(config->>'group_id',
+    // install_id)`, NOT the bare `config->>'group_id'`. A standalone
+    // datasource with no explicit `config.group_id` is its OWN group-of-one
+    // keyed by its `install_id` (#3855), which is exactly how the env-picker
+    // (`/me/connection-groups`) and the write-side resolvers
+    // (`resolveGroupIdForConnection` / `inlineConnectionGroupSql`) surface it.
+    // Matching only the bare `config->>'group_id'` here made this gate
+    // disagree with the picker: a freshly-installed group-less datasource
+    // appeared in the picker keyed by its install_id, but pinning it 400'd
+    // with "environment not available" because no row had
+    // `config->>'group_id' = <install_id>`. The COALESCE keeps the gate in
+    // lockstep with the canonical group-of-one resolution.
     const rows = await internalQuery<{ install_id: string }>(
       `SELECT install_id FROM workspace_plugins
-        WHERE config->>'group_id' = $1
+        WHERE COALESCE(config->>'group_id', install_id) = $1
           AND pillar = 'datasource'
           AND (workspace_id IS NOT DISTINCT FROM $2 OR workspace_id = '__global__')
         LIMIT 1`,

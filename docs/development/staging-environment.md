@@ -883,6 +883,90 @@ RESOLVED CONTRACT note in `deploy/api-staging/atlas.config.ts`.
 
 ---
 
+## 8. Analytics-datasource fleet — operational notes (#3253 soak matrix)
+
+The multi-engine datasource-matrix soak ([#3253](https://github.com/AtlasDevHQ/atlas/issues/3253))
+runs Postgres + MySQL + ClickHouse + Elasticsearch + OpenSearch as **live
+analytics datasources** in one workspace, all driven through the deployed
+agent. Those engines run as their own Railway services in the `staging`
+environment of the `satisfied-creation` project, alongside `staging-postgres`
+(Atlas's internal DB):
+
+| Service | Engine | Role |
+|---------|--------|------|
+| `staging-postgres` | Postgres 16 | internal DB (auth/audit/settings) — always on |
+| `MySQL` | MySQL | analytics datasource |
+| `ClickHouse` | ClickHouse | analytics datasource |
+| `Elasticsearch` | Elasticsearch | analytics datasource |
+| `railwayapp-opensearch` | OpenSearch 2.19 (`vergissberlin/railwayapp-opensearch` template) | analytics datasource |
+
+Two operational characteristics surfaced by the 2026-06-22 soak are now fixed
+on the Railway side. Both fixes live in **Railway service config**, not the
+repo — they're recorded here because the soak only completed by working around
+them manually.
+
+### App Sleep is disabled on every analytics DB ([#3880](https://github.com/AtlasDevHQ/atlas/issues/3880))
+
+Atlas connects to these services over the **private network**
+(`*.railway.internal`). Railway only wakes a sleeping service on **public /
+edge-proxy** inbound traffic — **not** on private-network inbound from
+`api-staging`. So a slept analytics DB makes the **first cold agent query hard-
+fail with `ECONNREFUSED`**, and nothing Atlas does over the private network
+wakes it (only a redeploy or external public traffic does).
+
+Fix: **App Sleep is turned off** (`sleep_application = false`) on `ClickHouse`,
+`Elasticsearch`, `railwayapp-opensearch`, and `MySQL` so they stay warm and a
+cold agent query connects without a manual redeploy. `staging-postgres` was
+already always-on.
+
+> ⚠️ [#3867](https://github.com/AtlasDevHQ/atlas/issues/3867)'s cold-pool retry
+> handles a **transient** cold-connect on a **live** pool — it does **not** (and
+> shouldn't) cover a fully-slept server. A slept service is `ECONNREFUSED` on a
+> stopped process; the retry can only help once the server is up.
+
+If App Sleep is ever re-enabled to save spend, the pre-soak wake step is: open
+each analytics DB service in Railway and redeploy it (or hit a public endpoint)
+**before** starting the soak — a private-network query alone will not wake it.
+
+### OpenSearch disk watermark + ephemeral data ([#3878](https://github.com/AtlasDevHQ/atlas/issues/3878))
+
+`railwayapp-opensearch` keeps `path.data=/usr/share/opensearch/datalocal` — the
+data dir sits on the **small ephemeral container filesystem**, not the attached
+`opensearch-data` volume. That's the deliberate volume-UID workaround: the
+volume mounts root-owned but the process runs as `RAILWAY_RUN_UID=1000`, so
+data was pushed off the volume to a container-writable path (see
+`docs/development/...` and the volume-UID note in project memory).
+
+The small ephemeral fs trips OpenSearch's **disk-based shard-allocation
+watermark** (low 85% / high 90% / flood 95%): a fresh index won't allocate its
+primary, and the flood-stage `index.blocks.read_only_allow_delete` makes
+`/_cluster/health` and queries hang (the soak saw 21ms↔>20s latency swings and
+a `degraded` Atlas datasource).
+
+Fix: set **`cluster.routing.allocation.disk.threshold_enabled=false`** as a
+Railway service variable on `railwayapp-opensearch`. The OpenSearch Docker image
+folds dotted env-var names into `opensearch.yml`, so the setting applies **at
+boot**. This matters: the setting is a *dynamic* cluster setting, but applying
+it via the `_cluster/settings` API would be **lost on every redeploy** because
+cluster state lives on the ephemeral `path.data`. Only a boot-time setting
+survives. With the decider off, the node boots **GREEN** and fresh indices
+allocate without manually disabling the watermark each time. Disabling the
+decider also clears any stuck `read_only_allow_delete` block.
+
+### Data persistence decision: stay ephemeral, seed-before-soak
+
+OpenSearch / ClickHouse / Elasticsearch data on staging is **ephemeral** — a
+redeploy (including the wake-from-sleep redeploy above) **wipes it**. The
+decision is to **keep it ephemeral** rather than move onto a persistent volume:
+the OpenSearch volume-UID workaround already forced `path.data` off the volume,
+and fixing that properly means forking the template entrypoint to `chown` the
+mount for UID 1000 — not worth it for throwaway soak data. So **re-seed indices
+/ tables at the start of each soak** and don't expect analytics-DB data to
+survive a restart. (The internal `staging-postgres` is the only persistent
+store, and it holds no analytics data.)
+
+---
+
 ## Operational rules
 
 - **New integrations start on staging.** When adding a chat platform, action
@@ -894,6 +978,11 @@ RESOLVED CONTRACT note in `deploy/api-staging/atlas.config.ts`.
 - **A red staging run blocks the tag.** `/ci` runs before a release tag is cut,
   and a staging regression should be caught and fixed on `main` before
   `/release`.
+- **Analytics DBs don't sleep, and their data is ephemeral.** App Sleep is off
+  on the staging analytics datasources ([#3880](https://github.com/AtlasDevHQ/atlas/issues/3880)) —
+  a private-network query from `api-staging` can't wake a slept service, so a
+  cold query would `ECONNREFUSED`. Their data is wiped on redeploy; **re-seed
+  before a soak** (see §8).
 
 ## Quick smoke check (manual)
 

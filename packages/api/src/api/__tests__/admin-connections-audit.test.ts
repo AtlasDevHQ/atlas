@@ -65,6 +65,15 @@ const mocks = createApiTestMocks({
       list: mockConnectionList,
       has: mockConnectionHas,
       describe: mockConnectionDescribe,
+      // #3853 — the `/:id/test` route now resolves presence via the
+      // workspace-scoped describe and probes via healthCheckForWorkspace.
+      // Derive describeForWorkspace from `mockConnectionList` so the existing
+      // "not registered (404)" test (which sets list → []) still 404s; warehouse
+      // is a native id, so hasDirectForWorkspace is false and
+      // healthCheckForWorkspace delegates to the native healthCheck mock.
+      describeForWorkspace: () => mockConnectionList().map((id) => ({ id, dbType: "postgres" })),
+      hasDirectForWorkspace: () => false,
+      healthCheckForWorkspace: (_orgId: string, id: string) => mockConnectionHealthCheck(id),
       register: mockConnectionRegister,
       unregister: mockConnectionUnregister,
       healthCheck: mockConnectionHealthCheck,

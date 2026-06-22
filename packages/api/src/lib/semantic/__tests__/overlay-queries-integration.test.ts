@@ -22,7 +22,7 @@ import {
   _resetPool,
   hasInternalDB as _hasInternalDB,
 } from "@atlas/api/lib/db/internal";
-import { listEntitiesWithOverlay } from "@atlas/api/lib/semantic/entities";
+import { listEntitiesWithOverlay, listEntityRows } from "@atlas/api/lib/semantic/entities";
 
 // ---------------------------------------------------------------------------
 // In-memory Postgres wired into the internal DB pool singleton
@@ -296,6 +296,134 @@ describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", 
     seedEntity({ id: "demo-ent", name: "novamart_orders", status: "published", connectionId: "__demo__" });
 
     const rows = await listEntitiesWithOverlay("org-1", "entity");
+    expect(rows).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Group-of-one — standalone group-less datasources (#3855)
+  // -------------------------------------------------------------------------
+
+  /**
+   * A group-LESS datasource install: `config` carries no `group_id`, so its
+   * entities key under the bare `install_id` (a group-of-one) rather than the
+   * shared NULL/default bucket. Distinct from {@link seedConnection}, which
+   * always stamps `config.group_id = g_<id>`.
+   */
+  function seedGrouplessConnection(
+    id: string,
+    status: "published" | "draft" | "archived" = "published",
+    workspaceId = "org-1",
+  ): void {
+    db.public.none(
+      `INSERT INTO workspace_plugins (install_id, workspace_id, pillar, status, config)
+       VALUES ('${id}', '${workspaceId}', 'datasource', '${status}', '{}'::jsonb)`,
+    );
+  }
+
+  /** Seed an entity keyed directly under a group-of-one's bare `install_id`. */
+  function seedGroupOfOneEntity(opts: {
+    id: string;
+    name: string;
+    status: "published" | "draft" | "draft_delete" | "archived";
+    installId: string;
+    yaml?: string;
+  }): void {
+    const yaml = (opts.yaml ?? `table: ${opts.name}`).replace(/'/g, "''");
+    db.public.none(
+      `INSERT INTO semantic_entities (id, org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES ('${opts.id}', 'org-1', 'entity', '${opts.name}', '${yaml}', '${opts.installId}', '${opts.status}')`,
+    );
+  }
+
+  it("two same-named tables on distinct group-less connections both survive — no last-write-wins (#3855)", async () => {
+    // The bug: `test_orders` generated+saved from `mysql-staging` then from
+    // `clickhouse` (both group-less → pre-fix resolved to NULL) shared the
+    // `coalesce(connection_group_id,'default')` upsert key and the second
+    // clobbered the first. The fix keys each under its own install_id, so the
+    // two rows are distinct AND each is surfaced by the install_id visibility
+    // branch.
+    seedGrouplessConnection("mysql-staging");
+    seedGrouplessConnection("clickhouse");
+    seedGroupOfOneEntity({
+      id: "e-mysql",
+      name: "test_orders",
+      status: "published",
+      installId: "mysql-staging",
+      yaml: "table: test_orders\nengine: mysql",
+    });
+    seedGroupOfOneEntity({
+      id: "e-ch",
+      name: "test_orders",
+      status: "published",
+      installId: "clickhouse",
+      yaml: "table: test_orders\nengine: clickhouse",
+    });
+
+    const rows = await listEntitiesWithOverlay("org-1", "entity");
+    // Two distinct rows — one per connection group-of-one. `DISTINCT ON`
+    // keys on connection_group_id, so the same name no longer collapses.
+    expect(rows).toHaveLength(2);
+    const scopes = rows.map((r) => r.connection_group_id).toSorted();
+    expect(scopes).toEqual(["clickhouse", "mysql-staging"]);
+    // Each row kept its own dialect-specific YAML — neither overwrote the other.
+    const byScope = new Map(rows.map((r) => [r.connection_group_id, r.yaml_content]));
+    expect(byScope.get("mysql-staging")).toContain("engine: mysql");
+    expect(byScope.get("clickhouse")).toContain("engine: clickhouse");
+  });
+
+  it("a group-of-one entity is invisible once its standalone install is shadowed/archived (#3855)", async () => {
+    // Sanity that the install_id visibility branch is gated on a LIVE install,
+    // not a blanket pass — archiving the standalone datasource hides its
+    // group-of-one entities just like a grouped connection.
+    seedGrouplessConnection("clickhouse", "archived");
+    seedGroupOfOneEntity({ id: "e-ch", name: "test_orders", status: "published", installId: "clickhouse" });
+
+    const rows = await listEntitiesWithOverlay("org-1", "entity");
+    expect(rows).toHaveLength(0);
+  });
+
+  it("a per-org install shadows a `__global__` group-of-one install with the same id (#3855)", async () => {
+    // The group-less mirror of the #2304 shadow-precedence check: a `__global__`
+    // group-of-one install is surfaced via the global install_id branch UNLESS
+    // the org has its own row at the same install_id, in which case the NOT-IN
+    // shadow guard drops it (and its entities) from the developer-mode overlay.
+    seedGrouplessConnection("clickhouse", "published", "__global__");
+    seedGroupOfOneEntity({ id: "e-ch", name: "test_orders", status: "published", installId: "clickhouse" });
+    expect(rowsByName(await listEntitiesWithOverlay("org-1", "entity"))).toEqual({ test_orders: "published" });
+
+    // Org-local install of the same id arrives — shadows the global group-of-one.
+    seedGrouplessConnection("clickhouse", "archived", "org-1");
+    expect(await listEntitiesWithOverlay("org-1", "entity")).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // listEntityRows (PUBLISHED read path) — the path real end-user queries take.
+  // It carries the same group-of-one visibility branches as the developer
+  // overlay above but with a `status = 'published'` install filter, so it
+  // needs its own coverage: a copy-paste slip in the published variant would
+  // pass every developer-mode test yet make a standalone datasource's tables
+  // un-queryable in production (#3855, pr-test-analyzer gap #1).
+  // -------------------------------------------------------------------------
+
+  it("listEntityRows(published) surfaces two same-named group-of-one tables on distinct connections (#3855)", async () => {
+    seedGrouplessConnection("mysql-staging");
+    seedGrouplessConnection("clickhouse");
+    seedGroupOfOneEntity({ id: "e-mysql", name: "test_orders", status: "published", installId: "mysql-staging" });
+    seedGroupOfOneEntity({ id: "e-ch", name: "test_orders", status: "published", installId: "clickhouse" });
+
+    const rows = await listEntityRows("org-1", "entity", "published");
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.connection_group_id).toSorted()).toEqual(["clickhouse", "mysql-staging"]);
+  });
+
+  it("listEntityRows(published) hides a group-of-one entity whose standalone install is archived (#3855)", async () => {
+    // Only `status = 'published'` installs count in the published read — an
+    // archived (or draft-only) standalone datasource must not surface its
+    // group-of-one entities here.
+    seedGrouplessConnection("clickhouse", "archived");
+    seedGroupOfOneEntity({ id: "e-ch", name: "test_orders", status: "published", installId: "clickhouse" });
+
+    const rows = await listEntityRows("org-1", "entity", "published");
     expect(rows).toHaveLength(0);
   });
 });

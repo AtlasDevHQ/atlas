@@ -466,19 +466,29 @@ async function registerPluginDatasourceInstall(
  * Resolve `(row, decryptedConfig)` and register the resulting native pool
  * with the `ConnectionRegistry`.
  *
+ * The boolean return reports whether a FRESH (workspace, install_id)
+ * registration happened — it is NOT "did anything get built". For a plugin
+ * dbType the live connection is ALWAYS (re)built via `createFromConfig`
+ * regardless of the return value (see `registerPluginDatasourceInstall`).
+ *
  * Returns:
- *   - `true`  — a fresh registration was performed (the per-(workspace,
- *               install_id) config and/or the bare install_id row was new)
+ *   - `true`  — a fresh registration was performed: for native types the
+ *               per-(workspace, install_id) config and/or the bare install_id
+ *               row was new; for plugin types no direct connection existed for
+ *               this (workspace, install_id) before this call
  *   - `false` — the dbType is handler-managed (Salesforce / OAuth — skipped
- *               entirely, see `HANDLER_MANAGED_DATASOURCE_DBTYPES`), OR the
- *               dbType is plugin-managed (filter short-circuit), OR BOTH the
- *               per-(workspace, install_id) config and the bare install_id were
- *               already registered (full idempotent re-register)
+ *               entirely, NOTHING built, see `HANDLER_MANAGED_DATASOURCE_DBTYPES`),
+ *               OR a plugin connection for this (workspace, install_id) already
+ *               existed and was REBUILT in place (a new connection IS live), OR
+ *               for native types BOTH the per-(workspace, install_id) config and
+ *               the bare install_id were already registered (idempotent re-register).
+ *               Callers that must probe the live connection should NOT gate on
+ *               this — gate on `connections.hasDirectForWorkspace` instead.
  *
  * Throws on any resolver violation (missing required field, invalid
  * schema identifier, unknown catalog slug). Resolver runs before the
- * native filter — a plugin-managed row with malformed config throws
- * here, never reaching the short-circuit branch.
+ * native filter — a malformed-config row throws here, never reaching the
+ * registration branch.
  *
  * The native-only filter matches the prior in-line check in
  * `loadSavedConnections` — without it, `connections.register` would

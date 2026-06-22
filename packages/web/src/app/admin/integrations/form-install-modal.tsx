@@ -305,6 +305,20 @@ export function buildSubmitPayload(
   return out;
 }
 
+/**
+ * Reserved form key carrying the per-install connection id (#3858). Mirrors the
+ * server-side `DATASOURCE_INSTALL_ID_FIELD`: it selects/names the
+ * `workspace_plugins` row rather than being a catalog `config_schema` field, so a
+ * workspace can hold more than one datasource of the same catalog (e.g. an
+ * Elasticsearch and an OpenSearch connection under the unified `elasticsearch`
+ * slug). Underscore-bracketed so it never collides with a real catalog field key.
+ *
+ * Wire contract: this literal must equal the API's `DATASOURCE_INSTALL_ID_FIELD`.
+ * The two are jointly pinned by drift tests (this side asserts the literal; the
+ * API side imports the real constant) — keep them in lockstep.
+ */
+export const CONNECTION_ID_FIELD = "__install_id__";
+
 export interface FormInstallModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -315,8 +329,55 @@ export interface FormInstallModalProps {
   description?: string | null;
   /** The catalog row's `configSchema` JSONB — drives the rendered fields. */
   configSchema: unknown;
+  /**
+   * When true, surface an optional "Connection name" field whose value is sent as
+   * {@link CONNECTION_ID_FIELD} — the per-install connection id (#3858). Set by
+   * the datasource picker (`/admin/connections`) so a workspace can install
+   * multiple datasources of the same catalog; omitted for chat/action installs
+   * (those are single-instance per workspace, so no id field). Leaving it blank
+   * installs the first connection under the catalog slug.
+   */
+  showConnectionId?: boolean;
   /** Fired after a successful install so the parent can refetch the catalog list. */
   onInstalled: () => void;
+}
+
+/**
+ * The synthetic "Connection name" descriptor prepended to a datasource install
+ * form (#3858). Optional + non-secret; its value rides the reserved
+ * {@link CONNECTION_ID_FIELD} key, which the server reads as the per-install
+ * connection id (default = catalog slug when blank).
+ */
+const CONNECTION_ID_DESCRIPTOR: FormFieldDescriptor = {
+  key: CONNECTION_ID_FIELD,
+  type: "string",
+  label: "Connection name",
+  description:
+    "A unique id for this connection (letters, digits, dots, dashes, underscores). " +
+    "Leave blank for your first connection of this type; set a distinct name to add another " +
+    "(e.g. an Elasticsearch and an OpenSearch cluster side by side).",
+  required: false,
+  secret: false,
+};
+
+/**
+ * Assemble the rendered field list: the parsed catalog `configSchema`, with the
+ * connection-id field prepended only for datasource installs (#3858) so a
+ * workspace can hold multiple datasources of the same catalog. The reserved
+ * field rides the same generic machinery (zod schema, defaults, submit payload)
+ * as every catalog field, so it reaches the server exactly like the others.
+ * Chat/action installs (`showConnectionId = false`) get the parsed fields
+ * unchanged — they stay single-instance and never emit the reserved key.
+ *
+ * Exported as a pure function so both branches are unit-testable without
+ * rendering the modal.
+ */
+export function assembleInstallFields(
+  configSchema: unknown,
+  showConnectionId: boolean,
+): FormFieldDescriptor[] {
+  const parsed = parseConfigSchema(configSchema);
+  return showConnectionId ? [CONNECTION_ID_DESCRIPTOR, ...parsed] : parsed;
 }
 
 /**
@@ -333,9 +394,13 @@ export function FormInstallModal({
   name,
   description,
   configSchema,
+  showConnectionId = false,
   onInstalled,
 }: FormInstallModalProps) {
-  const fields = useMemo(() => parseConfigSchema(configSchema), [configSchema]);
+  const fields = useMemo(
+    () => assembleInstallFields(configSchema, showConnectionId),
+    [configSchema, showConnectionId],
+  );
   const schema = useMemo(() => buildZodSchema(fields), [fields]);
   const defaultValues = useMemo(() => buildDefaultValues(fields), [fields]);
   const [saving, setSaving] = useState(false);

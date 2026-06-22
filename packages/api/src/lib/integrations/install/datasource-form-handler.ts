@@ -39,11 +39,30 @@
  * misconfigured SaaS deploy fails closed at the credential boundary rather than
  * persisting a credential in plaintext.
  *
- * **Single-instance per workspace.** One install per (workspace, datasource) — a
- * fixed `installId`; re-submitting the form edits the same row. Query wiring for
- * admin-installed plugin datasources lives in the bridge boot path
- * (`loadSavedConnections` → `registerDatasourceInstall`, #3295) — this handler
- * owns install/edit/persist only.
+ * **Multi-instance per workspace (#3858).** A workspace may hold more than one
+ * datasource of the same catalog slug — e.g. an Elasticsearch *and* an OpenSearch
+ * connection (the unified `@useatlas/elasticsearch` plugin serves both under one
+ * slug), or two ClickHouse clusters. Each install gets its own `install_id`,
+ * which is the user-facing connection id keying the connection pool, group, and
+ * semantic scope — exactly how core (postgres/mysql) datasources already work,
+ * and how the OpenAPI datasource handler mints a fresh id per install.
+ *
+ * The form may carry a reserved `install_id` meta-field (see
+ * {@link DATASOURCE_INSTALL_ID_FIELD}) selecting which connection to write:
+ *   - **omitted** → the constructor's default id (conventionally the slug), so
+ *     the first install of a catalog reads `install_id = slug` and the legacy
+ *     single-instance path is unchanged (backward compatible);
+ *   - **present** → that id, letting a second connection of the same catalog
+ *     coexist (and re-submitting with the same id edits THAT connection in place,
+ *     so masked-secret restore-on-save stays keyed to the right row).
+ *
+ * The reserved meta-field is stripped from the config BEFORE the schema-driven
+ * encryption / validation / restore walkers run, so it is never a `config`
+ * column value and never confuses the secret walkers (it is a `workspace_plugins`
+ * column, not catalog config). Query wiring for admin-installed plugin
+ * datasources lives in the bridge boot path (`loadSavedConnections` →
+ * `registerDatasourceInstall`, #3295) — this handler owns install/edit/persist
+ * only.
  *
  * @see ./types.ts — {@link FormBasedInstallHandler}
  * @see ./elasticsearch-form-handler.ts — the #3270 ES specialization
@@ -67,14 +86,47 @@ import type { WorkspaceId } from "@useatlas/types";
 import { FormInstallValidationError } from "./email-form-handler";
 import type { CatalogId, FormBasedInstallHandler, InstallRecord } from "./types";
 
+/**
+ * Reserved form key carrying the per-install connection id (#3858). It is NOT a
+ * catalog `config_schema` field — it selects/names the `workspace_plugins` row,
+ * mirroring a core datasource's connection id. Stripped from the config before
+ * the secret walkers run. Underscore-bracketed so it can never collide with a
+ * real catalog field key (those are plain identifiers like `url` / `apiKey`).
+ *
+ * This is a wire-contract field name: the web install modal sends the same key
+ * (`CONNECTION_ID_FIELD` in `form-install-modal.tsx`). The two literals are
+ * jointly pinned by their drift tests — the API test imports THIS constant; the
+ * web test asserts its mirror equals `"__install_id__"`. Keep them in lockstep.
+ */
+export const DATASOURCE_INSTALL_ID_FIELD = "__install_id__";
+
+/**
+ * Max length for a custom `install_id`. Generous (connection ids are short
+ * labels), and bounded so a pathological paste can't bloat the row key.
+ */
+const INSTALL_ID_MAX = 128;
+
+/**
+ * A custom `install_id` is a connection-id label: non-empty after trimming,
+ * within {@link INSTALL_ID_MAX}, and restricted to URL-safe id characters
+ * (letters, digits, `-`, `_`, `.`). It flows into a connection-pool key, group
+ * name, and semantic scope, so keep it to the same alphabet a path/identifier
+ * would tolerate — rejecting whitespace, slashes, and other delimiters that
+ * would be ambiguous downstream. Mirrors the spirit of core connection ids.
+ */
+const INSTALL_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+
 /** Construction parameters — the only per-datasource knobs. */
 export interface DatasourceFormInstallHandlerOptions {
   /** Catalog slug — the dispatch key in `registerFormHandler` + the `plugin_catalog` lookup. */
   readonly slug: CatalogId;
   /**
-   * Stable per-workspace install id. Datasource installs are single-instance for
-   * this slice, so a fixed id makes re-submits edit-in-place (and the
-   * restore-on-save lookup unambiguous). Conventionally the slug itself.
+   * Default per-workspace install id, used when the form omits a custom
+   * {@link DATASOURCE_INSTALL_ID_FIELD}. Conventionally the slug itself, so the
+   * first install of a catalog keeps the legacy `install_id = slug` row and
+   * re-submitting without a custom id edits it in place (#3858 backward compat).
+   * A form-supplied id overrides this per call, enabling multiple datasources of
+   * the same catalog in one workspace.
    */
   readonly installId: string;
   /** Test-only injection of the install-row id generator. */
@@ -94,13 +146,14 @@ export class DatasourceFormInstallHandler implements FormBasedInstallHandler {
   readonly kind = "form" as const;
 
   protected readonly slug: CatalogId;
-  protected readonly installId: string;
+  /** Default install id (the slug) used when the form omits a custom one. */
+  protected readonly defaultInstallId: string;
   private readonly newId: () => string;
   private readonly log: ReturnType<typeof createLogger>;
 
   constructor(options: DatasourceFormInstallHandlerOptions) {
     this.slug = options.slug;
-    this.installId = options.installId;
+    this.defaultInstallId = options.installId;
     this.newId = options.idGenerator ?? (() => crypto.randomUUID());
     // Per-slug logger so install lines stay attributable per datasource type.
     this.log = createLogger(`integrations.install.${options.slug}`);
@@ -120,7 +173,16 @@ export class DatasourceFormInstallHandler implements FormBasedInstallHandler {
         formErrors: ["Request body must be a JSON object of config fields."],
       });
     }
-    const incoming = formData as Record<string, unknown>;
+    const rawForm = formData as Record<string, unknown>;
+
+    // ── 1b. Resolve + strip the per-install connection id (#3858) ────
+    // The reserved `__install_id__` meta-field selects/names the connection
+    // (defaulting to the slug for the first install). It is NOT a catalog config
+    // field, so strip it before the schema-driven walkers run — leaving it in
+    // `incoming` would persist it as a `config` value and (under a corrupt
+    // schema) be encrypted as if it were a credential.
+    const installId = resolveInstallId(rawForm[DATASOURCE_INSTALL_ID_FIELD], this.defaultInstallId);
+    const { [DATASOURCE_INSTALL_ID_FIELD]: _droppedInstallId, ...incoming } = rawForm;
 
     // ── 2. Load the catalog row (id + live config_schema) ───────────
     // The schema is the source of truth for which fields are secret / required
@@ -191,6 +253,7 @@ export class DatasourceFormInstallHandler implements FormBasedInstallHandler {
     const existingDecrypted = await this.loadExistingDecryptedConfig(
       workspaceId,
       catalogId,
+      installId,
       schema,
     );
     const restored = restoreMaskedSecrets(incoming, existingDecrypted, schema);
@@ -234,7 +297,7 @@ export class DatasourceFormInstallHandler implements FormBasedInstallHandler {
                enabled = true,
                updated_at = NOW()
          RETURNING id`,
-        [candidateId, workspaceId, catalogId, this.installId, JSON.stringify(encryptedConfig)],
+        [candidateId, workspaceId, catalogId, installId, JSON.stringify(encryptedConfig)],
       );
       const returned = rows[0]?.id;
       if (typeof returned !== "string" || returned.length === 0) {
@@ -260,7 +323,7 @@ export class DatasourceFormInstallHandler implements FormBasedInstallHandler {
     }
 
     this.log.info(
-      { workspaceId, installId: persistedId, credentialWritten },
+      { workspaceId, installId, rowId: persistedId, credentialWritten },
       "Datasource install completed",
     );
     return {
@@ -278,6 +341,7 @@ export class DatasourceFormInstallHandler implements FormBasedInstallHandler {
   private async loadExistingDecryptedConfig(
     workspaceId: WorkspaceId,
     catalogId: string,
+    installId: string,
     schema: ConfigSchema,
   ): Promise<Record<string, unknown>> {
     const rows = await internalQuery<ExistingInstallRow>(
@@ -285,11 +349,51 @@ export class DatasourceFormInstallHandler implements FormBasedInstallHandler {
          FROM workspace_plugins
         WHERE workspace_id = $1 AND catalog_id = $2 AND install_id = $3
         LIMIT 1`,
-      [workspaceId, catalogId, this.installId],
+      [workspaceId, catalogId, installId],
     );
     if (rows.length === 0) return {};
     return decryptSecretFields(rows[0].config ?? {}, schema);
   }
+}
+
+/**
+ * Resolve the connection id for this install from the reserved form value,
+ * falling back to `defaultId` (the slug) when omitted. A supplied id is trimmed
+ * and validated against {@link INSTALL_ID_PATTERN} — an invalid one is a 400 with
+ * field-level detail (it becomes a connection-pool key / group / semantic scope,
+ * so it must be a clean identifier), never silently coerced.
+ */
+function resolveInstallId(raw: unknown, defaultId: string): string {
+  if (raw === undefined || raw === null) return defaultId;
+  if (typeof raw !== "string") {
+    throw new FormInstallValidationError({
+      fieldErrors: { [DATASOURCE_INSTALL_ID_FIELD]: ["Connection id must be a string."] },
+      formErrors: [],
+    });
+  }
+  const trimmed = raw.trim();
+  // An empty/whitespace-only value is treated as "not supplied" → default id, so
+  // a blank optional field in the form still installs the first connection.
+  if (trimmed.length === 0) return defaultId;
+  if (trimmed.length > INSTALL_ID_MAX) {
+    throw new FormInstallValidationError({
+      fieldErrors: {
+        [DATASOURCE_INSTALL_ID_FIELD]: [`Connection id must be ${INSTALL_ID_MAX} characters or fewer.`],
+      },
+      formErrors: [],
+    });
+  }
+  if (!INSTALL_ID_PATTERN.test(trimmed)) {
+    throw new FormInstallValidationError({
+      fieldErrors: {
+        [DATASOURCE_INSTALL_ID_FIELD]: [
+          "Connection id may contain only letters, digits, dots, dashes, and underscores.",
+        ],
+      },
+      formErrors: [],
+    });
+  }
+  return trimmed;
 }
 
 /** Keys of every `secret: true` field in a parsed schema. */

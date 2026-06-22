@@ -118,10 +118,12 @@ type HandlerCtor = typeof import("../datasource-form-handler").DatasourceFormIns
 type FormErrCtor = typeof import("../email-form-handler").FormInstallValidationError;
 let DatasourceFormInstallHandler!: HandlerCtor;
 let FormInstallValidationError!: FormErrCtor;
+let DATASOURCE_INSTALL_ID_FIELD!: string;
 
 beforeAll(async () => {
-  DatasourceFormInstallHandler = (await import("../datasource-form-handler"))
-    .DatasourceFormInstallHandler;
+  const mod = await import("../datasource-form-handler");
+  DatasourceFormInstallHandler = mod.DatasourceFormInstallHandler;
+  DATASOURCE_INSTALL_ID_FIELD = mod.DATASOURCE_INSTALL_ID_FIELD;
   FormInstallValidationError = (await import("../email-form-handler")).FormInstallValidationError;
 });
 
@@ -143,12 +145,30 @@ function newHandler(
   return new DatasourceFormInstallHandler({ slug, installId, idGenerator });
 }
 
-/** The config blob written by the (single) upsert INSERT, parsed from JSON. */
-function upsertedConfig(): Record<string, unknown> {
+/** The single upsert INSERT capture (throws if none). */
+function upsertInsert(): CapturedQuery {
   const insert = captured.find((q) => q.sql.includes("INSERT INTO workspace_plugins"));
   if (!insert) throw new Error("no INSERT captured");
-  const json = insert.params[4] as string;
+  return insert;
+}
+
+/** The config blob written by the (single) upsert INSERT, parsed from JSON. */
+function upsertedConfig(): Record<string, unknown> {
+  const json = upsertInsert().params[4] as string;
   return JSON.parse(json) as Record<string, unknown>;
+}
+
+/** The `install_id` ($4) the upsert INSERT keyed the row on. */
+function upsertedInstallId(): string {
+  return upsertInsert().params[3] as string;
+}
+
+/** The `install_id` ($3) the existing-row restore lookup queried. */
+function restoreLookupInstallId(): string | undefined {
+  const lookup = captured.find(
+    (q) => q.sql.includes("FROM workspace_plugins") && q.sql.includes("SELECT config"),
+  );
+  return lookup?.params[2] as string | undefined;
 }
 
 beforeEach(() => {
@@ -272,6 +292,109 @@ describe("DatasourceFormInstallHandler — ClickHouse persistence + encryption",
     expect(decryptSecret(cfg.url as string)).toBe("clickhouse://user:pass@host:8443/analytics");
     // Non-secret description stays plaintext.
     expect(cfg.description).toBe("Prod ClickHouse");
+  });
+});
+
+// ── Multi-instance per catalog (#3858) ───────────────────────────────────────
+// A workspace must be able to hold more than one datasource of the same catalog
+// slug (e.g. an Elasticsearch AND an OpenSearch connection under the unified
+// `elasticsearch` slug). The reserved `__install_id__` meta-field selects/names
+// the connection; omitted → the default (slug) for the first install.
+describe("DatasourceFormInstallHandler — multi-instance install id (#3858)", () => {
+  it("defaults install_id to the slug when no custom id is supplied", async () => {
+    const handler = newHandler("clickhouse", "clickhouse", () => "ch-uuid-1");
+    await handler.validateConfig(WSID, { url: "clickhouse://h:8443/db" });
+    expect(upsertedInstallId()).toBe("clickhouse");
+  });
+
+  it("uses a custom install_id so a second connection of the same catalog coexists", async () => {
+    const handler = newHandler("elasticsearch", "elasticsearch", () => "es-uuid-2");
+    catalogSchemaOverride = {
+      value: [{ key: "url", type: "string", label: "URL", required: true, secret: true }],
+    };
+    const result = await handler.validateConfig(WSID, {
+      [DATASOURCE_INSTALL_ID_FIELD]: "opensearch-logs",
+      url: "https://opensearch:9200",
+    });
+    expect(upsertedInstallId()).toBe("opensearch-logs");
+    // The user-facing record's catalogId is the slug (unchanged); the row keys on
+    // the custom install id so it's a distinct connection from `elasticsearch`.
+    expect(result.installRecord.catalogId).toBe("elasticsearch");
+  });
+
+  it("treats a blank/whitespace custom id as 'not supplied' → defaults to the slug", async () => {
+    const handler = newHandler("clickhouse", "clickhouse", () => "ch-uuid-3");
+    await handler.validateConfig(WSID, {
+      [DATASOURCE_INSTALL_ID_FIELD]: "   ",
+      url: "clickhouse://h:8443/db",
+    });
+    expect(upsertedInstallId()).toBe("clickhouse");
+  });
+
+  it("strips the reserved id field from the persisted config (never a config value)", async () => {
+    const handler = newHandler("clickhouse", "clickhouse", () => "ch-uuid-4");
+    await handler.validateConfig(WSID, {
+      [DATASOURCE_INSTALL_ID_FIELD]: "ch-second",
+      url: "clickhouse://h:8443/db",
+      description: "desc",
+    });
+    const cfg = upsertedConfig();
+    expect(cfg[DATASOURCE_INSTALL_ID_FIELD]).toBeUndefined();
+    expect(cfg.description).toBe("desc");
+  });
+
+  it("restore-on-save keys the existing-row lookup on the resolved (custom) install id", async () => {
+    const storedCipher = encryptSecret("clickhouse://user:secret@old:8443/db");
+    existingInstallRows = [{ config: { url: storedCipher, description: "old" } }];
+    const handler = newHandler("clickhouse", "clickhouse", () => "ch-uuid-5");
+    await handler.validateConfig(WSID, {
+      [DATASOURCE_INSTALL_ID_FIELD]: "ch-cluster-b",
+      url: MASKED_PLACEHOLDER,
+      description: "renamed",
+    });
+    // The restore lookup must query the CUSTOM id — not the slug — so editing the
+    // second connection restores ITS secret, not the first connection's.
+    expect(restoreLookupInstallId()).toBe("ch-cluster-b");
+    const cfg = upsertedConfig();
+    expect(decryptSecret(cfg.url as string)).toBe("clickhouse://user:secret@old:8443/db");
+  });
+
+  it("rejects a non-string custom id with field-level detail (no INSERT)", async () => {
+    const handler = newHandler("clickhouse");
+    let caught: unknown;
+    try {
+      await handler.validateConfig(WSID, {
+        [DATASOURCE_INSTALL_ID_FIELD]: 123,
+        url: "clickhouse://h:8443/db",
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(FormInstallValidationError);
+    expect((caught as InstanceType<FormErrCtor>).fieldErrors[DATASOURCE_INSTALL_ID_FIELD]).toBeDefined();
+    expect(captured.find((q) => q.sql.includes("INSERT INTO workspace_plugins"))).toBeUndefined();
+  });
+
+  it("rejects an id with illegal characters (no INSERT)", async () => {
+    const handler = newHandler("clickhouse");
+    await expect(
+      handler.validateConfig(WSID, {
+        [DATASOURCE_INSTALL_ID_FIELD]: "bad id/with spaces",
+        url: "clickhouse://h:8443/db",
+      }),
+    ).rejects.toBeInstanceOf(FormInstallValidationError);
+    expect(captured.find((q) => q.sql.includes("INSERT INTO workspace_plugins"))).toBeUndefined();
+  });
+
+  it("rejects an over-long id (no INSERT)", async () => {
+    const handler = newHandler("clickhouse");
+    await expect(
+      handler.validateConfig(WSID, {
+        [DATASOURCE_INSTALL_ID_FIELD]: "a".repeat(200),
+        url: "clickhouse://h:8443/db",
+      }),
+    ).rejects.toBeInstanceOf(FormInstallValidationError);
+    expect(captured.find((q) => q.sql.includes("INSERT INTO workspace_plugins"))).toBeUndefined();
   });
 });
 

@@ -1446,6 +1446,10 @@ export default function ConnectionsPage() {
           name={formInstallCandidate.name}
           description={formInstallCandidate.description}
           configSchema={formInstallCandidate.configSchema}
+          // Surface the connection-name field so a workspace can install more
+          // than one datasource of the same catalog (#3858) — e.g. an
+          // Elasticsearch and an OpenSearch cluster under the unified slug.
+          showConnectionId
           onInstalled={handleFormInstallInstalled}
         />
       ) : null}

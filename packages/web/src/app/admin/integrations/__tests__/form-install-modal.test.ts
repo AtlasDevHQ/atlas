@@ -16,6 +16,8 @@ import {
   buildDefaultValues,
   buildSubmitPayload,
   isFieldVisible,
+  assembleInstallFields,
+  CONNECTION_ID_FIELD,
   type FormFieldDescriptor,
 } from "../form-install-modal";
 
@@ -126,6 +128,65 @@ describe("isFieldVisible", () => {
     expect(isFieldVisible(username, { authMode: "apiKey" })).toBe(false);
     expect(isFieldVisible(username, { authMode: "none" })).toBe(false);
     expect(isFieldVisible(username, {})).toBe(false);
+  });
+});
+
+// The connection-id field the datasource picker prepends (#3858). Mirrors the
+// `CONNECTION_ID_DESCRIPTOR` the modal injects when `showConnectionId` is set:
+// an optional, non-secret string riding the reserved key.
+const CONNECTION_ID_DESCRIPTOR: FormFieldDescriptor = {
+  key: CONNECTION_ID_FIELD,
+  type: "string",
+  label: "Connection name",
+  required: false,
+  secret: false,
+};
+
+describe("connection-id field (#3858 — multiple datasources per catalog)", () => {
+  test("the reserved key is underscore-bracketed so it can't collide with a catalog field", () => {
+    expect(CONNECTION_ID_FIELD).toBe("__install_id__");
+  });
+
+  test("is optional — a form with only a blank connection id passes validation", () => {
+    const schema = buildZodSchema([CONNECTION_ID_DESCRIPTOR, { key: "url", type: "string", required: true }]);
+    // Blank connection id + a filled url is valid (defaults to the slug server-side).
+    expect(schema.safeParse({ [CONNECTION_ID_FIELD]: "", url: "clickhouse://h:8443/db" }).success).toBe(true);
+  });
+
+  test("a blank connection id is dropped from the submit payload (server defaults to the slug)", () => {
+    const fields = [CONNECTION_ID_DESCRIPTOR, { key: "url", type: "string", required: true } as FormFieldDescriptor];
+    expect(buildSubmitPayload(fields, { [CONNECTION_ID_FIELD]: "", url: "clickhouse://h:8443/db" })).toEqual({
+      url: "clickhouse://h:8443/db",
+    });
+  });
+
+  test("a supplied connection id rides the reserved key into the submit payload", () => {
+    const fields = [CONNECTION_ID_DESCRIPTOR, { key: "url", type: "string", required: true } as FormFieldDescriptor];
+    expect(
+      buildSubmitPayload(fields, { [CONNECTION_ID_FIELD]: "opensearch-logs", url: "https://os:9200" }),
+    ).toEqual({ [CONNECTION_ID_FIELD]: "opensearch-logs", url: "https://os:9200" });
+  });
+});
+
+describe("assembleInstallFields — datasource vs chat/action gating (#3858)", () => {
+  const CATALOG = [
+    { key: "url", type: "string", required: true },
+    { key: "token", type: "string", secret: true },
+  ];
+
+  test("prepends the connection-id field for datasource installs (showConnectionId=true)", () => {
+    const fields = assembleInstallFields(CATALOG, true);
+    expect(fields[0].key).toBe(CONNECTION_ID_FIELD);
+    expect(fields.map((f) => f.key)).toEqual([CONNECTION_ID_FIELD, "url", "token"]);
+  });
+
+  test("chat/action installs (showConnectionId=false) never include the reserved field", () => {
+    const fields = assembleInstallFields(CATALOG, false);
+    expect(fields.map((f) => f.key)).toEqual(["url", "token"]);
+    // Non-regression: a single-instance chat/action submit can never emit the
+    // reserved key, so the server never sees a stray __install_id__ to validate.
+    const payload = buildSubmitPayload(fields, { url: "https://h", token: "t" });
+    expect(payload[CONNECTION_ID_FIELD]).toBeUndefined();
   });
 });
 

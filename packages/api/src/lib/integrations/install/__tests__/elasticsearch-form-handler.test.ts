@@ -96,10 +96,13 @@ type HandlerCtor = typeof import("../elasticsearch-form-handler").ElasticsearchF
 type FormErrCtor = typeof import("../email-form-handler").FormInstallValidationError;
 let ElasticsearchFormInstallHandler!: HandlerCtor;
 let FormInstallValidationError!: FormErrCtor;
+let DATASOURCE_INSTALL_ID_FIELD!: string;
 
 beforeAll(async () => {
   ElasticsearchFormInstallHandler = (await import("../elasticsearch-form-handler"))
     .ElasticsearchFormInstallHandler;
+  DATASOURCE_INSTALL_ID_FIELD = (await import("../datasource-form-handler"))
+    .DATASOURCE_INSTALL_ID_FIELD;
   FormInstallValidationError = (await import("../email-form-handler")).FormInstallValidationError;
 });
 
@@ -196,6 +199,10 @@ describe("ElasticsearchFormInstallHandler — persistence + encryption", () => {
     expect(insert).toBeDefined();
     expect(insert!.sql).toContain("'datasource'");
     expect(insert!.sql).toContain("ON CONFLICT (workspace_id, catalog_id, install_id)");
+    // The ES subclass defaults install_id ($4) to its slug for the first install
+    // (#3858) — pins that the production subclass wires `ELASTICSEARCH_INSTALL_ID`
+    // through, not just the generic handler.
+    expect(insert!.params[3]).toBe("elasticsearch");
 
     const cfg = upsertedConfig();
     // Non-secret url stays plaintext (DB ops grep-able).
@@ -204,6 +211,27 @@ describe("ElasticsearchFormInstallHandler — persistence + encryption", () => {
     expect(typeof cfg.apiKey).toBe("string");
     expect((cfg.apiKey as string).startsWith("enc:v1:")).toBe(true);
     expect(decryptSecret(cfg.apiKey as string)).toBe("base64-encoded-api-key");
+  });
+});
+
+// ── Multi-instance: ES + OpenSearch under one slug (#3858) ────────────────────
+// The unified `@useatlas/elasticsearch` plugin serves BOTH engines under slug
+// `elasticsearch`. A custom connection id on the ES form lets a second
+// connection (e.g. an OpenSearch cluster) coexist with the first.
+describe("ElasticsearchFormInstallHandler — multi-instance install id (#3858)", () => {
+  it("routes a custom connection id to the upsert so OpenSearch coexists with Elasticsearch", async () => {
+    const handler = newHandler(() => "es-uuid-2");
+    const result = await handler.validateConfig(
+      WSID,
+      validForm({ [DATASOURCE_INSTALL_ID_FIELD]: "opensearch-logs" }),
+    );
+    const insert = captured.find((q) => q.sql.includes("INSERT INTO workspace_plugins"));
+    expect(insert!.params[3]).toBe("opensearch-logs");
+    // The user-facing record's catalogId stays the slug; the row keys on the
+    // custom install id, so it's a distinct connection from the first install.
+    expect(result.installRecord.catalogId).toBe("elasticsearch");
+    // The reserved meta-field is stripped — never a config value.
+    expect(upsertedConfig()[DATASOURCE_INSTALL_ID_FIELD]).toBeUndefined();
   });
 });
 

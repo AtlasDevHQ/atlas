@@ -7,11 +7,18 @@
  * As of #3300 this is a thin specialization of the reusable
  * {@link DatasourceFormInstallHandler}: the generic handler carries the entire
  * behavior (config_schema-driven encryption, mask-on-read / restore-on-save,
- * SaaS keyset gate, corrupt-schema fail-close, single-instance upsert) and ES
- * supplies only its slug + install id. ClickHouse / Snowflake / BigQuery
+ * SaaS keyset gate, corrupt-schema fail-close, multi-instance upsert) and ES
+ * supplies only its slug + default install id. ClickHouse / Snowflake / BigQuery
  * register the same generic handler with their own slug — so a change to the
  * install behavior lands in one place, and ES's path stays identical (pinned by
  * `__tests__/elasticsearch-form-handler.test.ts`).
+ *
+ * Multi-instance (#3858): the unified `@useatlas/elasticsearch` plugin serves
+ * BOTH Elasticsearch and OpenSearch under this one slug, so a workspace must be
+ * able to install both at once. The form carries a reserved
+ * {@link DATASOURCE_INSTALL_ID_FIELD} connection id; when omitted, the first
+ * install reads `install_id = elasticsearch` ({@link ELASTICSEARCH_INSTALL_ID})
+ * and a second supplies its own (e.g. `opensearch-logs`).
  *
  * @see ./datasource-form-handler.ts — {@link DatasourceFormInstallHandler}
  * @see ./types.ts — {@link FormBasedInstallHandler}
@@ -26,10 +33,10 @@ export const ELASTICSEARCH_SLUG: CatalogId = "elasticsearch";
 /** Catalog FK — the canonical `catalog:<slug>` id seeded in `plugin_catalog`. */
 export const ELASTICSEARCH_CATALOG_ID = "catalog:elasticsearch";
 /**
- * Stable per-workspace install id — ES is single-instance for this slice, so a
- * fixed id makes re-submits edit-in-place (and the restore-on-save lookup
- * unambiguous). Multi-instance support rides along with the query-wiring slice
- * (#3295).
+ * Default per-workspace install id — used when the install form omits a custom
+ * connection id, so the FIRST Elasticsearch/OpenSearch connection reads
+ * `install_id = elasticsearch` and re-submits without a custom id edit it in
+ * place. A second connection of this catalog supplies its own id (#3858).
  */
 export const ELASTICSEARCH_INSTALL_ID = "elasticsearch";
 

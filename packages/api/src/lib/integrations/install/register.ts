@@ -177,9 +177,11 @@ export function registerBuiltinInstallHandlers(): void {
   // form-installable on SaaS now that the runtime connect path is uniform across
   // plugin datasources (#3297/#3299 adapter registration + the `createFromConfig`
   // bridge; #3295 query-path wiring). Each registers the generic
-  // `DatasourceFormInstallHandler` pinned to its slug — single-instance per
-  // workspace (install_id = slug), config_schema-driven (reads the catalog row
-  // live so the `secret: true` field(s) — ClickHouse/Snowflake `url`, BigQuery
+  // `DatasourceFormInstallHandler` pinned to its slug — multi-instance per
+  // workspace (#3858): the slug is the DEFAULT install_id (first connection), and
+  // a form-supplied connection id lets a second cluster of the same catalog
+  // coexist. The handler is config_schema-driven (reads the catalog row live so
+  // the `secret: true` field(s) — ClickHouse/Snowflake `url`, BigQuery
   // `service_account_json` — encrypt at rest with no per-type branch). No env
   // gate: the customer admin supplies credentials at install, same as every other
   // form handler. `loadSavedConnections` boot-registers the persisted

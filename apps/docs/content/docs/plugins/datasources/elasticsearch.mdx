@@ -52,6 +52,17 @@ A connection needs an endpoint — supply **either** a `url` **or** an Elastic
 | `url`     | no     | `elasticsearch://host[:port][/prefix]` or `opensearch://host[:port][/prefix]`. HTTPS by default; append `?ssl=false` (alias `?tls=false`) for a plaintext local cluster. Credentials are **never** placed in the URL — the parser rejects userinfo and auth query params. |
 | `cloudId` | no     | An Elastic **Cloud ID** (`<name>:<base64>`), decoded to the cluster's HTTPS endpoint. An `atlas.config.ts` convenience — not offered in the admin form. |
 
+<Callout type="warn">
+**Private vs. public hosts.** A managed or internet-facing cluster must use
+HTTPS — the default. `?ssl=false` is for a **loopback or private-network**
+cluster only: Atlas exempts loopback hosts (`localhost`, the `127.0.0.0/8`
+range, `::1`) from the plaintext-credential check, but for any **non-loopback**
+host it logs a warning when HTTP Basic or API-key credentials would cross a
+plaintext connection. **AWS SigV4 is stricter** — signing a request to a
+non-loopback host over plaintext HTTP is a hard error at resolve time, so a
+remote SigV4 endpoint must be HTTPS.
+</Callout>
+
 ### Engine selection
 
 The engine (`elasticsearch` or `opensearch`) selects the SQL endpoint
@@ -178,12 +189,56 @@ so bypass the index whitelist). These are anchored to the statement start, so a
 field literally named `show` or `description` mid-query is fine, and
 `ORDER BY … DESC` is unaffected.
 
+### Supported SQL subset
+
+Atlas does **not** rewrite your SQL — it hands the statement to the engine's own
+SQL API, which compiles it to Query DSL internally. So the supported surface is
+the engines' SQL dialect, narrowed to read-only. What works, and where it stops:
+
+| Supported | Not supported |
+| --------- | ------------- |
+| `SELECT <cols>` / `SELECT *` (read-only) | DML / DDL of any kind — rejected by the base guard |
+| `FROM <index>` — one index (or [logical source](#logical-sources-indices-patterns-aliases--data-streams)) per query | **JOINs across indices** — each index is a standalone table |
+| `WHERE` with `=`, `<`, `>`, `IN`, `BETWEEN`, `LIKE`, `IS NULL` | `SHOW …` / `DESCRIBE …` — catalog disclosure, blocked |
+| `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` | Cross-index subqueries / set operations |
+| Aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `COUNT(DISTINCT …)` | |
+| Nested/object fields addressed by dotted path (`geo.dest`) | |
+
+For questions SQL can't express — relevance ranking, deeply-nested aggregations,
+geo/span queries — drop to the [Query DSL surface](#query-dsl-surface) below.
+
+## Index → entity profiling
+
+`atlas init` reads each index's `GET <index>/_mapping` and turns it into an
+entity YAML. The mapping's field tree is **flattened** into dimensions:
+
+| Mapping shape | Becomes |
+| ------------- | ------- |
+| Scalar (`keyword`, `long`, `boolean`, `ip`, …) | one dimension at the field path |
+| `date` / `date_nanos` | one dimension typed `timestamp` |
+| Object (`properties`) | recursed — children become dotted paths (`vendor.name`); the container itself is not a dimension |
+| `nested` object | recursed, with descendants flagged `nested: true` (array semantics) |
+| Multi-field (`fields`) | the main field **plus** each sub-field (e.g. `title.keyword`), flagged `multi_field: true` |
+
+ES field types collapse to four Atlas types: `boolean` → `boolean`,
+`date` / `date_nanos` → `timestamp`, the numeric family (`long`, `integer`,
+`double`, `scaled_float`, …) → `number`, and everything else (`text`, `keyword`,
+`ip`, `geo_point`, …) → `string` (the safe default).
+
+Every ES entity is written with **`identifier_style: opaque`**. Index names are
+routinely dotted — `logs-2024.01.01`, `.ds-metrics-000001` — where the dot is
+*part of the name*, not a `schema.table` separator. `opaque` tells the index
+whitelist loader to register the full name verbatim and never split it on `.`
+into a bogus unqualified key
+([#3317](https://github.com/AtlasDevHQ/atlas/issues/3317)), so a dotted index
+stays queryable as `FROM "logs-2024.01.01"`.
+
 ## Logical sources: indices, patterns, aliases & data streams
 
-`atlas init` profiles a cluster into entity YAMLs. Beyond one entity per concrete
-index, it represents three kinds of **logical source** as a single queryable
-entity, so a time-partitioned family is one table rather than one-per-day
-([#3269](https://github.com/AtlasDevHQ/atlas/issues/3269)):
+Profiling also decides what counts as one table. Beyond one entity per concrete
+index, `atlas init` represents three kinds of **logical source** as a single
+queryable entity, so a time-partitioned family is one table rather than
+one-per-day ([#3269](https://github.com/AtlasDevHQ/atlas/issues/3269)):
 
 | Source | `table:` value | How it's discovered |
 | ------ | -------------- | ------------------- |
@@ -234,10 +289,14 @@ request (`POST /<index>/_search` | `_count`) and flattens the response to Atlas'
 index, alias, data stream, or declared index-pattern entity), an optional
 `endpoint` (`_search` default, or `_count`), and an optional Query DSL `body`.
 
-The surface is gated by a **default-deny** read-only validator: only read
-endpoints are allowed; mutating/administrative endpoints, smuggled bulk-write
-actions, mutating (`ctx`-referencing) scripts, ad-hoc wildcard / `_all` /
-system-index targets are rejected. On top of those always-on structural rails,
+The surface is gated by a **default-deny** read-only validator. Only read
+endpoints pass — `_search`, `_count`, `_msearch`, `_field_caps`, `_mapping`, and
+read-only `_cat/*` — while mutating/administrative endpoints, smuggled bulk-write
+actions (top-level `index` / `create` / `update` / `delete` / `bulk` keys),
+mutating (`ctx`-referencing or stored) scripts, and ad-hoc wildcard / `_all` /
+system-index (`.`- or `_`-prefixed) targets are rejected. That read allow-list is
+the reusable validator's defense-in-depth; the `queryElasticsearch` tool itself
+exposes only `_search` (the default) and `_count`. On top of those always-on structural rails,
 the tool enforces **per-index membership** against the semantic layer: the
 queried index must be a profiled entity (the same index/table whitelist
 `executeSQL` validates against), so the DSL surface honors the identical access

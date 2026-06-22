@@ -7,7 +7,8 @@
  * trusted / hosted) and is structurally incapable of reaching
  * `runMcpDispatchGate`: it is registered on a SEPARATE, unauthenticated MCP
  * server (`createOnboardingMcpServer`) mounted on a distinct pre-auth endpoint
- * (`createOnboardingMcpRouter` → `/mcp/onboarding/sse`). That server exposes
+ * (`createOnboardingMcpRouter` → `/mcp/onboarding`, with a legacy `/sse`
+ * alias). That server exposes
  * NOTHING else — no `explore`, no `executeSQL`, no datasource tools — so the
  * anonymous caller can do exactly one thing: provision a trial Workspace.
  *
@@ -19,9 +20,11 @@
  * NEVER binds an actor and NEVER calls the gate; eroding that boundary would
  * reintroduce an unauthenticated mutation inside the actor model.
  *
- * SaaS-only: the router and tool exist only when `deployMode === 'saas'`.
- * Off-SaaS there is no billing surface to onboard onto, so the endpoint is
- * absent and the underlying provisioner refuses.
+ * SaaS-only: the tool is served only when `deployMode === 'saas'`. Off-SaaS
+ * there is no billing surface to onboard onto, so the endpoint's handler refuses
+ * with a structured 404 (the route itself is always registered — the SaaS gate
+ * is per-request, not construction-time; see `createOnboardingMcpRouter`) and
+ * the underlying provisioner refuses.
  */
 
 import { Hono } from "hono";
@@ -366,7 +369,9 @@ export function registerStartTrialTool(
 /**
  * Build the unauthenticated onboarding MCP server. It exposes ONLY
  * `start_trial` — no native tools, no datasource tools, no actor. Returns
- * `null` off-SaaS so the caller can decline to mount the endpoint.
+ * `null` off-SaaS; the router's per-request SaaS gate 404s before this is
+ * called on a live request, so a `null` here is a fail-loud guard against a
+ * half-built server, not a normal flow.
  */
 export function createOnboardingMcpServer(
   opts: RegisterStartTrialOptions = {},
@@ -383,26 +388,64 @@ export function createOnboardingMcpServer(
 const HANDLED_METHODS = ["POST", "GET", "DELETE"];
 
 /**
+ * The paths the onboarding endpoint answers on (relative to its `/mcp/onboarding`
+ * mount):
+ *   - `/`    → `/mcp/onboarding`     — the canonical Streamable HTTP path.
+ *   - `/sse` → `/mcp/onboarding/sse` — a back-compat alias.
+ *
+ * This endpoint speaks the **Streamable HTTP** MCP transport (one URL handling
+ * POST/GET/DELETE with an `mcp-session-id` header), NOT the deprecated HTTP+SSE
+ * transport that a trailing `/sse` connotes — the name misled early clients
+ * (#3886). The canonical path drops the misleading suffix; the `/sse` alias
+ * stays so any client already pinned to it keeps working.
+ */
+const ONBOARDING_PATHS = ["/", "/sse"];
+
+/**
  * Hono router for the pre-auth onboarding MCP endpoint. Mounted at
- * `/mcp/onboarding` (so the full path is `/mcp/onboarding/sse`), it carries no
+ * `/mcp/onboarding`, it answers on both `/mcp/onboarding` (canonical) and
+ * `/mcp/onboarding/sse` (alias) — see {@link ONBOARDING_PATHS}. It carries no
  * bearer verification, no workspace admission, and no residency check — there
- * is no identity yet. SaaS-only: off-SaaS the router has no routes and every
- * request 404s.
+ * is no identity yet. SaaS-only: off-SaaS the handler returns a structured 404
+ * (the funnel doesn't exist).
  *
  * Must be mounted BEFORE the hosted `/mcp/:workspaceId/sse` router so the
  * literal `onboarding` segment is matched here rather than treated as a
  * workspace id.
+ *
+ * The SaaS gate lives in the per-request handler, NOT at router construction
+ * (#3886). `server.ts` builds this router while evaluating `api/index.ts` (via
+ * the static `import { app }`) — which runs BEFORE `initializeConfig()`. Gating
+ * at construction meant `getConfig()` was still `null`, so the router mounted
+ * with NO routes; `/mcp/onboarding/sse` then fell through to the hosted
+ * `/:workspaceId/sse` bearer gate → 401 `missing_bearer`, killing the
+ * unauthenticated self-serve trial funnel. Registering the routes
+ * unconditionally keeps them winning precedence over the hosted param route, and
+ * the request-time gate sees the fully-resolved config (requests arrive
+ * post-boot).
  */
 export function createOnboardingMcpRouter(): Hono {
   const router = new Hono();
-  if (getConfig()?.deployMode !== "saas") return router;
 
   // A dedicated session store for the onboarding endpoint — never shared with
   // the identity-bearing hosted store.
   const sessions = new McpSessionStore(() => resolveMaxSessions());
 
-  router.on(HANDLED_METHODS, "/sse", async (c) => {
+  router.on(HANDLED_METHODS, ONBOARDING_PATHS, async (c) => {
     const requestId = crypto.randomUUID();
+    // SaaS-only, checked per request (see the construction-vs-request-time note
+    // on this function). Off-SaaS there is no trial funnel, so refuse cleanly
+    // rather than letting the path fall through to the hosted bearer gate.
+    if (getConfig()?.deployMode !== "saas") {
+      return c.json(
+        {
+          error: "not_found",
+          message: "The onboarding endpoint is only available on hosted Atlas.",
+          requestId,
+        },
+        404,
+      );
+    }
     const sessionId = c.req.raw.headers.get("mcp-session-id");
     // Resolve the client IP once at the HTTP seam and stamp it into the request
     // context so the per-session `start_trial` handler can rate-limit attempts
@@ -432,8 +475,10 @@ export function createOnboardingMcpRouter(): Hono {
             createServer: async () => {
               const server = createOnboardingMcpServer();
               if (!server) {
-                // Unreachable — the router only mounts routes on SaaS — but
-                // fail loud rather than serve a half-built server.
+                // Unreachable — the per-request SaaS gate at the top of this
+                // handler already 404s off-SaaS before we reach dispatch, so
+                // deployMode is 'saas' here and the server is non-null. Fail
+                // loud rather than serve a half-built server.
                 throw new Error("onboarding server unavailable");
               }
               return server;

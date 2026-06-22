@@ -69,7 +69,11 @@ describe("auth.md — managed auth mode", () => {
       // Scopes flow from the canonical ATLAS_OAUTH_SCOPES constant.
       expect(body).toContain("mcp:read");
       expect(body).toContain("mcp:write");
-      // The onboarding endpoint + start_trial contract are named.
+      // The onboarding endpoint + start_trial contract are named. The canonical
+      // Streamable HTTP path is advertised (no `/sse` suffix), with the transport
+      // spelled out and the legacy alias still surfaced (#3886).
+      expect(body).toContain("/mcp/onboarding");
+      expect(body).toContain("Streamable HTTP");
       expect(body).toContain("/mcp/onboarding/sse");
       expect(body).toContain("start_trial");
       // Backstop: no WorkOS conformance endpoint Atlas doesn't serve.

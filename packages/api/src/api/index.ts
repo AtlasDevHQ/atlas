@@ -634,17 +634,23 @@ log.info(
 // cold starts. The Hono API server (which Bun runs natively, no
 // bundler) resolves the import at runtime via the workspace dep.
 // Anonymous onboarding endpoint (ADR-0018 / #3649) — the single pre-auth
-// carve-out from the dispatch gate. Mounted at /mcp/onboarding/sse and BEFORE
-// the hosted router so the static `onboarding` segment is matched here rather
-// than treated as a workspace id by /mcp/:workspaceId/sse. The router
-// self-gates on deployMode === 'saas' (empty router off-SaaS), so `start_trial`
-// is absent everywhere but the hosted SaaS server.
+// carve-out from the dispatch gate. Mounted at /mcp/onboarding and BEFORE the
+// hosted router so the static `onboarding` segment is matched here rather than
+// treated as a workspace id by /mcp/:workspaceId/sse. It answers on the
+// canonical Streamable HTTP path /mcp/onboarding AND the legacy /mcp/onboarding/sse
+// alias. The routes are registered unconditionally; the SaaS gate is per-request
+// inside the handler (off-SaaS → structured 404), NOT at construction. This
+// block runs while the module is evaluated — BEFORE `initializeConfig()` in
+// server.ts — so a construction-time `deployMode` gate saw a null config,
+// mounted an empty router, and let /mcp/onboarding/sse fall through to the
+// hosted bearer gate (401 missing_bearer, #3886). `start_trial` is still
+// SaaS-only (the handler refuses off-SaaS), just gated at the right time.
 try {
   const { createOnboardingMcpRouter } = await import(
     /* turbopackIgnore: true */ "@atlas/mcp/onboarding"
   );
   app.route("/mcp/onboarding", createOnboardingMcpRouter());
-  log.info("Onboarding MCP endpoint mounted at /mcp/onboarding/sse (SaaS-gated)");
+  log.info("Onboarding MCP endpoint mounted at /mcp/onboarding (+ /sse alias, SaaS-gated)");
 } catch (err) {
   // Soft-fail to match the hosted-MCP block below: the standalone Vercel
   // template intentionally doesn't bundle `@atlas/mcp`, so throwing here would

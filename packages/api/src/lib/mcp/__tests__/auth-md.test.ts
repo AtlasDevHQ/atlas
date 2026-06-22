@@ -20,7 +20,7 @@ const BASE_OPTS: BuildAuthMdOptions = {
     { name: "mcp:read", grants: "query workspace data through the MCP endpoint" },
     { name: "mcp:write", grants: "reserved for future write paths" },
   ],
-  onboardingPath: "/mcp/onboarding/sse",
+  onboardingPath: "/mcp/onboarding",
   docsUrl: "https://docs.useatlas.dev",
 };
 
@@ -104,10 +104,15 @@ describe("buildAuthMd — content contract", () => {
     expect(md).toContain("mcp:admin");
   });
 
-  it("names the unauthenticated onboarding endpoint and start_trial", () => {
+  it("names the canonical onboarding endpoint, the Streamable HTTP transport, and start_trial", () => {
     const md = buildAuthMd(BASE_OPTS);
-    expect(md).toContain("/mcp/onboarding/sse");
+    expect(md).toContain("/mcp/onboarding");
     expect(md).toContain("start_trial");
+    // Clarifies the transport so a client doesn't reach for the deprecated
+    // HTTP+SSE transport the `/sse`-named path used to imply (#3886).
+    expect(md).toContain("Streamable HTTP");
+    // The legacy alias is still surfaced for clients pinned to it.
+    expect(md).toContain("/mcp/onboarding/sse");
   });
 
   it("documents the start_trial input contract (email, orgName, turnstileToken)", () => {

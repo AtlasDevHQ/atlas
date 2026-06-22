@@ -351,7 +351,11 @@ If you connect a client not listed here and it works (or it doesn't), [open an i
 
 ## Start a trial from inside your agent
 
-On Atlas SaaS there's a separate, **unauthenticated** onboarding endpoint at `mcp.useatlas.dev/mcp/onboarding/sse` that exposes exactly one tool — `start_trial`. It's how a brand-new prospect goes from *nothing* to a live, connectable Atlas workspace without leaving the agent. You don't need an account, a token, or a workspace to call it.
+On Atlas SaaS there's a separate, **unauthenticated** onboarding endpoint at `mcp.useatlas.dev/mcp/onboarding` that exposes exactly one tool — `start_trial`. It's how a brand-new prospect goes from *nothing* to a live, connectable Atlas workspace without leaving the agent. You don't need an account, a token, or a workspace to call it.
+
+<Callout type="warn">
+This endpoint speaks the **Streamable HTTP** MCP transport (a single URL handling `POST`/`GET`/`DELETE` with an `mcp-session-id` header) — point a Streamable HTTP client at it, not a legacy HTTP+SSE client. The older `mcp.useatlas.dev/mcp/onboarding/sse` path still resolves to the same endpoint, but the `/sse` name is misleading (it predates the transport rename) — prefer the canonical path above.
+</Callout>
 
 <Callout type="info">
 `start_trial` is the **only** tool reachable before you have an identity. It runs outside Atlas's MCP dispatch gate (there is no actor or workspace yet) and can do exactly one thing: provision a trial workspace. Every other tool — `explore`, `executeSQL`, datasource lifecycle — lives on the authenticated, per-workspace endpoint and runs the full gate (action policy → `mcp:write` → RBAC → approval). The endpoint exists only on Atlas SaaS; self-hosted has no billing surface to onboard onto.

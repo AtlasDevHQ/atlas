@@ -379,6 +379,7 @@ const mockGetEntityAdmin: Mock<(orgId: string, type: string, name: string) => Pr
 const mockUpsertEntityAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 const mockDeleteEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<boolean>> = mock(() => Promise.resolve(false));
 const mockUpsertDraftEntityAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
+const mockUpsertDraftEntityForGroupAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 const mockUpsertTombstoneAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 const mockDeleteDraftEntityAdmin: Mock<(...args: unknown[]) => Promise<boolean>> = mock(() => Promise.resolve(true));
 const mockCreateVersion: Mock<(...args: unknown[]) => Promise<string>> = mock(() => Promise.resolve("version-1"));
@@ -406,6 +407,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   upsertEntity: mockUpsertEntityAdmin,
   deleteEntity: mockDeleteEntityAdmin,
   upsertDraftEntity: mockUpsertDraftEntityAdmin,
+  upsertDraftEntityForGroup: mockUpsertDraftEntityForGroupAdmin,
   upsertTombstone: mockUpsertTombstoneAdmin,
   deleteDraftEntity: mockDeleteDraftEntityAdmin,
   upsertTombstoneForGroup: mockUpsertTombstoneAdmin,
@@ -3312,6 +3314,8 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name", () => {
     mockUpsertEntityAdmin.mockResolvedValue(undefined);
     mockUpsertDraftEntityAdmin.mockReset();
     mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    mockUpsertDraftEntityForGroupAdmin.mockReset();
+    mockUpsertDraftEntityForGroupAdmin.mockResolvedValue(undefined);
     mockSyncEntityToDisk.mockReset();
     mockSyncEntityToDisk.mockResolvedValue(undefined);
   });
@@ -3412,6 +3416,80 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name", () => {
     expect(res.status).toBe(200);
     const call = (mockUpsertDraftEntityAdmin.mock.calls as unknown[][])[0];
     expect(call?.[4]).toBe("warehouse");
+    // connectionGroupId path must NOT be taken when only connectionId is given.
+    expect(mockUpsertDraftEntityForGroupAdmin).not.toHaveBeenCalled();
+  });
+
+  it("writes via upsertDraftEntityForGroup when connectionGroupId is provided (#3854)", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/test_orders", "PUT", {
+      table: "test_orders",
+      connectionGroupId: "mysql-staging",
+    }));
+    expect(res.status).toBe(200);
+    // The row must land in the requested group scope, NOT the default null scope.
+    expect(mockUpsertDraftEntityForGroupAdmin).toHaveBeenCalledTimes(1);
+    const call = (mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0];
+    expect(call?.[0]).toBe("org-1");
+    expect(call?.[1]).toBe("entity");
+    expect(call?.[2]).toBe("test_orders");
+    expect(call?.[4]).toBe("mysql-staging");
+    // The connectionId-resolving path must NOT be taken.
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("treats empty-string connectionGroupId as the explicit null/legacy scope (#3854)", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/demo_users", "PUT", {
+      table: "demo_users",
+      connectionGroupId: "",
+    }));
+    expect(res.status).toBe(200);
+    expect(mockUpsertDraftEntityForGroupAdmin).toHaveBeenCalledTimes(1);
+    // "" → null (legacy/unscoped), addressed directly via the group write.
+    const call = (mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0];
+    expect(call?.[4]).toBeNull();
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("rejects a conflicting connectionId + connectionGroupId pair with 400 (#3854)", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/orders", "PUT", {
+      table: "orders",
+      connectionId: "warehouse",
+      connectionGroupId: "mysql-staging",
+    }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("conflicting_scope");
+    // Neither write path runs — the request is rejected, not silently resolved.
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+    expect(mockUpsertDraftEntityForGroupAdmin).not.toHaveBeenCalled();
+  });
+
+  it("treats empty-string connectionId as absent — not a conflict, normalized to undefined (#3854)", async () => {
+    setOrgAdmin("org-1");
+    // `connectionId: ""` is meaningless (asymmetric with connectionGroupId);
+    // it must NOT trip the conflict guard alongside a real group, and on the
+    // legacy path it must be normalized to undefined, never passed as "".
+    const conflictRes = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/orders", "PUT", {
+      table: "orders",
+      connectionId: "",
+      connectionGroupId: "mysql-staging",
+    }));
+    expect(conflictRes.status).toBe(200);
+    expect(mockUpsertDraftEntityForGroupAdmin).toHaveBeenCalledTimes(1);
+    expect((mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0]?.[4]).toBe("mysql-staging");
+
+    mockUpsertDraftEntityAdmin.mockClear();
+    const legacyRes = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/orders", "PUT", {
+      table: "orders",
+      connectionId: "",
+    }));
+    expect(legacyRes.status).toBe(200);
+    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    // "" normalized to undefined → default/null scope, not the literal "".
+    expect((mockUpsertDraftEntityAdmin.mock.calls as unknown[][])[0]?.[4]).toBeUndefined();
   });
 
   it("returns 500 when upsertDraftEntity throws", async () => {

@@ -59,6 +59,32 @@ const mockHealthCheckForWorkspace = mock(() =>
 // inline `mock(() => {})` is unobservable from `.mock.calls`.
 const mockRegister = mock(() => {});
 
+// Plugin-datasource re-registration bridge (#3852). The PUT handler routes
+// plugin dbTypes (clickhouse / elasticsearch / …) through
+// `registerDatasourceInstall` (ADR-0013 `createFromConfig` seam) instead of the
+// core `connections.register`, which only understands postgresql:// / mysql://.
+// Captured + mocked so the regression test asserts the bridge is used and the
+// real `findDatasourcePluginConnection` (which would throw "no plugin
+// registered" in a unit test) is never reached.
+// Default `false` mirrors the dominant real-world plugin-update case: the
+// bridge ALWAYS rebuilds the live connection but returns `!already`, so an
+// in-place rebuild of an existing (workspace, install_id) returns `false`. The
+// probe must NOT be gated on this boolean (#3852 round-2 fix) — it's gated on
+// `hasDirectForWorkspace` instead.
+const mockRegisterDatasourceInstall = mock(() => Promise.resolve(false));
+
+// The post-update plugin-adapter liveness probe (#3852) runs
+// `connections.getForWorkspace(orgId, id).query("SELECT 1", …)` (or `ping()`).
+// Capture the query so a test can (a) assert the probe fired and (b) make it
+// reject to drive the rollback path.
+const mockProbeQuery = mock(() =>
+  Promise.resolve({ columns: [] as string[], rows: [] as Record<string, unknown>[] }),
+);
+const mockGetForWorkspace = mock(() => ({
+  query: mockProbeQuery,
+  close: () => Promise.resolve(),
+}));
+
 const mocks = createApiTestMocks({
   authUser: {
     id: "admin-1",
@@ -95,8 +121,24 @@ const mocks = createApiTestMocks({
       // describeForWorkspace, absent from `list()`), so the fixture wires the
       // workspace-scoped helpers to recognise it.
       healthCheckForWorkspace: mockHealthCheckForWorkspace,
-      hasDirectForWorkspace: (_orgId: string, id: string) => id === "clickhouse-staging",
+      // A connection is a per-workspace plugin pool iff it's NOT one of the
+      // native/bare pools (`default` / `warehouse` / `other-org-conn`, the
+      // `list()` + `has()` set). This unifies two needs after the #3852 merge:
+      //   #3853 list/health tests — only `clickhouse-staging` (a plugin pool)
+      //     is actively probed; native `warehouse` is left to the cached fiber.
+      //   #3852 PUT tests — the plugin re-registration probe (`getForWorkspace`)
+      //     fires for plugin install ids (`clickhouse`, `analytics`, …).
+      // A single predicate avoids the duplicate-key footgun (last-key-wins
+      // silently made every row a plugin pool, double-probing the list).
+      hasDirectForWorkspace: (_orgId: string, id: string) =>
+        !["default", "warehouse", "other-org-conn"].includes(id),
       register: mockRegister,
+      // #3852 — plugin pools live in the per-workspace direct map, not the bare
+      // `entries`. The PUT handler probes the freshly-built plugin connection
+      // via `getForWorkspace(orgId, id)` (default mock returns a working query
+      // stub) gated on `hasDirectForWorkspace`.
+      getForWorkspace: mockGetForWorkspace,
+      unregisterDirectForWorkspace: mock(() => true),
       unregister: mock(() => false),
       has: (id: string) => ["default", "warehouse", "other-org-conn"].includes(id),
       list: () => ["default", "warehouse", "other-org-conn"],
@@ -124,6 +166,19 @@ let mockConfigOverride: { deployMode?: "saas" | "self-hosted" } | null = null;
 mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfigOverride,
   defineConfig: (c: unknown) => c,
+}));
+
+// Mock the datasource-registry bridge (#3852) — the PUT handler's plugin
+// re-registration seam. All value exports are mocked (mock-all-exports
+// discipline); the route only calls `registerDatasourceInstall`, the rest are
+// inert stubs so a partial mock can't leave a real export wired.
+mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
+  registerDatasourceInstall: mockRegisterDatasourceInstall,
+  unregisterDatasourceInstall: mock(() => true),
+  findDatasourcePluginConnection: mock(() => Promise.resolve(undefined)),
+  probePluginDatasourceConnection: mock(() => Promise.resolve({ kind: "ok" })),
+  probeNativeDatasourceConnection: mock(() => Promise.resolve({ kind: "ok" })),
+  isHandlerManagedDatasourceDbType: () => false,
 }));
 
 // --- Import app after mocks ---
@@ -271,6 +326,13 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
     mocks.mockInternalQuery.mockResolvedValue([]);
     mockHealthCheck.mockClear();
     mockRegister.mockClear();
+    mockRegisterDatasourceInstall.mockClear();
+    mockRegisterDatasourceInstall.mockImplementation(() => Promise.resolve(false));
+    mockGetForWorkspace.mockClear();
+    mockProbeQuery.mockClear();
+    mockProbeQuery.mockImplementation(() =>
+      Promise.resolve({ columns: [] as string[], rows: [] as Record<string, unknown>[] }),
+    );
     mockConfigOverride = null;
     setOrgAdmin("org-alpha");
   });
@@ -633,6 +695,265 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.id).toBe("warehouse");
+    });
+
+    // ─── #3852 — plugin datasource metadata update ────────────────────
+    // The keystone bug: setting a Connection group (or any metadata) on a
+    // plugin datasource (clickhouse:// / elasticsearch://) 500'd because the
+    // handler re-registered via the core `connections.register`, which only
+    // accepts postgresql:// / mysql://. The fix routes plugin re-registration
+    // through the `createFromConfig` bridge (`registerDatasourceInstall`).
+    describe("PUT /connections/:id — plugin datasource (#3852)", () => {
+      // Plugin catalog row — `url` is the lone secret field, mirroring the
+      // seeded built-in datasource catalog shape. `decryptSecretFields` uses the
+      // REAL (unmocked) `decryptSecret` from `db/secret-encryption`, which leaves
+      // a non-`enc:v1:` value verbatim, so the fixture stores PLAINTEXT URLs —
+      // no `encrypted:` sentinel needed (and none to confuse the assertion).
+      function pluginCatalogRow(slug: string) {
+        return {
+          id: `cat_${slug}`,
+          slug,
+          install_model: "form",
+          pillar: "datasource",
+          config_schema: [
+            { key: "url", type: "string", required: true, secret: true },
+            { key: "description", type: "string" },
+          ],
+          enabled: true,
+        };
+      }
+
+      function mockPluginPut(slug: string, storedUrl: string): void {
+        const row = pluginCatalogRow(slug);
+        mocks.mockInternalQuery.mockImplementation((sql: string) => {
+          if (sqlIs.putLoad(sql)) {
+            return Promise.resolve([
+              {
+                catalog_slug: slug,
+                config: { url: storedUrl },
+                config_schema: row.config_schema,
+                group_id: null,
+              },
+            ]);
+          }
+          if (sqlIs.groupExists(sql)) {
+            // newGroupName creates inline — no cross-org existence check fires,
+            // but a defensive stub keeps the dispatch total.
+            return Promise.resolve([{ install_id: slug }]);
+          }
+          if (sqlIs.catalogLookup(sql)) return Promise.resolve([row]);
+          if (sqlIs.installerLoadForUpdate(sql)) {
+            return Promise.resolve([
+              {
+                id: `cn_org-alpha_${slug}`,
+                install_id: slug,
+                config: { url: storedUrl },
+                status: "published",
+              },
+            ]);
+          }
+          if (sqlIs.installerUpdate(sql)) return Promise.resolve([]);
+          return Promise.resolve([]);
+        });
+      }
+
+      it("setting a Connection group on a clickhouse datasource succeeds (no core-scheme 500)", async () => {
+        setOrgAdmin("org-alpha");
+        mockPluginPut("clickhouse", "clickhouse://user:pass@host:8443/db");
+
+        const res = await app.fetch(
+          adminRequest("/api/v1/admin/connections/clickhouse", "PUT", {
+            newGroupName: "clickhouse",
+          }),
+        );
+
+        expect(res.status).toBe(200);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+        const body = (await res.json()) as any;
+        expect(body.id).toBe("clickhouse");
+        // dbType is the plugin slug, not a core-detected scheme.
+        expect(body.dbType).toBe("clickhouse");
+        expect(body.groupId).toBe("clickhouse");
+
+        // Re-registration went through the createFromConfig bridge…
+        expect(mockRegisterDatasourceInstall).toHaveBeenCalled();
+        const [row, config] = mockRegisterDatasourceInstall.mock.calls[0] as unknown as [
+          { workspaceId: string; catalogSlug: string; installId: string },
+          Record<string, unknown>,
+        ];
+        expect(row.workspaceId).toBe("org-alpha");
+        expect(row.catalogSlug).toBe("clickhouse");
+        expect(row.installId).toBe("clickhouse");
+        // The plaintext clickhouse:// URL reaches `createFromConfig` — proving
+        // the plugin scheme survives to the bridge, not the core adapter.
+        expect(config.url).toBe("clickhouse://user:pass@host:8443/db");
+
+        // …and NOT through the core adapter, which would have thrown on the
+        // clickhouse:// scheme (the 500 this fixes).
+        expect(mockRegister).not.toHaveBeenCalled();
+
+        // This is a metadata-only change (group rename, no URL) — the live
+        // connection is rebuilt but the liveness PROBE must NOT fire, matching
+        // the core path's `urlChanged` gate and ADR-0007. A transiently
+        // unreachable datasource must not 500 a valid rename (#3852, round-2
+        // review). The rebuild still happened (bridge called above) so the live
+        // pool reflects the new config.
+        expect(mockProbeQuery).not.toHaveBeenCalled();
+
+        // group_id is persisted into config (criterion #3): the installer's
+        // UPDATE writes the merged config JSON with the group_id key.
+        const installerUpdateCall = mocks.mockInternalQuery.mock.calls.find(
+          ([sql]) => typeof sql === "string" && sqlIs.installerUpdate(sql),
+        );
+        expect(installerUpdateCall).toBeDefined();
+        const configJson = (installerUpdateCall![1] as unknown[])[0] as string;
+        expect(configJson).toContain("group_id");
+        expect(configJson).toContain("clickhouse");
+      });
+
+      it("changing the clickhouse URL re-registers via the bridge and probes the plugin adapter", async () => {
+        setOrgAdmin("org-alpha");
+        mockPluginPut("clickhouse", "clickhouse://user:pass@host:8443/db");
+
+        const res = await app.fetch(
+          adminRequest("/api/v1/admin/connections/clickhouse", "PUT", {
+            url: "clickhouse://user:pass@newhost:8443/db",
+          }),
+        );
+
+        expect(res.status).toBe(200);
+        expect(mockRegisterDatasourceInstall).toHaveBeenCalled();
+        const [, config] = mockRegisterDatasourceInstall.mock.calls[0] as unknown as [
+          unknown,
+          Record<string, unknown>,
+        ];
+        expect(config.url).toBe("clickhouse://user:pass@newhost:8443/db");
+        expect(mockProbeQuery).toHaveBeenCalled();
+        expect(mockRegister).not.toHaveBeenCalled();
+      });
+
+      it("setting a group on an elasticsearch datasource also succeeds (not clickhouse-special-cased)", async () => {
+        setOrgAdmin("org-alpha");
+        mockPluginPut("elasticsearch", "elasticsearch://user:pass@host:9200");
+
+        const res = await app.fetch(
+          adminRequest("/api/v1/admin/connections/elasticsearch", "PUT", {
+            newGroupName: "elasticsearch",
+          }),
+        );
+
+        expect(res.status).toBe(200);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+        const body = (await res.json()) as any;
+        expect(body.dbType).toBe("elasticsearch");
+        expect(body.groupId).toBe("elasticsearch");
+        expect(mockRegisterDatasourceInstall).toHaveBeenCalled();
+        expect(mockRegister).not.toHaveBeenCalled();
+        // Metadata-only change: no URL ⇒ no probe (URL-change-gated, ADR-0007).
+        expect(mockProbeQuery).not.toHaveBeenCalled();
+      });
+
+      it("a metadata-only group rename succeeds even when the datasource is unreachable (no probe)", async () => {
+        // Round-2 review regression (#3852): a group rename with NO URL change
+        // must not run the liveness probe, so a transiently-unreachable plugin
+        // datasource (maintenance window) can still be renamed. If the probe
+        // fired here it would reject and 500 the rename — the bug this guards.
+        setOrgAdmin("org-alpha");
+        mockPluginPut("clickhouse", "clickhouse://user:pass@host:8443/db");
+        mockProbeQuery.mockImplementation(() =>
+          Promise.reject(new Error("ECONNREFUSED 10.0.0.1:8443")),
+        );
+
+        const res = await app.fetch(
+          adminRequest("/api/v1/admin/connections/clickhouse", "PUT", {
+            newGroupName: "clickhouse",
+          }),
+        );
+
+        // Succeeds despite the unreachable host — the probe was never invoked.
+        expect(res.status).toBe(200);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+        const body = (await res.json()) as any;
+        expect(body.groupId).toBe("clickhouse");
+        // The liveness probe was never invoked — that is what lets the rename
+        // succeed against an unreachable host.
+        expect(mockProbeQuery).not.toHaveBeenCalled();
+        // The live pool was still rebuilt via the bridge (not the core adapter).
+        expect(mockRegisterDatasourceInstall).toHaveBeenCalled();
+        expect(mockRegister).not.toHaveBeenCalled();
+      });
+
+      it("a metadata-only rebuild failure (bridge throws, not the probe) 500s internal_error", async () => {
+        // The companion to the no-probe success case: on a metadata-only change
+        // the probe is skipped, but the in-place REBUILD still runs — if the
+        // bridge itself throws, that is a genuine server-side failure and must
+        // map to 500 internal_error (not the 400 connection_failed reserved for
+        // a URL-change probe rejection). Guards the asymmetric error mapping.
+        setOrgAdmin("org-alpha");
+        mockPluginPut("clickhouse", "clickhouse://user:pass@host:8443/db");
+        // First call (the rebuild) throws; the rollback re-register succeeds.
+        let call = 0;
+        mockRegisterDatasourceInstall.mockImplementation(() => {
+          call += 1;
+          return call === 1
+            ? Promise.reject(new Error("createFromConfig blew up"))
+            : Promise.resolve(false);
+        });
+
+        const res = await app.fetch(
+          adminRequest("/api/v1/admin/connections/clickhouse", "PUT", {
+            newGroupName: "clickhouse",
+          }),
+        );
+
+        expect(res.status).toBe(500);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+        const body = (await res.json()) as any;
+        expect(body.error).toBe("internal_error");
+        expect(body.requestId).toBeDefined();
+        // Probe never fires on a metadata-only change, even on the failure path.
+        expect(mockProbeQuery).not.toHaveBeenCalled();
+        // Rollback re-registered the pre-update config via the bridge.
+        expect(mockRegisterDatasourceInstall.mock.calls.length).toBe(2);
+      });
+
+      it("a URL change whose probe fails rolls back to the pre-update config and 400s", async () => {
+        setOrgAdmin("org-alpha");
+        mockPluginPut("clickhouse", "clickhouse://user:pass@host:8443/db");
+        // The freshly-built connection is registered, then the liveness probe
+        // rejects (unreachable host) — the handler must roll back and 400.
+        mockProbeQuery.mockImplementation(() =>
+          Promise.reject(new Error("ECONNREFUSED 10.0.0.1:8443")),
+        );
+
+        const res = await app.fetch(
+          adminRequest("/api/v1/admin/connections/clickhouse", "PUT", {
+            url: "clickhouse://user:pass@unreachable:8443/db",
+          }),
+        );
+
+        expect(res.status).toBe(400);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+        const body = (await res.json()) as any;
+        expect(body.error).toBe("connection_failed");
+        expect(body.requestId).toBeDefined();
+
+        // The bridge was called twice: once for the attempted new URL, once for
+        // the rollback to the pre-update URL.
+        expect(mockRegisterDatasourceInstall.mock.calls.length).toBe(2);
+        const [, attemptedConfig] = mockRegisterDatasourceInstall.mock.calls[0] as unknown as [
+          unknown,
+          Record<string, unknown>,
+        ];
+        const [, rolledBackConfig] = mockRegisterDatasourceInstall.mock.calls[1] as unknown as [
+          unknown,
+          Record<string, unknown>,
+        ];
+        expect(attemptedConfig.url).toBe("clickhouse://user:pass@unreachable:8443/db");
+        // Rollback re-registers the ORIGINAL stored URL, not the rejected one.
+        expect(rolledBackConfig.url).toBe("clickhouse://user:pass@host:8443/db");
+        expect(mockRegister).not.toHaveBeenCalled();
+      });
     });
   });
 

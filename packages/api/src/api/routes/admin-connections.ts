@@ -504,23 +504,58 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
   // per-workspace direct-plugin map the fiber never visits, so they arrived
   // with no `health` field — the row rendered "Status unknown" and the
   // aggregate stuck at N-1/N (#3853). Actively probe any plugin pool here so
-  // every connection in the list carries a real reachability result. Probes
-  // run concurrently and a failure is captured as a `degraded`/`unhealthy`
-  // health object by `healthCheckForWorkspace`, never thrown.
+  // every connection in the list carries a real reachability result.
+  //
+  // `healthCheckForWorkspace` is contractually "never throws" — it converts
+  // connection-level failures AND the TOCTOU race (a pool unregistered between
+  // the `hasDirectForWorkspace` filter and the probe, which would otherwise
+  // throw `ConnectionNotRegisteredError` from the native fallback) into a
+  // `degraded` result. We still use `Promise.allSettled` here as defense in
+  // depth so that even an unexpected throw from a single probe degrades that
+  // one row instead of rejecting the whole list with a 500 (#3860).
+  //
+  // TODO(#3853-followup): the `conn.health === undefined` guard means we only
+  // probe plugin pools that have never been checked; once `lastHealth` is
+  // cached (first list call or explicit `/test`) we serve the cached value and
+  // never re-probe. The periodic health-check fiber visits only bare `entries`,
+  // not plugin pools, so plugin-pool health is never background-refreshed and
+  // its age is unbounded (native pools refresh every 60s). Extending the
+  // periodic fiber to plugin pools is tracked as the next iteration and is
+  // intentionally out of scope for this PR.
   const healthByConnection = new Map<string, HealthCheckResult>();
   const pluginPoolsToProbe = filtered.filter(
     (conn) => conn.health === undefined && connections.hasDirectForWorkspace(orgId, conn.id),
   );
   if (pluginPoolsToProbe.length > 0) {
-    const probed = await Promise.all(
+    const probed = await Promise.allSettled(
       pluginPoolsToProbe.map(async (conn) => {
         const health = await connections.healthCheckForWorkspace(orgId, conn.id);
         return [conn.id, health] as const;
       }),
     );
-    for (const [id, health] of probed) {
-      healthByConnection.set(id, health);
-    }
+    probed.forEach((outcome, i) => {
+      if (outcome.status === "fulfilled") {
+        const [id, health] = outcome.value;
+        healthByConnection.set(id, health);
+        return;
+      }
+      // Defensive: `healthCheckForWorkspace` should never reject, but if it
+      // somehow does, contain the blast radius to this single row rather than
+      // failing the entire connections list. Surface a synthetic `degraded`.
+      // The log line keeps the raw `reason` (pino preserves the stack, central
+      // scrubbing handles the log side); the response `message` runs through
+      // `errorMessage` so a driver-echoed DSN can't leak to the admin UI —
+      // mirrors the scrub in `healthCheckForWorkspace`'s own arms.
+      const conn = pluginPoolsToProbe[i];
+      const reason = outcome.reason;
+      log.warn({ connectionId: conn.id, orgId, err: reason }, "Plugin pool health probe rejected unexpectedly");
+      healthByConnection.set(conn.id, {
+        status: "degraded",
+        latencyMs: 0,
+        message: errorMessage(reason),
+        checkedAt: new Date(),
+      });
+    });
   }
 
   // Decorate with `group_id` from `workspace_plugins.config`. Per

@@ -527,6 +527,44 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       // health comes from the cached fiber, not this active probe).
       expect(mockHealthCheckForWorkspace).toHaveBeenCalledWith("org-alpha", "clickhouse-staging");
     });
+
+    it("#3860 — one throwing plugin probe degrades its row, never 500s the whole list", async () => {
+      // TOCTOU defense-in-depth: `healthCheckForWorkspace` is contractually
+      // "never throws", but the list route still wraps each probe so that even
+      // an unexpected rejection (e.g. a race-removed pool reaching the native
+      // fallback's `ConnectionNotRegisteredError`) is contained to a single
+      // `degraded` row rather than rejecting the route's `Promise.allSettled`
+      // and failing the entire connections list with a 500.
+      mockHealthCheckForWorkspace.mockClear();
+      mockHealthCheckForWorkspace.mockImplementationOnce(() =>
+        Promise.reject(new Error('Connection "clickhouse-staging" is not registered.')),
+      );
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sqlIs.visibility(sql)) {
+          return Promise.resolve([{ install_id: "warehouse" }, { install_id: "clickhouse-staging" }]);
+        }
+        if (sqlIs.decoration(sql)) {
+          return Promise.resolve([
+            { install_id: "warehouse", group_id: null },
+            { install_id: "clickhouse-staging", group_id: null },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+      // The list survives — no 500 — despite the throwing probe.
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const clickhouse = body.connections.find((c: { id: string }) => c.id === "clickhouse-staging");
+      // The bad row is degraded, not absent or fatal.
+      expect(clickhouse).toBeDefined();
+      expect(clickhouse.health.status).toBe("degraded");
+      // Native rows are unaffected.
+      const warehouse = body.connections.find((c: { id: string }) => c.id === "warehouse");
+      expect(warehouse).toBeDefined();
+    });
   });
 
   // ─── 3. PUT 404s for wrong workspace ──────────────────────────────────

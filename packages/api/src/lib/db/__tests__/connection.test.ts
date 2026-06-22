@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { resolve } from "path";
+import type { HealthCheckResult } from "../connection";
 
 const modulePath = resolve(__dirname, "../connection.ts");
 const mod = await import(`${modulePath}?t=${Date.now()}`);
@@ -483,6 +484,39 @@ describe("ConnectionRegistry — DB-stored plugin datasources (#3253 seam)", () 
     // No plugin pool registered for (ws-1, warehouse) → native path.
     const result = await registry.healthCheckForWorkspace("ws-1", "warehouse");
     expect(result.status).toBe("healthy");
+    registry._reset();
+  });
+
+  // #3860 — TOCTOU: a caller (e.g. the admin list route) sees a plugin pool via
+  // `hasDirectForWorkspace`, but the pool is unregistered before the probe runs.
+  // `healthCheckForWorkspace` then finds no entry in `workspacePluginEntries`,
+  // falls through to the native `healthCheck(installId)`, which throws
+  // `ConnectionNotRegisteredError` because the id is absent from `entries` too.
+  // The method's JSDoc promises it "never throws". The admin list route
+  // additionally wraps each probe in `Promise.allSettled` as defense in depth,
+  // but this test pins the method's OWN contract directly — the native-fallback
+  // arm must catch the throw and convert it to a synthetic `degraded` result.
+  it("healthCheckForWorkspace returns degraded (never throws) for an id absent from BOTH maps", async () => {
+    const registry = new ConnectionRegistry();
+    // Nothing registered at all — neither a plugin pool nor a bare entry.
+    expect(registry.hasDirectForWorkspace("ws-1", "gone")).toBe(false);
+    // Bare healthCheck throws for the missing id — the underlying failure mode.
+    await expect(registry.healthCheck("gone")).rejects.toThrow(/not registered/i);
+
+    // healthCheckForWorkspace must absorb it into a degraded result.
+    let result: HealthCheckResult | undefined;
+    await expect(
+      (async () => {
+        result = await registry.healthCheckForWorkspace("ws-1", "gone");
+      })(),
+    ).resolves.toBeUndefined();
+    expect(result?.status).toBe("degraded");
+    // No live probe ran (entry gone from both maps) → synthetic zero latency.
+    expect(result?.latencyMs).toBe(0);
+    // The surfaced message carries the underlying failure but never leaks
+    // credentials (the synthetic-degraded arm scrubs via `errorMessage`).
+    expect(result?.message).toMatch(/not registered/i);
+    expect(result?.message).not.toContain("@");
     registry._reset();
   });
 });

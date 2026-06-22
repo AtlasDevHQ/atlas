@@ -1518,13 +1518,47 @@ export class ConnectionRegistry {
    * On a probe failure the plugin path reports `degraded` (plugin entries don't
    * track the consecutive-failure span the native path uses to escalate to
    * `unhealthy`); the native fallback keeps its own escalation behaviour.
+   *
+   * **Never throws** — unconditionally. The plugin-pool probe arm catches
+   * connection-level failures (timeout, refused) → `degraded`. The native
+   * fallback arm is also wrapped: if `installId` is absent from BOTH
+   * {@link workspacePluginEntries} AND the bare `entries` map (the TOCTOU race
+   * where a pool is unregistered between a caller's presence check and this
+   * probe, #3860), {@link healthCheck} would throw `ConnectionNotRegisteredError`.
+   * We catch that (and any unexpected throw) and convert it to a synthetic
+   * `degraded` result so callers like the admin list route's concurrent probe
+   * can never be rejected by a single race-removed connection.
    */
   async healthCheckForWorkspace(workspaceId: string, installId: string): Promise<HealthCheckResult> {
     const entry = this.workspacePluginEntries.get(this._workspaceKey(workspaceId, installId));
     if (!entry) {
       // Native/bare id (e.g. self-hosted `default`, a postgres/mysql pool):
-      // defer to the native probe, which owns failure-span escalation.
-      return this.healthCheck(installId);
+      // defer to the native probe, which owns failure-span escalation. Wrap it
+      // so a TOCTOU unregistration (id absent from both maps) surfaces as a
+      // synthetic `degraded` rather than a thrown `ConnectionNotRegisteredError`
+      // — keeping the "never throws" contract above unconditionally true.
+      try {
+        return await this.healthCheck(installId);
+      } catch (err) {
+        // Scrub any driver-echoed DSN userinfo from the surfaced message; the
+        // log line keeps the raw `err` (pino's serializer preserves the stack,
+        // central scrubbing handles the log side). Mirrors the probe-failure
+        // arm below.
+        const scrubbedMessage = errorMessage(err);
+        log.warn(
+          { err, workspaceId, installId },
+          "Plugin connection health check fell back to native probe and threw (race-removed pool?)",
+        );
+        const matched = matchError(err);
+        return {
+          status: "degraded",
+          // No live probe ran (the entry was gone from both maps), so there is
+          // no meaningful round-trip latency to report.
+          latencyMs: 0,
+          message: matched?.message ?? scrubbedMessage,
+          checkedAt: new Date(),
+        };
+      }
     }
 
     const start = performance.now();

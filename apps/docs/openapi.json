@@ -10813,6 +10813,31 @@
               }
             }
           },
+          "404": {
+            "description": "Connection not found for the request's workspace scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation error (invalid request body)",
             "content": {

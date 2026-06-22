@@ -43,6 +43,8 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   getClientIP: mockGetClientIP,
 }));
 
+const mockGetRequestContext: Mock<() => unknown> = mock(() => null);
+
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
@@ -51,14 +53,14 @@ mock.module("@atlas/api/lib/logger", () => ({
     debug: () => {},
   }),
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
-  getRequestContext: () => null,
+  getRequestContext: mockGetRequestContext,
 }));
 
 const mockValidateSQL: Mock<
-  (sql: string, connectionId?: string) => { valid: boolean; error?: string }
+  (sql: string, connectionId?: string, workspaceId?: string) => { valid: boolean; error?: string }
 > = mock(() => ({ valid: true }));
 
-const mockParserDatabase: Mock<(dbType: string, connectionId?: string) => string> = mock(
+const mockParserDatabase: Mock<(dbType: string, connectionId?: string, workspaceId?: string) => string> = mock(
   () => "PostgresQL",
 );
 
@@ -80,7 +82,9 @@ mock.module("node-sql-parser", () => ({
 }));
 
 const mockDetectDBType: Mock<() => string> = mock(() => "postgres");
-const mockGetDBType: Mock<(id: string) => string> = mock(() => "postgres");
+const mockGetDBType: Mock<(id: string, workspaceId?: string) => string> = mock(
+  () => "postgres",
+);
 
 mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
@@ -109,6 +113,9 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
 // Import after mocks
 const { Hono } = await import("hono");
 const { validateSqlRoute } = await import("../routes/validate-sql");
+const { ConnectionNotRegisteredError } = await import(
+  "@atlas/api/lib/db/connection"
+);
 
 const app = new Hono();
 app.route("/api/v1/validate-sql", validateSqlRoute);
@@ -145,6 +152,8 @@ describe("POST /api/v1/validate-sql", () => {
     mockGetDBType.mockReturnValue("postgres");
     mockParserDatabase.mockReset();
     mockParserDatabase.mockReturnValue("PostgresQL");
+    mockGetRequestContext.mockReset();
+    mockGetRequestContext.mockReturnValue(null);
   });
 
   it("returns valid=true with tables for a valid SELECT", async () => {
@@ -237,7 +246,8 @@ describe("POST /api/v1/validate-sql", () => {
       makeRequest({ sql: "SELECT 1", connectionId: "my-conn" }),
     );
     expect(response.status).toBe(200);
-    expect(mockValidateSQL).toHaveBeenCalledWith("SELECT 1", "my-conn");
+    // workspaceId is resolved from the request context (null in this mock → undefined).
+    expect(mockValidateSQL).toHaveBeenCalledWith("SELECT 1", "my-conn", undefined);
   });
 
   it("deduplicates extracted tables", async () => {
@@ -389,7 +399,8 @@ describe("POST /api/v1/validate-sql", () => {
       makeRequest({ sql: "SELECT 1 FROM t", connectionId: "my-conn" }),
     );
     expect(response.status).toBe(200);
-    expect(mockGetDBType).toHaveBeenCalledWith("my-conn");
+    // workspaceId is resolved from the request context (null in this mock → undefined).
+    expect(mockGetDBType).toHaveBeenCalledWith("my-conn", undefined);
     expect(mockDetectDBType).not.toHaveBeenCalled();
   });
 
@@ -407,5 +418,81 @@ describe("POST /api/v1/validate-sql", () => {
 
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.error).toBe("auth_error");
+  });
+
+  // --- #3857: per-workspace plugin connections ---
+
+  it("passes the request's workspaceId to validateSQL and getDBType", async () => {
+    // A per-workspace plugin connection (ClickHouse, Elasticsearch) only resolves
+    // when getDBType is called WITH the workspace scope. Simulate it: getDBType
+    // throws unless the second arg (workspaceId) is present.
+    mockGetRequestContext.mockReturnValue({
+      user: { activeOrganizationId: "ws-123" },
+    });
+    mockGetDBType.mockImplementation((_id: string, workspaceId?: string) => {
+      if (!workspaceId) {
+        throw new ConnectionNotRegisteredError({
+          message: `Connection "${_id}" is not registered.`,
+          id: _id,
+        });
+      }
+      return "clickhouse";
+    });
+
+    const response = await app.fetch(
+      makeRequest({ sql: "SELECT id FROM test_orders", connectionId: "clickhouse" }),
+    );
+
+    // No 500 — the workspace-scoped lookup succeeds and tables are extracted.
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.valid).toBe(true);
+    expect(body.tables).toEqual(["users", "orders"]);
+    expect(mockValidateSQL).toHaveBeenCalledWith(
+      "SELECT id FROM test_orders",
+      "clickhouse",
+      "ws-123",
+    );
+    expect(mockGetDBType).toHaveBeenCalledWith("clickhouse", "ws-123");
+    // parserDatabase must also be workspace-scoped so the dialect lookup resolves
+    // the per-workspace plugin's parser (args: resolved dbType, connectionId, workspaceId).
+    expect(mockParserDatabase).toHaveBeenCalledWith("clickhouse", "clickhouse", "ws-123");
+  });
+
+  it("rethrows non-ConnectionNotRegisteredError from getDBType (does not mask as 404)", async () => {
+    // The catch is deliberately narrow: only ConnectionNotRegisteredError → 404.
+    // Any other failure must propagate (→ 500), never be swallowed as a 404
+    // ("prefer errors over silent fallbacks").
+    mockGetDBType.mockImplementation(() => {
+      throw new Error("registry pool exploded");
+    });
+
+    const response = await app.fetch(
+      makeRequest({ sql: "SELECT 1 FROM t", connectionId: "my-conn" }),
+    );
+
+    // The error propagates (500), and crucially is NOT swallowed as the 404
+    // connection_not_found path.
+    expect(response.status).toBe(500);
+    expect(response.status).not.toBe(404);
+  });
+
+  it("returns 404 (not 500) when getDBType throws ConnectionNotRegisteredError", async () => {
+    // Even with the fix, a genuinely-unregistered connection must surface as a
+    // clean 404, never an unhandled 500 (#3857).
+    mockGetDBType.mockImplementation((id: string) => {
+      throw new ConnectionNotRegisteredError({
+        message: `Connection "${id}" is not registered.`,
+        id,
+      });
+    });
+
+    const response = await app.fetch(
+      makeRequest({ sql: "SELECT 1 FROM t", connectionId: "ghost-conn" }),
+    );
+
+    expect(response.status).toBe(404);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.error).toBe("connection_not_found");
   });
 });

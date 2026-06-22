@@ -390,4 +390,99 @@ describe("ConnectionRegistry — DB-stored plugin datasources (#3253 seam)", () 
     expect(all.every((m) => m.id === "clickhouse")).toBe(true);
     registry._reset();
   });
+
+  // #3853 — health/test half of the native-vs-plugin registry split. The bare
+  // `healthCheck(id)` only probes `entries`, so plugin pools threw
+  // ConnectionNotRegisteredError; `healthCheckForWorkspace` resolves the plugin
+  // pool first and caches the result so `describeForWorkspace` carries `health`.
+  it("healthCheckForWorkspace probes a plugin pool and caches health onto its describe", async () => {
+    const registry = new ConnectionRegistry();
+    registry.registerDirectForWorkspace("ws-1", "ch", fakeConn("ch"), "clickhouse", "ClickHouse");
+
+    // Bare healthCheck can't see the plugin pool — this is the bug.
+    await expect(registry.healthCheck("ch")).rejects.toThrow(/not registered/i);
+
+    const result = await registry.healthCheckForWorkspace("ws-1", "ch");
+    expect(result.status).toBe("healthy");
+    expect(typeof result.latencyMs).toBe("number");
+
+    // The probe result is cached on the entry so the admin list (which reads
+    // through describeForWorkspace) surfaces a `health` object.
+    const meta = registry.describeForWorkspace("ws-1").find((m) => m.id === "ch");
+    expect(meta?.health?.status).toBe("healthy");
+    registry._reset();
+  });
+
+  it("healthCheckForWorkspace reports degraded (never throws) when the plugin probe fails", async () => {
+    const failingConn = {
+      query: async () => {
+        throw new Error("connection refused");
+      },
+      close: async () => {},
+    };
+    const registry = new ConnectionRegistry();
+    registry.registerDirectForWorkspace("ws-1", "ch", failingConn, "clickhouse");
+
+    const result = await registry.healthCheckForWorkspace("ws-1", "ch");
+    expect(result.status).toBe("degraded");
+    expect(result.message).toBeDefined();
+    registry._reset();
+  });
+
+  it("healthCheckForWorkspace stays degraded on repeated plugin failures (never escalates to unhealthy)", async () => {
+    // The documented contract: plugin pools don't track the consecutive-failure
+    // span the native path uses to escalate to `unhealthy`, so repeated probe
+    // failures must report `degraded` every time. Guards a future refactor that
+    // might unify the two paths and silently change plugin behaviour (#3853).
+    const failingConn = {
+      query: async () => {
+        throw new Error("connection refused");
+      },
+      close: async () => {},
+    };
+    const registry = new ConnectionRegistry();
+    registry.registerDirectForWorkspace("ws-1", "ch", failingConn, "clickhouse");
+
+    for (let i = 0; i < 4; i++) {
+      const result = await registry.healthCheckForWorkspace("ws-1", "ch");
+      expect(result.status).toBe("degraded");
+    }
+    registry._reset();
+  });
+
+  it("healthCheckForWorkspace scrubs DSN userinfo from a failed plugin probe message", async () => {
+    // "No secrets in responses": when no curated matchError pattern fires, the
+    // plugin failure path surfaces the raw driver error via `errorMessage`,
+    // which scrubs `scheme://user:pass@host` userinfo. A DSN echoed in such an
+    // error must not reach HealthCheckResult.message — this result renders in
+    // the admin UI (#3853). (matchError's own ECONNREFUSED/ENOTFOUND messages
+    // only ever carry a `host:port` token, never the DSN, so the fallback is
+    // the path that needs the scrub guarantee.)
+    const failingConn = {
+      query: async () => {
+        throw new Error(
+          "authentication failed for clickhouse://admin:sup3rsecret@db.internal:8443/main",
+        );
+      },
+      close: async () => {},
+    };
+    const registry = new ConnectionRegistry();
+    registry.registerDirectForWorkspace("ws-1", "ch", failingConn, "clickhouse");
+
+    const result = await registry.healthCheckForWorkspace("ws-1", "ch");
+    expect(result.status).toBe("degraded");
+    expect(result.message).toBeDefined();
+    expect(result.message).not.toContain("sup3rsecret");
+    expect(result.message).not.toContain("admin:");
+    registry._reset();
+  });
+
+  it("healthCheckForWorkspace falls back to the native healthCheck for a bare id", async () => {
+    const registry = new ConnectionRegistry();
+    registry.registerDirect("warehouse", fakeConn("pg"), "postgres", "PG");
+    // No plugin pool registered for (ws-1, warehouse) → native path.
+    const result = await registry.healthCheckForWorkspace("ws-1", "warehouse");
+    expect(result.status).toBe("healthy");
+    registry._reset();
+  });
 });

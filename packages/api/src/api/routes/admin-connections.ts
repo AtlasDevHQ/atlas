@@ -14,7 +14,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getConfig } from "@atlas/api/lib/config";
-import { connections, detectDBType } from "@atlas/api/lib/db/connection";
+import { connections, detectDBType, type HealthCheckResult } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
@@ -498,6 +498,31 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
   const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, getAtlasMode(c));
   const filtered = visible ? connList.filter((conn) => visible.has(conn.id)) : connList;
 
+  // Health enrichment for plugin datasources. Native pools carry a cached
+  // `health` from the periodic health-check fiber (which probes only the bare
+  // `entries`); plugin pools (clickhouse / elasticsearch / …) live in the
+  // per-workspace direct-plugin map the fiber never visits, so they arrived
+  // with no `health` field — the row rendered "Status unknown" and the
+  // aggregate stuck at N-1/N (#3853). Actively probe any plugin pool here so
+  // every connection in the list carries a real reachability result. Probes
+  // run concurrently and a failure is captured as a `degraded`/`unhealthy`
+  // health object by `healthCheckForWorkspace`, never thrown.
+  const healthByConnection = new Map<string, HealthCheckResult>();
+  const pluginPoolsToProbe = filtered.filter(
+    (conn) => conn.health === undefined && connections.hasDirectForWorkspace(orgId, conn.id),
+  );
+  if (pluginPoolsToProbe.length > 0) {
+    const probed = await Promise.all(
+      pluginPoolsToProbe.map(async (conn) => {
+        const health = await connections.healthCheckForWorkspace(orgId, conn.id);
+        return [conn.id, health] as const;
+      }),
+    );
+    for (const [id, health] of probed) {
+      healthByConnection.set(id, health);
+    }
+  }
+
   // Decorate with `group_id` from `workspace_plugins.config`. Per
   // ADR-0007 the `connection_groups` table is gone; named groups
   // collapse into the per-row JSONB key `config->>'group_id'`. The
@@ -540,8 +565,10 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
 
   const decorated = filtered.map((c) => {
     const info = groupInfoByConnection.get(c.id);
+    const probedHealth = healthByConnection.get(c.id);
     return {
       ...c,
+      ...(probedHealth ? { health: probedHealth } : {}),
       groupId: info?.groupId ?? null,
       groupName: info?.groupName ?? null,
       billable: groupInfoByConnection.has(c.id),
@@ -740,8 +767,15 @@ adminConnections.openapi(testExistingConnectionRoute, async (c) => runHandler(c,
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   const { id } = c.req.valid("param");
 
-  const registered = connections.list();
-  if (!registered.includes(id)) {
+  // Existence is workspace-scoped: a published plugin datasource (clickhouse /
+  // elasticsearch / …) registers ONLY in the per-(workspace, install_id) plugin
+  // map, never in the bare `connections.list()` (`entries`). Gating on
+  // `list()` 404'd every plugin pool here (#3853). `describeForWorkspace`
+  // unions the bare entries with this workspace's plugin pools, so it's the
+  // correct registry-presence check; the `visible` set below is the
+  // content-mode / org-membership authorization gate.
+  const registeredForWorkspace = connections.describeForWorkspace(orgId);
+  if (!registeredForWorkspace.some((entry) => entry.id === id)) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found.`, requestId }, 404);
   }
 
@@ -750,7 +784,12 @@ adminConnections.openapi(testExistingConnectionRoute, async (c) => runHandler(c,
     return c.json({ error: "not_found", message: `Connection "${id}" not found.`, requestId }, 404);
   }
 
-  const result = await connections.healthCheck(id);
+  // Workspace-scoped probe: resolves the plugin pool first, falling back to the
+  // native health check for bare ids. Plugin datasources have no entry in the
+  // bare `entries` map: the old `connections.list()` gate above 404'd them
+  // first, and even past that gate the prior `connections.healthCheck(id)`
+  // would have thrown ConnectionNotRegisteredError → 500 (#3853).
+  const result = await connections.healthCheckForWorkspace(orgId, id);
 
   // `connection.health_check` is distinct from `connection.probe` (the
   // ephemeral `POST /test` surface) so forensic queries can separately
@@ -758,7 +797,7 @@ adminConnections.openapi(testExistingConnectionRoute, async (c) => runHandler(c,
   // a persisted datasource. Metadata shape matches probe: same success
   // / dbType / latencyMs fields so downstream dashboards can union the
   // two when appropriate. See F-29 / F-34.
-  const registryEntry = connections.describe().find((entry) => entry.id === id);
+  const registryEntry = registeredForWorkspace.find((entry) => entry.id === id);
   logAdminAction({
     actionType: ADMIN_ACTIONS.connection.healthCheck,
     targetType: "connection",

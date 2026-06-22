@@ -47,6 +47,13 @@ const mockHealthCheck = mock(() =>
   Promise.resolve({ status: "healthy", latencyMs: 3, checkedAt: new Date() }),
 );
 
+// #3853 — workspace-scoped probe used by the list route's plugin-pool health
+// enrichment and the `POST /:id/test` route. Returns a distinct latency so
+// tests can assert the route used THIS path (not the bare `healthCheck`).
+const mockHealthCheckForWorkspace = mock(() =>
+  Promise.resolve({ status: "healthy" as const, latencyMs: 7, checkedAt: new Date() }),
+);
+
 // Captured so tests can assert on register-call sequences (e.g. the
 // registry-rollback contract on PUT). Without a captured reference,
 // inline `mock(() => {})` is unobservable from `.mock.calls`.
@@ -82,6 +89,13 @@ const mocks = createApiTestMocks({
         { id: "clickhouse-staging", dbType: "clickhouse", description: "ClickHouse" },
       ],
       healthCheck: mockHealthCheck,
+      // #3853 — the `/test` route and list health-enrichment resolve plugin
+      // pools through the workspace-scoped probe / presence check, not the bare
+      // `entries`. `clickhouse-staging` is a plugin pool (present in
+      // describeForWorkspace, absent from `list()`), so the fixture wires the
+      // workspace-scoped helpers to recognise it.
+      healthCheckForWorkspace: mockHealthCheckForWorkspace,
+      hasDirectForWorkspace: (_orgId: string, id: string) => id === "clickhouse-staging",
       register: mockRegister,
       unregister: mock(() => false),
       has: (id: string) => ["default", "warehouse", "other-org-conn"].includes(id),
@@ -480,6 +494,39 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       // It owns a workspace_plugins row, so it counts toward the plan/billing.
       expect(clickhouse.billable).toBe(true);
     });
+
+    it("#3853 — list actively probes a plugin pool so it carries a health object", async () => {
+      // The plugin pool (clickhouse-staging) arrives from describeForWorkspace
+      // with no cached `health` (the periodic fiber probes only bare entries).
+      // The list route must probe it via healthCheckForWorkspace so the row
+      // shows latency instead of "Status unknown" and the aggregate reaches
+      // full count.
+      mockHealthCheckForWorkspace.mockClear();
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sqlIs.visibility(sql)) {
+          return Promise.resolve([{ install_id: "warehouse" }, { install_id: "clickhouse-staging" }]);
+        }
+        if (sqlIs.decoration(sql)) {
+          return Promise.resolve([
+            { install_id: "warehouse", group_id: null },
+            { install_id: "clickhouse-staging", group_id: null },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const clickhouse = body.connections.find((c: { id: string }) => c.id === "clickhouse-staging");
+      expect(clickhouse.health).toBeDefined();
+      expect(clickhouse.health.status).toBe("healthy");
+      expect(clickhouse.health.latencyMs).toBe(7);
+      // The plugin pool was the only one probed (warehouse is a native id whose
+      // health comes from the cached fiber, not this active probe).
+      expect(mockHealthCheckForWorkspace).toHaveBeenCalledWith("org-alpha", "clickhouse-staging");
+    });
   });
 
   // ─── 3. PUT 404s for wrong workspace ──────────────────────────────────
@@ -643,6 +690,30 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(200);
+    });
+
+    it("#3853 — health-checks a plugin datasource (no 404) via the workspace-scoped probe", async () => {
+      // clickhouse-staging is a plugin pool: present in describeForWorkspace,
+      // absent from the bare `list()`. Pre-fix the route gated on `list()` →
+      // 404; now it gates on describeForWorkspace and probes via
+      // healthCheckForWorkspace, returning a real reachability result.
+      setOrgAdmin("org-alpha");
+      mockHealthCheckForWorkspace.mockClear();
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sqlIs.visibility(sql)) return Promise.resolve([{ install_id: "clickhouse-staging" }]);
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/clickhouse-staging/test", "POST"),
+      );
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.status).toBe("healthy");
+      expect(body.latencyMs).toBe(7);
+      expect(mockHealthCheckForWorkspace).toHaveBeenCalledWith("org-alpha", "clickhouse-staging");
     });
 
     it("platform admin health-checking an install not in their active workspace gets 404", async () => {

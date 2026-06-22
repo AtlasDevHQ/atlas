@@ -37,6 +37,8 @@ export interface ConnectionsOverrides {
   has?: AnyFn;
   _reset?: AnyFn;
   healthCheck?: AnyFn;
+  healthCheckForWorkspace?: AnyFn;
+  hasDirectForWorkspace?: AnyFn;
   register?: AnyFn;
   unregister?: AnyFn;
   recordQuery?: AnyFn;
@@ -101,12 +103,20 @@ export function createConnectionMock(overrides?: ConnectionMockOverrides) {
     describeForWorkspace: (_workspaceId: string) => connections.describe(),
     describeAllWorkspacePlugins: () => [],
     has: () => true,
+    healthCheck: async () => ({ status: "healthy" as const, latencyMs: 1, checkedAt: new Date() }),
     isOrgPoolingEnabled: () => false,
     getForOrg: () => dbConn,
     getForWorkspace: () => dbConn,
     // Default: no per-workspace config registered in the mock, so the
     // org-pooling-OFF read path keeps pool metrics on the bare entry (#3109).
     hasForWorkspace: () => false,
+    // #3853 — default: no per-workspace PLUGIN pool registered, so the admin
+    // list / `/:id/test` route's plugin-pool branch is skipped and
+    // healthCheckForWorkspace falls back to the native healthCheck. Tests that
+    // exercise a plugin datasource override both.
+    hasDirectForWorkspace: () => false,
+    healthCheckForWorkspace: (_workspaceId: string, installId: string) =>
+      connections.healthCheck(installId),
     drainWorkspacePool: () => 0,
     recordQuery: () => {},
     recordSuccess: () => {},

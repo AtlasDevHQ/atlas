@@ -15,6 +15,9 @@ import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getConfig } from "@atlas/api/lib/config";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
+import type { DBConnection, DBType } from "@atlas/api/lib/db/connection";
+import { catalogSlugToDbType } from "@atlas/api/lib/db/datasource-pool-resolver";
+import { registerDatasourceInstall } from "@atlas/api/lib/db/datasource-registry-bridge";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
@@ -50,6 +53,33 @@ const log = createLogger("admin-connections");
 /** Read atlasMode from the Hono context. Defaults to "published" (most restrictive) when not set. */
 function getAtlasMode(c: { get(key: string): unknown }): import("@useatlas/types/auth").AtlasMode {
   return (c.get("atlasMode") as import("@useatlas/types/auth").AtlasMode | undefined) ?? "published";
+}
+
+/**
+ * Liveness window for the post-update plugin-datasource probe — matches the
+ * `PLUGIN_PROBE_TIMEOUT_MS` the datasource bridge uses for its own pre-flight
+ * probe (10s) so a cold-start warehouse (ClickHouse / Snowflake / BigQuery can
+ * take several seconds to open the first session) isn't spuriously failed (#3852).
+ */
+const PLUGIN_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Probe an already-registered plugin-datasource connection for liveness. Prefers
+ * the adapter's native `ping()` (Elasticsearch / OpenSearch — whose `query()`
+ * routes to the cluster SQL API `/_sql`, optional on OpenSearch, so `SELECT 1`
+ * would test the wrong surface) and falls back to `SELECT 1` for SQL-only
+ * adapters (ClickHouse / Snowflake / BigQuery). Mirrors the bridge's
+ * `probePluginDatasourceConnection` surface choice, but probes the LIVE
+ * registered connection rather than building a throwaway one. Throws on failure;
+ * the caller maps it to a rollback + HTTP error.
+ */
+async function probeLivePluginConnection(conn: DBConnection): Promise<void> {
+  const maybePing = (conn as { ping?: (timeoutMs?: number) => Promise<unknown> }).ping;
+  if (typeof maybePing === "function") {
+    await maybePing.call(conn, PLUGIN_PROBE_TIMEOUT_MS);
+    return;
+  }
+  await conn.query("SELECT 1", PLUGIN_PROBE_TIMEOUT_MS);
 }
 
 // ---------------------------------------------------------------------------
@@ -1170,9 +1200,16 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   let currentUrl: string;
   let currentDescription: string | null;
   let currentSchema: string | null;
+  // Full decrypted config — the plugin re-registration bridge
+  // (`registerDatasourceInstall` → `createFromConfig`) needs every field a
+  // plugin connection carries (not just url/description/schema), so capture
+  // the whole object here and merge patched fields onto it below (#3852).
+  // Definitely assigned before any read: the catch returns early.
+  let currentDecryptedConfig: Readonly<Record<string, unknown>>;
   try {
     const schemaSpec = parseConfigSchema(current.config_schema);
     const decrypted = decryptSecretFields(current.config ?? {}, schemaSpec);
+    currentDecryptedConfig = decrypted;
     currentUrl = typeof decrypted.url === "string" ? decrypted.url : "";
     currentDescription =
       typeof decrypted.description === "string" && decrypted.description.length > 0
@@ -1196,10 +1233,29 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   const urlChanged = typeof url === "string" && url !== currentUrl;
 
   // dbType for the response — derived from the catalog slug since that's
-  // the source of truth post-cutover. For URL changes we re-detect to
-  // validate the new URL's shape before the test-connect dance.
-  let dbType = current.catalog_slug;
-  if (urlChanged) {
+  // the source of truth post-cutover. `catalogSlugToDbType` collapses the
+  // `demo-postgres` alias onto `postgres`; throws on an unknown slug.
+  let dbType: DBType;
+  try {
+    dbType = catalogSlugToDbType(current.catalog_slug);
+  } catch (err) {
+    log.error({ connectionId: id, requestId, catalogSlug: current.catalog_slug, err: errorMessage(err) }, "Unknown catalog slug on connection update");
+    return c.json({ error: "internal_error", message: "Connection has an unrecognized datasource type and cannot be updated.", requestId }, 500);
+  }
+
+  // Plugin datasources — everything except core postgres/mysql (clickhouse,
+  // snowflake, bigquery, duckdb, elasticsearch, salesforce) — re-register
+  // through the `createFromConfig` bridge (ADR-0013), NOT the core
+  // `connections.register`, which only understands postgresql:// / mysql:// and
+  // would 500 on a plugin URL scheme (#3852). The core re-detect-and-validate
+  // dance below is postgres/mysql-only for the same reason:
+  // `detectDBType("clickhouse://…")` throws.
+  const isPluginDbType = dbType !== "postgres" && dbType !== "mysql";
+
+  // For a core URL change, re-detect to validate the new URL's shape before the
+  // test-connect dance. Plugin URLs keep the catalog-slug dbType (their schemes
+  // are unknown to the core detector).
+  if (urlChanged && !isPluginDbType) {
     try {
       dbType = detectDBType(newUrl);
     } catch (err) {
@@ -1207,9 +1263,84 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     }
   }
 
-  // Re-test if URL changed. Test-connect dance is route-owned per
-  // ADR-0007 — the installer trusts the caller's reachability check.
-  if (urlChanged) {
+  // Re-register the live pool to reflect the metadata change. Plugin
+  // datasources route through the `createFromConfig` bridge (ADR-0013);
+  // core (postgres/mysql) keep the native `connections.register` path. Both
+  // re-test only when the URL changed — the test-connect dance is route-owned
+  // per ADR-0007. (#3852)
+  if (isPluginDbType) {
+    // Merge the patched url/description/schema onto the full decrypted config
+    // so plugin-specific fields the caller didn't touch survive the rebuild.
+    const mergedConfig: Record<string, unknown> = { ...currentDecryptedConfig, url: newUrl };
+    if (newDescription !== null) mergedConfig.description = newDescription;
+    else delete mergedConfig.description;
+    if (newSchema !== null) mergedConfig.schema = newSchema;
+    else delete mergedConfig.schema;
+
+    try {
+      // `registerDatasourceInstall` builds the connection via the plugin's
+      // `createFromConfig` and registers it via `registerDirectForWorkspace`
+      // (which closes + replaces any prior live connection). For a plugin
+      // dbType it ALWAYS rebuilds the live connection from the merged config —
+      // its boolean return is "was this a fresh (workspace, install_id)
+      // registration" (`false` on an in-place rebuild of an existing one, which
+      // is the common URL-change case), NOT "did anything get built". It returns
+      // `false` without building only for handler-managed (OAuth) types like
+      // salesforce, which keep their LazyPluginLoader connection.
+      await registerDatasourceInstall(
+        { workspaceId: orgId, catalogId: "", installId: id, pillar: "datasource", catalogSlug: current.catalog_slug },
+        mergedConfig,
+      );
+      // Probe the (re)built plugin connection through the plugin adapter —
+      // but ONLY when the URL changed, matching the core path's `else if
+      // (urlChanged)` gate and the comment above (test-connect is route-owned
+      // per ADR-0007). A metadata-only change (e.g. a group rename) must not
+      // probe: a transiently-unreachable datasource would otherwise 500 a valid
+      // rename (#3852). The rebuild itself always runs so the live pool reflects
+      // the new config; only the liveness PROBE is URL-change-gated.
+      //
+      // The probe is further gated on `hasDirectForWorkspace`, NOT the boolean
+      // return: an in-place rebuild returns `false` yet a fresh connection — to
+      // a new URL — is now live and MUST be probed. Salesforce registers no
+      // direct connection, so the guard correctly skips it. (The core
+      // `connections.healthCheck` reads the bare `entries` map, which plugin
+      // pools never populate — they live in `workspacePluginEntries`.)
+      if (urlChanged && connections.hasDirectForWorkspace(orgId, id)) {
+        await probeLivePluginConnection(connections.getForWorkspace(orgId, id));
+      }
+    } catch (err) {
+      // Rebuild the previous connection from the pre-update config so the live
+      // pool isn't left pointing at the rejected URL.
+      let rollbackFailed = false;
+      try {
+        await registerDatasourceInstall(
+          { workspaceId: orgId, catalogId: "", installId: id, pillar: "datasource", catalogSlug: current.catalog_slug },
+          currentDecryptedConfig,
+        );
+      } catch (restoreErr) {
+        rollbackFailed = true;
+        log.error({ connectionId: id, requestId, err: errorMessage(restoreErr) }, "Failed to restore previous plugin connection after update failure — connection unregistered");
+        connections.unregisterDirectForWorkspace(orgId, id);
+      }
+      const baseMsg = urlChanged
+        ? `Connection test failed: ${errorMessage(err)}. Fix the URL and try again.`
+        : `Failed to update connection: ${errorMessage(err)}.`;
+      if (rollbackFailed) {
+        return c.json({ error: "internal_error", message: `${baseMsg} The connection may need a server restart to restore.`, requestId }, 500);
+      }
+      // A URL-change failure is the caller's input problem (400, connection_failed);
+      // a metadata-only failure means the rebuild itself broke (500,
+      // internal_error). Both surface the scrubbed cause (`errorMessage` strips
+      // DSN userinfo) so the admin gets an actionable message, not a bare
+      // "Failed to update connection."
+      return c.json(
+        urlChanged
+          ? { error: "connection_failed", message: baseMsg, requestId }
+          : { error: "internal_error", message: baseMsg, requestId },
+        urlChanged ? 400 : 500,
+      );
+    }
+  } else if (urlChanged) {
     try {
       connections.register(id, { url: newUrl, description: newDescription ?? undefined, schema: newSchema ?? undefined });
       await connections.healthCheck(id);
@@ -1273,15 +1404,24 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
       ),
   );
   if (result.kind === "error") {
-    // Rollback the registry to the pre-update URL — the DB write didn't
-    // land so the live pool shouldn't reflect the attempted change.
+    // Rollback the registry to the pre-update config — the DB write didn't
+    // land so the live pool shouldn't reflect the attempted change. Plugin
+    // datasources rebuild via the bridge; core via `connections.register`.
     let rollbackFailed = false;
     try {
-      connections.register(id, { url: currentUrl, description: currentDescription ?? undefined, schema: currentSchema ?? undefined });
+      if (isPluginDbType) {
+        await registerDatasourceInstall(
+          { workspaceId: orgId, catalogId: "", installId: id, pillar: "datasource", catalogSlug: current.catalog_slug },
+          currentDecryptedConfig,
+        );
+      } else {
+        connections.register(id, { url: currentUrl, description: currentDescription ?? undefined, schema: currentSchema ?? undefined });
+      }
     } catch (restoreErr) {
       rollbackFailed = true;
       log.error({ connectionId: id, requestId, err: errorMessage(restoreErr) }, "Failed to restore previous connection after installer error — connection unregistered");
-      connections.unregister(id);
+      if (isPluginDbType) connections.unregisterDirectForWorkspace(orgId, id);
+      else connections.unregister(id);
     }
     if (rollbackFailed) {
       // Rollback failed AND the installer rejected the change: the in-memory

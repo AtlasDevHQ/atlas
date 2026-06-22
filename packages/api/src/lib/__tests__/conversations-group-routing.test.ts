@@ -23,7 +23,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
 import { withRequestContext, getRequestContext } from "@atlas/api/lib/logger";
-import { resolveGroupForConnection } from "@atlas/api/lib/conversations";
+import { resolveGroupForConnection, verifyGroupBelongsToOrg } from "@atlas/api/lib/conversations";
 
 // ── Mock internal pool ────────────────────────────────────────────────
 
@@ -277,5 +277,72 @@ describe("missing group falls back to legacy behavior", () => {
     // The caller's null orgId is forwarded as a SQL NULL so the
     // null-safe operator can match against workspace_plugins.workspace_id IS NULL.
     expect(params).toEqual(["conn-1", null]);
+  });
+});
+
+// ── 4. #3879 — group-of-one verify gate ───────────────────────────────
+
+describe("verifyGroupBelongsToOrg resolves a group-of-one by install_id (#3879)", () => {
+  it("returns no_db when the internal DB is not configured", async () => {
+    const result = await verifyGroupBelongsToOrg("opensearch", "org-1");
+    expect(result).toBe("no_db");
+    // Short-circuits before any query.
+    expect(queryCalls.length).toBe(0);
+  });
+
+  it("uses COALESCE(config->>'group_id', install_id) so a group-less install verifies by its own id", async () => {
+    // The bug: the picker (`/me/connection-groups`) and the write-side
+    // resolvers surface a standalone, group-less datasource as a
+    // group-of-one keyed by its `install_id` via
+    // `COALESCE(config->>'group_id', install_id)` (#3855). This gate
+    // matched only the bare `config->>'group_id' = $1`, so pinning a
+    // freshly-installed group-less datasource 400'd with "environment
+    // not available" — the row had a NULL `config.group_id`, so no row
+    // matched its install_id.
+    //
+    // Mock-theater caveat (see the #2415 test above): the mock returns
+    // whatever rows we hand it regardless of WHERE semantics, so the
+    // behavioral "ok" only proves the caller maps a non-empty result to
+    // "ok". The real regression signal is the SQL string — the COALESCE
+    // form is what makes an install_id-keyed group-of-one resolvable, and
+    // it must stay in lockstep with the picker's identical resolution
+    // (locked by `me-connection-groups.test.ts`). Real-Postgres COALESCE
+    // semantics are standard SQL and exercised by the picker path.
+    enableInternalDB();
+    setResults({ rows: [{ install_id: "opensearch" }] });
+
+    const result = await verifyGroupBelongsToOrg("opensearch", "org-1");
+    expect(result).toBe("ok");
+
+    expect(queryCalls.length).toBe(1);
+    const { sql, params } = queryCalls[0];
+    // Must resolve the group id the same way the picker does.
+    expect(sql).toContain("COALESCE(config->>'group_id', install_id) = $1");
+    // The pre-#3879 bare-equality form is forbidden — it can't match a
+    // group-less install keyed by its install_id.
+    expect(sql).not.toMatch(/WHERE\s+config->>'group_id'\s*=\s*\$1/);
+    // Still scoped to datasource installs in the caller's workspace (or
+    // the shared `__global__` bucket), null-safe on the workspace id.
+    expect(sql).toContain("pillar = 'datasource'");
+    expect(sql).toContain("IS NOT DISTINCT FROM");
+    expect(params).toEqual(["opensearch", "org-1"]);
+  });
+
+  it("returns not_found when no install resolves to the pinned group id", async () => {
+    enableInternalDB();
+    setResults({ rows: [] });
+
+    const result = await verifyGroupBelongsToOrg("ghost-env", "org-1");
+    expect(result).toBe("not_found");
+  });
+
+  it("returns error (caller fails closed → 500) when the query throws", async () => {
+    enableInternalDB();
+    queryThrow = new Error("connection refused");
+
+    const result = await verifyGroupBelongsToOrg("opensearch", "org-1");
+    // Fails closed: the chat route maps "error" to a retryable 500 rather
+    // than silently treating an unverifiable group as owned.
+    expect(result).toBe("error");
   });
 });

@@ -211,6 +211,14 @@ const mockSendEmailWithTransport: Mock<(...args: unknown[]) => Promise<DeliveryR
 mock.module("@atlas/api/lib/email/delivery", () => ({
   sendEmail: mockSendEmail,
   sendEmailWithTransport: mockSendEmailWithTransport,
+  // The baseline brand sender reuses this seam constant (#3889) — keep the
+  // mock's value in lockstep with the real default so the baseline assertion
+  // holds.
+  DEFAULT_FROM_ADDRESS: "Atlas <noreply@ship.useatlas.dev>",
+  // The smtp/ses save-time gate reads the bridge URL through this seam (#3889);
+  // model the real resolver's env tier so the gate tests that toggle
+  // process.env.ATLAS_SMTP_URL still drive it.
+  resolveSmtpBridgeUrl: () => process.env.ATLAS_SMTP_URL,
   // Pulled transitively via the agent tool registry (email-tool imports
   // resolveOutboundClampRegion from this module). null → no staging clamp;
   // this route test exercises provider config, not the outbound clamp.

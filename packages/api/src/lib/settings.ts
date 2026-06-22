@@ -712,6 +712,9 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     label: "From Address",
     description: "Default sender address for platform emails",
     type: "string",
+    // Keep in sync with DEFAULT_FROM_ADDRESS in lib/email/delivery.ts (#3889).
+    // It can't be imported here — delivery.ts depends on this module, so the
+    // back-import would cycle — hence a synced literal rather than a shared ref.
     default: "Atlas <noreply@ship.useatlas.dev>",
     envVar: "ATLAS_EMAIL_FROM",
     scope: "platform",

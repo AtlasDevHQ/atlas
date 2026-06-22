@@ -425,6 +425,107 @@ describe("POST /api/v1/admin/integrations/email/test — audit emission (F-29 re
     if (prevSmtpUrl !== undefined) process.env.ATLAS_SMTP_URL = prevSmtpUrl;
   });
 
+  it("routes the test-send through the canonical delivery seam — sends from the install sender_address (#3889)", async () => {
+    // The admin test-send builds the SAME EmailTransport prod resolves and sends
+    // via deliverViaTransport, so the From on the wire is the install's own
+    // sender_address (test path == prod path), not a parallel test-only sender.
+    // A distinctive sender_address (not the default-install value) ensures the
+    // assertion can't be satisfied by a coincidental fallback.
+    mockGetEmailInstallationByOrg.mockImplementationOnce(async () => ({
+      org_id: "org-alpha",
+      installed_at: new Date().toISOString(),
+      config_id: "cfg-byo",
+      provider: "resend" as const,
+      sender_address: "Acme BYO <byo@acme.test>",
+      config: { provider: "resend" as const, apiKey: "re_byo" },
+    }));
+    let capturedFrom: unknown;
+    mockFetch.mockImplementation((_url, init) => {
+      const body = init?.body ? (JSON.parse(String(init.body)) as { from?: unknown }) : {};
+      capturedFrom = body.from;
+      return Promise.resolve(
+        new Response(JSON.stringify({ id: "ok" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/integrations/email/test", {
+        recipientEmail: "dest@test.com",
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(capturedFrom).toBe("Acme BYO <byo@acme.test>");
+  });
+
+  it("test-send for a non-resend provider hits the canonical per-provider sender (#3889)", async () => {
+    // The consolidation's payoff: sendgrid/postmark/smtp/ses test-sends now route
+    // through deliverViaTransport's single per-provider senders too, not a
+    // parallel copy. A sendgrid install must hit api.sendgrid.com with its own
+    // sender_address.
+    mockGetEmailInstallationByOrg.mockImplementationOnce(async () => ({
+      org_id: "org-alpha",
+      installed_at: new Date().toISOString(),
+      config_id: "cfg-sg",
+      provider: "sendgrid" as const,
+      sender_address: "sg@acme.test",
+      config: { provider: "sendgrid" as const, apiKey: "SG.byo_key" },
+    }));
+    let capturedUrl: string | undefined;
+    let capturedFrom: unknown;
+    mockFetch.mockImplementation((url, init) => {
+      capturedUrl = String(url);
+      const body = init?.body ? (JSON.parse(String(init.body)) as { from?: { email?: unknown } }) : {};
+      capturedFrom = body.from?.email;
+      return Promise.resolve(
+        new Response(JSON.stringify({}), { status: 202, headers: { "Content-Type": "application/json" } }),
+      );
+    });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/integrations/email/test", {
+        recipientEmail: "dest@test.com",
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(capturedUrl).toContain("api.sendgrid.com");
+    expect(capturedFrom).toBe("sg@acme.test");
+    const entry = lastAuditCall();
+    expect(entry.metadata).toMatchObject({ platform: "email", provider: "sendgrid", success: true });
+  });
+
+  it("test-send retries a transient 503 — proves it uses the canonical deliverResend, not a parallel sender (#3889)", async () => {
+    // The removed parallel sender used a plain `fetch` with no retry; the
+    // canonical `deliverResend` retries 5xx via `fetchWithRetry`. A 503-then-200
+    // sequence that ultimately succeeds can only happen on the canonical path.
+    let calls = 0;
+    mockFetch.mockImplementation(() => {
+      calls++;
+      const status = calls === 1 ? 503 : 200;
+      return Promise.resolve(
+        new Response(JSON.stringify(status === 200 ? { id: "ok" } : "busy"), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/integrations/email/test", {
+        recipientEmail: "dest@test.com",
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean };
+    expect(body.success).toBe(true);
+    expect(calls).toBe(2);
+  });
+
   it("does not emit when no email configuration is saved (400)", async () => {
     mockGetEmailInstallationByOrg.mockImplementationOnce(async () => null);
 

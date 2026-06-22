@@ -1646,7 +1646,17 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   const { id } = c.req.valid("param");
 
-  if (!connections.has(id)) {
+  // Existence is workspace-scoped: a published plugin datasource (clickhouse /
+  // elasticsearch / …) registers ONLY in the per-(workspace, install_id) plugin
+  // map, never in the bare `connections.has()` (`entries`). Gating on `has()`
+  // 404'd the detail load for every plugin datasource → the admin Edit dialog
+  // could never open its details ("Failed to load connection details: HTTP 404",
+  // #3866). `describeForWorkspace` unions the bare entries with this workspace's
+  // plugin pools — the correct registry-presence check, mirroring the list
+  // (#3844) and `/test` (#3853) endpoints. The `visible` set below is the
+  // content-mode / org-membership authorization gate.
+  const registeredForWorkspace = connections.describeForWorkspace(orgId);
+  if (!registeredForWorkspace.some((entry) => entry.id === id)) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found.`, requestId }, 404);
   }
 
@@ -1656,7 +1666,7 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
     return c.json({ error: "not_found", message: `Connection "${id}" not found.`, requestId }, 404);
   }
 
-  const meta = connections.describe().find((m) => m.id === id);
+  const meta = registeredForWorkspace.find((entry) => entry.id === id);
 
   // If admin-managed, include masked URL and schema from DB. Post-#2744
   // the row lives in workspace_plugins with the URL inside `config`

@@ -1395,6 +1395,43 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       expect(body.groupName).toBeNull();
     });
 
+    it("#3866 — get-by-id resolves a plugin datasource, not just native pools", async () => {
+      // A published plugin datasource (clickhouse-staging) registers ONLY in the
+      // per-workspace plugin map — present in describeForWorkspace, absent from
+      // the bare `has()`/`describe()`/`list()`. The detail route gated existence
+      // on `connections.has(id)` (core registry), so it 404'd every plugin
+      // datasource → the admin "Edit" dialog could never load its details
+      // ("Failed to load connection details: HTTP 404"). It must gate on the
+      // workspace-scoped describe, mirroring the list (#3844) and /test (#3853)
+      // endpoints; the `visible` set remains the authorization gate.
+      setOrgAdmin("org-alpha");
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sqlIs.visibility(sql)) return Promise.resolve([{ install_id: "clickhouse-staging" }]);
+        if (sqlIs.detail(sql)) {
+          return Promise.resolve([
+            {
+              config: { url: "encrypted:clickhouse://user:pass@host:8123/db" },
+              config_schema: POSTGRES_CATALOG_ROW.config_schema,
+              group_id: "clickhouse",
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections/clickhouse-staging"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.id).toBe("clickhouse-staging");
+      // dbType comes from describeForWorkspace meta (the plugin pool), proving the
+      // route resolved the per-workspace registry rather than the bare describe().
+      expect(body.dbType).toBe("clickhouse");
+      expect(body.managed).toBe(true);
+      expect(body.groupId).toBe("clickhouse");
+      expect(body.groupName).toBe("clickhouse");
+    });
+
     it("get-by-id surfaces groupId + groupName when config carries group_id", async () => {
       setOrgAdmin("org-alpha");
       mocks.mockInternalQuery.mockImplementation((sql: string) => {

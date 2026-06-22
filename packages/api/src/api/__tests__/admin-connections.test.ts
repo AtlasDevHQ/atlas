@@ -47,6 +47,13 @@ const mockHealthCheck = mock(() =>
   Promise.resolve({ status: "healthy", latencyMs: 3, checkedAt: new Date() }),
 );
 
+// #3853 — workspace-scoped probe used by the list route's plugin-pool health
+// enrichment and the `POST /:id/test` route. Returns a distinct latency so
+// tests can assert the route used THIS path (not the bare `healthCheck`).
+const mockHealthCheckForWorkspace = mock(() =>
+  Promise.resolve({ status: "healthy" as const, latencyMs: 7, checkedAt: new Date() }),
+);
+
 // Captured so tests can assert on register-call sequences (e.g. the
 // registry-rollback contract on PUT). Without a captured reference,
 // inline `mock(() => {})` is unobservable from `.mock.calls`.
@@ -108,12 +115,28 @@ const mocks = createApiTestMocks({
         { id: "clickhouse-staging", dbType: "clickhouse", description: "ClickHouse" },
       ],
       healthCheck: mockHealthCheck,
+      // #3853 — the `/test` route and list health-enrichment resolve plugin
+      // pools through the workspace-scoped probe / presence check, not the bare
+      // `entries`. `clickhouse-staging` is a plugin pool (present in
+      // describeForWorkspace, absent from `list()`), so the fixture wires the
+      // workspace-scoped helpers to recognise it.
+      healthCheckForWorkspace: mockHealthCheckForWorkspace,
+      // A connection is a per-workspace plugin pool iff it's NOT one of the
+      // native/bare pools (`default` / `warehouse` / `other-org-conn`, the
+      // `list()` + `has()` set). This unifies two needs after the #3852 merge:
+      //   #3853 list/health tests — only `clickhouse-staging` (a plugin pool)
+      //     is actively probed; native `warehouse` is left to the cached fiber.
+      //   #3852 PUT tests — the plugin re-registration probe (`getForWorkspace`)
+      //     fires for plugin install ids (`clickhouse`, `analytics`, …).
+      // A single predicate avoids the duplicate-key footgun (last-key-wins
+      // silently made every row a plugin pool, double-probing the list).
+      hasDirectForWorkspace: (_orgId: string, id: string) =>
+        !["default", "warehouse", "other-org-conn"].includes(id),
       register: mockRegister,
       // #3852 — plugin pools live in the per-workspace direct map, not the bare
       // `entries`. The PUT handler probes the freshly-built plugin connection
       // via `getForWorkspace(orgId, id)` (default mock returns a working query
       // stub) gated on `hasDirectForWorkspace`.
-      hasDirectForWorkspace: () => true,
       getForWorkspace: mockGetForWorkspace,
       unregisterDirectForWorkspace: mock(() => true),
       unregister: mock(() => false),
@@ -532,6 +555,77 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       expect(clickhouse.dbType).toBe("clickhouse");
       // It owns a workspace_plugins row, so it counts toward the plan/billing.
       expect(clickhouse.billable).toBe(true);
+    });
+
+    it("#3853 — list actively probes a plugin pool so it carries a health object", async () => {
+      // The plugin pool (clickhouse-staging) arrives from describeForWorkspace
+      // with no cached `health` (the periodic fiber probes only bare entries).
+      // The list route must probe it via healthCheckForWorkspace so the row
+      // shows latency instead of "Status unknown" and the aggregate reaches
+      // full count.
+      mockHealthCheckForWorkspace.mockClear();
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sqlIs.visibility(sql)) {
+          return Promise.resolve([{ install_id: "warehouse" }, { install_id: "clickhouse-staging" }]);
+        }
+        if (sqlIs.decoration(sql)) {
+          return Promise.resolve([
+            { install_id: "warehouse", group_id: null },
+            { install_id: "clickhouse-staging", group_id: null },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const clickhouse = body.connections.find((c: { id: string }) => c.id === "clickhouse-staging");
+      expect(clickhouse.health).toBeDefined();
+      expect(clickhouse.health.status).toBe("healthy");
+      expect(clickhouse.health.latencyMs).toBe(7);
+      // The plugin pool was the only one probed (warehouse is a native id whose
+      // health comes from the cached fiber, not this active probe).
+      expect(mockHealthCheckForWorkspace).toHaveBeenCalledWith("org-alpha", "clickhouse-staging");
+    });
+
+    it("#3860 — one throwing plugin probe degrades its row, never 500s the whole list", async () => {
+      // TOCTOU defense-in-depth: `healthCheckForWorkspace` is contractually
+      // "never throws", but the list route still wraps each probe so that even
+      // an unexpected rejection (e.g. a race-removed pool reaching the native
+      // fallback's `ConnectionNotRegisteredError`) is contained to a single
+      // `degraded` row rather than rejecting the route's `Promise.allSettled`
+      // and failing the entire connections list with a 500.
+      mockHealthCheckForWorkspace.mockClear();
+      mockHealthCheckForWorkspace.mockImplementationOnce(() =>
+        Promise.reject(new Error('Connection "clickhouse-staging" is not registered.')),
+      );
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sqlIs.visibility(sql)) {
+          return Promise.resolve([{ install_id: "warehouse" }, { install_id: "clickhouse-staging" }]);
+        }
+        if (sqlIs.decoration(sql)) {
+          return Promise.resolve([
+            { install_id: "warehouse", group_id: null },
+            { install_id: "clickhouse-staging", group_id: null },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+      // The list survives — no 500 — despite the throwing probe.
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const clickhouse = body.connections.find((c: { id: string }) => c.id === "clickhouse-staging");
+      // The bad row is degraded, not absent or fatal.
+      expect(clickhouse).toBeDefined();
+      expect(clickhouse.health.status).toBe("degraded");
+      // Native rows are unaffected.
+      const warehouse = body.connections.find((c: { id: string }) => c.id === "warehouse");
+      expect(warehouse).toBeDefined();
     });
   });
 
@@ -955,6 +1049,30 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       );
 
       expect(res.status).toBe(200);
+    });
+
+    it("#3853 — health-checks a plugin datasource (no 404) via the workspace-scoped probe", async () => {
+      // clickhouse-staging is a plugin pool: present in describeForWorkspace,
+      // absent from the bare `list()`. Pre-fix the route gated on `list()` →
+      // 404; now it gates on describeForWorkspace and probes via
+      // healthCheckForWorkspace, returning a real reachability result.
+      setOrgAdmin("org-alpha");
+      mockHealthCheckForWorkspace.mockClear();
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sqlIs.visibility(sql)) return Promise.resolve([{ install_id: "clickhouse-staging" }]);
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/clickhouse-staging/test", "POST"),
+      );
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.status).toBe("healthy");
+      expect(body.latencyMs).toBe(7);
+      expect(mockHealthCheckForWorkspace).toHaveBeenCalledWith("org-alpha", "clickhouse-staging");
     });
 
     it("platform admin health-checking an install not in their active workspace gets 404", async () => {

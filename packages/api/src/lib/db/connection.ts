@@ -473,6 +473,18 @@ interface WorkspacePluginEntry {
   targetHost: string;
   validate?: (query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>;
   pluginMeta?: ConnectionPluginMeta;
+  /**
+   * Last health probe result for this plugin pool. Set by
+   * {@link ConnectionRegistry.healthCheckForWorkspace}; surfaced through
+   * {@link ConnectionRegistry.describeForWorkspace} (and
+   * {@link ConnectionRegistry.describeAllWorkspacePlugins}) via `_pluginMeta` so
+   * the admin Connections list carries a `health` object for plugin datasources
+   * (#3853). Unlike the
+   * native {@link RegistryEntry}, plugin pools don't track a consecutive-failure
+   * span (the periodic fiber probes only bare `entries`), so a failed probe is
+   * reported as `degraded` rather than escalating to `unhealthy`.
+   */
+  lastHealth?: HealthCheckResult;
 }
 
 /** Configuration for per-org pool isolation. */
@@ -1378,12 +1390,17 @@ export class ConnectionRegistry {
     }));
   }
 
-  /** {@link ConnectionMetadata} for a per-workspace plugin pool (no `lastHealth` tracked on these entries). */
+  /**
+   * {@link ConnectionMetadata} for a per-workspace plugin pool. Carries a
+   * `health` object once {@link healthCheckForWorkspace} has probed the pool and
+   * cached `lastHealth` on the entry (#3853); omitted until the first probe.
+   */
   private _pluginMeta(entry: WorkspacePluginEntry): ConnectionMetadata {
     return {
       id: entry.installId,
       dbType: entry.dbType,
       ...(entry.description !== undefined ? { description: entry.description } : {}),
+      ...(entry.lastHealth ? { health: entry.lastHealth } : {}),
     };
   }
 
@@ -1476,6 +1493,94 @@ export class ConnectionRegistry {
       const matched = matchError(err);
       const result: HealthCheckResult = {
         status,
+        latencyMs,
+        message: matched?.message ?? scrubbedMessage,
+        checkedAt: new Date(),
+      };
+      entry.lastHealth = result;
+      return result;
+    }
+  }
+
+  /**
+   * Run a health check for a connection visible to a specific workspace,
+   * resolving a per-(workspace, install_id) PLUGIN pool first and falling back
+   * to the native {@link healthCheck} for bare/native ids.
+   *
+   * Plugin datasources (clickhouse / elasticsearch / snowflake / …) register a
+   * pre-built live connection ONLY in {@link workspacePluginEntries} — never in
+   * the bare `entries` map that {@link healthCheck} probes — so a bare
+   * `healthCheck(installId)` threw `ConnectionNotRegisteredError` and the admin
+   * `/test` route 404'd for them (#3853). This probes the plugin pool directly
+   * (`SELECT 1`, 5s budget) and caches the result on the entry so a subsequent
+   * {@link describeForWorkspace} carries the `health` object.
+   *
+   * On a probe failure the plugin path reports `degraded` (plugin entries don't
+   * track the consecutive-failure span the native path uses to escalate to
+   * `unhealthy`); the native fallback keeps its own escalation behaviour.
+   *
+   * **Never throws** — unconditionally. The plugin-pool probe arm catches
+   * connection-level failures (timeout, refused) → `degraded`. The native
+   * fallback arm is also wrapped: if `installId` is absent from BOTH
+   * {@link workspacePluginEntries} AND the bare `entries` map (the TOCTOU race
+   * where a pool is unregistered between a caller's presence check and this
+   * probe, #3860), {@link healthCheck} would throw `ConnectionNotRegisteredError`.
+   * We catch that (and any unexpected throw) and convert it to a synthetic
+   * `degraded` result so callers like the admin list route's concurrent probe
+   * can never be rejected by a single race-removed connection.
+   */
+  async healthCheckForWorkspace(workspaceId: string, installId: string): Promise<HealthCheckResult> {
+    const entry = this.workspacePluginEntries.get(this._workspaceKey(workspaceId, installId));
+    if (!entry) {
+      // Native/bare id (e.g. self-hosted `default`, a postgres/mysql pool):
+      // defer to the native probe, which owns failure-span escalation. Wrap it
+      // so a TOCTOU unregistration (id absent from both maps) surfaces as a
+      // synthetic `degraded` rather than a thrown `ConnectionNotRegisteredError`
+      // — keeping the "never throws" contract above unconditionally true.
+      try {
+        return await this.healthCheck(installId);
+      } catch (err) {
+        // Scrub any driver-echoed DSN userinfo from the surfaced message; the
+        // log line keeps the raw `err` (pino's serializer preserves the stack,
+        // central scrubbing handles the log side). Mirrors the probe-failure
+        // arm below.
+        const scrubbedMessage = errorMessage(err);
+        log.warn(
+          { err, workspaceId, installId },
+          "Plugin connection health check fell back to native probe and threw (race-removed pool?)",
+        );
+        const matched = matchError(err);
+        return {
+          status: "degraded",
+          // No live probe ran (the entry was gone from both maps), so there is
+          // no meaningful round-trip latency to report.
+          latencyMs: 0,
+          message: matched?.message ?? scrubbedMessage,
+          checkedAt: new Date(),
+        };
+      }
+    }
+
+    const start = performance.now();
+    try {
+      await entry.conn.query("SELECT 1", 5000);
+      const result: HealthCheckResult = {
+        status: "healthy",
+        latencyMs: Math.round(performance.now() - start),
+        checkedAt: new Date(),
+      };
+      entry.lastHealth = result;
+      return result;
+    } catch (err) {
+      const latencyMs = Math.round(performance.now() - start);
+      // Scrub driver-echoed DSN userinfo from the surfaced message (the log
+      // line keeps the raw `err` so pino's serializer preserves the stack;
+      // central scrubbing handles the log side). Mirrors {@link healthCheck}.
+      const scrubbedMessage = errorMessage(err);
+      log.warn({ err, workspaceId, installId, latencyMs }, "Plugin connection health check failed");
+      const matched = matchError(err);
+      const result: HealthCheckResult = {
+        status: "degraded",
         latencyMs,
         message: matched?.message ?? scrubbedMessage,
         checkedAt: new Date(),

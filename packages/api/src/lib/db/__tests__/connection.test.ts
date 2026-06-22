@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { resolve } from "path";
+import type { HealthCheckResult } from "../connection";
 
 const modulePath = resolve(__dirname, "../connection.ts");
 const mod = await import(`${modulePath}?t=${Date.now()}`);
@@ -388,6 +389,134 @@ describe("ConnectionRegistry — DB-stored plugin datasources (#3253 seam)", () 
     const all = registry.describeAllWorkspacePlugins();
     expect(all).toHaveLength(2);
     expect(all.every((m) => m.id === "clickhouse")).toBe(true);
+    registry._reset();
+  });
+
+  // #3853 — health/test half of the native-vs-plugin registry split. The bare
+  // `healthCheck(id)` only probes `entries`, so plugin pools threw
+  // ConnectionNotRegisteredError; `healthCheckForWorkspace` resolves the plugin
+  // pool first and caches the result so `describeForWorkspace` carries `health`.
+  it("healthCheckForWorkspace probes a plugin pool and caches health onto its describe", async () => {
+    const registry = new ConnectionRegistry();
+    registry.registerDirectForWorkspace("ws-1", "ch", fakeConn("ch"), "clickhouse", "ClickHouse");
+
+    // Bare healthCheck can't see the plugin pool — this is the bug.
+    await expect(registry.healthCheck("ch")).rejects.toThrow(/not registered/i);
+
+    const result = await registry.healthCheckForWorkspace("ws-1", "ch");
+    expect(result.status).toBe("healthy");
+    expect(typeof result.latencyMs).toBe("number");
+
+    // The probe result is cached on the entry so the admin list (which reads
+    // through describeForWorkspace) surfaces a `health` object.
+    const meta = registry.describeForWorkspace("ws-1").find((m) => m.id === "ch");
+    expect(meta?.health?.status).toBe("healthy");
+    registry._reset();
+  });
+
+  it("healthCheckForWorkspace reports degraded (never throws) when the plugin probe fails", async () => {
+    const failingConn = {
+      query: async () => {
+        throw new Error("connection refused");
+      },
+      close: async () => {},
+    };
+    const registry = new ConnectionRegistry();
+    registry.registerDirectForWorkspace("ws-1", "ch", failingConn, "clickhouse");
+
+    const result = await registry.healthCheckForWorkspace("ws-1", "ch");
+    expect(result.status).toBe("degraded");
+    expect(result.message).toBeDefined();
+    registry._reset();
+  });
+
+  it("healthCheckForWorkspace stays degraded on repeated plugin failures (never escalates to unhealthy)", async () => {
+    // The documented contract: plugin pools don't track the consecutive-failure
+    // span the native path uses to escalate to `unhealthy`, so repeated probe
+    // failures must report `degraded` every time. Guards a future refactor that
+    // might unify the two paths and silently change plugin behaviour (#3853).
+    const failingConn = {
+      query: async () => {
+        throw new Error("connection refused");
+      },
+      close: async () => {},
+    };
+    const registry = new ConnectionRegistry();
+    registry.registerDirectForWorkspace("ws-1", "ch", failingConn, "clickhouse");
+
+    for (let i = 0; i < 4; i++) {
+      const result = await registry.healthCheckForWorkspace("ws-1", "ch");
+      expect(result.status).toBe("degraded");
+    }
+    registry._reset();
+  });
+
+  it("healthCheckForWorkspace scrubs DSN userinfo from a failed plugin probe message", async () => {
+    // "No secrets in responses": when no curated matchError pattern fires, the
+    // plugin failure path surfaces the raw driver error via `errorMessage`,
+    // which scrubs `scheme://user:pass@host` userinfo. A DSN echoed in such an
+    // error must not reach HealthCheckResult.message — this result renders in
+    // the admin UI (#3853). (matchError's own ECONNREFUSED/ENOTFOUND messages
+    // only ever carry a `host:port` token, never the DSN, so the fallback is
+    // the path that needs the scrub guarantee.)
+    const failingConn = {
+      query: async () => {
+        throw new Error(
+          "authentication failed for clickhouse://admin:sup3rsecret@db.internal:8443/main",
+        );
+      },
+      close: async () => {},
+    };
+    const registry = new ConnectionRegistry();
+    registry.registerDirectForWorkspace("ws-1", "ch", failingConn, "clickhouse");
+
+    const result = await registry.healthCheckForWorkspace("ws-1", "ch");
+    expect(result.status).toBe("degraded");
+    expect(result.message).toBeDefined();
+    expect(result.message).not.toContain("sup3rsecret");
+    expect(result.message).not.toContain("admin:");
+    registry._reset();
+  });
+
+  it("healthCheckForWorkspace falls back to the native healthCheck for a bare id", async () => {
+    const registry = new ConnectionRegistry();
+    registry.registerDirect("warehouse", fakeConn("pg"), "postgres", "PG");
+    // No plugin pool registered for (ws-1, warehouse) → native path.
+    const result = await registry.healthCheckForWorkspace("ws-1", "warehouse");
+    expect(result.status).toBe("healthy");
+    registry._reset();
+  });
+
+  // #3860 — TOCTOU: a caller (e.g. the admin list route) sees a plugin pool via
+  // `hasDirectForWorkspace`, but the pool is unregistered before the probe runs.
+  // `healthCheckForWorkspace` then finds no entry in `workspacePluginEntries`,
+  // falls through to the native `healthCheck(installId)`, which throws
+  // `ConnectionNotRegisteredError` because the id is absent from `entries` too.
+  // The method's JSDoc promises it "never throws". The admin list route
+  // additionally wraps each probe in `Promise.allSettled` as defense in depth,
+  // but this test pins the method's OWN contract directly — the native-fallback
+  // arm must catch the throw and convert it to a synthetic `degraded` result.
+  it("healthCheckForWorkspace returns degraded (never throws) for an id absent from BOTH maps", async () => {
+    const registry = new ConnectionRegistry();
+    // Nothing registered at all — neither a plugin pool nor a bare entry.
+    expect(registry.hasDirectForWorkspace("ws-1", "gone")).toBe(false);
+    // Bare healthCheck throws for the missing id — the underlying failure mode.
+    await expect(registry.healthCheck("gone")).rejects.toThrow(/not registered/i);
+
+    // healthCheckForWorkspace must absorb it into a degraded result.
+    let result: HealthCheckResult | undefined;
+    await expect(
+      (async () => {
+        result = await registry.healthCheckForWorkspace("ws-1", "gone");
+      })(),
+    ).resolves.toBeUndefined();
+    expect(result?.status).toBe("degraded");
+    // No live probe ran (entry gone from both maps) → synthetic zero latency.
+    expect(result?.latencyMs).toBe(0);
+    // The surfaced message carries the underlying failure but never leaks
+    // credentials (the synthetic-degraded arm scrubs via `errorMessage`).
+    expect(result?.message).toMatch(/not registered/i);
+    expect(result?.message).not.toContain("@");
     registry._reset();
   });
 });

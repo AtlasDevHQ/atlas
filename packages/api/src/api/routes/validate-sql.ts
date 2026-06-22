@@ -14,9 +14,9 @@ import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { Parser } from "node-sql-parser";
-import { createLogger } from "@atlas/api/lib/logger";
+import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { validateSQL, parserDatabase } from "@atlas/api/lib/tools/sql";
-import { connections, detectDBType } from "@atlas/api/lib/db/connection";
+import { connections, detectDBType, ConnectionNotRegisteredError } from "@atlas/api/lib/db/connection";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -91,6 +91,10 @@ const validateRoute = createRoute({
       description: "Forbidden — insufficient permissions",
       content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
     },
+    404: {
+      description: "Connection not found for the request's workspace scope",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     422: {
       description: "Validation error (invalid request body)",
       content: {
@@ -129,7 +133,17 @@ validateSqlRoute.openapi(
   async (c) => {
     const { sql, connectionId } = c.req.valid("json");
 
-    const result = await validateSQL(sql, connectionId);
+    // Resolve the request's workspace scope. A per-workspace plugin datasource
+    // (ClickHouse, Elasticsearch via `registerDirectForWorkspace`) lives in a
+    // per-(workspace, install_id) pool, so every connection lookup below must be
+    // workspace-scoped or it falls back to the bare registry and throws
+    // ConnectionNotRegisteredError (#3857). This mirrors the agent path
+    // (`lib/tools/sql.ts`), which passes `workspaceId` to validateSQL/getDBType.
+    // validateSQL defaults to the same value internally, but getDBType/parserDatabase
+    // here are called directly and need the scope passed explicitly.
+    const workspaceId = getRequestContext()?.user?.activeOrganizationId;
+
+    const result = await validateSQL(sql, connectionId, workspaceId);
 
     if (!result.valid) {
       return c.json({
@@ -140,19 +154,35 @@ validateSqlRoute.openapi(
     }
 
     // Extract referenced tables from the valid query.
-    // getDBType/detectDBType are outside the catch — operational errors
-    // (missing connection, bad config) should propagate, not be swallowed.
     let tables: string[] = [];
     let dbType: string;
     if (connectionId) {
-      dbType = connections.getDBType(connectionId);
+      // Workspace-scoped lookup so per-workspace plugin connections resolve.
+      // A genuinely-unregistered connection surfaces as a clean 404 rather than
+      // an unhandled 500 (#3857) — validateSQL already passed for this same
+      // (connectionId, workspaceId) above, so reaching here with a missing
+      // connection is an unexpected registry race, not a routine miss.
+      try {
+        dbType = connections.getDBType(connectionId, workspaceId);
+      } catch (err) {
+        if (err instanceof ConnectionNotRegisteredError) {
+          return c.json(
+            {
+              error: "connection_not_found",
+              message: `Connection "${connectionId}" is not registered.`,
+            },
+            404,
+          );
+        }
+        throw err;
+      }
     } else {
       dbType = detectDBType();
     }
     const trimmed = sql.trim().replace(/;\s*$/, "");
     try {
       const tableRefs = parser.tableList(trimmed, {
-        database: parserDatabase(dbType, connectionId),
+        database: parserDatabase(dbType, connectionId, workspaceId),
       });
       tables = [
         ...new Set(

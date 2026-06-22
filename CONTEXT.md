@@ -161,11 +161,17 @@ A conversation can read from two kinds of **Datasource** (see Pillars): SQL conn
 - "env picker" / "environment" — the chat-header control was built SQL-only (#2345) and named for environments; it now governs full **Conversation scope**. Canonical name: **scope picker**; "environment" survives only as an informal synonym for **Connection group**.
 - "scope" is overloaded — **Conversation scope** (this umbrella) vs `executeSQL`'s per-turn **`scope`** argument (the agent's per-call member choice under Auto routing) vs ADR-0010 "in-scope". Disambiguate in prose.
 - "reach" / "routing" as the umbrella — both considered and rejected. The umbrella is **Conversation scope**; the SQL axis is **SQL routing**; the REST axis is **REST scope**.
+- "region" — overloaded across two unrelated axes. **Atlas-internal residency region** (the control-plane region where Atlas stores a Workspace's *own* data — `ResidencyResolver`, per-workspace, immutable, resolved transparently below the connection, **invisible to the agent**) is *not* the **Connection group / Member** axis (the customer's analytical datasources, which may physically live anywhere and which the agent ranges over). Cross-group analytical reach never composes with residency — residency sits below it and the agent never sees it. A group's members being *named* by region (`us-prod`) is the customer's own replica/shard naming, unrelated to Atlas residency.
 
 ### Example dialogue
 
 > **Dev:** "If I **Pin** a conversation to `apac-prod`, does that stop it hitting Stripe?"
 > **Maintainer:** "No — the **routing mode** only picks which **Member** runs `executeSQL`. Stripe is a workspace-global **REST datasource**, so it's in **REST scope** regardless of the pin. To take it out, **exclude** it. If you want *only* Stripe and no SQL at all, **focus** it — that suspends SQL routing for the conversation."
+
+### Cross-source composition
+
+When a question spans more than one **Datasource** — several **Connection groups**, or a group plus a **REST datasource** — Atlas answers by **cross-source composition**: the agent runs a separate query per source (`executeSQL` per group, `executeRestOperation` per REST datasource) and **correlates the returned result sets in its own reasoning**. The "join" is the LLM stitching result sets in context, not a SQL operation — so every individual query still stays within one source's dialect, whitelist, and AST validation.
+  _Avoid_: "federation" / "cross-engine join" — Atlas has **no** query engine that executes a single SQL `JOIN` across heterogeneous datasources. A federated query engine (DuckDB-with-scanners / Trino) would be a separate, deliberately-unbuilt capability, never this.
 
 ## Semantic layer scoping
 

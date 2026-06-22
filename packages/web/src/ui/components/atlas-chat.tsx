@@ -23,7 +23,10 @@ import { ToolPart } from "./chat/tool-part";
 import { Markdown } from "./chat/markdown";
 import { FollowUpChips } from "./chat/follow-up-chips";
 import { SuggestionChips } from "./chat/suggestion-chips";
-import { DeveloperChatEmptyState } from "./chat/developer-empty-state";
+import {
+  DeveloperChatEmptyState,
+  shouldShowDevChatEmpty,
+} from "./chat/developer-empty-state";
 import {
   ChatEnvPicker,
   shouldRenderEnvPicker,
@@ -33,7 +36,7 @@ import {
   type ConversationRoutingMode,
   type EnvSelectionProvenance,
 } from "./chat/env-picker";
-import { useDevModeNoDrafts } from "../hooks/use-dev-mode-no-drafts";
+import { useMode } from "@/ui/hooks/use-mode";
 import type { QuerySuggestion } from "@/ui/lib/types";
 import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
@@ -145,10 +148,7 @@ export function AtlasChat({
   emptyStateOverride,
 }: AtlasChatProps = {}) {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
-  // In developer mode the chat talks to draft connections. If the admin
-  // hasn't drafted one yet, surface a dedicated empty state instead of
-  // letting the agent fail with a confusing "no datasource" error.
-  const showDevChatEmpty = useDevModeNoDrafts(["connections"]);
+  const { mode } = useMode();
   // #3081 — the host "connect data" gate engages only when BOTH a zero-table
   // workspace is signalled AND the host supplied a node to show. Without an
   // override we'd render `undefined` into the empty slot AND still hide the
@@ -360,6 +360,16 @@ export function AtlasChat({
     error: envGroupsQuery.error,
     restDatasources: envGroupsQuery.restDatasources,
   });
+
+  // #3883 — in developer mode, show the "no connections" empty state only when
+  // the workspace has *zero* connections the chat can reach (SQL groups + REST
+  // datasources), NOT when there are merely zero drafts. Dev mode resolves
+  // published + draft connections, and this env-groups query already reflects
+  // that superset — so keying off it (the same list `shouldRenderEnvPicker`
+  // above consumes) stops a fully-published workspace from being wrongly
+  // blocked. The previous `useDevModeNoDrafts(["connections"])` gate fired on
+  // draft-count and showed a misleading "No connection configured" prompt.
+  const showDevChatEmpty = shouldShowDevChatEmpty({ mode, ...envGroupsQuery });
 
   // Seed / restore the env-picker selection on a fresh chat. #3064 — the
   // decision is centralized in `resolveEnvSelection`: it waits until groups,

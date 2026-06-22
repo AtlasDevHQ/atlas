@@ -157,10 +157,16 @@ describe("indirect-read drift guard", () => {
     return new Set([...matches].map((m) => m[1] as string));
   }
 
-  test("every process.env.X in lib/email/dpa-guard.ts is in SAAS_ENV_KEYS", async () => {
-    const reads = await readProcessEnvKeys("lib/email/dpa-guard.ts");
-    expect(reads.size).toBeGreaterThan(0); // sanity: file did read at least one env var
-    for (const key of reads) {
+  // #3889 — the DPA guard no longer reads `process.env` directly. Its transport
+  // keys now flow through the lib/email/delivery seam (`resolveResendApiKey` /
+  // `resolveSmtpBridgeUrl` → `getSetting`), so a static `process.env.X` grep of
+  // dpa-guard.ts finds nothing. The boot-contract requirement is unchanged: the
+  // keys the DPA guard resolves at SaaS boot must stay in SAAS_ENV_KEYS so the
+  // boot-smoke fixture populates them and the guard can resolve Resend. Assert
+  // that membership directly (a drift in either the resolver keys or the SaaS
+  // contract trips here before CI's boot smoke).
+  test("the DPA guard's resolved transport keys are in SAAS_ENV_KEYS (#3889 indirection)", () => {
+    for (const key of ["RESEND_API_KEY", "ATLAS_SMTP_URL"] as const) {
       expect(SAAS_ENV_KEYS).toContain(key as (typeof SAAS_ENV_KEYS)[number]);
     }
   });

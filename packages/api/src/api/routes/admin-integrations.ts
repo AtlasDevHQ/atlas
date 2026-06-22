@@ -44,7 +44,8 @@ import {
   deleteEmailInstallationByOrg,
 } from "@atlas/api/lib/email/store";
 import { EMAIL_PROVIDERS } from "@atlas/api/lib/email/store";
-import type { EmailProvider, ProviderConfig } from "@atlas/api/lib/email/store";
+import type { EmailProvider } from "@atlas/api/lib/email/store";
+import { sendEmailWithTransport } from "@atlas/api/lib/email/delivery";
 import { getConfig } from "@atlas/api/lib/config";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -1694,8 +1695,27 @@ adminIntegrations.openapi(testEmailRoute, async (c) => {
         );
       }
 
+      // Route the test-send through the canonical delivery seam (#3889): build
+      // the SAME EmailTransport `resolveEmailSender(orgId)` would for this org
+      // (org-transport) from the install we just validated, and send it via
+      // `sendEmailWithTransport` → `deliverViaTransport` — the exact per-provider
+      // senders production uses, with the staging outbound clamp. This replaces
+      // the removed parallel raw test-senders, so the test path's provider + from
+      // are byte-for-byte what the real send uses. `result.success`/`result.error`
+      // drive the response; the audited `provider` stays the installed one below.
       const result = yield* Effect.tryPromise({
-        try: () => sendTestEmail(install, recipientEmail),
+        try: () => sendEmailWithTransport(
+          {
+            to: recipientEmail,
+            subject: "Atlas Email Test",
+            html: "<h1>Atlas Email Test</h1><p>This is a test email from Atlas to verify your email configuration is working correctly.</p>",
+          },
+          {
+            provider: install.provider,
+            senderAddress: install.sender_address,
+            config: install.config,
+          },
+        ),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(
         Effect.tapError((err) =>
@@ -1835,201 +1855,13 @@ adminIntegrations.openapi(disconnectEmailRoute, async (c) => {
 // `validateProviderConfig` was removed in #1542 — the route's
 // `ProviderConfigSchema` (z.discriminatedUnion) plus the sibling-match
 // check in the handler cover the same ground without double-validation.
-
-interface TestEmailResult {
-  success: boolean;
-  error?: string;
-}
-
-async function sendTestEmail(
-  install: { sender_address: string; config: ProviderConfig },
-  recipientEmail: string,
-): Promise<TestEmailResult> {
-  const subject = "Atlas Email Test";
-  const html = "<h1>Atlas Email Test</h1><p>This is a test email from Atlas to verify your email configuration is working correctly.</p>";
-
-  // `install.config` is a tagged union (#1542); the switch narrows each
-  // case to the matching variant so the helpers can accept their exact
-  // config shape rather than `Record<string, unknown>`.
-  switch (install.config.provider) {
-    case "smtp":
-      return sendSmtpTestEmail(install.sender_address, recipientEmail, subject, html);
-    case "sendgrid":
-      return sendSendGridTestEmail(install.config.apiKey, install.sender_address, recipientEmail, subject, html);
-    case "postmark":
-      return sendPostmarkTestEmail(install.config.serverToken, install.sender_address, recipientEmail, subject, html);
-    case "ses":
-      return sendSesTestEmail(install.sender_address, recipientEmail, subject, html);
-    case "resend":
-      return sendResendTestEmail(install.config.apiKey, install.sender_address, recipientEmail, subject, html);
-  }
-}
-
-async function sendSendGridTestEmail(
-  apiKey: string,
-  from: string,
-  to: string,
-  subject: string,
-  html: string,
-): Promise<TestEmailResult> {
-  try {
-    const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        personalizations: [{ to: [{ email: to }] }],
-        from: { email: from },
-        subject,
-        content: [{ type: "text/html", value: html }],
-      }),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      return { success: false, error: `SendGrid API error (${res.status}): ${text.slice(0, 200)}` };
-    }
-    return { success: true };
-  } catch (err) {
-    return { success: false, error: errorMessage(err) };
-  }
-}
-
-async function sendPostmarkTestEmail(
-  serverToken: string,
-  from: string,
-  to: string,
-  subject: string,
-  html: string,
-): Promise<TestEmailResult> {
-  try {
-    const res = await fetch("https://api.postmarkapp.com/email", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Postmark-Server-Token": serverToken,
-      },
-      body: JSON.stringify({
-        From: from,
-        To: to,
-        Subject: subject,
-        HtmlBody: html,
-      }),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      return { success: false, error: `Postmark API error (${res.status}): ${text.slice(0, 200)}` };
-    }
-    return { success: true };
-  } catch (err) {
-    return { success: false, error: errorMessage(err) };
-  }
-}
-
-async function sendSmtpTestEmail(
-  from: string,
-  to: string,
-  subject: string,
-  html: string,
-): Promise<TestEmailResult> {
-  // SMTP delivery delegates to the ATLAS_SMTP_URL webhook bridge.
-  // The bridge endpoint is responsible for connecting to the SMTP server
-  // using the config stored in the database — we do not send credentials
-  // over the wire in this payload.
-  const smtpUrl = process.env.ATLAS_SMTP_URL;
-  if (!smtpUrl) {
-    return {
-      success: false,
-      error: "SMTP test requires ATLAS_SMTP_URL to be configured as an SMTP-to-HTTP bridge endpoint. " +
-        "Configuration has been saved and will be used when ATLAS_SMTP_URL is available.",
-    };
-  }
-
-  try {
-    const res = await fetch(smtpUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ from, to, subject, html }),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      return { success: false, error: `SMTP webhook error (${res.status}): ${text.slice(0, 200)}` };
-    }
-    return { success: true };
-  } catch (err) {
-    return { success: false, error: errorMessage(err) };
-  }
-}
-
-async function sendSesTestEmail(
-  from: string,
-  to: string,
-  subject: string,
-  html: string,
-): Promise<TestEmailResult> {
-  // AWS Signature V4 is complex — for the test email we delegate to the
-  // ATLAS_SMTP_URL webhook bridge if available. We do not send AWS credentials
-  // over the wire; the bridge reads them from its own config or the database.
-  const smtpUrl = process.env.ATLAS_SMTP_URL;
-  if (!smtpUrl) {
-    return {
-      success: false,
-      error: "SES test email requires ATLAS_SMTP_URL configured as an SES-compatible bridge. " +
-        "Configuration has been saved.",
-    };
-  }
-
-  try {
-    const res = await fetch(smtpUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ from, to, subject, html }),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      return { success: false, error: `SES webhook error (${res.status}): ${text.slice(0, 200)}` };
-    }
-    return { success: true };
-  } catch (err) {
-    return { success: false, error: errorMessage(err) };
-  }
-}
-
-async function sendResendTestEmail(
-  apiKey: string,
-  from: string,
-  to: string,
-  subject: string,
-  html: string,
-): Promise<TestEmailResult> {
-  try {
-    const res = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({ from, to: [to], subject, html }),
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      return { success: false, error: `Resend API error (${res.status}): ${text.slice(0, 200)}` };
-    }
-    return { success: true };
-  } catch (err) {
-    return { success: false, error: errorMessage(err) };
-  }
-}
+//
+// The per-provider test-send helpers (sendResendTestEmail / sendSendGridTestEmail
+// / sendPostmarkTestEmail / sendSmtpTestEmail / sendSesTestEmail) were removed in
+// #3889. They were a parallel copy of the canonical senders in
+// `lib/email/delivery.ts`, so the Admin "test email" could pass through a
+// different provider/from than production actually uses. The test-send handler
+// now builds the install's `EmailTransport` and calls `sendEmailWithTransport(..)`
+// → `deliverViaTransport` — one sender per provider, test path == prod path.
 
 export { adminIntegrations };

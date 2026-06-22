@@ -7,8 +7,15 @@
  *    SMTP and SES require ATLAS_SMTP_URL as an HTTP bridge.
  * 2. Platform email provider (from settings registry).
  * 3. Webhook via ATLAS_SMTP_URL (POST JSON to any email API endpoint)
- * 4. Resend API via RESEND_API_KEY (existing env-var fallback)
+ * 4. Resend API via RESEND_API_KEY (registry/env fallback)
  * 5. Logging fallback when nothing is configured (dev mode).
+ *
+ * Provider keys (RESEND_API_KEY, ATLAS_SMTP_URL) and the fallback from-address
+ * (ATLAS_EMAIL_FROM) resolve through the single resolvers in this module
+ * (`resolveResendApiKey` / `resolveSmtpBridgeUrl` / `resolvePlatformFromAddress`,
+ * #3889) so every branch — and every consumer (the admin test-sends, the DPA
+ * guard, the scheduler preflight, the auth-config probe) — reads the same
+ * source and can never disagree about provider, key, or sender.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -235,6 +242,67 @@ function isEmailProvider(s: string): s is EmailProvider {
   return (EMAIL_PROVIDERS as readonly string[]).includes(s);
 }
 
+// ---------------------------------------------------------------------------
+// Single-source provider/key + from-address resolution (#3889)
+// ---------------------------------------------------------------------------
+
+/**
+ * The one default sender used when no per-org / platform / registry
+ * from-address is configured. Exported so the send path's fallback branches and
+ * the admin email-provider baseline brand row both reference the SAME literal.
+ * The `ATLAS_EMAIL_FROM` settings-registry `default` (settings.ts) is a separate
+ * copy of this string kept in sync by a comment there — settings.ts can't import
+ * this (it's a dependency of this module, importing back would cycle). Changing
+ * Atlas's default sender is a two-line edit: here + that registry default (#3889).
+ */
+export const DEFAULT_FROM_ADDRESS = "Atlas <noreply@ship.useatlas.dev>";
+
+/**
+ * Resolve the platform Resend API key (platform-scoped: platform DB override →
+ * env; `undefined` when unset — the key has no registry default). The single
+ * source for the key across the whole send path — `resolveEmailSender`'s
+ * env-fallback branch, `deliverResend`'s default key, `isAuthEmailDeliveryConfigured`,
+ * and the DPA guard all read it here. Before #3889 the fallback branch and the
+ * auth probe read `process.env.RESEND_API_KEY` directly, so a registry-only key
+ * (set in Admin without `ATLAS_EMAIL_PROVIDER`) was invisible to them while the
+ * platform-config branch already honored it — the same deploy disagreed with
+ * itself about whether email was configured.
+ */
+export function resolveResendApiKey(): string | undefined {
+  return getSetting("RESEND_API_KEY");
+}
+
+/**
+ * Resolve the `ATLAS_SMTP_URL` HTTP-bridge endpoint through the same single
+ * accessor. `ATLAS_SMTP_URL` is currently env-only (unregistered), so this is
+ * equivalent to `process.env.ATLAS_SMTP_URL` today — routing it through
+ * `getSetting` keeps every bridge read in one place so the resolution can never
+ * fork, and a future registry registration would apply uniformly (#3889).
+ */
+export function resolveSmtpBridgeUrl(): string | undefined {
+  return getSetting("ATLAS_SMTP_URL");
+}
+
+/**
+ * The ONE from-address resolver for sends that have no transport object — the
+ * `resend-env` and `smtp-webhook` fallback branches, and the platform
+ * transport's sender. Reads `ATLAS_EMAIL_FROM` through the settings registry
+ * (platform DB override → env → registry default) and falls back to
+ * {@link DEFAULT_FROM_ADDRESS}. NEVER reads `process.env.ATLAS_EMAIL_FROM`
+ * directly — that bypassed the registry, so the From address depended on which
+ * provider branch was active rather than on config (#3889).
+ *
+ * `orgId` is threaded through for forward-compatibility but is currently inert:
+ * `ATLAS_EMAIL_FROM` is platform-scoped, so `getSetting` ignores the orgId.
+ * Per-workspace BYO senders are NOT resolved here — they live on the
+ * `org-transport` {@link EmailTransport} (`email_installations.sender_address`)
+ * and are sent verbatim by {@link deliverViaTransport}. This resolver only
+ * governs the branches with no transport object.
+ */
+export function resolvePlatformFromAddress(orgId?: string): string {
+  return getSetting("ATLAS_EMAIL_FROM", orgId) ?? DEFAULT_FROM_ADDRESS;
+}
+
 /**
  * Whether the deployment can deliver auth emails (password reset, etc.)
  * without per-org config. Used by the public `/api/v1/onboarding/password-reset-status`
@@ -252,8 +320,11 @@ function isEmailProvider(s: string): s is EmailProvider {
  */
 export function isAuthEmailDeliveryConfigured(): boolean {
   if (getPlatformEmailConfig() !== null) return true;
-  if (process.env.ATLAS_SMTP_URL) return true;
-  if (process.env.RESEND_API_KEY) return true;
+  // Read through the SAME resolvers the send path uses (#3889) so this probe
+  // can never disagree with the actual transport — e.g. a registry-only
+  // RESEND_API_KEY is now seen here exactly as `resolveEmailSender` sees it.
+  if (resolveSmtpBridgeUrl()) return true;
+  if (resolveResendApiKey()) return true;
   return false;
 }
 
@@ -298,7 +369,7 @@ function getPlatformEmailConfig(): EmailTransport | null {
   }
   const provider = raw;
 
-  const fromAddress = getSetting("ATLAS_EMAIL_FROM") ?? "Atlas <noreply@ship.useatlas.dev>";
+  const fromAddress = resolvePlatformFromAddress();
 
   switch (provider) {
     case "resend": {
@@ -332,7 +403,7 @@ function getPlatformEmailConfig(): EmailTransport | null {
       // minimal config tagged with the provider; deliverViaTransport only
       // reads it for the `provider` discriminator before delegating to
       // the webhook.
-      if (!process.env.ATLAS_SMTP_URL) {
+      if (!resolveSmtpBridgeUrl()) {
         log.warn({ provider }, "Platform email provider requires ATLAS_SMTP_URL bridge — falling through");
         return null;
       }
@@ -391,7 +462,7 @@ export async function resolveEmailSender(orgId?: string): Promise<ResolvedEmailS
     if (transport) {
       const bridgeMissing =
         (transport.config.provider === "smtp" || transport.config.provider === "ses") &&
-        !process.env.ATLAS_SMTP_URL;
+        !resolveSmtpBridgeUrl();
       return bridgeMissing
         ? { kind: "org-transport", transport, bridgeMissing }
         : { kind: "org-transport", transport };
@@ -404,13 +475,15 @@ export async function resolveEmailSender(orgId?: string): Promise<ResolvedEmailS
     return { kind: "platform-transport", transport: platformConfig };
   }
 
-  // 3. Webhook delivery (generic email API)
-  if (process.env.ATLAS_SMTP_URL) {
+  // 3. Webhook delivery (generic email API) — single accessor (#3889)
+  if (resolveSmtpBridgeUrl()) {
     return { kind: "smtp-webhook" };
   }
 
-  // 4. Resend API delivery (env-var fallback for backward compat)
-  if (process.env.RESEND_API_KEY) {
+  // 4. Resend API delivery (registry/env fallback for backward compat) — read
+  //    through the single key resolver so a registry-only RESEND_API_KEY is
+  //    honored here, not just on the platform-config branch (#3889).
+  if (resolveResendApiKey()) {
     return { kind: "resend-env" };
   }
 
@@ -436,18 +509,20 @@ export async function sendEmail(message: EmailMessage, orgId?: string): Promise<
   const outbound = clampForOutbound(message);
 
   const resolved = await resolveEmailSender(orgId);
-  const fromAddress = process.env.ATLAS_EMAIL_FROM ?? "Atlas <noreply@ship.useatlas.dev>";
 
   switch (resolved.kind) {
     case "org-transport":
     case "platform-transport":
+      // The org / platform transport carries its own sender_address.
       return deliverViaTransport(outbound, resolved.transport);
 
     case "smtp-webhook":
-      return deliverWebhook(outbound, fromAddress);
+      // No transport object — resolve the From through the single
+      // registry+org-aware resolver (#3889), never process.env directly.
+      return deliverWebhook(outbound, resolvePlatformFromAddress(orgId));
 
     case "resend-env":
-      return deliverResend(outbound, fromAddress);
+      return deliverResend(outbound, resolvePlatformFromAddress(orgId));
 
     case "log":
       // Dev fallback — log instead of sending. Returns success: false so the email
@@ -705,11 +780,20 @@ async function deliverViaTransport(
 
     case "smtp":
     case "ses":
-      if (process.env.ATLAS_SMTP_URL) {
+      if (resolveSmtpBridgeUrl()) {
         return deliverWebhook(message, from);
       }
       log.warn({ to: message.to, provider: transport.provider }, "DB email config found but provider requires ATLAS_SMTP_URL bridge");
-      return { success: false, provider: "log", error: `${transport.provider} provider requires ATLAS_SMTP_URL bridge` };
+      return {
+        success: false,
+        provider: "log",
+        // Actionable for every caller of this shared path (real send + both
+        // admin test-sends, #3889) without asserting the config was persisted —
+        // the fresh-creds test-send sends WITHOUT saving, so "config saved"
+        // would be false there.
+        error: `${transport.provider.toUpperCase()} delivery requires the ATLAS_SMTP_URL HTTP bridge, which is not configured on this server. ` +
+          `Set ATLAS_SMTP_URL, or switch to an API-based provider (Resend, SendGrid, Postmark).`,
+      };
 
     default: {
       // `never` at the type layer — if this arm fires, the store/wire
@@ -784,7 +868,14 @@ async function fetchWithRetry(
  * Compatible with any email service that accepts JSON webhooks.
  */
 async function deliverWebhook(message: EmailMessage, from: string): Promise<DeliveryResult> {
-  const url = process.env.ATLAS_SMTP_URL!;
+  // Resolved through the single bridge accessor (#3889). Callers only reach
+  // this once `resolveSmtpBridgeUrl()` was truthy, but guard defensively so a
+  // future caller can't dereference an undefined URL.
+  const url = resolveSmtpBridgeUrl();
+  if (!url) {
+    log.error({ to: message.to }, "Webhook email delivery attempted with ATLAS_SMTP_URL unset");
+    return { success: false, provider: "webhook", error: "ATLAS_SMTP_URL bridge is not configured" };
+  }
   try {
     const resp = await fetchWithRetry(url, {
       method: "POST",
@@ -814,7 +905,7 @@ async function deliverWebhook(message: EmailMessage, from: string): Promise<Deli
 }
 
 async function deliverResend(message: EmailMessage, from: string, apiKey?: string): Promise<DeliveryResult> {
-  const key = apiKey ?? process.env.RESEND_API_KEY;
+  const key = apiKey ?? resolveResendApiKey();
   try {
     const resp = await fetchWithRetry("https://api.resend.com/emails", {
       method: "POST",

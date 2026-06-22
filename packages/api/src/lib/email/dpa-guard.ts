@@ -30,11 +30,12 @@
  *   2. **Resolved transport**. `sendEmail`'s fallback order is platform-config
  *      → `ATLAS_SMTP_URL` → `RESEND_API_KEY` → log. The DPA-safe outcomes are
  *      "platform-resend with key" and "RESEND_API_KEY fallback" — both are
- *      recognised by `hasResendKey()` (the platform Resend config reads its
- *      key via `getSetting("RESEND_API_KEY")`, which itself falls through to
- *      env). If no Resend key exists, `ATLAS_SMTP_URL` would route through
- *      an arbitrary bridge → FAIL. If nothing is configured at all, mail is
- *      silently dropped → FAIL.
+ *      recognised by `hasResendKey()`, which since #3889 reads the key directly
+ *      through the shared `resolveResendApiKey()` seam (`getSetting("RESEND_API_KEY")`,
+ *      registry override → env), the SAME source the actual send path reads. If
+ *      no Resend key exists, `ATLAS_SMTP_URL` would route through an arbitrary
+ *      bridge → FAIL. If nothing is configured at all, mail is silently dropped
+ *      → FAIL.
  *
  * The guard is wired into `buildAppLayer` via the `Layer.effectDiscard`
  * built from `assertSaasPlatformEmailIsResendEffect`; throwing here fails
@@ -44,6 +45,7 @@
 
 import { Data } from "effect";
 import { getSetting } from "@atlas/api/lib/settings";
+import { resolveResendApiKey, resolveSmtpBridgeUrl } from "@atlas/api/lib/email/delivery";
 import { EMAIL_PROVIDERS, type EmailProvider } from "@atlas/api/lib/integrations/types";
 
 /** Resolved-transport discriminator carried by `DpaInconsistencyError`. */
@@ -82,8 +84,13 @@ const productionDeps: Omit<DpaGuardDeps, "isSaas"> = {
     if (!PROVIDER_SET.has(raw)) return null;
     return raw as EmailProvider;
   },
-  hasSmtpUrl: () => Boolean(process.env.ATLAS_SMTP_URL),
-  hasResendKey: () => Boolean(process.env.RESEND_API_KEY),
+  // Read transport keys through the SAME resolvers the actual send path uses
+  // (#3889) — `getSetting`-backed, so a registry-only RESEND_API_KEY (env or
+  // Admin) is recognized here exactly as `sendEmail` would resolve it. Reading
+  // `process.env` directly here would have failed boot on a registry-only key
+  // even though Resend was correctly configured.
+  hasSmtpUrl: () => Boolean(resolveSmtpBridgeUrl()),
+  hasResendKey: () => Boolean(resolveResendApiKey()),
 };
 
 const ISSUE_REF = "#1969";

@@ -20,7 +20,7 @@ import {
   saveEmailInstallation,
   deleteEmailInstallationByOrg,
 } from "@atlas/api/lib/email/store";
-import { sendEmail, sendEmailWithTransport } from "@atlas/api/lib/email/delivery";
+import { sendEmail, sendEmailWithTransport, DEFAULT_FROM_ADDRESS, resolveSmtpBridgeUrl } from "@atlas/api/lib/email/delivery";
 import {
   EMAIL_PROVIDERS,
   type EmailProvider,
@@ -37,17 +37,20 @@ const log = createLogger("admin-email-provider");
 // ---------------------------------------------------------------------------
 
 /**
- * Baseline is deliberately hardcoded to Resend + the atlas.dev sender — it is
- * NOT derived from `ATLAS_EMAIL_PROVIDER` / `ATLAS_EMAIL_FROM` platform
- * settings. The baseline represents "Atlas owns delivery" — the shared SaaS
- * identity rendered as a locked row in the UI so orgs know what falls back
- * when they have no override. The actual runtime fallback resolved by
- * `lib/email/delivery.ts` may differ on self-hosted deployments (platform
- * settings / env vars can change the transport) — this baseline is a brand
- * statement, not a live status readout.
+ * Baseline is deliberately Resend + the atlas.dev sender — it is NOT derived
+ * from `ATLAS_EMAIL_PROVIDER` / `ATLAS_EMAIL_FROM` platform settings. The
+ * baseline represents "Atlas owns delivery" — the shared SaaS identity rendered
+ * as a locked row in the UI so orgs know what falls back when they have no
+ * override. The actual runtime fallback resolved by `lib/email/delivery.ts` may
+ * differ on self-hosted deployments (platform settings / env vars can change the
+ * transport) — this baseline is a brand statement, not a live status readout.
+ *
+ * The sender literal reuses the single {@link DEFAULT_FROM_ADDRESS} seam
+ * constant (#3889) so the displayed brand sender and the send-path default can
+ * never drift apart; it is still a static brand statement, not a settings read.
  */
 const BASELINE_PROVIDER: EmailProvider = "resend";
-const BASELINE_FROM_ADDRESS = "Atlas <noreply@ship.useatlas.dev>";
+const BASELINE_FROM_ADDRESS = DEFAULT_FROM_ADDRESS;
 
 // Provider-specific secret config shapes. Each carries the `provider`
 // discriminator (#1542) — the wire contract now requires it on the
@@ -355,8 +358,11 @@ adminEmailProvider.openapi(setConfigRoute, async (c) => {
     }
 
     // SMTP/SES require the webhook bridge at delivery time; warn early so admins
-    // don't save credentials that can't be used on this deployment.
-    if ((body.provider === "smtp" || body.provider === "ses") && !process.env.ATLAS_SMTP_URL) {
+    // don't save credentials that can't be used on this deployment. Read through
+    // the same `resolveSmtpBridgeUrl()` seam the send path uses (#3889) so a
+    // registry-set ATLAS_SMTP_URL satisfies this gate exactly as it satisfies
+    // delivery — the save-time check can't disagree with the actual transport.
+    if ((body.provider === "smtp" || body.provider === "ses") && !resolveSmtpBridgeUrl()) {
       return c.json({
         error: "validation",
         message: `${body.provider.toUpperCase()} delivery requires ATLAS_SMTP_URL to be configured as an HTTP bridge on the server.`,

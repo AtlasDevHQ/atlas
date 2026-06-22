@@ -10,8 +10,14 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 
 let settingsStore: Record<string, string> = {};
 
+// Faithfully model the real `getSetting` precedence (#3889): DB/registry
+// override (here `settingsStore`) → env var → undefined. The send path now
+// reads RESEND_API_KEY / ATLAS_SMTP_URL / ATLAS_EMAIL_FROM through `getSetting`
+// rather than `process.env` directly, so the mock must honor the env tier or
+// the existing env-var fallback tests would break. Registry default (tier 4)
+// is omitted — the email resolvers supply their own default constant.
 mock.module("@atlas/api/lib/settings", () => ({
-  getSetting: (key: string) => settingsStore[key],
+  getSetting: (key: string) => settingsStore[key] ?? process.env[key],
 }));
 
 // Controllable per-org email install (default: none). Mirrors the store's
@@ -49,6 +55,9 @@ const {
   shouldEnqueueFailedSend,
   enqueueFailedTransactionalEmail,
   computeExpiresAt,
+  DEFAULT_FROM_ADDRESS,
+  resolveResendApiKey,
+  resolveSmtpBridgeUrl,
 } = await import("../delivery");
 type DeliveryResult = import("../delivery").DeliveryResult;
 type EmailMessage = import("../delivery").EmailMessage;
@@ -67,6 +76,26 @@ function installFetchMock(response: { status: number; body: unknown }) {
       status: response.status,
       headers: { "Content-Type": "application/json" },
     })) as unknown as typeof globalThis.fetch;
+}
+
+/**
+ * Fetch mock that records every request's parsed JSON body so a test can
+ * assert the `from` address actually put on the wire (#3889). Returns the
+ * mutable call log.
+ */
+function installCapturingFetchMock(
+  response: { status: number; body: unknown } = { status: 200, body: { id: "e1" } },
+): Array<{ url: string; body: Record<string, unknown> }> {
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    calls.push({ url: String(url), body });
+    return new Response(JSON.stringify(response.body), {
+      status: response.status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof globalThis.fetch;
+  return calls;
 }
 
 beforeEach(() => {
@@ -373,6 +402,108 @@ describe("isAuthEmailDeliveryConfigured", () => {
     // sends email into a black hole.
     settingsStore["ATLAS_EMAIL_PROVIDER"] = "resend";
     expect(isAuthEmailDeliveryConfigured()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One sender seam — consolidated from-address + key resolution (#3889)
+// ---------------------------------------------------------------------------
+
+describe("one sender seam — from-address + key consolidation (#3889)", () => {
+  it("(a) honors a registry ATLAS_EMAIL_FROM on the resend-env fallback branch", async () => {
+    // resend-env branch (no org transport, no platform provider). Before #3889
+    // this branch read process.env.ATLAS_EMAIL_FROM directly and ignored the
+    // registry, so an Admin-set From address was silently dropped here.
+    process.env.RESEND_API_KEY = "re_env_key";
+    settingsStore["ATLAS_EMAIL_FROM"] = "Workspace <ws@acme.test>";
+    const calls = installCapturingFetchMock();
+
+    const result = await sendEmail({ to: "u@x.com", subject: "S", html: "<p>x</p>" });
+    expect(result.provider).toBe("resend");
+    expect(calls[0]!.body.from).toBe("Workspace <ws@acme.test>");
+  });
+
+  it("(a) honors a registry ATLAS_EMAIL_FROM on the smtp-webhook fallback branch", async () => {
+    process.env.ATLAS_SMTP_URL = "http://bridge.test";
+    settingsStore["ATLAS_EMAIL_FROM"] = "Workspace <ws@acme.test>";
+    const calls = installCapturingFetchMock();
+
+    const result = await sendEmail({ to: "u@x.com", subject: "S", html: "<p>x</p>" });
+    expect(result.provider).toBe("webhook");
+    expect(calls[0]!.body.from).toBe("Workspace <ws@acme.test>");
+  });
+
+  it("(a) falls back to the single DEFAULT_FROM_ADDRESS constant when nothing sets the From", async () => {
+    process.env.RESEND_API_KEY = "re_env_key";
+    const calls = installCapturingFetchMock();
+
+    await sendEmail({ to: "u@x.com", subject: "S", html: "<p>x</p>" });
+    expect(calls[0]!.body.from).toBe(DEFAULT_FROM_ADDRESS);
+  });
+
+  it("(b) sends from the org BYO sender_address on the org-transport branch", async () => {
+    mockOrgInstall = {
+      provider: "resend",
+      sender_address: "Acme <reports@acme.test>",
+      config: { provider: "resend", apiKey: "re_org" },
+    };
+    const calls = installCapturingFetchMock();
+
+    const result = await sendEmail({ to: "u@x.com", subject: "S", html: "<p>x</p>" }, "org-1");
+    expect(result.provider).toBe("resend");
+    expect(calls[0]!.body.from).toBe("Acme <reports@acme.test>");
+  });
+
+  it("(b) the org BYO sender_address wins over a registry ATLAS_EMAIL_FROM regardless of branch", async () => {
+    settingsStore["ATLAS_EMAIL_FROM"] = "Global <global@atlas.test>";
+    mockOrgInstall = {
+      provider: "resend",
+      sender_address: "Acme <reports@acme.test>",
+      config: { provider: "resend", apiKey: "re_org" },
+    };
+    const calls = installCapturingFetchMock();
+
+    await sendEmail({ to: "u@x.com", subject: "S", html: "<p>x</p>" }, "org-1");
+    // No fallthrough to the global From — the org sender_address is honored.
+    expect(calls[0]!.body.from).toBe("Acme <reports@acme.test>");
+  });
+
+  it("(criterion 3) a registry-only RESEND_API_KEY is visible to BOTH resolveEmailSender and isAuthEmailDeliveryConfigured", async () => {
+    // Registry-set RESEND_API_KEY without ATLAS_EMAIL_PROVIDER. Before #3889
+    // the env-fallback branch + isAuthEmailDeliveryConfigured read process.env
+    // directly, so a registry-only key was invisible to both — they disagreed
+    // with the platform-config branch (which already read via getSetting).
+    settingsStore["RESEND_API_KEY"] = "re_registry_only";
+
+    const resolved = await resolveEmailSender();
+    expect(resolved.kind).toBe("resend-env");
+    expect(isAuthEmailDeliveryConfigured()).toBe(true);
+  });
+
+  it("(criterion 3) the shared key resolvers read a registry-only value — the source the DPA guard + auth probe consume", async () => {
+    // resolveResendApiKey / resolveSmtpBridgeUrl are the single source the DPA
+    // guard's productionDeps now read (was process.env directly). A registry-only
+    // value (no env) must be visible, or boot would fail-closed a correctly
+    // configured SaaS deploy.
+    settingsStore["RESEND_API_KEY"] = "re_registry_only";
+    settingsStore["ATLAS_SMTP_URL"] = "http://registry-bridge.test";
+
+    expect(resolveResendApiKey()).toBe("re_registry_only");
+    expect(resolveSmtpBridgeUrl()).toBe("http://registry-bridge.test");
+  });
+
+  it("(criterion 2) the platform-transport branch resolves its From through the registry too", async () => {
+    // getPlatformEmailConfig now uses resolvePlatformFromAddress(); a registry
+    // ATLAS_EMAIL_FROM must reach the From on the wire for the platform branch,
+    // not just the fallback branches.
+    settingsStore["ATLAS_EMAIL_PROVIDER"] = "resend";
+    settingsStore["RESEND_API_KEY"] = "re_platform_key";
+    settingsStore["ATLAS_EMAIL_FROM"] = "Platform <platform@acme.test>";
+    const calls = installCapturingFetchMock();
+
+    const result = await sendEmail({ to: "u@x.com", subject: "S", html: "<p>x</p>" });
+    expect(result.provider).toBe("resend");
+    expect(calls[0]!.body.from).toBe("Platform <platform@acme.test>");
   });
 });
 

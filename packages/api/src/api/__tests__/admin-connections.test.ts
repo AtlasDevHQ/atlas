@@ -698,13 +698,13 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
         // clickhouse:// scheme (the 500 this fixes).
         expect(mockRegister).not.toHaveBeenCalled();
 
-        // The probe ran against the live per-workspace plugin connection
-        // (criterion #2 — post-update health check uses the plugin adapter).
-        // NOTE: `mockRegisterDatasourceInstall` returns `false` here (in-place
-        // rebuild), so this also guards the round-2 fix: the probe is gated on
-        // `hasDirectForWorkspace`, NOT the bridge's boolean return.
-        expect(mockGetForWorkspace).toHaveBeenCalledWith("org-alpha", "clickhouse");
-        expect(mockProbeQuery).toHaveBeenCalled();
+        // This is a metadata-only change (group rename, no URL) — the live
+        // connection is rebuilt but the liveness PROBE must NOT fire, matching
+        // the core path's `urlChanged` gate and ADR-0007. A transiently
+        // unreachable datasource must not 500 a valid rename (#3852, round-2
+        // review). The rebuild still happened (bridge called above) so the live
+        // pool reflects the new config.
+        expect(mockProbeQuery).not.toHaveBeenCalled();
 
         // group_id is persisted into config (criterion #3): the installer's
         // UPDATE writes the merged config JSON with the group_id key.
@@ -755,6 +755,72 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
         expect(body.groupId).toBe("elasticsearch");
         expect(mockRegisterDatasourceInstall).toHaveBeenCalled();
         expect(mockRegister).not.toHaveBeenCalled();
+        // Metadata-only change: no URL ⇒ no probe (URL-change-gated, ADR-0007).
+        expect(mockProbeQuery).not.toHaveBeenCalled();
+      });
+
+      it("a metadata-only group rename succeeds even when the datasource is unreachable (no probe)", async () => {
+        // Round-2 review regression (#3852): a group rename with NO URL change
+        // must not run the liveness probe, so a transiently-unreachable plugin
+        // datasource (maintenance window) can still be renamed. If the probe
+        // fired here it would reject and 500 the rename — the bug this guards.
+        setOrgAdmin("org-alpha");
+        mockPluginPut("clickhouse", "clickhouse://user:pass@host:8443/db");
+        mockProbeQuery.mockImplementation(() =>
+          Promise.reject(new Error("ECONNREFUSED 10.0.0.1:8443")),
+        );
+
+        const res = await app.fetch(
+          adminRequest("/api/v1/admin/connections/clickhouse", "PUT", {
+            newGroupName: "clickhouse",
+          }),
+        );
+
+        // Succeeds despite the unreachable host — the probe was never invoked.
+        expect(res.status).toBe(200);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+        const body = (await res.json()) as any;
+        expect(body.groupId).toBe("clickhouse");
+        // The liveness probe was never invoked — that is what lets the rename
+        // succeed against an unreachable host.
+        expect(mockProbeQuery).not.toHaveBeenCalled();
+        // The live pool was still rebuilt via the bridge (not the core adapter).
+        expect(mockRegisterDatasourceInstall).toHaveBeenCalled();
+        expect(mockRegister).not.toHaveBeenCalled();
+      });
+
+      it("a metadata-only rebuild failure (bridge throws, not the probe) 500s internal_error", async () => {
+        // The companion to the no-probe success case: on a metadata-only change
+        // the probe is skipped, but the in-place REBUILD still runs — if the
+        // bridge itself throws, that is a genuine server-side failure and must
+        // map to 500 internal_error (not the 400 connection_failed reserved for
+        // a URL-change probe rejection). Guards the asymmetric error mapping.
+        setOrgAdmin("org-alpha");
+        mockPluginPut("clickhouse", "clickhouse://user:pass@host:8443/db");
+        // First call (the rebuild) throws; the rollback re-register succeeds.
+        let call = 0;
+        mockRegisterDatasourceInstall.mockImplementation(() => {
+          call += 1;
+          return call === 1
+            ? Promise.reject(new Error("createFromConfig blew up"))
+            : Promise.resolve(false);
+        });
+
+        const res = await app.fetch(
+          adminRequest("/api/v1/admin/connections/clickhouse", "PUT", {
+            newGroupName: "clickhouse",
+          }),
+        );
+
+        expect(res.status).toBe(500);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+        const body = (await res.json()) as any;
+        expect(body.error).toBe("internal_error");
+        expect(body.requestId).toBeDefined();
+        // Probe never fires on a metadata-only change, even on the failure path.
+        expect(mockProbeQuery).not.toHaveBeenCalled();
+        // Rollback re-registered the pre-update config via the bridge.
+        expect(mockRegisterDatasourceInstall.mock.calls.length).toBe(2);
       });
 
       it("a URL change whose probe fails rolls back to the pre-update config and 400s", async () => {

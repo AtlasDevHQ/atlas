@@ -1291,14 +1291,21 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
         { workspaceId: orgId, catalogId: "", installId: id, pillar: "datasource", catalogSlug: current.catalog_slug },
         mergedConfig,
       );
-      // Probe the (re)built plugin connection through the plugin adapter. Gate
-      // on `hasDirectForWorkspace`, NOT the boolean return: an in-place rebuild
-      // returns `false` yet a fresh connection — possibly to a new URL — is now
-      // live and MUST be probed. Salesforce registers no direct connection, so
-      // the guard correctly skips it. (The core `connections.healthCheck` reads
-      // the bare `entries` map, which plugin pools never populate — they live in
-      // `workspacePluginEntries`.)
-      if (connections.hasDirectForWorkspace(orgId, id)) {
+      // Probe the (re)built plugin connection through the plugin adapter —
+      // but ONLY when the URL changed, matching the core path's `else if
+      // (urlChanged)` gate and the comment above (test-connect is route-owned
+      // per ADR-0007). A metadata-only change (e.g. a group rename) must not
+      // probe: a transiently-unreachable datasource would otherwise 500 a valid
+      // rename (#3852). The rebuild itself always runs so the live pool reflects
+      // the new config; only the liveness PROBE is URL-change-gated.
+      //
+      // The probe is further gated on `hasDirectForWorkspace`, NOT the boolean
+      // return: an in-place rebuild returns `false` yet a fresh connection — to
+      // a new URL — is now live and MUST be probed. Salesforce registers no
+      // direct connection, so the guard correctly skips it. (The core
+      // `connections.healthCheck` reads the bare `entries` map, which plugin
+      // pools never populate — they live in `workspacePluginEntries`.)
+      if (urlChanged && connections.hasDirectForWorkspace(orgId, id)) {
         await probeLivePluginConnection(connections.getForWorkspace(orgId, id));
       }
     } catch (err) {

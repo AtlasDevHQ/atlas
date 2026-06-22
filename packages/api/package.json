@@ -12,6 +12,8 @@
     "./lib/email-outbox": "./src/lib/email-outbox/index.ts",
     "./lib/env-routing": "./src/lib/env-routing/index.ts",
     "./lib/env-routing/*": "./src/lib/env-routing/*.ts",
+    "./lib/group-reach": "./src/lib/group-reach/index.ts",
+    "./lib/group-reach/*": "./src/lib/group-reach/*.ts",
     "./lib/multi-env-merger": "./src/lib/multi-env-merger/index.ts",
     "./lib/sub-processor-publisher": "./src/lib/sub-processor-publisher/index.ts",
     "./lib/semantic": "./src/lib/semantic/index.ts",

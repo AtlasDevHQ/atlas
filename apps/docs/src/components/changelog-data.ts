@@ -20,6 +20,22 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.21",
+    title: "Real-World Testing Fixes",
+    date: "2026-06-22",
+    summary:
+      "A hardening pass driven by a customer-fidelity soak of the full datasource onboarding flow against a production-mirror environment. The most important fix restores the self-serve trial funnel: the onboarding MCP endpoint was returning 401 to anonymous callers, so a cold AI client could never start a trial — it now responds correctly on both the canonical Streamable-HTTP path and the legacy SSE alias. Elasticsearch and OpenSearch gain the fixes they needed to actually go live (identity content-encoding so OpenSearch stops timing out, a progressive-auth install form, and showWhen-aware validation), and the broader plugin-datasource onboarding path is made whole — non-Postgres/MySQL connections now appear in the admin connections list and health checks, register per workspace, hot-register on publish, and resolve correctly through the chat connection picker. Dev-mode chat also stops claiming 'no connection configured' when published connections already exist.",
+    highlights: [
+      "Self-serve trial restored — the onboarding MCP endpoint no longer 401s anonymous start_trial callers; both the canonical path and the SSE back-compat alias return 200 (#3886)",
+      "Elasticsearch/OpenSearch go live — identity content-encoding fixes OpenSearch query timeouts, plus a progressive-auth install form and showWhen-aware config validation (#3878, #3841, #3842, #3848)",
+      "Plugin datasources are first-class in admin — non-Postgres/MySQL connections surface in the connections list and health checks, backed by per-workspace connection pools (#3849, #3853, #3866)",
+      "Hot-register on publish — newly published datasources become queryable immediately, with group-of-one environment scoping for standalone connections (#3856, #3855)",
+      "Multiple datasources per plugin catalog entry, plus a transient cold-connect retry on the first query (#3858, #3867)",
+      "Dev-mode chat gates its empty state on visible connections, not draft count — no more false 'no connection configured' (#3883)",
+      "Add-Connection Test button enables as soon as the connection URL is filled (#3846)",
+    ],
+  },
+  {
     version: "v0.0.20",
     title: "Long-Running Turn Bundle",
     date: "2026-06-20",

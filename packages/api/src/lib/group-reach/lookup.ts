@@ -30,7 +30,6 @@
  */
 
 import { loadOrgWhitelist } from "@atlas/api/lib/semantic";
-import { listConnectionGroupMembers } from "@atlas/api/lib/semantic/entities";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { VisibleGroup } from "./index";
 
@@ -67,6 +66,14 @@ export async function loadVisibleGroups(
   const memberToGroup = new Map<string, string>();
   const groupToMembers = new Map<string, string[]>();
   try {
+    // Dynamic import (mirrors `whitelist.ts`): `entities.ts` is frequently
+    // partial-mocked by test fixtures, so a STATIC import here would pull it
+    // into the broadly-imported `sql.ts` graph and break those fixtures with a
+    // module-load "export not found" SyntaxError. Resolving at call-time keeps
+    // the dependency out of the load graph.
+    const { listConnectionGroupMembers } = await import(
+      "@atlas/api/lib/semantic/entities"
+    );
     const rows = await listConnectionGroupMembers(orgId);
     for (const { group_id, id } of rows) {
       memberToGroup.set(id, group_id);

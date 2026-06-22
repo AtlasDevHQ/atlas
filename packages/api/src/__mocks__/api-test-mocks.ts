@@ -169,6 +169,10 @@ export function buildInternalDbMockDefaults(deps: {
     closeInternalDB: mock(async () => {}),
     migrateInternalDB: mock(async () => {}),
     loadSavedConnections: mock(async () => 0),
+    // #3856 — post-publish datasource hot-register/deregister reconcile. Default
+    // no-op (zero counts) so routes that call it on the success path don't trip
+    // on an undefined export under partial mocks.
+    reconcileWorkspaceDatasources: mock(async () => ({ registered: 0, deregistered: 0 })),
     _resetPool: mock(() => {}),
     _resetCircuitBreaker: mock(() => {}),
     isInternalCircuitOpen: () => false,

@@ -64,6 +64,27 @@ const mockGetInternalDB = mock(() => ({
   connect: async () => makeMockClient(),
 }));
 
+// #3856 — drives the post-commit `reconcileWorkspaceDatasources` hot-register.
+// Default: zero counts (the common case). Tests reassign it to assert the
+// orgId it's invoked with, or to reject (best-effort: must not 500 a
+// committed publish).
+let reconcileHandler: (
+  orgId: string,
+) => Promise<{ registered: number; deregistered: number }> = async () => ({
+  registered: 0,
+  deregistered: 0,
+});
+const reconcileCalls: string[] = [];
+// Snapshot of the client query log AT THE MOMENT reconcile was invoked — lets
+// a test assert the COMMIT had already landed (reconcile runs post-commit, not
+// before), pinning the ordering the "AFTER commit" test name claims.
+let clientQueriesAtReconcile: string[] = [];
+const mockReconcileWorkspaceDatasources = mock(async (orgId: string) => {
+  reconcileCalls.push(orgId);
+  clientQueriesAtReconcile = clientQueries.map((q) => q.sql.trim().toUpperCase());
+  return reconcileHandler(orgId);
+});
+
 // ── Mocks ──────────────────────────────────────────────────────────────
 
 const mocks = createApiTestMocks({
@@ -77,6 +98,7 @@ const mocks = createApiTestMocks({
   authMode: "managed",
   internal: {
     getInternalDB: mockGetInternalDB,
+    reconcileWorkspaceDatasources: mockReconcileWorkspaceDatasources,
   },
 });
 
@@ -213,6 +235,9 @@ function resetClient(): void {
   demoIndustryFixture = null;
   throwOnGet = null;
   incompleteLayersHandler = async () => [];
+  reconcileCalls.length = 0;
+  clientQueriesAtReconcile = [];
+  reconcileHandler = async () => ({ registered: 0, deregistered: 0 });
 }
 
 afterAll(() => {
@@ -781,6 +806,49 @@ describe("POST /api/v1/admin/publish — atomicity", () => {
     // release() called with no arg means "return to pool" — the client is
     // clean because ROLLBACK succeeded.
     expect(clientReleaseArg).toBeUndefined();
+  });
+});
+
+describe("POST /api/v1/admin/publish — datasource hot-register (#3856)", () => {
+  beforeEach(() => {
+    mocks.hasInternalDB = true;
+    mocks.mockInternalQuery.mockReset();
+    mocks.mockInternalQuery.mockResolvedValue([]);
+    resetClient();
+    mocks.setOrgAdmin("org-alpha");
+  });
+
+  it("reconciles the org's datasources into the live registry AFTER a successful commit", async () => {
+    reconcileHandler = async () => ({ registered: 1, deregistered: 0 });
+    const res = await app.fetch(publishReq());
+    expect(res.status).toBe(200);
+    // Reconcile fired once, scoped to the publishing org.
+    expect(reconcileCalls).toEqual(["org-alpha"]);
+    // ...and the COMMIT had ALREADY landed when reconcile was invoked — proving
+    // the registry reflects the persisted truth, not an in-flight transaction.
+    expect(clientQueriesAtReconcile.includes("COMMIT")).toBe(true);
+  });
+
+  it("does NOT reconcile when the transaction rolled back (500)", async () => {
+    queryHandler = async (sql) => {
+      if (/^\s*UPDATE/i.test(sql)) throw new Error("simulated UPDATE failure");
+      return { rows: [] };
+    };
+    const res = await app.fetch(publishReq());
+    expect(res.status).toBe(500);
+    // The reconcile runs only on the post-commit success path.
+    expect(reconcileCalls).toEqual([]);
+  });
+
+  it("still returns 200 when the post-commit reconcile throws (best-effort)", async () => {
+    // The publish already committed; a transient registry failure must not
+    // turn it into a 500 — the next boot's loadSavedConnections reconciles.
+    reconcileHandler = async () => {
+      throw new Error("registry blip");
+    };
+    const res = await app.fetch(publishReq());
+    expect(res.status).toBe(200);
+    expect(reconcileCalls).toEqual(["org-alpha"]);
   });
 });
 

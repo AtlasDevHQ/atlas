@@ -15,6 +15,7 @@ import {
   queryEffect,
   migrateInternalDB,
   loadSavedConnections,
+  reconcileWorkspaceDatasources,
   cascadeWorkspaceDelete,
   hardDeleteWorkspace,
   updateWorkspacePlanTier,
@@ -509,6 +510,178 @@ describe("internal DB module", () => {
 
       const count = await loadSavedConnections();
       expect(count).toBe(0);
+    });
+  });
+
+  describe("reconcileWorkspaceDatasources() — hot-register on publish (#3856)", () => {
+    afterEach(() => {
+      connections._reset();
+    });
+
+    it("returns zero counts when DATABASE_URL is not set", async () => {
+      delete process.env.DATABASE_URL;
+      expect(await reconcileWorkspaceDatasources("org-1")).toEqual({
+        registered: 0,
+        deregistered: 0,
+      });
+    });
+
+    it("registers the org's non-archived datasource installs into the live registry", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      pool._setResult({
+        rows: [
+          {
+            workspace_id: "org-1",
+            install_id: "warehouse",
+            catalog_slug: "postgres",
+            config: { url: "postgresql://host/wh" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+            status: "published",
+          },
+          {
+            workspace_id: "org-1",
+            install_id: "reporting",
+            catalog_slug: "postgres",
+            config: { url: "postgresql://host/rp" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+            status: "draft",
+          },
+        ],
+      });
+      _resetPool(pool);
+
+      const result = await reconcileWorkspaceDatasources("org-1");
+      // Both fresh registrations — a draft install registers too (developer
+      // mode previews queries against it before publish).
+      expect(result.registered).toBe(2);
+      expect(result.deregistered).toBe(0);
+      expect(connections.has("warehouse")).toBe(true);
+      expect(connections.has("reporting")).toBe(true);
+    });
+
+    it("deregisters an archived install so it stops serving without a restart", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      // Pre-register the pool as if it went live at install time, then archive
+      // it. The reconcile must evict it — not merely skip it like the boot
+      // loader does.
+      connections.register("legacy", { url: "postgresql://host/legacy" });
+      connections.registerForWorkspace("org-1", "legacy", {
+        url: "postgresql://host/legacy",
+      });
+      expect(connections.has("legacy")).toBe(true);
+
+      pool._setResult({
+        rows: [
+          {
+            workspace_id: "org-1",
+            install_id: "legacy",
+            catalog_slug: "postgres",
+            config: { url: "postgresql://host/legacy" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+            status: "archived",
+          },
+        ],
+      });
+      _resetPool(pool);
+
+      const result = await reconcileWorkspaceDatasources("org-1");
+      expect(result.registered).toBe(0);
+      expect(result.deregistered).toBe(1);
+      expect(connections.has("legacy")).toBe(false);
+      expect(connections.hasForWorkspace("org-1", "legacy")).toBe(false);
+    });
+
+    it("is idempotent — re-registering an already-live install reports zero fresh", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      pool._setResult({
+        rows: [
+          {
+            workspace_id: "org-1",
+            install_id: "warehouse",
+            catalog_slug: "postgres",
+            config: { url: "postgresql://host/wh" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+            status: "published",
+          },
+        ],
+      });
+      _resetPool(pool);
+
+      const first = await reconcileWorkspaceDatasources("org-1");
+      expect(first.registered).toBe(1);
+      // Second pass over the same persisted state: the bridge's has()-guards
+      // make this a no-op (no double-register).
+      const second = await reconcileWorkspaceDatasources("org-1");
+      expect(second.registered).toBe(0);
+      expect(second.deregistered).toBe(0);
+      expect(connections.has("warehouse")).toBe(true);
+    });
+
+    it("skips a single bad install without aborting the reconcile", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      pool._setResult({
+        rows: [
+          {
+            workspace_id: "org-1",
+            install_id: "good",
+            catalog_slug: "postgres",
+            config: { url: "postgresql://host/db" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+            status: "published",
+          },
+          {
+            workspace_id: "org-1",
+            install_id: "bad",
+            catalog_slug: "postgres",
+            config: { url: "badscheme://host/db" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+            status: "published",
+          },
+        ],
+      });
+      _resetPool(pool);
+
+      const result = await reconcileWorkspaceDatasources("org-1");
+      expect(result.registered).toBe(1);
+      expect(connections.has("good")).toBe(true);
+      expect(connections.has("bad")).toBe(false);
+    });
+
+    it("returns zero counts on the 42P01 table-missing branch (fresh DB, no plugin tables)", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      // Attach the Postgres SQLSTATE so `isPgError` recognizes the
+      // undefined_table case and takes the dedicated warn branch — not the
+      // generic error branch. Both return zero counts, but this pins the
+      // 42P01-specific path the comment promises.
+      const tableMissing = Object.assign(
+        new Error('relation "workspace_plugins" does not exist'),
+        { code: "42P01" },
+      );
+      pool._setError(tableMissing);
+      _resetPool(pool);
+
+      expect(await reconcileWorkspaceDatasources("org-1")).toEqual({
+        registered: 0,
+        deregistered: 0,
+      });
+    });
+
+    it("returns zero counts on a generic query failure (not 42P01)", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      // No `.code` → falls through to the generic error branch.
+      pool._setError(new Error("connection reset by peer"));
+      _resetPool(pool);
+
+      expect(await reconcileWorkspaceDatasources("org-1")).toEqual({
+        registered: 0,
+        deregistered: 0,
+      });
     });
   });
 

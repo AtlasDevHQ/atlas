@@ -83,8 +83,14 @@ The endpoint executes four phases inside a single PostgreSQL transaction. Any fa
 
 After a successful response, **no `draft` or `draft_delete` rows remain for the org**.
 
+After the transaction commits, the endpoint **reconciles the org's datasources into the live connection registry** (best-effort, outside the transaction): every non-archived datasource install is (re)registered and every archived one is deregistered. This is what makes a freshly-published standalone datasource **agent-queryable immediately — with no API restart**. A transient registry hiccup here does not fail an already-committed publish; the next API boot reconciles regardless.
+
 <Callout title="Atomicity">
-  Every mutation above runs through a single `BEGIN ... COMMIT` block. If any statement throws — a constraint violation, a lost connection, anything — the endpoint issues `ROLLBACK`, releases the client, and returns `500 publish_failed` with the original error detail. The internal DB state is left untouched.
+  The four phases above run through a single `BEGIN ... COMMIT` block. If any statement throws — a constraint violation, a lost connection, anything — the endpoint issues `ROLLBACK`, releases the client, and returns `500 publish_failed` with the original error detail. The internal DB state is left untouched. The post-commit registry reconcile runs only on the success path.
+</Callout>
+
+<Callout title="Standalone datasource happy path">
+  The end-to-end path for a single self-installed datasource (one ClickHouse, one Elasticsearch, …) is: **install** via Admin → Connections → **auto-profile / generate entities** → **publish**. After the publish you can `executeSQL` against it right away — no API restart, and **no manual `group_id` SQL**. A standalone connection with no explicit Connection group behaves as its own *group-of-one* keyed by its install id, so its generated entities are whitelisted and routed under that connection out of the box, and it appears in the chat env picker automatically.
 </Callout>
 
 ### Responses

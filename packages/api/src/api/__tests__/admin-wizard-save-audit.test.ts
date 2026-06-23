@@ -128,6 +128,10 @@ mock.module("@atlas/api/lib/semantic/sync", () => ({
   getSemanticRoot: () => "/tmp/test-semantic",
   reconcileAllOrgs: async () => {},
   importFromDisk: mock(async () => ({ imported: 0, skipped: 0, total: 0 })),
+  // Reached transitively once the full app mounts the /tables route (#3898):
+  // whitelist.ts → invalidateOrgModeRoots, the route → ensureOrgModeSemanticRoot.
+  invalidateOrgModeRoots: () => {},
+  ensureOrgModeSemanticRoot: mock(async () => "/tmp/test-semantic"),
 }));
 
 // Mock the entity store: this test exercises the wizard /save audit

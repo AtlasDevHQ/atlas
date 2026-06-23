@@ -63,6 +63,10 @@ mock.module("@atlas/api/lib/semantic/sync", () => ({
   getSemanticRoot: () => "/tmp/test-semantic",
   reconcileAllOrgs: async () => {},
   importFromDisk: mockImportFromDisk,
+  // Reached transitively once the full app mounts the /tables route (#3898):
+  // whitelist.ts → invalidateOrgModeRoots, the route → ensureOrgModeSemanticRoot.
+  invalidateOrgModeRoots: () => {},
+  ensureOrgModeSemanticRoot: mock(async () => "/tmp/test-semantic"),
 }));
 
 // Audit capture

@@ -195,6 +195,16 @@ export interface ListTablesResponse {
   tables: TableInfo[];
 }
 
+export interface ListTablesOptions {
+  /**
+   * Connection (or group) to scope the table list to. The returned set matches
+   * exactly what the SQL validation pipeline enforces for that connection
+   * (group-scoped whitelist, ADR-0012). An unknown id yields a 404; omitting it
+   * resolves to the default group.
+   */
+  connectionId?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Starter prompts
 // ---------------------------------------------------------------------------
@@ -689,11 +699,20 @@ export function createAtlasClient(options: AtlasClientOptions) {
     },
 
     /**
-     * List all queryable tables from the semantic layer, including column
+     * List the queryable tables from the semantic layer, including column
      * details. Does not require admin role.
+     *
+     * Pass `connectionId` to scope the list to a specific connection (or
+     * group): the returned set matches exactly what `validateSQL` / `executeSQL`
+     * enforce for that connection (the group-scoped whitelist, ADR-0012). An
+     * unknown `connectionId` is rejected with a 404 rather than silently falling
+     * back to the global list. Omitting it resolves to the default group.
      */
-    async listTables(): Promise<ListTablesResponse> {
-      const res = await get("/api/v1/tables");
+    async listTables(opts?: ListTablesOptions): Promise<ListTablesResponse> {
+      const params = new URLSearchParams();
+      if (opts?.connectionId != null) params.set("connectionId", opts.connectionId);
+      const qs = params.toString();
+      const res = await get(`/api/v1/tables${qs ? `?${qs}` : ""}`);
       return unwrap<ListTablesResponse>(res);
     },
 

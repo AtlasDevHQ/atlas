@@ -10618,7 +10618,21 @@
           "Tables"
         ],
         "summary": "List queryable tables",
-        "description": "Returns a simplified view of semantic layer entities with column details, enabling SDK consumers to discover queryable tables.",
+        "description": "Returns a simplified view of semantic layer entities with column details, scoped to the connection's group whitelist (ADR-0012), enabling SDK consumers to discover queryable tables.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Connection (or group) to scope the table list to. Returns the same table set validate-sql / executeSQL enforce for that connection. An unknown id is a 404, not a fallback to the global list.",
+              "example": "clickhouse"
+            },
+            "required": false,
+            "description": "Connection (or group) to scope the table list to. Returns the same table set validate-sql / executeSQL enforce for that connection. An unknown id is a 404, not a fallback to the global list.",
+            "name": "connectionId",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
             "description": "List of tables with columns",
@@ -10666,6 +10680,31 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Connection not found for the request's workspace scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
                 }
               }
             }

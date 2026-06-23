@@ -12,11 +12,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { connections } from "@atlas/api/lib/db/connection";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getSemanticRoot, readYamlFile, discoverEntities } from "./files";
-import {
-  getOrgWhitelistedTables,
-  getWhitelistedTables,
-  loadOrgWhitelist,
-} from "./whitelist";
+import { resolveAllowedTables, type AllowedTablesScope } from "./allowed-tables";
 import { listEntityRows, listEntitiesWithOverlay } from "./entities";
 
 const log = createLogger("semantic-diff");
@@ -423,38 +419,21 @@ export async function getYAMLSnapshotsFromDB(
  *     tombstones hide tables, archived-connection entities are excluded)
  *   - omitted — legacy path (no status filter, all rows including tombstones)
  */
-export interface DiffOptions {
+// Extends AllowedTablesScope so the diff's whitelist scope stays in lockstep
+// with the shared resolver: a new required scoping axis surfaces here as a
+// compile error rather than silently going unpassed (the diff supplies its own
+// `onMissingOrgDB` at the call site, so it isn't part of this public shape).
+export interface DiffOptions extends Pick<AllowedTablesScope, "orgId" | "atlasMode"> {
   /** Organization ID for org-scoped semantic whitelist. */
   orgId?: string;
   /** Atlas mode — `published` (end-user) or `developer` (overlay with drafts). */
   atlasMode?: AtlasMode;
 }
 
-/**
- * Internal: resolve the mode-aware allowed-tables whitelist for an org +
- * connection, falling back to the file-based whitelist when no org context
- * is available (self-hosted CLI / single-tenant). Fails closed on whitelist
- * load errors to avoid leaking the whole DB schema across tenants.
- */
-async function resolveAllowedTables(
-  connectionId: string,
-  options: DiffOptions,
-): Promise<Set<string> | undefined> {
-  const { orgId, atlasMode } = options;
-  if (orgId && hasInternalDB()) {
-    try {
-      await loadOrgWhitelist(orgId, atlasMode);
-      return getOrgWhitelistedTables(orgId, connectionId, atlasMode);
-    } catch (err) {
-      log.error(
-        { orgId, connectionId, atlasMode, err: err instanceof Error ? err.message : String(err) },
-        "Failed to load org whitelist — scoping diff to empty set",
-      );
-      return new Set();
-    }
-  }
-  return getWhitelistedTables(connectionId);
-}
+// The allowed-tables whitelist resolution lives in `./allowed-tables`
+// (`resolveAllowedTables`) so the diff and the public `/api/v1/tables`
+// endpoint (#3898) share ONE definition and can't drift on the org / mode /
+// internal-DB axes — "advertised == enforced" stays structural.
 
 /**
  * Internal: resolve the YAML snapshot side of the diff, preferring DB-backed
@@ -487,7 +466,11 @@ export async function runDiff(
   connectionId: string = "default",
   options: DiffOptions = {},
 ): Promise<SemanticDiffResponse> {
-  const allowedTables = await resolveAllowedTables(connectionId, options);
+  // The diff opts into the file-whitelist fallback for an org-without-internal-DB
+  // (a self-hosted admin who set an org but hand-edits YAML still gets a
+  // meaningful diff); the enforcement-parity surfaces (/api/v1/tables) use the
+  // default "empty" so they match validateSQL exactly.
+  const allowedTables = await resolveAllowedTables(connectionId, { ...options, onMissingOrgDB: "file" });
   // Scope introspection to the querying workspace (#3109) so a shared
   // install_id reads the correct tenant's schema, not a sibling's.
   const dbSnapshots = await getDBSchema(connectionId, allowedTables, options.orgId);
@@ -534,7 +517,11 @@ export async function runDriftDiff(
   introspectedTableCount: number;
   warnings: string[];
 }> {
-  const allowedTables = await resolveAllowedTables(connectionId, options);
+  // The diff opts into the file-whitelist fallback for an org-without-internal-DB
+  // (a self-hosted admin who set an org but hand-edits YAML still gets a
+  // meaningful diff); the enforcement-parity surfaces (/api/v1/tables) use the
+  // default "empty" so they match validateSQL exactly.
+  const allowedTables = await resolveAllowedTables(connectionId, { ...options, onMissingOrgDB: "file" });
   // Scope introspection to the querying workspace (#3109) so a shared
   // install_id reads the correct tenant's schema, not a sibling's.
   const rawDBSnapshots = await getDBSchemaRaw(connectionId, options.orgId);

@@ -24,6 +24,8 @@ import {
   MOCK_STARTER_PROMPTS,
   getLastStarterPromptsRequestUrl,
   resetStarterPromptsCapture,
+  getLastTablesRequestUrl,
+  resetTablesCapture,
   type MockServer,
 } from "./mock-server";
 
@@ -473,6 +475,22 @@ describe("listTables()", () => {
     expect(result.tables[0].columns).toHaveLength(2);
     expect(result.tables[1].table).toBe("orders");
     expect(result.tables[1].columns).toHaveLength(3);
+  });
+
+  test("forwards connectionId as a query param", async () => {
+    resetTablesCapture();
+    await client().listTables({ connectionId: "clickhouse" });
+    const captured = getLastTablesRequestUrl();
+    expect(captured).not.toBeNull();
+    expect(new URL(captured!).searchParams.get("connectionId")).toBe("clickhouse");
+  });
+
+  test("omits the query string when no connectionId is given", async () => {
+    resetTablesCapture();
+    await client().listTables();
+    const captured = getLastTablesRequestUrl();
+    expect(captured).not.toBeNull();
+    expect(new URL(captured!).search).toBe("");
   });
 
   test("401 unauthorized → AtlasError", async () => {

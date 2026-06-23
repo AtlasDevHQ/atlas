@@ -67,6 +67,7 @@ export {
   type ActionStatus,
   type RollbackActionResponse,
   type ListTablesResponse,
+  type ListTablesOptions,
   type TableInfo,
   type TableColumn,
   type StarterPrompt,

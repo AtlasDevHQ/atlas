@@ -240,6 +240,16 @@ export function resetStarterPromptsCapture(): void {
   lastStarterPromptsRequestUrl = null;
 }
 
+let lastTablesRequestUrl: string | null = null;
+
+export function getLastTablesRequestUrl(): string | null {
+  return lastTablesRequestUrl;
+}
+
+export function resetTablesCapture(): void {
+  lastTablesRequestUrl = null;
+}
+
 export const MOCK_STARTER_PROMPTS = {
   prompts: [
     { id: "favorite:fav-1", text: "Top users by revenue", provenance: "favorite" as const },
@@ -694,6 +704,7 @@ async function handleRequest(req: Request): Promise<Response> {
   if (method === "GET" && pathname === "/api/v1/tables") {
     const authErr = checkAuth(req);
     if (authErr) return authErr;
+    lastTablesRequestUrl = req.url;
     return json(MOCK_TABLES_RESPONSE);
   }
 

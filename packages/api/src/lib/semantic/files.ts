@@ -167,6 +167,7 @@ export function discoverEntities(root: string): DiscoverEntitiesResult {
 // ---------------------------------------------------------------------------
 
 import type { TableInfo, TableColumn } from "@useatlas/types";
+import { tableWhitelistKeys } from "./whitelist";
 export type { TableInfo };
 
 /**
@@ -178,7 +179,21 @@ interface DiscoverTablesResult {
   warnings: string[];
 }
 
-export function discoverTables(root: string): DiscoverTablesResult {
+/**
+ * Discover entity tables (with column detail) from a semantic root.
+ *
+ * @param root - Semantic layer root to scan (flat + group/legacy namespaces).
+ * @param allowed - When provided, the **single source of truth** for which
+ *   tables are queryable on the resolved connection — the SAME whitelist set
+ *   `validateSQL` / `executeSQL` enforce (`getWhitelistedTables` /
+ *   `getOrgWhitelistedTables`). A discovered entity is included only when one
+ *   of its {@link tableWhitelistKeys} appears in this set, so the advertised
+ *   list can never disagree with the enforced one (#3898). Omit it to return
+ *   every discovered table unfiltered — the correct behavior only when the
+ *   table whitelist is globally disabled (`ATLAS_TABLE_WHITELIST=false`), where
+ *   the enforcement layer itself allows any table.
+ */
+export function discoverTables(root: string, allowed?: ReadonlySet<string>): DiscoverTablesResult {
   const { entities: scanned, warnings } = scanEntities(root);
   const tables: TableInfo[] = [];
 
@@ -186,6 +201,20 @@ export function discoverTables(root: string): DiscoverTablesResult {
     if (!raw.table) {
       warnings.push(`Entity file missing required 'table' field: ${path.relative(root, filePath)}`);
       continue;
+    }
+
+    // Whitelist filter (#3898): keep only entities whose table is queryable on
+    // the resolved connection. Derive the entity's whitelist keys with the SAME
+    // helper the whitelist loader uses (honoring `identifier_style: opaque` for
+    // Elasticsearch indices) so a discovered table matches iff the enforcement
+    // layer would also accept it — `/tables` becomes a view of the whitelist,
+    // never a divergent advertisement.
+    if (allowed) {
+      // `raw` is already `Record<string, unknown>`, so `raw.identifier_style`
+      // is `unknown` — no cast needed to compare it to the opaque marker.
+      const opaque = raw.identifier_style === "opaque";
+      const keys = tableWhitelistKeys(String(raw.table), { opaque });
+      if (!keys.some((k) => allowed.has(k))) continue;
     }
 
     const columns: TableColumn[] = [];

@@ -156,6 +156,15 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetPluginEntities: () => {},
 }));
 
+// The /tables route resolves its whitelist through resolveAllowedTables (the
+// shared SSOT). Mock it to the default-group whitelist {companies} so the route
+// test stays deterministic without pulling the real whitelist→entities→internal
+// chain. shouldUseOrgSemanticMirror=false keeps column reads on the disk root.
+mock.module("@atlas/api/lib/semantic/allowed-tables", () => ({
+  resolveAllowedTables: async () => new Set(["companies"]),
+  shouldUseOrgSemanticMirror: () => false,
+}));
+
 mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
   makeInternalDBShimLayer: () =>
@@ -480,14 +489,15 @@ describe("GET /api/v1/tables", () => {
     setAuthenticated();
   });
 
-  it("returns tables with column details", async () => {
+  it("returns only the default-group tables the whitelist enforces, with column details (#3898)", async () => {
     const res = await app.fetch(apiRequest("/api/v1/tables"));
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as { tables: Array<Record<string, unknown>> };
     expect(body.tables).toBeDefined();
 
-    // companies + orders from fixtures (broken.yml is skipped)
+    // The mocked whitelist for the default group is `{ companies }` — so `/tables`
+    // advertises EXACTLY that, matching what validate-sql / executeSQL enforce.
     const companies = body.tables.find((t) => t.table === "companies");
     expect(companies).toBeDefined();
     expect(companies!.description).toBe("All company records");
@@ -496,8 +506,11 @@ describe("GET /api/v1/tables", () => {
     expect(cols.length).toBe(3);
     expect(cols.find((c) => c.name === "id")).toBeDefined();
 
-    const orders = body.tables.find((t) => t.table === "orders");
-    expect(orders).toBeDefined();
+    // `orders` lives in the `warehouse` group fixture, NOT the default group's
+    // whitelist — so it must NOT be advertised on the default connection. Before
+    // #3898 the endpoint ignored the group and leaked it into every connection's
+    // list; the fix scopes the list to the per-connection whitelist.
+    expect(body.tables.find((t) => t.table === "orders")).toBeUndefined();
   });
 
   it("returns 401 when unauthenticated", async () => {

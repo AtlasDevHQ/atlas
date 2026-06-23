@@ -566,6 +566,39 @@ You are answering inside a chat platform (Slack/Teams/etc.) where the audience i
 - End with a single short line offering the analyst view: "Want the SQL or full breakdown? Tap the button below." Do NOT use markdown formatting on this closing line.
 `;
 
+/**
+ * #3909 — Cross-source composition guidance (ADR-0022 §2, slice (d)).
+ *
+ * Teaches the agent how to *compose* an answer across the sources it can now
+ * route to. It rides on the Source catalog (#3894): appended only when a catalog
+ * is in reach (≥1 source), so single-source / no-internal-DB workspaces — which
+ * never get a catalog — are unchanged. Cross-source answers are **LLM
+ * composition, not federation** (ADR-0022): query each source on its own engine
+ * (each query keeps its dialect + whitelist + 4-layer AST validation), then
+ * stitch the result sets together in reasoning. Atlas runs no cross-engine query
+ * engine, so a single SQL `JOIN` across sources is never an option.
+ *
+ * Two behavioral rules the catalog's routing blurb does not cover:
+ *   - **Provenance** — name which source(s) the answer drew from, so the user can
+ *     sanity-check it.
+ *   - **No silent fallback** — if the source that actually holds the answer is
+ *     empty or errors, state the gap; never answer from an unrelated source and
+ *     imply it is equivalent.
+ *
+ * Lives in the SYSTEM prompt (out-of-band of the message transcript), placed
+ * right after the catalog and ahead of the durable memory block so the
+ * memory-LAST invariant (#3755) still holds; like the rest of the system prompt
+ * it is itself compaction-immune by construction (compaction only rewrites the
+ * message array — ADR-0020). Exported so unit tests can pin the contract.
+ */
+export const CROSS_SOURCE_COMPOSITION_GUIDANCE = `## Cross-source composition
+
+When a question spans more than one source in the catalog above — several SQL Connection groups, or a group plus a REST datasource — answer by **composition, not federation**:
+
+- **Query each relevant source on its own**, then correlate the result sets in your own reasoning: \`executeSQL\` per Connection group, \`executeRestOperation\` per REST datasource. The "join" is you stitching the returned rows together in context — Atlas runs **no** cross-engine query engine, so never attempt a single SQL \`JOIN\` across sources or assume a federated query layer exists. (Example: "how many of last month's signups converted to paid?" → count signups in the Postgres group, list paid customers from the Stripe datasource, then correlate the two sets yourself.)
+- **Report which source(s) you drew from** so the user can check provenance — e.g. "1,240 signups (Postgres), 180 of them paid (Stripe)".
+- **Never silently fall back to an unrelated source.** If the source that actually holds the answer is empty or errors, say so plainly and state the gap — do not answer from a different source and imply it is equivalent.`;
+
 export function buildSystemParam(
   providerType: ProviderType,
   registry: ToolRegistry = defaultRegistry,
@@ -601,10 +634,11 @@ export function buildSystemParam(
   /**
    * #3894 — the Source catalog (ADR-0022 §4): the compact routing menu of SQL
    * Connection groups + REST datasources the agent reads to pick a source before
-   * drilling in with `explore`. Injected right before the REST representation
-   * (the menu sits just ahead of the per-datasource detail), and before the
-   * durable memory block so the memory-LAST invariant (#3755) holds. Empty
-   * string / omitted ⇒ nothing appended (single-source / no-internal-DB
+   * drilling in with `explore`. Injected ahead of the cross-source composition
+   * guidance (#3909) and the REST representation — the menu sits just ahead of
+   * the compose-across-the-menu guidance and the per-datasource detail — and
+   * before the durable memory block so the memory-LAST invariant (#3755) holds.
+   * Empty string / omitted ⇒ nothing appended (single-source / no-internal-DB
    * workspaces are unchanged).
    */
   sourceCatalog?: string,
@@ -613,6 +647,11 @@ export function buildSystemParam(
 
   if (sourceCatalog) {
     content += "\n\n" + sourceCatalog;
+    // #3909 — composition guidance rides on the catalog: appended only when a
+    // non-empty catalog is supplied (≥1 source in reach), a no-op for single-
+    // source / no-catalog workspaces. Sits right after the menu (how to compose
+    // across what it lists) and ahead of memory.
+    content += "\n\n" + CROSS_SOURCE_COMPOSITION_GUIDANCE;
   }
 
   if (restRepresentation) {

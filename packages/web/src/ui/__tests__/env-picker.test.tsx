@@ -3033,23 +3033,29 @@ describe("resolveEnvSelection / resolveConversationScope — Group reach (#3895)
   });
 
   test("a sticky preference's Focus on a NO-LONGER-VISIBLE group falls back to All sources (never lies)", () => {
-    // The pref remembers Focus → g_archived, but it's no longer in `groups`
-    // (content-mode hid it / it was removed). Seeding Focus on a gone group
-    // would lie; the resolver coalesces prefReach to null = All sources.
+    // The pref's member routing points at a VISIBLE group (g_a/a) so the restore
+    // branch fires and actually computes nextGroupReach = prefReach — but the
+    // pref's *reach* is g_archived, which is no longer in `groups`. Seeding Focus
+    // on a gone group would lie, so prefReach coalesces to null = All sources.
+    // (Member routing for g_a still restores — reach is the independent axis.)
     const decision = resolveEnvSelection(
       baseInput({
         activeWorkspaceId: "org-1",
         preference: {
           ...emptyPref,
           workspaceId: "org-1",
-          groupId: "g_archived", // also gone → no member-routing restore
-          connectionId: "x",
-          groupReach: "g_archived",
+          groupId: "g_a",
+          connectionId: "a",
+          routingMode: "pin",
+          groupReach: "g_archived", // gone → must fall back to All, not restore Focus
         },
       }),
     );
-    // No member-routing restore (group gone) AND reach falls back to All.
-    if (decision.kind === "restore" || decision.kind === "seed") {
+    expect(decision.kind).toBe("restore");
+    if (decision.kind === "restore") {
+      expect(decision.groupId).toBe("g_a");
+      // The reach falls back to All sources rather than restoring a Focus on a
+      // group the workspace can no longer see.
       expect(decision.groupReach).toBeNull();
     }
   });

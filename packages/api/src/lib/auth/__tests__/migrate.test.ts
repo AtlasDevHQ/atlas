@@ -404,6 +404,9 @@ describe("migrateAuthTables", () => {
             // 0147 updates the elasticsearch plugin_catalog config_schema
             // (Atlas-internal data migration) — runs in every auth mode.
             { name: "0147_elasticsearch_auth_mode_selector_config_schema.sql" },
+            // 0148 creates connection_group_descriptions (Atlas-internal
+            // Source-catalog metadata, #3894) — runs in every auth mode.
+            { name: "0148_connection_group_descriptions.sql" },
           ],
         };
       }

@@ -31,6 +31,7 @@ import { defaultRegistry, ToolRegistry } from "./tools/registry";
 import { resolveWorkspaceRestDatasources, resolveWorkspaceRestDatasourcesOrThrow } from "./openapi/workspace-datasource";
 import type { RestDatasource } from "./openapi/datasource";
 import { buildAgentRepresentation } from "./openapi/representation";
+import { loadSourceCatalog, type RestCatalogSource } from "./source-catalog/lookup";
 import { REST_OPERATION_DESCRIPTION, createExecuteRestOperationTool } from "./tools/rest-operation";
 import { getStreamWriter } from "./tools/python-stream";
 import { getContextFragments, getDialectHints } from "./plugins/tools";
@@ -596,8 +597,22 @@ export function buildSystemParam(
    * nothing appended (memory off / empty / no internal DB → no change vs. today).
    */
   memoryBlock?: string,
+  /**
+   * #3894 — the Source catalog (ADR-0022 §4): the compact routing menu of SQL
+   * Connection groups + REST datasources the agent reads to pick a source before
+   * drilling in with `explore`. Injected right before the REST representation
+   * (the menu sits just ahead of the per-datasource detail), and before the
+   * durable memory block so the memory-LAST invariant (#3755) holds. Empty
+   * string / omitted ⇒ nothing appended (single-source / no-internal-DB
+   * workspaces are unchanged).
+   */
+  sourceCatalog?: string,
 ): string | SystemModelMessage {
   let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext);
+
+  if (sourceCatalog) {
+    content += "\n\n" + sourceCatalog;
+  }
 
   if (restRepresentation) {
     content += "\n\n" + restRepresentation;
@@ -1230,6 +1245,10 @@ export async function runAgent({
   // that environment's scoped REST datasources; a scoped one never leaks past it.
   let activeRegistry = toolRegistry;
   let restRepresentation: string | undefined;
+  // #3894 — minimal REST projection for the Source catalog (ADR-0022 §4). Filled
+  // from the resolved REST datasources inside the preflight below so the catalog
+  // lists the same conversation-scoped set the representation describes.
+  let restCatalogSources: RestCatalogSource[] = [];
   // #3067 — set true once a REST-only focus actually resolves to a datasource;
   // gates executeSQL suspension + the focus prompt banner below.
   let sqlSuspended = false;
@@ -1372,6 +1391,14 @@ export async function runAgent({
         restRepresentation = `${REST_ONLY_FOCUS_GUIDANCE}\n\n${restRepresentation}`;
       }
     }
+    // #3894 — project the resolved REST datasources into the Source catalog
+    // shape (id + name + headline operation ids). Same set the representation
+    // above describes, so the catalog and the per-datasource detail agree.
+    restCatalogSources = restDatasources.map((ds) => ({
+      id: ds.id,
+      displayName: ds.displayName,
+      operationNames: [...ds.graph.operations.keys()],
+    }));
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err.message : String(err) },
@@ -1417,11 +1444,18 @@ export async function runAgent({
   // transcript — so a compaction pass can never summarize or evict it (ADR-0020).
   const memoryBlock = renderDurableMemoryBlock(memoryStore.snapshot());
 
+  // #3894 — the Source catalog (ADR-0022 §4): the compact routing menu of SQL
+  // groups + REST datasources the agent reads to choose a source before drilling
+  // in with `explore`. Built once per turn after REST resolution (it lists the
+  // same conversation-scoped REST set). Fail-soft: an assembly hiccup yields ""
+  // (no block), never a failed turn.
+  const sourceCatalog = await loadSourceCatalog(orgId, atlasMode, restCatalogSources);
+
   // System prompt is built once and pinned: it carries the semantic index +
   // glossary AND the durable memory block (#3755), and is passed to the model
   // separately, so neither ever enters the message array compaction rewrites
   // (#3759).
-  const systemParam = buildSystemParam(providerType, activeRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext, presentationMode ?? "developer", restRepresentation, resolvedModelId, memoryBlock);
+  const systemParam = buildSystemParam(providerType, activeRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext, presentationMode ?? "developer", restRepresentation, resolvedModelId, memoryBlock, sourceCatalog);
 
   // #3759 — context compaction. Resolved once per turn (knobs hot-reload at the
   // next turn via the settings cache). Off by default ⇒ the prepareStep below

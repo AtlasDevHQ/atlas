@@ -182,6 +182,22 @@ mock.module("@atlas/api/lib/semantic/sync", () => ({
   reconcileAllOrgs: async () => {},
 }));
 
+// #3894 — the Source-catalog auto-description refresh the wizard `/save` fires
+// after entities land. A module-level spy so tests can assert the wiring (call
+// args + the NULL-group skip) without exercising the real (DB-backed) refresh.
+const mockRefreshGroupAutoDescription: Mock<(
+  orgId: string,
+  groupId: string,
+  entities: ReadonlyArray<{ name: string; yaml: string }>,
+) => Promise<void>> = mock(async () => {});
+
+mock.module("@atlas/api/lib/source-catalog/lookup", () => ({
+  refreshGroupAutoDescription: mockRefreshGroupAutoDescription,
+  // Other named export — present so the mock.module() loader resolves every
+  // export of the real module for any sibling import in this isolated process.
+  loadSourceCatalog: async () => "",
+}));
+
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
@@ -580,6 +596,9 @@ beforeEach(() => {
   mockResolveGroupId.mockImplementation(
     async (_orgId, connectionId) => (!connectionId || connectionId === "default" ? null : connectionId),
   );
+
+  mockRefreshGroupAutoDescription.mockReset();
+  mockRefreshGroupAutoDescription.mockImplementation(async () => {});
 
   mockListPostgresObjects.mockReset();
   mockListPostgresObjects.mockImplementation(async () => [
@@ -1089,6 +1108,36 @@ describe("POST /api/v1/wizard/save", () => {
     const files = data.files as string[];
     expect(files).toContain("entities/users.yml");
     expect(files).toContain("entities/orders.yml");
+  });
+
+  it("#3894 — refreshes the group's auto-description from the saved batch (real group)", async () => {
+    // A non-"default" connection resolves to its own group (group-of-one), so
+    // the Source-catalog auto-description refresh fires with the saved entities.
+    await postJson("/api/v1/wizard/save", {
+      connectionId: "warehouse",
+      entities: [
+        { tableName: "users", yaml: "table: users\ndescription: User accounts\n" },
+        { tableName: "orders", yaml: "table: orders\ndescription: Customer orders\n" },
+      ],
+    });
+    expect(mockRefreshGroupAutoDescription).toHaveBeenCalledTimes(1);
+    const [orgId, groupId, entities] = mockRefreshGroupAutoDescription.mock.calls[0];
+    expect(orgId).toBe("org-1");
+    expect(groupId).toBe("warehouse");
+    expect(entities).toEqual([
+      { name: "users", yaml: "table: users\ndescription: User accounts\n" },
+      { name: "orders", yaml: "table: orders\ndescription: Customer orders\n" },
+    ]);
+  });
+
+  it("#3894 — skips the auto-description refresh for the NULL default group", async () => {
+    // `connectionId: "default"` resolves to the NULL flat-default group, which
+    // has no group id to key a description under — the refresh must not fire.
+    await postJson("/api/v1/wizard/save", {
+      connectionId: "default",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+    expect(mockRefreshGroupAutoDescription).not.toHaveBeenCalled();
   });
 
   it("creates directories and writes entity files", async () => {

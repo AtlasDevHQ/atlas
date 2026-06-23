@@ -63,6 +63,7 @@ import { SAFE_TABLE_NAME, safeSemanticRowName } from "@atlas/api/lib/semantic/sh
 // Phase-2 enrichment is the same shared engine (issue #3236, § D); the in-memory
 // variant lets the wizard enrich a YAML string per table without touching disk.
 import { enrichEntityYaml } from "@atlas/api/lib/semantic/enrich";
+import { refreshGroupAutoDescription } from "@atlas/api/lib/source-catalog/lookup";
 import {
   getModel,
   getMissingModelConfig,
@@ -1110,6 +1111,33 @@ wizard.openapi(saveRoute, async (c) => {
           }, 500);
         }
         invalidateOrgWhitelist(orgId);
+
+        // #3894 — refresh the group's auto-generated Source-catalog description
+        // (ADR-0022 §4) from the entities just saved. Only for a real group
+        // (the NULL flat-default group has no key to store under). Best-effort:
+        // the entities ARE persisted, and the catalog falls back to an
+        // entity-name summary, so a description hiccup must never fail the save.
+        // `upsertAutoGroupDescription` (inside) never clobbers a manual edit.
+        if (connectionGroupId) {
+          yield* Effect.tryPromise({
+            try: () =>
+              refreshGroupAutoDescription(
+                orgId,
+                connectionGroupId,
+                entities.map((e) => ({ name: e.tableName, yaml: e.yaml })),
+              ),
+            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+          }).pipe(
+            Effect.catchAll((err) => {
+              log.warn(
+                { err: err.message, requestId, orgId, connectionGroupId },
+                "Wizard save: failed to refresh group auto-description — " +
+                  "entities persisted, catalog falls back to entity-name summary",
+              );
+              return Effect.void;
+            }),
+          );
+        }
 
         // #3682 — record the durable partial-profile marker when the wizard
         // forwarded the `/generate` failures. The wizard path persists via

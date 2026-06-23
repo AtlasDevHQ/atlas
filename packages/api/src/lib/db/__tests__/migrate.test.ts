@@ -170,7 +170,9 @@ describe("runMigrations", () => {
     //   Plus 0146 (agent_runs parked⟺parked_reason CHECK, ADR-0020, #3748) = 147.
     //   Plus 0147 (elasticsearch authMode-selector config_schema,
     //   progressive-disclosure pass, milestone v0.0.13) = 148.
-    expect(count).toBe(148);
+    //   Plus 0148 (connection_group_descriptions Source-catalog routing
+    //   metadata, ADR-0022 §4, #3894) = 149.
+    expect(count).toBe(149);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -347,6 +349,7 @@ describe("runMigrations", () => {
         "0145_agent_session_memory.sql",
         "0146_agent_runs_parked_reason_check.sql",
         "0147_elasticsearch_auth_mode_selector_config_schema.sql",
+        "0148_connection_group_descriptions.sql",
       ],
     });
 

@@ -12,11 +12,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { connections } from "@atlas/api/lib/db/connection";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getSemanticRoot, readYamlFile, discoverEntities } from "./files";
-import {
-  getOrgWhitelistedTables,
-  getWhitelistedTables,
-  loadOrgWhitelist,
-} from "./whitelist";
+import { resolveAllowedTables } from "./allowed-tables";
 import { listEntityRows, listEntitiesWithOverlay } from "./entities";
 
 const log = createLogger("semantic-diff");
@@ -430,31 +426,10 @@ export interface DiffOptions {
   atlasMode?: AtlasMode;
 }
 
-/**
- * Internal: resolve the mode-aware allowed-tables whitelist for an org +
- * connection, falling back to the file-based whitelist when no org context
- * is available (self-hosted CLI / single-tenant). Fails closed on whitelist
- * load errors to avoid leaking the whole DB schema across tenants.
- */
-async function resolveAllowedTables(
-  connectionId: string,
-  options: DiffOptions,
-): Promise<Set<string> | undefined> {
-  const { orgId, atlasMode } = options;
-  if (orgId && hasInternalDB()) {
-    try {
-      await loadOrgWhitelist(orgId, atlasMode);
-      return getOrgWhitelistedTables(orgId, connectionId, atlasMode);
-    } catch (err) {
-      log.error(
-        { orgId, connectionId, atlasMode, err: err instanceof Error ? err.message : String(err) },
-        "Failed to load org whitelist — scoping diff to empty set",
-      );
-      return new Set();
-    }
-  }
-  return getWhitelistedTables(connectionId);
-}
+// The allowed-tables whitelist resolution lives in `./allowed-tables`
+// (`resolveAllowedTables`) so the diff and the public `/api/v1/tables`
+// endpoint (#3898) share ONE definition and can't drift on the org / mode /
+// internal-DB axes — "advertised == enforced" stays structural.
 
 /**
  * Internal: resolve the YAML snapshot side of the diff, preferring DB-backed

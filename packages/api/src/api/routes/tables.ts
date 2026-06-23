@@ -18,11 +18,7 @@ import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { getSemanticRoot, discoverTables } from "@atlas/api/lib/semantic/files";
 import { ensureOrgModeSemanticRoot } from "@atlas/api/lib/semantic/sync";
-import {
-  getWhitelistedTables,
-  getOrgWhitelistedTables,
-  loadOrgWhitelist,
-} from "@atlas/api/lib/semantic";
+import { resolveAllowedTables, shouldUseOrgSemanticMirror } from "@atlas/api/lib/semantic/allowed-tables";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { connections, ConnectionNotRegisteredError } from "@atlas/api/lib/db/connection";
 import { getRequestContext } from "@atlas/api/lib/logger";
@@ -98,10 +94,12 @@ tables.openapi(tablesRoute, async (c) => {
     // org or they validate against the wrong scope (#3109, #3857).
     const reqCtx = getRequestContext();
     const orgId = reqCtx?.user?.activeOrganizationId;
-    // Default to published mode when the request context omits it, matching the
-    // agent's executeSQL path (agent.ts) so the advertised set, the whitelist,
-    // and the on-disk column mirror all resolve to the same view.
-    const mode = reqCtx?.atlasMode ?? "published";
+    // Pass the request's mode RAW to the whitelist resolution (via
+    // resolveAllowedTables) so the advertised set matches `validateSQL` exactly,
+    // which also threads the raw `atlasMode` (an undefined mode selects the
+    // legacy cache, never published-only). A concrete mode is only needed to
+    // pick the on-disk COLUMN mirror below, where it can't change membership.
+    const atlasMode = reqCtx?.atlasMode;
 
     // Validate the connection up front. An explicit but unknown connectionId is
     // a clear 404 — never a silent fallback to the global/demo list (#3898). We
@@ -116,6 +114,7 @@ tables.openapi(tablesRoute, async (c) => {
             {
               error: "connection_not_found",
               message: `Connection "${connectionId}" is not registered.`,
+              requestId: reqCtx?.requestId,
             },
             404,
           );
@@ -125,8 +124,8 @@ tables.openapi(tablesRoute, async (c) => {
     }
 
     // The connection group key the whitelist is partitioned by. `validateSQL`
-    // passes the bare connectionId straight through; `getWhitelistedTables` /
-    // `getOrgWhitelistedTables` default it to "default" (the flat group).
+    // passes the bare connectionId straight through; the resolvers default it
+    // to "default" (the flat group).
     const groupKey = connectionId ?? "default";
 
     // When the whitelist is globally disabled, the enforcement layer accepts
@@ -136,26 +135,26 @@ tables.openapi(tablesRoute, async (c) => {
       (getSettingAuto("ATLAS_TABLE_WHITELIST") ?? process.env.ATLAS_TABLE_WHITELIST) === "false";
 
     // Resolve the SAME whitelist set the enforcement layer uses for this
-    // connection. SaaS (orgId present) reads the per-org DB-backed whitelist
-    // (loadOrgWhitelist is cache-guarded — O(1) after first load); self-hosted
-    // reads the on-disk group-partitioned set.
-    let allowed: ReadonlySet<string> | undefined;
-    if (!whitelistDisabled) {
-      if (orgId) {
-        await loadOrgWhitelist(orgId, mode);
-        allowed = getOrgWhitelistedTables(orgId, groupKey, mode);
-      } else {
-        allowed = getWhitelistedTables(groupKey);
-      }
-    }
+    // connection, through the shared `resolveAllowedTables` (org-scoped vs
+    // file-scoped, raw mode, internal-DB guard, fail-closed) that the schema
+    // diff also reads — so `/tables` can never drift from what executeSQL
+    // enforces. `undefined` means "whitelist disabled → return everything".
+    const allowed = whitelistDisabled
+      ? undefined
+      : await resolveAllowedTables(groupKey, { orgId, atlasMode });
 
-    // Column detail is read from the semantic root that backs this scope: the
-    // per-org mode mirror for SaaS, the base root for self-hosted. The `allowed`
-    // filter is what guarantees the set matches the whitelist; the root only
-    // supplies columns. `ensureOrgModeSemanticRoot` lazily rebuilds the mode
-    // mirror from the DB (cache-guarded, same primitive the explore tool uses)
-    // so the columns are present even on a cache-cold process.
-    const root = orgId ? await ensureOrgModeSemanticRoot(orgId, mode) : getSemanticRoot();
+    // Column detail is read from the semantic root that backs this scope. The
+    // `allowed` filter is the authority for membership; the root only supplies
+    // columns. When the org whitelist came from the DB (org + internal DB), read
+    // columns from the per-org mode mirror (lazily rebuilt from the DB by
+    // `ensureOrgModeSemanticRoot`, cache-guarded, same primitive the explore
+    // tool uses) so columns track the same source as membership. Everything else
+    // (self-hosted, or org without an internal DB — where `resolveAllowedTables`
+    // already fell back to the file whitelist) reads the base root.
+    const root =
+      orgId && shouldUseOrgSemanticMirror(orgId)
+        ? await ensureOrgModeSemanticRoot(orgId, atlasMode ?? "published")
+        : getSemanticRoot();
     const result = discoverTables(root, allowed);
 
     return c.json({

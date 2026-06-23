@@ -210,7 +210,9 @@ export function discoverTables(root: string, allowed?: ReadonlySet<string>): Dis
     // layer would also accept it — `/tables` becomes a view of the whitelist,
     // never a divergent advertisement.
     if (allowed) {
-      const opaque = (raw as { identifier_style?: unknown }).identifier_style === "opaque";
+      // `raw` is already `Record<string, unknown>`, so `raw.identifier_style`
+      // is `unknown` — no cast needed to compare it to the opaque marker.
+      const opaque = raw.identifier_style === "opaque";
       const keys = tableWhitelistKeys(String(raw.table), { opaque });
       if (!keys.some((k) => allowed.has(k))) continue;
     }

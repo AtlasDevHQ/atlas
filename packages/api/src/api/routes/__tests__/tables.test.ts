@@ -76,20 +76,22 @@ mock.module("@atlas/api/lib/semantic/sync", () => ({
   ensureOrgModeSemanticRoot: mockEnsureOrgModeSemanticRoot,
 }));
 
-const mockGetWhitelistedTables: Mock<(connectionId?: string) => Set<string>> = mock(
-  () => new Set(["default_table"]),
-);
-const mockLoadOrgWhitelist: Mock<(orgId: string, mode?: string) => Promise<Map<string, Set<string>>>> = mock(
-  async () => new Map(),
-);
-const mockGetOrgWhitelistedTables: Mock<
-  (orgId: string, connectionId?: string, mode?: string) => Set<string>
-> = mock(() => new Set(["org_table"]));
+// resolveAllowedTables is the shared seam (also used by the schema diff) that
+// returns the SAME whitelist set executeSQL enforces. The route's job is to
+// call it with the right (groupKey, { orgId, atlasMode }) and feed the result
+// to discoverTables — so the route test asserts that wiring; the org-vs-file
+// resolution itself is covered in allowed-tables.test.ts.
+const mockResolveAllowedTables: Mock<
+  (connectionId: string, scope: { orgId?: string; atlasMode?: string }) => Promise<Set<string>>
+> = mock(async () => new Set(["resolved_table"]));
+// shouldUseOrgSemanticMirror gates the column source on the same predicate the
+// whitelist resolution uses (org + internal DB). The route reads it through the
+// allowed-tables module so the test never has to mock the heavy db/internal.
+const mockShouldUseOrgSemanticMirror: Mock<(orgId: string | undefined) => boolean> = mock(() => false);
 
-mock.module("@atlas/api/lib/semantic", () => ({
-  getWhitelistedTables: mockGetWhitelistedTables,
-  loadOrgWhitelist: mockLoadOrgWhitelist,
-  getOrgWhitelistedTables: mockGetOrgWhitelistedTables,
+mock.module("@atlas/api/lib/semantic/allowed-tables", () => ({
+  resolveAllowedTables: mockResolveAllowedTables,
+  shouldUseOrgSemanticMirror: mockShouldUseOrgSemanticMirror,
 }));
 
 const mockGetSettingAuto: Mock<(key: string) => string | undefined> = mock(() => undefined);
@@ -152,11 +154,10 @@ describe("GET /api/v1/tables", () => {
     mockGetRequestContext.mockReturnValue(undefined);
     mockDiscoverTables.mockClear();
     mockEnsureOrgModeSemanticRoot.mockClear();
-    mockGetWhitelistedTables.mockReset();
-    mockGetWhitelistedTables.mockReturnValue(new Set(["default_table"]));
-    mockLoadOrgWhitelist.mockClear();
-    mockGetOrgWhitelistedTables.mockReset();
-    mockGetOrgWhitelistedTables.mockReturnValue(new Set(["org_table"]));
+    mockResolveAllowedTables.mockReset();
+    mockResolveAllowedTables.mockResolvedValue(new Set(["resolved_table"]));
+    mockShouldUseOrgSemanticMirror.mockReset();
+    mockShouldUseOrgSemanticMirror.mockReturnValue(false);
     mockGetSettingAuto.mockReset();
     mockGetSettingAuto.mockReturnValue(undefined);
     mockGetDBType.mockReset();
@@ -164,25 +165,28 @@ describe("GET /api/v1/tables", () => {
   });
 
   it("self-hosted, no connectionId: scopes to the default-group whitelist", async () => {
-    mockGetWhitelistedTables.mockReturnValue(new Set(["staging_products"]));
+    mockResolveAllowedTables.mockResolvedValue(new Set(["staging_products"]));
 
     const res = await app.fetch(makeRequest());
     expect(res.status).toBe(200);
     expect(await tableNames(res)).toEqual(["staging_products"]);
-    // The default group is the lookup key, and the filter is applied.
-    expect(mockGetWhitelistedTables).toHaveBeenCalledWith("default");
+    // The default group is the lookup key, and the resolved set is the filter.
+    expect(mockResolveAllowedTables).toHaveBeenCalledWith("default", { orgId: undefined, atlasMode: undefined });
     const allowedArg = mockDiscoverTables.mock.calls[0][1];
     expect([...(allowedArg as Set<string>)]).toEqual(["staging_products"]);
+    // Self-hosted reads the base root, never the per-org mode mirror.
+    expect(mockEnsureOrgModeSemanticRoot).not.toHaveBeenCalled();
   });
 
   it("self-hosted, connectionId: scopes to that connection's whitelist (not the global list)", async () => {
-    mockGetWhitelistedTables.mockReturnValue(new Set(["payments"]));
+    mockResolveAllowedTables.mockResolvedValue(new Set(["payments"]));
 
     const res = await app.fetch(makeRequest("connectionId=clickhouse"));
     expect(res.status).toBe(200);
     expect(await tableNames(res)).toEqual(["payments"]);
     expect(mockGetDBType).toHaveBeenCalledWith("clickhouse", undefined);
-    expect(mockGetWhitelistedTables).toHaveBeenCalledWith("clickhouse");
+    expect(mockResolveAllowedTables).toHaveBeenCalledWith("clickhouse", { orgId: undefined, atlasMode: undefined });
+    expect(mockEnsureOrgModeSemanticRoot).not.toHaveBeenCalled();
   });
 
   it("unknown connectionId is a clear 404, never a silent fallback to the global list", async () => {
@@ -195,8 +199,9 @@ describe("GET /api/v1/tables", () => {
     const body = (await res.json()) as { error: string; message: string };
     expect(body.error).toBe("connection_not_found");
     expect(body.message).toBe('Connection "nope" is not registered.');
-    // It must NOT have advertised any tables.
+    // It must NOT have advertised any tables OR even resolved a whitelist.
     expect(mockDiscoverTables).not.toHaveBeenCalled();
+    expect(mockResolveAllowedTables).not.toHaveBeenCalled();
   });
 
   it("whitelist disabled: returns the unfiltered list (matches the enforcement layer allowing any table)", async () => {
@@ -209,44 +214,60 @@ describe("GET /api/v1/tables", () => {
     // discoverTables called with NO allowed set → unfiltered.
     expect(mockDiscoverTables.mock.calls[0][1]).toBeUndefined();
     expect(await tableNames(res)).toEqual(["__all__"]);
-    // The whitelist resolvers are not consulted when enforcement is disabled.
-    expect(mockGetWhitelistedTables).not.toHaveBeenCalled();
+    // The whitelist is not resolved when enforcement is disabled.
+    expect(mockResolveAllowedTables).not.toHaveBeenCalled();
   });
 
-  it("SaaS (orgId present): reads the per-org whitelist + mode mirror", async () => {
+  it("SaaS (orgId present, internal DB): resolves the org whitelist + reads the mode mirror", async () => {
     mockGetRequestContext.mockReturnValue({
       requestId: "r1",
       user: { activeOrganizationId: "org_42" },
       atlasMode: "developer",
     });
-    mockGetOrgWhitelistedTables.mockReturnValue(new Set(["org_orders"]));
+    mockShouldUseOrgSemanticMirror.mockReturnValue(true);
+    mockResolveAllowedTables.mockResolvedValue(new Set(["org_orders"]));
 
     const res = await app.fetch(makeRequest("connectionId=ch"));
     expect(res.status).toBe(200);
     expect(await tableNames(res)).toEqual(["org_orders"]);
     expect(mockGetDBType).toHaveBeenCalledWith("ch", "org_42");
-    expect(mockLoadOrgWhitelist).toHaveBeenCalledWith("org_42", "developer");
-    expect(mockGetOrgWhitelistedTables).toHaveBeenCalledWith("org_42", "ch", "developer");
+    // Raw atlasMode is threaded — never defaulted — into the whitelist resolution.
+    expect(mockResolveAllowedTables).toHaveBeenCalledWith("ch", { orgId: "org_42", atlasMode: "developer" });
     expect(mockEnsureOrgModeSemanticRoot).toHaveBeenCalledWith("org_42", "developer");
-    // Self-hosted resolver is not used in org mode.
-    expect(mockGetWhitelistedTables).not.toHaveBeenCalled();
   });
 
-  it("SaaS without an explicit atlasMode defaults to published", async () => {
+  it("SaaS resolution threads a missing atlasMode as undefined (matching validateSQL), defaulting only the column mirror to published", async () => {
     mockGetRequestContext.mockReturnValue({
       requestId: "r2",
       user: { activeOrganizationId: "org_7" },
     });
+    mockShouldUseOrgSemanticMirror.mockReturnValue(true);
 
     const res = await app.fetch(makeRequest());
     expect(res.status).toBe(200);
-    expect(mockLoadOrgWhitelist).toHaveBeenCalledWith("org_7", "published");
-    expect(mockGetOrgWhitelistedTables).toHaveBeenCalledWith("org_7", "default", "published");
+    // Whitelist resolution gets the RAW (undefined) mode — same as validateSQL,
+    // so the advertised set can't diverge from the enforced one.
+    expect(mockResolveAllowedTables).toHaveBeenCalledWith("default", { orgId: "org_7", atlasMode: undefined });
+    // Only the column mirror needs a concrete mode; it defaults to published.
     expect(mockEnsureOrgModeSemanticRoot).toHaveBeenCalledWith("org_7", "published");
   });
 
+  it("org without an internal DB falls back to the base root (mirrors resolveAllowedTables's file fallback)", async () => {
+    mockGetRequestContext.mockReturnValue({
+      requestId: "r3",
+      user: { activeOrganizationId: "org_nodb" },
+      atlasMode: "published",
+    });
+    mockShouldUseOrgSemanticMirror.mockReturnValue(false);
+
+    const res = await app.fetch(makeRequest());
+    expect(res.status).toBe(200);
+    // No internal DB → no org mode mirror; columns come from the base root.
+    expect(mockEnsureOrgModeSemanticRoot).not.toHaveBeenCalled();
+  });
+
   it("empty whitelist yields an empty table list (deny-all, not the global list)", async () => {
-    mockGetWhitelistedTables.mockReturnValue(new Set());
+    mockResolveAllowedTables.mockResolvedValue(new Set());
 
     const res = await app.fetch(makeRequest("connectionId=clickhouse"));
     expect(res.status).toBe(200);

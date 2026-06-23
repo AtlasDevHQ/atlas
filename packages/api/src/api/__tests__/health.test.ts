@@ -54,8 +54,13 @@ let connMetadata: ConnectionMetadata[] = [];
 // `sources` section unions them in via `describeAllWorkspacePlugins()` (#3844).
 let pluginMetadata: ConnectionMetadata[] = [];
 
+// Datasource live-probe impl — mutable so a test can simulate the `default`
+// datasource's SELECT 1 failing mid-life (the "pod connected, DB died" path the
+// base status turns into a 503). Defaults to success; reset per-scenario.
+let dsQueryImpl: () => Promise<unknown> = () =>
+  Promise.resolve({ columns: ["?column?"], rows: [{ "?column?": 1 }] });
 const mockDBConnection = {
-  query: async () => ({ columns: ["?column?"], rows: [{ "?column?": 1 }] }),
+  query: () => dsQueryImpl(),
   close: async () => {},
 };
 
@@ -258,6 +263,8 @@ describe("GET /api/health — sources section", () => {
     delete process.env.DATABASE_URL;
     connMetadata = [];
     pluginMetadata = [];
+    dsQueryImpl = () =>
+      Promise.resolve({ columns: ["?column?"], rows: [{ "?column?": 1 }] });
     mockValidateEnvironment.mockReset();
     mockValidateEnvironment.mockResolvedValue([]);
     mockGetStartupWarnings.mockReset();
@@ -269,6 +276,8 @@ describe("GET /api/health — sources section", () => {
     else delete process.env.ATLAS_DATASOURCE_URL;
     if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
     else delete process.env.DATABASE_URL;
+    dsQueryImpl = () =>
+      Promise.resolve({ columns: ["?column?"], rows: [{ "?column?": 1 }] });
   });
 
   it("returns sources section omitted when no connections are registered", async () => {
@@ -366,6 +375,47 @@ describe("GET /api/health — sources section", () => {
     // Still surfaced in the breakdown.
     const sources = body.sources as Record<string, unknown>;
     expect((sources.warehouse as Record<string, unknown>).status).toBe("degraded");
+  });
+
+  // The #1981 contract via the LIVE probe path (not just the boot diagnostic): the
+  // default datasource's SELECT 1 failing mid-life ("pod connected, DB died") must
+  // still 503 — and an otherwise-healthy non-default source must not mask it.
+  it("still 503s when the default datasource live probe fails, even with a healthy non-default source", async () => {
+    dsQueryImpl = () => Promise.reject(new Error("connection refused"));
+    connMetadata = [
+      { id: "default", dbType: "postgres" },
+      { id: "warehouse", dbType: "postgres", health: { status: "healthy", latencyMs: 4, checkedAt: new Date() } },
+    ];
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("error");
+  });
+
+  // Realistic shared-region shape: several tenant/secondary sources impaired at
+  // once. None may move the platform status — guards against a future
+  // "promote if N unhealthy" regression.
+  it("a healthy default with MULTIPLE unhealthy non-default sources stays ok", async () => {
+    const down = (msg: string): HealthCheckResult => ({
+      status: "unhealthy",
+      latencyMs: 5000,
+      message: msg,
+      checkedAt: new Date(),
+    });
+    connMetadata = [
+      { id: "default", dbType: "postgres", health: { status: "healthy", latencyMs: 3, checkedAt: new Date() } },
+      { id: "us-prod", dbType: "postgres", health: down("dns") },
+      { id: "eu-prod", dbType: "postgres", health: down("timeout") },
+    ];
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("ok");
+    const sources = body.sources as Record<string, unknown>;
+    expect((sources["us-prod"] as Record<string, unknown>).status).toBe("unhealthy");
+    expect((sources["eu-prod"] as Record<string, unknown>).status).toBe("unhealthy");
   });
 
   it("includes multiple sources in the sources section", async () => {

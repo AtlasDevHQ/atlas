@@ -409,8 +409,7 @@ health.openapi(healthRoute, async (c) => {
         // breakdown below and in the per-workspace Admin → Connections view, but it
         // MUST NOT move the shared region's top-level status. Letting it would either
         // 503 the whole region (LB removal for every tenant) or trip every operator's
-        // platform alert because one workspace fat-fingered a connection host. The
-        // platform probe reflects platform infrastructure, not tenant data sources.
+        // platform alert because one workspace fat-fingered a connection host.
         // Multi-tenant health isolation — no promotion off non-`default` sources.
       }
     } catch (err) {

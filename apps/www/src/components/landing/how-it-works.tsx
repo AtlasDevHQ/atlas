@@ -86,7 +86,7 @@ function YamlPane() {
           <span key={i} className="block">
             {tokenize(line).map((tok, j) => (
               <span key={j} className={tok.cls}>
-                {tok.text || " "}
+                {tok.text || " "}
               </span>
             ))}
           </span>
@@ -97,6 +97,10 @@ function YamlPane() {
 }
 
 const QUESTION = TOP_CATEGORY_QUESTION;
+
+/** The hero already renders the full result table; here we echo only the
+ * top row so the SQL stays the payload and the answer doesn't repeat. */
+const TOP_ROW = CATEGORY_ROWS[0];
 
 function AnswerPane() {
   return (
@@ -120,14 +124,14 @@ function AnswerPane() {
       <div className="flex flex-col gap-4 px-4 py-5">
         <div>
           <p className="mb-1 font-mono text-[11px] tracking-[0.06em] text-brand">
-            // user
+            // you ask
           </p>
           <p className="m-0 text-[14px] text-zinc-100">{QUESTION}</p>
         </div>
 
         <div>
           <p className="mb-2 font-mono text-[11px] tracking-[0.06em] text-zinc-400">
-            // agent reads orders.yml + categories.yml + glossary.yml, then writes SQL
+            // atlas reads your YAML, then writes the SQL
           </p>
           <pre
             className="m-0 overflow-auto rounded-md border border-white/10 px-3 py-2 font-mono text-[11.5px] leading-[1.6] text-zinc-300"
@@ -158,63 +162,47 @@ function AnswerPane() {
 
         <div>
           <p className="mb-2 font-mono text-[11px] tracking-[0.06em] text-zinc-400">
-            // result · 5 rows · 7 validators passed
+            // result · {CATEGORY_ROWS.length} rows · 7 validators passed
           </p>
           <div
-            className="overflow-hidden rounded-md border border-white/10"
+            className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded-md border border-white/10 px-3 py-2.5 font-mono text-[12.5px]"
             style={{ background: "oklch(0.10 0 0)" }}
           >
-            <div
-              className="grid grid-cols-[1fr_auto_auto] gap-4 border-b border-white/5 px-3 py-2 font-mono text-[11px] uppercase tracking-[0.06em] text-zinc-400"
-            >
-              <span>category</span>
-              <span className="text-right">gmv</span>
-              <span className="text-right">orders</span>
-            </div>
-            {CATEGORY_ROWS.map((row, i) => (
-              <div
-                key={row.category}
-                className="grid grid-cols-[1fr_auto_auto] gap-4 px-3 py-1.5 font-mono text-[12px] text-zinc-200"
-                style={{
-                  background: i % 2 ? "oklch(0.12 0 0)" : "transparent",
-                }}
-              >
-                <span>{row.category}</span>
-                <span className="text-right text-brand">{row.gmv}</span>
-                <span className="text-right text-zinc-400">{row.orders}</span>
-              </div>
-            ))}
+            <span className="text-zinc-400">{TOP_ROW.category} leads</span>
+            <span className="text-brand">{TOP_ROW.gmv}</span>
+            <span className="text-zinc-600">·</span>
+            <span className="text-zinc-400">{TOP_ROW.orders} orders</span>
           </div>
+          <p className="mt-2 font-mono text-[11px] text-zinc-400">
+            read-only · row-limited · audited
+          </p>
         </div>
       </div>
     </div>
   );
 }
 
-const QUESTIONS: ReadonlyArray<string> = [
-  "What's our GMV this quarter?",
-  "What's our top-performing category by GMV this month?",
-  "Monthly GMV trend over the past 6 months.",
-  "Show me revenue last quarter.",
-  "What are our most common return reasons?",
-];
-
-export function YamlSection() {
+/**
+ * The "how it works / why trust it" section: your semantic layer in YAML (the
+ * input you control) beside the SQL Atlas generates and the validated result it
+ * returns. Replaces the old YamlSection + TraceSection.
+ */
+export function HowItWorks() {
   return (
     <section
-      id="yaml"
+      id="how-it-works"
       className="scroll-mt-20 border-b border-white/5 px-6 pt-20 pb-16 md:px-16 md:pt-[100px] md:pb-20"
       style={{ background: "oklch(0.16 0 0)" }}
     >
       <header className="mb-10 max-w-[760px]">
-        <p className="mb-4 font-mono text-[11.5px] uppercase tracking-[0.16em] text-brand">
-          // the schema is the product
-        </p>
         <h2 className="m-0 mb-4 text-[36px] md:text-[46px] font-semibold leading-[1.05] tracking-[-0.03em] text-zinc-50">
-          The YAML format is the moat.
+          Why you can trust the answer.
         </h2>
         <p className="m-0 text-base leading-[1.65] text-zinc-400">
-          Entities, dimensions, measures, joins, glossary terms, and authoritative metrics: all in YAML, in your repo, code-reviewed in pull requests. Every field exists because an LLM needs it. <code className="font-mono text-zinc-300">sample_values</code> ground the agent in real data, <code className="font-mono text-zinc-300">glossary.status: ambiguous</code> forces clarifying questions, <code className="font-mono text-zinc-300">metrics.objective</code> picks <code className="font-mono text-zinc-300">MAX</code> vs <code className="font-mono text-zinc-300">MIN</code>. The same semantic layer fronts REST/OpenAPI services too: Atlas reads their operation graph the way it reads your SQL entities, so databases and APIs answer through one model.
+          You define your data once in YAML: the entities, joins, and the terms
+          your team actually uses, versioned in your repo and reviewed in pull
+          requests. Atlas reads it on every question, writes the SQL, and runs it
+          read-only behind seven validators. You see exactly what ran.
         </p>
       </header>
 
@@ -223,38 +211,18 @@ export function YamlSection() {
         <AnswerPane />
       </div>
 
-      <div className="mt-10">
-        <p className="mb-3 font-mono text-[11px] tracking-[0.06em] text-brand">
-          // canonical questions
-        </p>
-        <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-5">
-          {QUESTIONS.map((q) => (
-            <div
-              key={q}
-              className="rounded-md border border-white/10 px-3 py-2.5 font-mono text-[12px] leading-[1.5] text-zinc-300"
-              style={{ background: "oklch(0.14 0 0)" }}
-            >
-              {q}
-            </div>
-          ))}
-        </div>
-        <p className="mt-3 font-mono text-[11px] tracking-[0.04em] text-zinc-400">
-          // same questions on the readme, the docs homepage, and the eval harness · against the bundled NovaMart e-commerce demo
-        </p>
-      </div>
-
       <div className="mt-10 flex flex-wrap gap-2.5">
         <a
           href="https://docs.useatlas.dev/semantic-layer"
           className="inline-flex items-center rounded-lg bg-brand px-[18px] py-[11px] text-[13.5px] font-semibold text-zinc-950 transition-colors hover:bg-brand-hover"
         >
-          Read the YAML format →
+          See how the YAML works →
         </a>
         <a
           href="https://app.useatlas.dev/demo"
           className="inline-flex items-center rounded-lg border border-white/10 bg-zinc-900 px-3.5 py-2.5 text-[13.5px] text-zinc-50 transition-colors hover:border-white/20"
         >
-          try the NovaMart demo
+          Try the demo
         </a>
       </div>
     </section>

@@ -1,11 +1,9 @@
 import { BigStat } from "../components/landing/big-stat";
-import { Comparison } from "../components/landing/comparison";
 import { Deploy } from "../components/landing/deploy";
+import { DropInSurfaces } from "../components/landing/drop-in-surfaces";
 import { EndCta } from "../components/landing/end-cta";
 import { Hero } from "../components/landing/hero";
-import { Primitives } from "../components/landing/primitives";
-import { TraceSection } from "../components/landing/trace-section";
-import { YamlSection } from "../components/landing/yaml-section";
+import { HowItWorks } from "../components/landing/how-it-works";
 import { Footer } from "../components/footer";
 import { Nav } from "../components/nav";
 import { StickyNav } from "../components/sticky-nav";
@@ -25,11 +23,9 @@ export default function Home() {
 
       <main id="main" tabIndex={-1} className="focus:outline-none">
         <Hero />
-        <YamlSection />
         <BigStat />
-        <TraceSection />
-        <Primitives />
-        <Comparison />
+        <HowItWorks />
+        <DropInSurfaces />
         <Deploy />
         <EndCta />
       </main>

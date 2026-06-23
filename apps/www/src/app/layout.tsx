@@ -16,13 +16,13 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Atlas — Text-to-SQL, that actually ships.",
+  title: "Atlas — Ask your data anything, trust the answer.",
   description:
-    "Atlas reads your semantic layer, writes deterministic SQL, and runs it through 7 validators before it ever touches your warehouse. Open-source, self-hosted or cloud.",
+    "Atlas is an AI data analyst that turns plain-English questions into safe, validated SQL, grounded in a semantic layer you control. Open-source, self-hosted or cloud.",
   openGraph: {
-    title: "Atlas — Text-to-SQL, that actually ships.",
+    title: "Atlas — Ask your data anything, trust the answer.",
     description:
-      "94% of AI-generated SQL fails at least one Atlas validator. Atlas reads your schema, writes deterministic SQL, and runs it through 7 gates before execution. Self-host or cloud.",
+      "94% of AI-generated SQL fails at least one Atlas validator. Atlas reads your semantic layer, writes the SQL, and runs it read-only behind 7 validators. Self-host or cloud.",
     url: "https://www.useatlas.dev",
     siteName: "Atlas",
     type: "website",
@@ -31,15 +31,15 @@ export const metadata: Metadata = {
         url: "/og.png",
         width: 1200,
         height: 630,
-        alt: "Atlas — Text-to-SQL, that actually ships.",
+        alt: "Atlas — Ask your data anything, trust the answer.",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Atlas — Text-to-SQL, that actually ships.",
+    title: "Atlas — Ask your data anything, trust the answer.",
     description:
-      "Atlas reads your schema, writes deterministic SQL, and runs it through 7 validators. Open-source or cloud.",
+      "Plain-English questions, safe validated SQL, grounded in a semantic layer you control. Open-source or cloud.",
     images: ["/og.png"],
   },
 };

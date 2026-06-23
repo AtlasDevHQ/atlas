@@ -48,7 +48,7 @@ function SelfHostCard() {
             style={{ background: "oklch(0.7 0.16 140)" }}
           />
           <span className="ml-2 font-mono text-[11px] text-zinc-400">
-            ~/projects — bash
+            ~/projects · bash
           </span>
         </div>
         <pre className="m-0 px-4 py-3.5 font-mono text-[12.5px] leading-[1.7]">
@@ -82,7 +82,7 @@ function SelfHostCard() {
       <ul className="m-0 mb-6 flex list-none flex-col gap-2 p-0">
         {["BYO model key", "No telemetry", "Community Discord"].map((item) => (
           <li key={item} className="flex items-center gap-2.5 text-[13.5px] text-zinc-200">
-            <span className="font-mono text-[12px] text-brand">✓</span>
+            <span aria-hidden className="font-mono text-[12px] text-brand">✓</span>
             {item}
           </li>
         ))}
@@ -162,7 +162,7 @@ function CloudCard() {
           "Priority support",
         ].map((item) => (
           <li key={item} className="flex items-center gap-2.5 text-[13.5px] text-zinc-200">
-            <span className="font-mono text-[12px] text-brand">✓</span>
+            <span aria-hidden className="font-mono text-[12px] text-brand">✓</span>
             {item}
           </li>
         ))}
@@ -185,9 +185,6 @@ export function Deploy() {
       className="scroll-mt-20 border-b border-white/5 px-6 pt-20 pb-16 md:px-16 md:pt-[88px] md:pb-[72px]"
     >
       <header className="mb-10 max-w-[720px]">
-        <p className="mb-4 font-mono text-[11.5px] uppercase tracking-[0.16em] text-brand">
-          // deployment topology
-        </p>
         <h2 className="m-0 mb-4 text-[36px] md:text-[46px] font-semibold leading-[1.05] tracking-[-0.03em] text-zinc-50">
           Two ways to run it. Same code.
         </h2>

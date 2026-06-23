@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.23",
+    title: "Multi-Tenant Health Isolation",
+    date: "2026-06-23",
+    summary:
+      "A reliability fix for multi-tenant deployments: one workspace's misconfigured datasource can no longer affect the shared region's health. Previously, any registered datasource being unreachable — including a tenant's own connection-group database — flipped the region's /api/health endpoint to an error state and a 503, which could pull the entire region out of the load balancer for every tenant. Now only the region's own primary datasource (and, on the hosted service, the internal database) gates that load-balancer health signal. A non-primary source being unhealthy or degraded stays fully visible in the per-connection health view and the admin Connections page, but no longer changes the platform's top-level status.",
+    highlights: [
+      "A tenant's unhealthy datasource connection no longer degrades or 503s the shared region's health endpoint (#3907)",
+      "Only the region's own primary datasource (+ the hosted internal database) gates the load-balancer health probe",
+      "Non-primary datasource health remains visible per-connection in Admin → Connections and the operator health breakdown",
+    ],
+  },
+  {
     version: "v0.0.22",
     title: "Cross-Group Reach Foundation",
     date: "2026-06-23",

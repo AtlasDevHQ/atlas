@@ -22,6 +22,8 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 No tag milestone is in flight. **`v0.0.21` — Real-World Testing Fixes** shipped 2026-06-22 (tag `v0.0.21` @ `ca4c5cda4`, see [History](#history)) — datasource-soak hardening plus the prod `start_trial` onboarding-401 fix; the next cycle's milestone hasn't been kicked off yet.
 
+**Banking on `main` for the next tag — cross-group reach** ([ADR-0022](../../docs/adr/0022-cross-group-reach-llm-composition.md), design [#3868](https://github.com/AtlasDevHQ/atlas/issues/3868)): the agent answers across all datasources by default and the env-picker focuses rather than hard-scopes. Shipped — the `executeSQL` per-query group target + reach-bounded `GroupReachResolver` keystone ([#3893](https://github.com/AtlasDevHQ/atlas/issues/3893)) and the auto/refinable Source catalog of group descriptions for agent routing ([#3894](https://github.com/AtlasDevHQ/atlas/issues/3894)); open — PRD [#3892](https://github.com/AtlasDevHQ/atlas/issues/3892) and the group-reach picker + conversation-reach persistence [#3895](https://github.com/AtlasDevHQ/atlas/issues/3895). Also banking: nonce-based web CSP (#3903), per-connection `/api/v1/tables` whitelist scoping (#3904), the unified email sender seam (#3890), and the deploy-mode-gated action-credential health check (#3906).
+
 The **Staging environment** track ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) is **CLOSED 2026-06-22 ("good for now")** — the staging env is live and soaked end-to-end; the remaining HITL OAuth provisioning slices were deferred for unreleased/undecided integrations (detail under [Planned tags](#planned-tags)).
 
 ---

@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.24",
+    title: "Cross-Group Reach Picker",
+    date: "2026-06-23",
+    summary:
+      "The user-facing completion of cross-group reach, on top of the v0.0.22 foundation. A conversation now carries an explicit reach: 'All sources', where the agent decides which of your connected datasources to consult, or 'Focus' on a single connection group — a hard, exclusive 'only look here'. The scope picker exposes that choice directly, each conversation remembers its own reach and restores it when reopened, and a brand-new chat defaults to All sources so asking across datasources is the path of least resistance. A clean-break migration maps any existing conversation that was pinned to one group onto Focus → that group, so nothing silently broadens what an older conversation can see.",
+    highlights: [
+      "Group-reach scope picker — choose 'All sources' (the agent routes across every connected datasource) or 'Focus' on one connection group, hard and exclusive (#3895)",
+      "Per-conversation reach persistence — each conversation remembers its own reach and restores it on open; brand-new chats default to All sources",
+      "Clean-break migration — existing group-pinned conversations map to Focus → that group, preserving their prior behavior",
+    ],
+  },
+  {
     version: "v0.0.23",
     title: "Multi-Tenant Health Isolation",
     date: "2026-06-23",

@@ -156,6 +156,15 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetPluginEntities: () => {},
 }));
 
+// The /tables route resolves its whitelist through resolveAllowedTables (the
+// shared SSOT). Mock it to the default-group whitelist {companies} so the route
+// test stays deterministic without pulling the real whitelist→entities→internal
+// chain. shouldUseOrgSemanticMirror=false keeps column reads on the disk root.
+mock.module("@atlas/api/lib/semantic/allowed-tables", () => ({
+  resolveAllowedTables: async () => new Set(["companies"]),
+  shouldUseOrgSemanticMirror: () => false,
+}));
+
 mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
   makeInternalDBShimLayer: () =>

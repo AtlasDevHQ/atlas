@@ -54,9 +54,25 @@ describe("resolveAllowedTables", () => {
     expect(mockGetWhitelistedTables).not.toHaveBeenCalled();
   });
 
-  it("org present but no internal DB: falls back to the file whitelist", async () => {
+  it("org, no internal DB, default (empty): takes the org branch like validateSQL (no file widening)", async () => {
+    // validateSQL branches on `orgId` alone; with no DB the org whitelist is
+    // empty (deny-all). The enforcement-parity default MUST do the same so
+    // /tables never advertises on-disk tables executeSQL would reject (#3898).
     mockHasInternalDB.mockReturnValue(false);
+    mockGetOrgWhitelistedTables.mockReturnValue(new Set());
     const result = await resolveAllowedTables("ch", { orgId: "org_1", atlasMode: "published" });
+    expect([...result]).toEqual([]);
+    expect(mockLoadOrgWhitelist).toHaveBeenCalledWith("org_1", "published");
+    expect(mockGetWhitelistedTables).not.toHaveBeenCalled();
+  });
+
+  it("org, no internal DB, onMissingOrgDB=file: opts into the file whitelist (diff back-compat)", async () => {
+    mockHasInternalDB.mockReturnValue(false);
+    const result = await resolveAllowedTables("ch", {
+      orgId: "org_1",
+      atlasMode: "published",
+      onMissingOrgDB: "file",
+    });
     expect([...result]).toEqual(["file_table"]);
     expect(mockGetWhitelistedTables).toHaveBeenCalledWith("ch");
     expect(mockLoadOrgWhitelist).not.toHaveBeenCalled();

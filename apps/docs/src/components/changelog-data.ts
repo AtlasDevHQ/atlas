@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.25",
+    title: "Cross-Source Composition",
+    date: "2026-06-23",
+    summary:
+      "The final piece of cross-group reach: the agent now composes a single answer across multiple datasources in one turn instead of stopping at one source. When a question spans sources, Atlas correlates the separate result sets, tells you which datasource each part came from, and never silently falls back to a single source when it can't reach the others — so a partial answer is reported as partial, not dressed up as complete. This closes the cross-group reach program begun with the v0.0.22 foundation and the v0.0.24 reach picker.",
+    highlights: [
+      "Cross-source composition — the agent correlates result sets across connection groups within a single turn (#3909)",
+      "Provenance reporting — answers state which datasource each part of the result came from",
+      "No silent fallback — if a source can't be reached, the answer is reported as partial rather than quietly narrowed to one source",
+    ],
+  },
+  {
     version: "v0.0.24",
     title: "Cross-Group Reach Picker",
     date: "2026-06-23",

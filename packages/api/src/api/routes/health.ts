@@ -399,12 +399,18 @@ health.openapi(healthRoute, async (c) => {
           };
         }
 
-        // Promote overall status based on effective source health (includes live probe overrides)
-        const sourceStatuses = Object.values(sourcesSection).map((s) => s.status);
-        const hasUnhealthy = sourceStatuses.includes("unhealthy");
-        const hasDegraded = sourceStatuses.includes("degraded");
-        if (hasUnhealthy && status !== "error") status = "error";
-        else if (hasDegraded && status === "ok") status = "degraded";
+        // Per-source health is ADVISORY for every source EXCEPT the region's own
+        // primary datasource (`default`). `default` is the only platform-critical
+        // source, and it already gates the 503 LB contract (#1981) via the live
+        // SELECT 1 probe folded into the base `status` computation above. A
+        // NON-default source — a tenant's connection-group datasource, a secondary
+        // env group, a cross-region fleet member — being unhealthy or degraded is a
+        // tenant-/fleet-scoped condition: it stays visible in the operator `sources`
+        // breakdown below and in the per-workspace Admin → Connections view, but it
+        // MUST NOT move the shared region's top-level status. Letting it would either
+        // 503 the whole region (LB removal for every tenant) or trip every operator's
+        // platform alert because one workspace fat-fingered a connection host.
+        // Multi-tenant health isolation — no promotion off non-`default` sources.
       }
     } catch (err) {
       log.warn(
@@ -569,9 +575,10 @@ health.openapi(healthRoute, async (c) => {
     // per-DB latencies. That breakdown is reconnaissance surface for an
     // unauthenticated caller, so only operators receive it. Anonymous callers
     // get the aggregate `status` plus the region's own datasource (`default`) —
-    // the shape EU/APAC already return. The status-promotion aggregation above
-    // (lines computing sourceStatuses) still considers every source regardless
-    // of who's asking, so the 503-on-unhealthy-source contract is unchanged.
+    // the shape EU/APAC already return. The aggregate `status` itself reflects
+    // only platform-critical infra (the `default` datasource + SaaS internal DB),
+    // not non-`default` sources (see the multi-tenant-isolation note above), so a
+    // tenant's unhealthy connection never changes it for any caller.
     const isOperator = await isOperatorHealthRequest(c.req.raw);
     const visibleSources = sourcesSection
       ? isOperator

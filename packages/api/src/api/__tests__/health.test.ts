@@ -54,8 +54,13 @@ let connMetadata: ConnectionMetadata[] = [];
 // `sources` section unions them in via `describeAllWorkspacePlugins()` (#3844).
 let pluginMetadata: ConnectionMetadata[] = [];
 
+// Datasource live-probe impl — mutable so a test can simulate the `default`
+// datasource's SELECT 1 failing mid-life (the "pod connected, DB died" path the
+// base status turns into a 503). Defaults to success; reset per-scenario.
+let dsQueryImpl: () => Promise<unknown> = () =>
+  Promise.resolve({ columns: ["?column?"], rows: [{ "?column?": 1 }] });
 const mockDBConnection = {
-  query: async () => ({ columns: ["?column?"], rows: [{ "?column?": 1 }] }),
+  query: () => dsQueryImpl(),
   close: async () => {},
 };
 
@@ -258,6 +263,8 @@ describe("GET /api/health — sources section", () => {
     delete process.env.DATABASE_URL;
     connMetadata = [];
     pluginMetadata = [];
+    dsQueryImpl = () =>
+      Promise.resolve({ columns: ["?column?"], rows: [{ "?column?": 1 }] });
     mockValidateEnvironment.mockReset();
     mockValidateEnvironment.mockResolvedValue([]);
     mockGetStartupWarnings.mockReset();
@@ -269,6 +276,8 @@ describe("GET /api/health — sources section", () => {
     else delete process.env.ATLAS_DATASOURCE_URL;
     if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
     else delete process.env.DATABASE_URL;
+    dsQueryImpl = () =>
+      Promise.resolve({ columns: ["?column?"], rows: [{ "?column?": 1 }] });
   });
 
   it("returns sources section omitted when no connections are registered", async () => {
@@ -304,7 +313,12 @@ describe("GET /api/health — sources section", () => {
     expect(defaultSource.checkedAt).toBe("2026-01-15T12:00:00.000Z");
   });
 
-  it("promotes top-level status to 'error' when a non-default source is unhealthy", async () => {
+  // Multi-tenant health isolation: a NON-default source (a tenant's connection-group
+  // datasource, a secondary env group) being unhealthy must NOT affect the shared
+  // region's platform status — no 503, not even `degraded`. It stays visible in the
+  // `sources` breakdown so operators/admins can see and fix it. Only the region's own
+  // `default` datasource gates platform status / 503 (#1981).
+  it("a non-default unhealthy source does NOT change platform status (stays ok, still visible)", async () => {
     const unhealthy: HealthCheckResult = {
       status: "unhealthy",
       latencyMs: 5000,
@@ -312,19 +326,36 @@ describe("GET /api/health — sources section", () => {
       checkedAt: new Date(),
     };
     connMetadata = [
+      { id: "default", dbType: "postgres", health: { status: "healthy", latencyMs: 3, checkedAt: new Date() } },
       { id: "warehouse", dbType: "postgres", health: unhealthy },
     ];
 
     const response = await app.fetch(healthRequest());
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(200);
 
     const body = (await response.json()) as Record<string, unknown>;
-    expect(body.status).toBe("error");
+    expect(body.status).toBe("ok");
+    // The unhealthy source is still surfaced — operators must see it to fix it.
     const sources = body.sources as Record<string, unknown>;
     expect((sources.warehouse as Record<string, unknown>).status).toBe("unhealthy");
   });
 
-  it("promotes top-level status to 'degraded' when a non-default source is degraded and no other errors", async () => {
+  // Guard against over-correction: the region's OWN primary datasource (`default`)
+  // being unreachable MUST still 503 — that's the #1981 LB contract. Only NON-default
+  // sources are advisory.
+  it("still 503s when the region's own default datasource is unreachable (#1981)", async () => {
+    mockValidateEnvironment.mockResolvedValue([
+      { code: "DB_UNREACHABLE", message: "datasource down" },
+    ]);
+    connMetadata = [{ id: "default", dbType: "postgres" }];
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("error");
+  });
+
+  it("a non-default degraded source does NOT change platform status (stays ok)", async () => {
     const degraded: HealthCheckResult = {
       status: "degraded",
       latencyMs: 2000,
@@ -332,6 +363,7 @@ describe("GET /api/health — sources section", () => {
       checkedAt: new Date(),
     };
     connMetadata = [
+      { id: "default", dbType: "postgres", health: { status: "healthy", latencyMs: 3, checkedAt: new Date() } },
       { id: "warehouse", dbType: "postgres", health: degraded },
     ];
 
@@ -339,7 +371,51 @@ describe("GET /api/health — sources section", () => {
     expect(response.status).toBe(200);
 
     const body = (await response.json()) as Record<string, unknown>;
-    expect(body.status).toBe("degraded");
+    expect(body.status).toBe("ok");
+    // Still surfaced in the breakdown.
+    const sources = body.sources as Record<string, unknown>;
+    expect((sources.warehouse as Record<string, unknown>).status).toBe("degraded");
+  });
+
+  // The #1981 contract via the LIVE probe path (not just the boot diagnostic): the
+  // default datasource's SELECT 1 failing mid-life ("pod connected, DB died") must
+  // still 503 — and an otherwise-healthy non-default source must not mask it.
+  it("still 503s when the default datasource live probe fails, even with a healthy non-default source", async () => {
+    dsQueryImpl = () => Promise.reject(new Error("connection refused"));
+    connMetadata = [
+      { id: "default", dbType: "postgres" },
+      { id: "warehouse", dbType: "postgres", health: { status: "healthy", latencyMs: 4, checkedAt: new Date() } },
+    ];
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(503);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("error");
+  });
+
+  // Realistic shared-region shape: several tenant/secondary sources impaired at
+  // once. None may move the platform status — guards against a future
+  // "promote if N unhealthy" regression.
+  it("a healthy default with MULTIPLE unhealthy non-default sources stays ok", async () => {
+    const down = (msg: string): HealthCheckResult => ({
+      status: "unhealthy",
+      latencyMs: 5000,
+      message: msg,
+      checkedAt: new Date(),
+    });
+    connMetadata = [
+      { id: "default", dbType: "postgres", health: { status: "healthy", latencyMs: 3, checkedAt: new Date() } },
+      { id: "us-prod", dbType: "postgres", health: down("dns") },
+      { id: "eu-prod", dbType: "postgres", health: down("timeout") },
+    ];
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("ok");
+    const sources = body.sources as Record<string, unknown>;
+    expect((sources["us-prod"] as Record<string, unknown>).status).toBe("unhealthy");
+    expect((sources["eu-prod"] as Record<string, unknown>).status).toBe("unhealthy");
   });
 
   it("includes multiple sources in the sources section", async () => {
@@ -805,9 +881,13 @@ describe("GET /api/health — plugin component", () => {
 // anonymous callers; EU/APAC exposed only `default`. The full per-source
 // breakdown is recon surface, so it's now gated behind an operator signal
 // (admin session / API key / local-dev no-auth). Anonymous callers see only the
-// aggregate `status` + the region's own datasource (`default`). The overall
-// status-promotion aggregation (and the 503-on-unhealthy contract) is unchanged
-// — it still considers every source regardless of who's asking.
+// aggregate `status` + the region's own datasource (`default`).
+//
+// Multi-tenant health isolation: a NON-default source being unhealthy/degraded no
+// longer moves the platform `status` for ANY caller — only the region's own
+// `default` datasource (+ the SaaS internal DB) gates 503. So a tenant's bad
+// connection can't pull the shared region from the LB. The tests below assert the
+// new contract.
 describe("GET /api/health — per-source fleet visibility gating (#3685)", () => {
   const origDatasource = process.env.ATLAS_DATASOURCE_URL;
   const origDatabaseUrl = process.env.DATABASE_URL;
@@ -916,7 +996,7 @@ describe("GET /api/health — per-source fleet visibility gating (#3685)", () =>
     expect(Object.keys(sources)).toEqual(["default"]);
   });
 
-  it("overall status promotion stays intact for anonymous callers — a degraded non-default source still degrades the aggregate without being enumerated", async () => {
+  it("a degraded non-default source no longer degrades the aggregate for anonymous callers — stays ok, fleet not enumerated", async () => {
     connMetadata = fleet({
       "eu-prod": {
         status: "degraded",
@@ -930,14 +1010,15 @@ describe("GET /api/health — per-source fleet visibility gating (#3685)", () =>
     const response = await app.fetch(healthRequest());
     expect(response.status).toBe(200);
     const body = (await response.json()) as Record<string, unknown>;
-    // Aggregate reflects the fleet (eu-prod degraded) ...
-    expect(body.status).toBe("degraded");
-    // ... but the breakdown does not enumerate the degraded region.
+    // Multi-tenant isolation: a non-default (cross-region / tenant) source being
+    // impaired does not move the platform status.
+    expect(body.status).toBe("ok");
+    // ... and the breakdown still does not enumerate the cross-region fleet.
     const sources = body.sources as Record<string, unknown>;
     expect(Object.keys(sources)).toEqual(["default"]);
   });
 
-  it("503-on-unhealthy-source contract holds for anonymous callers without enumerating the fleet", async () => {
+  it("a non-default unhealthy source no longer 503s anonymous callers — stays ok, fleet not enumerated", async () => {
     connMetadata = fleet({
       "eu-prod": {
         status: "unhealthy",
@@ -949,9 +1030,11 @@ describe("GET /api/health — per-source fleet visibility gating (#3685)", () =>
     authenticateRequestImpl = () => Promise.resolve(ANON_AUTH);
 
     const response = await app.fetch(healthRequest());
-    expect(response.status).toBe(503);
+    // Multi-tenant isolation: a non-default (cross-region / tenant) source being
+    // unhealthy must NOT take the shared region out of the LB.
+    expect(response.status).toBe(200);
     const body = (await response.json()) as Record<string, unknown>;
-    expect(body.status).toBe("error");
+    expect(body.status).toBe("ok");
     const sources = body.sources as Record<string, unknown>;
     expect(Object.keys(sources)).toEqual(["default"]);
   });

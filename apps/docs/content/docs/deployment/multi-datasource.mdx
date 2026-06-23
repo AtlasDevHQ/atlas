@@ -370,10 +370,15 @@ curl http://localhost:3001/api/health
 }
 ```
 
-The aggregate `status` (and the 503-on-unhealthy contract) always reflects
-**every** registered source regardless of who is asking — a degraded or
-unhealthy non-`default` source still degrades or fails the overall status for
-anonymous callers; it just isn't enumerated in their `sources` breakdown.
+The aggregate `status` (and the 503 load-balancer contract) reflects only
+**platform-critical infrastructure** — the region's own primary datasource
+(`default`) and, in SaaS, the internal database. A degraded or unhealthy
+**non-`default`** source (a secondary connection group, a tenant's
+connection-group datasource, a cross-region fleet member) is advisory: it shows
+up in the per-source `sources` breakdown (and the workspace's Admin → Connections
+view) but does **not** change the aggregate `status` or trip a 503. This keeps one
+workspace's misconfigured connection from pulling the whole shared region out of
+the load balancer.
 
 ---
 

@@ -88,6 +88,7 @@ import {
   type StatusKind,
 } from "@/ui/components/admin/compact";
 import { CollapsibleRow } from "@/ui/components/admin/collapsible-row";
+import { ConnectionGroupDescriptions } from "./connection-group-descriptions";
 import {
   type ConnectionFormValues,
   connectionCreateSchema,
@@ -1349,6 +1350,13 @@ export default function ConnectionsPage() {
             demoReadOnly={demoReadOnly}
             onChange={handleMutationSuccess}
           />
+
+          {/*
+            #3894 — per-Connection-group Source-catalog descriptions (ADR-0022
+            §4): what the agent reads to route a question to the right source.
+            Self-hides when the workspace has no groups (nothing to curate).
+          */}
+          <ConnectionGroupDescriptions groups={envGroups} />
         </div>
       </ErrorBoundary>
 

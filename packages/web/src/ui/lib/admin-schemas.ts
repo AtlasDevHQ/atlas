@@ -57,6 +57,8 @@ export {
   ConnectionHealthSchema,
   ConnectionInfoSchema,
   ConnectionsResponseSchema,
+  ConnectionGroupDescriptionsResponseSchema,
+  MAX_GROUP_DESCRIPTION_CHARS,
   CustomDomainSchema,
   ErrorGroupSchema,
   FrequentQuerySchema,

@@ -69,3 +69,32 @@ export const ConnectionsResponseSchema = z
     connections: z.array(ConnectionInfoSchema).optional(),
   })
   .transform((r) => r.connections ?? []);
+
+// ---------------------------------------------------------------------------
+// Connection-group Source-catalog descriptions (ADR-0022 §4, #3894)
+// ---------------------------------------------------------------------------
+
+/** Provenance of a group description: auto-generated from entities vs admin-refined. */
+export const CONNECTION_GROUP_DESCRIPTION_SOURCES = ["auto", "manual"] as const;
+
+/**
+ * Max stored/edited length of a group description. Single source for the DB
+ * write-boundary truncation, the admin PATCH validation, and the web editor's
+ * `maxLength`, so all three can't drift.
+ */
+export const MAX_GROUP_DESCRIPTION_CHARS = 2000;
+
+/** One Connection group's Source-catalog description, as served to the admin UI. */
+export const ConnectionGroupDescriptionSchema = z.object({
+  groupId: z.string(),
+  description: z.string(),
+  source: z.enum(CONNECTION_GROUP_DESCRIPTION_SOURCES),
+  updatedAt: z.string(),
+});
+
+export type ConnectionGroupDescription = z.infer<typeof ConnectionGroupDescriptionSchema>;
+
+/** Response shape of `GET /api/v1/admin/connection-groups`. */
+export const ConnectionGroupDescriptionsResponseSchema = z.object({
+  descriptions: z.array(ConnectionGroupDescriptionSchema),
+});

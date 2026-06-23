@@ -123,6 +123,7 @@ import { adminMigrate } from "./admin-migrate";
 import { adminTokens } from "./admin-tokens";
 import { adminOauthClients } from "./admin-oauth-clients";
 import { adminConnections, getVisibleConnectionIds } from "./admin-connections";
+import { adminConnectionGroupDescriptions } from "./admin-connection-group-descriptions";
 import { adminOpenApiDatasources } from "./admin-openapi-datasources";
 import { adminProactive } from "./admin-proactive";
 import { adminPlugins } from "./admin-plugins";
@@ -468,6 +469,9 @@ import { registerMfaResetRoutes } from "./admin-mfa-reset";
 registerMfaResetRoutes(admin, adminAuthAndContext, verifyOrgMembership, reqId);
 admin.route("/connections", adminConnections);
 admin.route("/connections/", adminConnections);
+// #3894 — per-Connection-group Source-catalog descriptions (ADR-0022 §4).
+admin.route("/connection-groups", adminConnectionGroupDescriptions);
+admin.route("/connection-groups/", adminConnectionGroupDescriptions);
 admin.route("/openapi-datasources", adminOpenApiDatasources);
 admin.route("/openapi-datasources/", adminOpenApiDatasources);
 admin.route("/proactive", adminProactive);

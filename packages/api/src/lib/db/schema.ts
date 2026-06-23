@@ -2667,3 +2667,31 @@ export const agentSessionMemory = pgTable(
     index("idx_agent_session_memory_org").on(t.orgId),
   ],
 );
+
+/**
+ * Per-Connection-group routing descriptions for the agent Source catalog
+ * (ADR-0022 §4, #3894). Mirrors migration 0148. A group is an abstraction over
+ * one-or-more `workspace_plugins` installs sharing a `config->>'group_id'`
+ * (post-0096 there is no `connection_groups` table), so its description has no
+ * single install row to live on — hence its own table keyed on the canonical
+ * group id. `source` distinguishes an auto description (generated from the
+ * group's entities at `/wizard/save`) from a manual one (admin-refined);
+ * auto-generation never clobbers a manual override. Content-mode-exempt: this is
+ * operator metadata (the group-level analogue of the per-connection
+ * `config.description`), not draft→publish content.
+ */
+export const connectionGroupDescriptions = pgTable(
+  "connection_group_descriptions",
+  {
+    orgId: text("org_id").notNull(),
+    groupId: text("group_id").notNull(),
+    description: text("description").notNull(),
+    source: text("source").notNull().default("auto"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.orgId, t.groupId] }),
+    check("chk_connection_group_descriptions_source", sql`source IN ('auto', 'manual')`),
+  ],
+);

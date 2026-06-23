@@ -80,9 +80,18 @@ export interface ChatEnvGroup {
  *
  * #3895 (ADR-0022) — `groupReach` is the cross-group axis ABOVE member routing:
  * `null` = **All sources** (every visible group reachable); a group id = **Focus
- * → that group** (hard/exclusive). When `groupReach` is `null` the member-routing
- * fields are `null` too (there is no single group to route within); when it names
- * a group they carry that group's member routing (`groupId === groupReach`).
+ * → that group** (hard/exclusive). The reach/member-routing coupling is enforced
+ * by this component's four `onSelect` producers (not the type), and depends on
+ * the workspace shape:
+ *
+ *   - **Multi-group:** `null` groupReach ⇒ member-routing fields are `null` too
+ *     (no single group to route within); a named group ⇒ `groupId === groupReach`.
+ *   - **Single-group:** the reach chooser is hidden (reach is trivially All), so
+ *     `groupReach` stays `null` while `groupId`/`connectionId`/`routingMode` bind
+ *     the sole group for member-routing context (`groupId !== groupReach` here).
+ *
+ * The producer behaviour is pinned by the picker's onSelect tests (#3895), so the
+ * flat (vs. discriminated-union) shape can't drift into an illegal combination.
  */
 export interface ChatEnvSelection {
   readonly groupReach: string | null;

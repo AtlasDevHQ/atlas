@@ -26,6 +26,7 @@ import {
   convertToNotebook,
   updateConversationRestExcluded,
   updateConversationRestFocus,
+  updateConversationGroupReach,
 } from "../conversations";
 
 // ---------------------------------------------------------------------------
@@ -1464,6 +1465,44 @@ describe("conversations module", () => {
 
     it("updateConversationRestFocus short-circuits to no_db when the internal DB is off", async () => {
       const result = await updateConversationRestFocus("c1", "ds-stripe");
+      expect(result).toEqual({ ok: false, reason: "no_db" });
+      expect(queryCalls).toHaveLength(0);
+    });
+
+    // #3895 — Group reach persistence. Same org-scoped / fail-open contract as
+    // updateConversationRestFocus; uses scopeClause(3, …) so the org param lands
+    // at $4 (an off-by-one in the SQL would surface in the param assertion).
+    it("updateConversationGroupReach writes the Focus group id, scoped + parameterized", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "c1" }] });
+
+      const result = await updateConversationGroupReach("c1", "g_prod", "u1", "org-B");
+      expect(result).toEqual({ ok: true });
+      expect(queryCalls[0].sql).toContain("UPDATE conversations SET group_reach = $1");
+      expect(queryCalls[0].sql).toContain("(org_id = $4 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["g_prod", "c1", "u1", "org-B"]);
+    });
+
+    it("updateConversationGroupReach persists null to WIDEN back to All sources", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "c1" }] });
+
+      const result = await updateConversationGroupReach("c1", null, "u1", "org-B");
+      expect(result).toEqual({ ok: true });
+      // $1 is null — the widen path the transport must support (#3073).
+      expect(queryCalls[0].params).toEqual([null, "c1", "u1", "org-B"]);
+    });
+
+    it("updateConversationGroupReach returns not_found when no row matches (cross-org)", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await updateConversationGroupReach("c1", "g_prod", "u1", "org-B");
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("updateConversationGroupReach short-circuits to no_db when the internal DB is off", async () => {
+      const result = await updateConversationGroupReach("c1", "g_prod");
       expect(result).toEqual({ ok: false, reason: "no_db" });
       expect(queryCalls).toHaveLength(0);
     });

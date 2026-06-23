@@ -3032,6 +3032,28 @@ describe("resolveEnvSelection / resolveConversationScope — Group reach (#3895)
     }
   });
 
+  test("a sticky preference's Focus on a NO-LONGER-VISIBLE group falls back to All sources (never lies)", () => {
+    // The pref remembers Focus → g_archived, but it's no longer in `groups`
+    // (content-mode hid it / it was removed). Seeding Focus on a gone group
+    // would lie; the resolver coalesces prefReach to null = All sources.
+    const decision = resolveEnvSelection(
+      baseInput({
+        activeWorkspaceId: "org-1",
+        preference: {
+          ...emptyPref,
+          workspaceId: "org-1",
+          groupId: "g_archived", // also gone → no member-routing restore
+          connectionId: "x",
+          groupReach: "g_archived",
+        },
+      }),
+    );
+    // No member-routing restore (group gone) AND reach falls back to All.
+    if (decision.kind === "restore" || decision.kind === "seed") {
+      expect(decision.groupReach).toBeNull();
+    }
+  });
+
   test("passes an explicit reach through a SQL seed instead of clobbering it (reach provenance decoupled)", () => {
     // A conversation-open restore set the reach authoritative ("explicit") while
     // the SQL member routing must still seed → the reach must survive.

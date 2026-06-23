@@ -982,6 +982,49 @@ chat.openapi(chatRoute, async (c) => {
           // internal DB has no group concept to begin with.
         }
 
+        // #3895 — a body-supplied Focus `groupReach` is a group id we persist
+        // onto the row, so it gets the SAME org-ownership gate as
+        // `connectionGroupId` (#2424): a cross-org pointer must not survive on
+        // the row even though the runtime reach bound (org-scoped
+        // `loadVisibleGroups`) already refuses to reach another org's data — this
+        // keeps the persisted-pointer integrity story consistent across both
+        // cross-group fields. Skip when null (a widen to All sources names no
+        // group) or when it equals `connectionGroupId` (already verified above —
+        // the picker sends both equal on a Focus, so the common path adds no
+        // second lookup).
+        if (
+          parsed.data.groupReach &&
+          parsed.data.groupReach !== parsed.data.connectionGroupId
+        ) {
+          const verdict = await verifyGroupBelongsToOrg(
+            parsed.data.groupReach,
+            authResult.user?.activeOrganizationId,
+          );
+          if (verdict === "not_found") {
+            return c.json(
+              {
+                error: "invalid_connection_group",
+                message: "The requested environment is not available in this workspace.",
+                retryable: false,
+                requestId,
+              },
+              400,
+            );
+          }
+          if (verdict === "error") {
+            return c.json(
+              {
+                error: "internal_error",
+                message: "Could not verify environment ownership. Please retry.",
+                retryable: true,
+                requestId,
+              },
+              500,
+            );
+          }
+          // `no_db` falls through, exactly as the connectionGroupId gate above.
+        }
+
         // Conversation persistence — Ownership verification blocks here (can 404); message writes are fire-and-forget via internalExecute.
         if (hasInternalDB()) {
           if (conversationId) {

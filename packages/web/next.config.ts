@@ -62,6 +62,18 @@ const nextConfig: NextConfig = {
   //   data; `'unsafe-eval'` is included for libraries like Recharts that JIT
   //   chart paths. Operators on a strict-CSP build can fork this list.
   //
+  //   NOTE (this package only): the CSP below is the *self-hosted fallback*.
+  //   At runtime `src/proxy.ts` mints a per-request nonce and OVERWRITES the
+  //   `Content-Security-Policy` response header with a stronger nonce-based
+  //   `script-src 'self' 'nonce-…' 'strict-dynamic'` (no `'unsafe-inline'`;
+  //   `'unsafe-eval'` dev-only). In the standalone router-server, proxy
+  //   response headers are merged into config `headers()` by key, so the
+  //   proxy's CSP replaces this one (a single header — not two). This static
+  //   block stays here so the scaffold mirrors keep a working CSP (they ship
+  //   no proxy) and so a CSP survives even if the proxy is bypassed. The
+  //   block is drift-locked to the scaffolds, so the nonce posture is added
+  //   in the proxy, NOT by editing the directives below. See #3899.
+  //
   // The `/shared/:token/embed` route inherits everything except frame-ancestors,
   // which it overrides to `*` so customers can embed shared conversations.
   // Browsers ignore X-Frame-Options when CSP `frame-ancestors` is present, so

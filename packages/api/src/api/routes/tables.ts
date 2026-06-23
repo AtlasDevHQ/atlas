@@ -4,6 +4,12 @@
  * Mounted at /api/v1/tables. Available to all authenticated users (not admin-gated).
  * Returns a simplified view of semantic layer entities with column details,
  * enabling SDK consumers to discover queryable tables.
+ *
+ * The advertised set is the SAME set `validate-sql` / `executeSQL` enforce for
+ * the resolved connection — a view of the per-connection (group-scoped)
+ * whitelist (ADR-0012), never the global/demo entity list (#3898). An
+ * unknown `connectionId` is a clear error, not a silent fallback to the
+ * global list.
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
@@ -11,12 +17,30 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { getSemanticRoot, discoverTables } from "@atlas/api/lib/semantic/files";
+import { ensureOrgModeSemanticRoot } from "@atlas/api/lib/semantic/sync";
+import {
+  getWhitelistedTables,
+  getOrgWhitelistedTables,
+  loadOrgWhitelist,
+} from "@atlas/api/lib/semantic";
+import { getSettingAuto } from "@atlas/api/lib/settings";
+import { connections, ConnectionNotRegisteredError } from "@atlas/api/lib/db/connection";
+import { getRequestContext } from "@atlas/api/lib/logger";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const TablesResponseSchema = z.object({
   tables: z.array(z.record(z.string(), z.unknown())),
   warnings: z.array(z.string()).optional(),
+});
+
+const TablesQuerySchema = z.object({
+  connectionId: z.string().min(1).optional().openapi({
+    param: { name: "connectionId", in: "query" },
+    description:
+      "Connection (or group) to scope the table list to. Returns the same table set validate-sql / executeSQL enforce for that connection. An unknown id is a 404, not a fallback to the global list.",
+    example: "clickhouse",
+  }),
 });
 
 
@@ -26,7 +50,10 @@ const tablesRoute = createRoute({
   tags: ["Tables"],
   summary: "List queryable tables",
   description:
-    "Returns a simplified view of semantic layer entities with column details, enabling SDK consumers to discover queryable tables.",
+    "Returns a simplified view of semantic layer entities with column details, scoped to the connection's group whitelist (ADR-0012), enabling SDK consumers to discover queryable tables.",
+  request: {
+    query: TablesQuerySchema,
+  },
   responses: {
     200: {
       description: "List of tables with columns",
@@ -39,6 +66,10 @@ const tablesRoute = createRoute({
     403: {
       description: "Forbidden — insufficient permissions",
       content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Connection not found for the request's workspace scope",
+      content: { "application/json": { schema: ErrorSchema } },
     },
     429: {
       description: "Rate limit exceeded",
@@ -56,12 +87,80 @@ export const tables = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
 tables.use(standardAuth);
 tables.use(requestContext);
 
-// GET / — list all tables with columns
-tables.openapi(tablesRoute, async (c) => runHandler(c, "load table list", async () => {
-  const root = getSemanticRoot();
-  const result = discoverTables(root);
-  return c.json({
-    tables: result.tables,
-    ...(result.warnings.length > 0 && { warnings: result.warnings }),
-  }, 200);
-}));
+// GET / — list tables with columns, scoped to the connection's group whitelist.
+tables.openapi(tablesRoute, async (c) => {
+  const { connectionId } = c.req.valid("query");
+
+  return runHandler(c, "load table list", async () => {
+    // Resolve the request's workspace scope, mirroring `validateSQL`: a
+    // per-workspace plugin datasource lives in a per-(workspace, install_id)
+    // pool, so the connection lookup AND the whitelist must follow the active
+    // org or they validate against the wrong scope (#3109, #3857).
+    const reqCtx = getRequestContext();
+    const orgId = reqCtx?.user?.activeOrganizationId;
+    // Default to published mode when the request context omits it, matching the
+    // agent's executeSQL path (agent.ts) so the advertised set, the whitelist,
+    // and the on-disk column mirror all resolve to the same view.
+    const mode = reqCtx?.atlasMode ?? "published";
+
+    // Validate the connection up front. An explicit but unknown connectionId is
+    // a clear 404 — never a silent fallback to the global/demo list (#3898). We
+    // mirror validate-sql: a workspace-scoped lookup so per-workspace plugin
+    // connections resolve.
+    if (connectionId) {
+      try {
+        connections.getDBType(connectionId, orgId);
+      } catch (err) {
+        if (err instanceof ConnectionNotRegisteredError) {
+          return c.json(
+            {
+              error: "connection_not_found",
+              message: `Connection "${connectionId}" is not registered.`,
+            },
+            404,
+          );
+        }
+        throw err;
+      }
+    }
+
+    // The connection group key the whitelist is partitioned by. `validateSQL`
+    // passes the bare connectionId straight through; `getWhitelistedTables` /
+    // `getOrgWhitelistedTables` default it to "default" (the flat group).
+    const groupKey = connectionId ?? "default";
+
+    // When the whitelist is globally disabled, the enforcement layer accepts
+    // any table — so the advertised list must match by being unfiltered too
+    // (getSettingAuto so SaaS hot-reload is respected, same as validateSQL).
+    const whitelistDisabled =
+      (getSettingAuto("ATLAS_TABLE_WHITELIST") ?? process.env.ATLAS_TABLE_WHITELIST) === "false";
+
+    // Resolve the SAME whitelist set the enforcement layer uses for this
+    // connection. SaaS (orgId present) reads the per-org DB-backed whitelist
+    // (loadOrgWhitelist is cache-guarded — O(1) after first load); self-hosted
+    // reads the on-disk group-partitioned set.
+    let allowed: ReadonlySet<string> | undefined;
+    if (!whitelistDisabled) {
+      if (orgId) {
+        await loadOrgWhitelist(orgId, mode);
+        allowed = getOrgWhitelistedTables(orgId, groupKey, mode);
+      } else {
+        allowed = getWhitelistedTables(groupKey);
+      }
+    }
+
+    // Column detail is read from the semantic root that backs this scope: the
+    // per-org mode mirror for SaaS, the base root for self-hosted. The `allowed`
+    // filter is what guarantees the set matches the whitelist; the root only
+    // supplies columns. `ensureOrgModeSemanticRoot` lazily rebuilds the mode
+    // mirror from the DB (cache-guarded, same primitive the explore tool uses)
+    // so the columns are present even on a cache-cold process.
+    const root = orgId ? await ensureOrgModeSemanticRoot(orgId, mode) : getSemanticRoot();
+    const result = discoverTables(root, allowed);
+
+    return c.json({
+      tables: result.tables,
+      ...(result.warnings.length > 0 && { warnings: result.warnings }),
+    }, 200);
+  });
+});

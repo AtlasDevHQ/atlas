@@ -199,4 +199,58 @@ describe("discoverTables", () => {
     expect(tables[0].columns).toHaveLength(1);
     expect(tables[0].columns[0].name).toBe("valid_col");
   });
+
+  // #3898 — when an `allowed` whitelist set is passed, the discovered list must
+  // be filtered to exactly the tables that set permits, so `/tables` advertises
+  // the SAME set validate-sql / executeSQL enforce.
+  describe("allowed-whitelist filter (#3898)", () => {
+    it("keeps only tables present in the allowed set", () => {
+      const root = makeRoot("filter-basic");
+      writeEntity(root, "payments", "table: payments\ndescription: pay\ndimensions:\n  id:\n    type: number\n");
+      writeEntity(root, "orders", "table: orders\ndescription: ord\ndimensions:\n  id:\n    type: number\n");
+
+      const { tables } = discoverTables(root, new Set(["orders"]));
+      expect(tables.map((t) => t.table)).toEqual(["orders"]);
+    });
+
+    it("returns every table when no allowed set is passed (back-compat / whitelist-disabled)", () => {
+      const root = makeRoot("filter-none");
+      writeEntity(root, "payments", "table: payments\ndescription: pay\n");
+      writeEntity(root, "orders", "table: orders\ndescription: ord\n");
+
+      const { tables } = discoverTables(root);
+      expect(tables.map((t) => t.table).sort()).toEqual(["orders", "payments"]);
+    });
+
+    it("returns no tables when the allowed set is empty (deny-all)", () => {
+      const root = makeRoot("filter-empty");
+      writeEntity(root, "payments", "table: payments\ndescription: pay\n");
+
+      const { tables } = discoverTables(root, new Set());
+      expect(tables).toEqual([]);
+    });
+
+    it("matches a schema-qualified entity table by its unqualified whitelist key", () => {
+      // The whitelist registers both `public.orders` and the bare `orders` for a
+      // SQL identifier; a discovered `public.orders` must match an allowed set
+      // that carries either key.
+      const root = makeRoot("filter-qualified");
+      writeEntity(root, "orders", "table: public.orders\ndescription: ord\n");
+
+      expect(discoverTables(root, new Set(["orders"])).tables.map((t) => t.table)).toEqual(["public.orders"]);
+      expect(discoverTables(root, new Set(["public.orders"])).tables.map((t) => t.table)).toEqual(["public.orders"]);
+    });
+
+    it("matches an opaque (Elasticsearch) identifier only by its full name, not a dot-split fragment", () => {
+      const root = makeRoot("filter-opaque");
+      writeEntity(root, "logs", "table: logs-nginx.access-default\nidentifier_style: opaque\ndescription: es\n");
+
+      // Full opaque name is allowed → included.
+      expect(
+        discoverTables(root, new Set(["logs-nginx.access-default"])).tables.map((t) => t.table),
+      ).toEqual(["logs-nginx.access-default"]);
+      // A dot-split fragment must NOT match an opaque identifier.
+      expect(discoverTables(root, new Set(["access-default"])).tables).toEqual([]);
+    });
+  });
 });

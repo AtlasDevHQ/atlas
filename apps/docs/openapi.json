@@ -112,6 +112,13 @@
                     ],
                     "minLength": 1
                   },
+                  "groupReach": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1
+                  },
                   "boundDashboardId": {
                     "type": "string",
                     "format": "uuid"
@@ -2361,6 +2368,12 @@
                               "null"
                             ]
                           },
+                          "groupReach": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "starred": {
                             "type": "boolean"
                           },
@@ -2648,6 +2661,12 @@
                       }
                     },
                     "restFocusDatasourceId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "groupReach": {
                       "type": [
                         "string",
                         "null"

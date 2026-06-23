@@ -726,6 +726,11 @@ export function createApiTestMocks(
     // they override locally when they do.
     updateConversationRestExcluded: mock(() => Promise.resolve({ ok: true as const })),
     updateConversationRestFocus: mock(() => Promise.resolve({ ok: true as const })),
+    // #3895 — per-conversation Group reach write path. Same no-op success
+    // default; chat.ts statically imports it, so the shared mock MUST export it
+    // (a partial mock omitting it breaks every route test's module load with a
+    // "Export named 'updateConversationGroupReach' not found" SyntaxError).
+    updateConversationGroupReach: mock(() => Promise.resolve({ ok: true as const })),
     // NULL → "pin" back-compat default helper used by the chat route to
     // resolve a conversation's persisted `routing_mode`. Mocked as a pure
     // pass-through so tests can simulate either an explicit mode or the

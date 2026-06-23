@@ -305,6 +305,62 @@ describe("action diagnostics — missing credentials", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #3905 — global action-credential check is deploy-mode-gated.
+// Per the #3766 config model, action targets are per-workspace-only on SaaS —
+// there is no platform/global default env credential. Warning on a missing
+// *global* JIRA_* on SaaS reported a credential model SaaS doesn't use and
+// surfaced as a spurious /api/health warning. Self-host is unchanged.
+// ---------------------------------------------------------------------------
+
+describe("action diagnostics — deploy-mode gate (#3905)", () => {
+  beforeEach(() => {
+    process.env.ATLAS_ACTIONS_ENABLED = "true";
+    process.env.ATLAS_API_KEY = "test-key-123"; // satisfy auth requirement
+    mockValidateActionCredentials = () => [
+      { action: "createJiraTicket", missing: ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"] },
+    ];
+  });
+
+  it("suppresses missing global action-credential warnings on SaaS", async () => {
+    mockConfig = { deployMode: "saas" };
+
+    await validateEnvironment();
+    const warnings = getStartupWarnings();
+    expect(warnings.filter((w) => w.includes("missing credentials"))).toHaveLength(0);
+    // The skip is narrow: unrelated, non-action startup warnings still fire on
+    // SaaS (proves we suppressed only the global action-cred check — DATABASE_URL
+    // is unset in this suite's beforeEach, so its warning must still appear).
+    expect(
+      warnings.some((w) => w.includes("Action framework requires DATABASE_URL")),
+    ).toBe(true);
+  });
+
+  it("still warns on self-hosted when a registered action lacks its global creds", async () => {
+    mockConfig = { deployMode: "self-hosted" };
+
+    await validateEnvironment();
+    const warnings = getStartupWarnings();
+    const credWarnings = warnings.filter((w) => w.includes("missing credentials"));
+    expect(credWarnings).toHaveLength(1);
+    expect(credWarnings[0]).toContain("createJiraTicket");
+    expect(credWarnings[0]).toContain("JIRA_BASE_URL");
+  });
+
+  it("validates (warns) when the resolved config has no deploy mode set", async () => {
+    // checkConfigFile() runs loadConfig() before checkActionFramework(), so by
+    // the gate getConfig() returns a resolved config (the mock's loadConfig
+    // sets `{ source: "env" }`, deployMode unset). A config without a deployMode
+    // (`undefined !== "saas"`) must fail open to validating — the self-host
+    // default — never silently suppress a real self-host misconfiguration.
+    mockConfig = { source: "env" };
+
+    await validateEnvironment();
+    const warnings = getStartupWarnings();
+    expect(warnings.filter((w) => w.includes("missing credentials"))).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ATLAS_ACTIONS_ENABLED=true without DATABASE_URL — persistent tracking warning
 // ---------------------------------------------------------------------------
 

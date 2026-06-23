@@ -721,15 +721,32 @@ async function checkActionFramework(errors: DiagnosticError[], authMode: string)
   }
 
   // Check required credentials for registered actions (warnings only —
-  // missing optional action credentials should not block chat queries)
+  // missing optional action credentials should not block chat queries).
+  //
+  // SaaS skips this check: per the #3766 config model, action targets
+  // (Jira, Linear, GitHub, Salesforce, …) are per-workspace-only on SaaS —
+  // there is no platform/global default env credential.
+  // `validateActionCredentials()` checks each *registered* action's required
+  // keys against the global env, so on SaaS it would report those globals
+  // (e.g. a registered Jira action's JIRA_*) missing and surface them as
+  // spurious /api/health warnings for a credential model SaaS isn't supposed
+  // to use (#3905). Read the *resolved* deploy mode (not raw env): a `saas`
+  // request that downgraded to self-hosted because enterprise wasn't enabled
+  // resolves to `self-hosted` here and is still validated. Core/platform
+  // globals (AI gateway, sandbox) are unaffected — they aren't action
+  // credentials. Self-host behavior is unchanged. Out of scope: per-workspace
+  // resolution and dropping global-env registration on SaaS (#3766).
   try {
-    const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
-    const { registry: actionRegistry } = await buildRegistry({ includeActions: true });
-    const missingCreds = actionRegistry.validateActionCredentials();
-    for (const { action, missing } of missingCreds) {
-      const msg = `Action "${action}" missing credentials: ${missing.join(", ")}`;
-      if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
-      log.warn(msg);
+    const { getConfig } = await import("@atlas/api/lib/config");
+    if (getConfig()?.deployMode !== "saas") {
+      const { buildRegistry } = await import("@atlas/api/lib/tools/registry");
+      const { registry: actionRegistry } = await buildRegistry({ includeActions: true });
+      const missingCreds = actionRegistry.validateActionCredentials();
+      for (const { action, missing } of missingCreds) {
+        const msg = `Action "${action}" missing credentials: ${missing.join(", ")}`;
+        if (!_startupWarnings.includes(msg)) _startupWarnings.push(msg);
+        log.warn(msg);
+      }
     }
   } catch (err) {
     log.warn(

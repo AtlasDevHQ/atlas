@@ -10,13 +10,10 @@ export function EndCta() {
       }}
     >
       <div className="mx-auto max-w-[720px] text-center">
-        <p className="mb-4 font-mono text-[11.5px] uppercase tracking-[0.16em] text-brand">
-          // ship it
-        </p>
         <h2 className="m-0 mb-8 text-[40px] md:text-[56px] font-semibold leading-[1.05] tracking-[-0.035em] text-zinc-50">
-          <span className="block">YAML in.</span>
+          <span className="block">Ask your data anything.</span>
           <em className="block font-semibold text-brand">
-            Validated answers out.
+            Trust the answer.
           </em>
         </h2>
         <div className="flex flex-wrap justify-center gap-2.5">
@@ -35,8 +32,8 @@ export function EndCta() {
             </code>
           </a>
         </div>
-        <p className="mt-3.5 font-mono text-[11px] tracking-[0.04em] text-zinc-400">
-          self-host is free · MCP server for claude desktop, cursor, continue · slack-native (enterprise)
+        <p className="mt-3.5 text-[13px] text-zinc-500">
+          Self-host is free and open source.
         </p>
       </div>
     </section>

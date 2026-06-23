@@ -1,10 +1,9 @@
 /**
  * Shared sample data used across landing-page components.
  *
- * Hoisted here so the YAML section, the Trace component, and any future
- * surface that quotes the same NovaMart "top categories by GMV" answer all
- * read from a single source — no copy/paste drift between the result table
- * in {@link ./yaml-section.tsx} and the result strip in {@link ./trace.tsx}.
+ * Hoisted here so the hero answer card and the how-it-works reply pane, plus
+ * any future surface that quotes the same NovaMart "top categories by GMV"
+ * answer, read from a single source. No copy/paste drift between them.
  */
 export type CategoryRow = {
   readonly category: string;
@@ -21,8 +20,8 @@ export const CATEGORY_ROWS: ReadonlyArray<CategoryRow> = [
 ];
 
 /**
- * The canonical demo question. Shared by the hero answer card and the YAML
- * section's reply pane so the prompt text never drifts between surfaces.
+ * The canonical demo question. Shared by the hero answer card and the
+ * how-it-works reply pane so the prompt text never drifts between surfaces.
  */
 export const TOP_CATEGORY_QUESTION =
   "What's our top-performing category by GMV this month?";

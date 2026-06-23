@@ -79,24 +79,9 @@ const ROWS: ReadonlyArray<Row> = [
 
 export function Comparison() {
   return (
-    <section
-      id="why-atlas"
-      className="scroll-mt-20 border-b border-white/5 px-6 pt-20 pb-16 md:px-16 md:pt-[88px] md:pb-[72px]"
-    >
-      <header className="mb-10 max-w-[720px]">
-        <p className="mb-4 font-mono text-[11.5px] uppercase tracking-[0.16em] text-brand">
-          // why atlas
-        </p>
-        <h2 className="m-0 mb-4 text-[36px] md:text-[46px] font-semibold leading-[1.05] tracking-[-0.03em] text-zinc-50">
-          Three columns. One choice.
-        </h2>
-        <p className="m-0 text-base leading-[1.65] text-zinc-400">
-          The same comparison from the README — same words, same scoring, no claim drift across surfaces.
-        </p>
-      </header>
-
+    <section className="px-6 pb-24 md:px-16">
       <div
-        className="overflow-hidden rounded-xl border border-white/10"
+        className="mx-auto max-w-5xl overflow-hidden rounded-xl border border-white/10"
         style={{ background: "oklch(0.16 0 0)" }}
       >
         {/* Mobile-first: stack rows. Desktop: 4-col grid. */}

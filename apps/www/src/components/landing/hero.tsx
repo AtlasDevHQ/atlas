@@ -2,11 +2,11 @@ import { Fragment } from "react";
 
 import { CATEGORY_ROWS, TOP_CATEGORY_QUESTION } from "./data";
 
-const HEADLINE_LINES = ["A semantic layer", "for analytics,", "agent-native."] as const;
-const ITALIC_LINE_INDEX = 2;
+const HEADLINE_LINES = ["Ask your data anything.", "Trust the answer."] as const;
+const ITALIC_LINE_INDEX = 1;
 
 const SUBHEAD =
-  "Your semantic layer lives in YAML, versioned in your repo. Ask in plain English; Atlas writes the query and runs it read-only, returning grounded answers from SQL warehouses and REST/OpenAPI services alike.";
+  "Atlas is an AI data analyst that turns plain-English questions into safe, validated SQL, grounded in a semantic layer you control.";
 
 /**
  * The hero's payload: a plain-English question and the validated answer it
@@ -85,21 +85,21 @@ type Stage = { readonly label: string; readonly value: string; readonly highligh
 
 const STAGES: ReadonlyArray<Stage> = [
   { label: "ask",            value: '"top category by gmv…"', highlight: false },
-  { label: "semantic layer", value: "entities · metrics",     highlight: false },
-  { label: "datasources",    value: "sql · rest/openapi",     highlight: true  },
-  { label: "answer",         value: "validated · audited",    highlight: false },
+  { label: "semantic layer", value: "your YAML",              highlight: false },
+  { label: "validate",       value: "7 checks · read-only",   highlight: false },
+  { label: "answer",         value: "grounded · audited",     highlight: true  },
 ];
 
 /**
- * The four-stage path, replacing the old hand-positioned schema graph. One
- * straight read left-to-right; the datasources stage carries the SQL-or-REST
- * repositioning.
+ * The four-stage path: ask → semantic layer → validate → answer. One straight
+ * read left-to-right; the highlight lands on the answer to reinforce the
+ * headline's promise (a grounded, audited result you can trust).
  */
 function PipelineStrip() {
   return (
     <div className="mt-12 md:mt-16">
       <p className="mb-3.5 font-mono text-[11px] tracking-[0.04em] text-zinc-500">
-        // the same path, every datasource
+        // every question takes the same path
       </p>
       <div className="grid gap-3 md:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] md:items-center">
         {STAGES.map((stage, i) => (
@@ -114,16 +114,7 @@ function PipelineStrip() {
               }}
             >
               <span className="text-[13px] font-semibold text-zinc-50">{stage.label}</span>
-              <span className="font-mono text-[11px]">
-                {stage.highlight ? (
-                  <>
-                    <span className="text-zinc-400">sql · </span>
-                    <span className="text-brand">rest/openapi</span>
-                  </>
-                ) : (
-                  <span className="text-zinc-400">{stage.value}</span>
-                )}
-              </span>
+              <span className="font-mono text-[11px] text-zinc-400">{stage.value}</span>
             </div>
             {i < STAGES.length - 1 && (
               <span aria-hidden className="hidden justify-center font-mono text-brand md:flex">
@@ -151,9 +142,6 @@ export function Hero() {
 
       <div className="relative grid gap-10 md:grid-cols-2 md:items-center md:gap-12">
         <div className="max-w-[520px]">
-          <p className="mb-[18px] font-mono text-[11.5px] uppercase tracking-[0.16em] text-brand">
-            // ask in plain english
-          </p>
           <h1 className="m-0 text-[44px] sm:text-[56px] md:text-[64px] font-semibold leading-[1.02] tracking-[-0.035em] text-zinc-50">
             {HEADLINE_LINES.map((line, i) => (
               <span key={line} className="block">
@@ -180,8 +168,8 @@ export function Hero() {
               <code className="font-mono text-[12.5px]">$ bun create atlas-agent</code>
             </a>
           </div>
-          <p className="mt-3.5 font-mono text-[11px] tracking-[0.04em] text-zinc-400">
-            self-host is free · MCP server for claude desktop, cursor, continue · slack-native
+          <p className="mt-3.5 text-[13px] text-zinc-500">
+            Self-host is free and open source.
           </p>
         </div>
 

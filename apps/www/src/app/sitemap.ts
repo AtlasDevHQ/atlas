@@ -9,6 +9,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
   return [
     { url: baseUrl, lastModified, changeFrequency: "daily", priority: 1.0 },
+    { url: `${baseUrl}/why-atlas`, lastModified, changeFrequency: "weekly", priority: 0.9 },
     { url: `${baseUrl}/pricing`, lastModified, changeFrequency: "daily", priority: 0.9 },
     { url: `${baseUrl}/blog`, lastModified, changeFrequency: "weekly", priority: 0.7 },
     {

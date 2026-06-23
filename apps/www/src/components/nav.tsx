@@ -4,6 +4,7 @@ import { useState } from "react";
 import { AtlasLogo } from "./shared";
 
 const NAV_LINKS = [
+  { href: "/why-atlas", label: "Why Atlas" },
   { href: "/pricing", label: "Pricing" },
   { href: "/blog", label: "Blog" },
   { href: "https://docs.useatlas.dev", label: "Docs" },

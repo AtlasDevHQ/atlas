@@ -3,10 +3,25 @@ import { join } from "path";
 const OUT_DIR = join(import.meta.dir, "out");
 const port = parseInt(process.env.PORT || "8080");
 
-// `script-src 'unsafe-inline'` is required by Next.js's `__NEXT_DATA__` and
-// hydration runtime. `style-src 'unsafe-inline'` is required by Next.js's
-// inlined critical CSS. `https://challenges.cloudflare.com` is required for
-// the Cloudflare Turnstile widget on the talk-to-sales form (script + iframe).
+// `script-src 'unsafe-inline'` is REQUIRED here and — unlike packages/web —
+// cannot be replaced with a nonce. www is a Next.js **static export**
+// (`output: "export"`, served by this Bun static server with no per-request
+// runtime). Each built HTML page bakes in Next.js's own inline hydration
+// scripts (`self.__next_f.push(...)`, dozens per page, content differing per
+// page), and a CSP nonce can only be minted per request by a live server —
+// which a static file server is not. The doc-cited alternative (experimental
+// `experimental.sri` hash-based CSP) only covers external chunk files, not
+// these inline RSC-payload scripts, so it wouldn't let us drop `'unsafe-inline'`
+// either. Dropping it without abandoning the static-export architecture would
+// break hydration. So www keeps `'unsafe-inline'` for scripts as a documented,
+// named-reason exception; the nonce hardening in #3899 applies to packages/web
+// (which has a server runtime / proxy) only. `frame-ancestors 'none'` below
+// still gives www full clickjacking protection regardless.
+//
+// `style-src 'unsafe-inline'` is required by Next.js's inlined critical CSS.
+// `https://challenges.cloudflare.com` is required for the Cloudflare Turnstile
+// widget on the talk-to-sales form (script + iframe); it loads as an external
+// `src=` script, so it does NOT depend on `'unsafe-inline'`.
 // `https://static.cloudflareinsights.com` is the Cloudflare Web Analytics
 // beacon auto-injected when the site is proxied through Cloudflare (its
 // reports POST to `cloudflareinsights.com`, already covered by `connect-src

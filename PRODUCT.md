@@ -20,21 +20,24 @@
 
 ## Aesthetic Direction
 
-**Visual tone:** Clean technical SaaS. Dark-leaning but with a polished light mode for the hosted app. Not flashy, not playful — functional and honest.
+**Direction (set 2026-06-23):** the brand surface is moving from dark-teal-on-black to a **warm cream paper base with a deep forest green** as the committed brand color. The point is to sell the product's one thesis, *trust the answer*, harder: deep green reads as validation / correctness ("7 validators passed"), and going light deliberately breaks the saturated dark-dev-tool reflex (Vercel / Linear / Supabase) for real differentiation. Dialed-in prototype: `apps/www/src/app/proto-light/` (branch `www/proto-dark-ramp`). **The production landing migration is pending — until it lands, the live landing is still dark. Treat cream + forest as the target, not the current state.**
 
-**Theme:** Dark mode is the default personality (landing page, docs, developer surfaces). Light mode is equally maintained for the SaaS app where broader audiences expect it.
+**Visual tone:** Clean, technical, considered. Warm and honest, not flashy or playful. Premium without being precious.
+
+**Theme: light-first, warm cream + deep forest.** A warm tan paper ground with deep forest green carrying headlines, CTAs, and accents. **Code stays dark:** the YAML / SQL / agent-reply panes are dark "terminal windows" floating on the cream — high-contrast, technical, the page's hero asset (the Stripe-docs move). One deep-green-drenched band per page (the closing CTA) for punch, where the bright brand teal appears as a spark that only shows up on dark / green surfaces.
 
 **What Atlas looks like:**
-- Quiet confidence — generous whitespace, clear hierarchy, no visual noise
-- Technical precision — monospace where it matters (code, SQL, data), clean sans-serif everywhere else
-- Teal accent (`#23CE9E`) used sparingly for emphasis, not decoration
+- Quiet confidence — warm cream, generous whitespace, clear hierarchy, no visual noise
+- Technical precision — dark code windows on light paper; monospace where it matters (code, SQL, data), clean sans-serif everywhere else
+- Deep forest green (`#1F5C45`) as the committed brand color; bright teal (`#23CE9E`) reserved as a spark on dark / green surfaces
 
 **What Atlas does NOT look like:**
-- Not cluttered like Jira — no information overload, no nested panels fighting for attention
-- Not playful/whimsical — no illustrations, mascots, or bouncy animations
-- Not enterprise-gray — the teal brand color and dark surfaces give it energy without being loud
+- Not the dark-dev-tool reflex (neon teal on black) — that's the lane we're deliberately leaving
+- Not the generic SaaS-light page (near-white + a timid accent) — we commit to the green, we don't hedge
+- Not the earthy-cream-wellness cliché — the deep forest green, dark code windows, and the type keep it technical, not organic
+- Not cluttered like Jira; not playful/whimsical (no illustrations, mascots, bouncy motion)
 
-**References:** None specified. The current direction (modern dev-tool aesthetic, similar to Linear/Vercel in restraint) is the target.
+**References:** dark code panes on warm paper (Stripe docs); restraint and hierarchy in the Linear / Vercel tradition, but light and committed to a color rather than monochrome.
 
 ## Design Principles
 
@@ -50,17 +53,19 @@ The agent's power comes from the semantic layer, and the UI should make that vis
 ### 4. One way to do things
 Standardize on single patterns: one font pair (Sora + JetBrains Mono), one icon set (Lucide), one component library (shadcn/ui), one state pattern per context (nuqs for URL state, useState for transient). Consistency reduces cognitive load for both users and the solo developer maintaining it.
 
-### 5. Dark-first, light-ready
-Design in dark mode first (it's the brand personality), but every surface must work in light mode too. Use CSS variables and oklch tokens — never hardcode color values. Test both themes.
+### 5. Light-first (cream + forest), code stays dark
+Build the brand surface light-first: warm cream paper, deep forest green. Code panes (YAML / SQL / agent replies) stay dark in every theme — they're terminal windows on paper, not themed surfaces. Drive all color through CSS-variable tokens (`--bg`, `--fg`, `--accent`, `--code-*`), never hardcoded values, so the theme is one edit. The product app (admin / dashboard) remains its own light-ready shadcn surface, separate from the brand surface.
 
 ## Design Tokens
 
 ### Colors
-- **Brand primary:** `#23CE9E` (oklch `0.759 0.148 167.71`)
-- **Brand dark:** `#1A9B76` (oklch `0.82 0.148 167.71`)
-- **Dark background:** `#0C0C10`
-- **Light background:** `#F6F6F8`
+- **Brand green (primary):** deep forest `#1F5C45` (oklch `0.40 0.115 158`) — headlines, CTAs, accents on the light brand surface
+- **Brand teal (spark):** `#23CE9E` (oklch `0.759 0.148 167.71`) — reserved for dark / green surfaces (code panes, the drenched CTA band)
+- **Paper base:** warm cream oklch `0.955 0.017 83` (raised sections `0.923 0.019 83`)
+- **Ink:** near-black, faint forest oklch `0.245 0.026 158`
+- **Code windows (fixed in every theme):** bg oklch `0.14 0.006 167`, chrome `0.185`, well `0.10`
 - **Color space:** oklch throughout — perceptually uniform, better for accessible contrast ratios
+- **Token source of truth:** `apps/www/src/app/proto-light/theme.css` (until migrated into the production landing)
 
 ### Typography
 - **UI font:** Sora (Google Fonts) — clean geometric sans-serif

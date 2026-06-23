@@ -3,30 +3,31 @@ import { type CSSProperties } from "react";
 function SelfHostCard() {
   return (
     <div
-      className="flex flex-col rounded-[14px] border border-white/10 p-8"
-      style={{ background: "oklch(0.18 0 0 / 0.35)" }}
+      className="flex flex-col rounded-[14px] border border-border p-8"
+      style={{ background: "var(--bg-raised)" }}
     >
       <header className="mb-4 flex items-start justify-between">
         <div>
-          <p className="mb-2.5 font-mono text-[11px] tracking-[0.06em] text-zinc-400">
+          <p className="mb-2.5 font-mono text-[11px] tracking-[0.06em] text-fg-muted">
             // self-host
           </p>
-          <p className="text-[38px] font-semibold leading-none tracking-[-0.03em] text-zinc-50">
+          <p className="text-[38px] font-semibold leading-none tracking-[-0.03em] text-fg">
             free
           </p>
-          <p className="mt-2 text-sm text-zinc-200">Your infra. Your data.</p>
+          <p className="mt-2 text-sm text-fg">Your infra. Your data.</p>
         </div>
-        <span className="text-[38px] font-semibold tracking-[-0.03em] text-zinc-400">
+        <span className="text-[38px] font-semibold tracking-[-0.03em] text-fg-muted">
           $0
         </span>
       </header>
 
-      <p className="m-0 mb-5 text-sm leading-[1.6] text-zinc-400">
+      <p className="m-0 mb-5 text-sm leading-[1.6] text-fg-muted">
         One command. Bun, Docker, or k8s. AGPL-3.0.
         <br />
         Every feature, no limits.
       </p>
 
+      {/* Dark terminal "window" — a code pane; stays dark in every theme. */}
       <div
         className="mb-5 overflow-hidden rounded-lg border border-white/10"
         style={{ background: "oklch(0.12 0 0)" }}
@@ -81,8 +82,8 @@ function SelfHostCard() {
 
       <ul className="m-0 mb-6 flex list-none flex-col gap-2 p-0">
         {["BYO model key", "No telemetry", "Community Discord"].map((item) => (
-          <li key={item} className="flex items-center gap-2.5 text-[13.5px] text-zinc-200">
-            <span aria-hidden className="font-mono text-[12px] text-brand">✓</span>
+          <li key={item} className="flex items-center gap-2.5 text-[13.5px] text-fg">
+            <span aria-hidden className="font-mono text-[12px] text-accent">✓</span>
             {item}
           </li>
         ))}
@@ -90,7 +91,7 @@ function SelfHostCard() {
 
       <a
         href="https://docs.useatlas.dev/getting-started/quick-start"
-        className="mt-auto inline-flex items-center justify-center rounded-lg border border-white/15 bg-transparent px-4 py-3 text-[13.5px] font-medium text-zinc-50 transition-colors hover:border-white/30"
+        className="mt-auto inline-flex items-center justify-center rounded-lg border border-border bg-transparent px-4 py-3 text-[13.5px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-bg-sunken"
       >
         read the docs →
       </a>
@@ -100,34 +101,33 @@ function SelfHostCard() {
 
 function CloudCard() {
   const cardStyle: CSSProperties = {
-    background:
-      "color-mix(in oklch, var(--atlas-brand) 4%, oklch(0.18 0 0 / 0.4))",
+    background: "color-mix(in oklch, var(--accent) 6%, var(--bg-raised))",
   };
   return (
     <div
       className="flex flex-col rounded-[14px] border p-8"
       style={{
         ...cardStyle,
-        borderColor: "color-mix(in oklch, var(--atlas-brand) 38%, transparent)",
+        borderColor: "color-mix(in oklch, var(--accent) 42%, transparent)",
       }}
     >
       <header className="mb-4 flex items-start justify-between">
         <div>
-          <p className="mb-2.5 font-mono text-[11px] tracking-[0.06em] text-brand">
+          <p className="mb-2.5 font-mono text-[11px] tracking-[0.06em] text-accent">
             // atlas cloud
           </p>
-          <p className="text-[38px] font-semibold leading-none tracking-[-0.03em] text-zinc-50">
-            <span className="text-base font-normal text-zinc-400">from </span>$29
-            <span className="ml-1 text-base font-normal text-zinc-400">/ seat</span>
+          <p className="text-[38px] font-semibold leading-none tracking-[-0.03em] text-fg">
+            <span className="text-base font-normal text-fg-muted">from </span>$29
+            <span className="ml-1 text-base font-normal text-fg-muted">/ seat</span>
           </p>
-          <p className="mt-2 text-sm text-zinc-200">Hosted. Zero ops.</p>
+          <p className="mt-2 text-sm text-fg">Hosted. Zero ops.</p>
         </div>
-        <span className="rounded-full border border-brand px-2 py-1 font-mono text-[10px] tracking-[0.08em] uppercase text-brand">
+        <span className="rounded-full border border-accent px-2 py-1 font-mono text-[10px] tracking-[0.08em] uppercase text-accent">
           recommended
         </span>
       </header>
 
-      <p className="m-0 mb-5 text-sm leading-[1.6] text-zinc-400">
+      <p className="m-0 mb-5 text-sm leading-[1.6] text-fg-muted">
         We run it. Weekly updates, monitored connections.
         <br />
         Live in 3 minutes.
@@ -137,20 +137,20 @@ function CloudCard() {
         href="https://atlas.openstatus.dev"
         target="_blank"
         rel="noreferrer"
-        className="mb-5 flex items-center justify-between rounded-lg border border-white/10 px-[18px] py-4 transition-colors hover:border-white/20"
-        style={{ background: "oklch(0.16 0 0)" }}
+        className="mb-5 flex items-center justify-between rounded-lg border border-border px-[18px] py-4 transition-colors hover:border-border-strong"
+        style={{ background: "var(--bg-sunken)" }}
       >
         <div className="flex items-center gap-2.5">
           <span
             className="h-2 w-2 rounded-full"
-            style={{ background: "var(--atlas-brand)" }}
+            style={{ background: "var(--accent)" }}
             aria-hidden="true"
           />
-          <span className="font-mono text-[11px] tracking-[0.04em] text-zinc-400">
+          <span className="font-mono text-[11px] tracking-[0.04em] text-fg-muted">
             live status
           </span>
         </div>
-        <span className="text-[13px] font-medium text-zinc-200">
+        <span className="text-[13px] font-medium text-fg">
           atlas.openstatus.dev →
         </span>
       </a>
@@ -161,8 +161,8 @@ function CloudCard() {
           "Audit log export",
           "Priority support",
         ].map((item) => (
-          <li key={item} className="flex items-center gap-2.5 text-[13.5px] text-zinc-200">
-            <span aria-hidden className="font-mono text-[12px] text-brand">✓</span>
+          <li key={item} className="flex items-center gap-2.5 text-[13.5px] text-fg">
+            <span aria-hidden className="font-mono text-[12px] text-accent">✓</span>
             {item}
           </li>
         ))}
@@ -170,7 +170,7 @@ function CloudCard() {
 
       <a
         href="https://app.useatlas.dev"
-        className="mt-auto inline-flex items-center justify-center rounded-lg bg-brand px-4 py-3 text-[13.5px] font-semibold text-zinc-950 transition-colors hover:bg-brand-hover"
+        className="mt-auto inline-flex items-center justify-center rounded-lg bg-accent px-4 py-3 text-[13.5px] font-semibold text-accent-ink transition-colors hover:bg-accent-hover"
       >
         start free trial →
       </a>
@@ -182,13 +182,13 @@ export function Deploy() {
   return (
     <section
       id="deploy"
-      className="scroll-mt-20 border-b border-white/5 px-6 pt-20 pb-16 md:px-16 md:pt-[88px] md:pb-[72px]"
+      className="scroll-mt-20 border-b border-border-soft px-6 pt-20 pb-16 md:px-16 md:pt-[88px] md:pb-[72px]"
     >
       <header className="mb-10 max-w-[720px]">
-        <h2 className="m-0 mb-4 text-[36px] md:text-[46px] font-semibold leading-[1.05] tracking-[-0.03em] text-zinc-50">
+        <h2 className="m-0 mb-4 text-[36px] md:text-[46px] font-semibold leading-[1.05] tracking-[-0.03em] text-fg">
           Two ways to run it. Same code.
         </h2>
-        <p className="m-0 text-base leading-[1.65] text-zinc-400">
+        <p className="m-0 text-base leading-[1.65] text-fg-muted">
           Cloud, or your VPC. Same Atlas, same primitives, same upgrade path.
         </p>
       </header>

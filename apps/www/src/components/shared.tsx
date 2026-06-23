@@ -31,7 +31,7 @@ export function GitHubIcon({ className }: { className?: string }) {
 export function CheckIcon() {
   return (
     <svg
-      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand"
+      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent"
       fill="none"
       viewBox="0 0 24 24"
       stroke="currentColor"
@@ -66,7 +66,7 @@ export function TopGlow() {
       className="pointer-events-none absolute top-0 left-1/2 -z-10 h-[600px] w-[800px] -translate-x-1/2"
       style={{
         background:
-          "radial-gradient(ellipse at center, color-mix(in oklch, var(--atlas-brand) 6%, transparent) 0%, transparent 70%)",
+          "radial-gradient(ellipse at center, color-mix(in oklch, var(--accent) 6%, transparent) 0%, transparent 70%)",
       }}
     />
   );
@@ -75,14 +75,14 @@ export function TopGlow() {
 export function Divider() {
   return (
     <div className="mx-auto max-w-5xl px-6">
-      <div className="h-px bg-gradient-to-r from-transparent via-zinc-800 to-transparent" />
+      <div className="h-px bg-gradient-to-r from-transparent via-border to-transparent" />
     </div>
   );
 }
 
 export function SectionLabel({ children, id }: { children: ReactNode; id?: string }) {
   return (
-    <p id={id} className="mb-4 scroll-mt-20 font-mono text-xs tracking-widest text-brand/80 uppercase">
+    <p id={id} className="mb-4 scroll-mt-20 font-mono text-xs tracking-widest text-accent uppercase">
       {children}
     </p>
   );

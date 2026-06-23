@@ -25,7 +25,7 @@ export default function WhyAtlasPage() {
     <div className="relative min-h-screen">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:rounded-md focus:bg-zinc-900 focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-zinc-100 focus:ring-2 focus:ring-brand"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:rounded-md focus:bg-bg-raised focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-fg focus:ring-2 focus:ring-accent"
       >
         Skip to content
       </a>
@@ -36,11 +36,11 @@ export default function WhyAtlasPage() {
 
       <main id="main" tabIndex={-1} className="focus:outline-none">
         <section className="mx-auto max-w-5xl px-6 pt-16 pb-12 md:px-16 md:pt-24 md:pb-16">
-          <h1 className="animate-fade-in-up delay-100 m-0 text-[40px] font-semibold leading-[1.04] tracking-[-0.035em] text-zinc-50 sm:text-[52px] md:text-[60px]">
+          <h1 className="animate-fade-in-up delay-100 m-0 text-[40px] font-semibold leading-[1.04] tracking-[-0.035em] text-fg sm:text-[52px] md:text-[60px]">
             <span className="block">One model. Every surface.</span>
-            <em className="block font-semibold text-brand">Yours to run.</em>
+            <em className="block font-semibold text-accent">Yours to run.</em>
           </h1>
-          <p className="animate-fade-in-up delay-200 mt-5 max-w-xl text-lg leading-[1.6] text-zinc-400">
+          <p className="animate-fade-in-up delay-200 mt-5 max-w-xl text-lg leading-[1.6] text-fg-muted">
             How Atlas stacks up against traditional BI and other text-to-SQL tools.
           </p>
         </section>

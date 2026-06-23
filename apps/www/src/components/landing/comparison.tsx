@@ -81,19 +81,19 @@ export function Comparison() {
   return (
     <section className="px-6 pb-24 md:px-16">
       <div
-        className="mx-auto max-w-5xl overflow-hidden rounded-xl border border-white/10"
-        style={{ background: "oklch(0.16 0 0)" }}
+        className="mx-auto max-w-5xl overflow-hidden rounded-xl border border-border"
+        style={{ background: "var(--bg-raised)" }}
       >
         {/* Mobile-first: stack rows. Desktop: 4-col grid. */}
-        <div className="hidden grid-cols-[200px_1fr_1fr_1fr] border-b border-white/5 md:grid">
-          <div className="px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] text-zinc-400">
+        <div className="hidden grid-cols-[200px_1fr_1fr_1fr] border-b border-border-soft md:grid">
+          <div className="px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] text-fg-muted">
             feature
           </div>
           {COLUMNS.map((col) => (
             <div
               key={col.id}
               className={`px-4 py-3 font-mono text-[11px] uppercase tracking-[0.06em] ${
-                col.tone === "brand" ? "text-brand" : "text-zinc-400"
+                col.tone === "brand" ? "text-accent" : "text-fg-muted"
               }`}
             >
               {col.label}
@@ -104,24 +104,24 @@ export function Comparison() {
         {ROWS.map((row, i) => (
           <div
             key={row.feature}
-            className="grid grid-cols-1 border-b border-white/5 last:border-b-0 md:grid-cols-[200px_1fr_1fr_1fr]"
+            className="grid grid-cols-1 border-b border-border-soft last:border-b-0 md:grid-cols-[200px_1fr_1fr_1fr]"
             style={{
-              background: i % 2 ? "oklch(0.14 0 0)" : "transparent",
+              background: i % 2 ? "var(--bg-sunken)" : "transparent",
             }}
           >
-            <div className="px-4 py-3 font-mono text-[12.5px] font-medium text-zinc-50">
+            <div className="px-4 py-3 font-mono text-[12.5px] font-medium text-fg">
               {row.feature}
             </div>
             {COLUMNS.map((col) => (
               <div
                 key={col.id}
                 className={`px-4 py-3 text-[13px] leading-[1.55] ${
-                  col.tone === "brand" ? "text-zinc-200" : "text-zinc-400"
+                  col.tone === "brand" ? "text-fg" : "text-fg-muted"
                 }`}
               >
                 <span
                   className={`md:hidden font-mono text-[10.5px] uppercase tracking-[0.06em] ${
-                    col.tone === "brand" ? "text-brand" : "text-zinc-500"
+                    col.tone === "brand" ? "text-accent" : "text-fg-faint"
                   }`}
                 >
                   {col.mobileLabel}:{" "}

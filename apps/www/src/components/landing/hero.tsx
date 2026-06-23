@@ -98,7 +98,7 @@ const STAGES: ReadonlyArray<Stage> = [
 function PipelineStrip() {
   return (
     <div className="animate-fade-in-up delay-400 mt-12 md:mt-16">
-      <p className="mb-3.5 font-mono text-[11px] tracking-[0.04em] text-zinc-400">
+      <p className="mb-3.5 font-mono text-[11px] tracking-[0.04em] text-fg-muted">
         // every question takes the same path
       </p>
       <div className="grid gap-3 md:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] md:items-center">
@@ -107,17 +107,15 @@ function PipelineStrip() {
             <div
               className="flex flex-col gap-1 rounded-lg border px-4 py-3.5"
               style={{
-                background: "oklch(0.16 0 0)",
-                borderColor: stage.highlight
-                  ? "color-mix(in oklch, var(--atlas-brand) 35%, transparent)"
-                  : "oklch(1 0 0 / 0.1)",
+                background: stage.highlight ? "var(--accent-quiet)" : "var(--bg-raised)",
+                borderColor: stage.highlight ? "var(--accent)" : "var(--border)",
               }}
             >
-              <span className="text-[13px] font-semibold text-zinc-50">{stage.label}</span>
-              <span className="font-mono text-[11px] text-zinc-400">{stage.value}</span>
+              <span className="text-[13px] font-semibold text-fg">{stage.label}</span>
+              <span className="font-mono text-[11px] text-fg-muted">{stage.value}</span>
             </div>
             {i < STAGES.length - 1 && (
-              <span aria-hidden className="hidden justify-center font-mono text-brand md:flex">
+              <span aria-hidden className="hidden justify-center font-mono text-accent md:flex">
                 →
               </span>
             )}
@@ -130,45 +128,44 @@ function PipelineStrip() {
 
 export function Hero() {
   return (
-    <section className="relative overflow-hidden border-b border-white/5 px-6 pt-16 pb-16 md:px-16 md:pt-24 md:pb-20">
+    <section className="relative overflow-hidden border-b border-border-soft px-6 pt-16 pb-16 md:px-16 md:pt-24 md:pb-20">
       <div
         aria-hidden
         className="pointer-events-none absolute -top-32 right-0 h-[560px] w-[560px] rounded-full"
         style={{
-          background:
-            "radial-gradient(circle, color-mix(in oklch, var(--atlas-brand) 10%, transparent), transparent 70%)",
+          background: "radial-gradient(circle, var(--glow), transparent 70%)",
         }}
       />
 
       <div className="relative grid gap-10 md:grid-cols-2 md:items-center md:gap-12">
         <div className="max-w-[520px]">
-          <h1 className="animate-fade-in-up m-0 text-[44px] sm:text-[56px] md:text-[64px] font-semibold leading-[1.02] tracking-[-0.035em] text-zinc-50">
+          <h1 className="animate-fade-in-up m-0 text-[44px] sm:text-[56px] md:text-[64px] font-semibold leading-[1.02] tracking-[-0.035em] text-fg">
             {HEADLINE_LINES.map((line, i) => (
               <span key={line} className="block">
                 {i === ITALIC_LINE_INDEX ? (
-                  <em className="font-semibold text-brand">{line}</em>
+                  <em className="font-semibold text-accent">{line}</em>
                 ) : (
                   line
                 )}
               </span>
             ))}
           </h1>
-          <p className="animate-fade-in-up delay-100 mt-6 max-w-[460px] text-base leading-[1.6] text-zinc-400">{SUBHEAD}</p>
+          <p className="animate-fade-in-up delay-100 mt-6 max-w-[460px] text-base leading-[1.6] text-fg-muted">{SUBHEAD}</p>
           <div className="animate-fade-in-up delay-200 mt-7 flex flex-wrap gap-2.5">
             <a
               href="https://app.useatlas.dev/demo"
-              className="inline-flex items-center gap-2 rounded-lg bg-brand px-[18px] py-[11px] text-[13.5px] font-semibold text-zinc-950 transition-colors hover:bg-brand-hover"
+              className="inline-flex items-center gap-2 rounded-lg bg-accent px-[18px] py-[11px] text-[13.5px] font-semibold text-accent-ink transition-colors hover:bg-accent-hover"
             >
               Try the demo →
             </a>
             <a
               href="https://docs.useatlas.dev/getting-started/quick-start"
-              className="inline-flex items-center rounded-lg border border-white/10 bg-zinc-900 px-3.5 py-2.5 text-zinc-50 transition-colors hover:border-white/20"
+              className="inline-flex items-center rounded-lg border border-border bg-transparent px-3.5 py-2.5 text-fg transition-colors hover:border-border-strong hover:bg-bg-sunken"
             >
               <code className="font-mono text-[12.5px]">$ bun create atlas-agent</code>
             </a>
           </div>
-          <p className="animate-fade-in-up delay-300 mt-3.5 text-[13px] text-zinc-400">
+          <p className="animate-fade-in-up delay-300 mt-3.5 text-[13px] text-fg-muted">
             Self-host is free and open source.
           </p>
         </div>

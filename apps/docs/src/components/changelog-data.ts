@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.22",
+    title: "Cross-Group Reach Foundation",
+    date: "2026-06-23",
+    summary:
+      "The foundation for cross-group reach — the agent answering questions across all of your connected datasources, not just one connection group at a time. Two pieces land this cycle: executeSQL can now target a specific connection group per query, bounded by a reach limit so a single turn can compose across sources without runaway fan-out; and a Source catalog gives each connection group an auto-generated, refinable description so the agent knows which sources to route a question to. The release also carries a security and correctness batch — the web app moves to a nonce-based Content-Security-Policy that drops unsafe-inline and unsafe-eval, the tables API is scoped to each connection's own table whitelist, the global action-credential health check no longer reports a false 'degraded' on the hosted service, and per-workspace bring-your-own email now resolves through a single shared sender seam.",
+    highlights: [
+      "Cross-group reach foundation — executeSQL can target a specific connection group per query, reach-bounded so a turn composes across sources without runaway fan-out (#3893)",
+      "Source catalog — each connection group gets an auto-generated, refinable description so the agent routes questions to the right datasource (#3894)",
+      "Nonce-based Content-Security-Policy for the web app — drops unsafe-inline and unsafe-eval (#3903)",
+      "GET /api/v1/tables is scoped to each connection's own table whitelist (#3904)",
+      "Action-credential health check is deploy-mode gated — no more false 'degraded' status on the hosted service (#3906)",
+      "Unified email sender seam — per-workspace bring-your-own email resolves consistently (#3890)",
+    ],
+  },
+  {
     version: "v0.0.21",
     title: "Real-World Testing Fixes",
     date: "2026-06-22",

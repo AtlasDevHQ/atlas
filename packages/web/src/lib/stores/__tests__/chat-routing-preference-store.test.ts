@@ -92,6 +92,53 @@ describe("useChatRoutingPreferenceStore (#3044)", () => {
   });
 });
 
+describe("useChatRoutingPreferenceStore Group reach (#3895)", () => {
+  it("setPreference records the Group reach (null = All sources, a group id = Focus)", () => {
+    useChatRoutingPreferenceStore.getState().setPreference({
+      workspaceId: "org-1",
+      groupId: "g_prod",
+      connectionId: "eu-prod",
+      routingMode: "pin",
+      restExcludedDatasourceIds: [],
+      restFocusDatasourceId: null,
+      groupReach: "g_prod",
+    });
+    expect(useChatRoutingPreferenceStore.getState().groupReach).toBe("g_prod");
+  });
+
+  it("clean-break migration (v0 → v1) clears the single-group preference, keeps REST scope", async () => {
+    // A pre-#3895 persisted blob: a single-group seed (groupId/connectionId/
+    // routingMode) that would re-focus the last group on every new chat. The
+    // cross-group default is All sources, so the migration must DROP that SQL
+    // seed (start at All sources) while carrying the workspace + REST scope.
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        version: 0,
+        state: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+          restExcludedDatasourceIds: ["billing-api"],
+          restFocusDatasourceId: "stripe",
+        },
+      }),
+    );
+    await useChatRoutingPreferenceStore.persist.rehydrate();
+    const s = useChatRoutingPreferenceStore.getState();
+    // SQL single-group seed cleared → new chats start at All sources.
+    expect(s.groupId).toBeNull();
+    expect(s.connectionId).toBeNull();
+    expect(s.routingMode).toBeNull();
+    expect(s.groupReach).toBeNull();
+    // Workspace + REST scope (a separate axis) carry forward.
+    expect(s.workspaceId).toBe("org-1");
+    expect(s.restExcludedDatasourceIds).toEqual(["billing-api"]);
+    expect(s.restFocusDatasourceId).toBe("stripe");
+  });
+});
+
 describe("useChatRoutingPreferenceStore hydration gate (#3064)", () => {
   // The reset-on-reload fix gates atlas-chat's seed/restore effect on the
   // persist store having finished rehydrating localStorage. Without that

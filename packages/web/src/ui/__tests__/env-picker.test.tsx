@@ -96,6 +96,7 @@ import {
   shouldRenderEnvPicker,
   useChatEnvGroups,
   type ChatEnvGroup,
+  type ChatEnvSelection,
   type ResolveEnvSelectionInput,
 } from "../components/chat/env-picker";
 
@@ -411,6 +412,10 @@ describe("ChatEnvPicker chip label collapse (#2408)", () => {
         groups={groups}
         activeGroupId="g_warehouse"
         activeConnectionId="warehouse"
+        // #3895 — the Pin chip collapse applies to a focused group (or a
+        // single-group workspace); under multi-group All sources the chip reads
+        // "All sources". Focus → g_warehouse exercises the collapse here.
+        activeGroupReach="g_warehouse"
         onSelect={noop}
       />,
     );
@@ -448,6 +453,7 @@ describe("ChatEnvPicker chip label collapse (#2408)", () => {
         groups={groups}
         activeGroupId="g_warehouse"
         activeConnectionId="warehouse"
+        activeGroupReach="g_warehouse"
         onSelect={noop}
       />,
     );
@@ -1677,11 +1683,14 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
         routingMode: null,
         restExcludedDatasourceIds: [],
         restFocusDatasourceId: null,
+        groupReach: null,
       },
       provenance: "unset",
       // #3078 — REST scope provenance defaults to "unset" (follows the SQL
       // seed/restore). Tests that exercise the decoupled lifecycle override it.
       restProvenance: "unset",
+      // #3895 — Group reach provenance, same default (follows the seed/restore).
+      groupReachProvenance: "unset",
       preference: {
         workspaceId: null,
         groupId: null,
@@ -1689,6 +1698,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
         routingMode: null,
         restExcludedDatasourceIds: [],
         restFocusDatasourceId: null,
+        groupReach: null,
       },
       activeWorkspaceId: null,
       preferenceHydrated: true,
@@ -1764,6 +1774,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       routingMode: "pin",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -1792,6 +1803,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       routingMode: "pin",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -1819,6 +1831,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       routingMode: "auto",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -1878,6 +1891,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       connectionId: "us-prod",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -1899,6 +1913,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       connectionId: "us-prod",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -1920,6 +1935,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       connectionId: "us-prod",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -1942,6 +1958,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       routingMode: "auto",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -1958,6 +1975,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       connectionId: "only",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -1973,6 +1991,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: "pin",
           restExcludedDatasourceIds: [],
           restFocusDatasourceId: "stripe",
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -1984,6 +2003,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       routingMode: "pin",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: "stripe",
+      groupReach: null,
     });
   });
 
@@ -1998,6 +2018,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: "pin",
           restExcludedDatasourceIds: [],
           restFocusDatasourceId: null,
+          groupReach: null,
         },
         provenance: "default",
         preference: {
@@ -2007,6 +2028,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: "pin",
           restExcludedDatasourceIds: [],
           restFocusDatasourceId: "stripe",
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -2018,6 +2040,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       routingMode: "pin",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: "stripe",
+      groupReach: null,
     });
   });
 
@@ -2038,6 +2061,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: null,
           restExcludedDatasourceIds: ["stripe"],
           restFocusDatasourceId: null,
+          groupReach: null,
         },
         provenance: "unset",
         restProvenance: "explicit",
@@ -2051,6 +2075,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       connectionId: "us-prod",
       restExcludedDatasourceIds: ["stripe"],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -2063,6 +2088,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: null,
           restExcludedDatasourceIds: [],
           restFocusDatasourceId: "stripe",
+          groupReach: null,
         },
         provenance: "unset",
         restProvenance: "explicit",
@@ -2074,6 +2100,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       connectionId: "us-prod",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: "stripe",
+      groupReach: null,
     });
   });
 
@@ -2089,6 +2116,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: null,
           restExcludedDatasourceIds: ["stripe"],
           restFocusDatasourceId: null,
+          groupReach: null,
         },
         provenance: "unset",
         restProvenance: "explicit",
@@ -2099,6 +2127,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: "pin",
           restExcludedDatasourceIds: [],
           restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -2110,6 +2139,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       routingMode: "pin",
       restExcludedDatasourceIds: ["stripe"],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -2125,6 +2155,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: "pin",
           restExcludedDatasourceIds: ["stripe"],
           restFocusDatasourceId: null,
+          groupReach: null,
         },
         provenance: "explicit",
         restProvenance: "explicit",
@@ -2135,6 +2166,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: "pin",
           restExcludedDatasourceIds: [],
           restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -2160,6 +2192,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: "pin",
           restExcludedDatasourceIds: ["stripe"],
           restFocusDatasourceId: null,
+          groupReach: null,
         },
         provenance: "default",
         restProvenance: "explicit",
@@ -2170,6 +2203,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: "pin",
           restExcludedDatasourceIds: [],
           restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -2189,6 +2223,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: null,
           restExcludedDatasourceIds: [],
           restFocusDatasourceId: "stripe",
+          groupReach: null,
         },
         provenance: "unset",
         restProvenance: "explicit",
@@ -2199,6 +2234,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: "pin",
           restExcludedDatasourceIds: [],
           restFocusDatasourceId: "github",
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -2210,6 +2246,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       routingMode: "pin",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: "stripe",
+      groupReach: null,
     });
   });
 
@@ -2233,6 +2270,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
             routingMode: null,
             restExcludedDatasourceIds: ["stripe"],
             restFocusDatasourceId: null,
+            groupReach: null,
           },
         }),
       ).kind,
@@ -2251,6 +2289,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: null,
           restExcludedDatasourceIds: ["stripe"],
           restFocusDatasourceId: null,
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -2263,6 +2302,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       routingMode: null,
       restExcludedDatasourceIds: ["stripe"],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -2278,6 +2318,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
           routingMode: null,
           restExcludedDatasourceIds: [],
           restFocusDatasourceId: "stripe",
+          groupReach: null,
         },
         activeWorkspaceId: "org-1",
       }),
@@ -2289,6 +2330,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       routingMode: null,
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: "stripe",
+      groupReach: null,
     });
   });
 
@@ -2305,6 +2347,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
             routingMode: null,
             restExcludedDatasourceIds: ["stripe"],
             restFocusDatasourceId: null,
+            groupReach: null,
           },
           activeWorkspaceId: "org-A",
         }),
@@ -2324,6 +2367,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
             routingMode: null,
             restExcludedDatasourceIds: ["stripe"],
             restFocusDatasourceId: null,
+            groupReach: null,
           },
           preference: {
             workspaceId: "org-1",
@@ -2332,6 +2376,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
             routingMode: null,
             restExcludedDatasourceIds: ["stripe"],
             restFocusDatasourceId: null,
+            groupReach: null,
           },
           activeWorkspaceId: "org-1",
         }),
@@ -2353,6 +2398,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
             routingMode: null,
             restExcludedDatasourceIds: ["github"],
             restFocusDatasourceId: null,
+            groupReach: null,
           },
           restProvenance: "explicit",
           preference: {
@@ -2362,6 +2408,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
             routingMode: null,
             restExcludedDatasourceIds: ["stripe"],
             restFocusDatasourceId: null,
+            groupReach: null,
           },
           activeWorkspaceId: "org-1",
         }),
@@ -2410,7 +2457,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "eu-prod", routingMode: "pin" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("preserves an 'auto' routing mode (mode is a first-class scope dimension)", () => {
@@ -2421,7 +2468,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "us-prod", routingMode: "auto" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "auto", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "auto", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("preserves an 'all' routing mode", () => {
@@ -2430,7 +2477,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "us-prod", routingMode: "all" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "all", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "all", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("two different conversations resolve to two different scopes (switching updates the picker each time)", () => {
@@ -2456,7 +2503,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "eu-prod", routingMode: null },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: null, restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: null, restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("legacy conversation with an omitted routing mode defaults to null", () => {
@@ -2467,7 +2514,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "eu-prod" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: null, restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: null, restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("seeds (defers) for a fully-null row — never makes nulls authoritative", () => {
@@ -2478,7 +2525,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: null, connectionId: null, routingMode: null },
         groups,
       ),
-    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("seeds when the row's group has been archived / is no longer visible", () => {
@@ -2489,7 +2536,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_archived", connectionId: "old-prod", routingMode: "pin" },
         groups,
       ),
-    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("repairs an archived member to the group primary when the group still resolves", () => {
@@ -2500,7 +2547,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "ap-prod-archived", routingMode: "pin" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "pin", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "pin", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("repairs a group-only row (null member, e.g. Auto) to the group primary", () => {
@@ -2511,7 +2558,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: null, routingMode: "auto" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "auto", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "auto", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("falls back to members[0] when repairing under a group with no primary", () => {
@@ -2520,7 +2567,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_staging", connectionId: "gone", routingMode: "pin" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_staging", connectionId: "us-staging", routingMode: "pin", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "restore", groupId: "g_staging", connectionId: "us-staging", routingMode: "pin", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("trusts the row optimistically when groups have not loaded yet (cold-start open)", () => {
@@ -2532,7 +2579,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "eu-prod", routingMode: "all" },
         [],
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "all", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "all", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("still seeds a fully-null row even when groups have not loaded", () => {
@@ -2543,7 +2590,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: null, connectionId: null, routingMode: null },
         [],
       ),
-    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("restores a legacy group-less row by locating the group that owns its connection", () => {
@@ -2558,7 +2605,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: null, connectionId: "eu-prod", routingMode: "pin" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("seeds a legacy group-less row only when its connection no longer exists in any group", () => {
@@ -2568,7 +2615,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: null, connectionId: "deleted-conn", routingMode: "pin" },
         groups,
       ),
-    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("optimistically restores a legacy group-less row (null group) on cold-start", () => {
@@ -2581,7 +2628,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: null, connectionId: "eu-prod", routingMode: "pin" },
         [],
       ),
-    ).toEqual({ kind: "restore", groupId: null, connectionId: "eu-prod", routingMode: "pin", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "restore", groupId: null, connectionId: "eu-prod", routingMode: "pin", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   test("seeds when a resolved group has no live members (fully archived group)", () => {
@@ -2596,7 +2643,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_empty", connectionId: "anything", routingMode: "pin" },
         [emptyGroup],
       ),
-    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
+    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null, groupReach: null });
   });
 
   // #3067 — the row's REST-only focus is restored alongside the SQL scope, the
@@ -2609,6 +2656,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
           connectionId: "eu-prod",
           routingMode: "pin",
           restFocusDatasourceId: "stripe",
+          groupReach: null,
         },
         groups,
       ),
@@ -2619,6 +2667,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
       routingMode: "pin",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: "stripe",
+      groupReach: null,
     });
   });
 
@@ -2636,6 +2685,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
       routingMode: "pin",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -2663,6 +2713,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
       kind: "seed",
       restExcludedDatasourceIds: ["stripe"],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -2673,6 +2724,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
           connectionGroupId: null,
           connectionId: null,
           restFocusDatasourceId: "stripe",
+          groupReach: null,
         },
         groups,
       ),
@@ -2680,6 +2732,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
       kind: "seed",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: "stripe",
+      groupReach: null,
     });
   });
 
@@ -2700,6 +2753,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
       kind: "seed",
       restExcludedDatasourceIds: ["stripe", "github"],
       restFocusDatasourceId: null,
+      groupReach: null,
     });
   });
 
@@ -2713,6 +2767,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
           connectionId: "old-prod",
           routingMode: "pin",
           restFocusDatasourceId: "stripe",
+          groupReach: null,
         },
         groups,
       ),
@@ -2720,7 +2775,344 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
       kind: "seed",
       restExcludedDatasourceIds: [],
       restFocusDatasourceId: "stripe",
+      groupReach: null,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3895 (ADR-0022 §5) — Group reach axis: All sources (default) | Focus → group,
+// with member routing nested under a focused multi-member group.
+// ---------------------------------------------------------------------------
+describe("ChatEnvPicker — Group reach axis (#3895)", () => {
+  afterEach(() => cleanup());
+
+  const twoGroups: ChatEnvGroup[] = [
+    {
+      id: "g_prod",
+      name: "prod",
+      primaryConnectionId: "us-prod",
+      members: [
+        { connectionId: "eu-prod", dbType: "postgres", description: null },
+        { connectionId: "us-prod", dbType: "postgres", description: null },
+      ],
+    },
+    {
+      id: "g_analytics",
+      name: "analytics",
+      primaryConnectionId: null,
+      members: [{ connectionId: "warehouse", dbType: "clickhouse", description: null }],
+    },
+  ];
+
+  test("multi-group default (no reach) shows the 'All sources' chip + reach chooser, no member routing", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={twoGroups}
+        activeGroupId={null}
+        activeConnectionId={null}
+        activeGroupReach={null}
+        onSelect={noop}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-label"]')?.textContent,
+    ).toBe("All sources");
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-trigger"]')?.getAttribute("data-reach"),
+    ).toBe("all");
+    // The reach chooser is present and "All sources" is active.
+    const all = container.querySelector('[data-testid="chat-env-picker-reach-all"]');
+    expect(all?.getAttribute("data-active")).toBe("true");
+    // Both groups are offered as Focus targets.
+    expect(container.querySelector('[data-testid="chat-env-picker-reach-focus-g_prod"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="chat-env-picker-reach-focus-g_analytics"]')).not.toBeNull();
+    // Member routing is NOT shown under All sources (no single group).
+    expect(container.querySelector('[data-testid="chat-env-picker-mode-auto"]')).toBeNull();
+  });
+
+  test("Focus on a multi-member group reveals nested member routing + marks the focus active", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={twoGroups}
+        activeGroupId="g_prod"
+        activeConnectionId="us-prod"
+        activeRoutingMode="auto"
+        activeGroupReach="g_prod"
+        onSelect={noop}
+      />,
+    );
+    // Reach focus marked active.
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-reach-focus-g_prod"]')?.getAttribute("data-active"),
+    ).toBe("true");
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-reach-all"]')?.getAttribute("data-active"),
+    ).toBe("false");
+    // Member routing IS shown (focused group has >1 member).
+    expect(container.querySelector('[data-testid="chat-env-picker-mode-auto"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="chat-env-picker-member-eu-prod"]')).not.toBeNull();
+  });
+
+  test("Focus on a single-member group hides member routing (nothing to route)", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={twoGroups}
+        activeGroupId="g_analytics"
+        activeConnectionId="warehouse"
+        activeGroupReach="g_analytics"
+        onSelect={noop}
+      />,
+    );
+    expect(container.querySelector('[data-testid="chat-env-picker-reach-focus-g_analytics"]')?.getAttribute("data-active")).toBe("true");
+    expect(container.querySelector('[data-testid="chat-env-picker-mode-auto"]')).toBeNull();
+  });
+
+  test("selecting 'All sources' emits a cleared selection (reach + member binding both null)", () => {
+    let captured: ChatEnvSelection | null = null;
+    const { container } = render(
+      <ChatEnvPicker
+        groups={twoGroups}
+        activeGroupId="g_prod"
+        activeConnectionId="us-prod"
+        activeGroupReach="g_prod"
+        onSelect={(next) => {
+          captured = next;
+        }}
+      />,
+    );
+    container
+      .querySelector<HTMLElement>('[data-testid="chat-env-picker-reach-all"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(captured).toEqual({
+      groupReach: null,
+      groupId: null,
+      connectionId: null,
+      routingMode: null,
+    });
+  });
+
+  test("selecting 'Focus → group' emits a focus selection with the group's primary member + Auto", () => {
+    let captured: ChatEnvSelection | null = null;
+    const { container } = render(
+      <ChatEnvPicker
+        groups={twoGroups}
+        activeGroupId={null}
+        activeConnectionId={null}
+        activeGroupReach={null}
+        onSelect={(next) => {
+          captured = next;
+        }}
+      />,
+    );
+    container
+      .querySelector<HTMLElement>('[data-testid="chat-env-picker-reach-focus-g_prod"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(captured).toEqual({
+      groupReach: "g_prod",
+      groupId: "g_prod",
+      connectionId: "us-prod",
+      routingMode: "auto",
+    });
+  });
+
+  test("changing member routing under Focus preserves the reach (does not widen to All)", () => {
+    let captured: ChatEnvSelection | null = null;
+    const { container } = render(
+      <ChatEnvPicker
+        groups={twoGroups}
+        activeGroupId="g_prod"
+        activeConnectionId="us-prod"
+        activeRoutingMode="auto"
+        activeGroupReach="g_prod"
+        onSelect={(next) => {
+          captured = next;
+        }}
+      />,
+    );
+    container
+      .querySelector<HTMLElement>('[data-testid="chat-env-picker-member-eu-prod"]')
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(captured!.groupReach).toBe("g_prod");
+    expect(captured!.connectionId).toBe("eu-prod");
+    expect(captured!.routingMode).toBe("pin");
+  });
+
+  test("a single-group workspace shows no reach chooser (reach is trivial)", () => {
+    const oneGroup: ChatEnvGroup[] = [twoGroups[0]];
+    const { container } = render(
+      <ChatEnvPicker
+        groups={oneGroup}
+        activeGroupId="g_prod"
+        activeConnectionId="us-prod"
+        activeRoutingMode="pin"
+        activeGroupReach={null}
+        onSelect={noop}
+      />,
+    );
+    // No reach chooser for a single-group workspace…
+    expect(container.querySelector('[data-testid="chat-env-picker-reach-all"]')).toBeNull();
+    // …but member routing for the sole multi-member group is still available.
+    expect(container.querySelector('[data-testid="chat-env-picker-mode-auto"]')).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3895 — reach threading through the pure seed/restore resolvers.
+// ---------------------------------------------------------------------------
+describe("resolveEnvSelection / resolveConversationScope — Group reach (#3895)", () => {
+  const g = (id: string, members: string[]): ChatEnvGroup => ({
+    id,
+    name: id,
+    primaryConnectionId: members[0] ?? null,
+    members: members.map((c) => ({ connectionId: c, dbType: "postgres", description: null })),
+  });
+  const emptyPref = {
+    workspaceId: null,
+    groupId: null,
+    connectionId: null,
+    routingMode: null,
+    restExcludedDatasourceIds: [],
+    restFocusDatasourceId: null,
+    groupReach: null,
+  };
+  const baseInput = (overrides: Partial<ResolveEnvSelectionInput>): ResolveEnvSelectionInput => ({
+    groups: [g("g_a", ["a"]), g("g_b", ["b"])],
+    current: {
+      groupId: null,
+      connectionId: null,
+      routingMode: null,
+      restExcludedDatasourceIds: [],
+      restFocusDatasourceId: null,
+      groupReach: null,
+    },
+    provenance: "unset",
+    restProvenance: "unset",
+    groupReachProvenance: "unset",
+    preference: emptyPref,
+    activeWorkspaceId: null,
+    preferenceHydrated: true,
+    sessionResolved: true,
+    groupsLoaded: true,
+    ...overrides,
+  });
+
+  test("a MULTI-group fresh chat with no preference defaults to All sources — no group is bound", () => {
+    // The ADR-0022 flip: a multi-group workspace no longer focus-seeds the first
+    // group; it starts at All sources (the agent ranges every group).
+    const decision = resolveEnvSelection(baseInput({}));
+    // Either noop (already at the All-sources default) or a seed that binds no
+    // group — never a focus-first-group seed.
+    if (decision.kind === "seed") {
+      expect(decision.groupId).toBeNull();
+      expect(decision.groupReach).toBeNull();
+    } else {
+      expect(decision.kind).toBe("noop");
+    }
+  });
+
+  test("seeds the Group reach from a workspace-matching sticky preference (Focus restored on a fresh chat)", () => {
+    const decision = resolveEnvSelection(
+      baseInput({
+        activeWorkspaceId: "org-1",
+        preference: {
+          ...emptyPref,
+          workspaceId: "org-1",
+          groupId: "g_a",
+          connectionId: "a",
+          routingMode: "pin",
+          groupReach: "g_a",
+        },
+      }),
+    );
+    expect(decision.kind).toBe("restore");
+    if (decision.kind === "restore") {
+      expect(decision.groupReach).toBe("g_a");
+      expect(decision.groupId).toBe("g_a");
+    }
+  });
+
+  test("a sticky preference's Focus on a NO-LONGER-VISIBLE group falls back to All sources (never lies)", () => {
+    // The pref's member routing points at a VISIBLE group (g_a/a) so the restore
+    // branch fires and actually computes nextGroupReach = prefReach — but the
+    // pref's *reach* is g_archived, which is no longer in `groups`. Seeding Focus
+    // on a gone group would lie, so prefReach coalesces to null = All sources.
+    // (Member routing for g_a still restores — reach is the independent axis.)
+    const decision = resolveEnvSelection(
+      baseInput({
+        activeWorkspaceId: "org-1",
+        preference: {
+          ...emptyPref,
+          workspaceId: "org-1",
+          groupId: "g_a",
+          connectionId: "a",
+          routingMode: "pin",
+          groupReach: "g_archived", // gone → must fall back to All, not restore Focus
+        },
+      }),
+    );
+    expect(decision.kind).toBe("restore");
+    if (decision.kind === "restore") {
+      expect(decision.groupId).toBe("g_a");
+      // The reach falls back to All sources rather than restoring a Focus on a
+      // group the workspace can no longer see.
+      expect(decision.groupReach).toBeNull();
+    }
+  });
+
+  test("passes an explicit reach through a SQL seed instead of clobbering it (reach provenance decoupled)", () => {
+    // A conversation-open restore set the reach authoritative ("explicit") while
+    // the SQL member routing must still seed → the reach must survive.
+    const decision = resolveEnvSelection(
+      baseInput({
+        current: {
+          groupId: null,
+          connectionId: null,
+          routingMode: null,
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+          groupReach: "g_b",
+        },
+        groupReachProvenance: "explicit",
+      }),
+    );
+    // Whatever the SQL decision, the explicit reach passes through unchanged.
+    if (decision.kind === "restore" || decision.kind === "seed") {
+      expect(decision.groupReach).toBe("g_b");
+    }
+  });
+
+  test("resolveConversationScope restores the row's Group reach on a restore", () => {
+    const decision = resolveConversationScope(
+      {
+        connectionGroupId: "g_a",
+        connectionId: "a",
+        routingMode: "pin",
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: null,
+        groupReach: "g_a",
+      },
+      [g("g_a", ["a"])],
+    );
+    expect(decision.kind).toBe("restore");
+    expect(decision.groupReach).toBe("g_a");
+  });
+
+  test("resolveConversationScope carries the row's Group reach even when the SQL scope defers to seed", () => {
+    // All-null SQL scope → SQL seed, but the row's reach (independent axis) is
+    // still restored verbatim (like the REST scope, #3078).
+    const decision = resolveConversationScope(
+      {
+        connectionGroupId: null,
+        connectionId: null,
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: null,
+        groupReach: "g_a",
+      },
+      [g("g_a", ["a"])],
+    );
+    expect(decision.kind).toBe("seed");
+    expect(decision.groupReach).toBe("g_a");
   });
 });
 

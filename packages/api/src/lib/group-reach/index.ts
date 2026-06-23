@@ -43,6 +43,20 @@ export type ReachState =
   | { readonly kind: "focus"; readonly groupId: string };
 
 /**
+ * Map a persisted `conversations.group_reach` column value to a {@link ReachState}
+ * (slice (c) #3895). `null` / `undefined` (the column default) → `all`; a
+ * non-empty `connection_group_id` → `focus` on that group.
+ *
+ * Pure + total. Centralises the column ↔ state encoding so the chat route, the
+ * `executeSQL` reach bound, and the Source-catalog narrowing all read the
+ * conversation's reach the same way — the column is the single wire/DB
+ * representation and this is the single decoder.
+ */
+export function reachStateFromColumn(value: string | null | undefined): ReachState {
+  return value ? { kind: "focus", groupId: value } : { kind: "all" };
+}
+
+/**
  * A Connection group the workspace can see, as resolved by the impure
  * `loadVisibleGroups` lookup. `id` is the canonical `connection_group_id`
  * (a group-of-one standalone datasource uses its own connection id as its

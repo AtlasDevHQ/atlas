@@ -281,6 +281,70 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(after.rows[0]?.bound_dashboard_id).toBeNull();
   }, PG_TEST_TIMEOUT_MS);
 
+  // ─────────────────────────────────────────────────────────────────────
+  // 0149 — conversations.group_reach + behavior-preserving backfill (#3895)
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("0149: conversations.group_reach is a nullable text column with no default (#3895)", async () => {
+    const { rows } = await pool.query<{
+      data_type: string;
+      is_nullable: string;
+      column_default: string | null;
+    }>(
+      `SELECT data_type, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE table_name = 'conversations'
+          AND column_name = 'group_reach'
+          AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.data_type).toBe("text");
+    expect(rows[0]?.is_nullable).toBe("YES");
+    // NULL = All sources is the default state — no column default needed.
+    expect(rows[0]?.column_default).toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0149: the behavior-preserving backfill maps a group-bound row to Focus, leaves a null-group row at All (#3895)", async () => {
+    // A clean forward run has no pre-existing rows, so exercise the exact
+    // backfill statement against real Postgres: a conversation already bound to
+    // a group (connection_group_id) must become Focus → that group, while a
+    // null-group conversation stays NULL (All sources). The WHERE guard
+    // (group_reach IS NULL) is what makes the backfill safe to re-run.
+    const stamp = Date.now();
+    const orgId = `org-3895-${stamp}`;
+    const bound = await pool.query<{ id: string }>(
+      `INSERT INTO conversations (user_id, org_id, connection_group_id, group_reach)
+       VALUES ('u-3895', $1, 'g_prod', NULL) RETURNING id`,
+      [orgId],
+    );
+    const noGroup = await pool.query<{ id: string }>(
+      `INSERT INTO conversations (user_id, org_id, connection_group_id, group_reach)
+       VALUES ('u-3895', $1, NULL, NULL) RETURNING id`,
+      [orgId],
+    );
+
+    // The exact backfill from 0149.
+    await pool.query(
+      `UPDATE conversations
+          SET group_reach = connection_group_id
+        WHERE connection_group_id IS NOT NULL AND group_reach IS NULL
+          AND org_id = $1`,
+      [orgId],
+    );
+
+    const boundRow = await pool.query<{ group_reach: string | null }>(
+      `SELECT group_reach FROM conversations WHERE id = $1`,
+      [bound.rows[0]?.id],
+    );
+    const noGroupRow = await pool.query<{ group_reach: string | null }>(
+      `SELECT group_reach FROM conversations WHERE id = $1`,
+      [noGroup.rows[0]?.id],
+    );
+    // Group-bound → Focus → that group (behavior-preserving).
+    expect(boundRow.rows[0]?.group_reach).toBe("g_prod");
+    // Null-group → All sources (unchanged).
+    expect(noGroupRow.rows[0]?.group_reach).toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
+
   // ---------------------------------------------------------------------------
   // proactive_pauses (#2295)
   // ---------------------------------------------------------------------------

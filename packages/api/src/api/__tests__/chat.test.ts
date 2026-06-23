@@ -134,6 +134,13 @@ const mockUpdateConversationRestExcluded = mock(() =>
 const mockUpdateConversationRestFocus = mock(() =>
   Promise.resolve({ ok: true as const }),
 );
+// #3895 — captured so tests can assert the Group-reach persist path, incl. the
+// widen-via-null case (the #3073 transport-omits-null bug class). The chat route
+// imports + CALLS this synchronously (before .catch), so it MUST be mocked or
+// the persist-reach branch throws a TypeError the moment the picker is touched.
+const mockUpdateConversationGroupReach = mock(() =>
+  Promise.resolve({ ok: true as const }),
+);
 type ReservationResult =
   | { status: "ok"; totalStepsBefore: number }
   | { status: "exceeded"; totalSteps: number }
@@ -176,6 +183,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
   updateConversationRestExcluded: mockUpdateConversationRestExcluded,
   updateConversationRestFocus: mockUpdateConversationRestFocus,
+  updateConversationGroupReach: mockUpdateConversationGroupReach,
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
@@ -266,6 +274,8 @@ describe("POST /api/v1/chat", () => {
     mockUpdateConversationRestExcluded.mockResolvedValue({ ok: true as const });
     mockUpdateConversationRestFocus.mockReset();
     mockUpdateConversationRestFocus.mockResolvedValue({ ok: true as const });
+    mockUpdateConversationGroupReach.mockReset();
+    mockUpdateConversationGroupReach.mockResolvedValue({ ok: true as const });
     mockReserveConversationBudget.mockReset();
     mockReserveConversationBudget.mockResolvedValue({ status: "ok", totalStepsBefore: 0 });
     mockSettleConversationSteps.mockReset();
@@ -699,6 +709,131 @@ describe("POST /api/v1/chat", () => {
     expect(capturedContext?.restFocusDatasourceId).toBe("ds-stripe");
     // …and did NOT burn an UPDATE (body absent → inherit, no change).
     expect(mockUpdateConversationRestFocus).not.toHaveBeenCalled();
+  });
+
+  // #3895 — the conversation's Group reach (a Focus group id) must reach the
+  // agent via the ALS frame so executeSQL's reach resolver bounds queries to it.
+  it("propagates groupReach into the ALS frame the agent sees (#3895)", async () => {
+    const { getRequestContext } = await import("@atlas/api/lib/logger");
+    let capturedContext: ReturnType<typeof getRequestContext> | undefined;
+    mockRunAgent.mockImplementationOnce(() => {
+      capturedContext = getRequestContext();
+      return Promise.resolve({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        text: Promise.resolve("answer"),
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "focus prod" }] }],
+        groupReach: "g_prod",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(capturedContext?.groupReach).toBe("g_prod");
+  });
+
+  // #3895 — a null/All-sources reach must NOT be stamped on the ALS frame, so the
+  // default "every visible group reachable" shape is byte-identical for the
+  // common non-focused conversation.
+  it("does not stamp a null groupReach on the ALS frame (All sources) (#3895)", async () => {
+    const { getRequestContext } = await import("@atlas/api/lib/logger");
+    let capturedContext: ReturnType<typeof getRequestContext> | undefined;
+    mockRunAgent.mockImplementationOnce(() => {
+      capturedContext = getRequestContext();
+      return Promise.resolve({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        text: Promise.resolve("answer"),
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+        groupReach: null,
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(capturedContext?.groupReach).toBeUndefined();
+  });
+
+  // #3895 / #3073 — the widen path. An existing conversation is Focused on
+  // g_prod; the user widens to All sources, so the body carries `null`. The route
+  // distinguishes "field present as null" (persist the widen) from "field absent"
+  // (inherit the row) — without it a widen silently keeps the stale Focus.
+  it("persists a widen (null widens a prior Focus to All sources) (#3895/#3073)", async () => {
+    const convId = "a1b2c3d4-e5f6-4708-9a0b-1c2d3e4f5061";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: null,
+        groupReach: "g_prod",
+        messages: [],
+      },
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "widen" }] }],
+        conversationId: convId,
+        groupReach: null,
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mockUpdateConversationGroupReach).toHaveBeenCalledTimes(1);
+    const calls = mockUpdateConversationGroupReach.mock.calls as unknown as unknown[][];
+    // Second arg is the new (null) reach persisted to the row.
+    expect(calls[0]![1]).toBeNull();
+  });
+
+  // #3895 — when the body OMITS groupReach (the common follow-up turn), the
+  // stored Focus is inherited into the ALS frame and NO redundant UPDATE fires.
+  it("inherits the stored Group reach and skips the UPDATE when the body omits it (#3895)", async () => {
+    const convId = "b2c3d4e5-f6a7-4819-8b0c-2d3e4f506172";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: null,
+        groupReach: "g_prod",
+        messages: [],
+      },
+    });
+    const { getRequestContext } = await import("@atlas/api/lib/logger");
+    let capturedContext: ReturnType<typeof getRequestContext> | undefined;
+    mockRunAgent.mockImplementationOnce(() => {
+      capturedContext = getRequestContext();
+      return Promise.resolve({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        text: Promise.resolve("answer"),
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "follow up" }] }],
+        conversationId: convId,
+        // groupReach intentionally omitted
+      }),
+    );
+    expect(response.status).toBe(200);
+    // Inherited the stored Focus into the ALS frame…
+    expect(capturedContext?.groupReach).toBe("g_prod");
+    // …and did NOT burn an UPDATE (body absent → inherit, no change).
+    expect(mockUpdateConversationGroupReach).not.toHaveBeenCalled();
   });
 
   // F-74 regression pin: the chat handler MUST pass `bucket: "chat"` so the

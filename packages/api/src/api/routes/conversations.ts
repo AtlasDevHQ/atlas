@@ -112,6 +112,16 @@ const ConversationSchema = z.object({
    * Mirrors the `Conversation` wire type.
    */
   restFocusDatasourceId: z.string().nullable().optional(),
+  /**
+   * Per-conversation Group reach (#3895, ADR-0022). `null` = All sources
+   * (every visible Connection group reachable); a `connectionGroupId` value =
+   * Focus → that group (hard/exclusive — only it is reachable). The cross-group
+   * axis ABOVE member routing (`routingMode`); independent of the REST-scope
+   * fields. Genuinely nullable; optional so pre-#3895 rows / SDK consumers need
+   * not supply it. Mirrors the `Conversation` wire type — `GET /conversations/:id`
+   * carries it so the picker restores the persisted reach on open.
+   */
+  groupReach: z.string().nullable().optional(),
   starred: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

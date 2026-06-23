@@ -45,6 +45,7 @@ import {
   updateConversationRoutingMode,
   updateConversationRestExcluded,
   updateConversationRestFocus,
+  updateConversationGroupReach,
   resolveRoutingMode,
 } from "@atlas/api/lib/conversations";
 import type { ConversationRoutingMode } from "@useatlas/types/conversation";
@@ -435,6 +436,29 @@ export const ChatRequestSchema = z.object({
   restFocusDatasourceId: z
     .string()
     .min(1, "restFocusDatasourceId must be a non-empty install_id or null.")
+    .nullable()
+    .optional(),
+  /**
+   * #3895 (ADR-0022) — per-conversation Group reach. The scope picker sends the
+   * focused `connection_group_id` (to Focus → that group, a hard/exclusive
+   * narrowing) or `null` (All sources — every visible group reachable). The
+   * route persists it onto the conversation row AND stamps it into the request
+   * context so the reach resolver bounds `executeSQL` for this turn.
+   *
+   * Presence is meaningful, like the REST-scope fields: an explicit `null`
+   * widens back to All sources, whereas an OMITTED field inherits the
+   * conversation's stored reach. The web transport must therefore send the
+   * field (including `null`) whenever the picker was touched, or a widen
+   * silently keeps the stale Focus (the #3073 transport-omits-null bug class).
+   *
+   * An empty string is rejected (`.min(1)`): the only valid values are a
+   * non-empty group id (Focus) or `null` (All sources). `""` would persist as
+   * Focus yet read back as All at the runtime truthy gate — invalid stored state
+   * with the UI and agent disagreeing (mirrors restFocusDatasourceId).
+   */
+  groupReach: z
+    .string()
+    .min(1, "groupReach must be a non-empty connection_group_id or null.")
     .nullable()
     .optional(),
   /**
@@ -906,6 +930,14 @@ chat.openapi(chatRoute, async (c) => {
         // row (the transport-omits-null bug class, #3073).
         let effectiveRestFocus: string | null | undefined =
           parsed.data.restFocusDatasourceId;
+        // #3895 — per-conversation Group reach (ADR-0022). Body value (this
+        // turn, from the scope picker) > stored value on the row. PRESENCE is
+        // meaningful: an explicit `null` widens to All sources, an OMITTED field
+        // inherits the row's reach. We keep `undefined` (omitted) vs `null`
+        // (widen) distinct all the way through so a widen actually nulls the row
+        // (the transport-omits-null bug class, #3073).
+        let effectiveGroupReach: string | null | undefined =
+          parsed.data.groupReach;
 
         // #2424 — when the body supplies `connectionGroupId`, verify it
         // belongs to the caller's active org BEFORE persisting it onto the
@@ -948,6 +980,49 @@ chat.openapi(chatRoute, async (c) => {
           }
           // `no_db` falls through — self-hosted single-tenant without
           // internal DB has no group concept to begin with.
+        }
+
+        // #3895 — a body-supplied Focus `groupReach` is a group id we persist
+        // onto the row, so it gets the SAME org-ownership gate as
+        // `connectionGroupId` (#2424): a cross-org pointer must not survive on
+        // the row even though the runtime reach bound (org-scoped
+        // `loadVisibleGroups`) already refuses to reach another org's data — this
+        // keeps the persisted-pointer integrity story consistent across both
+        // cross-group fields. Skip when null (a widen to All sources names no
+        // group) or when it equals `connectionGroupId` (already verified above —
+        // the picker sends both equal on a Focus, so the common path adds no
+        // second lookup).
+        if (
+          parsed.data.groupReach &&
+          parsed.data.groupReach !== parsed.data.connectionGroupId
+        ) {
+          const verdict = await verifyGroupBelongsToOrg(
+            parsed.data.groupReach,
+            authResult.user?.activeOrganizationId,
+          );
+          if (verdict === "not_found") {
+            return c.json(
+              {
+                error: "invalid_connection_group",
+                message: "The requested environment is not available in this workspace.",
+                retryable: false,
+                requestId,
+              },
+              400,
+            );
+          }
+          if (verdict === "error") {
+            return c.json(
+              {
+                error: "internal_error",
+                message: "Could not verify environment ownership. Please retry.",
+                retryable: true,
+                requestId,
+              },
+              500,
+            );
+          }
+          // `no_db` falls through, exactly as the connectionGroupId gate above.
         }
 
         // Conversation persistence — Ownership verification blocks here (can 404); message writes are fire-and-forget via internalExecute.
@@ -994,6 +1069,13 @@ chat.openapi(chatRoute, async (c) => {
             // "field absent → use the row".
             if (effectiveRestFocus === undefined) {
               effectiveRestFocus = existing.data.restFocusDatasourceId ?? null;
+            }
+            // #3895 — inherit Group reach from the row when the body omits it.
+            // An explicit `null` from the body is NOT omitted (it widens to All
+            // sources), so the `=== undefined` guard keeps "widen" distinct from
+            // "field absent → use the row".
+            if (effectiveGroupReach === undefined) {
+              effectiveGroupReach = existing.data.groupReach ?? null;
             }
             // Persist the picker mode if the body explicitly set one for
             // this turn. We compare against the stored value to avoid
@@ -1076,6 +1158,33 @@ chat.openapi(chatRoute, async (c) => {
                     conversationId,
                   },
                   "updateConversationRestFocus rejected",
+                );
+              });
+            }
+            // #3895 — persist Group reach when the body explicitly set one this
+            // turn AND it differs from the stored value. An explicit `null` that
+            // widens a prior Focus back to All sources DOES persist (the widen
+            // path the transport must support); normalize the row's value with
+            // `?? null` so a string→null or null→string change is detected.
+            if (
+              parsed.data.groupReach !== undefined &&
+              parsed.data.groupReach !== (existing.data.groupReach ?? null)
+            ) {
+              // Fire-and-forget, same contract as routing-mode / REST scope
+              // above: the runtime honours the body's reach for this turn even
+              // if the persist fails; the helper logs its own failures.
+              updateConversationGroupReach(
+                conversationId,
+                parsed.data.groupReach,
+                authResult.user?.id,
+                authResult.user?.activeOrganizationId,
+              ).catch((err: unknown) => {
+                log.warn(
+                  {
+                    err: err instanceof Error ? err.message : String(err),
+                    conversationId,
+                  },
+                  "updateConversationGroupReach rejected",
                 );
               });
             }
@@ -1195,6 +1304,11 @@ chat.openapi(chatRoute, async (c) => {
                 // null when the picker is in default mode, so `?? null` keeps a
                 // newly-created default-mode conversation un-focused.
                 restFocusDatasourceId: effectiveRestFocus ?? null,
+                // #3895 — persist Group reach the user picked at creation.
+                // Undefined / null ⇒ NULL (All sources — the new default). The
+                // transport sends null when the picker is at All sources, so
+                // `?? null` keeps a newly-created conversation ranging all groups.
+                groupReach: effectiveGroupReach ?? null,
                 orgId: authResult.user?.activeOrganizationId,
               });
               if (created) {
@@ -1449,6 +1563,14 @@ chat.openapi(chatRoute, async (c) => {
               // not-focused shape so default-scope turns are unchanged.
               ...(effectiveRestFocus
                 ? { restFocusDatasourceId: effectiveRestFocus }
+                : {}),
+              // #3895 — the resolved Group reach reaches `executeSQL`'s reach
+              // resolver + the Source-catalog builder via the request context.
+              // Stamped only when truthy (a Focus group id); a null/All-sources
+              // reach keeps the legacy "all visible groups" shape so the default
+              // is byte-identical for non-focused conversations.
+              ...(effectiveGroupReach
+                ? { groupReach: effectiveGroupReach }
                 : {}),
             },
             () =>

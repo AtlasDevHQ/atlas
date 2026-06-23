@@ -141,6 +141,16 @@ export const conversations = pgTable(
     // as normal, and they stay RETAINED-but-inert while focused so
     // clearing focus returns to the prior scope. See ADR-0011.
     restFocusDatasourceId: text("rest_focus_datasource_id"),
+    // 0149 — per-conversation Group reach (#3895, ADR-0022 slice (c)). NULL
+    // (the default) = All sources: every visible Connection group is reachable
+    // and the agent routes per question via the Source catalog. A
+    // `connection_group_id` value = Focus → that group: only it is reachable;
+    // executeSQL REJECTS any other group target (no silent re-route — the
+    // #3867(b) fix). Reach is the axis ABOVE member routing (`routing_mode`);
+    // REST scope is a separate axis. This column feeds the slice-(a) reach
+    // resolver (#3893) so Focus actually bounds executeSQL. Existing group-bound
+    // rows were backfilled to Focus (behavior-preserving).
+    groupReach: text("group_reach"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
     // Saved/starred

@@ -32,6 +32,7 @@ import { resolveWorkspaceRestDatasources, resolveWorkspaceRestDatasourcesOrThrow
 import type { RestDatasource } from "./openapi/datasource";
 import { buildAgentRepresentation } from "./openapi/representation";
 import { loadSourceCatalog, type RestCatalogSource } from "./source-catalog/lookup";
+import { reachStateFromColumn } from "./group-reach";
 import { REST_OPERATION_DESCRIPTION, createExecuteRestOperationTool } from "./tools/rest-operation";
 import { getStreamWriter } from "./tools/python-stream";
 import { getContextFragments, getDialectHints } from "./plugins/tools";
@@ -1449,7 +1450,18 @@ export async function runAgent({
   // in with `explore`. Built once per turn after REST resolution (it lists the
   // same conversation-scoped REST set). Fail-soft: an assembly hiccup yields ""
   // (no block), never a failed turn.
-  const sourceCatalog = await loadSourceCatalog(orgId, atlasMode, restCatalogSources);
+  //
+  // #3895 — narrow the SQL half to the conversation's Group reach: under Focus
+  // the menu lists only the focused group, matching what `executeSQL` will allow
+  // (so the agent isn't told about groups every query to which would be
+  // rejected). Sourced from the same RequestContext value that bounds executeSQL.
+  const sourceCatalog = await loadSourceCatalog(
+    orgId,
+    atlasMode,
+    restCatalogSources,
+    {},
+    reachStateFromColumn(reqCtx?.groupReach),
+  );
 
   // System prompt is built once and pinned: it carries the semantic index +
   // glossary AND the durable memory block (#3755), and is passed to the model

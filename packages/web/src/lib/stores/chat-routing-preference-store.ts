@@ -51,6 +51,16 @@ export interface ChatRoutingPreference {
    * targets only that datasource and SQL is suspended.
    */
   readonly restFocusDatasourceId: string | null;
+  /**
+   * #3895 (ADR-0022) — Group reach the user last chose. `null` = **All sources**
+   * (every visible Connection group reachable — the new default); a
+   * `connection_group_id` value = **Focus → that group** (hard/exclusive). Seeds
+   * NEW chats only (mirrors `restFocusDatasourceId`); the per-conversation row is
+   * authoritative once a conversation exists. The clean-break migration (persist
+   * `version: 1`) clears any legacy single-group preference so existing browsers
+   * start fresh at All sources (ADR-0022 migration).
+   */
+  readonly groupReach: string | null;
 }
 
 interface ChatRoutingPreferenceStore extends ChatRoutingPreference {
@@ -78,6 +88,7 @@ const EMPTY: ChatRoutingPreference = {
   routingMode: null,
   restExcludedDatasourceIds: [],
   restFocusDatasourceId: null,
+  groupReach: null,
 };
 
 export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>()(
@@ -94,6 +105,7 @@ export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>(
           routingMode: next.routingMode,
           restExcludedDatasourceIds: next.restExcludedDatasourceIds,
           restFocusDatasourceId: next.restFocusDatasourceId,
+          groupReach: next.groupReach,
         }),
       // Partial set — zustand shallow-merges, so `_hasHydrated` (absent from
       // EMPTY) is preserved. A clear must not re-close the hydration gate.
@@ -102,6 +114,28 @@ export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>(
     {
       name: "atlas:chat:routing-preference",
       storage: createJSONStorage(() => localStorage),
+      // #3895 (ADR-0022) — clean-break migration. v0 stored a single-group
+      // preference (groupId/connectionId/routingMode) that seeded each new chat
+      // onto that one group. Cross-group reach flips the default to All sources,
+      // so a persisted v0 single-group seed must be CLEARED: drop the SQL pin and
+      // start at All sources (groupReach null), exactly as the conversation-row
+      // migration clears the sticky single-group preference. REST scope carries
+      // forward (a separate axis, unchanged). New browsers persist v1 directly.
+      version: 1,
+      migrate: (persisted, version) => {
+        const prev = (persisted ?? {}) as Partial<ChatRoutingPreference>;
+        if (version < 1) {
+          return {
+            ...EMPTY,
+            // Keep the workspace + REST scope; clear the SQL single-group seed so
+            // new chats default to All sources rather than re-focusing the last group.
+            workspaceId: prev.workspaceId ?? null,
+            restExcludedDatasourceIds: prev.restExcludedDatasourceIds ?? [],
+            restFocusDatasourceId: prev.restFocusDatasourceId ?? null,
+          } satisfies ChatRoutingPreference;
+        }
+        return prev as ChatRoutingPreference;
+      },
       // Persist ONLY the preference fields. `_hasHydrated` + setters are
       // transient: persisting them is meaningless, and a stored
       // `_hasHydrated: true` would — under any async-storage swap — report
@@ -113,6 +147,7 @@ export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>(
         routingMode: s.routingMode,
         restExcludedDatasourceIds: s.restExcludedDatasourceIds,
         restFocusDatasourceId: s.restFocusDatasourceId,
+        groupReach: s.groupReach,
       }),
       // Fires after rehydration (synchronously for localStorage, even when
       // storage was empty), so the consumer's gate opens exactly once the

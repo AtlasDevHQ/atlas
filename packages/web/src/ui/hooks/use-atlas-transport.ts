@@ -64,6 +64,13 @@ export interface ChatRoutingInputs {
   restExcludedDatasourceIds?: readonly string[] | undefined;
   /** Always sent when present (even `null`) so a clear nulls the row (#3067). */
   restFocusDatasourceId?: string | null | undefined;
+  /**
+   * #3895 (ADR-0022) — Group reach. Always sent when the getter is wired (even
+   * `null`) so a widen back to All sources nulls the row instead of inheriting
+   * the stale Focus (the #3073 transport-omits-null bug class). `null` = All
+   * sources; a `connection_group_id` value = Focus → that group.
+   */
+  groupReach?: string | null | undefined;
 }
 
 /**
@@ -89,6 +96,11 @@ export function buildChatRequestBody(
   }
   if (inputs.restFocusDatasourceId !== undefined) {
     body.restFocusDatasourceId = inputs.restFocusDatasourceId;
+  }
+  // #3895 — Group reach: always sent when the getter is wired (even `null`), like
+  // the REST-scope fields, so a widen to All sources resets the row.
+  if (inputs.groupReach !== undefined) {
+    body.groupReach = inputs.groupReach;
   }
   return body;
 }
@@ -151,6 +163,14 @@ export interface UseAtlasTransportOptions {
   getRestExcludedDatasourceIds?: () => readonly string[];
   /** #3067 — REST-only focus (`install_id`, or null = not focused). */
   getRestFocusDatasourceId?: () => string | null;
+  /**
+   * #3895 (ADR-0022) — Group reach (`connection_group_id` = Focus, or null = All
+   * sources). When provided, the transport ALWAYS sends it (even `null`), because
+   * the chat route distinguishes "field present as null" (widen to All sources —
+   * clear the row's Focus) from "field absent" (inherit the row). Omitting it on
+   * a widen would silently keep a stale Focus — the #3073 bug class.
+   */
+  getGroupReach?: () => string | null;
 }
 
 export interface UseAtlasTransportReturn {
@@ -214,6 +234,11 @@ export function useAtlasTransport(
   getRestExcludedDatasourceIdsRef.current = opts.getRestExcludedDatasourceIds;
   const getRestFocusDatasourceIdRef = useRef(opts.getRestFocusDatasourceId);
   getRestFocusDatasourceIdRef.current = opts.getRestFocusDatasourceId;
+  // #3895 — Group reach getter. Ref for the same reason as the routing getters:
+  // a reach change between turns reaches the next request without rebuilding the
+  // transport.
+  const getGroupReachRef = useRef(opts.getGroupReach);
+  getGroupReachRef.current = opts.getGroupReach;
 
   // --- Auth state (seed from module cache to avoid flash on client-side nav) ---
   const [authMode, setAuthModeState] = useState<AuthMode | null>(_cachedAuthMode);
@@ -405,6 +430,7 @@ export function useAtlasTransport(
             routingMode: getRoutingModeRef.current?.(),
             restExcludedDatasourceIds: getRestExcludedDatasourceIdsRef.current?.(),
             restFocusDatasourceId: getRestFocusDatasourceIdRef.current?.(),
+            groupReach: getGroupReachRef.current?.(),
           }),
         };
       },

@@ -73,15 +73,31 @@ export interface ChatEnvGroup {
 }
 
 /**
- * Payload for {@link ChatEnvPickerProps.onSelect}. The parent receives
- * the full triple every time so it can persist any subset onto the
- * conversation row without the picker having to know which fields the
- * server treats as content-scope vs. per-turn execution-target.
+ * Payload for {@link ChatEnvPickerProps.onSelect}. The parent receives the full
+ * reach + member-routing selection every time so it can persist any subset onto
+ * the conversation row without the picker having to know which fields the server
+ * treats as reach vs. content-scope vs. per-turn execution-target.
+ *
+ * #3895 (ADR-0022) — `groupReach` is the cross-group axis ABOVE member routing:
+ * `null` = **All sources** (every visible group reachable); a group id = **Focus
+ * → that group** (hard/exclusive). The reach/member-routing coupling is enforced
+ * by this component's four `onSelect` producers (not the type), and depends on
+ * the workspace shape:
+ *
+ *   - **Multi-group:** `null` groupReach ⇒ member-routing fields are `null` too
+ *     (no single group to route within); a named group ⇒ `groupId === groupReach`.
+ *   - **Single-group:** the reach chooser is hidden (reach is trivially All), so
+ *     `groupReach` stays `null` while `groupId`/`connectionId`/`routingMode` bind
+ *     the sole group for member-routing context (`groupId !== groupReach` here).
+ *
+ * The producer behaviour is pinned by the picker's onSelect tests (#3895), so the
+ * flat (vs. discriminated-union) shape can't drift into an illegal combination.
  */
 export interface ChatEnvSelection {
-  readonly groupId: string;
-  readonly connectionId: string;
-  readonly routingMode: ConversationRoutingMode;
+  readonly groupReach: string | null;
+  readonly groupId: string | null;
+  readonly connectionId: string | null;
+  readonly routingMode: ConversationRoutingMode | null;
 }
 
 export interface ChatEnvPickerProps {
@@ -114,6 +130,16 @@ export interface ChatEnvPickerProps {
    * pinned to that member".
    */
   readonly activeRoutingMode?: ConversationRoutingMode | null;
+  /**
+   * #3895 (ADR-0022) — the conversation's Group reach. `null` = **All sources**
+   * (every visible Connection group reachable — the default); a group id =
+   * **Focus → that group** (hard/exclusive narrowing). Drives the picker's reach
+   * UI (the "All sources" vs "Focus: <group>" choice) and gates member routing:
+   * Auto/Pin/All surface only when a multi-member group is the single reachable
+   * group (Focus → it, or the sole group under All sources). Optional / defaults
+   * to `null` (All sources) for back-compat with callers that don't pass it.
+   */
+  readonly activeGroupReach?: string | null;
   /**
    * #3044 — the workspace's REST datasources + their env scope. Rendered in the
    * dropdown so the user can see (and, #3066, toggle) what the conversation
@@ -291,6 +317,8 @@ export interface ResolveEnvSelectionInput {
     readonly restExcludedDatasourceIds: ReadonlyArray<string>;
     /** #3067 — current REST-only focus, so a pref-only focus change still restores. */
     readonly restFocusDatasourceId: string | null;
+    /** #3895 — current Group reach (null = All sources), so a pref-only reach change still restores. */
+    readonly groupReach: string | null;
   };
   /** How {@link current}'s SQL scope (group / member / mode) was set. */
   readonly provenance: EnvSelectionProvenance;
@@ -306,6 +334,18 @@ export interface ResolveEnvSelectionInput {
    * silent default in a precedence resolver is how the clobber bug returns.
    */
   readonly restProvenance: EnvSelectionProvenance;
+  /**
+   * #3895 — how {@link current}'s Group reach was set, independent of the SQL
+   * member-routing {@link provenance} and the {@link restProvenance} (mirrors the
+   * decoupling that fixed #3078). When `"explicit"` the reach is authoritative —
+   * a conversation-open restore made the row's reach the source of truth, or the
+   * user picked All sources / Focus — so the resolver passes the *current* reach
+   * through any seed/restore instead of clobbering it with the default (All) /
+   * the sticky preference. `"unset"` / `"default"` mean "reach follows the
+   * seed/restore." Required, like {@link provenance}: a silent default in a
+   * precedence resolver is how a clobber bug returns.
+   */
+  readonly groupReachProvenance: EnvSelectionProvenance;
   /** The persisted sticky preference for this browser. */
   readonly preference: EnvSelectionPreference;
   /** Active workspace id (`null` = self-hosted / no active org). */
@@ -347,15 +387,26 @@ export type EnvSelectionDecision =
       readonly restExcludedDatasourceIds: string[];
       /** #3067 — the sticky preference's REST-only focus to seed onto this fresh chat. */
       readonly restFocusDatasourceId: string | null;
+      /** #3895 — the Group reach to apply (sticky preference's reach, or null = All sources). */
+      readonly groupReach: string | null;
     }
   | {
       readonly kind: "seed";
-      readonly groupId: string;
-      readonly connectionId: string;
+      /**
+       * #3895 — the SQL member binding to seed. Non-null for a SINGLE-group
+       * workspace (bind that group for member-routing context). `null` for a
+       * MULTI-group workspace, where the new default is All sources (the agent
+       * ranges every group, so no single group is bound) — `groupReach` carries
+       * the reach and the SQL scope stays null.
+       */
+      readonly groupId: string | null;
+      readonly connectionId: string | null;
       /** #3066 — a default seed excludes nothing (every in-scope datasource queryable). */
       readonly restExcludedDatasourceIds: string[];
       /** #3067 — a default seed is not focused (SQL active). */
       readonly restFocusDatasourceId: string | null;
+      /** #3895 — the Group reach to apply (null = All sources, the default). */
+      readonly groupReach: string | null;
     };
 
 /**
@@ -392,6 +443,7 @@ export function resolveEnvSelection(
     current,
     provenance,
     restProvenance,
+    groupReachProvenance,
     preference,
     activeWorkspaceId,
     preferenceHydrated,
@@ -405,6 +457,24 @@ export function resolveEnvSelection(
   // scope free to seed/restore while the REST scope stays put — the seam that
   // fixes the all-null-SQL exclude-set data loss.
   const restExplicit = restProvenance === "explicit";
+  // #3895 — same seam for Group reach: when the reach is authoritative (a
+  // conversation-open restore made the row's reach the source of truth, or the
+  // user picked All sources / Focus), pass the CURRENT reach through any
+  // seed/restore instead of clobbering it with the default (All) / the sticky
+  // preference. Its OWN provenance, decoupled from the SQL + REST provenances.
+  const reachExplicit = groupReachProvenance === "explicit";
+
+  // The sticky preference's reach to seed a fresh chat: only when it belongs to
+  // the active workspace AND still names a visible group (else fall back to All
+  // sources — a Focus on a gone group would lie). When reach is explicit the
+  // current reach passes through untouched (computed per-branch below).
+  const prefMatchesWorkspaceForReach = preference.workspaceId === activeWorkspaceId;
+  const prefReach =
+    prefMatchesWorkspaceForReach &&
+    preference.groupReach &&
+    groups.some((g) => g.id === preference.groupReach)
+      ? preference.groupReach
+      : null;
 
   // 1. Gate — wait until the inputs we need to choose correctly are ready.
   // (Group readiness is handled per-branch below: a *loaded-empty* group list is
@@ -419,10 +489,11 @@ export function resolveEnvSelection(
   if (groups.length === 0) {
     if (!groupsLoaded) return { kind: "wait" };
     // An explicit selection (user pick / conversation restore) is authoritative,
-    // and an explicit REST scope must not be clobbered — leave both alone.
-    if (provenance === "explicit" || restExplicit) return { kind: "noop" };
+    // and an explicit REST/reach scope must not be clobbered — leave all alone.
+    if (provenance === "explicit" || restExplicit || reachExplicit) return { kind: "noop" };
     // Restore the workspace-matching preference's REST scope; another workspace's
-    // preference is ignored (ids can collide). SQL scope stays null (no groups).
+    // preference is ignored (ids can collide). SQL scope stays null (no groups);
+    // reach is All (no groups to Focus → prefReach resolves to null here).
     const prefMatchesWorkspace = preference.workspaceId === activeWorkspaceId;
     const nextRestExcluded = prefMatchesWorkspace
       ? [...(preference.restExcludedDatasourceIds ?? [])]
@@ -430,10 +501,11 @@ export function resolveEnvSelection(
     const nextRestFocus = prefMatchesWorkspace
       ? preference.restFocusDatasourceId ?? null
       : null;
-    // Already on the target REST scope — don't churn (and don't loop).
+    // Already on the target REST + reach scope — don't churn (and don't loop).
     if (
       sameExcludeSet(current.restExcludedDatasourceIds ?? [], nextRestExcluded) &&
-      (current.restFocusDatasourceId ?? null) === nextRestFocus
+      (current.restFocusDatasourceId ?? null) === nextRestFocus &&
+      (current.groupReach ?? null) === prefReach
     ) {
       return { kind: "noop" };
     }
@@ -444,12 +516,13 @@ export function resolveEnvSelection(
       routingMode: null,
       restExcludedDatasourceIds: nextRestExcluded,
       restFocusDatasourceId: nextRestFocus,
+      groupReach: prefReach,
     };
   }
 
   // 2. An explicit pick (or conversation-restored value) is authoritative.
-  // (When SQL is explicit the REST scope is already settled too, so there is no
-  // divergent REST action to take here — the early noop is safe.)
+  // (When SQL is explicit the REST + reach scopes are settled too — a user pick /
+  // conversation open marks all three at once — so the early noop is safe.)
   if (provenance === "explicit") return { kind: "noop" };
 
   // 3. Restore a workspace-matching, still-resolvable preference.
@@ -462,27 +535,28 @@ export function resolveEnvSelection(
     (m) => m.connectionId === preference.connectionId,
   );
   if (prefGroup && prefMember) {
-    // The REST scope this restore would apply: the preference's, UNLESS the REST
-    // scope is explicit (#3078) — then the current exclude-set / focus is
-    // authoritative and passes through untouched. Computed once so the no-churn
-    // guard and the returned decision agree (a mismatch would loop forever).
+    // The REST + reach scope this restore would apply: the preference's, UNLESS
+    // explicit (#3078 / #3895) — then the current value is authoritative and
+    // passes through untouched. Computed once so the no-churn guard and the
+    // returned decision agree (a mismatch would loop forever).
     const nextRestExcluded = restExplicit
       ? [...(current.restExcludedDatasourceIds ?? [])]
       : [...(preference.restExcludedDatasourceIds ?? [])];
     const nextRestFocus = restExplicit
       ? current.restFocusDatasourceId ?? null
       : preference.restFocusDatasourceId ?? null;
+    const nextGroupReach = reachExplicit ? current.groupReach ?? null : prefReach;
 
-    // Already on the preferred selection — don't churn React state. The
-    // routing mode AND the REST scope (#3066/#3067) are part of the selection,
-    // so a mode-only or REST-only difference (e.g. a default seed landed on the
-    // preferred member but with no mode / empty exclude-set) must still restore.
+    // Already on the preferred selection — don't churn React state. The routing
+    // mode, REST scope (#3066/#3067), AND Group reach (#3895) are all part of the
+    // selection, so a mode-only / REST-only / reach-only difference must restore.
     if (
       current.groupId === prefGroup.id &&
       current.connectionId === prefMember.connectionId &&
       current.routingMode === preference.routingMode &&
       sameExcludeSet(current.restExcludedDatasourceIds ?? [], nextRestExcluded) &&
-      (current.restFocusDatasourceId ?? null) === nextRestFocus
+      (current.restFocusDatasourceId ?? null) === nextRestFocus &&
+      (current.groupReach ?? null) === nextGroupReach
     ) {
       return { kind: "noop" };
     }
@@ -493,30 +567,54 @@ export function resolveEnvSelection(
       routingMode: preference.routingMode,
       restExcludedDatasourceIds: nextRestExcluded,
       restFocusDatasourceId: nextRestFocus,
+      groupReach: nextGroupReach,
     };
   }
 
-  // No restorable preference. Seed the group-primary default only on a fresh
-  // chat (provenance "unset"); once a default has been seeded — or anything
-  // is already selected — leave it in place rather than re-seeding.
+  // No restorable preference. Seed the default. #3895 — the new default is All
+  // sources (ADR-0022): a MULTI-group workspace binds NO group (the agent ranges
+  // every group; reach = All), while a SINGLE-group workspace binds that one
+  // group for member-routing context (All sources ≡ the one group; the reach
+  // chooser is hidden, so `groupReach` stays null = All). Seed only on a fresh
+  // chat (provenance "unset"); once a default has been seeded — or a member is
+  // already selected — leave it in place rather than re-seeding.
   if (provenance === "default" || current.connectionId !== null) {
     return { kind: "noop" };
   }
-  const seed = pickDefaultEnvSeed(groups, current.connectionId);
-  if (!seed) return { kind: "noop" };
-  // A default seed carries no exclusions — every in-scope REST datasource stays
-  // queryable until the user opts one out — and is not focused (SQL active).
-  // #3078 — UNLESS the REST scope is explicit (e.g. an all-null-SQL conversation
-  // whose exclude-set / focus was just restored): pass it through so seeding the
-  // SQL default doesn't wipe it.
+  // A default seed carries no exclusions and is not focused, UNLESS the REST /
+  // reach scope is explicit (#3078/#3895) — then it passes through so seeding the
+  // SQL default doesn't wipe a just-restored REST scope / reach.
+  const seedRestExcluded = restExplicit ? [...(current.restExcludedDatasourceIds ?? [])] : [];
+  const seedRestFocus = restExplicit ? current.restFocusDatasourceId ?? null : null;
+  const seedGroupReach = reachExplicit ? current.groupReach ?? null : null;
+  const seed = groups.length === 1 ? pickDefaultEnvSeed(groups, current.connectionId) : null;
+  if (!seed) {
+    // Multi-group All-sources default: no SQL binding. Seed only if the reach (or
+    // a passed-through REST scope) actually differs from current — else noop so
+    // the effect doesn't churn. `current.connectionId` is already null here.
+    if (
+      (current.groupReach ?? null) === seedGroupReach &&
+      sameExcludeSet(current.restExcludedDatasourceIds ?? [], seedRestExcluded) &&
+      (current.restFocusDatasourceId ?? null) === seedRestFocus
+    ) {
+      return { kind: "noop" };
+    }
+    return {
+      kind: "seed",
+      groupId: null,
+      connectionId: null,
+      restExcludedDatasourceIds: seedRestExcluded,
+      restFocusDatasourceId: seedRestFocus,
+      groupReach: seedGroupReach,
+    };
+  }
   return {
     kind: "seed",
     groupId: seed.groupId,
     connectionId: seed.connectionId,
-    restExcludedDatasourceIds: restExplicit
-      ? [...(current.restExcludedDatasourceIds ?? [])]
-      : [],
-    restFocusDatasourceId: restExplicit ? current.restFocusDatasourceId ?? null : null,
+    restExcludedDatasourceIds: seedRestExcluded,
+    restFocusDatasourceId: seedRestFocus,
+    groupReach: seedGroupReach,
   };
 }
 
@@ -535,6 +633,8 @@ export interface ConversationScopeSource {
   readonly restExcludedDatasourceIds?: ReadonlyArray<string> | null;
   /** #3067 — the row's REST-only focus (`install_id`, or null = not focused). */
   readonly restFocusDatasourceId?: string | null;
+  /** #3895 — the row's Group reach (`connection_group_id` = Focus, or null = All sources). Absent ⇒ All. */
+  readonly groupReach?: string | null;
 }
 
 /**
@@ -557,6 +657,15 @@ export interface RestoredRestScope {
    * focused). Carried the same way as the exclude-set.
    */
   readonly restFocusDatasourceId: string | null;
+  /**
+   * #3895 — the conversation's Group reach (`connection_group_id` = Focus → that
+   * group, or null = All sources). Carried on EVERY decision the same way as the
+   * REST scope: reach is the authoritative cross-group axis read straight from the
+   * row's `group_reach` column, independent of the SQL member-routing
+   * (group/member) restore-vs-seed validation. The caller restores it and marks
+   * its own provenance `explicit` regardless of the SQL `kind`.
+   */
+  readonly groupReach: string | null;
 }
 
 /** The picker selection restored from a conversation row — SQL scope + REST scope. */
@@ -636,18 +745,26 @@ export function resolveConversationScope(
   // #3067 — the row's REST-only focus (null = not focused). Carried on every
   // decision the same way as the exclude-set (#3078).
   const restFocusDatasourceId = source.restFocusDatasourceId ?? null;
+  // #3895 — the row's Group reach (null = All sources). The authoritative
+  // cross-group axis, read straight from the row's `group_reach` column and
+  // carried on EVERY decision below (restore AND seed), independent of the SQL
+  // member-routing validation: reach is not derived from `connection_group_id`.
+  // executeSQL re-validates a Focus on a now-invisible group at query time, so a
+  // verbatim restore here is safe (the picker shows the persisted reach; the
+  // agent refuses to query an unreachable focused group rather than substitute).
+  const groupReach = source.groupReach ?? null;
 
   // A row that persisted no SQL scope is never authoritative for routing — defer
   // to the seed/restore effect (decided before the load gate so it holds either
   // way). The REST scope still rides along, so an all-null-SQL conversation with
   // an exclude-set keeps it (#3078).
-  if (groupId === null && connectionId === null) return { kind: "seed", restExcludedDatasourceIds, restFocusDatasourceId };
+  if (groupId === null && connectionId === null) return { kind: "seed", restExcludedDatasourceIds, restFocusDatasourceId, groupReach };
 
   // Groups not loaded yet (cold-start open): we can't validate, so trust the
   // row optimistically. Losing the restore here would be a worse, more common
   // regression than the rare archived-env + cold-start intersection.
   if (groups.length === 0) {
-    return { kind: "restore", groupId, connectionId, routingMode, restExcludedDatasourceIds, restFocusDatasourceId };
+    return { kind: "restore", groupId, connectionId, routingMode, restExcludedDatasourceIds, restFocusDatasourceId, groupReach };
   }
 
   // Groups loaded — validate the row against the visible environments.
@@ -655,20 +772,20 @@ export function resolveConversationScope(
     // The row named a content group: it must still resolve, else a stale group
     // id reaches the chat route and is rejected (invalid_connection_group).
     const group = groups.find((g) => g.id === groupId);
-    if (!group) return { kind: "seed", restExcludedDatasourceIds, restFocusDatasourceId };
+    if (!group) return { kind: "seed", restExcludedDatasourceIds, restFocusDatasourceId, groupReach };
 
     // Group resolves. Keep the pinned member if it's still present; otherwise
     // repair the execution target to the group primary (never send a stale id),
     // preserving the still-valid group rather than discarding it.
     const member = group.members.find((m) => m.connectionId === connectionId);
     if (member) {
-      return { kind: "restore", groupId: group.id, connectionId: member.connectionId, routingMode, restExcludedDatasourceIds, restFocusDatasourceId };
+      return { kind: "restore", groupId: group.id, connectionId: member.connectionId, routingMode, restExcludedDatasourceIds, restFocusDatasourceId, groupReach };
     }
     const repaired =
       group.members.find((m) => m.connectionId === group.primaryConnectionId) ??
       group.members[0];
-    if (!repaired) return { kind: "seed", restExcludedDatasourceIds, restFocusDatasourceId }; // group exists but has no live members
-    return { kind: "restore", groupId: group.id, connectionId: repaired.connectionId, routingMode, restExcludedDatasourceIds, restFocusDatasourceId };
+    if (!repaired) return { kind: "seed", restExcludedDatasourceIds, restFocusDatasourceId, groupReach }; // group exists but has no live members
+    return { kind: "restore", groupId: group.id, connectionId: repaired.connectionId, routingMode, restExcludedDatasourceIds, restFocusDatasourceId, groupReach };
   }
 
   // Legacy group-less row (connectionGroupId null, connectionId set, e.g. a
@@ -681,8 +798,8 @@ export function resolveConversationScope(
   const owningGroup = groups.find((g) =>
     g.members.some((m) => m.connectionId === connectionId),
   );
-  if (!owningGroup) return { kind: "seed", restExcludedDatasourceIds, restFocusDatasourceId };
-  return { kind: "restore", groupId: owningGroup.id, connectionId, routingMode, restExcludedDatasourceIds, restFocusDatasourceId };
+  if (!owningGroup) return { kind: "seed", restExcludedDatasourceIds, restFocusDatasourceId, groupReach };
+  return { kind: "restore", groupId: owningGroup.id, connectionId, routingMode, restExcludedDatasourceIds, restFocusDatasourceId, groupReach };
 }
 
 /**
@@ -705,6 +822,7 @@ export function ChatEnvPicker({
   activeGroupId,
   activeConnectionId,
   activeRoutingMode = null,
+  activeGroupReach = null,
   restDatasources = [],
   restExcludedDatasourceIds = [],
   onRestExcludedChange,
@@ -749,20 +867,40 @@ export function ChatEnvPicker({
     return null;
   }
 
+  // #3895 (ADR-0022) — Group reach. `activeGroupReach` null = All sources (every
+  // visible group reachable — the default); a group id = Focus → that group. The
+  // reach chooser (All sources / Focus list) shows only for a MULTI-group
+  // workspace; a single-group workspace keeps the member-routing-only picker (its
+  // reach is trivial — All sources ≡ the one group).
+  const multiGroup = groups.length > 1;
+  const isAllSources = activeGroupReach === null;
+  // The single SQL group whose member routing applies: the FOCUSED group (Focus
+  // → X), or — for a single-group workspace — the sole group (its reach is
+  // trivially All). Undefined for a multi-group All-sources workspace (no single
+  // group; the agent ranges all) and a zero-group (REST-only) workspace. Member
+  // routing (Auto/Pin/All) surfaces only when this group has >1 member (AC2).
+  const focusedGroup =
+    activeGroupReach !== null ? groups.find((g) => g.id === activeGroupReach) : undefined;
+  // For a single-group workspace the active group is the sole group (preferring
+  // the one `activeGroupId` names — the member-routing binding — else the only
+  // group). A multi-group All-sources workspace has no single active group.
   const activeGroup =
-    groups.find((g) => g.id === activeGroupId) ??
-    groups.find((g) => g.members.some((m) => m.connectionId === activeConnectionId)) ??
-    groups[0];
+    focusedGroup ??
+    (multiGroup
+      ? undefined
+      : groups.find((g) => g.id === activeGroupId) ?? groups[0]);
   const activeMember =
     activeGroup?.members.find((m) => m.connectionId === activeConnectionId) ??
     activeGroup?.members.find((m) => m.connectionId === activeGroup.primaryConnectionId) ??
     activeGroup?.members[0];
 
-  // #3078 — a zero-group (REST-only) workspace has no SQL routing to display.
-  // `activeGroup` is undefined there, so the chip / dropdown drop the SQL
-  // routing modes, member list, and singleton hint and show only the REST
-  // scope. `hasSqlScope` gates every SQL affordance below.
+  // `hasSqlScope` = there is a single active SQL group to route WITHIN (Focus →
+  // it, or the sole group). Drives the REST-scope partition (by `activeGroup`)
+  // and the member-routing affordances. False for a multi-group All-sources
+  // workspace (no single group — REST is all-reachable, member routing hidden)
+  // and a zero-group (REST-only) workspace (#3078).
   const hasSqlScope = activeGroup != null;
+  const hasGroups = groups.length > 0;
   const mode = effectiveMode(activeRoutingMode);
   const groupLabel = activeGroup ? stripGroupPrefix(activeGroup.name) : "—";
   const memberLabel = activeMember?.connectionId ?? "—";
@@ -787,37 +925,52 @@ export function ChatEnvPicker({
     : undefined;
   const isFocused = restFocusDatasourceId !== null;
 
-  // Chip label. Precedence: REST-only focus (SQL suspended) > SQL routing chip
-  // (with the REST count appended) > SQL-less REST count (zero-group workspace).
+  // #3066 — append the REST count (e.g. `· 2/3 REST`) to the chip only when the
+  // workspace has a reachable REST datasource, so SQL-only workspaces keep their
+  // byte-identical chip. Shared by the SQL-routing + reach chip branches.
+  const withRestCount = (label: string): string =>
+    reachableRest.length > 0
+      ? `${label} · ${restInScopeCount}/${reachableRest.length} REST`
+      : label;
+
+  // Chip label. Precedence: REST-only focus (SQL suspended) > All sources
+  // (multi-group, agent ranges every group) > SQL routing chip (focused or
+  // single group) > Focus-on-invisible-group > SQL-less REST count (zero-group).
   let chipLabel: string;
   let ChipIcon: typeof Layers;
   if (isFocused) {
-    // #3067 — focus overrides the chip entirely: SQL routing is suspended, so the
+    // #3067 — REST focus overrides the chip entirely: SQL is suspended, so the
     // chip reads "<name> only" for the datasource the agent targets.
     chipLabel = `${focusedDatasource?.displayName ?? "REST"} only`;
     ChipIcon = Crosshair;
+  } else if (multiGroup && isAllSources) {
+    // #3895 — All sources: the agent ranges every visible Connection group.
+    chipLabel = withRestCount("All sources");
+    ChipIcon = Layers;
   } else if (hasSqlScope) {
-    // SQL routing chip — tracks the mode so the trigger reflects the next turn's
+    // Focused group (multi-group Focus) OR single-group workspace: the
+    // member-routing chip tracks the mode so the trigger reflects the next turn's
     // routing. The compact forms keep the chip readable for long names.
     if (mode === "auto") {
-      chipLabel = `Auto · ${groupLabel}`;
+      chipLabel = withRestCount(`Auto · ${groupLabel}`);
       ChipIcon = Sparkles;
     } else if (mode === "all") {
-      chipLabel = `All · ${groupLabel}`;
+      chipLabel = withRestCount(`All · ${groupLabel}`);
       ChipIcon = Globe2;
     } else {
       // Pin — show the member name. Collapse "warehouse / warehouse" →
       // "warehouse" when the stripped group name and the member id match (the
       // common 0062 backfill shape: g_<connId> + one member named <connId>).
-      chipLabel = groupLabel === memberLabel ? memberLabel : `${groupLabel} / ${memberLabel}`;
+      const pin = groupLabel === memberLabel ? memberLabel : `${groupLabel} / ${memberLabel}`;
+      chipLabel = withRestCount(pin);
       ChipIcon = Pin;
     }
-    // #3066 — append the REST count (e.g. `Pin · apac-prod · 2/3 REST`) only when
-    // the workspace has a reachable REST datasource, so SQL-only workspaces keep
-    // their byte-identical chip.
-    if (reachableRest.length > 0) {
-      chipLabel = `${chipLabel} · ${restInScopeCount}/${reachableRest.length} REST`;
-    }
+  } else if (activeGroupReach !== null) {
+    // #3895 — Focus on a group that isn't currently visible (content-mode hid it,
+    // or it was removed). Show the persisted focus so the user can change it;
+    // executeSQL refuses to query it rather than substitute another source.
+    chipLabel = withRestCount(`Focus: ${stripGroupPrefix(activeGroupReach)}`);
+    ChipIcon = Crosshair;
   } else {
     // #3078 — zero-group (REST-only) workspace: no SQL group/member to show, so
     // the chip is just the REST count.
@@ -825,36 +978,56 @@ export function ChatEnvPicker({
     ChipIcon = Network;
   }
 
-  // When every group has at most one member (the 0062 backfill shape,
-  // or a defensive-empty group), the dropdown has no actual
-  // multi-member choice to offer. Surface a hint so admins discover
-  // that merging connections into a shared environment is possible.
+  // Member routing surfaces only when the single active group has >1 member
+  // (AC2): the focused group (multi-group Focus), or the sole group (single-group
+  // workspace). `activeGroup.members.length > 1` is the gate.
+  const showMemberRouting = hasSqlScope && (activeGroup?.members.length ?? 0) > 1;
+
+  // When every group has at most one member, there's no member routing to offer
+  // anywhere — surface the #2408 discoverability hint that admins can merge
+  // connections into shared environments. Gated on `hasGroups` so a zero-group
+  // (REST-only) workspace, where `allSingletons` is vacuously true, never shows it.
   const allSingletons = groups.every((g) => g.members.length <= 1);
+  const showSingletonHint = hasGroups && allSingletons;
 
-  // The active group's member list is the source the Pin/Member rows
-  // render from. We re-resolve here (vs. consuming `activeGroup` directly)
-  // so a defensive-empty group renders an "empty" affordance rather than
-  // a silent zero-length list.
-  const activeMembers = activeGroup?.members ?? [];
-
-  // Mode dispatch — every selection produces the full triple so the
-  // parent can persist whichever subset matters. Implicit rules:
-  //   - Switching mode keeps the current member as the execution
-  //     target (pinned mode targets it; auto/all also need a sensible
-  //     `currentMember` for the server-side routing lookup).
-  //   - Selecting a member from the member list implies `pin` mode —
-  //     you can't "select a member" in fanout, and the most natural
-  //     interpretation is "pin to that one".
+  // Mode dispatch — a member-routing change keeps the CURRENT reach (a focused
+  // group stays focused; a single-group workspace stays at All sources): changing
+  // Auto/Pin/All must never flip the Group-reach axis. `groupId` carries the
+  // active group as member-routing context; selecting a member implies `pin`.
   const handleModeSelect = (nextMode: ConversationRoutingMode) => {
     if (!activeGroup || !activeMember) return;
     onSelect({
+      groupReach: activeGroupReach,
       groupId: activeGroup.id,
       connectionId: activeMember.connectionId,
       routingMode: nextMode,
     });
   };
-  const handleMemberSelect = (groupId: string, connectionId: string) => {
-    onSelect({ groupId, connectionId, routingMode: "pin" });
+  const handleMemberSelect = (connectionId: string) => {
+    if (!activeGroup) return;
+    onSelect({
+      groupReach: activeGroupReach,
+      groupId: activeGroup.id,
+      connectionId,
+      routingMode: "pin",
+    });
+  };
+  // #3895 — Group-reach chooser dispatch. "All sources" clears the focus (reach +
+  // member binding both null); "Focus → X" narrows reach to X with its primary
+  // member and Auto routing (the agent picks the member; the user can then Pin).
+  const handleAllSources = () => {
+    onSelect({ groupReach: null, groupId: null, connectionId: null, routingMode: null });
+  };
+  const handleFocusGroup = (group: ChatEnvGroup) => {
+    const member =
+      group.members.find((m) => m.connectionId === group.primaryConnectionId) ??
+      group.members[0];
+    onSelect({
+      groupReach: group.id,
+      groupId: group.id,
+      connectionId: member?.connectionId ?? null,
+      routingMode: "auto",
+    });
   };
 
   return (
@@ -868,12 +1041,15 @@ export function ChatEnvPicker({
           data-mode={mode}
           data-focused={isFocused}
           data-sql-scope={hasSqlScope}
+          data-reach={activeGroupReach ?? "all"}
           aria-label={
             isFocused
               ? `Conversation scope: focused on ${chipLabel} — SQL suspended. Change.`
-              : hasSqlScope
-                ? `Cross-environment routing: ${chipLabel}. Change.`
-                : `Conversation scope: ${chipLabel}. Change.`
+              : multiGroup && isAllSources
+                ? `Group reach: all sources — the agent ranges every group. Change.`
+                : hasSqlScope
+                  ? `Cross-environment routing: ${chipLabel}. Change.`
+                  : `Conversation scope: ${chipLabel}. Change.`
           }
         >
           <ChipIcon className="size-3.5 text-zinc-500" aria-hidden />
@@ -885,13 +1061,73 @@ export function ChatEnvPicker({
         className="w-72"
         data-testid="chat-env-picker-menu"
       >
-        {/* Mode section — three SQL-routing states with the current mode marked.
-            #3078 — hidden for a zero-group (REST-only) workspace: there is no SQL
-            to route, so the dropdown shows only the REST scope section below. */}
-        {hasSqlScope && (
+        {/* #3895 — Group reach chooser (ADR-0022 §5). Multi-group only: All
+            sources (default — every group reachable) or Focus → one group (a hard,
+            exclusive narrowing). A single-group workspace's reach is trivial, so
+            it shows the member-routing picker directly (below). */}
+        {multiGroup && (
           <>
             <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-500">
-              Routing
+              Group reach
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              onSelect={handleAllSources}
+              className="flex items-start gap-2 text-xs"
+              data-testid="chat-env-picker-reach-all"
+              data-active={isAllSources}
+            >
+              <Layers
+                className={`mt-0.5 size-3.5 ${isAllSources ? "text-primary" : "text-zinc-500"}`}
+                aria-hidden
+              />
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className={`truncate ${isAllSources ? "font-medium" : ""}`}>
+                  All sources
+                </span>
+                <span className="truncate text-[10px] text-zinc-500 dark:text-zinc-400">
+                  Agent ranges every group
+                </span>
+              </div>
+              {isAllSources && <Check className="size-3.5 shrink-0 text-primary" aria-hidden />}
+            </DropdownMenuItem>
+            {groups.map((group) => {
+              const focused = group.id === activeGroupReach;
+              return (
+                <DropdownMenuItem
+                  key={group.id}
+                  onSelect={() => handleFocusGroup(group)}
+                  className="flex items-center justify-between gap-2 text-xs"
+                  data-testid={`chat-env-picker-reach-focus-${group.id}`}
+                  data-active={focused}
+                >
+                  <span className="flex min-w-0 items-center gap-1.5 truncate">
+                    {focused ? (
+                      <Check className="size-3 shrink-0 text-primary" aria-hidden />
+                    ) : (
+                      <Crosshair className="size-3 shrink-0 text-zinc-400" aria-hidden />
+                    )}
+                    <span className="truncate">Focus: {stripGroupPrefix(group.name)}</span>
+                  </span>
+                  <span className="text-[10px] uppercase tracking-wider text-zinc-400">
+                    {group.members.length > 1
+                      ? `${group.members.length} envs`
+                      : group.members[0]?.dbType ?? ""}
+                  </span>
+                </DropdownMenuItem>
+              );
+            })}
+          </>
+        )}
+
+        {/* Member routing — Auto/Pin/All within the single active group, plus its
+            member list. Surfaces only when that group has >1 member (#3895 AC2):
+            the focused group for multi-group, or the sole group for single-group.
+            #3078 — never for a zero-group (REST-only) workspace. */}
+        {showMemberRouting && activeGroup && (
+          <>
+            {multiGroup && <DropdownMenuSeparator />}
+            <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-500">
+              Routing · {stripGroupPrefix(activeGroup.name)}
             </DropdownMenuLabel>
             <ChatEnvModeItem
               mode="auto"
@@ -917,28 +1153,20 @@ export function ChatEnvPicker({
               subtitle="Fan out to every member"
               onSelect={() => handleModeSelect("all")}
             />
-          </>
-        )}
-
-        {activeGroup && activeMembers.length > 0 && (
-          <>
-            <DropdownMenuSeparator />
             <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-500">
               {stripGroupPrefix(activeGroup.name)} members
             </DropdownMenuLabel>
-            {activeMembers.map((member) => {
-              // Pin highlight only when the current mode is pin AND we're
-              // on the member it pins to — otherwise highlighting the
-              // member would falsely suggest "this is the active target"
-              // while routing is in Auto/All.
+            {activeGroup.members.map((member) => {
+              // Pin highlight only when the current mode is pin AND we're on the
+              // member it pins to — otherwise highlighting the member would
+              // falsely suggest "this is the active target" while routing is
+              // Auto/All.
               const isActive =
                 mode === "pin" && member.connectionId === activeMember?.connectionId;
               return (
                 <DropdownMenuItem
                   key={member.connectionId}
-                  onSelect={() =>
-                    handleMemberSelect(activeGroup.id, member.connectionId)
-                  }
+                  onSelect={() => handleMemberSelect(member.connectionId)}
                   className="flex items-center justify-between gap-2 text-xs"
                   data-testid={`chat-env-picker-member-${member.connectionId}`}
                   data-active={isActive}
@@ -956,30 +1184,9 @@ export function ChatEnvPicker({
           </>
         )}
 
-        {groups.length > 1 && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-500">
-              Other environments
-            </DropdownMenuLabel>
-            {groups
-              .filter((g) => g.id !== activeGroup?.id)
-              .map((group) => (
-                <ChatEnvOtherGroupItem
-                  key={group.id}
-                  group={group}
-                  onSelect={(connectionId) =>
-                    handleMemberSelect(group.id, connectionId)
-                  }
-                />
-              ))}
-          </>
-        )}
-
-        {/* #3078 — the singleton hint is an SQL-connections affordance; suppress
-            it on a zero-group (REST-only) workspace, where `allSingletons` would
-            be vacuously true for the empty group list. */}
-        {hasSqlScope && allSingletons && (
+        {/* #2408 — discoverability hint when no group has multiple members, so
+            member routing is unavailable everywhere. */}
+        {showSingletonHint && (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuLabel
@@ -1253,52 +1460,6 @@ function ChatEnvModeItem({
       </div>
       {active && <Check className="size-3.5 shrink-0 text-primary" aria-hidden />}
     </DropdownMenuItem>
-  );
-}
-
-/**
- * Row for a member of a *different* group. Selecting it switches both
- * the active group and pins to that member — the natural "I want to
- * work in a different environment" gesture.
- */
-function ChatEnvOtherGroupItem({
-  group,
-  onSelect,
-}: {
-  group: ChatEnvGroup;
-  onSelect: (connectionId: string) => void;
-}): React.ReactElement {
-  const label = stripGroupPrefix(group.name);
-  return (
-    <>
-      {group.members.length === 0 ? (
-        <DropdownMenuItem
-          disabled
-          className="text-xs italic text-zinc-400"
-          data-testid={`chat-env-picker-empty-${group.id}`}
-        >
-          {label} — no members
-        </DropdownMenuItem>
-      ) : (
-        group.members.map((member) => (
-          <DropdownMenuItem
-            key={`${group.id}:${member.connectionId}`}
-            onSelect={() => onSelect(member.connectionId)}
-            className="flex items-center justify-between gap-2 text-xs"
-            data-testid={`chat-env-picker-other-${group.id}-${member.connectionId}`}
-          >
-            <span className="flex min-w-0 items-center gap-1.5 truncate">
-              <span className="truncate text-zinc-500">{label}</span>
-              <span className="text-zinc-300">/</span>
-              <span className="truncate">{member.connectionId}</span>
-            </span>
-            <span className="text-[10px] uppercase tracking-wider text-zinc-400">
-              {member.dbType}
-            </span>
-          </DropdownMenuItem>
-        ))
-      )}
-    </>
   );
 }
 

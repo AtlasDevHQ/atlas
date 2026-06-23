@@ -255,9 +255,60 @@ describe("executeSQL — per-query group target + reach bounding", () => {
     mockRequestContext = { user: { id: "u1", activeOrganizationId: "org-1" }, connectionId: "postgres" };
     const result = await run({ sql: "SELECT id FROM companies" });
     expect(result.success).toBe(true);
-    // The degenerate single-reachable-group case stays on the fast path:
-    // no visible-groups enumeration, runs against the stamped connection.
+    // Under All-sources reach with no named group, the degenerate
+    // single-reachable case stays on the fast path: no visible-groups
+    // enumeration, runs against the stamped connection.
     expect(mockLoadVisibleGroups.mock.calls.length).toBe(0);
     expect((mockGetForWorkspace.mock.calls as unknown[][])[0]?.[1]).toBe("postgres");
+  });
+
+  // #3895 (ADR-0022 slice (c)) — the conversation's persisted Group reach
+  // (stamped into RequestContext.groupReach by the chat route) now bounds
+  // executeSQL. Under Focus → X, only X is reachable even though other groups
+  // are visible; the omitted-group default binds to X (never a stale member
+  // outside it). Rejection-path assertions (no query runs) exercise the bound.
+  describe("Focus reach — conversation groupReach bounds executeSQL (#3895)", () => {
+    it("REJECTS a query to a different VISIBLE group when the conversation is Focused — only the focused group is reachable", async () => {
+      // postgres + clickhouse are both visible workspace groups, but the
+      // conversation is Focused on postgres → clickhouse is out of reach. Hard
+      // reject, never a silent re-route (the #3867(b) fix, now Focus-driven).
+      mockRequestContext = {
+        user: { id: "u1", activeOrganizationId: "org-1" },
+        groupReach: "postgres",
+      };
+      const result = await run({ sql: "SELECT id FROM events", group: "clickhouse" });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("not within this conversation's reach");
+      expect(mockQuery.mock.calls.length).toBe(0);
+    });
+
+    it("rejects an omitted-group query when Focused on a group that is no longer visible — no substitution", async () => {
+      // group_reach points at a group content-mode has since hidden / removed.
+      // Reach resolves to empty; the agent omits `group` → we must NOT fall back
+      // to a default connection outside the (now-invisible) focus.
+      mockRequestContext = {
+        user: { id: "u1", activeOrganizationId: "org-1" },
+        connectionId: "postgres",
+        groupReach: "gone",
+      };
+      const result = await run({ sql: "SELECT id FROM companies" });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("focused on group");
+      expect(mockGetForWorkspace.mock.calls.length).toBe(0);
+      expect(mockQuery.mock.calls.length).toBe(0);
+    });
+
+    it("binds an omitted-group query to the focused group's member (no `group` arg needed under Focus)", async () => {
+      // Focused on clickhouse, agent omits `group` → execution binds to
+      // clickhouse's member, not the stamped/default connection.
+      mockRequestContext = {
+        user: { id: "u1", activeOrganizationId: "org-1" },
+        connectionId: "postgres",
+        groupReach: "clickhouse",
+      };
+      const result = await run({ sql: "SELECT id FROM events" });
+      expect(result.success).toBe(true);
+      expect((mockGetForWorkspace.mock.calls as unknown[][])[0]?.[1]).toBe("clickhouse");
+    });
   });
 });

@@ -150,6 +150,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
   updateConversationRestExcluded: mock(() => Promise.resolve({ ok: true as const })),
   updateConversationRestFocus: mock(() => Promise.resolve({ ok: true as const })),
+  updateConversationGroupReach: mock(() => Promise.resolve({ ok: true as const })),
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
   // Type exports (no runtime value — needed so mock.module doesn't break re-exports)
 }));

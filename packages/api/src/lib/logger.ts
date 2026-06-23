@@ -125,6 +125,18 @@ interface RequestContext {
    * truthy, so the legacy shape is unchanged for non-focused conversations.
    */
   restFocusDatasourceId?: string | null;
+  /**
+   * #3895 (ADR-0022) — per-conversation Group reach. The chat route stamps this
+   * from the resolved conversation row (or the per-turn body override) so the
+   * reach resolver in `executeSQL` (and the Source-catalog builder) bounds which
+   * Connection groups the agent may query. `null` / undefined here = All sources
+   * (every visible group reachable, the default); a `connection_group_id` value
+   * = Focus → that group (hard/exclusive — only it is reachable, any other group
+   * target is rejected). Stamped only when truthy, so the legacy "all" shape is
+   * unchanged for non-focused conversations. Independent of `routingMode`
+   * (intra-group) and the REST-scope fields (a separate axis).
+   */
+  groupReach?: string | null;
 }
 
 const requestStore = new AsyncLocalStorage<RequestContext>();

@@ -45,7 +45,7 @@ import { EXECUTE_SQL_TOOL_DESCRIPTION } from "./descriptions";
 import { appendRowLimit, hasLimitClause } from "./auto-limit";
 import { resolveRoutingPlan, type RoutingMode, type RoutingReason } from "@atlas/api/lib/env-routing";
 import { loadGroupRoutingContext } from "@atlas/api/lib/env-routing/lookup";
-import { resolveReach, isReachable } from "@atlas/api/lib/group-reach";
+import { resolveReach, isReachable, reachStateFromColumn } from "@atlas/api/lib/group-reach";
 import { loadVisibleGroups } from "@atlas/api/lib/group-reach/lookup";
 import { mergeMemberResults } from "@atlas/api/lib/multi-env-merger";
 import {
@@ -2368,47 +2368,65 @@ export const executeSQL = tool({
     const reqCtx = getRequestContext();
     const requestContextConnectionId = reqCtx?.connectionId;
 
-    // Cross-group reach (ADR-0022, slice (a) #3893). When the agent names a
-    // `group`, that is a per-query GROUP target — an axis ABOVE member routing.
-    // The named group must be within the conversation's reach (slice (a): reach
-    // defaults to ALL visible groups; the Focus picker that narrows it lands in
-    // slice (c)). A group outside the reachable set is REJECTED here — a hard
-    // error, never a silent re-route to a different source (the #3867(b) fix at
-    // the execution layer). When `group` is omitted, today's implicit
-    // single-connection binding is the degenerate single-reachable-group case.
+    // Cross-group reach (ADR-0022). The conversation's persisted Group-reach
+    // state (slice (c) #3895, stamped into RequestContext by the chat route)
+    // bounds which Connection groups this query may reach — the axis ABOVE
+    // member routing. `all` (the default) → every visible group reachable;
+    // `focus` → exactly one. A target outside the reachable set is REJECTED
+    // here — a hard error, never a silent re-route to a different source (the
+    // #3867(b) fix at the execution layer).
+    //
+    // Resolve reach when the agent names a `group` (validate the named target)
+    // OR the conversation is Focused (bound the implicit default to the focused
+    // group, never a stale `connectionId` outside it). Under `all` with no
+    // named group we skip the lookup entirely — every group is reachable, so
+    // there is nothing to bound and the legacy single-connection path stands
+    // (no per-query DB cost added to the common default case).
+    const reachState = reachStateFromColumn(reqCtx?.groupReach);
     let groupTargetMember: string | undefined;
-    if (group !== undefined) {
+    if (group !== undefined || reachState.kind === "focus") {
       const reachOrgId = reqCtx?.user?.activeOrganizationId;
       const visibleGroups = await loadVisibleGroups(reachOrgId, reqCtx?.atlasMode);
-      // Slice (a): no conversation-scope reach state yet, so reach is always
-      // "all visible". Slice (c) sources this from the conversation's persisted
-      // Group-reach value (`all` | focus-group-id) — and must then surface
-      // `reach.warnings` (a `focus`-on-invisible resolution explains why reach
-      // is empty rather than substituting); under `all` it's always [].
-      const reach = resolveReach({ kind: "all" }, visibleGroups);
-      if (!isReachable(reach, group)) {
+      const reach = resolveReach(reachState, visibleGroups);
+      // A `focus`-on-invisible resolution explains (via a warning) why reach is
+      // empty rather than substituting another source; surface it so the
+      // divergence is observable. Under `all` warnings is always [].
+      for (const w of reach.warnings) {
+        log.warn({ group, groupReach: reqCtx?.groupReach, orgId: reachOrgId }, w);
+      }
+      // The group this query targets: the agent's explicit `group`, else — under
+      // Focus — the single focused group. (Under `all` with no explicit group we
+      // don't enter this branch.)
+      const targetGroupId =
+        group ?? (reachState.kind === "focus" ? reach.reachableGroups[0]?.id : undefined);
+      if (targetGroupId === undefined || !isReachable(reach, targetGroupId)) {
         const reachable = reach.reachableGroups.map((g) => g.id);
         log.warn(
-          { group, orgId: reachOrgId, reachable },
+          { group, groupReach: reqCtx?.groupReach, orgId: reachOrgId, reachable },
           "executeSQL rejected an out-of-reach group target — not re-routing",
         );
-        return {
-          success: false,
-          explanation,
-          error:
-            `Connection group "${group}" is not within this conversation's reach ` +
-            `(reachable groups: ${reachable.join(", ") || "none"}). ` +
-            `I will not query a different source instead — re-run against a reachable ` +
-            `group, or omit \`group\` to use the conversation's current source.`,
-          executionMs: 0,
-        };
+        // Two shapes: the agent named an out-of-reach group, OR the conversation
+        // is Focused on a group that isn't currently reachable (content-mode hid
+        // it, or it was removed). Either way we refuse to substitute another
+        // source — the no-substitution invariant the whole feature rests on.
+        const error =
+          group === undefined && reachState.kind === "focus"
+            ? `This conversation is focused on group "${reachState.groupId}", which is not ` +
+              `currently reachable (visible groups: ${reachable.join(", ") || "none"}). ` +
+              `The focused source may be unpublished or removed — I will not query a ` +
+              `different source instead. Widen the conversation's scope to All sources to query elsewhere.`
+            : `Connection group "${group}" is not within this conversation's reach ` +
+              `(reachable groups: ${reachable.join(", ") || "none"}). ` +
+              `I will not query a different source instead — re-run against a reachable ` +
+              `group, or omit \`group\` to use the conversation's current source.`;
+        return { success: false, explanation, error, executionMs: 0 };
       }
       // Resolve the group to a connection to execute against: the group's
       // primary member (a group-of-one resolves to its own connection id).
       // `connectionId`, if also supplied, may pin a specific member of THIS
       // group; otherwise the group's primary is used. The per-group whitelist
       // resolves via this connection id (members register their group's tables).
-      const target = reach.reachableGroups.find((g) => g.id === group);
+      const target = reach.reachableGroups.find((g) => g.id === targetGroupId);
       groupTargetMember =
         connectionId && target?.members.includes(connectionId)
           ? connectionId

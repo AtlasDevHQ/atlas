@@ -230,6 +230,11 @@ export function AtlasChat({
   // SQL is suspended. Seeded from the sticky preference on a fresh chat,
   // restored from the row when a conversation is opened.
   const [selectedRestFocus, setSelectedRestFocus] = useState<string | null>(null);
+  // #3895 (ADR-0022) — per-conversation Group reach. `null` = All sources (every
+  // visible group reachable — the new default); a group id = Focus → that group.
+  // The cross-group axis ABOVE member routing. Seeded from the sticky preference
+  // on a fresh chat, restored from the row when a conversation is opened.
+  const [selectedGroupReach, setSelectedGroupReach] = useState<string | null>(null);
   // #3044 — persisted env-picker preference so a reload restores the user's
   // last selection instead of re-seeding from the first group. Select fields
   // individually so the store object identity doesn't churn effect deps.
@@ -239,6 +244,7 @@ export function AtlasChat({
   const prefRoutingMode = useChatRoutingPreferenceStore((s) => s.routingMode);
   const prefRestExcluded = useChatRoutingPreferenceStore((s) => s.restExcludedDatasourceIds);
   const prefRestFocus = useChatRoutingPreferenceStore((s) => s.restFocusDatasourceId);
+  const prefGroupReach = useChatRoutingPreferenceStore((s) => s.groupReach);
   const prefHasHydrated = useChatRoutingPreferenceStore((s) => s._hasHydrated);
   const setRoutingPreference = useChatRoutingPreferenceStore((s) => s.setPreference);
   // #3064 — how the current picker SQL scope (group / member / mode) was set, so
@@ -254,6 +260,14 @@ export function AtlasChat({
   // through any SQL seed/restore instead of clobbering it — the seam that fixes
   // the all-null-SQL exclude-set data loss. `handleNewChat` resets it to "unset".
   const restScopeProvenanceRef = useRef<EnvSelectionProvenance>("unset");
+  // #3895 — the Group reach has its OWN provenance, decoupled from the SQL
+  // member-routing (`selectionProvenanceRef`) and REST (`restScopeProvenanceRef`)
+  // provenances (the #3078 decoupling, applied to the reach axis). Opening a
+  // conversation makes the row's reach authoritative ("explicit") regardless of
+  // the SQL decision; a reach pick marks it explicit too. While explicit,
+  // `resolveEnvSelection` passes the current reach through any SQL seed/restore
+  // instead of clobbering it. `handleNewChat` resets it to "unset".
+  const groupReachProvenanceRef = useRef<EnvSelectionProvenance>("unset");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -305,6 +319,9 @@ export function AtlasChat({
     // #3067 — forward the REST-only focus on every turn (always, even null) so
     // a clear actually nulls the row instead of inheriting the stale focus.
     getRestFocusDatasourceId: () => selectedRestFocus,
+    // #3895 — forward the Group reach on every turn (always, even null) so a
+    // widen back to All sources nulls the row instead of inheriting stale Focus.
+    getGroupReach: () => selectedGroupReach,
     // #3749 — onRunId: capture the active run id for correlation/telemetry only
     // (not used to target a resume). getResumeConversationId: a resume targets the
     // bound CONVERSATION (not the run id); the affordance only shows once a
@@ -387,6 +404,7 @@ export function AtlasChat({
         routingMode: selectedRoutingMode,
         restExcludedDatasourceIds: selectedRestExcluded,
         restFocusDatasourceId: selectedRestFocus,
+        groupReach: selectedGroupReach,
       },
       provenance: selectionProvenanceRef.current,
       // #3078 — REST scope provenance is independent of the SQL provenance. When
@@ -394,6 +412,8 @@ export function AtlasChat({
       // resolver passes the current REST scope through instead of clobbering it
       // with the default seed / sticky preference while SQL seeds or restores.
       restProvenance: restScopeProvenanceRef.current,
+      // #3895 — Group reach provenance, independent of both (same seam as REST).
+      groupReachProvenance: groupReachProvenanceRef.current,
       preference: {
         workspaceId: prefWorkspaceId,
         groupId: prefGroupId,
@@ -401,6 +421,7 @@ export function AtlasChat({
         routingMode: prefRoutingMode,
         restExcludedDatasourceIds: prefRestExcluded,
         restFocusDatasourceId: prefRestFocus,
+        groupReach: prefGroupReach,
       },
       activeWorkspaceId,
       preferenceHydrated: prefHasHydrated,
@@ -422,9 +443,13 @@ export function AtlasChat({
         setSelectedRestExcluded(decision.restExcludedDatasourceIds);
         // #3067 — seed the sticky preference's REST-only focus too.
         setSelectedRestFocus(decision.restFocusDatasourceId);
+        // #3895 — seed the sticky preference's Group reach too.
+        setSelectedGroupReach(decision.groupReach);
         // A restored sticky preference is the user's deliberate prior choice —
-        // mark it explicit so a later effect run can't seed over it.
+        // mark it explicit so a later effect run can't seed over it. The reach
+        // has its own provenance but settles together with the SQL scope here.
         selectionProvenanceRef.current = "explicit";
+        groupReachProvenanceRef.current = "explicit";
         break;
       case "seed":
         setSelectedGroupId(decision.groupId);
@@ -433,10 +458,14 @@ export function AtlasChat({
         setSelectedRestExcluded(decision.restExcludedDatasourceIds);
         // #3067 — a default seed is not focused (SQL active).
         setSelectedRestFocus(decision.restFocusDatasourceId);
+        // #3895 — a default seed is All sources (null), unless the reach was
+        // explicit and passed through.
+        setSelectedGroupReach(decision.groupReach);
         // Record that this was auto-seeded: a workspace-matching preference
         // arriving later is still restored over it (the resolver re-runs), but
         // a second default seed is suppressed.
         selectionProvenanceRef.current = "default";
+        groupReachProvenanceRef.current = "default";
         break;
       case "wait":
       case "noop":
@@ -465,12 +494,16 @@ export function AtlasChat({
     selectedRestExcluded,
     // #3067 — focus is part of `current` too; keep it in deps for the same reason.
     selectedRestFocus,
+    // #3895 — reach is part of `current` too; keep it in deps so a pref-only reach
+    // change re-evaluates restore-vs-noop rather than going stale.
+    selectedGroupReach,
     prefWorkspaceId,
     prefGroupId,
     prefConnectionId,
     prefRoutingMode,
     prefRestExcluded,
     prefRestFocus,
+    prefGroupReach,
     prefHasHydrated,
     activeWorkspaceId,
     sessionResolved,
@@ -879,6 +912,11 @@ export function AtlasChat({
       restScopeProvenanceRef.current = "explicit";
       setSelectedRestExcluded(decision.restExcludedDatasourceIds);
       setSelectedRestFocus(decision.restFocusDatasourceId);
+      // #3895 — Group reach — restored on BOTH decision kinds (read straight from
+      // the row's `group_reach`, independent of the SQL member-routing decision),
+      // made authoritative so the seed/restore effect can't clobber it.
+      groupReachProvenanceRef.current = "explicit";
+      setSelectedGroupReach(decision.groupReach);
       // SQL scope — restore vs defer-to-seed.
       if (decision.kind === "restore") {
         selectionProvenanceRef.current = "explicit";
@@ -945,6 +983,11 @@ export function AtlasChat({
     // conversation's `explicit` REST scope doesn't carry into the new chat and
     // block the seed/restore effect from seeding the sticky preference / default.
     restScopeProvenanceRef.current = "unset";
+    // #3895 — reset the Group reach provenance + value too, so a just-opened
+    // conversation's `explicit` reach doesn't carry into the new chat. The new
+    // chat re-seeds reach from the sticky preference (or the All-sources default).
+    groupReachProvenanceRef.current = "unset";
+    setSelectedGroupReach(null);
     setSelectedGroupId(null);
     setSelectedConnectionId(null);
     setSelectedRoutingMode(null);
@@ -1113,6 +1156,7 @@ export function AtlasChat({
                     activeGroupId={selectedGroupId}
                     activeConnectionId={selectedConnectionId}
                     activeRoutingMode={selectedRoutingMode}
+                    activeGroupReach={selectedGroupReach}
                     restDatasources={envGroupsQuery.restDatasources}
                     restExcludedDatasourceIds={selectedRestExcluded}
                     onRestExcludedChange={(next) => {
@@ -1134,6 +1178,9 @@ export function AtlasChat({
                         routingMode: selectedRoutingMode,
                         restExcludedDatasourceIds: next,
                         restFocusDatasourceId: selectedRestFocus,
+                        // #3895 — carry the current reach so a REST toggle doesn't
+                        // drop it from the sticky preference.
+                        groupReach: selectedGroupReach,
                       });
                     }}
                     restFocusDatasourceId={selectedRestFocus}
@@ -1152,12 +1199,19 @@ export function AtlasChat({
                         routingMode: selectedRoutingMode,
                         restExcludedDatasourceIds: selectedRestExcluded,
                         restFocusDatasourceId: next,
+                        // #3895 — carry the current reach so a focus toggle doesn't
+                        // drop it from the sticky preference.
+                        groupReach: selectedGroupReach,
                       });
                     }}
-                    onSelect={({ groupId, connectionId, routingMode }) => {
+                    onSelect={({ groupReach, groupId, connectionId, routingMode }) => {
                       // #3064 — a user pick is authoritative; mark it explicit
-                      // so the seed/restore effect never replaces it.
+                      // so the seed/restore effect never replaces it. #3895 — a
+                      // reach pick (All sources / Focus → group) sets the reach +
+                      // member routing together, so mark BOTH provenances explicit.
                       selectionProvenanceRef.current = "explicit";
+                      groupReachProvenanceRef.current = "explicit";
+                      setSelectedGroupReach(groupReach);
                       setSelectedGroupId(groupId);
                       setSelectedConnectionId(connectionId);
                       setSelectedRoutingMode(routingMode);
@@ -1173,6 +1227,9 @@ export function AtlasChat({
                         // #3067 — carry the current focus so an env change
                         // doesn't drop it from the sticky preference.
                         restFocusDatasourceId: selectedRestFocus,
+                        // #3895 — persist the picked Group reach so new chats
+                        // inherit it (mirrors the REST scope's sticky seeding).
+                        groupReach,
                       });
                     }}
                   />

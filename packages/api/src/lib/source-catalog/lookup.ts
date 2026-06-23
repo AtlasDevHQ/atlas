@@ -28,6 +28,7 @@
 import * as yaml from "js-yaml";
 import { createLogger } from "@atlas/api/lib/logger";
 import { loadVisibleGroups } from "@atlas/api/lib/group-reach/lookup";
+import { resolveReach, type ReachState } from "@atlas/api/lib/group-reach";
 import {
   getGroupDescriptionMap,
   upsertAutoGroupDescription,
@@ -58,12 +59,20 @@ export interface RestCatalogSource {
 /**
  * Render the Source-catalog block for a workspace, or `""` when there is nothing
  * to route between (no workspace, no visible SQL groups, and no REST datasources).
+ *
+ * `reach` (#3895, ADR-0022) narrows the SQL half to the conversation's reachable
+ * groups: under `all` (the default) every visible group is listed; under `focus`
+ * only the focused group is — so the menu the agent reads matches what
+ * `executeSQL` will actually allow, instead of advertising groups every query to
+ * which would be rejected. REST datasources are a separate axis (REST scope,
+ * ADR-0011) and are never narrowed by SQL reach.
  */
 export async function loadSourceCatalog(
   orgId: string | undefined,
   mode: "published" | "developer" | undefined,
   restDatasources: readonly RestCatalogSource[] = [],
   options: SourceCatalogOptions = {},
+  reach: ReachState = { kind: "all" },
 ): Promise<string> {
   const restSources: CatalogSource[] = restDatasources.map((ds) => ({
     kind: "rest",
@@ -86,7 +95,13 @@ export async function loadSourceCatalog(
       loadEntityNamesByGroup(orgId, mode),
     ]);
 
-    sqlSources = visibleGroups.map((grp) => ({
+    // #3895 — narrow to the reachable groups: under Focus the catalog lists only
+    // the focused group (a `focus`-on-invisible reach resolves to none, so the
+    // catalog drops the SQL half entirely rather than listing an unreachable
+    // group). Under `all` this is every visible group, unchanged.
+    const reachableGroups = resolveReach(reach, visibleGroups).reachableGroups;
+
+    sqlSources = reachableGroups.map((grp) => ({
       kind: "sql",
       id: grp.id,
       // Groups have no separate display name post-0096 — the id IS the name.

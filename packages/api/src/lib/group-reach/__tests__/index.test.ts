@@ -15,6 +15,7 @@ import { describe, it, expect } from "bun:test";
 import {
   resolveReach,
   isReachable,
+  reachStateFromColumn,
   type VisibleGroup,
   type ReachReason,
 } from "../index";
@@ -127,5 +128,31 @@ describe("ReachReason — stable identifiers", () => {
     for (const { state, reason } of cases) {
       expect(resolveReach(state, VISIBLE).reason).toBe(reason);
     }
+  });
+});
+
+describe("reachStateFromColumn — column ↔ state encoding (#3895)", () => {
+  it("maps null / undefined / empty string to All sources", () => {
+    // NULL is the column default; undefined is an absent read; "" is never a
+    // valid group id (the chat-route Zod rejects it) but coalesces to All for
+    // safety rather than producing a focus on the empty string.
+    expect(reachStateFromColumn(null)).toEqual({ kind: "all" });
+    expect(reachStateFromColumn(undefined)).toEqual({ kind: "all" });
+    expect(reachStateFromColumn("")).toEqual({ kind: "all" });
+  });
+
+  it("maps a connection_group_id to Focus → that group", () => {
+    expect(reachStateFromColumn("postgres")).toEqual({
+      kind: "focus",
+      groupId: "postgres",
+    });
+  });
+
+  it("round-trips through resolveReach: a focus column resolves to exactly that group", () => {
+    const reach = resolveReach(reachStateFromColumn("postgres"), VISIBLE);
+    expect(reach.reachableGroups.map((g) => g.id)).toEqual(["postgres"]);
+    // …and a null column (All sources) resolves to every visible group.
+    const all = resolveReach(reachStateFromColumn(null), VISIBLE);
+    expect(all.reachableGroups.length).toBe(VISIBLE.length);
   });
 });

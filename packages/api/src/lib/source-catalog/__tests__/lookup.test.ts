@@ -72,6 +72,36 @@ describe("loadSourceCatalog", () => {
     expect(out).toContain("Key entities: customers, orders.");
   });
 
+  it("#3895 — Focus reach narrows the SQL half to the focused group only", async () => {
+    visibleGroups = [g("orders"), g("analytics")];
+    entityEntries = [
+      { name: "orders", source: "orders" },
+      { name: "events", source: "analytics" },
+    ];
+    // All sources (default) lists every visible group.
+    const all = await loadSourceCatalog("org", "published", []);
+    expect(all).toContain("[id: `orders`]");
+    expect(all).toContain("[id: `analytics`]");
+    // Focus → orders lists only orders (matching what executeSQL will allow).
+    const focused = await loadSourceCatalog("org", "published", [], {}, {
+      kind: "focus",
+      groupId: "orders",
+    });
+    expect(focused).toContain("[id: `orders`]");
+    expect(focused).not.toContain("[id: `analytics`]");
+  });
+
+  it("#3895 — Focus on an invisible group drops the SQL half entirely (no substitution)", async () => {
+    visibleGroups = [g("orders")];
+    entityEntries = [{ name: "orders", source: "orders" }];
+    const out = await loadSourceCatalog("org", "published", [
+      { id: "stripe_1", displayName: "Stripe", operationNames: ["ListCharges"] },
+    ], {}, { kind: "focus", groupId: "gone" });
+    // The focused group isn't visible → no SQL section; REST (separate axis) stays.
+    expect(out).not.toContain("### SQL connection groups");
+    expect(out).toContain("**Stripe** [id: `stripe_1`]");
+  });
+
   it("falls back to an entity-name summary when a group has no description", async () => {
     visibleGroups = [g("analytics")];
     entityEntries = [{ name: "events", source: "analytics" }];

@@ -108,6 +108,20 @@ describe("buildChatRequestBody (#3749)", () => {
     expect(body.restExcludedDatasourceIds).toEqual(["a", "b"]);
     expect(body.restExcludedDatasourceIds).not.toBe(src);
   });
+
+  test("#3895 — ALWAYS sends groupReach when present, even null (widen to All sources)", () => {
+    // A focus → its group id reaches the server; a widen → an explicit null
+    // reaches it too, so the row's stale Focus is cleared (the #3073 bug class).
+    expect(buildChatRequestBody(MSGS, { groupReach: "g_prod" }).groupReach).toBe("g_prod");
+    const widened = buildChatRequestBody(MSGS, { groupReach: null });
+    expect("groupReach" in widened).toBe(true);
+    expect(widened.groupReach).toBeNull();
+  });
+
+  test("#3895 — omits groupReach when the getter is absent (SDK/API callers inherit the row)", () => {
+    const body = buildChatRequestBody(MSGS, { groupReach: undefined });
+    expect("groupReach" in body).toBe(false);
+  });
 });
 
 describe("nextCapturedId (#3749)", () => {

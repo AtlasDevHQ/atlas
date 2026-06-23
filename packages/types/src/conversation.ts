@@ -84,6 +84,26 @@ export interface Conversation {
    * can omit it; the runtime treats missing the same as `null`.
    */
   restFocusDatasourceId?: string | null;
+  /**
+   * Per-conversation Group reach (#3895, ADR-0022). The cross-group axis ABOVE
+   * member routing (`routingMode`):
+   *
+   *   - `null` / absent — **All sources** (the default): every visible
+   *     Connection group is reachable and the agent routes per question via the
+   *     Source catalog.
+   *   - a `connectionGroupId` value — **Focus → that group**: a hard, exclusive
+   *     narrowing where only that group is reachable for the conversation.
+   *     `executeSQL` rejects any other group target — never a silent re-route to
+   *     a different source.
+   *
+   * Authoritative per-conversation; the web sticky preference only seeds NEW
+   * chats (mirrors `restFocusDatasourceId`). Independent of `routingMode`
+   * (intra-group) and the REST scope fields (a separate axis). Genuinely
+   * nullable: the column is plain nullable `text` and `null` is the meaningful
+   * "All sources" state. Optional so pre-#3895 fixtures / SDK consumers can omit
+   * it; the runtime treats missing the same as `null`.
+   */
+  groupReach?: string | null;
   starred: boolean;
   createdAt: string;
   updatedAt: string;

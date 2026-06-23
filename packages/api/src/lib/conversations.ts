@@ -150,6 +150,13 @@ function rowToConversation(r: Record<string, unknown>): Conversation {
     // getSharedConversation, which doesn't surface scope to anon viewers)
     // reads as null, matching the column's "not focused" default.
     restFocusDatasourceId: (r.rest_focus_datasource_id as string) ?? null,
+    // #3895 — per-conversation Group reach (ADR-0022). Plain nullable text
+    // column: NULL → null = All sources (every visible group reachable); a
+    // `connection_group_id` value = Focus → that group. The SELECTs feeding
+    // this mapper include the column; a caller that omits it (e.g.
+    // getSharedConversation, which doesn't surface scope to anon viewers) reads
+    // as null, matching the column's "All sources" default.
+    groupReach: (r.group_reach as string) ?? null,
     starred: r.starred === true,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
@@ -213,6 +220,13 @@ export async function createConversation(opts: {
    * suspends `executeSQL` for the conversation.
    */
   restFocusDatasourceId?: string | null;
+  /**
+   * #3895 — per-conversation Group reach (ADR-0022). `null` / undefined ⇒
+   * persist NULL = All sources (every visible group reachable). A
+   * `connection_group_id` value Focuses the conversation on that group
+   * (hard/exclusive). Legacy callers are unaffected — omitting it keeps All.
+   */
+  groupReach?: string | null;
   orgId?: string | null;
 }): Promise<{ id: string } | null> {
   if (!hasInternalDB()) return null;
@@ -222,11 +236,13 @@ export async function createConversation(opts: {
   const restExcluded = opts.restExcludedDatasourceIds ?? [];
   // #3067 — null/undefined ⇒ persist NULL ("not focused").
   const restFocus = opts.restFocusDatasourceId ?? null;
+  // #3895 — null/undefined ⇒ persist NULL ("All sources").
+  const groupReach = opts.groupReach ?? null;
   try {
     const rows = opts.id
       ? await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          `INSERT INTO conversations (id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
            RETURNING id`,
           [
             opts.id,
@@ -238,12 +254,13 @@ export async function createConversation(opts: {
             opts.routingMode ?? null,
             restExcluded,
             restFocus,
+            groupReach,
             opts.orgId ?? null,
           ],
         )
       : await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
            RETURNING id`,
           [
             opts.userId ?? null,
@@ -254,6 +271,7 @@ export async function createConversation(opts: {
             opts.routingMode ?? null,
             restExcluded,
             restFocus,
+            groupReach,
             opts.orgId ?? null,
           ],
         );
@@ -346,6 +364,36 @@ export async function updateConversationRestFocus(
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
     log.error({ err: errorMessage(err) }, "updateConversationRestFocus failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+/**
+ * #3895 (ADR-0022) — update the conversation's `group_reach`. Same fail-open /
+ * org-scoped contract as {@link updateConversationRestFocus}: a no-DB / error
+ * result is logged but the chat turn still proceeds (the runtime honours the
+ * body's reach for this turn even if the persist fails). Pass a
+ * `connection_group_id` to Focus that group (hard/exclusive — only it is
+ * reachable), or `null` to widen back to All sources (every visible group
+ * reachable). pg binds the string|null directly to the nullable text column.
+ */
+export async function updateConversationGroupReach(
+  id: string,
+  groupReach: string | null,
+  userId?: string | null,
+  orgId?: string | null,
+): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const scope = scopeClause(3, userId, orgId);
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE conversations SET group_reach = $1, updated_at = now()
+       WHERE id = $2${scope.sql} RETURNING id`,
+      [groupReach, id, ...scope.params],
+    );
+    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
+  } catch (err) {
+    log.error({ err: errorMessage(err) }, "updateConversationGroupReach failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -730,7 +778,7 @@ export async function getConversation(
   try {
     const scope = scopeClause(2, userId, orgId);
     const convRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, starred, notebook_state, created_at, updated_at
+      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, starred, notebook_state, created_at, updated_at
        FROM conversations WHERE id = $1${scope.sql}`,
       [id, ...scope.params],
     );
@@ -802,7 +850,7 @@ export async function listConversations(opts?: {
       params,
     );
     const dataRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, starred, created_at, updated_at
+      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, starred, created_at, updated_at
        FROM conversations ${where}
        ORDER BY updated_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
       [...params, limit, offset],
@@ -879,7 +927,7 @@ export async function forkConversation(opts: {
     // source row's org_id; scopeClause rejects mismatches (NULL-safe for legacy rows).
     const sourceScope = scopeClause(2, opts.userId, opts.orgId);
     const sourceRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
+      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
       [opts.sourceId, ...sourceScope.params],
     );
     if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
@@ -915,8 +963,8 @@ export async function forkConversation(opts: {
     // the user keeps the same env context after branching.
     const orgId = opts.orgId ?? (source.org_id as string) ?? null;
     const newConv = await internalQuery<{ id: string }>(
-      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
       [
         opts.userId ?? null,
         `${sourceTitle} (fork)`,
@@ -929,6 +977,9 @@ export async function forkConversation(opts: {
         (source.rest_excluded_datasource_ids as string[]) ?? [],
         // #3067 — inherit the source's REST-only focus too.
         (source.rest_focus_datasource_id as string) ?? null,
+        // #3895 — inherit the source's Group reach (All / Focus → group) so the
+        // fork/notebook keeps the same cross-group scope after branching.
+        (source.group_reach as string) ?? null,
         orgId,
       ],
     );
@@ -1072,7 +1123,7 @@ export async function convertToNotebook(opts: {
     // Verify source exists and caller has access in both the user + org dimensions.
     const sourceScope = scopeClause(2, opts.userId, opts.orgId);
     const sourceRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
+      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
       [opts.sourceId, ...sourceScope.params],
     );
     if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
@@ -1085,8 +1136,8 @@ export async function convertToNotebook(opts: {
     // both routing columns + the picker mode so the notebook preserves
     // the source's env context end-to-end.
     const newConv = await internalQuery<{ id: string }>(
-      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, group_reach, org_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
       [
         opts.userId ?? null,
         `${sourceTitle} (notebook)`,
@@ -1099,6 +1150,9 @@ export async function convertToNotebook(opts: {
         (source.rest_excluded_datasource_ids as string[]) ?? [],
         // #3067 — inherit the source's REST-only focus too.
         (source.rest_focus_datasource_id as string) ?? null,
+        // #3895 — inherit the source's Group reach (All / Focus → group) so the
+        // fork/notebook keeps the same cross-group scope after branching.
+        (source.group_reach as string) ?? null,
         orgId,
       ],
     );

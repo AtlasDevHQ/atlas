@@ -407,6 +407,9 @@ describe("migrateAuthTables", () => {
             // 0148 creates connection_group_descriptions (Atlas-internal
             // Source-catalog metadata, #3894) — runs in every auth mode.
             { name: "0148_connection_group_descriptions.sql" },
+            // 0149 adds conversations.group_reach (Atlas-internal per-conversation
+            // Group reach, ADR-0022 §5, #3895) — runs in every auth mode.
+            { name: "0149_conversation_group_reach.sql" },
           ],
         };
       }

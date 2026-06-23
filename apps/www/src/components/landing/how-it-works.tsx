@@ -98,6 +98,10 @@ function YamlPane() {
 
 const QUESTION = TOP_CATEGORY_QUESTION;
 
+/** The hero already renders the full result table; here we echo only the
+ * top row so the SQL stays the payload and the answer doesn't repeat. */
+const TOP_ROW = CATEGORY_ROWS[0];
+
 function AnswerPane() {
   return (
     <div
@@ -158,33 +162,20 @@ function AnswerPane() {
 
         <div>
           <p className="mb-2 font-mono text-[11px] tracking-[0.06em] text-zinc-400">
-            // result · 5 rows · 7 validators passed
+            // result · {CATEGORY_ROWS.length} rows · 7 validators passed
           </p>
           <div
-            className="overflow-hidden rounded-md border border-white/10"
+            className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded-md border border-white/10 px-3 py-2.5 font-mono text-[12.5px]"
             style={{ background: "oklch(0.10 0 0)" }}
           >
-            <div
-              className="grid grid-cols-[1fr_auto_auto] gap-4 border-b border-white/5 px-3 py-2 font-mono text-[11px] uppercase tracking-[0.06em] text-zinc-400"
-            >
-              <span>category</span>
-              <span className="text-right">gmv</span>
-              <span className="text-right">orders</span>
-            </div>
-            {CATEGORY_ROWS.map((row, i) => (
-              <div
-                key={row.category}
-                className="grid grid-cols-[1fr_auto_auto] gap-4 px-3 py-1.5 font-mono text-[12px] text-zinc-200"
-                style={{
-                  background: i % 2 ? "oklch(0.12 0 0)" : "transparent",
-                }}
-              >
-                <span>{row.category}</span>
-                <span className="text-right text-brand">{row.gmv}</span>
-                <span className="text-right text-zinc-400">{row.orders}</span>
-              </div>
-            ))}
+            <span className="text-zinc-400">{TOP_ROW.category} leads</span>
+            <span className="text-brand">{TOP_ROW.gmv}</span>
+            <span className="text-zinc-600">·</span>
+            <span className="text-zinc-400">{TOP_ROW.orders} orders</span>
           </div>
+          <p className="mt-2 font-mono text-[11px] text-zinc-400">
+            read-only · row-limited · audited
+          </p>
         </div>
       </div>
     </div>

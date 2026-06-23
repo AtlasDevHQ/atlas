@@ -13,7 +13,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Why Atlas",
     description:
-      "Atlas vs. traditional BI vs. other text-to-SQL — semantic layer, agent-native, embeddable, open source, deploy anywhere.",
+      "Atlas vs. traditional BI vs. other text-to-SQL: semantic layer, agent-native, embeddable, open source, deploy anywhere.",
     url: "https://www.useatlas.dev/why-atlas",
     siteName: "Atlas",
     type: "website",
@@ -35,14 +35,12 @@ export default function WhyAtlasPage() {
       <Nav currentPage="/why-atlas" />
 
       <main id="main" tabIndex={-1} className="focus:outline-none">
-        <section className="mx-auto max-w-4xl px-6 pt-16 pb-12 text-center md:pt-24 md:pb-16">
-          <p className="animate-fade-in-up delay-100 mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
-            // why atlas
-          </p>
-          <h1 className="animate-fade-in-up delay-200 text-3xl font-semibold tracking-tight text-zinc-100 md:text-5xl">
-            One model. Every surface. Yours to run.
+        <section className="mx-auto max-w-5xl px-6 pt-16 pb-12 md:px-16 md:pt-24 md:pb-16">
+          <h1 className="animate-fade-in-up delay-100 m-0 text-[40px] font-semibold leading-[1.04] tracking-[-0.035em] text-zinc-50 sm:text-[52px] md:text-[60px]">
+            <span className="block">One model. Every surface.</span>
+            <em className="block font-semibold text-brand">Yours to run.</em>
           </h1>
-          <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-zinc-400">
+          <p className="animate-fade-in-up delay-200 mt-5 max-w-xl text-lg leading-[1.6] text-zinc-400">
             How Atlas stacks up against traditional BI and other text-to-SQL tools.
           </p>
         </section>

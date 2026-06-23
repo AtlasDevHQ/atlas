@@ -32,7 +32,7 @@ export function EndCta() {
             </code>
           </a>
         </div>
-        <p className="mt-3.5 text-[13px] text-zinc-500">
+        <p className="mt-3.5 text-[13px] text-zinc-400">
           Self-host is free and open source.
         </p>
       </div>

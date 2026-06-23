@@ -82,7 +82,7 @@ function SelfHostCard() {
       <ul className="m-0 mb-6 flex list-none flex-col gap-2 p-0">
         {["BYO model key", "No telemetry", "Community Discord"].map((item) => (
           <li key={item} className="flex items-center gap-2.5 text-[13.5px] text-zinc-200">
-            <span className="font-mono text-[12px] text-brand">✓</span>
+            <span aria-hidden className="font-mono text-[12px] text-brand">✓</span>
             {item}
           </li>
         ))}
@@ -162,7 +162,7 @@ function CloudCard() {
           "Priority support",
         ].map((item) => (
           <li key={item} className="flex items-center gap-2.5 text-[13.5px] text-zinc-200">
-            <span className="font-mono text-[12px] text-brand">✓</span>
+            <span aria-hidden className="font-mono text-[12px] text-brand">✓</span>
             {item}
           </li>
         ))}

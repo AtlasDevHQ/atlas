@@ -97,8 +97,8 @@ const STAGES: ReadonlyArray<Stage> = [
  */
 function PipelineStrip() {
   return (
-    <div className="mt-12 md:mt-16">
-      <p className="mb-3.5 font-mono text-[11px] tracking-[0.04em] text-zinc-500">
+    <div className="animate-fade-in-up delay-400 mt-12 md:mt-16">
+      <p className="mb-3.5 font-mono text-[11px] tracking-[0.04em] text-zinc-400">
         // every question takes the same path
       </p>
       <div className="grid gap-3 md:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] md:items-center">
@@ -142,7 +142,7 @@ export function Hero() {
 
       <div className="relative grid gap-10 md:grid-cols-2 md:items-center md:gap-12">
         <div className="max-w-[520px]">
-          <h1 className="m-0 text-[44px] sm:text-[56px] md:text-[64px] font-semibold leading-[1.02] tracking-[-0.035em] text-zinc-50">
+          <h1 className="animate-fade-in-up m-0 text-[44px] sm:text-[56px] md:text-[64px] font-semibold leading-[1.02] tracking-[-0.035em] text-zinc-50">
             {HEADLINE_LINES.map((line, i) => (
               <span key={line} className="block">
                 {i === ITALIC_LINE_INDEX ? (
@@ -153,8 +153,8 @@ export function Hero() {
               </span>
             ))}
           </h1>
-          <p className="mt-6 max-w-[460px] text-base leading-[1.6] text-zinc-400">{SUBHEAD}</p>
-          <div className="mt-7 flex flex-wrap gap-2.5">
+          <p className="animate-fade-in-up delay-100 mt-6 max-w-[460px] text-base leading-[1.6] text-zinc-400">{SUBHEAD}</p>
+          <div className="animate-fade-in-up delay-200 mt-7 flex flex-wrap gap-2.5">
             <a
               href="https://app.useatlas.dev/demo"
               className="inline-flex items-center gap-2 rounded-lg bg-brand px-[18px] py-[11px] text-[13.5px] font-semibold text-zinc-950 transition-colors hover:bg-brand-hover"
@@ -168,12 +168,12 @@ export function Hero() {
               <code className="font-mono text-[12.5px]">$ bun create atlas-agent</code>
             </a>
           </div>
-          <p className="mt-3.5 text-[13px] text-zinc-500">
+          <p className="animate-fade-in-up delay-300 mt-3.5 text-[13px] text-zinc-400">
             Self-host is free and open source.
           </p>
         </div>
 
-        <div className="relative">
+        <div className="animate-fade-in-up delay-200 relative">
           <AnswerCard />
         </div>
       </div>

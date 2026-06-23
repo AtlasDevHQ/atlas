@@ -12,14 +12,14 @@ const ROWS: ReadonlyArray<Row> = [
   {
     feature: "Semantic layer",
     atlas:
-      "YAML on disk — query_patterns, virtual_dimensions, glossary.status: ambiguous, metrics.objective are all first-class",
+      "YAML on disk: query_patterns, virtual_dimensions, glossary.status: ambiguous, metrics.objective are all first-class",
     bi: "Proprietary metadata, GUI-authored",
     textToSql: "None or limited",
   },
   {
     feature: "Agent-native",
     atlas:
-      "MCP server first — Claude Desktop, Cursor, Continue with bunx @useatlas/mcp init; read tools open, datasource writes gated by OAuth scope + RBAC",
+      "MCP server first: Claude Desktop, Cursor, Continue with bunx @useatlas/mcp init; read tools open, datasource writes gated by OAuth scope + RBAC",
     bi: "Bolted-on AI feature",
     textToSql: "Standalone chat UI",
   },
@@ -32,15 +32,15 @@ const ROWS: ReadonlyArray<Row> = [
   {
     feature: "Dashboards as conversations",
     atlas:
-      "Chat drawer is the editor — per-user drafts + atomic three-way-merge Publish over a persisted baseline",
+      "Chat drawer is the editor: per-user drafts + atomic three-way-merge Publish over a persisted baseline",
     bi: "Static dashboards with separate edit mode",
     textToSql: "No dashboards",
   },
   {
     feature: "Chat-platform reach",
     atlas:
-      "Slack-native — answers questions in opt-in channels with a reaction-first tracer, fail-closed kill switch (paid plans)",
-    bi: "Web app only — context-switch out of Slack",
+      "Slack-native: answers questions in opt-in channels with a reaction-first tracer, fail-closed kill switch (paid plans)",
+    bi: "Web app only; context-switch out of Slack",
     textToSql: "Web app only",
   },
   {
@@ -51,7 +51,7 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     feature: "Plugin ecosystem",
-    atlas: "21 plugins across 5 types — extend anything",
+    atlas: "21 plugins across 5 types, extend anything",
     bi: "Closed",
     textToSql: "Limited",
   },
@@ -71,7 +71,7 @@ const ROWS: ReadonlyArray<Row> = [
   {
     feature: "REST APIs as datasources",
     atlas:
-      "Stripe, GitHub, Notion, any OpenAPI spec — read like a datasource, write-gated; generic OpenAPI installs auto-refresh",
+      "Stripe, GitHub, Notion, any OpenAPI spec: read like a datasource, write-gated; generic OpenAPI installs auto-refresh",
     bi: "None",
     textToSql: "None",
   },

@@ -61,10 +61,11 @@ export type {
   FavoriteStarterPrompt,
 } from "@useatlas/types/starter-prompt";
 
-// Shared cold-start fallback prompts — the static set the widget empty state
-// shows while the adaptive list loads / when it resolves empty (#3936 §F5).
-// Exported so the post-signup success page (#3935 §F4, not yet landed) can
-// adopt the same texts instead of its current divergent hardcoded copy.
+// Shared cold-start fallback prompts — the static NovaMart set the widget
+// empty state shows while the adaptive list loads / when it resolves empty
+// (#3936 §F5). Exported so the post-signup success page (#3935 §F4) draws
+// from this one source rather than re-hardcoding a divergent set; this
+// package is the only one both the widget and @atlas/web can import.
 export {
   DEFAULT_STARTER_PROMPTS,
   DEFAULT_STARTER_PROMPT_TEXTS,

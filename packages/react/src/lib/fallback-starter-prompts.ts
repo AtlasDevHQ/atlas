@@ -1,8 +1,8 @@
 import type { StarterPrompt } from "@useatlas/types/starter-prompt";
 
 /**
- * Static, schema-agnostic starter prompts shown when the adaptive set hasn't
- * resolved (or comes back empty in a cold-start state).
+ * Static fallback starter prompts shown when the adaptive set hasn't resolved
+ * (or comes back empty in a cold-start state).
  *
  * The adaptive list (`GET /api/v1/starter-prompts`) is generated server-side
  * and can take ~15s on a cold semantic index. Until it lands — and whenever
@@ -10,18 +10,25 @@ import type { StarterPrompt } from "@useatlas/types/starter-prompt";
  * with no suggestions (#3936, cold-start audit §F5). These prompts give the
  * empty state something actionable to render immediately.
  *
- * Deliberately generic so they read sensibly against any business schema
- * (the success page after signup, the public demo, a fresh embed) without
- * promising a column that may not exist. Exported as
- * `DEFAULT_STARTER_PROMPT_TEXTS` so the post-signup success page (#3935 §F4,
- * not yet landed — it currently hardcodes its own divergent copy) can adopt
- * this set and keep the two cold-start surfaces from drifting apart.
+ * Drawn from the canonical NovaMart e-commerce question set
+ * (`eval/canonical-questions/questions.yml`, locked in #2021) — the same
+ * dataset the public demo renders, so the fallback matches the connected
+ * schema rather than reading as a generic SaaS placeholder.
+ *
+ * Lives in `@useatlas/react` because it is the only package both consumers can
+ * import: the demo empty state renders through `<AtlasChat>` here, and the
+ * post-signup success page (`@atlas/web`, #3935 §F4) depends on this package.
+ * Putting it in `@atlas/web` would be unreachable from the widget. Exported as
+ * `DEFAULT_STARTER_PROMPT_TEXTS` so both cold-start surfaces draw from this one
+ * source instead of re-hardcoding divergent sets.
  */
 export const DEFAULT_STARTER_PROMPT_TEXTS: readonly string[] = [
-  "What are our top 10 customers by revenue?",
-  "Show me revenue trends over the last 12 months",
-  "Which products are selling the most this quarter?",
-  "How many new customers did we acquire last month?",
+  "What is our total GMV?",
+  "Who are our top customers by spend?",
+  "What is our revenue broken down by category?",
+  "How has our GMV changed by month?",
+  "What is our average order value?",
+  "How are our shipping carriers performing?",
 ] as const;
 
 /**

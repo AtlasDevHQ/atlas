@@ -12,16 +12,26 @@
  * Scoped to .atlas-root to avoid clobbering host app styles.
  */
 
+/* The embedded chat is a product surface — its accent is deep forest
+ * (--atlas-brand), matching app.useatlas.dev, never teal. --primary and --ring
+ * point at --atlas-brand so a white-label override flows through. The literal
+ * forest default mirrors brand.css and the DEFAULT_BRAND_COLOR lockstep (this
+ * package does not import the shared brand.css). NOTE: the widget HTML in
+ * packages/api/src/api/routes/widget.ts inlines a copy of this .atlas-root block
+ * (it loads after the compiled CSS and wins the cascade) — keep the two in sync.
+ * See ADR-0023 §4 + Consequences. */
 .atlas-root {
   --radius: 0.625rem;
+  --atlas-brand: oklch(0.4 0.115 158);
+  --atlas-brand-foreground: oklch(0.965 0.016 88);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
+  --primary: var(--atlas-brand);
+  --primary-foreground: var(--atlas-brand-foreground);
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
@@ -32,19 +42,21 @@
   --destructive-foreground: oklch(0.577 0.245 27.325);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --atlas-brand: oklch(0.759 0.148 167.71);
+  --ring: var(--atlas-brand);
 }
 
 .dark .atlas-root {
+  /* Lightened forest so the brand reads on dark grounds, never teal. */
+  --atlas-brand: oklch(0.62 0.12 158);
+  --atlas-brand-foreground: oklch(0.165 0.012 158);
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.145 0 0);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.145 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.985 0 0);
-  --primary-foreground: oklch(0.205 0 0);
+  --primary: var(--atlas-brand);
+  --primary-foreground: var(--atlas-brand-foreground);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -55,5 +67,5 @@
   --destructive-foreground: oklch(0.637 0.237 25.331);
   --border: oklch(0.269 0 0);
   --input: oklch(0.269 0 0);
-  --ring: oklch(0.439 0 0);
+  --ring: var(--atlas-brand);
 }

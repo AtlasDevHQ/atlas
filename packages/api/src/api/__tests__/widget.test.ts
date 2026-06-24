@@ -363,6 +363,17 @@ describe("GET /widget", () => {
     expect(html).toContain("--background:");
     expect(html).toContain(".dark .atlas-root{");
   });
+
+  it("ships the forest brand accent (not the retired teal) in the inline .atlas-root", async () => {
+    // The inline <style> .atlas-root copy loads after the compiled widget CSS
+    // and wins the cascade, so it must carry the forest --atlas-brand. Guards
+    // against the inline copy drifting back to teal (ADR-0023 §4 product surface).
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    expect(html).toContain("--atlas-brand:oklch(0.4 0.115 158)");
+    expect(html).toContain("--primary:var(--atlas-brand)");
+    expect(html).not.toContain("oklch(0.759 0.148 167.71)");
+  });
 });
 
 // --- data-atlas-* stable selectors ---

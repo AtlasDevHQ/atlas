@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/react",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Embeddable Atlas chat UI for React applications",
   "license": "MIT",
   "repository": {

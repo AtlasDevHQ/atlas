@@ -114,7 +114,7 @@ function AnswerPane() {
       >
         <span
           className="h-2 w-2 rounded-full"
-          style={{ background: "var(--atlas-brand)" }}
+          style={{ background: "var(--atlas-spark)" }}
         />
         <span className="font-mono text-[11px] text-zinc-400">atlas · agent reply</span>
         <span className="ml-auto rounded border border-white/10 px-2 py-[2px] font-mono text-[10px] text-zinc-400">

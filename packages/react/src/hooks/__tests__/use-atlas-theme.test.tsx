@@ -47,10 +47,10 @@ describe("useAtlasTheme", () => {
     const { result } = renderHook(() => useAtlasTheme());
 
     act(() => {
-      result.current.applyBrandColor("oklch(0.759 0.148 167.71)");
+      result.current.applyBrandColor("oklch(0.4 0.115 158)");
     });
 
     const value = document.documentElement.style.getPropertyValue("--atlas-brand");
-    expect(value).toBe("oklch(0.759 0.148 167.71)");
+    expect(value).toBe("oklch(0.4 0.115 158)");
   });
 });

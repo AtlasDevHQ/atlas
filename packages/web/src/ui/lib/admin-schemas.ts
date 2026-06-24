@@ -543,8 +543,8 @@ export type {
 
 export const DemoConfigSchema = z.object({
   model: z.string(),
-  maxSteps: z.number(),
-  rpm: z.number(),
+  maxSteps: z.number().int(),
+  rpm: z.number().int(),
   effectiveModel: z.string().nullable(),
 });
 export type DemoConfig = z.infer<typeof DemoConfigSchema>;

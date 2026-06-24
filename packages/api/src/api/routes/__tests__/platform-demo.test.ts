@@ -131,9 +131,27 @@ mock.module("@atlas/api/lib/settings", () => ({
   SaasImmutableSettingError: class SaasImmutableSettingError extends Error {},
 }));
 
+// Mock the full demo.ts export surface (mock-all-exports). Only `demoUserId`
+// (real hash, so the leads/usage join keys line up) and `getDemoConfig` are
+// exercised by these routes; the rest are harmless stubs so nothing in the
+// import graph resolves a demo export to `undefined`.
 mock.module("@atlas/api/lib/demo", () => ({
   demoUserId: realDemoUserId,
   getDemoConfig: () => demoConfig,
+  getDemoModelRaw: () => demoConfig.model,
+  getDemoModelId: () => demoConfig.effectiveModel,
+  getDemoMaxSteps: () => demoConfig.maxSteps,
+  getDemoRpmLimit: () => demoConfig.rpm,
+  isDemoEnabled: () => true,
+  demoRunAgentModelParams: () => ({}),
+  signDemoToken: () => "",
+  verifyDemoToken: () => null,
+  checkDemoRateLimit: () => ({ allowed: true }),
+  resetDemoRateLimits: () => {},
+  DEMO_CLEANUP_INTERVAL_MS: 60_000,
+  demoCleanupTick: () => {},
+  captureDemoLead: async () => ({}),
+  countDemoConversations: async () => 0,
 }));
 
 // Bypass the platform-admin auth + MFA middleware so we exercise handler

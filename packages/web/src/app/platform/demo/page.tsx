@@ -61,8 +61,10 @@ function fmtLatency(ms: number | null): string {
 
 /**
  * Extract human-readable text from a persisted message's `content`. Demo
- * messages store AI-SDK UIMessage parts (`{ type: "text", text }`); fall back
- * to a raw string or a compact JSON dump for non-text parts (tool calls, etc.).
+ * messages store AI-SDK UIMessage parts (`{ type: "text", text }`); this returns
+ * the joined text parts (dropping any tool-call parts). A message with no text
+ * part is JSON-dumped whole, guarded so a non-serializable value (circular ref,
+ * BigInt) renders a placeholder instead of throwing into the transcript Sheet.
  */
 function extractText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -78,7 +80,13 @@ function extractText(content: unknown): string {
       .map((p) => p.text);
     if (texts.length > 0) return texts.join("\n");
   }
-  return JSON.stringify(content);
+  try {
+    return JSON.stringify(content);
+  } catch {
+    // intentionally ignored: unrenderable content (circular / BigInt) — show a
+    // placeholder rather than crash the transcript Sheet via the ErrorBoundary.
+    return "[unrenderable content]";
+  }
 }
 
 // ── Page shell ───────────────────────────────────────────────────────

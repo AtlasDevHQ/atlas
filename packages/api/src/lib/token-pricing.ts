@@ -7,9 +7,10 @@
  * tokens; gateway-routed pricing may differ, and an unknown model returns
  * `null` (the UI renders "—") rather than a misleading $0.
  *
- * Cost model — `token_usage.prompt_tokens` is the AI-SDK `inputTokens.total`,
- * which INCLUDES the cache_read + cache_write split (verified: total 100 =
- * noCache 90 + cacheRead 7 + cacheWrite 3). So the fresh (uncached) input is
+ * Cost model — `token_usage.prompt_tokens` is the AI-SDK `inputTokens` (the
+ * input-token total), which INCLUDES the cache_read + cache_write split
+ * (verified: inputTokens 100 = noCacheTokens 90 + cacheReadTokens 7 +
+ * cacheWriteTokens 3). So the fresh (uncached) input is
  * `prompt_tokens − cache_read − cache_write`, priced at the base input rate;
  * cache reads/writes are priced with Anthropic's standard 5-minute prompt-cache
  * multipliers (read ≈ 0.1×, write ≈ 1.25× of base input). Pricing the four
@@ -17,7 +18,7 @@
  */
 
 export interface TokenCounts {
-  /** Total input tokens (AI-SDK `inputTokens.total`, incl. the cache split). */
+  /** Total input tokens (AI-SDK `inputTokens`, inclusive of the cache split). */
   readonly promptTokens: number;
   readonly completionTokens: number;
   readonly cacheReadTokens: number;

@@ -14,10 +14,9 @@
  * - GET  /transcript — full question/answer transcript for one lead email
  * - GET  /metrics    — token + cache + latency rollup (aggregate + per-model)
  *
- * Demo turns are identified by `conversations.surface = 'demo'`; token_usage
- * rows join through `conversation_id`. A lead email maps to its synthetic
- * conversation `user_id` via {@link demoUserId} (sha256 — the email is never
- * stored on conversations), so the JS-side join keys hashed id → email.
+ * The SQL + the fold/join logic live in `lib/demo-tracking.ts` so they're
+ * unit- and `-pg`-testable without this route's auth graph; this file is the
+ * thin Hono/Effect shell (auth, validation, query → assemble → respond).
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
@@ -29,7 +28,26 @@ import { RequestContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB, queryEffect } from "@atlas/api/lib/db/internal";
 import { setSetting } from "@atlas/api/lib/settings";
 import { demoUserId, getDemoConfig } from "@atlas/api/lib/demo";
-import { estimateCostUsd } from "@atlas/api/lib/token-pricing";
+import {
+  LEADS_LIMIT,
+  TRANSCRIPT_CONVERSATION_LIMIT,
+  LEADS_SQL,
+  LEADS_USAGE_SQL,
+  LEADS_CONV_COUNT_SQL,
+  METRICS_PER_MODEL_SQL,
+  METRICS_LEAD_COUNTS_SQL,
+  TRANSCRIPT_CONV_SQL,
+  TRANSCRIPT_MSG_SQL,
+  assembleLeads,
+  assembleMetrics,
+  assembleTranscript,
+  type LeadRow,
+  type UsageRow,
+  type ConvCountRow,
+  type LeadCountsRow,
+  type TranscriptConvRow,
+  type TranscriptMsgRow,
+} from "@atlas/api/lib/demo-tracking";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
@@ -39,16 +57,14 @@ const log = createLogger("platform-demo");
 // Constants
 // ---------------------------------------------------------------------------
 
-const LEADS_LIMIT = 500;
-const TRANSCRIPT_CONVERSATION_LIMIT = 100;
 const DEMO_MAX_STEPS_MIN = 1;
 const DEMO_MAX_STEPS_MAX = 100;
 
 // ---------------------------------------------------------------------------
-// Schemas (inline — kept out of @useatlas/schemas so the scaffold template's
-// pinned-version build never blocks on a not-yet-published symbol. The web
-// page mirrors these shapes in `ui/lib/admin-schemas.ts`; keep field names in
-// lockstep.)
+// Response schemas (inline — kept out of @useatlas/schemas so the scaffold
+// template's pinned-version build never blocks on a not-yet-published symbol.
+// The web page mirrors these shapes in `ui/lib/admin-schemas.ts`, and the
+// internal shapes live in `lib/demo-tracking.ts`; keep field names in lockstep.)
 // ---------------------------------------------------------------------------
 
 const ConfigSchema = z.object({
@@ -219,208 +235,6 @@ const metricsRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
-// SQL — hoisted so each statement is greppable
-// ---------------------------------------------------------------------------
-
-const LEADS_SQL = `
-  SELECT email, session_count, created_at, last_active_at
-  FROM demo_leads
-  ORDER BY last_active_at DESC
-  LIMIT $1
-`;
-
-/** Per-(user, model) token rollup over demo turns. Keyed back to email in JS. */
-const LEADS_USAGE_SQL = `
-  SELECT c.user_id AS user_id, tu.model AS model, tu.provider AS provider,
-         COUNT(*)::int AS turns,
-         COALESCE(SUM(tu.prompt_tokens), 0)::bigint AS prompt_tokens,
-         COALESCE(SUM(tu.completion_tokens), 0)::bigint AS completion_tokens,
-         COALESCE(SUM(tu.cache_read_tokens), 0)::bigint AS cache_read_tokens,
-         COALESCE(SUM(tu.cache_write_tokens), 0)::bigint AS cache_write_tokens,
-         AVG(tu.latency_ms)::float8 AS avg_latency_ms,
-         COUNT(tu.latency_ms)::int AS latency_count
-  FROM conversations c
-  JOIN token_usage tu ON tu.conversation_id = c.id::text
-  WHERE c.surface = 'demo' AND c.user_id IS NOT NULL
-  GROUP BY c.user_id, tu.model, tu.provider
-`;
-
-const LEADS_CONV_COUNT_SQL = `
-  SELECT user_id, COUNT(*)::int AS conversation_count
-  FROM conversations
-  WHERE surface = 'demo' AND user_id IS NOT NULL
-  GROUP BY user_id
-`;
-
-/** Global per-model rollup over all demo turns (independent of leads). */
-const METRICS_PER_MODEL_SQL = `
-  SELECT tu.model AS model, tu.provider AS provider,
-         COUNT(*)::int AS turns,
-         COALESCE(SUM(tu.prompt_tokens), 0)::bigint AS prompt_tokens,
-         COALESCE(SUM(tu.completion_tokens), 0)::bigint AS completion_tokens,
-         COALESCE(SUM(tu.cache_read_tokens), 0)::bigint AS cache_read_tokens,
-         COALESCE(SUM(tu.cache_write_tokens), 0)::bigint AS cache_write_tokens,
-         AVG(tu.latency_ms)::float8 AS avg_latency_ms,
-         COUNT(tu.latency_ms)::int AS latency_count
-  FROM token_usage tu
-  JOIN conversations c ON c.id::text = tu.conversation_id
-  WHERE c.surface = 'demo'
-  GROUP BY tu.model, tu.provider
-  ORDER BY turns DESC
-`;
-
-const METRICS_LEAD_COUNTS_SQL = `
-  SELECT COUNT(*)::int AS lead_count,
-         COALESCE(SUM(session_count), 0)::int AS session_count
-  FROM demo_leads
-`;
-
-const TRANSCRIPT_CONV_SQL = `
-  SELECT id, title, created_at
-  FROM conversations
-  WHERE user_id = $1 AND surface = 'demo'
-  ORDER BY created_at DESC
-  LIMIT $2
-`;
-
-const TRANSCRIPT_MSG_SQL = `
-  SELECT conversation_id, role, content, created_at
-  FROM messages
-  WHERE conversation_id = ANY($1::uuid[])
-  ORDER BY created_at ASC
-`;
-
-// ---------------------------------------------------------------------------
-// Row types + helpers
-// ---------------------------------------------------------------------------
-
-type LeadRow = {
-  email: string;
-  session_count: number;
-  created_at: string | Date;
-  last_active_at: string | Date;
-} & Record<string, unknown>;
-
-type UsageRow = {
-  user_id: string;
-  model: string | null;
-  provider: string | null;
-  turns: number;
-  prompt_tokens: string | number;
-  completion_tokens: string | number;
-  cache_read_tokens: string | number;
-  cache_write_tokens: string | number;
-  avg_latency_ms: number | null;
-  latency_count: number;
-} & Record<string, unknown>;
-
-type ConvCountRow = {
-  user_id: string;
-  conversation_count: number;
-} & Record<string, unknown>;
-
-type LeadCountsRow = {
-  lead_count: number;
-  session_count: number;
-} & Record<string, unknown>;
-
-type TranscriptConvRow = {
-  id: string;
-  title: string | null;
-  created_at: string | Date;
-} & Record<string, unknown>;
-
-type TranscriptMsgRow = {
-  conversation_id: string;
-  role: string;
-  content: unknown;
-  created_at: string | Date;
-} & Record<string, unknown>;
-
-function isoOf(v: string | Date): string {
-  return typeof v === "string" ? v : v.toISOString();
-}
-
-/** Latency-count-weighted average across rows, or null when no row had latency. */
-function weightedAvgLatency(
-  parts: ReadonlyArray<{ avg: number | null; count: number }>,
-): number | null {
-  let weightedSum = 0;
-  let totalCount = 0;
-  for (const p of parts) {
-    if (p.avg != null && p.count > 0) {
-      weightedSum += p.avg * p.count;
-      totalCount += p.count;
-    }
-  }
-  return totalCount > 0 ? weightedSum / totalCount : null;
-}
-
-/**
- * Fold per-(user|null, model) usage rows into one token rollup, summing the
- * per-model estimated cost. `estimatedCostUsd` is null only when EVERY model in
- * the group is unpriced (so the UI shows "—" rather than a misleading $0);
- * `costComplete` flags a partial estimate (some priced, some not).
- */
-function foldUsage(rows: ReadonlyArray<UsageRow>): {
-  turns: number;
-  promptTokens: number;
-  completionTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  avgLatencyMs: number | null;
-  estimatedCostUsd: number | null;
-  costComplete: boolean;
-} {
-  let turns = 0;
-  let promptTokens = 0;
-  let completionTokens = 0;
-  let cacheReadTokens = 0;
-  let cacheWriteTokens = 0;
-  let costSum = 0;
-  let anyPriced = false;
-  let anyUnpriced = false;
-  const latencyParts: Array<{ avg: number | null; count: number }> = [];
-
-  for (const r of rows) {
-    const prompt = Number(r.prompt_tokens);
-    const completion = Number(r.completion_tokens);
-    const cacheRead = Number(r.cache_read_tokens);
-    const cacheWrite = Number(r.cache_write_tokens);
-    turns += r.turns;
-    promptTokens += prompt;
-    completionTokens += completion;
-    cacheReadTokens += cacheRead;
-    cacheWriteTokens += cacheWrite;
-    latencyParts.push({ avg: r.avg_latency_ms, count: r.latency_count });
-
-    const cost = estimateCostUsd(r.model, {
-      promptTokens: prompt,
-      completionTokens: completion,
-      cacheReadTokens: cacheRead,
-      cacheWriteTokens: cacheWrite,
-    });
-    if (cost == null) {
-      anyUnpriced = true;
-    } else {
-      anyPriced = true;
-      costSum += cost;
-    }
-  }
-
-  return {
-    turns,
-    promptTokens,
-    completionTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-    avgLatencyMs: weightedAvgLatency(latencyParts),
-    estimatedCostUsd: anyPriced ? costSum : null,
-    costComplete: !anyUnpriced,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -463,13 +277,14 @@ platformDemo.openapi(updateConfigRoute, async (c) => {
       // `model` is a ≤200-char string.
       const body = c.req.valid("json");
       const model = body.model.trim();
+      const userId = c.get("authResult")?.user?.id;
 
       yield* Effect.tryPromise({
         try: () =>
           Promise.all([
-            setSetting("ATLAS_DEMO_MODEL", model, c.get("authResult")?.user?.id),
-            setSetting("ATLAS_DEMO_MAX_STEPS", String(body.maxSteps), c.get("authResult")?.user?.id),
-            setSetting("ATLAS_DEMO_RATE_LIMIT_RPM", String(body.rpm), c.get("authResult")?.user?.id),
+            setSetting("ATLAS_DEMO_MODEL", model, userId),
+            setSetting("ATLAS_DEMO_MAX_STEPS", String(body.maxSteps), userId),
+            setSetting("ATLAS_DEMO_RATE_LIMIT_RPM", String(body.rpm), userId),
           ]),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
@@ -512,45 +327,7 @@ platformDemo.openapi(leadsRoute, async (c) => {
         { concurrency: "unbounded" },
       );
 
-      // Map synthetic demo user_id → email. The email is never stored on
-      // conversations/token_usage, so the hash is the only join key.
-      const emailByUid = new Map<string, string>();
-      for (const lead of leadRows) emailByUid.set(demoUserId(lead.email), lead.email);
-
-      const usageByEmail = new Map<string, UsageRow[]>();
-      for (const row of usageRows) {
-        const email = emailByUid.get(row.user_id);
-        if (!email) continue; // demo conversation with no surviving lead row
-        const list = usageByEmail.get(email);
-        if (list) list.push(row);
-        else usageByEmail.set(email, [row]);
-      }
-
-      const convCountByUid = new Map<string, number>();
-      for (const row of convCountRows) convCountByUid.set(row.user_id, row.conversation_count);
-
-      const leads = leadRows.map((lead) => {
-        const uid = demoUserId(lead.email);
-        const folded = foldUsage(usageByEmail.get(lead.email) ?? []);
-        return {
-          email: lead.email,
-          sessionCount: lead.session_count,
-          firstSeen: isoOf(lead.created_at),
-          lastActive: isoOf(lead.last_active_at),
-          conversationCount: convCountByUid.get(uid) ?? 0,
-          usage: {
-            turns: folded.turns,
-            promptTokens: folded.promptTokens,
-            completionTokens: folded.completionTokens,
-            cacheReadTokens: folded.cacheReadTokens,
-            cacheWriteTokens: folded.cacheWriteTokens,
-            avgLatencyMs: folded.avgLatencyMs,
-            estimatedCostUsd: folded.estimatedCostUsd,
-          },
-        };
-      });
-
-      return c.json({ leads }, 200);
+      return c.json({ leads: assembleLeads(leadRows, usageRows, convCountRows) }, 200);
     }),
     { label: "list demo leads" },
   );
@@ -579,25 +356,7 @@ platformDemo.openapi(transcriptRoute, async (c) => {
           ? []
           : yield* queryEffect<TranscriptMsgRow>(TRANSCRIPT_MSG_SQL, [convIds]);
 
-      const msgsByConv = new Map<string, TranscriptMsgRow[]>();
-      for (const m of msgRows) {
-        const list = msgsByConv.get(m.conversation_id);
-        if (list) list.push(m);
-        else msgsByConv.set(m.conversation_id, [m]);
-      }
-
-      const conversations = convRows.map((conv) => ({
-        id: conv.id,
-        title: conv.title,
-        createdAt: isoOf(conv.created_at),
-        messages: (msgsByConv.get(conv.id) ?? []).map((m) => ({
-          role: m.role,
-          content: m.content,
-          createdAt: isoOf(m.created_at),
-        })),
-      }));
-
-      return c.json({ email, conversations }, 200);
+      return c.json(assembleTranscript(email, convRows, msgRows), 200);
     }),
     { label: "get demo transcript" },
   );
@@ -620,42 +379,7 @@ platformDemo.openapi(metricsRoute, async (c) => {
         { concurrency: "unbounded" },
       );
 
-      const perModel = perModelRows.map((r) => {
-        const folded = foldUsage([r]);
-        return {
-          model: r.model,
-          provider: r.provider,
-          turns: folded.turns,
-          promptTokens: folded.promptTokens,
-          completionTokens: folded.completionTokens,
-          cacheReadTokens: folded.cacheReadTokens,
-          cacheWriteTokens: folded.cacheWriteTokens,
-          avgLatencyMs: folded.avgLatencyMs,
-          estimatedCostUsd: folded.estimatedCostUsd,
-        };
-      });
-
-      const totals = foldUsage(perModelRows);
-      const counts = leadCountRows[0] ?? { lead_count: 0, session_count: 0 };
-
-      return c.json(
-        {
-          leadCount: counts.lead_count,
-          sessionCount: counts.session_count,
-          totals: {
-            turns: totals.turns,
-            promptTokens: totals.promptTokens,
-            completionTokens: totals.completionTokens,
-            cacheReadTokens: totals.cacheReadTokens,
-            cacheWriteTokens: totals.cacheWriteTokens,
-            avgLatencyMs: totals.avgLatencyMs,
-            estimatedCostUsd: totals.estimatedCostUsd,
-            costComplete: totals.costComplete,
-          },
-          perModel,
-        },
-        200,
-      );
+      return c.json(assembleMetrics(perModelRows, leadCountRows), 200);
     }),
     { label: "get demo metrics" },
   );

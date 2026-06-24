@@ -150,7 +150,10 @@ describe("token_usage cache split write path (#3099)", () => {
     expect(params[4]).toBe(7); // cache_read_tokens  ← inputTokenDetails.cacheReadTokens
     expect(params[5]).toBe(3); // cache_write_tokens ← inputTokenDetails.cacheWriteTokens
     // latency_ms (#3931) — agent-turn wall-clock, non-negative integer ms.
-    expect(typeof params[9]).toBe("number");
+    // Integer is load-bearing: a units/formula regression (fractional, or a
+    // swapped non-time param) would trip this without the flakiness of an
+    // upper bound on a near-instant mock turn.
+    expect(Number.isInteger(params[9])).toBe(true);
     expect(params[9] as number).toBeGreaterThanOrEqual(0);
   });
 

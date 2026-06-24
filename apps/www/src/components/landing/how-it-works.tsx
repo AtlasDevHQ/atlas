@@ -224,6 +224,12 @@ export function HowItWorks() {
         >
           Try the demo
         </a>
+        <a
+          href="/security"
+          className="inline-flex items-center rounded-lg border border-border bg-transparent px-3.5 py-2.5 text-[13.5px] text-fg transition-colors hover:border-border-strong hover:bg-bg-sunken"
+        >
+          How we keep your data safe →
+        </a>
       </div>
     </section>
   );

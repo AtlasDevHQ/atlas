@@ -39,6 +39,9 @@ export function Footer() {
           <a href={STATUS_URL} className="text-xs text-fg-muted transition-colors hover:text-fg">
             Status
           </a>
+          <a href="/security" className="text-xs text-fg-muted transition-colors hover:text-fg">
+            Security
+          </a>
           <a href="/terms" className="text-xs text-fg-muted transition-colors hover:text-fg">
             Terms
           </a>

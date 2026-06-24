@@ -9,6 +9,13 @@ Atlas lets an AI agent write SQL against your production database. Without guard
 
 Every SQL query the agent writes passes through **7 layers of validation** before it reaches your database. No query can bypass the pipeline — if any layer rejects, the query is blocked and the agent receives a structured error message explaining why.
 
+<Callout title="Looking for the overview?">
+  This page is the deep technical reference. For the prospect-facing summary of
+  how Atlas keeps your database safe — validation, read-only connections,
+  sandboxing, and encrypted credentials — see the
+  [Security overview](https://www.useatlas.dev/security).
+</Callout>
+
 ## Key terms
 
 Before diving in, here are a few terms used throughout this page:

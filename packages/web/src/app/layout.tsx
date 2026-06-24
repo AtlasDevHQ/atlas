@@ -41,7 +41,22 @@ export default async function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: buildThemeInitScript() }} />
+        {/*
+          suppressHydrationWarning: under a nonce-based CSP the browser strips
+          the `nonce` content attribute from the DOM once it has authorized the
+          inline script, so on the client React reads `nonce=""` while the SSR
+          HTML carried the real value. That benign, expected mismatch otherwise
+          logs a hydration error on *every* page (it surfaced across the whole
+          cold-start funnel, #3925). The attribute is still server-stamped, so
+          CSP enforcement is unchanged — only the false-positive warning is
+          silenced. The no-flash theme script has no hydrated children, so
+          nothing else on this element needs reconciliation.
+        */}
+        <script
+          nonce={nonce}
+          suppressHydrationWarning
+          dangerouslySetInnerHTML={{ __html: buildThemeInitScript() }}
+        />
       </head>
       <body className="flex h-dvh flex-col bg-white text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100">
         <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-4 focus:bg-background focus:text-foreground">Skip to content</a>

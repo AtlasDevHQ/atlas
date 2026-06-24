@@ -13,6 +13,7 @@ import {
 import { ArrowRight, BookOpen, Clock, MessageSquare, Settings, Users } from "lucide-react";
 import { SignupShell } from "@/ui/components/signup/signup-shell";
 import { useTrialStatus } from "@/ui/hooks/use-trial-status";
+import { useSuccessStarterPrompts } from "@/ui/hooks/use-success-starter-prompts";
 import { formatDate } from "@/lib/format";
 
 interface NextStepDef {
@@ -45,14 +46,12 @@ const NEXT_STEPS: NextStepDef[] = [
   },
 ];
 
-const STARTER_PROMPTS = [
-  "What are our top 10 customers by revenue this quarter?",
-  "Which products had the biggest week-over-week drop?",
-  "Show me churn risk by plan tier.",
-];
-
 export default function SuccessPage() {
   const router = useRouter();
+  // Starter prompts derive from the connected workspace's semantic layer via
+  // the same adaptive resolver the in-chat empty state uses (#3935 §F4), with
+  // a shared static fallback for a cold-start / not-yet-ready semantic layer.
+  const { prompts: starterPrompts } = useSuccessStarterPrompts();
 
   // #2487: hydrate the Better Auth session store before navigating to a
   // guarded route. Without this, AuthGuard can read the pre-signup `null`
@@ -90,7 +89,7 @@ export default function SuccessPage() {
               </h2>
             </div>
             <ul className="space-y-2">
-              {STARTER_PROMPTS.map((prompt) => (
+              {starterPrompts.map((prompt) => (
                 <li key={prompt}>
                   <button
                     type="button"

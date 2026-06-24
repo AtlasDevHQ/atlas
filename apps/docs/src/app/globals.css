@@ -4,8 +4,91 @@
 @import "fumadocs-openapi/css/preset.css";
 @import "../../brand.css";
 
+/* ---------------------------------------------------------------------------
+ * Docs brand adapter — warm cream + deep forest, light AND dark (ADR-0023).
+ *
+ * Docs is a *brand surface* (PRODUCT.md › Principle 5): its light mode is the
+ * landing's marketing cream + forest; its dark mode is *kept* (developers read
+ * docs at night) but retinted on-brand — forest, lightened, never teal. The
+ * forest accent is the through-line in both modes; teal (`--atlas-spark`) is a
+ * rare spark only and is never a docs primary.
+ *
+ * This is a thin adapter: it maps the shared `brand.css` tokens onto Fumadocs'
+ * `--color-fd-*` vocabulary (the full set lives in
+ * node_modules/fumadocs-ui/css/lib/default-colors.css).
+ *
+ * Forest is pinned to its explicit value here (oklch 0.40 0.115 158 = #1F5C45)
+ * instead of `var(--atlas-brand)`, because `--atlas-brand` still resolves to
+ * teal until the white-label teal→forest flip lands with #3916 (that flip moves
+ * brand.css ↔ use-dark-mode.ts ↔ settings.ts in lockstep). Once #3916 flips it,
+ * every forest-pinned LIGHT value here — `--color-fd-primary`, `--color-fd-ring`,
+ * the `--color-fd-accent` mix, and the forest-ink `--color-fd-border` — can
+ * collapse back onto `var(--atlas-brand)`. The DARK lightened-forest
+ * (`oklch(0.72 0.13 158)`) stays pinned: there is no dark-mode brand token to
+ * collapse into (add `--atlas-brand-dark` to brand.css if that changes).
+ * Sequencing: #3918 (token groundwork) → this issue → #3916 (forest flip +
+ * app/demo). The shared cream ramp (`--atlas-paper*` / `--atlas-ink*`) is
+ * already net-zero from #3918, so we consume it directly.
+ *
+ * Code blocks stay dark: Shiki themes them independently of `--fd-*`, so they
+ * are left untouched in both modes.
+ * ------------------------------------------------------------------------- */
+
 :root {
-  --color-fd-primary: var(--atlas-brand);
-  --color-fd-primary-foreground: var(--atlas-brand-foreground);
-  --color-fd-ring: var(--atlas-brand);
+  /* Cream paper grounds — the brand light surface. Docs is long-form prose, so
+   * it can sit on the literal landing cream (not the app's paper-lite). */
+  --color-fd-background: var(--atlas-paper);
+  --color-fd-foreground: var(--atlas-ink);
+
+  --color-fd-card: var(--atlas-paper-raised);
+  --color-fd-card-foreground: var(--atlas-ink);
+  --color-fd-popover: var(--atlas-paper-raised);
+  --color-fd-popover-foreground: var(--atlas-ink);
+
+  --color-fd-muted: var(--atlas-paper-sunken);
+  --color-fd-muted-foreground: var(--atlas-ink-muted);
+  --color-fd-secondary: var(--atlas-paper-raised);
+  --color-fd-secondary-foreground: var(--atlas-ink);
+
+  /* Hover/active wash off the forest accent, kept faint so prose stays calm. */
+  --color-fd-accent: color-mix(in oklch, oklch(0.4 0.115 158) 10%, transparent);
+  --color-fd-accent-foreground: var(--atlas-ink);
+
+  /* Forest-ink borders — the shared ink token at low alpha (no reinvented hue). */
+  --color-fd-border: color-mix(in oklch, var(--atlas-ink) 16%, transparent);
+
+  /* Deep forest #1F5C45 primary + ring (pinned; see header note). */
+  --color-fd-primary: oklch(0.4 0.115 158);
+  --color-fd-primary-foreground: oklch(0.965 0.016 88); /* cream on forest */
+  --color-fd-ring: oklch(0.4 0.115 158);
+}
+
+.dark {
+  /* Keep Fumadocs' neutral dark grounds, faintly forest-tinted (hue 158) so the
+   * dark docs read as a sibling of the cream landing rather than pure gray —
+   * still a calm working surface for night reading. */
+  --color-fd-background: oklch(0.18 0.008 158);
+  --color-fd-foreground: oklch(0.92 0.006 158);
+
+  --color-fd-card: oklch(0.215 0.009 158);
+  --color-fd-card-foreground: oklch(0.96 0.006 158);
+  --color-fd-popover: oklch(0.205 0.009 158);
+  --color-fd-popover-foreground: oklch(0.9 0.006 158);
+
+  --color-fd-muted: oklch(0.24 0.009 158);
+  --color-fd-muted-foreground: oklch(0.72 0.012 158);
+  --color-fd-secondary: oklch(0.24 0.009 158);
+  --color-fd-secondary-foreground: oklch(0.92 0.006 158);
+
+  --color-fd-accent: color-mix(in oklch, oklch(0.72 0.13 158) 18%, transparent);
+  --color-fd-accent-foreground: oklch(0.95 0.006 158);
+
+  --color-fd-border: oklch(0.72 0.04 158 / 0.18);
+
+  /* Lightened forest primary + ring — forest stays the accent in dark too,
+   * never teal (ADR-0023 §4). Lifted to ~0.72 L for AA contrast on the dark
+   * ground. */
+  --color-fd-primary: oklch(0.72 0.13 158);
+  --color-fd-primary-foreground: oklch(0.18 0.03 158); /* dark forest on light */
+  --color-fd-ring: oklch(0.72 0.13 158);
 }

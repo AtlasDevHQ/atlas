@@ -61,6 +61,16 @@ export type {
   FavoriteStarterPrompt,
 } from "@useatlas/types/starter-prompt";
 
+// Shared cold-start fallback prompts — the static NovaMart set the widget
+// empty state shows while the adaptive list loads / when it resolves empty
+// (#3936 §F5). Exported so the post-signup success page (#3935 §F4) draws
+// from this one source rather than re-hardcoding a divergent set; this
+// package is the only one both the widget and @atlas/web can import.
+export {
+  DEFAULT_STARTER_PROMPTS,
+  DEFAULT_STARTER_PROMPT_TEXTS,
+} from "./lib/fallback-starter-prompts";
+
 // Cross-environment routing wire types — re-exported from @useatlas/types
 // so embedders writing a custom `executeSQL` tool renderer can read
 // `envContributions[]` (per-env row count + error + durationMs) from

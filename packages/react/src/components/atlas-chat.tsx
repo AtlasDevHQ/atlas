@@ -21,6 +21,7 @@ import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
 import { useHealthQuery } from "../hooks/use-health-query";
 import { useStarterPromptsQuery } from "../hooks/use-starter-prompts-query";
+import { DEFAULT_STARTER_PROMPTS } from "../lib/fallback-starter-prompts";
 import { Sun, Moon, Monitor, Star, TableProperties, Pin, Send } from "lucide-react";
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import {
@@ -480,7 +481,26 @@ function AtlasChatInner({
       provenance: "library" as const,
     }));
   }, [starterPromptsOverride]);
-  const starterPromptsList: StarterPrompt[] = overrideStarterPrompts ?? fetchedStarterPrompts;
+  // Empty-state prompt resolution (#3936 §F5). Two paths:
+  //
+  //  • Override path — the host passed a static `starterPrompts` prop. Render
+  //    exactly what they gave us (including `[]` → no suggestions); no fetch,
+  //    so no skeleton and no fallback. The host owns their empty state.
+  //
+  //  • Adaptive path — we fetch `/api/v1/starter-prompts`, which can take ~15s
+  //    on a cold semantic index. While in flight we render skeleton chips so a
+  //    first-time visitor never faces a bare "ask anything". When it resolves
+  //    empty (the server's cold-start signal), we substitute the shared static
+  //    fallback rather than a dead-end — adaptive rows replace it once present.
+  const isOverridePath = overrideStarterPrompts !== null;
+  const starterPromptsLoading = !isOverridePath && starterPromptsQuery.isLoading;
+  const starterPromptsList: StarterPrompt[] = isOverridePath
+    ? overrideStarterPrompts
+    : fetchedStarterPrompts.length > 0
+      ? fetchedStarterPrompts
+      : starterPromptsLoading
+        ? []
+        : [...DEFAULT_STARTER_PROMPTS];
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -653,7 +673,25 @@ function AtlasChatInner({
                           Ask a question about your data to get started
                         </p>
                       </div>
-                      {starterPromptsList.length > 0 ? (
+                      {starterPromptsLoading ? (
+                        // Skeleton chips while the ~15s adaptive list loads.
+                        // Identical grid container + matching single-line chip
+                        // height (42px) as the real prompts, so the swap is
+                        // layout-shift-free for single-line prompts (a wrapping
+                        // adaptive prompt can still grow its row) (#3936 §F5).
+                        <div
+                          className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2"
+                          aria-hidden="true"
+                        >
+                          {DEFAULT_STARTER_PROMPTS.map((prompt) => (
+                            <div
+                              key={prompt.id}
+                              data-testid="starter-prompt-skeleton"
+                              className="h-[42px] animate-pulse rounded-lg border border-zinc-200 bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-800/50"
+                            />
+                          ))}
+                        </div>
+                      ) : starterPromptsList.length > 0 ? (
                         <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
                           {starterPromptsList.map((prompt) => {
                             const isFavorite = prompt.provenance === "favorite";
@@ -677,11 +715,13 @@ function AtlasChatInner({
                           })}
                         </div>
                       ) : (
-                        !starterPromptsQuery.isLoading && (
-                          <p className="max-w-sm text-center text-sm text-zinc-500 dark:text-zinc-500">
-                            Ask your first question below to get started.
-                          </p>
-                        )
+                        // Reached only on the override path with an explicit
+                        // empty list (`starterPrompts={[]}`) — the adaptive path
+                        // substitutes the static fallback above, so it never
+                        // lands here with nothing to show.
+                        <p className="max-w-sm text-center text-sm text-zinc-500 dark:text-zinc-500">
+                          Ask your first question below to get started.
+                        </p>
                       )}
                     </div>
                   )}

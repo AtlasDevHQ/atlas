@@ -238,11 +238,16 @@ export async function upsertEntity(
   name: string,
   yamlContent: string,
   connectionId?: string,
+  // Optional transaction-bound executor so a multi-entity import can commit
+  // atomically with its caller — the published sibling of the `exec` param on
+  // {@link upsertDraftEntity}, used by the /use-demo seed to land the curated
+  // demo layer published-and-queryable inside `withDemoSeedLock` (#3932).
+  exec: InternalQueryExecutor = internalQuery,
 ): Promise<void> {
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
-  await internalQuery(
+  await exec(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
      VALUES ($1, $2, $3, $4, ${inlineConnectionGroupSql("$5", "$1")}, 'published')
      ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn(GROUP_COLUMN)}) WHERE status = 'published'
@@ -273,11 +278,14 @@ export async function upsertEntityForGroup(
   name: string,
   yamlContent: string,
   connectionGroupId?: string | null,
+  // See {@link upsertEntity} — optional transaction-bound executor so a grouped
+  // published import commits atomically with its caller (#3932).
+  exec: InternalQueryExecutor = internalQuery,
 ): Promise<void> {
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
-  await internalQuery(
+  await exec(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
      VALUES ($1, $2, $3, $4, $5, 'published')
      ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn(GROUP_COLUMN)}) WHERE status = 'published'
@@ -1624,6 +1632,14 @@ export async function bulkUpsertEntities(
   orgId: string,
   entities: Array<{ entityType: SemanticEntityType; name: string; yamlContent: string; connectionId?: string; connectionGroupId?: string | null }>,
   exec: InternalQueryExecutor = internalQuery,
+  // Content-mode status for the written rows. Defaults to `draft` — the
+  // review-then-publish workflow the wizard `/save`, admin import, profiler, and
+  // auth-migrate all rely on. The /use-demo seed passes `published` so its
+  // curated, read-only layer is queryable in published mode (the default mode
+  // for a fresh signup) without a manual publish step (#3932). Promoting drafts
+  // to live still flows only through the atomic publish endpoint; this is a
+  // documented carve-out for system-seeded content (see content-mode.md).
+  status: "draft" | "published" = "draft",
 ): Promise<number> {
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
@@ -1634,17 +1650,25 @@ export async function bulkUpsertEntities(
   // transaction — partial commits are not on the table, so a row failure must
   // propagate rather than be counted as a skip.
   const atomic = exec !== internalQuery;
+  const published = status === "published";
 
   let upserted = 0;
   for (const e of entities) {
     try {
       // A group-scoped row (canonical `groups/<group>/` or legacy `<source>/`)
       // carries its group directly; the flat default dir keeps resolving the
-      // connection/install id through `inlineConnectionGroupSql` (#3245).
+      // connection/install id through `inlineConnectionGroupSql` (#3245). The
+      // status branch picks the published vs draft sibling — both keyed on their
+      // own partial unique index, so a re-run upserts the same-status row in
+      // place (idempotent demo re-seed).
       if (e.connectionGroupId !== undefined) {
-        await upsertDraftEntityForGroup(orgId, e.entityType, e.name, e.yamlContent, e.connectionGroupId, exec);
+        await (published ? upsertEntityForGroup : upsertDraftEntityForGroup)(
+          orgId, e.entityType, e.name, e.yamlContent, e.connectionGroupId, exec,
+        );
       } else {
-        await upsertDraftEntity(orgId, e.entityType, e.name, e.yamlContent, e.connectionId, exec);
+        await (published ? upsertEntity : upsertDraftEntity)(
+          orgId, e.entityType, e.name, e.yamlContent, e.connectionId, exec,
+        );
       }
       upserted++;
     } catch (err) {

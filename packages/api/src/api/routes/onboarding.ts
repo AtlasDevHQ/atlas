@@ -800,10 +800,28 @@ onboarding.openapi(
         try: () => withDemoSeedLock(orgId, async (tx) => {
           // Phase 2 — import demo semantic entities on the transaction
           // connection so they commit (or roll back) with phase 3.
+          //
+          // Seed as `published`, not the import default `draft` (#3932). A fresh
+          // signup runs in `published` atlas-mode by default (no developer
+          // cookie), and the published-mode entity read requires the ENTITY's
+          // own `status='published'` — a published install alone does NOT surface
+          // draft entities. Left as drafts, the curated demo layer is invisible
+          // to BOTH the chat data-setup gate (`/semantic/entities` → 0 →
+          // composer hidden) AND the agent's published-mode whitelist (empty →
+          // "I have no tables"), dead-ending the user at the activation moment.
+          //
+          // CONTENT-MODE CARVE-OUT: this is the one place demo entities go live
+          // outside the atomic publish endpoint. Justified because the demo layer
+          // is system-curated and read-only (`use-demo-readonly`) with no
+          // human-review step — it is published-at-seed by design, the same way
+          // on-disk YAML entities are always treated as published. The published
+          // upsert's `ON CONFLICT ... WHERE status='published'` keeps the re-seed
+          // idempotent. See docs/development/content-mode.md.
           const importResult = await importFromDisk(orgId, {
             sourceDir: semanticDir,
             connectionId: DEMO_CONNECTION_ID,
             exec: tx.query,
+            status: "published",
           });
 
           if (importResult.total === 0) {

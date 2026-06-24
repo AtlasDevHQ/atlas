@@ -63,3 +63,83 @@ describe("bulkUpsertEntities — transactional atomicity (#3683)", () => {
     expect(calls).toBe(3);
   });
 });
+
+/**
+ * Status dispatch (#3932). `bulkUpsertEntities` writes `draft` rows by default
+ * (the admin import / wizard / profiler "review-then-publish" workflow), but the
+ * /use-demo seed threads `status: 'published'` so the curated, read-only demo
+ * layer lands queryable in published mode (the default mode for a fresh signup).
+ * Without this, the curated demo entities are stranded as drafts — invisible to
+ * both the chat data-setup gate AND the agent's published-mode whitelist,
+ * dead-ending the user at the activation moment.
+ *
+ * The injected `exec` records the INSERT so we can assert the inlined status
+ * literal without a real DB.
+ */
+describe("bulkUpsertEntities — status dispatch (#3932)", () => {
+  let savedDbUrl: string | undefined;
+
+  beforeEach(() => {
+    savedDbUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgres://fake:fake@localhost:5432/fake";
+  });
+
+  afterEach(() => {
+    if (savedDbUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = savedDbUrl;
+  });
+
+  function recordingExec(): { exec: <T extends Record<string, unknown>>(sql: string) => Promise<T[]>; sqls: string[] } {
+    const sqls: string[] = [];
+    const exec = async <T extends Record<string, unknown>>(sql: string): Promise<T[]> => {
+      sqls.push(sql);
+      return [] as T[];
+    };
+    return { exec, sqls };
+  }
+
+  it("defaults to draft rows when status is omitted", async () => {
+    const { exec, sqls } = recordingExec();
+    const n = await bulkUpsertEntities("org-1", rows, exec);
+
+    expect(n).toBe(3);
+    expect(sqls).toHaveLength(3);
+    for (const sql of sqls) {
+      expect(sql).toContain("'draft'");
+      expect(sql).not.toContain("'published'");
+    }
+  });
+
+  it("writes published rows when status='published' (demo seed)", async () => {
+    const { exec, sqls } = recordingExec();
+    const n = await bulkUpsertEntities("org-1", rows, exec, "published");
+
+    expect(n).toBe(3);
+    expect(sqls).toHaveLength(3);
+    for (const sql of sqls) {
+      expect(sql).toContain("'published'");
+      expect(sql).not.toContain("'draft'");
+    }
+  });
+
+  it("dispatches a group-scoped row to the PUBLISHED group helper (direct connection_group_id)", async () => {
+    const { exec, sqls } = recordingExec();
+    // A row carrying `connectionGroupId` directly (canonical groups/<group>/ or
+    // legacy <source>/ layout) must route to `upsertEntityForGroup`, not the
+    // flat `upsertEntity` install-resolution path.
+    const n = await bulkUpsertEntities(
+      "org-1",
+      [{ entityType: "entity", name: "orders", yamlContent: "table: orders\n", connectionGroupId: "eu_prod" }],
+      exec,
+      "published",
+    );
+
+    expect(n).toBe(1);
+    expect(sqls).toHaveLength(1);
+    expect(sqls[0]).toContain("'published'");
+    // Group-direct INSERT writes `connection_group_id` from $5 verbatim — it must
+    // NOT route through the install-resolving subquery the flat connectionId path
+    // uses, which is how we know the published *group* branch was selected.
+    expect(sqls[0]).not.toContain("COALESCE(config->>'group_id'");
+  });
+});

@@ -28,8 +28,9 @@ import * as path from "path";
 import type { SemanticEntityRow } from "../semantic/entities";
 
 const mockListEntities = mock((): Promise<SemanticEntityRow[]> => Promise.resolve([]));
-const mockBulkUpsertEntities = mock((_orgId: string, entities: unknown[]): Promise<number> =>
-  Promise.resolve(Array.isArray(entities) ? entities.length : 0),
+const mockBulkUpsertEntities = mock(
+  (_orgId: string, entities: unknown[], _exec?: unknown, _status?: "draft" | "published"): Promise<number> =>
+    Promise.resolve(Array.isArray(entities) ? entities.length : 0),
 );
 const mockHasInternalDB = mock((): boolean => true);
 const mockInternalQuery = mock((): Promise<Array<{ org_id: string }>> => Promise.resolve([]));
@@ -773,6 +774,31 @@ describe("importFromDisk", () => {
     expect(result.imported).toBe(1);
     // The mock bulkUpsertEntities doesn't check connectionId,
     // but we verify it doesn't error
+  });
+
+  it("threads status:'published' through to bulkUpsertEntities (#3932 demo seed)", async () => {
+    const orgId = testOrgId();
+    await syncEntityToDisk(orgId, "test", "entity", "table: test\n");
+
+    await importFromDisk(orgId, { connectionId: "__demo__", status: "published" });
+
+    // bulkUpsertEntities receives the status as its 4th positional arg, after
+    // (orgId, entities, exec). The demo seed relies on this to land the curated
+    // layer queryable in published mode (#3932).
+    const call = mockBulkUpsertEntities.mock.calls.at(-1);
+    expect(call?.[3]).toBe("published");
+  });
+
+  it("defaults bulkUpsertEntities to draft status when status is omitted", async () => {
+    const orgId = testOrgId();
+    await syncEntityToDisk(orgId, "test", "entity", "table: test\n");
+
+    await importFromDisk(orgId, { connectionId: "warehouse" });
+
+    // Omitting status preserves the review-then-publish default for the admin
+    // import / auth-migrate callers — they must keep landing drafts.
+    const call = mockBulkUpsertEntities.mock.calls.at(-1);
+    expect(call?.[3] ?? "draft").toBe("draft");
   });
 
   it("surfaces dbFailures when bulkUpsertEntities persists fewer rows than scanned (#3683)", async () => {

@@ -33,7 +33,7 @@ tag to confirm the flagged items are resolved.
 | 4c. Signup · region | `/signup/region` | ⚠️ dead-end on error | Auto-skips when no regions configured (200 `[]`); **traps the user when the regions API errors** (disabled Continue, only Back). |
 | 4d. Signup · connect | `/signup/connect` | ✅ clear | "Connect your database" + "Explore demo data" + "Skip for now". ![connect](./assets/cold-start-activation/funnel-04-signup-connect.png) |
 | 5. Success / trial | `/signup/success` | ✅ polished | Trial clearly communicated ("14-day free trial… no charges until you pick a plan"), starter prompts, secondary actions. ![success](./assets/cold-start-activation/funnel-05-signup-success.png) |
-| 6. Authed first-run | `/` (`(workspace)/page.tsx`) | ⛔ **composer dead-end** | After connecting the demo dataset, the chat shows "Connect data to get started" and **hides the composer** — see flagged finding F1. |
+| 6. Authed first-run | `/` (`(workspace)/page.tsx`) | ✅ fixed (#3932) | Was a composer dead-end after connecting the demo dataset; `/use-demo` now seeds the demo layer as `published` so the gate + agent see it — see F1. |
 
 The demo funnel reaches a real, high-quality first answer with zero signup. The
 authed funnel is polished step-to-step but has one blocking dead-end (F1) at the
@@ -135,6 +135,18 @@ publish status (its job is "is data connected?", not "what's published"); (b) th
 published-mode entity list includes entities backed by a published install;
 (c) `/use-demo` publishes the imported entities. Touches the content-mode system
 (ADRs / `docs/development/content-mode.md`) — not a safe polish change.
+
+**Resolution (#3932 → chose (c)).** Diagnosis corrected the "by design" framing
+above: a published *install* does **not** make draft entities visible in
+published mode — `listEntityRows(…, "published")` requires the **entity's own**
+`status='published'`, so the bug also hit the **agent's** whitelist (empty), not
+just the gate. (a) alone would therefore ship a worse dead-end (composer shows →
+agent has no tables); (b) leaks every workspace's WIP drafts into published mode.
+(c) wins: `/use-demo` now seeds the curated, read-only demo layer as `published`
+(`importFromDisk({ status: "published" })`), fixing the gate **and** the agent
+with zero blast radius elsewhere. Invariant recorded in
+[content-mode.md](content-mode.md) § *System-seeded content may be
+published-at-seed*; live-PG regression in `demo-publish-visibility-pg.test.ts`.
 
 ### F2 — P1: stale/expired-session cookie trap
 

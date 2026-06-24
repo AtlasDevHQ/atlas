@@ -5,7 +5,8 @@
  * server-side and can take ~15s on a cold semantic index. A first-time
  * visitor must never face a bare "ask anything" empty state with no
  * suggestions while that resolves — nor when it comes back empty (the
- * server's cold-start signal). This file pins three guarantees:
+ * server's cold-start signal). This file pins three guarantees (the final
+ * test exercises 1→2 end-to-end):
  *
  *  1. While the fetch is in flight → skeleton chips render (no bare empty
  *     state, no "ask your first question" dead-end).
@@ -24,7 +25,7 @@ import { DEFAULT_STARTER_PROMPT_TEXTS } from "../../lib/fallback-starter-prompts
 
 let resolveStarter: ((res: Response) => void) | null = null;
 
-function makeFetch(starterBody: unknown | "pending") {
+function makeFetch(starterBody: unknown | "pending", starterStatus = 200) {
   return function fetchImpl(input: string | URL | Request): Promise<Response> {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 
@@ -45,7 +46,7 @@ function makeFetch(starterBody: unknown | "pending") {
       }
       return Promise.resolve(
         new Response(JSON.stringify(starterBody), {
-          status: 200,
+          status: starterStatus,
           headers: { "Content-Type": "application/json" },
         }),
       );
@@ -138,5 +139,65 @@ describe("AtlasChat empty state — loading skeleton + cold-start fallback", () 
 
     await findByText("Cybersecurity threat trends");
     expect(queryByText("Ask your first question below to get started.")).toBeNull();
+  });
+
+  it("falls back to static prompts when the adaptive fetch 5xx-soft-fails (transient backend fault)", async () => {
+    // The SDK soft-fails a 5xx to an empty list, so the empty-state gate sees
+    // the same resolved-empty signal as a cold-start 200 — and must still
+    // render the fallback, not a bare dead-end. This is the most common way a
+    // real cold-start visitor hits an empty list (a backend hiccup), so it's
+    // the load-bearing regression guard for the PR's stated reason to exist.
+    fetchMock.mockImplementation(makeFetch({ error: "internal" }, 500));
+    const { findByText, queryByTestId } = render(
+      <AtlasChat apiUrl="https://api.example.com" apiKey="test-key" />,
+    );
+
+    await findByText(DEFAULT_STARTER_PROMPT_TEXTS[0], undefined, { timeout: 5_000 });
+    expect(queryByTestId("starter-prompt-skeleton")).toBeNull();
+  });
+
+  it("falls back to static prompts when the adaptive fetch 4xx-throws (auth / rate limit)", async () => {
+    // A 4xx throws in the SDK → React Query error state, data: undefined →
+    // empty list once it settles (after the retry: 1 backoff, ~1s+). The
+    // empty state must degrade to the fallback rather than a dead-end, so a
+    // first-time visitor with an expired key / rate limit still gets prompts.
+    fetchMock.mockImplementation(makeFetch({ error: "unauthorized" }, 401));
+    const { findByText, queryByTestId } = render(
+      <AtlasChat apiUrl="https://api.example.com" apiKey="test-key" />,
+    );
+
+    // Longer timeout: the query only settles after the retry backoff.
+    await findByText(DEFAULT_STARTER_PROMPT_TEXTS[0], undefined, { timeout: 10_000 });
+    expect(queryByTestId("starter-prompt-skeleton")).toBeNull();
+  });
+
+  it("override path never shows the skeleton, even on first paint", async () => {
+    // The override prop disables the fetch; the empty-state gate must short-
+    // circuit BOTH the skeleton and the fallback so the host owns its empty
+    // state. Guards against a future change that gates the skeleton on the
+    // disabled query's isPending (true) instead of isLoading.
+    fetchMock.mockImplementation(makeFetch("pending"));
+    const { findByText, queryByTestId } = render(
+      <AtlasChat apiUrl="https://api.example.com" apiKey="test-key" starterPrompts={["Custom host prompt"]} />,
+    );
+
+    await findByText("Custom host prompt", undefined, { timeout: 5_000 });
+    expect(queryByTestId("starter-prompt-skeleton")).toBeNull();
+  });
+
+  it("empty override array renders the dead-end copy (host opted out of suggestions)", async () => {
+    // `starterPrompts={[]}` is the ONLY path to the dead-end copy after this
+    // change — the adaptive path substitutes the static fallback instead. The
+    // host explicitly chose no suggestions, so we honor it rather than
+    // injecting the fallback.
+    fetchMock.mockImplementation(makeFetch("pending"));
+    const { findByText, queryByTestId } = render(
+      <AtlasChat apiUrl="https://api.example.com" apiKey="test-key" starterPrompts={[]} />,
+    );
+
+    await findByText("Ask your first question below to get started.", undefined, { timeout: 5_000 });
+    expect(queryByTestId("starter-prompt-skeleton")).toBeNull();
+    // No fallback chips leaked in despite the empty list.
+    expect(queryByTestId("starter-prompt-cold-start")).toBeNull();
   });
 });

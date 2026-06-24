@@ -12,9 +12,10 @@ import type { StarterPrompt } from "@useatlas/types/starter-prompt";
  *
  * Deliberately generic so they read sensibly against any business schema
  * (the success page after signup, the public demo, a fresh embed) without
- * promising a column that may not exist. Shared with the post-signup success
- * page (#3935 §F4) via `DEFAULT_STARTER_PROMPT_TEXTS` so the two cold-start
- * surfaces never drift apart.
+ * promising a column that may not exist. Exported as
+ * `DEFAULT_STARTER_PROMPT_TEXTS` so the post-signup success page (#3935 §F4,
+ * not yet landed — it currently hardcodes its own divergent copy) can adopt
+ * this set and keep the two cold-start surfaces from drifting apart.
  */
 export const DEFAULT_STARTER_PROMPT_TEXTS: readonly string[] = [
   "What are our top 10 customers by revenue?",

@@ -675,8 +675,10 @@ function AtlasChatInner({
                       </div>
                       {starterPromptsLoading ? (
                         // Skeleton chips while the ~15s adaptive list loads.
-                        // Same grid + chip dimensions as the real prompts so
-                        // the swap is layout-shift-free (#3936 §F5).
+                        // Identical grid container + matching single-line chip
+                        // height (42px) as the real prompts, so the swap is
+                        // layout-shift-free for single-line prompts (a wrapping
+                        // adaptive prompt can still grow its row) (#3936 §F5).
                         <div
                           className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2"
                           aria-hidden="true"

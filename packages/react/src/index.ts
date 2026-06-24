@@ -63,8 +63,8 @@ export type {
 
 // Shared cold-start fallback prompts — the static set the widget empty state
 // shows while the adaptive list loads / when it resolves empty (#3936 §F5).
-// Exported so the post-signup success page (#3935 §F4) reuses the same texts
-// instead of maintaining a divergent copy.
+// Exported so the post-signup success page (#3935 §F4, not yet landed) can
+// adopt the same texts instead of its current divergent hardcoded copy.
 export {
   DEFAULT_STARTER_PROMPTS,
   DEFAULT_STARTER_PROMPT_TEXTS,

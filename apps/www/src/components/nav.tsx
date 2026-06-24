@@ -18,11 +18,11 @@ export function Nav({ currentPage, logoHref = "/" }: { currentPage?: string; log
     <nav className="animate-fade-in relative z-50 mx-auto max-w-5xl px-6 py-6">
       <div className="flex items-center justify-between">
         <a href={logoHref} className="flex items-center gap-2.5">
-          <AtlasLogo className="h-6 w-6 text-brand" />
-          <span className="font-mono text-lg font-semibold tracking-tight text-zinc-100">
+          <AtlasLogo className="h-6 w-6 text-accent" />
+          <span className="font-mono text-lg font-semibold tracking-tight text-fg">
             atlas
           </span>
-          <span className="rounded-full border border-brand/20 bg-brand/10 px-2 py-0.5 font-mono text-[10px] font-medium tracking-wider text-brand uppercase">
+          <span className="rounded-full border border-accent-quiet bg-accent-quiet px-2 py-0.5 font-mono text-[10px] font-medium tracking-wider text-accent uppercase">
             beta
           </span>
         </a>
@@ -38,8 +38,8 @@ export function Nav({ currentPage, logoHref = "/" }: { currentPage?: string; log
                 {...(isActive ? { "aria-current": "page" as const } : {})}
                 className={`text-sm transition-colors ${
                   isActive
-                    ? "text-zinc-300 hover:text-zinc-100"
-                    : "text-zinc-400 hover:text-zinc-300"
+                    ? "text-fg"
+                    : "text-fg-muted hover:text-fg"
                 }`}
               >
                 {link.label}
@@ -48,7 +48,7 @@ export function Nav({ currentPage, logoHref = "/" }: { currentPage?: string; log
           })}
           <a
             href="https://app.useatlas.dev"
-            className="rounded-md bg-zinc-100 px-3.5 py-1.5 text-sm font-medium text-zinc-950 transition-colors hover:bg-white"
+            className="rounded-md bg-fg px-3.5 py-1.5 text-sm font-medium text-bg transition-colors hover:bg-accent"
           >
             Sign up
           </a>
@@ -58,7 +58,7 @@ export function Nav({ currentPage, logoHref = "/" }: { currentPage?: string; log
         <button
           type="button"
           onClick={() => setOpen(!open)}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 transition-colors hover:text-zinc-100 sm:hidden"
+          className="flex h-8 w-8 items-center justify-center rounded-md text-fg-muted transition-colors hover:text-fg sm:hidden"
           aria-label={open ? "Close menu" : "Open menu"}
           aria-expanded={open}
         >
@@ -76,7 +76,7 @@ export function Nav({ currentPage, logoHref = "/" }: { currentPage?: string; log
 
       {/* Mobile dropdown */}
       {open && (
-        <div className="absolute right-6 left-6 top-full z-50 mt-1 flex flex-col gap-1 rounded-lg border border-zinc-800/60 bg-zinc-950 p-2 shadow-xl sm:hidden">
+        <div className="absolute right-6 left-6 top-full z-50 mt-1 flex flex-col gap-1 rounded-lg border border-border bg-bg p-2 shadow-xl sm:hidden">
           {NAV_LINKS.map((link) => {
             const isActive = currentPage === link.href;
             return (
@@ -86,18 +86,18 @@ export function Nav({ currentPage, logoHref = "/" }: { currentPage?: string; log
                 {...(isActive ? { "aria-current": "page" as const } : {})}
                 className={`rounded-md px-3 py-2 text-sm transition-colors ${
                   isActive
-                    ? "text-zinc-200"
-                    : "text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200"
+                    ? "text-fg"
+                    : "text-fg-muted hover:bg-bg-sunken hover:text-fg"
                 }`}
               >
                 {link.label}
               </a>
             );
           })}
-          <div className="my-1 border-t border-zinc-800/60" />
+          <div className="my-1 border-t border-border" />
           <a
             href="https://app.useatlas.dev"
-            className="rounded-md bg-zinc-100 px-3 py-2 text-center text-sm font-medium text-zinc-950 transition-colors hover:bg-white"
+            className="rounded-md bg-fg px-3 py-2 text-center text-sm font-medium text-bg transition-colors hover:bg-accent"
           >
             Sign up
           </a>

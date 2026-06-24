@@ -55,7 +55,7 @@ function tokenize(line: string): Token[] {
 function YamlPane() {
   return (
     <div
-      className="overflow-hidden rounded-xl border border-white/10"
+      className="overflow-hidden rounded-xl border border-white/10 shadow-pane"
       style={{ background: "oklch(0.12 0 0)" }}
     >
       <div
@@ -105,7 +105,7 @@ const TOP_ROW = CATEGORY_ROWS[0];
 function AnswerPane() {
   return (
     <div
-      className="flex h-full flex-col overflow-hidden rounded-xl border border-white/10"
+      className="flex h-full flex-col overflow-hidden rounded-xl border border-white/10 shadow-pane"
       style={{ background: "oklch(0.14 0 0)" }}
     >
       <div
@@ -191,14 +191,14 @@ export function HowItWorks() {
   return (
     <section
       id="how-it-works"
-      className="scroll-mt-20 border-b border-white/5 px-6 pt-20 pb-16 md:px-16 md:pt-[100px] md:pb-20"
-      style={{ background: "oklch(0.16 0 0)" }}
+      className="scroll-mt-20 border-b border-border-soft px-content pt-20 pb-16 md:pt-[100px] md:pb-20"
+      style={{ background: "var(--bg-raised)" }}
     >
       <header className="mb-10 max-w-[760px]">
-        <h2 className="m-0 mb-4 text-[36px] md:text-[46px] font-semibold leading-[1.05] tracking-[-0.03em] text-zinc-50">
+        <h2 className="m-0 mb-4 text-[36px] md:text-[46px] font-semibold leading-[1.05] tracking-[-0.03em] text-fg">
           Why you can trust the answer.
         </h2>
-        <p className="m-0 text-base leading-[1.65] text-zinc-400">
+        <p className="m-0 text-base leading-[1.65] text-fg-muted">
           You define your data once in YAML: the entities, joins, and the terms
           your team actually uses, versioned in your repo and reviewed in pull
           requests. Atlas reads it on every question, writes the SQL, and runs it
@@ -214,13 +214,13 @@ export function HowItWorks() {
       <div className="mt-10 flex flex-wrap gap-2.5">
         <a
           href="https://docs.useatlas.dev/semantic-layer"
-          className="inline-flex items-center rounded-lg bg-brand px-[18px] py-[11px] text-[13.5px] font-semibold text-zinc-950 transition-colors hover:bg-brand-hover"
+          className="inline-flex items-center rounded-lg bg-accent px-[18px] py-[11px] text-[13.5px] font-semibold text-accent-ink transition-colors hover:bg-accent-hover"
         >
           See how the YAML works →
         </a>
         <a
           href="https://app.useatlas.dev/demo"
-          className="inline-flex items-center rounded-lg border border-white/10 bg-zinc-900 px-3.5 py-2.5 text-[13.5px] text-zinc-50 transition-colors hover:border-white/20"
+          className="inline-flex items-center rounded-lg border border-border bg-transparent px-3.5 py-2.5 text-[13.5px] text-fg transition-colors hover:border-border-strong hover:bg-bg-sunken"
         >
           Try the demo
         </a>

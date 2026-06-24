@@ -1,14 +1,117 @@
 @import "tailwindcss";
 @import "../../brand.css";
 
+/* ---------------------------------------------------------------------------
+ * Brand surface theme — warm cream paper + deep forest green (light-first).
+ * Single source of truth for the landing's color. Code panes stay dark in
+ * every context via the --code-* tokens (terminal windows on paper); the
+ * bright brand teal only appears on those dark/green surfaces as a spark.
+ * See PRODUCT.md › Aesthetic Direction.
+ * ------------------------------------------------------------------------- */
+/*
+ * Default surface = the legacy DARK theme, so every not-yet-migrated www page
+ * (and the shared nav/footer on it) keeps rendering correctly. The new cream +
+ * forest brand surface is OPT-IN via `.theme-light` — the landing and
+ * /why-atlas wrap their tree in it. Flip the default to light once the
+ * remaining pages migrate. --code-* and --drench-* are shared (always
+ * dark/green in both themes) and live here on :root.
+ */
+:root {
+  --bg: oklch(0.13 0 0);
+  --bg-raised: oklch(0.16 0 0);
+  --bg-sunken: oklch(0.12 0 0);
+  --fg: oklch(0.97 0 0);
+  --fg-muted: oklch(0.7 0 0);
+  --fg-faint: oklch(0.5 0 0);
+  --border: oklch(1 0 0 / 0.1);
+  --border-soft: oklch(1 0 0 / 0.05);
+  --border-strong: oklch(1 0 0 / 0.2);
+  --accent: var(--atlas-brand);
+  --accent-hover: var(--atlas-brand-hover);
+  --accent-ink: oklch(0.18 0 0);
+  --accent-quiet: color-mix(in oklch, var(--atlas-brand) 12%, transparent);
+  --glow: color-mix(in oklch, var(--atlas-brand) 12%, transparent);
+
+  /* The closing CTA's drenched-green band (shared; always deep forest). */
+  --drench-bg: oklch(0.3 0.072 158);
+  --drench-fg: oklch(0.965 0.016 88);
+  --drench-muted: oklch(0.83 0.035 150);
+  --drench-accent: oklch(0.8 0.16 168);
+  --drench-ink: oklch(0.22 0.05 160);
+  --drench-glow: color-mix(in oklch, oklch(0.8 0.16 168) 20%, transparent);
+
+  /* Dark code "terminal windows" — shared; fixed dark in every theme. */
+  --code-bg: oklch(0.14 0.006 167);
+  --code-chrome: oklch(0.185 0.006 167);
+  --code-well: oklch(0.1 0.006 167);
+  --code-fg: oklch(0.86 0 0);
+  --code-muted: oklch(0.62 0 0);
+  --code-border: oklch(1 0 0 / 0.08);
+}
+
+/*
+ * Brand surface — warm cream paper + deep forest green (the new direction).
+ * Opt-in: the landing and /why-atlas wrap their root in `.theme-light`.
+ */
+.theme-light {
+  --bg: oklch(0.955 0.017 83); /* warm tan paper */
+  --bg-raised: oklch(0.923 0.019 83); /* sections / cards */
+  --bg-sunken: oklch(0.892 0.021 83);
+  --fg: oklch(0.245 0.026 158); /* near-black ink, faint forest */
+  --fg-muted: oklch(0.435 0.026 158);
+  --fg-faint: oklch(0.565 0.02 158);
+  --border: oklch(0.245 0.03 158 / 0.16);
+  --border-soft: oklch(0.245 0.03 158 / 0.09);
+  --border-strong: oklch(0.245 0.03 158 / 0.3);
+  --accent: oklch(0.4 0.115 158); /* deep forest green */
+  --accent-hover: oklch(0.45 0.12 158);
+  --accent-ink: oklch(0.965 0.016 88); /* cream text on green */
+  --accent-quiet: color-mix(in oklch, oklch(0.4 0.115 158) 11%, transparent);
+  --glow: color-mix(in oklch, oklch(0.4 0.115 158) 9%, transparent);
+}
+
+/*
+ * Constrain section content to the site content column (matches the nav and
+ * comparison `max-w-5xl`) while letting section backgrounds stay full-bleed.
+ * Swap a section's `px-6 md:px-16` for `px-content`.
+ */
+.px-content {
+  padding-inline: max(1.5rem, calc((100% - 68rem) / 2));
+}
+
 @theme inline {
   --color-brand: var(--atlas-brand);
   --color-brand-hover: var(--atlas-brand-hover);
+
+  --color-bg: var(--bg);
+  --color-bg-raised: var(--bg-raised);
+  --color-bg-sunken: var(--bg-sunken);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-faint: var(--fg-faint);
+  --color-border: var(--border);
+  --color-border-soft: var(--border-soft);
+  --color-border-strong: var(--border-strong);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-quiet: var(--accent-quiet);
+
+  --color-code-bg: var(--code-bg);
+  --color-code-chrome: var(--code-chrome);
+  --color-code-well: var(--code-well);
+  --color-code-fg: var(--code-fg);
+  --color-code-muted: var(--code-muted);
+  --color-code-border: var(--code-border);
 }
 
 @theme {
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
   --font-sans: "Sora", ui-sans-serif, sans-serif;
+
+  /* Soft, ink-tinted lift for the dark code panes floating on cream. */
+  --shadow-pane: 0 1px 2px oklch(0.245 0.03 158 / 0.06),
+    0 12px 28px -10px oklch(0.245 0.03 158 / 0.16);
 }
 
 @layer base {
@@ -25,7 +128,7 @@
   }
 
   ::selection {
-    background: color-mix(in oklch, var(--atlas-brand) 30%, transparent);
+    background: color-mix(in oklch, var(--accent) 22%, transparent);
   }
 }
 

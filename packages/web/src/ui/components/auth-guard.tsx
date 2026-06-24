@@ -89,14 +89,12 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
 
     void (async () => {
       // Only navigate once the cookie is provably cleared. The httpOnly cookie
-      // can only be dropped by the server round-trip — there is no client-side
-      // fallback — so if signOut fails the cookie is still set, and a hard nav
-      // to /login would be bounced straight back to / by the proxy. A fresh
-      // mount then resets `recovering` and re-fires → an infinite hard-nav loop
-      // that re-traps the user (a trap of our own making). So on failure we
-      // DON'T navigate: stay put (the API is degraded — /login wouldn't load
-      // either), `recovering` stays true so we don't re-fire this mount, and a
-      // user reload re-attempts once the API is reachable again.
+      // can only be dropped by the server round-trip (no client-side fallback),
+      // so if signOut fails the cookie is still set and a hard nav to /login
+      // would just be bounced back to / by the proxy — re-arming the trap. So on
+      // failure we DON'T navigate; we release the one-shot (see below) so a later
+      // session/route change can retry, and the `session.error` gate above keeps
+      // that from looping while the API is actually down.
       let cleared = false;
       try {
         // The /sign-out handler returns `{ success: true }` and clears the

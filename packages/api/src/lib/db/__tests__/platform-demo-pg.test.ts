@@ -165,4 +165,37 @@ describeIfPg("demo tracking read path (real Postgres, #3931)", () => {
       "assistant",
     ]);
   });
+
+  // Runs last: it inserts an orphan turn that the earlier assertions don't expect.
+  it("a demo turn with no surviving lead lands in metrics totals but not in leads", async () => {
+    const orphanConv = await pool.query<{ id: string }>(
+      `INSERT INTO conversations (user_id, surface, title)
+       VALUES ('demo:0rphaned00', 'demo', 'Orphan') RETURNING id`,
+    );
+    const orphanId = orphanConv.rows[0]!.id;
+    await pool.query(
+      `INSERT INTO token_usage
+         (user_id, conversation_id, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, model, provider, latency_ms)
+       VALUES ('demo:0rphaned00', $1, 100, 10, 0, 0, $2, 'gateway', 800)`,
+      [orphanId, HAIKU],
+    );
+
+    const [leadRows, usageRows, convCountRows, perModel, leadCounts] = await Promise.all([
+      pool.query<LeadRow>(LEADS_SQL, [LEADS_LIMIT]),
+      pool.query<UsageRow>(LEADS_USAGE_SQL),
+      pool.query<ConvCountRow>(LEADS_CONV_COUNT_SQL),
+      pool.query<UsageRow>(METRICS_PER_MODEL_SQL),
+      pool.query<LeadCountsRow>(METRICS_LEAD_COUNTS_SQL),
+    ]);
+
+    // LEADS_USAGE_SQL returns the orphan's row, but assembleLeads drops it.
+    expect(usageRows.rows.some((r) => r.user_id === "demo:0rphaned00")).toBe(true);
+    const leads = assembleLeads(leadRows.rows, usageRows.rows, convCountRows.rows);
+    expect(leads).toHaveLength(1); // orphan not resurrected as a lead
+    expect(leads[0]!.usage.turns).toBe(2); // the lead's own turns, unchanged
+
+    // ...but the metrics rollup is lead-independent, so the orphan's turn counts.
+    const metrics = assembleMetrics(perModel.rows, leadCounts.rows);
+    expect(metrics.totals.turns).toBe(3); // 2 (lead) + 1 (orphan)
+  });
 });

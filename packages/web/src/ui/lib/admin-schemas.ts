@@ -549,12 +549,15 @@ export const DemoConfigSchema = z.object({
 });
 export type DemoConfig = z.infer<typeof DemoConfigSchema>;
 
+// Token/cache counts are integers (kept in lockstep with the API's
+// TokenRollupSchema + the lib DemoTokenRollup interface); avgLatencyMs and
+// estimatedCostUsd are genuine floats and stay un-`.int()`.
 const DemoTokenRollupSchema = z.object({
-  turns: z.number(),
-  promptTokens: z.number(),
-  completionTokens: z.number(),
-  cacheReadTokens: z.number(),
-  cacheWriteTokens: z.number(),
+  turns: z.number().int(),
+  promptTokens: z.number().int(),
+  completionTokens: z.number().int(),
+  cacheReadTokens: z.number().int(),
+  cacheWriteTokens: z.number().int(),
   avgLatencyMs: z.number().nullable(),
   estimatedCostUsd: z.number().nullable(),
 });
@@ -562,10 +565,10 @@ export type DemoTokenRollup = z.infer<typeof DemoTokenRollupSchema>;
 
 export const DemoLeadSchema = z.object({
   email: z.string(),
-  sessionCount: z.number(),
+  sessionCount: z.number().int(),
   firstSeen: z.string(),
   lastActive: z.string(),
-  conversationCount: z.number(),
+  conversationCount: z.number().int(),
   usage: DemoTokenRollupSchema,
 });
 export type DemoLead = z.infer<typeof DemoLeadSchema>;
@@ -581,8 +584,8 @@ export const DemoPerModelSchema = DemoTokenRollupSchema.extend({
 export type DemoPerModel = z.infer<typeof DemoPerModelSchema>;
 
 export const DemoMetricsResponseSchema = z.object({
-  leadCount: z.number(),
-  sessionCount: z.number(),
+  leadCount: z.number().int(),
+  sessionCount: z.number().int(),
   totals: DemoTokenRollupSchema.extend({ costComplete: z.boolean() }),
   perModel: z.array(DemoPerModelSchema),
 });

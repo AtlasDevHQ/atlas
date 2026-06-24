@@ -78,6 +78,20 @@ describe("estimateCostUsd", () => {
     expect(sonnet).toBeCloseTo(haiku * 3, 6);
   });
 
+  it("clamps fresh input to 0 when the cache split exceeds prompt_tokens (isolated)", () => {
+    // prompt_tokens 100 < cache_read 500 → fresh input clamps to 0; no
+    // completion. Cost is then ONLY the cache-read contribution, proving the
+    // clamp isn't masked by a negative input flowing through.
+    const cost = estimateCostUsd("anthropic/claude-haiku-4.5", {
+      promptTokens: 100,
+      completionTokens: 0,
+      cacheReadTokens: 500,
+      cacheWriteTokens: 0,
+    });
+    // 500 * $1/MTok * 0.1 (cache-read multiplier) = $0.00005.
+    expect(cost).toBeCloseTo(500 * 0.1 / 1_000_000, 12);
+  });
+
   it("clamps negative / cache-exceeds-total inputs to a non-negative cost", () => {
     const cost = estimateCostUsd("anthropic/claude-haiku-4.5", {
       promptTokens: 100,

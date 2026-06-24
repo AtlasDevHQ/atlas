@@ -62,9 +62,10 @@ function fmtLatency(ms: number | null): string {
 /**
  * Extract human-readable text from a persisted message's `content`. Demo
  * messages store AI-SDK UIMessage parts (`{ type: "text", text }`); this returns
- * the joined text parts (dropping any tool-call parts). A message with no text
- * part is JSON-dumped whole, guarded so a non-serializable value (circular ref,
- * BigInt) renders a placeholder instead of throwing into the transcript Sheet.
+ * the joined text parts (dropping non-text parts such as tool calls). A message
+ * with no text part is JSON-dumped whole, guarded so a non-serializable value
+ * (circular ref, BigInt) renders a placeholder instead of throwing into the
+ * transcript Sheet.
  */
 function extractText(content: unknown): string {
   if (typeof content === "string") return content;

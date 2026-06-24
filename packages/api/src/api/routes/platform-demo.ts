@@ -47,6 +47,10 @@ import {
   type LeadCountsRow,
   type TranscriptConvRow,
   type TranscriptMsgRow,
+  type DemoTokenRollup,
+  type DemoLead,
+  type DemoPerModel,
+  type DemoMetrics,
 } from "@atlas/api/lib/demo-tracking";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
@@ -127,6 +131,19 @@ const MetricsResponseSchema = z.object({
   }),
   perModel: z.array(PerModelSchema),
 });
+
+// Compile-time lock — the inline response schemas above and the
+// `lib/demo-tracking.ts` interfaces are two same-package mirrors of one wire
+// shape (the web-local zod in `admin-schemas.ts` is the third, cross-package).
+// These bindings fail `tsgo` on any field/nullability drift between the zod and
+// the lib interface, so the mirrors can't silently diverge (they did once in
+// review). `Exact` collapses to `never` on mismatch, and `true` is not
+// assignable to `never`.
+type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+const _rollupLock: Exact<z.infer<typeof TokenRollupSchema>, DemoTokenRollup> = true;
+const _leadLock: Exact<z.infer<typeof LeadSchema>, DemoLead> = true;
+const _perModelLock: Exact<z.infer<typeof PerModelSchema>, DemoPerModel> = true;
+const _metricsLock: Exact<z.infer<typeof MetricsResponseSchema>, DemoMetrics> = true;
 
 const TranscriptQuerySchema = z.object({
   email: z.string().email().openapi({

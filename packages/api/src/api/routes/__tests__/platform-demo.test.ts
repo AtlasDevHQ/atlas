@@ -315,6 +315,18 @@ describe("PUT /config", () => {
     expect(byKey.ATLAS_DEMO_MODEL).toBe("");
   });
 
+  test("response reflects the re-read resolved config, not the raw write", async () => {
+    // The handler re-reads getDemoConfig() after writing so a blank model
+    // resolves to effectiveModel (e.g. the gateway Haiku default). Pin that the
+    // 200 body is the resolved config, not an echo of the request body.
+    demoConfig = { model: "", maxSteps: 7, rpm: 4, effectiveModel: "resolved-sentinel" };
+    const res = await put({ model: "", maxSteps: 7, rpm: 4 });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { effectiveModel: string }).effectiveModel).toBe(
+      "resolved-sentinel",
+    );
+  });
+
   test("422 on out-of-range maxSteps (validationHook)", async () => {
     const res = await put({ model: "", maxSteps: 9999, rpm: 10 });
     expect(res.status).toBe(422);

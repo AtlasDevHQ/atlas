@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { z } from "zod";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
@@ -45,7 +45,9 @@ export default function RegionPage() {
   const [error, setError] = useState<string | null>(null);
   const [skipping, setSkipping] = useState(false);
 
-  useEffect(() => {
+  const loadRegions = useCallback(() => {
+    setLoading(true);
+    setError(null);
     const base = getApiBase();
     fetch(`${base}/api/v1/onboarding/regions`, { credentials: getCredentials() })
       .then((res) => {
@@ -69,11 +71,18 @@ export default function RegionPage() {
       .catch((err: unknown) => {
         console.warn("Failed to fetch regions:", err instanceof Error ? err.message : String(err));
         // Show error instead of silently skipping — auto-skip only happens
-        // when the API explicitly returns configured=false (200 response).
-        setError("Unable to load region options. Please refresh the page or try again.");
+        // when the API explicitly returns configured=false (200 response), so a
+        // transient failure can't push someone past a deploy's required region
+        // pick. #3925 — pair the error with an in-place Retry so the user isn't
+        // dead-ended on a disabled Continue with only the Back link.
+        setError("Unable to load region options.");
         setLoading(false);
       });
   }, [router]);
+
+  useEffect(() => {
+    loadRegions();
+  }, [loadRegions]);
 
   async function handleContinue() {
     if (!selected) return;
@@ -158,9 +167,23 @@ export default function RegionPage() {
           </div>
 
           {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
+            <div role="alert" className="space-y-3 text-sm text-destructive">
+              <p>{error}</p>
+              {/* Load failure leaves no region to select, so Continue stays
+                  disabled — offer an in-place retry instead of a dead end whose
+                  only escape is the Back link. (#3925) */}
+              {regions.length === 0 && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={loadRegions}
+                  disabled={saving}
+                  className="w-full"
+                >
+                  Retry
+                </Button>
+              )}
+            </div>
           )}
 
           <Button

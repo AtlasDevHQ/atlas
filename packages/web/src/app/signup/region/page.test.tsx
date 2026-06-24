@@ -1,0 +1,130 @@
+/**
+ * Coverage for the signup region step (#3925).
+ *
+ * The step auto-skips to /signup/connect when no residency is configured, and
+ * — the change under test — pairs a region-load *failure* with an in-place
+ * Retry instead of dead-ending the user on a disabled Continue with only the
+ * Back link. There is no e2e coverage for this page, so these unit tests pin
+ * both the no-dead-end paths (auto-skip on empty, Retry on error).
+ *
+ * `mock.module(...)` stubs every named export of the modules it touches (per
+ * repo rule). The signup shell + region grid are mocked to passthroughs so the
+ * test exercises the page's load/retry logic, not their dep trees.
+ */
+
+import { describe, expect, test, mock, beforeEach, afterEach, afterAll } from "bun:test";
+import { render, fireEvent, waitFor, cleanup, act, screen } from "@testing-library/react";
+
+// ── Mocks ───────────────────────────────────────────────────────────────
+
+const routerReplaceMock = mock((_path: string) => {});
+const routerPushMock = mock((_path: string) => {});
+// Stable router reference across renders — the real next/navigation useRouter
+// is referentially stable, which the page's `useCallback(..., [router])`
+// relies on. A fresh object per call would churn the load effect.
+const routerMock = { replace: routerReplaceMock, push: routerPushMock, back: () => {} };
+mock.module("next/navigation", () => ({
+  useRouter: () => routerMock,
+}));
+
+mock.module("@/lib/api-url", () => ({
+  // getApiBase() falls back to window.location.origin when getApiUrl() is empty.
+  getApiUrl: () => "",
+  isCrossOrigin: () => false,
+  setRegionalApiUrl: () => {},
+  _resetApiUrl: () => {},
+}));
+
+mock.module("@/ui/components/signup/signup-shell", () => ({
+  SignupShell: ({ children, back }: { children: unknown; back?: { href: string } }) => (
+    <div>
+      {back ? <a href={back.href}>Back</a> : null}
+      {children as never}
+    </div>
+  ),
+}));
+
+mock.module("@/ui/components/region-picker", () => ({
+  RegionCardGrid: () => <div data-testid="region-grid" />,
+  ComplianceBadge: () => null,
+}));
+
+const fetchMock = mock(async (_input: RequestInfo | URL): Promise<Response> =>
+  new Response("not found", { status: 404 }),
+);
+const originalFetch = globalThis.fetch;
+globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+import RegionPage from "./page";
+
+function regionsFailure(): Response {
+  return new Response("boom", { status: 500 });
+}
+
+function regionsUnconfigured(): Response {
+  return new Response(
+    JSON.stringify({ configured: false, defaultRegion: "", availableRegions: [] }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
+beforeEach(() => {
+  routerReplaceMock.mockReset();
+  routerPushMock.mockReset();
+  fetchMock.mockReset();
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+afterAll(() => {
+  globalThis.fetch = originalFetch;
+});
+
+// ── Tests ───────────────────────────────────────────────────────────────
+
+describe("RegionPage — load failure recovery (#3925)", () => {
+  test("a regions load failure shows an error AND an in-place Retry (no dead end)", async () => {
+    fetchMock.mockImplementation(async () => regionsFailure());
+    render(<RegionPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/unable to load region options/i)).toBeDefined();
+    });
+    // The fix: a Retry button, not just a disabled Continue + Back link.
+    expect(screen.getByRole("button", { name: /^retry$/i })).toBeDefined();
+  });
+
+  test("clicking Retry re-fetches the region options", async () => {
+    fetchMock.mockImplementation(async () => regionsFailure());
+    render(<RegionPage />);
+
+    const retry = await screen.findByRole("button", { name: /^retry$/i });
+    // Don't assert the exact mount count — React StrictMode double-invokes the
+    // mount effect. Capture the baseline, then assert the click adds a fetch.
+    const callsBeforeRetry = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      fireEvent.click(retry);
+    });
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
+    });
+  });
+});
+
+describe("RegionPage — auto-skip when no residency configured", () => {
+  test("an unconfigured/empty response advances to /signup/connect (not a dead end)", async () => {
+    fetchMock.mockImplementation(async () => regionsUnconfigured());
+    render(<RegionPage />);
+
+    await waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/signup/connect");
+    });
+    // Auto-skip is the deliberate no-dead-end path for the empty case — no
+    // error, no Retry button.
+    expect(screen.queryByRole("button", { name: /^retry$/i })).toBeNull();
+  });
+});

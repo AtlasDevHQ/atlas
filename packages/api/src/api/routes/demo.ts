@@ -22,6 +22,7 @@ import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
 import { runAgent } from "@atlas/api/lib/agent";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { logFirstAnswerLatency, isFirstTurn } from "@atlas/api/lib/activation-metrics";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
@@ -497,6 +498,10 @@ demo.openapi(demoStartRoute, async (c) => {
 demo.openapi(demoChatRoute, async (c) => {
   const req = c.req.raw;
   const requestId = crypto.randomUUID();
+  // #3925 — cold-start time-to-first-answer clock. The demo is the purest
+  // cold path (zero signup), so its first-answer latency is the headline
+  // conversion signal. Stamped at request entry; finished in stream onFinish.
+  const turnStartedAtMs = Date.now();
 
   // Demo token auth
   const email = extractDemoEmail(req);
@@ -645,8 +650,20 @@ demo.openapi(demoChatRoute, async (c) => {
             setStreamWriter(requestId, writer);
             writer.merge(agentResult.toUIMessageStream());
           },
-          onFinish: () => {
+          onFinish: ({ isAborted, finishReason }) => {
             clearStreamWriter(requestId);
+            // #3925 — cold-start time-to-first-answer for the zero-signup demo
+            // path. Skip aborted/errored finishes (onFinish still fires after
+            // onError emits an error frame) so only delivered answers count.
+            if (isAborted || finishReason === "error") return;
+            logFirstAnswerLatency({
+              surface: "demo",
+              startedAtMs: turnStartedAtMs,
+              finishedAtMs: Date.now(),
+              firstTurn: isFirstTurn(messages),
+              requestId,
+              ...(conversationId ? { conversationId } : {}),
+            });
           },
           onError: (error) => {
             clearStreamWriter(requestId);

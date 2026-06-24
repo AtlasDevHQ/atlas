@@ -21,6 +21,7 @@ import { corsResponseHeaders } from "@atlas/api/lib/cors";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { logFirstAnswerLatency, isFirstTurn } from "@atlas/api/lib/activation-metrics";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import {
   authenticateRequest,
@@ -618,6 +619,11 @@ chat.openapi(chatRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const req = c.req.raw;
     const { requestId } = yield* RequestContext;
+    // #3925 — start the time-to-first-answer clock at request entry; the
+    // stream `onFinish` below stamps the finish reading. Captured here (not
+    // at stream start) so the metric includes auth + conversation setup, i.e.
+    // the full wait a cold visitor experiences.
+    const turnStartedAtMs = Date.now();
 
     // Auth check — before context so user identity is available to all downstream logs
     const authAttempt = yield* Effect.tryPromise({
@@ -1646,8 +1652,23 @@ chat.openapi(chatRoute, async (c) => {
                 }),
               );
             },
-            onFinish: () => {
+            onFinish: ({ isAborted, finishReason }) => {
               clearStreamWriter(requestId);
+              // #3925 — record cold-start time-to-first-answer, but only for
+              // answers the visitor actually received: onFinish also fires
+              // after onError emits an error frame and on client abort, so skip
+              // those (else an errored turn counts as a delivered answer with a
+              // meaningless latency). `firstTurn` isolates the opening question.
+              if (isAborted || finishReason === "error") return;
+              logFirstAnswerLatency({
+                surface: "chat",
+                startedAtMs: turnStartedAtMs,
+                finishedAtMs: Date.now(),
+                firstTurn: isFirstTurn(messages),
+                requestId,
+                ...(conversationId ? { conversationId } : {}),
+                ...(agentResult.runId ? { runId: agentResult.runId } : {}),
+              });
             },
             onError: (error) => {
               clearStreamWriter(requestId);

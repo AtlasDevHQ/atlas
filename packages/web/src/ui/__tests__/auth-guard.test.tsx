@@ -134,6 +134,36 @@ describe("AuthGuard stale-session recovery", () => {
     await waitFor(() => expect(assignMock).toHaveBeenCalledWith("/login"));
   });
 
+  test("does NOT redirect if the user navigated to a public route while signOut was in flight", async () => {
+    pathname = "/";
+    sessionState = { data: null, isPending: false, error: null };
+    // Hold signOut open, then move the user to /signup before it resolves.
+    let resolveSignOut: ((v: SignOutResult) => void) | null = null;
+    signOutImpl = () =>
+      new Promise<SignOutResult>((resolve) => {
+        resolveSignOut = resolve;
+      });
+    const { rerender } = renderGuard();
+
+    await waitFor(() => expect(signOutMock).toHaveBeenCalledTimes(1));
+
+    // User intentionally navigates to a public route mid-flight.
+    pathname = "/signup";
+    rerender(
+      <AuthGuard>
+        <div>signup</div>
+      </AuthGuard>,
+    );
+
+    // signOut resolves (cookie cleared) — but the live route is now public, so
+    // the stale callback must NOT force a redirect to /login.
+    resolveSignOut!({ data: { success: true }, error: null });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(assignMock).not.toHaveBeenCalled();
+  });
+
   test("recovers exactly once even when the effect re-fires (one-shot guard)", async () => {
     pathname = "/";
     sessionState = { data: null, isPending: false, error: null };

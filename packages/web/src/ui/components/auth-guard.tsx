@@ -61,6 +61,12 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   // a re-render could re-fire the effect before either lands. Guard so we clear
   // the cookie and navigate exactly once per trapped episode.
   const recovering = useRef(false);
+  // Latest pathname for the async recovery closure: the user may navigate
+  // mid-signOut, and the effect's captured `pathname` would be stale. Read the
+  // ref at navigation time so we don't yank a user who has moved to a public
+  // route (/signup, /wizard) over to /login.
+  const pathnameRef = useRef(pathname);
+  pathnameRef.current = pathname;
 
   useEffect(() => {
     if (
@@ -127,6 +133,17 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
         // effect only re-runs on a dep change, and while the API is down
         // get-session errors too, so the `session.error` gate above suppresses
         // recovery until it resolves cleanly again.
+        recovering.current = false;
+        return;
+      }
+      // The cookie is cleared — but the user may have navigated to a public
+      // route (/signup, /login, /wizard) while signOut was in flight. Re-check
+      // the LIVE pathname (the effect's captured one is stale): a stale callback
+      // must not yank them to /login after they intentionally moved somewhere
+      // they're allowed to be. Recovery has done its job (cookie gone); respect
+      // the new route. Release the one-shot so a return to a protected route can
+      // recover again if needed.
+      if (isPublicRoute(pathnameRef.current)) {
         recovering.current = false;
         return;
       }

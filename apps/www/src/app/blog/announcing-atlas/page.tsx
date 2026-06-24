@@ -25,19 +25,19 @@ export const metadata: Metadata = {
 
 function SectionHeading({ children }: { children: React.ReactNode }) {
   return (
-    <h2 className="mt-16 mb-6 text-xl font-semibold tracking-tight text-zinc-100 md:text-2xl">
+    <h2 className="mt-16 mb-6 text-xl font-semibold tracking-tight text-fg md:text-2xl">
       {children}
     </h2>
   );
 }
 
 function Paragraph({ children }: { children: React.ReactNode }) {
-  return <p className="mb-5 text-[15px] leading-relaxed text-zinc-400">{children}</p>;
+  return <p className="mb-5 text-[15px] leading-relaxed text-fg-muted">{children}</p>;
 }
 
 function InlineCode({ children }: { children: React.ReactNode }) {
   return (
-    <code className="rounded bg-zinc-800/60 px-1.5 py-0.5 font-mono text-[13px] text-zinc-300">
+    <code className="rounded bg-bg-sunken px-1.5 py-0.5 font-mono text-[13px] text-fg">
       {children}
     </code>
   );
@@ -45,14 +45,14 @@ function InlineCode({ children }: { children: React.ReactNode }) {
 
 function BlockCode({ title, children }: { title: string; children: string }) {
   return (
-    <div className="my-6 overflow-hidden rounded-xl border border-zinc-800/60 bg-zinc-900/50">
-      <div className="flex items-center gap-2 border-b border-zinc-800/60 px-4 py-3">
-        <span className="h-2.5 w-2.5 rounded-full bg-zinc-700" />
-        <span className="h-2.5 w-2.5 rounded-full bg-zinc-700" />
-        <span className="h-2.5 w-2.5 rounded-full bg-zinc-700" />
-        <span className="ml-3 font-mono text-xs text-zinc-600">{title}</span>
+    <div className="my-6 overflow-hidden rounded-xl border border-code-border bg-code-bg shadow-pane">
+      <div className="flex items-center gap-2 border-b border-code-border px-4 py-3">
+        <span className="h-2.5 w-2.5 rounded-full bg-code-muted" />
+        <span className="h-2.5 w-2.5 rounded-full bg-code-muted" />
+        <span className="h-2.5 w-2.5 rounded-full bg-code-muted" />
+        <span className="ml-3 font-mono text-xs text-code-muted">{title}</span>
       </div>
-      <pre className="overflow-x-auto p-5 font-mono text-sm leading-relaxed text-zinc-400">
+      <pre className="overflow-x-auto p-5 font-mono text-sm leading-relaxed text-code-fg">
         <code>{children}</code>
       </pre>
     </div>
@@ -62,8 +62,8 @@ function BlockCode({ title, children }: { title: string; children: string }) {
 function FeatureBullet({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <li className="mb-4">
-      <span className="font-medium text-zinc-200">{title}</span>
-      <span className="text-zinc-400">: {children}</span>
+      <span className="font-medium text-fg">{title}</span>
+      <span className="text-fg-muted">: {children}</span>
     </li>
   );
 }
@@ -83,15 +83,15 @@ export default function AnnouncingAtlas() {
         {/* Header */}
         <header className="mb-12">
           <div className="mb-5 flex items-center gap-3">
-            <span className="rounded-full border border-brand/20 bg-brand/10 px-2.5 py-0.5 font-mono text-[10px] font-medium tracking-wider text-brand uppercase">
+            <span className="rounded-full border border-accent/20 bg-accent-quiet px-2.5 py-0.5 font-mono text-[10px] font-medium tracking-wider text-accent uppercase">
               Launch
             </span>
-            <time dateTime="2026-03-25" className="font-mono text-xs text-zinc-600">2026-03-25</time>
+            <time dateTime="2026-03-25" className="font-mono text-xs text-fg-faint">2026-03-25</time>
           </div>
-          <h1 className="animate-fade-in-up delay-100 text-2xl font-semibold leading-tight tracking-tight text-zinc-100 md:text-4xl">
+          <h1 className="animate-fade-in-up delay-100 text-2xl font-semibold leading-tight tracking-tight text-fg md:text-4xl">
             Announcing Atlas: open-source text-to-SQL with a semantic layer
           </h1>
-          <p className="animate-fade-in-up delay-200 mt-5 text-lg leading-relaxed text-zinc-400">
+          <p className="animate-fade-in-up delay-200 mt-5 text-lg leading-relaxed text-fg-muted">
             You&apos;re already using AI to query your data. Atlas makes it
             safe, accurate, and deployable.
           </p>
@@ -131,7 +131,7 @@ export default function AnnouncingAtlas() {
           Railway, or Vercel, or use Atlas Cloud at{" "}
           <a
             href="https://app.useatlas.dev"
-            className="text-brand hover:underline"
+            className="text-accent hover:underline"
           >
             app.useatlas.dev
           </a>{" "}
@@ -169,14 +169,14 @@ $ cd my-app && bun run dev
           reaches your database, it passes through a 7-layer validation
           pipeline:
         </Paragraph>
-        <ol className="mb-6 list-inside list-decimal space-y-2 text-[15px] text-zinc-400">
-          <li><span className="text-zinc-300">Empty check</span>: rejects blank input</li>
-          <li><span className="text-zinc-300">Regex mutation guard</span>: blocks INSERT, UPDATE, DELETE, DROP</li>
-          <li><span className="text-zinc-300">AST parse</span>: confirms a single SELECT statement</li>
-          <li><span className="text-zinc-300">Table whitelist</span>: only tables in the semantic layer are queryable</li>
-          <li><span className="text-zinc-300">RLS injection</span>: appends WHERE clauses for tenant isolation</li>
-          <li><span className="text-zinc-300">Auto LIMIT</span>: prevents unbounded result sets</li>
-          <li><span className="text-zinc-300">Statement timeout</span>: kills runaway queries</li>
+        <ol className="mb-6 list-inside list-decimal space-y-2 text-[15px] text-fg-muted">
+          <li><span className="text-fg">Empty check</span>: rejects blank input</li>
+          <li><span className="text-fg">Regex mutation guard</span>: blocks INSERT, UPDATE, DELETE, DROP</li>
+          <li><span className="text-fg">AST parse</span>: confirms a single SELECT statement</li>
+          <li><span className="text-fg">Table whitelist</span>: only tables in the semantic layer are queryable</li>
+          <li><span className="text-fg">RLS injection</span>: appends WHERE clauses for tenant isolation</li>
+          <li><span className="text-fg">Auto LIMIT</span>: prevents unbounded result sets</li>
+          <li><span className="text-fg">Statement timeout</span>: kills runaway queries</li>
         </ol>
         <Paragraph>
           This is defense-in-depth. Any single layer can fail, but the pipeline
@@ -232,7 +232,7 @@ $ cd my-app && bun run dev
           specific ways.
         </Paragraph>
         <Paragraph>
-          <span className="text-zinc-200">vs Vanna AI:</span> Vanna is a Python
+          <span className="text-fg">vs Vanna AI:</span> Vanna is a Python
           library that learns from historical queries via RAG. Atlas uses an
           explicit YAML semantic layer. You know exactly what context the agent
           sees, and changes go through code review. Vanna is great for Python
@@ -240,7 +240,7 @@ $ cd my-app && bun run dev
           admin, and embedding built in.
         </Paragraph>
         <Paragraph>
-          <span className="text-zinc-200">vs WrenAI:</span> WrenAI is a GenBI
+          <span className="text-fg">vs WrenAI:</span> WrenAI is a GenBI
           platform with a UI-based semantic modeling layer. It&apos;s closer to
           &ldquo;replace Looker&rdquo; than &ldquo;embed an analyst.&rdquo;
           Atlas is designed to be a component in your application, not a
@@ -248,14 +248,14 @@ $ cd my-app && bun run dev
           client libraries are MIT.
         </Paragraph>
         <Paragraph>
-          <span className="text-zinc-200">vs raw MCP:</span> Connecting Claude
+          <span className="text-fg">vs raw MCP:</span> Connecting Claude
           Desktop directly to your database via a MCP server gives the AI raw
           schema with no business context, no validation, and no audit trail.
           Atlas has its own MCP server that provides the same semantic layer and
           validation pipeline. Context + safety, not just connectivity.
         </Paragraph>
         <Paragraph>
-          <span className="text-zinc-200">vs enterprise platforms:</span>{" "}
+          <span className="text-fg">vs enterprise platforms:</span>{" "}
           ThoughtSpot, Databricks AI/BI, and Looker AI are powerful but
           proprietary and locked to their ecosystems. Atlas is open-source,
           deploy-anywhere, and designed for embedding, not for replacing your
@@ -263,7 +263,7 @@ $ cd my-app && bun run dev
         </Paragraph>
         <Paragraph>
           Detailed comparisons:{" "}
-          <a href="https://docs.useatlas.dev/comparisons" className="text-brand hover:underline">
+          <a href="https://docs.useatlas.dev/comparisons" className="text-accent hover:underline">
             docs.useatlas.dev/comparisons
           </a>
         </Paragraph>
@@ -277,13 +277,13 @@ $ cd my-app && bun run dev
           database, and you&apos;re done.
         </Paragraph>
         <Paragraph>
-          <a href="https://app.useatlas.dev" className="text-brand hover:underline">
+          <a href="https://app.useatlas.dev" className="text-accent hover:underline">
             Atlas Cloud
           </a>{" "}
           is the managed option for teams that don&apos;t want to run
           infrastructure. It starts with a 14-day free trial (no credit card),
           then Starter, Pro, and Business tiers.{" "}
-          <a href="/pricing" className="text-brand hover:underline">
+          <a href="/pricing" className="text-accent hover:underline">
             See pricing
           </a>.
         </Paragraph>
@@ -299,14 +299,14 @@ $ cd my-app && bun run dev
         <div className="mt-8 flex flex-wrap items-center gap-4">
           <a
             href="https://app.useatlas.dev/demo"
-            className="group inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-brand-hover"
+            className="group inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-2.5 text-sm font-medium text-accent-ink transition-all hover:bg-accent-hover"
           >
             Try the live demo
             <ArrowIcon />
           </a>
           <a
             href="https://github.com/AtlasDevHQ/atlas"
-            className="group inline-flex items-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-all hover:border-zinc-700 hover:text-zinc-100"
+            className="group inline-flex items-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm font-medium text-fg-muted transition-all hover:border-border-strong hover:text-fg"
           >
             GitHub
             <ArrowIcon />
@@ -320,20 +320,20 @@ $ bun run dev`}</BlockCode>
 
         <Paragraph>
           Read the{" "}
-          <a href="https://docs.useatlas.dev/getting-started/quick-start" className="text-brand hover:underline">
+          <a href="https://docs.useatlas.dev/getting-started/quick-start" className="text-accent hover:underline">
             quick start guide
           </a>{" "}
           for the full walkthrough, or jump straight to{" "}
-          <a href="https://docs.useatlas.dev/getting-started/connect-your-data" className="text-brand hover:underline">
+          <a href="https://docs.useatlas.dev/getting-started/connect-your-data" className="text-accent hover:underline">
             connecting your database
           </a>.
         </Paragraph>
 
         {/* Back to blog */}
-        <div className="mt-16 border-t border-zinc-800/60 pt-8">
+        <div className="mt-16 border-t border-border pt-8">
           <a
             href="/blog"
-            className="inline-flex items-center gap-1.5 font-mono text-xs text-zinc-500 transition-colors hover:text-zinc-300"
+            className="inline-flex items-center gap-1.5 font-mono text-xs text-fg-faint transition-colors hover:text-fg-muted"
           >
             <svg className="h-3 w-3 rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />

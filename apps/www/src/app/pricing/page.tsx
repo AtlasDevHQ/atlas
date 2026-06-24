@@ -25,7 +25,7 @@ export default function PricingPage() {
     <div className="relative min-h-screen">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:rounded-md focus:bg-zinc-900 focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-zinc-100 focus:ring-2 focus:ring-brand"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:rounded-md focus:bg-bg-raised focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-fg focus:ring-2 focus:ring-accent"
       >
         Skip to content
       </a>
@@ -37,13 +37,13 @@ export default function PricingPage() {
       <main id="main" tabIndex={-1} className="focus:outline-none">
         {/* Hero */}
         <section className="mx-auto max-w-4xl px-6 pt-16 pb-12 text-center md:pt-24 md:pb-16">
-          <p className="animate-fade-in-up delay-100 mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
+          <p className="animate-fade-in-up delay-100 mb-4 font-mono text-xs tracking-widest text-accent uppercase">
             // pricing
           </p>
-          <h1 className="animate-fade-in-up delay-200 text-3xl font-semibold tracking-tight text-zinc-100 md:text-5xl">
+          <h1 className="animate-fade-in-up delay-200 text-3xl font-semibold tracking-tight text-fg md:text-5xl">
             Honest pricing. Per seat, per month.
           </h1>
-          <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-zinc-400">
+          <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-fg-muted">
             Self-host is free and always will be. Cloud adds the things you&rsquo;d build
             anyway: SSO, audit, uptime, support.
           </p>

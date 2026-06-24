@@ -140,7 +140,7 @@ export default function DPAPage() {
     <div className="relative min-h-screen">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-60 focus:rounded-md focus:bg-zinc-900 focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-zinc-100 focus:ring-2 focus:ring-brand"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-60 focus:rounded-md focus:bg-bg-raised focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-fg focus:ring-2 focus:ring-accent"
       >
         Skip to content
       </a>
@@ -152,18 +152,18 @@ export default function DPAPage() {
       <main id="main" tabIndex={-1} className="focus:outline-none">
         {/* Hero */}
         <section className="mx-auto max-w-4xl px-6 pt-16 pb-10 text-center md:pt-24 md:pb-14">
-          <p className="animate-fade-in-up delay-100 mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
+          <p className="animate-fade-in-up delay-100 mb-4 font-mono text-xs tracking-widest text-accent uppercase">
             // legal · dpa
           </p>
-          <h1 className="animate-fade-in-up delay-200 text-3xl font-semibold tracking-tight text-zinc-100 md:text-5xl">
+          <h1 className="animate-fade-in-up delay-200 text-3xl font-semibold tracking-tight text-fg md:text-5xl">
             Data Processing Addendum.
           </h1>
-          <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-zinc-400">
+          <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-fg-muted">
             Article 28 GDPR-compliant DPA, with the EU Standard Contractual
             Clauses incorporated by reference. Pre-signed for standard deals —
             no negotiation needed.
           </p>
-          <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-zinc-400 uppercase">
+          <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-fg-muted uppercase">
             <span>effective 2026-05-02</span>
             <span aria-hidden="true">·</span>
             <span>v2.5</span>
@@ -179,24 +179,24 @@ export default function DPAPage() {
         >
           <p
             id="presigned-heading"
-            className="mb-3 font-mono text-xs tracking-widest text-brand/80 uppercase"
+            className="mb-3 font-mono text-xs tracking-widest text-accent uppercase"
           >
             // pre-signed
           </p>
-          <div className="rounded-2xl border border-brand/30 bg-brand/4 p-5 md:p-6">
+          <div className="rounded-2xl border border-accent/30 bg-accent-quiet p-5 md:p-6">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between md:gap-6">
               <div>
-                <p className="mb-1 font-mono text-[15px] font-semibold text-zinc-100 md:text-base">
+                <p className="mb-1 font-mono text-[15px] font-semibold text-fg md:text-base">
                   DPA-v2.5-pre-signed.pdf
                 </p>
-                <p className="font-mono text-[11px] tracking-wider text-zinc-400">
+                <p className="font-mono text-[11px] tracking-wider text-fg-muted">
                   Countersigned by Atlas · valid through 2027-05-02 ·
                   available on request
                 </p>
               </div>
               <a
                 href="mailto:legal@useatlas.dev?subject=DPA%20countersigned%20PDF%20request"
-                className="group inline-flex shrink-0 items-center gap-2 self-start rounded-lg bg-brand px-5 py-2.5 text-sm font-semibold text-zinc-950 transition-colors hover:bg-brand-hover md:self-auto"
+                className="group inline-flex shrink-0 items-center gap-2 self-start rounded-lg bg-accent px-5 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-accent-hover md:self-auto"
               >
                 Request countersigned PDF
                 <ArrowIcon />
@@ -225,32 +225,32 @@ export default function DPAPage() {
         >
           <div className="mb-8 flex flex-col items-start gap-6 lg:flex-row lg:items-end lg:justify-between lg:gap-10">
             <div>
-              <p className="mb-3 font-mono text-xs tracking-widest text-brand/80 uppercase">
+              <p className="mb-3 font-mono text-xs tracking-widest text-accent uppercase">
                 // annex i — sub-processors
               </p>
               <h2
                 id="annex-i-heading"
-                className="text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl"
+                className="text-2xl font-semibold tracking-tight text-fg md:text-3xl"
               >
                 Current sub-processors.
               </h2>
-              <p className="mt-2 max-w-xl text-sm text-zinc-400">
+              <p className="mt-2 max-w-xl text-sm text-fg-muted">
                 This list is the source of truth. We notify Customer at least
                 30 days before any addition or replacement.
               </p>
             </div>
 
-            <div className="w-full max-w-sm rounded-xl border border-brand/30 bg-brand/4 p-5">
-              <p className="mb-3 font-mono text-[10px] tracking-widest text-brand uppercase">
+            <div className="w-full max-w-sm rounded-xl border border-accent/30 bg-accent-quiet p-5">
+              <p className="mb-3 font-mono text-[10px] tracking-widest text-accent uppercase">
                 // subscribe to changes
               </p>
-              <p className="mb-3 text-[13px] leading-relaxed text-zinc-400">
+              <p className="mb-3 text-[13px] leading-relaxed text-fg-muted">
                 We email account admins automatically. Procurement teams can
                 subscribe via:
               </p>
               <a
                 href="mailto:legal@useatlas.dev?subject=Subscribe%20to%20sub-processor%20notifications&body=Please%20add%20the%20following%20address%20to%20the%20sub-processor%20notification%20list%3A%0A"
-                className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-semibold text-zinc-950 transition-colors hover:bg-brand-hover"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-bg transition-colors hover:bg-accent-hover"
               >
                 Email
                 <ArrowIcon />
@@ -258,7 +258,7 @@ export default function DPAPage() {
               <div className="mt-2 grid grid-cols-2 gap-2">
                 <a
                   href="/sub-processors/feed.xml"
-                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-xs font-medium text-zinc-300 transition-colors hover:border-zinc-700 hover:text-zinc-100"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-bg-sunken px-3 py-2 text-xs font-medium text-fg-muted transition-colors hover:border-border-strong hover:text-fg"
                 >
                   RSS
                 </a>
@@ -268,31 +268,31 @@ export default function DPAPage() {
           </div>
 
           {/* Desktop table */}
-          <div className="hidden overflow-hidden rounded-xl border border-zinc-800/60 md:block">
+          <div className="hidden overflow-hidden rounded-xl border border-border md:block">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-zinc-800/60 bg-zinc-900/50">
+                <tr className="border-b border-border bg-bg-sunken">
                   <th
                     scope="col"
-                    className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-zinc-400 uppercase"
+                    className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-fg-muted uppercase"
                   >
                     vendor
                   </th>
                   <th
                     scope="col"
-                    className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-zinc-400 uppercase"
+                    className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-fg-muted uppercase"
                   >
                     purpose
                   </th>
                   <th
                     scope="col"
-                    className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-zinc-400 uppercase"
+                    className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-fg-muted uppercase"
                   >
                     region
                   </th>
                   <th
                     scope="col"
-                    className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-zinc-400 uppercase"
+                    className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-fg-muted uppercase"
                   >
                     since
                   </th>
@@ -302,18 +302,18 @@ export default function DPAPage() {
                 {SUBPROCESSORS.map((sp) => (
                   <tr
                     key={sp.name}
-                    className="border-b border-zinc-800/30 last:border-0"
+                    className="border-b border-border-soft last:border-0"
                   >
-                    <td className="px-5 py-3.5 text-sm font-semibold text-zinc-100">
+                    <td className="px-5 py-3.5 text-sm font-semibold text-fg">
                       {sp.name}
                     </td>
-                    <td className="px-5 py-3.5 text-sm text-zinc-300">
+                    <td className="px-5 py-3.5 text-sm text-fg-muted">
                       {sp.purpose}
                     </td>
-                    <td className="px-5 py-3.5 text-sm text-zinc-300">
+                    <td className="px-5 py-3.5 text-sm text-fg-muted">
                       {sp.region}
                     </td>
-                    <td className="px-5 py-3.5 font-mono text-xs text-zinc-400">
+                    <td className="px-5 py-3.5 font-mono text-xs text-fg-muted">
                       {sp.since}
                     </td>
                   </tr>
@@ -327,13 +327,13 @@ export default function DPAPage() {
             {SUBPROCESSORS.map((sp) => (
               <li
                 key={sp.name}
-                className="rounded-xl border border-zinc-800/60 bg-zinc-900/30 p-5"
+                className="rounded-xl border border-border bg-bg-raised p-5"
               >
-                <p className="mb-2 text-sm font-semibold text-zinc-100">
+                <p className="mb-2 text-sm font-semibold text-fg">
                   {sp.name}
                 </p>
-                <p className="mb-3 text-sm text-zinc-300">{sp.purpose}</p>
-                <div className="flex items-center justify-between font-mono text-[11px] tracking-wider text-zinc-400">
+                <p className="mb-3 text-sm text-fg-muted">{sp.purpose}</p>
+                <div className="flex items-center justify-between font-mono text-[11px] tracking-wider text-fg-muted">
                   <span>{sp.region}</span>
                   <span>{sp.since}</span>
                 </div>
@@ -344,10 +344,10 @@ export default function DPAPage() {
 
         {/* Closing CTA */}
         <section className="mx-auto max-w-4xl px-6 py-16 text-center md:py-24">
-          <h2 className="mb-3 text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl">
+          <h2 className="mb-3 text-2xl font-semibold tracking-tight text-fg md:text-3xl">
             Procurement questions?
           </h2>
-          <p className="mx-auto mb-6 max-w-xl text-zinc-400">
+          <p className="mx-auto mb-6 max-w-xl text-fg-muted">
             For DPA negotiation, custom enterprise terms, or to ask about our
             security-program documentation and certification roadmap, reach
             out to legal or sales.
@@ -355,17 +355,17 @@ export default function DPAPage() {
           <div className="flex flex-wrap items-center justify-center gap-4">
             <a
               href="mailto:legal@useatlas.dev"
-              className="group inline-flex items-center gap-2 rounded-lg bg-zinc-100 px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-white"
+              className="group inline-flex items-center gap-2 rounded-lg bg-fg px-5 py-2.5 text-sm font-medium text-bg transition-all hover:bg-accent"
             >
               Email legal
             </a>
             <TalkToSalesDialog
-              triggerClassName="group inline-flex items-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-all hover:border-zinc-700 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+              triggerClassName="group inline-flex items-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm font-medium text-fg-muted transition-all hover:border-border-strong hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               triggerLabel="Talk to sales"
             />
           </div>
           <noscript>
-            <p className="mt-6 text-sm text-zinc-400">
+            <p className="mt-6 text-sm text-fg-muted">
               The contact form needs JavaScript. Email{" "}
               <a className="underline" href="mailto:sales@useatlas.dev">
                 sales@useatlas.dev

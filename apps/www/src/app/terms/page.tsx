@@ -171,7 +171,7 @@ export default function TermsPage() {
     <div className="relative min-h-screen">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-60 focus:rounded-md focus:bg-zinc-900 focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-zinc-100 focus:ring-2 focus:ring-brand"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-60 focus:rounded-md focus:bg-bg-raised focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-fg focus:ring-2 focus:ring-accent"
       >
         Skip to content
       </a>
@@ -183,18 +183,18 @@ export default function TermsPage() {
       <main id="main" tabIndex={-1} className="focus:outline-none">
         {/* Hero */}
         <section className="mx-auto max-w-4xl px-6 pt-16 pb-10 text-center md:pt-24 md:pb-14">
-          <p className="animate-fade-in-up delay-100 mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
+          <p className="animate-fade-in-up delay-100 mb-4 font-mono text-xs tracking-widest text-accent uppercase">
             // legal · terms
           </p>
-          <h1 className="animate-fade-in-up delay-200 text-3xl font-semibold tracking-tight text-zinc-100 md:text-5xl">
+          <h1 className="animate-fade-in-up delay-200 text-3xl font-semibold tracking-tight text-fg md:text-5xl">
             Terms of Service.
           </h1>
-          <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-zinc-400">
+          <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-fg-muted">
             The agreement between Atlas DevHQ and the people who use Atlas
             Cloud. Two columns: the contract on the left, plain English on the
             right.
           </p>
-          <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-zinc-400 uppercase">
+          <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-fg-muted uppercase">
             <span>effective 2026-06-19</span>
             <span aria-hidden="true">·</span>
             <span>v4.3</span>
@@ -217,27 +217,27 @@ export default function TermsPage() {
 
         {/* Closing CTA */}
         <section className="mx-auto max-w-4xl px-6 py-16 text-center md:py-24">
-          <h2 className="mb-3 text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl">
+          <h2 className="mb-3 text-2xl font-semibold tracking-tight text-fg md:text-3xl">
             Questions about these terms?
           </h2>
-          <p className="mx-auto mb-6 max-w-xl text-zinc-400">
+          <p className="mx-auto mb-6 max-w-xl text-fg-muted">
             Reach out to legal for clarifications, or to sales for negotiated
             terms on enterprise contracts.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-4">
             <a
               href="mailto:legal@useatlas.dev"
-              className="group inline-flex items-center gap-2 rounded-lg bg-zinc-100 px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-white"
+              className="group inline-flex items-center gap-2 rounded-lg bg-fg px-5 py-2.5 text-sm font-medium text-bg transition-all hover:bg-accent"
             >
               Email legal
             </a>
             <TalkToSalesDialog
-              triggerClassName="group inline-flex items-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-all hover:border-zinc-700 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+              triggerClassName="group inline-flex items-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm font-medium text-fg-muted transition-all hover:border-border-strong hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               triggerLabel="Talk to sales"
             />
           </div>
           <noscript>
-            <p className="mt-6 text-sm text-zinc-400">
+            <p className="mt-6 text-sm text-fg-muted">
               The contact form needs JavaScript. Email{" "}
               <a className="underline" href="mailto:sales@useatlas.dev">
                 sales@useatlas.dev

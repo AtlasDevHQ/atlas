@@ -100,7 +100,7 @@ export function TalkToSalesForm({
       widgetIdRef.current = ts.render(widgetRef.current, {
         sitekey: TURNSTILE_SITE_KEY,
         action: "contact-sales",
-        theme: "dark",
+        theme: "light",
         callback: (token) => setTurnstileToken(token),
         "error-callback": () => setTurnstileToken(null),
         "expired-callback": () => setTurnstileToken(null),
@@ -267,18 +267,18 @@ export function TalkToSalesForm({
   if (state.kind === "success") {
     return (
       <div
-        className="rounded-lg border border-emerald-700/40 bg-emerald-950/30 p-5"
+        className="rounded-lg border border-emerald-600/30 bg-emerald-50 p-5"
         role="status"
         aria-live="polite"
       >
-        <p className="text-sm font-medium text-emerald-300">
+        <p className="text-sm font-medium text-emerald-700">
           Thanks — we got your note.
         </p>
-        <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-300">
+        <p className="mt-1.5 text-[13px] leading-relaxed text-fg-muted">
           Someone from our team will reach out within one business day. If
           you don&rsquo;t hear back, email us directly at{" "}
           <a
-            className="text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
+            className="text-emerald-700 underline underline-offset-2 hover:text-emerald-800"
             href="mailto:sales@useatlas.dev"
           >
             sales@useatlas.dev
@@ -293,7 +293,7 @@ export function TalkToSalesForm({
               setState({ kind: "idle" });
               onClose?.();
             }}
-            className="rounded-md bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-950 transition-colors hover:bg-white"
+            className="rounded-md bg-fg px-4 py-2 text-sm font-medium text-bg transition-colors hover:bg-accent"
           >
             Done
           </button>
@@ -356,7 +356,7 @@ export function TalkToSalesForm({
             className={INPUT_CLASS}
           >
             {PLAN_OPTIONS.map((opt) => (
-              <option key={opt} value={opt} className="bg-zinc-900">
+              <option key={opt} value={opt} className="bg-bg text-fg">
                 {opt}
               </option>
             ))}
@@ -383,7 +383,7 @@ export function TalkToSalesForm({
       {TURNSTILE_SITE_KEY ? (
         <div ref={widgetRef} className="flex justify-start" />
       ) : (
-        <div className="rounded-md border border-amber-700/40 bg-amber-950/20 px-3 py-2 text-[11px] text-amber-300">
+        <div className="rounded-md border border-amber-500/40 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
           Dev mode — NEXT_PUBLIC_TURNSTILE_SITE_KEY is unset, so the bot
           check is disabled. Submissions will be rejected by the API.
         </div>
@@ -392,18 +392,18 @@ export function TalkToSalesForm({
       {state.kind === "error" ? (
         <div
           role="alert"
-          className="rounded-md border border-rose-800/50 bg-rose-950/30 px-3 py-2 text-[13px] text-rose-300"
+          className="rounded-md border border-rose-400/50 bg-rose-50 px-3 py-2 text-[13px] text-rose-700"
         >
           {state.message}
         </div>
       ) : null}
 
       <div className="flex flex-col-reverse gap-3 pt-1 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-[11px] leading-relaxed text-zinc-500">
+        <p className="text-[11px] leading-relaxed text-fg-faint">
           By submitting, you agree to our{" "}
           <a
             href={PRIVACY_HREF}
-            className="text-zinc-300 underline underline-offset-2 hover:text-zinc-100"
+            className="text-fg-muted underline underline-offset-2 hover:text-fg"
           >
             Privacy Policy
           </a>
@@ -414,7 +414,7 @@ export function TalkToSalesForm({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md border border-zinc-800 px-4 py-2 text-sm font-medium text-zinc-300 transition-colors hover:border-zinc-700 hover:text-zinc-100"
+              className="rounded-md border border-border px-4 py-2 text-sm font-medium text-fg-muted transition-colors hover:border-border-strong hover:text-fg"
             >
               Cancel
             </button>
@@ -422,7 +422,7 @@ export function TalkToSalesForm({
           <button
             type="submit"
             disabled={state.kind === "submitting"}
-            className="rounded-md bg-brand px-4 py-2 text-sm font-semibold text-zinc-950 transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-ink transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
           >
             {state.kind === "submitting" ? "Sending…" : "Send to sales"}
           </button>
@@ -433,7 +433,7 @@ export function TalkToSalesForm({
 }
 
 const INPUT_CLASS =
-  "w-full rounded-md border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-brand focus:outline-none";
+  "w-full rounded-md border border-border bg-bg-sunken px-3 py-2 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none";
 
 function Field({
   id,
@@ -448,7 +448,7 @@ function Field({
     <div>
       <label
         htmlFor={id}
-        className="mb-1 block font-mono text-[11px] tracking-wider text-zinc-400 uppercase"
+        className="mb-1 block font-mono text-[11px] tracking-wider text-fg-muted uppercase"
       >
         {label}
       </label>

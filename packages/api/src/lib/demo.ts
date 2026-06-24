@@ -13,6 +13,8 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { SaasCrm } from "@atlas/api/lib/effect/services";
 import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 import { getSettingAuto } from "@atlas/api/lib/settings";
+import { getDefaultProvider, getModelForConfig } from "@atlas/api/lib/providers";
+import type { AtlasAiModelShape } from "@atlas/api/lib/effect/ai";
 
 const log = createLogger("demo");
 
@@ -61,6 +63,55 @@ export function getDemoRpmLimit(): number {
     return DEMO_DEFAULT_RPM;
   }
   return Math.floor(n);
+}
+
+/**
+ * Default demo model on the gateway (SaaS) — Haiku, the cheapest tier. The
+ * curated NovaMart demo dataset de-risks a cheaper model on the top-of-funnel
+ * path. Keep in lockstep with the starter plan's `defaultModel`
+ * (`billing/plans.ts`) — both are the cheap gateway-Haiku default.
+ */
+const DEMO_DEFAULT_GATEWAY_MODEL = "anthropic/claude-haiku-4.5";
+
+/**
+ * Resolve the model id demo turns should run on, or `null` to use the platform
+ * default. (#3931)
+ *
+ * - `ATLAS_DEMO_MODEL` set (non-blank) → that model id, verbatim.
+ * - Unset + resolved provider is the gateway (SaaS) → the cheap Haiku gateway
+ *   model {@link DEMO_DEFAULT_GATEWAY_MODEL}.
+ * - Unset + non-gateway (self-hosted / BYO) → `null`: fall back to the platform
+ *   default, so a gateway-only model id can never break a non-gateway deploy.
+ *
+ * Provider resolution mirrors `providers.ts:resolveSelection`
+ * (`ATLAS_PROVIDER ?? getDefaultProvider()`) so the demo default tracks the
+ * same provider the platform would pick. Hot-reloadable: read per demo turn.
+ */
+export function getDemoModelId(): string | null {
+  // Platform-scoped settings registry (#3705): DB override > env > default ("").
+  const configured = getSettingAuto("ATLAS_DEMO_MODEL")?.trim();
+  if (configured) return configured;
+
+  const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
+  return provider === "gateway" ? DEMO_DEFAULT_GATEWAY_MODEL : null;
+}
+
+/**
+ * The `runAgent` params fragment that injects the demo model: `{ aiModel }`
+ * when a demo model resolves, else `{}` so `runAgent` resolves the platform
+ * default. Spread into the `runAgent({ ... })` call so the inject-or-omit
+ * decision is one testable unit rather than an inline ternary. (#3931)
+ *
+ * Passing `aiModel` makes the demo model authoritative, so `token_usage.model`
+ * / `provider` reflect it. Resolution failures propagate to the caller (the
+ * demo route's `classifyDemoError` maps a missing gateway key / unknown model
+ * to the same structured provider error the platform path raises) rather than
+ * silently falling back to a different — billed — model.
+ */
+export function demoRunAgentModelParams(): { aiModel?: AtlasAiModelShape } {
+  const modelId = getDemoModelId();
+  if (!modelId) return {};
+  return { aiModel: getModelForConfig(undefined, modelId) };
 }
 
 // ---------------------------------------------------------------------------

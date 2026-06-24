@@ -1,13 +1,41 @@
-/* Atlas brand tokens — single source of truth.
- * Brand green: #23CE9E / oklch(0.759 0.148 167.71)
+/* Atlas brand tokens — the single source of truth (symlinked into each app:
+ * apps/www/brand.css · apps/docs/brand.css · packages/web/brand.css).
  *
- * Adapters per frontend:
- *   packages/web/globals.css  → shadcn/ui theme tokens (primary, ring, sidebar-*)
- *   apps/docs/globals.css     → Fumadocs theme tokens (fd-primary, fd-ring)
- *   apps/www/globals.css      → Tailwind utilities (brand, brand-hover)
+ * Vocabulary (see PRODUCT.md › Design Tokens, docs/adr/0023-brand-color-system.md):
+ *   --atlas-brand  the committed brand color, deep forest green #1F5C45 — the
+ *                  primary accent on every surface and mode. NOTE: still holds
+ *                  teal below, pending #3916: in the app this var is also the
+ *                  default for the white-label ATLAS_BRAND_COLOR setting, with a
+ *                  three-file lockstep (this file ↔ use-dark-mode.ts
+ *                  DEFAULT_BRAND_COLOR ↔ settings.ts ATLAS_BRAND_COLOR), so the
+ *                  teal→forest flip moves all three together — not in isolation.
+ *   --atlas-spark  bright teal #23CE9E — a spark on dark / green surfaces only
+ *                  (focus rings, active dots, code-pane highlights); never a
+ *                  primary.
+ *   --atlas-paper  warm cream ramp — the brand ground. Marketing surfaces use it
+ *                  directly; the working app desaturates toward white.
+ *
+ * Adapters per frontend map these onto framework tokens:
+ *   apps/www/globals.css     → Tailwind utilities + brand-surface vars
+ *   apps/docs/globals.css    → Fumadocs (--fd-primary, --fd-ring)
+ *   packages/web/globals.css → shadcn/ui (--primary, --ring, sidebar-*)
  */
 :root {
+  /* Committed brand color — deep forest #1F5C45 (oklch 0.40 0.115 158).
+   * Holds teal for now; the forest flip + white-label lockstep lands in #3916. */
   --atlas-brand: oklch(0.759 0.148 167.71);
   --atlas-brand-hover: oklch(0.82 0.148 167.71);
   --atlas-brand-foreground: oklch(0.145 0 0);
+
+  /* Spark — bright teal #23CE9E; dark / green surfaces only, never a primary. */
+  --atlas-spark: oklch(0.759 0.148 167.71);
+  --atlas-spark-hover: oklch(0.82 0.148 167.71);
+  --atlas-spark-foreground: oklch(0.145 0 0);
+
+  /* Warm cream ramp — the brand ground (forest ink on warm tan paper). */
+  --atlas-paper: oklch(0.955 0.017 83);
+  --atlas-paper-raised: oklch(0.923 0.019 83);
+  --atlas-paper-sunken: oklch(0.892 0.021 83);
+  --atlas-ink: oklch(0.245 0.026 158);
+  --atlas-ink-muted: oklch(0.435 0.026 158);
 }

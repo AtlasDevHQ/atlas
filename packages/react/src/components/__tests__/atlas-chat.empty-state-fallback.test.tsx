@@ -5,14 +5,19 @@
  * server-side and can take ~15s on a cold semantic index. A first-time
  * visitor must never face a bare "ask anything" empty state with no
  * suggestions while that resolves — nor when it comes back empty (the
- * server's cold-start signal). This file pins three guarantees (the final
- * test exercises 1→2 end-to-end):
+ * server's cold-start signal). This file pins the empty-state contract
+ * across every path. The three core guarantees:
  *
  *  1. While the fetch is in flight → skeleton chips render (no bare empty
  *     state, no "ask your first question" dead-end).
  *  2. Adaptive prompts replace the skeleton once they resolve.
  *  3. An empty adaptive response (cold-start) falls back to the shared
  *     static prompt set rather than rendering nothing.
+ *
+ * Plus the resolution-via-error and override paths: a 5xx soft-fail and a
+ * 4xx throw both degrade to the static fallback; the override prop owns its
+ * own empty state (no skeleton, no fallback, and an explicit `[]` keeps the
+ * dead-end copy rather than injecting suggestions).
  *
  * The `starterPrompts` override path already short-circuits the fetch (see
  * atlas-chat.starter-prompts.test.tsx); it never sees the skeleton/fallback,
@@ -174,8 +179,9 @@ describe("AtlasChat empty state — loading skeleton + cold-start fallback", () 
   it("override path never shows the skeleton, even on first paint", async () => {
     // The override prop disables the fetch; the empty-state gate must short-
     // circuit BOTH the skeleton and the fallback so the host owns its empty
-    // state. Guards against a future change that gates the skeleton on the
-    // disabled query's isPending (true) instead of isLoading.
+    // state. Guards the `!isOverridePath` short-circuit on the loading gate —
+    // a disabled React Query reports isPending: true, so dropping that guard
+    // (or gating on isPending) would leak the skeleton onto the override path.
     fetchMock.mockImplementation(makeFetch("pending"));
     const { findByText, queryByTestId } = render(
       <AtlasChat apiUrl="https://api.example.com" apiKey="test-key" starterPrompts={["Custom host prompt"]} />,

@@ -410,6 +410,9 @@ describe("migrateAuthTables", () => {
             // 0149 adds conversations.group_reach (Atlas-internal per-conversation
             // Group reach, ADR-0022 §5, #3895) — runs in every auth mode.
             { name: "0149_conversation_group_reach.sql" },
+            // 0150 adds token_usage.latency_ms (Atlas-internal per-turn latency,
+            // demo tracking, #3931) — runs in every auth mode.
+            { name: "0150_token_usage_latency.sql" },
           ],
         };
       }

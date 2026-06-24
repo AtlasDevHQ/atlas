@@ -41,6 +41,7 @@ export const FEATURE_NAMES = [
   "Custom Roles",
   "Data Residency",
   "Delete workspace",
+  "Demo Tracking",
   "Email Provider",
   "Environments",
   "Integrations",

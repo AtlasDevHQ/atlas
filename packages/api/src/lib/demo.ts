@@ -114,6 +114,37 @@ export function demoRunAgentModelParams(): { aiModel?: AtlasAiModelShape } {
   return { aiModel: getModelForConfig(undefined, modelId) };
 }
 
+/**
+ * Raw `ATLAS_DEMO_MODEL` override exactly as configured (blank = use the
+ * resolved default). Distinct from {@link getDemoModelId}, which resolves the
+ * blank case to the gateway Haiku default / platform default. The platform
+ * demo config form edits this raw value. (#3931)
+ */
+export function getDemoModelRaw(): string {
+  return getSettingAuto("ATLAS_DEMO_MODEL") ?? "";
+}
+
+/**
+ * Snapshot of the demo runtime config for the /platform/demo tracking page
+ * (#3931). `model` is the raw editable override; `effectiveModel` is what it
+ * resolves to right now (override → gateway Haiku on SaaS → null on a
+ * non-gateway deploy, meaning the platform default). Co-located with the other
+ * demo getters so the page's config half reads from one place.
+ */
+export function getDemoConfig(): {
+  model: string;
+  maxSteps: number;
+  rpm: number;
+  effectiveModel: string | null;
+} {
+  return {
+    model: getDemoModelRaw(),
+    maxSteps: getDemoMaxSteps(),
+    rpm: getDemoRpmLimit(),
+    effectiveModel: getDemoModelId(),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Token signing / verification
 // ---------------------------------------------------------------------------

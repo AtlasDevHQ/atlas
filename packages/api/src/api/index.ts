@@ -495,6 +495,19 @@ try {
   );
 }
 
+// Platform demo tracking routes — platform_admin role + MFA. Funnel
+// visibility + model config for the anonymous /demo path (#3931).
+try {
+  const { platformDemo } = await import("./routes/platform-demo");
+  app.route("/api/v1/platform/demo", platformDemo);
+  log.info("Platform demo tracking routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load platform demo tracking routes — demo tracking will be unavailable",
+  );
+}
+
 // Platform data residency routes — enterprise-gated, platform_admin role.
 try {
   const { platformResidency } = await import("./routes/platform-residency");

@@ -141,12 +141,17 @@ describe("token_usage cache split write path (#3099)", () => {
     expect(insert).toBeDefined();
 
     // Columns: user_id, conversation_id, prompt_tokens, completion_tokens,
-    //          cache_read_tokens, cache_write_tokens, model, provider, org_id
+    //          cache_read_tokens, cache_write_tokens, model, provider, org_id,
+    //          latency_ms
     expect(insert!.sql).toContain("cache_read_tokens, cache_write_tokens");
+    expect(insert!.sql).toContain("latency_ms");
     const params = insert!.params as unknown[];
-    expect(params).toHaveLength(9);
+    expect(params).toHaveLength(10);
     expect(params[4]).toBe(7); // cache_read_tokens  ← inputTokenDetails.cacheReadTokens
     expect(params[5]).toBe(3); // cache_write_tokens ← inputTokenDetails.cacheWriteTokens
+    // latency_ms (#3931) — agent-turn wall-clock, non-negative integer ms.
+    expect(typeof params[9]).toBe("number");
+    expect(params[9] as number).toBeGreaterThanOrEqual(0);
   });
 
   it("writes 0 for the cache split when the provider reports no cache usage", async () => {

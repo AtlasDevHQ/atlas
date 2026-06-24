@@ -410,6 +410,11 @@ export const tokenUsage = pgTable(
     cacheWriteTokens: integer("cache_write_tokens").default(0),
     model: text("model"),
     provider: text("provider"),
+    // Agent-turn wall-clock latency in ms (runAgent entry → onFinish), #3931.
+    // Nullable, no default — NULL for rows predating the migration; the INSERT
+    // path supplies a value for every turn after. Powers the /platform/demo
+    // latency rollup (aggregates skip NULLs).
+    latencyMs: integer("latency_ms"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     // Org scoping
     orgId: text("org_id"),

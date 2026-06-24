@@ -118,7 +118,18 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
           err instanceof Error ? err.message : String(err),
         );
       }
-      if (!cleared) return;
+      if (!cleared) {
+        // Release the one-shot so a later effect re-run can retry. AuthGuard
+        // never unmounts across client navigations, so latching `recovering`
+        // on after a transient failure would permanently disable recovery for
+        // the whole tab — a user with a stale cookie would stay trapped even
+        // after the API recovers (#3939 review). Resetting is loop-safe: the
+        // effect only re-runs on a dep change, and while the API is down
+        // get-session errors too, so the `session.error` gate above suppresses
+        // recovery until it resolves cleanly again.
+        recovering.current = false;
+        return;
+      }
       // Hard nav (not router.replace): the cleared cookie must be in effect so
       // the proxy admits /login instead of bouncing back to /. Mirrors the
       // user-menu sign-out flow.

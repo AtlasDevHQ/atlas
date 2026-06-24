@@ -195,6 +195,35 @@ describe("AuthGuard stale-session recovery", () => {
     expect(assignMock).not.toHaveBeenCalled();
   });
 
+  test("retries recovery after a transient signOut failure (does not latch off for the tab)", async () => {
+    pathname = "/";
+    sessionState = { data: null, isPending: false, error: null };
+    // First attempt: signOut fails transiently → no nav, and the one-shot must
+    // be released so a later re-run can retry.
+    signOutImpl = async () => ({ data: null, error: { message: "blip" } });
+    const { rerender } = renderGuard();
+
+    await waitFor(() => expect(signOutMock).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(assignMock).not.toHaveBeenCalled();
+
+    // API recovers + the user navigates to a sibling protected route (a dep
+    // change re-fires the effect). Recovery must re-attempt and now succeed —
+    // proving a transient failure didn't permanently disable recovery.
+    signOutImpl = okSignOut;
+    pathname = "/notebook";
+    rerender(
+      <AuthGuard>
+        <div>workspace content</div>
+      </AuthGuard>,
+    );
+
+    await waitFor(() => expect(signOutMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(assignMock).toHaveBeenCalledWith("/login"));
+  });
+
   test("recovers after a transient get-session error clears (resume-after-blip)", async () => {
     // First resolution: a transient API error → suppressed (don't destroy a
     // possibly-valid session). `session.error` is in the effect dep array, so

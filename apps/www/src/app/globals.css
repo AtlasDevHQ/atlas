@@ -17,11 +17,11 @@
  * CTA's drenched-green band).
  */
 :root {
-  --bg: oklch(0.955 0.017 83); /* warm tan paper */
-  --bg-raised: oklch(0.923 0.019 83); /* sections / cards */
-  --bg-sunken: oklch(0.892 0.021 83);
-  --fg: oklch(0.245 0.026 158); /* near-black ink, faint forest */
-  --fg-muted: oklch(0.435 0.026 158);
+  --bg: var(--atlas-paper); /* warm tan paper */
+  --bg-raised: var(--atlas-paper-raised); /* sections / cards */
+  --bg-sunken: var(--atlas-paper-sunken);
+  --fg: var(--atlas-ink); /* near-black ink, faint forest */
+  --fg-muted: var(--atlas-ink-muted);
   --fg-faint: oklch(0.565 0.02 158);
   --border: oklch(0.245 0.03 158 / 0.16);
   --border-soft: oklch(0.245 0.03 158 / 0.09);
@@ -59,8 +59,13 @@
 }
 
 @theme inline {
-  --color-brand: var(--atlas-brand);
-  --color-brand-hover: var(--atlas-brand-hover);
+  /* The landing's `brand` utility is the teal *spark* on dark code panes
+   * (hero, deploy terminal, how-it-works) — not the forest brand accent, which
+   * is `--accent`. See ADR-0023. (`text-spark` is the preferred alias.) */
+  --color-brand: var(--atlas-spark);
+  --color-brand-hover: var(--atlas-spark-hover);
+  --color-spark: var(--atlas-spark);
+  --color-spark-hover: var(--atlas-spark-hover);
 
   --color-bg: var(--bg);
   --color-bg-raised: var(--bg-raised);

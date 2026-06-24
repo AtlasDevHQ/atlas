@@ -279,7 +279,9 @@ describe("GET /config", () => {
 // ── PUT /config ─────────────────────────────────────────────────────
 
 describe("PUT /config", () => {
-  function put(body: unknown): Promise<Response> {
+  // `app.request` returns `Response | Promise<Response>`; an async wrapper
+  // normalizes the union to a single awaited `Promise<Response>`.
+  async function put(body: unknown): Promise<Response> {
     return app.request(`${BASE}/config`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },

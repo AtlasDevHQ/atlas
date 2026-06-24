@@ -11,10 +11,12 @@ import { THEME_STORAGE_KEY } from "./theme-init-script";
 export type ThemeMode = "light" | "dark" | "system";
 
 /**
- * Default brand color — must match `brand.css` `:root { --atlas-brand }` and
- * the `ATLAS_BRAND_COLOR` default in `packages/api/src/lib/settings.ts`.
+ * Default brand color — deep forest #1F5C45. Must match `brand.css`
+ * `:root { --atlas-brand }`, the `ATLAS_BRAND_COLOR` default in
+ * `packages/api/src/lib/settings.ts`, and `@useatlas/react`'s
+ * `DEFAULT_BRAND_COLOR` (four-way lockstep).
  */
-export const DEFAULT_BRAND_COLOR = "oklch(0.759 0.148 167.71)";
+export const DEFAULT_BRAND_COLOR = "oklch(0.4 0.115 158)";
 
 /** Basic oklch format check — prevents obviously invalid values from breaking the theme. */
 export const OKLCH_RE = /^oklch\(\s*[\d.]+\s+[\d.]+\s+[\d.]+\s*(?:\/\s*[\d.%]+\s*)?\)$/;

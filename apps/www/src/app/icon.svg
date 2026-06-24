@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none">
-  <!-- Atlas Prism Mark — Favicon (≤24px) -->
-  <path d="M128 28 L228 212 L28 212 Z" fill="#23CE9E"/>
+  <!-- Atlas Prism Mark — Favicon (≤24px). Forest #1F5C45 = the brand mark
+       (matches the AtlasLogo's text-accent); teal is the spark, not the mark. -->
+  <path d="M128 28 L228 212 L28 212 Z" fill="#1F5C45"/>
 </svg>

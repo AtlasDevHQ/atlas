@@ -3,12 +3,11 @@
  *
  * Vocabulary (see PRODUCT.md › Design Tokens, docs/adr/0023-brand-color-system.md):
  *   --atlas-brand  the committed brand color, deep forest green #1F5C45 — the
- *                  primary accent on every surface and mode. NOTE: still holds
- *                  teal below, pending #3916: in the app this var is also the
- *                  default for the white-label ATLAS_BRAND_COLOR setting, with a
- *                  three-file lockstep (this file ↔ use-dark-mode.ts
- *                  DEFAULT_BRAND_COLOR ↔ settings.ts ATLAS_BRAND_COLOR), so the
- *                  teal→forest flip moves all three together — not in isolation.
+ *                  primary accent on every surface and mode. In the app this var
+ *                  is also the default for the white-label ATLAS_BRAND_COLOR
+ *                  setting, with a four-way lockstep (this file ↔ packages/web
+ *                  + packages/react use-dark-mode.ts DEFAULT_BRAND_COLOR ↔
+ *                  settings.ts ATLAS_BRAND_COLOR) — keep all four in sync.
  *   --atlas-spark  bright teal #23CE9E — a spark on dark / green surfaces only
  *                  (focus rings, active dots, code-pane highlights); never a
  *                  primary.
@@ -21,11 +20,11 @@
  *   packages/web/globals.css → shadcn/ui (--primary, --ring, sidebar-*)
  */
 :root {
-  /* Committed brand color — deep forest #1F5C45 (oklch 0.40 0.115 158).
-   * Holds teal for now; the forest flip + white-label lockstep lands in #3916. */
-  --atlas-brand: oklch(0.759 0.148 167.71);
-  --atlas-brand-hover: oklch(0.82 0.148 167.71);
-  --atlas-brand-foreground: oklch(0.145 0 0);
+  /* Committed brand color — deep forest #1F5C45 (oklch 0.4 0.115 158).
+   * The primary accent on every surface and mode; cream ink reads on it. */
+  --atlas-brand: oklch(0.4 0.115 158);
+  --atlas-brand-hover: oklch(0.45 0.12 158);
+  --atlas-brand-foreground: oklch(0.965 0.016 88);
 
   /* Spark — bright teal #23CE9E; dark / green surfaces only, never a primary. */
   --atlas-spark: oklch(0.759 0.148 167.71);

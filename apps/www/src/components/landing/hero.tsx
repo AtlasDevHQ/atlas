@@ -23,7 +23,7 @@ function AnswerCard() {
         className="flex items-center gap-2 border-b border-white/5 px-3.5 py-2.5"
         style={{ background: "oklch(0.16 0 0)" }}
       >
-        <span className="h-2 w-2 rounded-full" style={{ background: "var(--atlas-brand)" }} />
+        <span className="h-2 w-2 rounded-full" style={{ background: "var(--atlas-spark)" }} />
         <span className="font-mono text-[11px] text-zinc-400">atlas · agent reply</span>
         <span className="ml-auto rounded border border-white/10 px-2 py-[2px] font-mono text-[10px] text-zinc-400">
           chat · mcp · widget

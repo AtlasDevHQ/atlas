@@ -77,7 +77,7 @@ describe("settings module", () => {
     queryThrow = null;
     _resetSettingsCache();
     // Save env vars we might modify
-    for (const key of ["ATLAS_ROW_LIMIT", "ATLAS_PROVIDER", "ATLAS_LOG_LEVEL"]) {
+    for (const key of ["ATLAS_ROW_LIMIT", "ATLAS_PROVIDER", "ATLAS_LOG_LEVEL", "ATLAS_BRAND_COLOR"]) {
       origEnvVars[key] = process.env[key];
     }
   });
@@ -102,6 +102,13 @@ describe("settings module", () => {
     it("returns default when no override and no env var", () => {
       delete process.env.ATLAS_ROW_LIMIT;
       expect(getSetting("ATLAS_ROW_LIMIT")).toBe("1000");
+    });
+
+    it("ATLAS_BRAND_COLOR defaults to forest (lockstep with brand.css / DEFAULT_BRAND_COLOR)", () => {
+      // Pins the settings.ts leg of the four-way brand-color lockstep so a
+      // silent reversion to the retired teal is caught here. See ADR-0023 §1.
+      delete process.env.ATLAS_BRAND_COLOR;
+      expect(getSetting("ATLAS_BRAND_COLOR")).toBe("oklch(0.4 0.115 158)");
     });
 
     it("returns env var when set", () => {

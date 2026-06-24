@@ -642,10 +642,13 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: "ATLAS_BRAND_COLOR",
     section: "Appearance",
+    // Default brand color — deep forest #1F5C45. Four-way lockstep with
+    // brand.css `:root { --atlas-brand }` and the `DEFAULT_BRAND_COLOR`
+    // constant in both packages/web and packages/react use-dark-mode.ts.
     label: "Brand Color",
     description: "Primary brand color in oklch format (used for theme tokens)",
     type: "string",
-    default: "oklch(0.759 0.148 167.71)",
+    default: "oklch(0.4 0.115 158)",
     envVar: "ATLAS_BRAND_COLOR",
     scope: "platform",
   },

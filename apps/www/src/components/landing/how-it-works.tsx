@@ -55,7 +55,7 @@ function tokenize(line: string): Token[] {
 function YamlPane() {
   return (
     <div
-      className="overflow-hidden rounded-xl border border-white/10"
+      className="overflow-hidden rounded-xl border border-white/10 shadow-pane"
       style={{ background: "oklch(0.12 0 0)" }}
     >
       <div
@@ -105,7 +105,7 @@ const TOP_ROW = CATEGORY_ROWS[0];
 function AnswerPane() {
   return (
     <div
-      className="flex h-full flex-col overflow-hidden rounded-xl border border-white/10"
+      className="flex h-full flex-col overflow-hidden rounded-xl border border-white/10 shadow-pane"
       style={{ background: "oklch(0.14 0 0)" }}
     >
       <div
@@ -191,7 +191,7 @@ export function HowItWorks() {
   return (
     <section
       id="how-it-works"
-      className="scroll-mt-20 border-b border-border-soft px-6 pt-20 pb-16 md:px-16 md:pt-[100px] md:pb-20"
+      className="scroll-mt-20 border-b border-border-soft px-content pt-20 pb-16 md:pt-[100px] md:pb-20"
       style={{ background: "var(--bg-raised)" }}
     >
       <header className="mb-10 max-w-[760px]">

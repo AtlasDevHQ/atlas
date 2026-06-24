@@ -19,7 +19,7 @@ export function DropInSurfaces() {
   return (
     <section
       id="surfaces"
-      className="scroll-mt-20 border-b border-border-soft px-6 pt-20 pb-16 md:px-16 md:pt-[88px] md:pb-[72px]"
+      className="scroll-mt-20 border-b border-border-soft px-content pt-20 pb-16 md:pt-[88px] md:pb-[72px]"
     >
       <header className="mb-8 max-w-[720px]">
         <h2 className="m-0 mb-4 text-[36px] md:text-[46px] font-semibold leading-[1.05] tracking-[-0.03em] text-fg">

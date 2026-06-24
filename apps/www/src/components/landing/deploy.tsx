@@ -29,7 +29,7 @@ function SelfHostCard() {
 
       {/* Dark terminal "window" — a code pane; stays dark in every theme. */}
       <div
-        className="mb-5 overflow-hidden rounded-lg border border-white/10"
+        className="mb-5 overflow-hidden rounded-lg border border-white/10 shadow-pane"
         style={{ background: "oklch(0.12 0 0)" }}
       >
         <div
@@ -182,7 +182,7 @@ export function Deploy() {
   return (
     <section
       id="deploy"
-      className="scroll-mt-20 border-b border-border-soft px-6 pt-20 pb-16 md:px-16 md:pt-[88px] md:pb-[72px]"
+      className="scroll-mt-20 border-b border-border-soft px-content pt-20 pb-16 md:pt-[88px] md:pb-[72px]"
     >
       <header className="mb-10 max-w-[720px]">
         <h2 className="m-0 mb-4 text-[36px] md:text-[46px] font-semibold leading-[1.05] tracking-[-0.03em] text-fg">

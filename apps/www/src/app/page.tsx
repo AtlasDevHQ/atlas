@@ -10,7 +10,7 @@ import { StickyNav } from "../components/sticky-nav";
 
 export default function Home() {
   return (
-    <div className="relative min-h-screen">
+    <div className="theme-light relative min-h-screen bg-bg text-fg">
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:rounded-md focus:bg-bg-raised focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-fg focus:ring-2 focus:ring-accent"

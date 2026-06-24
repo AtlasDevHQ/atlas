@@ -7,7 +7,7 @@
 export function EndCta() {
   return (
     <section
-      className="relative overflow-hidden px-6 py-24 md:px-16 md:py-[140px]"
+      className="relative overflow-hidden px-content py-24 md:py-[140px]"
       style={{
         background:
           "radial-gradient(ellipse at 50% 55%, var(--drench-glow), transparent 60%), var(--drench-bg)",

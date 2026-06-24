@@ -51,7 +51,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={`${sora.variable} ${jetbrainsMono.variable}`}>
-      <body className="noise-overlay bg-bg font-sans text-fg antialiased">
+      <body className="noise-overlay bg-zinc-950 font-sans text-zinc-300 antialiased">
         {children}
         <WebMCP />
       </body>

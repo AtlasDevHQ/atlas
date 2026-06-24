@@ -16,7 +16,7 @@ const SUBHEAD =
 function AnswerCard() {
   return (
     <div
-      className="relative overflow-hidden rounded-xl border border-white/10"
+      className="relative overflow-hidden rounded-xl border border-white/10 shadow-pane"
       style={{ background: "oklch(0.14 0 0)" }}
     >
       <div
@@ -128,7 +128,7 @@ function PipelineStrip() {
 
 export function Hero() {
   return (
-    <section className="relative overflow-hidden border-b border-border-soft px-6 pt-16 pb-16 md:px-16 md:pt-24 md:pb-20">
+    <section className="relative overflow-hidden border-b border-border-soft px-content pt-16 pb-16 md:pt-24 md:pb-20">
       <div
         aria-hidden
         className="pointer-events-none absolute -top-32 right-0 h-[560px] w-[560px] rounded-full"

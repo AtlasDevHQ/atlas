@@ -1,7 +1,7 @@
 export function BigStat() {
   return (
     <section
-      className="grid items-center gap-8 border-b border-border-soft px-6 py-14 md:grid-cols-[auto_1fr] md:gap-12 md:px-16 md:py-[72px]"
+      className="grid items-center gap-8 border-b border-border-soft px-content py-14 md:grid-cols-[auto_1fr] md:gap-12 md:py-[72px]"
       style={{ background: "var(--bg-raised)" }}
     >
       <div className="text-[88px] md:text-[144px] font-semibold leading-[0.9] tracking-[-0.05em] text-accent">

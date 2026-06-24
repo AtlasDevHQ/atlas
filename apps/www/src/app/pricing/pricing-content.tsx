@@ -281,7 +281,7 @@ function formatPrice(
 function DashIcon() {
   return (
     <svg
-      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-600"
+      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-fg-faint"
       fill="none"
       viewBox="0 0 24 24"
       stroke="currentColor"
@@ -305,7 +305,7 @@ function BillingToggle({
       <div
         role="group"
         aria-label="Billing period"
-        className="inline-flex rounded-full border border-zinc-800 bg-zinc-900/60 p-1"
+        className="inline-flex rounded-full border border-border bg-bg-raised p-1"
       >
         {(["monthly", "annual"] as const).map((period) => (
           <button
@@ -315,8 +315,8 @@ function BillingToggle({
             onClick={() => onBillingChange(period)}
             className={`inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-sm transition-colors ${
               billing === period
-                ? "bg-brand font-semibold text-zinc-950"
-                : "text-zinc-400 hover:text-zinc-200"
+                ? "bg-accent font-semibold text-accent-ink"
+                : "text-fg-muted hover:text-fg"
             }`}
           >
             {period === "monthly" ? "Monthly" : "Annual"}
@@ -324,8 +324,8 @@ function BillingToggle({
               <span
                 className={`rounded-full px-1.5 py-0.5 font-mono text-[9.5px] tracking-wider ${
                   billing === "annual"
-                    ? "bg-zinc-950/25 text-zinc-950"
-                    : "bg-brand/15 text-brand"
+                    ? "bg-accent-ink/20 text-accent-ink"
+                    : "bg-accent-quiet text-accent"
                 }`}
               >
                 save 17%
@@ -340,15 +340,15 @@ function BillingToggle({
 
 function StatCard() {
   return (
-    <div className="animate-fade-in-up delay-400 mb-10 grid items-center gap-6 rounded-xl border border-brand/25 bg-brand/4 p-6 md:grid-cols-[auto_1fr] md:gap-7 md:p-7">
-      <div className="font-mono text-5xl font-semibold tracking-tight text-brand md:text-[60px]">
+    <div className="animate-fade-in-up delay-400 mb-10 grid items-center gap-6 rounded-xl border border-accent/25 bg-accent-quiet p-6 md:grid-cols-[auto_1fr] md:gap-7 md:p-7">
+      <div className="font-mono text-5xl font-semibold tracking-tight text-accent md:text-[60px]">
         94%
       </div>
       <div className="flex flex-col gap-1.5">
-        <p className="text-base leading-snug font-medium text-zinc-100 md:text-[17px]">
+        <p className="text-base leading-snug font-medium text-fg md:text-[17px]">
           of AI-generated SQL fails at least one Atlas validator.
         </p>
-        <p className="font-mono text-[11.5px] leading-relaxed tracking-wider text-zinc-400">
+        <p className="font-mono text-[11.5px] leading-relaxed tracking-wider text-fg-muted">
           Sample: thousands of queries across our beta cohort. Every tier ships the same
           7 gates — the difference is who runs the servers.
         </p>
@@ -368,51 +368,51 @@ function TierCard({
 
   let ctaStyle: string;
   if (tier.highlighted) {
-    ctaStyle = "bg-brand text-zinc-950 hover:bg-brand-hover";
+    ctaStyle = "bg-accent text-accent-ink hover:bg-accent-hover";
   } else if (tier.monthlyPrice === null) {
-    ctaStyle = "bg-zinc-100 text-zinc-950 hover:bg-white";
+    ctaStyle = "bg-fg text-bg hover:bg-accent";
   } else {
-    ctaStyle = "border border-zinc-700 text-zinc-300 hover:border-zinc-600 hover:text-zinc-100";
+    ctaStyle = "border border-border-strong text-fg-muted hover:bg-bg-sunken hover:text-fg";
   }
 
   return (
     <div
       className={`relative flex flex-col rounded-2xl p-6 md:p-7 ${
         tier.highlighted
-          ? "cloud-glow bg-zinc-900/55"
-          : "border border-zinc-800/60 bg-zinc-900/30"
+          ? "cloud-glow bg-bg-raised"
+          : "border border-border bg-bg-raised"
       }`}
     >
-      <div className="mb-2 font-mono text-[11px] tracking-wider text-zinc-400 uppercase">
+      <div className="mb-2 font-mono text-[11px] tracking-wider text-fg-muted uppercase">
         // {tier.kind}
       </div>
       <div className="mb-3 flex items-center justify-between gap-2">
-        <h2 className="text-2xl font-semibold tracking-tight text-zinc-100">
+        <h2 className="text-2xl font-semibold tracking-tight text-fg">
           {tier.name}
         </h2>
         {tier.highlighted && (
-          <span className="rounded-full border border-brand/60 px-2 py-0.5 font-mono text-[9.5px] tracking-wider text-brand uppercase">
+          <span className="rounded-full border border-accent/60 px-2 py-0.5 font-mono text-[9.5px] tracking-wider text-accent uppercase">
             recommended
           </span>
         )}
       </div>
       <div className="mb-1 flex items-baseline gap-2">
-        <span className="text-[44px] leading-none font-semibold tracking-tight text-zinc-100">
+        <span className="text-[44px] leading-none font-semibold tracking-tight text-fg">
           {price}
         </span>
-        <span className="text-xs text-zinc-400">{suffix}</span>
+        <span className="text-xs text-fg-muted">{suffix}</span>
       </div>
       {annualTotal && (
-        <p className="mb-3 font-mono text-[11px] tracking-wider text-zinc-400">
+        <p className="mb-3 font-mono text-[11px] tracking-wider text-fg-muted">
           {annualTotal}
         </p>
       )}
-      <p className="mb-5 text-sm leading-relaxed text-zinc-400">{tier.tagline}</p>
+      <p className="mb-5 text-sm leading-relaxed text-fg-muted">{tier.tagline}</p>
       <ul className="mb-6 space-y-2.5">
         {tier.features.map((feature) => (
           <li key={feature} className="flex items-start gap-2.5">
             <CheckIcon />
-            <span className="text-sm text-zinc-400">{feature}</span>
+            <span className="text-sm text-fg-muted">{feature}</span>
           </li>
         ))}
       </ul>
@@ -437,7 +437,7 @@ function TierCard({
             />
           </div>
         ) : (
-          <p className="mt-2.5 text-center font-mono text-[10.5px] tracking-wider text-zinc-400">
+          <p className="mt-2.5 text-center font-mono text-[10.5px] tracking-wider text-fg-muted">
             {tier.ctaSecondary}
           </p>
         )}
@@ -448,16 +448,16 @@ function TierCard({
 
 function ComparisonCell({ value }: { value: CellValue }) {
   if (typeof value === "string") {
-    return <span className="font-mono text-xs text-zinc-300">{value}</span>;
+    return <span className="font-mono text-xs text-fg-muted">{value}</span>;
   }
   return value ? <CheckIcon /> : <DashIcon />;
 }
 
 function FAQCard({ faq }: { faq: FAQ }) {
   return (
-    <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/30 p-5 md:p-6">
-      <h3 className="mb-2 text-[15px] font-semibold text-zinc-100">{faq.question}</h3>
-      <p className="text-sm leading-relaxed text-zinc-400">{faq.answer}</p>
+    <div className="rounded-xl border border-border bg-bg-raised p-5 md:p-6">
+      <h3 className="mb-2 text-[15px] font-semibold text-fg">{faq.question}</h3>
+      <p className="text-sm leading-relaxed text-fg-muted">{faq.answer}</p>
     </div>
   );
 }
@@ -489,47 +489,47 @@ export function PricingContent() {
         aria-labelledby="compare-plans-heading"
         className="mx-auto max-w-6xl px-6 py-16 md:py-24"
       >
-        <p className="mb-3 font-mono text-xs tracking-widest text-brand/80 uppercase">
+        <p className="mb-3 font-mono text-xs tracking-widest text-accent uppercase">
           // detailed comparison
         </p>
         <h2
           id="compare-plans-heading"
-          className="mb-10 text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl"
+          className="mb-10 text-2xl font-semibold tracking-tight text-fg md:text-3xl"
         >
           What you get at every tier.
         </h2>
 
-        <div className="hidden overflow-hidden rounded-xl border border-zinc-800/60 lg:block">
+        <div className="hidden overflow-hidden rounded-xl border border-border lg:block">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-zinc-800/60 bg-zinc-900/50">
+              <tr className="border-b border-border bg-bg-sunken">
                 <th
                   scope="col"
-                  className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-zinc-400 uppercase"
+                  className="px-5 py-4 text-left font-mono text-[11px] tracking-widest text-fg-muted uppercase"
                 >
                   feature
                 </th>
                 <th
                   scope="col"
-                  className="px-5 py-4 text-center font-mono text-[11px] tracking-widest text-zinc-300 uppercase"
+                  className="px-5 py-4 text-center font-mono text-[11px] tracking-widest text-fg uppercase"
                 >
                   Self-Hosted
                 </th>
                 <th
                   scope="col"
-                  className="px-5 py-4 text-center font-mono text-[11px] tracking-widest text-zinc-300 uppercase"
+                  className="px-5 py-4 text-center font-mono text-[11px] tracking-widest text-fg uppercase"
                 >
                   Starter
                 </th>
                 <th
                   scope="col"
-                  className="bg-brand/4 px-5 py-4 text-center font-mono text-[11px] tracking-widest text-brand uppercase"
+                  className="bg-accent-quiet px-5 py-4 text-center font-mono text-[11px] tracking-widest text-accent uppercase"
                 >
                   Pro
                 </th>
                 <th
                   scope="col"
-                  className="px-5 py-4 text-center font-mono text-[11px] tracking-widest text-zinc-300 uppercase"
+                  className="px-5 py-4 text-center font-mono text-[11px] tracking-widest text-fg uppercase"
                 >
                   Business
                 </th>
@@ -548,16 +548,16 @@ export function PricingContent() {
           {TIER_KEYS.map((tierKey) => (
             <div
               key={tierKey}
-              className={`overflow-hidden rounded-xl border bg-zinc-900/30 ${
-                tierKey === "pro" ? "border-brand/40" : "border-zinc-800/60"
+              className={`overflow-hidden rounded-xl border bg-bg-raised ${
+                tierKey === "pro" ? "border-accent/40" : "border-border"
               }`}
             >
-              <div className="flex items-center justify-between gap-2 border-b border-zinc-800/60 px-5 py-3">
-                <h3 className="font-mono text-sm font-medium text-zinc-100">
+              <div className="flex items-center justify-between gap-2 border-b border-border px-5 py-3">
+                <h3 className="font-mono text-sm font-medium text-fg">
                   {TIER_LABELS[tierKey]}
                 </h3>
                 {tierKey === "pro" && (
-                  <span className="rounded-full border border-brand/60 px-2 py-0.5 font-mono text-[9.5px] tracking-wider text-brand uppercase">
+                  <span className="rounded-full border border-accent/60 px-2 py-0.5 font-mono text-[9.5px] tracking-wider text-accent uppercase">
                     recommended
                   </span>
                 )}
@@ -565,13 +565,13 @@ export function PricingContent() {
               <div className="px-5 pb-2">
                 {COMPARISON_SECTIONS.map((section) => (
                   <div key={section.label}>
-                    <p className="mt-3 mb-1 font-mono text-[10.5px] tracking-widest text-brand/80 uppercase">
+                    <p className="mt-3 mb-1 font-mono text-[10.5px] tracking-widest text-accent uppercase">
                       // {section.label}
                     </p>
-                    <div className="divide-y divide-zinc-800/40">
+                    <div className="divide-y divide-border-soft">
                       {section.rows.map((row) => (
                         <div key={row.feature} className="flex items-center justify-between py-2.5">
-                          <span className="text-sm text-zinc-400">{row.feature}</span>
+                          <span className="text-sm text-fg-muted">{row.feature}</span>
                           <span className="ml-4 shrink-0">
                             <ComparisonCell value={row[tierKey]} />
                           </span>
@@ -591,12 +591,12 @@ export function PricingContent() {
         aria-labelledby="pricing-faq-heading"
         className="mx-auto max-w-6xl px-6 py-16 md:py-24"
       >
-        <p className="mb-3 font-mono text-xs tracking-widest text-brand/80 uppercase">
+        <p className="mb-3 font-mono text-xs tracking-widest text-accent uppercase">
           // frequently asked
         </p>
         <h2
           id="pricing-faq-heading"
-          className="mb-8 text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl"
+          className="mb-8 text-2xl font-semibold tracking-tight text-fg md:text-3xl"
         >
           Pricing questions.
         </h2>
@@ -617,16 +617,16 @@ function SectionRows({ section, isFirst }: { section: ComparisonSection; isFirst
         <th
           colSpan={5}
           scope="colgroup"
-          className={`bg-zinc-900/30 px-5 pt-5 pb-2 text-left font-mono text-[10.5px] tracking-widest text-brand/80 uppercase ${
-            isFirst ? "" : "border-t border-zinc-800/40"
+          className={`bg-bg-sunken px-5 pt-5 pb-2 text-left font-mono text-[10.5px] tracking-widest text-accent uppercase ${
+            isFirst ? "" : "border-t border-border-soft"
           }`}
         >
           // {section.label}
         </th>
       </tr>
       {section.rows.map((row) => (
-        <tr key={row.feature} className="border-b border-zinc-800/30 last:border-0">
-          <td className="px-5 py-3 text-sm text-zinc-300">{row.feature}</td>
+        <tr key={row.feature} className="border-b border-border-soft last:border-0">
+          <td className="px-5 py-3 text-sm text-fg">{row.feature}</td>
           <td className="px-5 py-3 text-center">
             <span className="inline-flex justify-center">
               <ComparisonCell value={row.selfHosted} />
@@ -637,7 +637,7 @@ function SectionRows({ section, isFirst }: { section: ComparisonSection; isFirst
               <ComparisonCell value={row.starter} />
             </span>
           </td>
-          <td className="bg-brand/4 px-5 py-3 text-center">
+          <td className="bg-accent-quiet px-5 py-3 text-center">
             <span className="inline-flex justify-center">
               <ComparisonCell value={row.pro} />
             </span>

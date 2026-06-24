@@ -9,51 +9,14 @@
  * See PRODUCT.md › Aesthetic Direction.
  * ------------------------------------------------------------------------- */
 /*
- * Default surface = the legacy DARK theme, so every not-yet-migrated www page
- * (and the shared nav/footer on it) keeps rendering correctly. The new cream +
- * forest brand surface is OPT-IN via `.theme-light` — the landing and
- * /why-atlas wrap their tree in it. Flip the default to light once the
- * remaining pages migrate. --code-* and --drench-* are shared (always
- * dark/green in both themes) and live here on :root.
+ * Default surface = warm cream paper + deep forest green. The whole site is
+ * light now, so these are the :root defaults (the prior dark theme + its
+ * opt-in `.theme-light` wrapper were retired once every page migrated — see
+ * #3914). --code-* and --drench-* stay shared on :root: they are always
+ * dark/green regardless of surface (code "terminal windows" + the closing
+ * CTA's drenched-green band).
  */
 :root {
-  --bg: oklch(0.13 0 0);
-  --bg-raised: oklch(0.16 0 0);
-  --bg-sunken: oklch(0.12 0 0);
-  --fg: oklch(0.97 0 0);
-  --fg-muted: oklch(0.7 0 0);
-  --fg-faint: oklch(0.5 0 0);
-  --border: oklch(1 0 0 / 0.1);
-  --border-soft: oklch(1 0 0 / 0.05);
-  --border-strong: oklch(1 0 0 / 0.2);
-  --accent: var(--atlas-brand);
-  --accent-hover: var(--atlas-brand-hover);
-  --accent-ink: oklch(0.18 0 0);
-  --accent-quiet: color-mix(in oklch, var(--atlas-brand) 12%, transparent);
-  --glow: color-mix(in oklch, var(--atlas-brand) 12%, transparent);
-
-  /* The closing CTA's drenched-green band (shared; always deep forest). */
-  --drench-bg: oklch(0.3 0.072 158);
-  --drench-fg: oklch(0.965 0.016 88);
-  --drench-muted: oklch(0.83 0.035 150);
-  --drench-accent: oklch(0.8 0.16 168);
-  --drench-ink: oklch(0.22 0.05 160);
-  --drench-glow: color-mix(in oklch, oklch(0.8 0.16 168) 20%, transparent);
-
-  /* Dark code "terminal windows" — shared; fixed dark in every theme. */
-  --code-bg: oklch(0.14 0.006 167);
-  --code-chrome: oklch(0.185 0.006 167);
-  --code-well: oklch(0.1 0.006 167);
-  --code-fg: oklch(0.86 0 0);
-  --code-muted: oklch(0.62 0 0);
-  --code-border: oklch(1 0 0 / 0.08);
-}
-
-/*
- * Brand surface — warm cream paper + deep forest green (the new direction).
- * Opt-in: the landing and /why-atlas wrap their root in `.theme-light`.
- */
-.theme-light {
   --bg: oklch(0.955 0.017 83); /* warm tan paper */
   --bg-raised: oklch(0.923 0.019 83); /* sections / cards */
   --bg-sunken: oklch(0.892 0.021 83);
@@ -68,6 +31,22 @@
   --accent-ink: oklch(0.965 0.016 88); /* cream text on green */
   --accent-quiet: color-mix(in oklch, oklch(0.4 0.115 158) 11%, transparent);
   --glow: color-mix(in oklch, oklch(0.4 0.115 158) 9%, transparent);
+
+  /* The closing CTA's drenched-green band (shared; always deep forest). */
+  --drench-bg: oklch(0.3 0.072 158);
+  --drench-fg: oklch(0.965 0.016 88);
+  --drench-muted: oklch(0.83 0.035 150);
+  --drench-accent: oklch(0.8 0.16 168);
+  --drench-ink: oklch(0.22 0.05 160);
+  --drench-glow: color-mix(in oklch, oklch(0.8 0.16 168) 20%, transparent);
+
+  /* Dark code "terminal windows" — shared; fixed dark on every surface. */
+  --code-bg: oklch(0.14 0.006 167);
+  --code-chrome: oklch(0.185 0.006 167);
+  --code-well: oklch(0.1 0.006 167);
+  --code-fg: oklch(0.86 0 0);
+  --code-muted: oklch(0.62 0 0);
+  --code-border: oklch(1 0 0 / 0.08);
 }
 
 /*
@@ -252,26 +231,26 @@
 }
 
 .legal-prose a {
-  color: color-mix(in oklch, var(--atlas-brand) 80%, white);
+  color: var(--accent);
   text-decoration: underline;
-  text-decoration-color: color-mix(in oklch, var(--atlas-brand) 30%, transparent);
+  text-decoration-color: color-mix(in oklch, var(--accent) 30%, transparent);
   text-underline-offset: 2px;
 }
 
 .legal-prose a:hover {
-  color: var(--atlas-brand);
+  color: var(--accent-hover);
 }
 
 .legal-prose code {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  color: var(--color-zinc-300);
-  background: color-mix(in oklch, var(--color-zinc-800) 50%, transparent);
+  color: var(--fg);
+  background: var(--bg-sunken);
   border-radius: 0.25rem;
   padding: 0.125rem 0.375rem;
 }
 
-/* Deployment card accent glow */
+/* Recommended-card accent glow (forest, to match the light surface). */
 .cloud-glow {
   position: relative;
 }
@@ -282,7 +261,7 @@
   inset: -1px;
   border-radius: inherit;
   padding: 1px;
-  background: linear-gradient(135deg, color-mix(in oklch, var(--atlas-brand) 40%, transparent), transparent 60%);
+  background: linear-gradient(135deg, color-mix(in oklch, var(--accent) 45%, transparent), transparent 60%);
   mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   mask-composite: exclude;
   pointer-events: none;

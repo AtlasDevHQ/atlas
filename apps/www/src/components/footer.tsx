@@ -1,6 +1,9 @@
 import { AtlasLogo, GitHubIcon } from "./shared";
 
-const STATUS_URL = process.env.NEXT_PUBLIC_STATUS_URL || "/status";
+// The public status page lives on OpenStatus (independent infra, reachable
+// during an Atlas outage). NEXT_PUBLIC_STATUS_URL overrides it per-deploy.
+const STATUS_URL =
+  process.env.NEXT_PUBLIC_STATUS_URL || "https://atlas.openstatus.dev";
 
 export function Footer() {
   return (

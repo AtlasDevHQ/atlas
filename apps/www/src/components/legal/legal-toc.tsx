@@ -26,7 +26,7 @@ export function LegalTOC({ sections }: { sections: LegalSectionData[] }) {
 
   return (
     <aside aria-label="Document contents" className="lg:sticky lg:top-24 lg:self-start">
-      <p className="mb-4 font-mono text-[11px] tracking-widest text-brand uppercase">
+      <p className="mb-4 font-mono text-[11px] tracking-widest text-accent uppercase">
         // contents
       </p>
       <ol className="space-y-1">
@@ -37,15 +37,15 @@ export function LegalTOC({ sections }: { sections: LegalSectionData[] }) {
               <a
                 href={`#${section.id}`}
                 aria-current={isActive ? "location" : undefined}
-                className={`-ml-3.5 flex items-baseline gap-2.5 border-l-2 py-1.5 pl-3 text-[13px] transition-colors hover:border-brand/60 hover:text-brand ${
+                className={`-ml-3.5 flex items-baseline gap-2.5 border-l-2 py-1.5 pl-3 text-[13px] transition-colors hover:border-accent/60 hover:text-accent ${
                   isActive
-                    ? "border-brand text-brand"
-                    : "border-transparent text-zinc-400"
+                    ? "border-accent text-accent"
+                    : "border-transparent text-fg-muted"
                 }`}
               >
                 <span
                   className={`font-mono text-[10px] tracking-wider ${
-                    isActive ? "text-brand" : "text-zinc-400"
+                    isActive ? "text-accent" : "text-fg-muted"
                   }`}
                 >
                   {String(i + 1).padStart(2, "0")}

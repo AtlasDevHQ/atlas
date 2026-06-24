@@ -204,7 +204,7 @@ export default function PrivacyPage() {
     <div className="relative min-h-screen">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-60 focus:rounded-md focus:bg-zinc-900 focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-zinc-100 focus:ring-2 focus:ring-brand"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-60 focus:rounded-md focus:bg-bg-raised focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-fg focus:ring-2 focus:ring-accent"
       >
         Skip to content
       </a>
@@ -216,17 +216,17 @@ export default function PrivacyPage() {
       <main id="main" tabIndex={-1} className="focus:outline-none">
         {/* Hero */}
         <section className="mx-auto max-w-4xl px-6 pt-16 pb-10 text-center md:pt-24 md:pb-14">
-          <p className="animate-fade-in-up delay-100 mb-4 font-mono text-xs tracking-widest text-brand/80 uppercase">
+          <p className="animate-fade-in-up delay-100 mb-4 font-mono text-xs tracking-widest text-accent uppercase">
             // legal · privacy
           </p>
-          <h1 className="animate-fade-in-up delay-200 text-3xl font-semibold tracking-tight text-zinc-100 md:text-5xl">
+          <h1 className="animate-fade-in-up delay-200 text-3xl font-semibold tracking-tight text-fg md:text-5xl">
             Privacy Policy.
           </h1>
-          <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-zinc-400">
+          <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-fg-muted">
             What we collect, what we don&rsquo;t, and exactly what we do with
             it. Aggressively boring on purpose.
           </p>
-          <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-zinc-400 uppercase">
+          <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-fg-muted uppercase">
             <span>effective 2026-06-19</span>
             <span aria-hidden="true">·</span>
             <span>v3.2</span>
@@ -242,7 +242,7 @@ export default function PrivacyPage() {
         >
           <p
             id="four-promises-heading"
-            className="mb-3 font-mono text-xs tracking-widest text-brand/80 uppercase"
+            className="mb-3 font-mono text-xs tracking-widest text-accent uppercase"
           >
             // the four promises
           </p>
@@ -250,15 +250,15 @@ export default function PrivacyPage() {
             {PROMISES.map((p) => (
               <li
                 key={p.mono}
-                className="rounded-xl border border-brand/30 bg-brand/4 p-5 md:p-6"
+                className="rounded-xl border border-accent/30 bg-accent-quiet p-5 md:p-6"
               >
-                <p className="mb-3 font-mono text-[12px] tracking-wider text-brand">
+                <p className="mb-3 font-mono text-[12px] tracking-wider text-accent">
                   {p.mono}
                 </p>
-                <p className="mb-2 text-[15px] leading-snug font-semibold text-zinc-100">
+                <p className="mb-2 text-[15px] leading-snug font-semibold text-fg">
                   {p.label}
                 </p>
-                <p className="text-[12.5px] leading-relaxed text-zinc-400">
+                <p className="text-[12.5px] leading-relaxed text-fg-muted">
                   {p.sub}
                 </p>
               </li>
@@ -280,23 +280,23 @@ export default function PrivacyPage() {
 
         {/* Closing CTA */}
         <section className="mx-auto max-w-4xl px-6 py-16 text-center md:py-24">
-          <h2 className="mb-3 text-2xl font-semibold tracking-tight text-zinc-100 md:text-3xl">
+          <h2 className="mb-3 text-2xl font-semibold tracking-tight text-fg md:text-3xl">
             Privacy questions?
           </h2>
-          <p className="mx-auto mb-6 max-w-xl text-zinc-400">
+          <p className="mx-auto mb-6 max-w-xl text-fg-muted">
             Email privacy for data-rights requests, security for suspected
             incidents, or sales for negotiated DPAs on enterprise contracts.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-4">
             <a
               href="mailto:privacy@useatlas.dev"
-              className="group inline-flex items-center gap-2 rounded-lg bg-zinc-100 px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-white"
+              className="group inline-flex items-center gap-2 rounded-lg bg-fg px-5 py-2.5 text-sm font-medium text-bg transition-all hover:bg-accent"
             >
               Email privacy
             </a>
             <a
               href="mailto:security@useatlas.dev"
-              className="group inline-flex items-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-all hover:border-zinc-700 hover:text-zinc-100"
+              className="group inline-flex items-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm font-medium text-fg-muted transition-all hover:border-border-strong hover:text-fg"
             >
               Email security
             </a>

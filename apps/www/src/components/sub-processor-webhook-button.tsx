@@ -110,7 +110,7 @@ export function SubProcessorWebhookButton() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex items-center justify-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-xs font-medium text-zinc-300 transition-colors hover:border-zinc-700 hover:text-zinc-100"
+        className="inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-bg-sunken px-3 py-2 text-xs font-medium text-fg-muted transition-colors hover:border-border-strong hover:text-fg"
       >
         Webhook
       </button>
@@ -120,31 +120,31 @@ export function SubProcessorWebhookButton() {
           role="dialog"
           aria-modal="true"
           aria-labelledby={headingId}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/80 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-fg/40 p-4 backdrop-blur-sm"
           onClick={(event) => {
             if (event.target === event.currentTarget) close();
           }}
         >
           <div
             ref={dialogRef}
-            className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl"
+            className="w-full max-w-md rounded-2xl border border-border bg-bg p-6 shadow-2xl"
           >
-            <p className="mb-2 font-mono text-[10px] tracking-widest text-brand uppercase">
+            <p className="mb-2 font-mono text-[10px] tracking-widest text-accent uppercase">
               // register a webhook
             </p>
             <h3
               id={headingId}
-              className="mb-2 text-lg font-semibold tracking-tight text-zinc-100"
+              className="mb-2 text-lg font-semibold tracking-tight text-fg"
             >
               Receive sub-processor change notifications
             </h3>
-            <p className="mb-5 text-[13px] leading-relaxed text-zinc-400">
+            <p className="mb-5 text-[13px] leading-relaxed text-fg-muted">
               Atlas POSTs a JSON event to your URL on every add, change, or
               removal. Your token signs the request body via HMAC-SHA256
-              (header <code className="font-mono text-zinc-300">X-Webhook-Signature</code>).
+              (header <code className="font-mono text-fg">X-Webhook-Signature</code>).
               Verification details:{" "}
               <a
-                className="text-brand underline underline-offset-2 hover:text-brand-hover"
+                className="text-accent underline underline-offset-2 hover:text-accent-hover"
                 href="https://docs.useatlas.dev/integrations/sub-processor-feed"
               >
                 docs
@@ -153,21 +153,21 @@ export function SubProcessorWebhookButton() {
             </p>
 
             {state.kind === "success" ? (
-              <div className="rounded-lg border border-emerald-700/40 bg-emerald-950/30 p-4">
-                <p className="text-sm font-medium text-emerald-300">
+              <div className="rounded-lg border border-emerald-600/30 bg-emerald-50 p-4">
+                <p className="text-sm font-medium text-emerald-700">
                   Subscription registered.
                 </p>
-                <p className="mt-1 font-mono text-[11px] text-emerald-400/80">
+                <p className="mt-1 font-mono text-[11px] text-emerald-700/80">
                   id: {state.id}
                 </p>
-                <p className="mt-3 text-[13px] text-zinc-400">
+                <p className="mt-3 text-[13px] text-fg-muted">
                   Save your token securely — Atlas will not show it again.
                 </p>
                 <div className="mt-4 flex justify-end">
                   <button
                     type="button"
                     onClick={close}
-                    className="rounded-md bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-950 transition-colors hover:bg-white"
+                    className="rounded-md bg-fg px-4 py-2 text-sm font-medium text-bg transition-colors hover:bg-accent"
                   >
                     Done
                   </button>
@@ -178,7 +178,7 @@ export function SubProcessorWebhookButton() {
                 <div>
                   <label
                     htmlFor="webhook-url"
-                    className="mb-1 block font-mono text-[11px] tracking-wider text-zinc-400 uppercase"
+                    className="mb-1 block font-mono text-[11px] tracking-wider text-fg-muted uppercase"
                   >
                     target url
                   </label>
@@ -189,13 +189,13 @@ export function SubProcessorWebhookButton() {
                     value={url}
                     onChange={(event) => setUrl(event.target.value)}
                     placeholder="https://hooks.example.com/sub-processors"
-                    className="w-full rounded-md border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-brand focus:outline-none"
+                    className="w-full rounded-md border border-border bg-bg-sunken px-3 py-2 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none"
                   />
                 </div>
                 <div>
                   <label
                     htmlFor="webhook-token"
-                    className="mb-1 block font-mono text-[11px] tracking-wider text-zinc-400 uppercase"
+                    className="mb-1 block font-mono text-[11px] tracking-wider text-fg-muted uppercase"
                   >
                     hmac token
                   </label>
@@ -207,16 +207,16 @@ export function SubProcessorWebhookButton() {
                     value={token}
                     onChange={(event) => setToken(event.target.value)}
                     placeholder="At least 16 characters"
-                    className="w-full rounded-md border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-brand focus:outline-none"
+                    className="w-full rounded-md border border-border bg-bg-sunken px-3 py-2 text-sm text-fg placeholder:text-fg-faint focus:border-accent focus:outline-none"
                   />
-                  <p className="mt-1 text-[11px] text-zinc-500">
+                  <p className="mt-1 text-[11px] text-fg-faint">
                     Atlas stores this encrypted at rest and signs every
                     delivery with it.
                   </p>
                 </div>
 
                 {state.kind === "error" ? (
-                  <div className="rounded-md border border-rose-800/50 bg-rose-950/30 px-3 py-2 text-[13px] text-rose-300">
+                  <div className="rounded-md border border-rose-400/50 bg-rose-50 px-3 py-2 text-[13px] text-rose-700">
                     {state.message}
                     {state.needsAuth ? (
                       <a
@@ -233,14 +233,14 @@ export function SubProcessorWebhookButton() {
                   <button
                     type="button"
                     onClick={close}
-                    className="rounded-md border border-zinc-800 px-4 py-2 text-sm font-medium text-zinc-300 transition-colors hover:border-zinc-700 hover:text-zinc-100"
+                    className="rounded-md border border-border px-4 py-2 text-sm font-medium text-fg-muted transition-colors hover:border-border-strong hover:text-fg"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
                     disabled={state.kind === "submitting"}
-                    className="rounded-md bg-brand px-4 py-2 text-sm font-semibold text-zinc-950 transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-60"
+                    className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-ink transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {state.kind === "submitting" ? "Registering…" : "Register"}
                   </button>

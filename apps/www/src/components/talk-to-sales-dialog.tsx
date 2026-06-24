@@ -31,7 +31,7 @@ export interface TalkToSalesDialogProps {
 }
 
 const DEFAULT_TRIGGER_CLASS =
-  "inline-flex items-center justify-center rounded-md border border-transparent bg-transparent px-2 py-1 text-center font-mono text-[10.5px] tracking-wider text-zinc-400 transition-colors hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand";
+  "inline-flex items-center justify-center rounded-md border border-transparent bg-transparent px-2 py-1 text-center font-mono text-[10.5px] tracking-wider text-fg-muted transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
 export function TalkToSalesDialog({
   triggerLabel,
@@ -79,7 +79,7 @@ export function TalkToSalesDialog({
           role="dialog"
           aria-modal="true"
           aria-labelledby={headingId}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/80 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-fg/40 p-4 backdrop-blur-sm"
           onClick={(event) => {
             // Click-outside-to-close — only when clicking the overlay
             // itself, not the dialog content.
@@ -88,18 +88,18 @@ export function TalkToSalesDialog({
         >
           <div
             ref={dialogRef}
-            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl"
+            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-border bg-bg p-6 shadow-2xl"
           >
-            <p className="mb-2 font-mono text-[10px] tracking-widest text-brand uppercase">
+            <p className="mb-2 font-mono text-[10px] tracking-widest text-accent uppercase">
               // talk to sales
             </p>
             <h3
               id={headingId}
-              className="mb-2 text-lg font-semibold tracking-tight text-zinc-100"
+              className="mb-2 text-lg font-semibold tracking-tight text-fg"
             >
               Tell us what you&rsquo;re building
             </h3>
-            <p className="mb-5 text-[13px] leading-relaxed text-zinc-400">
+            <p className="mb-5 text-[13px] leading-relaxed text-fg-muted">
               Quick form — we&rsquo;ll reply within one business day. For
               security or procurement questions, mention them in the message
               and we&rsquo;ll loop in the right person.

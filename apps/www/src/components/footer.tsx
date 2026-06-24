@@ -48,8 +48,8 @@ export function Footer() {
           <a href="/dpa" className="text-xs text-fg-muted transition-colors hover:text-fg">
             DPA
           </a>
-          <a href="https://github.com/AtlasDevHQ/atlas" className="text-xs text-fg-muted transition-colors hover:text-fg">
-            Built by humans, for data teams
+          <a href="https://github.com/AtlasDevHQ/atlas" className="whitespace-nowrap text-xs text-fg-muted transition-colors hover:text-fg">
+            Built by humans and AI
           </a>
         </div>
       </div>

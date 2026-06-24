@@ -64,7 +64,7 @@ mock.module("@/ui/context", () => ({
 }));
 
 import React from "react";
-import { render, cleanup, waitFor } from "@testing-library/react";
+import { render, cleanup, waitFor, act } from "@testing-library/react";
 import { AuthGuard } from "../components/auth-guard";
 
 // Stub window.location.assign so the hard-nav recovery is observable without a
@@ -157,25 +157,31 @@ describe("AuthGuard stale-session recovery", () => {
     expect(assignMock).toHaveBeenCalledTimes(1);
   });
 
-  test("still escapes to /login when signOut returns an HTTP error (5xx)", async () => {
+  test("does NOT navigate when signOut returns an HTTP error — cookie uncleared, avoid the loop", async () => {
     pathname = "/";
     sessionState = { data: null, isPending: false, error: null };
-    // An HTTP-error response (server answered 5xx) resolves with `{ error }`
-    // rather than throwing. The cookie may be uncleared, but the user must not
-    // be frozen on the broken /, so we still bounce.
+    // An HTTP-error response (server answered e.g. 5xx) resolves with `{ error }`
+    // rather than throwing. The cookie is still set, so navigating to /login
+    // would be bounced back to / by the proxy → an infinite hard-nav loop. Stay
+    // put instead (the API is degraded; a reload re-attempts).
     signOutImpl = async () => ({ data: null, error: { message: "internal error" } });
 
     renderGuard();
 
     await waitFor(() => expect(signOutMock).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(assignMock).toHaveBeenCalledWith("/login"));
+    // Settle any microtasks the recovery IIFE scheduled, then assert no nav.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(assignMock).not.toHaveBeenCalled();
   });
 
-  test("still escapes to /login when signOut throws (transport failure)", async () => {
+  test("does NOT navigate when signOut throws (transport failure) — avoid the loop", async () => {
     pathname = "/";
     sessionState = { data: null, isPending: false, error: null };
     // A true transport failure (API down / DNS / CORS) rejects the underlying
-    // fetch, so signOut throws — the catch must still bounce.
+    // fetch, so signOut throws — the cookie is still set, so we must not navigate
+    // (else the proxy bounces /login → / → re-fire → loop).
     signOutImpl = async () => {
       throw new Error("network down");
     };
@@ -183,7 +189,10 @@ describe("AuthGuard stale-session recovery", () => {
     renderGuard();
 
     await waitFor(() => expect(signOutMock).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(assignMock).toHaveBeenCalledWith("/login"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(assignMock).not.toHaveBeenCalled();
   });
 
   test("recovers after a transient get-session error clears (resume-after-blip)", async () => {

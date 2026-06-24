@@ -82,34 +82,43 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     recovering.current = true;
 
     void (async () => {
+      // Only navigate once the cookie is provably cleared. The httpOnly cookie
+      // can only be dropped by the server round-trip — there is no client-side
+      // fallback — so if signOut fails the cookie is still set, and a hard nav
+      // to /login would be bounced straight back to / by the proxy. A fresh
+      // mount then resets `recovering` and re-fires → an infinite hard-nav loop
+      // that re-traps the user (a trap of our own making). So on failure we
+      // DON'T navigate: stay put (the API is degraded — /login wouldn't load
+      // either), `recovering` stays true so we don't re-fire this mount, and a
+      // user reload re-attempts once the API is reachable again.
+      let cleared = false;
       try {
-        // Clears the (stale) httpOnly session cookie server-side. The handler
-        // returns `{ success: true }` even for an already-invalid session, so it
-        // does not throw on the trap path. signOut can still fail two ways, both
-        // handled here, and on BOTH the cookie is NOT cleared (so the proxy would
-        // bounce /login → / and re-arm the trap — hence we surface each, per
-        // "never silently swallow errors", while still bouncing so the user isn't
-        // frozen on /):
-        //   (a) the server answered with an HTTP error (e.g. 5xx) — the Better Auth
-        //       client RESOLVES with `{ error }` (better-fetch returns
-        //       `{ data: null, error }` since `catchAllError` is unset here), so
-        //       inspect the returned `result.error`;
+        // The /sign-out handler returns `{ success: true }` and clears the
+        // cookie even for an already-invalid session, so the trap path succeeds.
+        // signOut can still fail two ways — on BOTH the cookie is uncleared, and
+        // we surface each (per "never silently swallow errors"):
+        //   (a) the server answered with an HTTP error (e.g. 5xx) — the Better
+        //       Auth client RESOLVES with `{ error }` (better-fetch returns
+        //       `{ data: null, error }` since `catchAllError` is unset here);
         //   (b) a true transport failure (API down / DNS / CORS preflight) — the
         //       platform `fetch()` rejects and the throw propagates (no
         //       `catchAllError`, no catch in the client proxy) → the `catch`.
         const result = await authClient.signOut();
         if (result?.error) {
           console.warn(
-            "[atlas] stale-session signOut returned an HTTP error; cookie may still be set, redirecting to /login anyway:",
+            "[atlas] stale-session signOut returned an HTTP error; cookie not cleared, staying put to avoid a redirect loop (reload once the API is reachable):",
             result.error.message ?? String(result.error),
           );
+        } else {
+          cleared = true;
         }
       } catch (err) {
         console.warn(
-          "[atlas] stale-session signOut threw (transport failure); redirecting to /login anyway:",
+          "[atlas] stale-session signOut threw (transport failure); cookie not cleared, staying put to avoid a redirect loop (reload once the API is reachable):",
           err instanceof Error ? err.message : String(err),
         );
       }
+      if (!cleared) return;
       // Hard nav (not router.replace): the cleared cookie must be in effect so
       // the proxy admits /login instead of bouncing back to /. Mirrors the
       // user-menu sign-out flow.

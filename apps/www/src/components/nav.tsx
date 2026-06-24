@@ -38,7 +38,7 @@ export function Nav({ currentPage, logoHref = "/" }: { currentPage?: string; log
                 {...(isActive ? { "aria-current": "page" as const } : {})}
                 className={`text-sm transition-colors ${
                   isActive
-                    ? "text-fg-muted hover:text-fg"
+                    ? "text-fg"
                     : "text-fg-muted hover:text-fg"
                 }`}
               >

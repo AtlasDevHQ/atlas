@@ -148,7 +148,7 @@ with zero blast radius elsewhere. Invariant recorded in
 [content-mode.md](content-mode.md) § *System-seeded content may be
 published-at-seed*; live-PG regression in `demo-publish-visibility-pg.test.ts`.
 
-### F2 — P1: stale/expired-session cookie trap
+### F2 — ✅ P1: stale/expired-session cookie trap (#3933 → PR #3939)
 
 `proxy.ts` redirects a user with a session **cookie present** away from
 `/signup` and `/login` to `/`, checking only cookie presence — not validity.
@@ -159,6 +159,14 @@ is broken. **Recommendation:** validate the session in the proxy before treating
 the user as authenticated, or have `/` recover from a 401 by redirecting to
 `/login`. Security-adjacent (auth gating) — needs a deliberate call.
 
+**Resolution (#3933 → PR #3939).** `AuthGuard` now clears the stale httpOnly
+cookie via `authClient.signOut()` (Better Auth's `/sign-out` expires even a
+dead/rotated session) and then hard-navs to `/login`, only when the clear is
+confirmed and the session resolves cleanly to no-session — transient API errors
+are skipped, and a failed clear releases the one-shot so a later route/session
+change retries (no loop, no permanent latch-off). Auth mode is resolved at
+render time.
+
 ### F3 — P1: region auto-skip policy on API error
 
 The region step intentionally does **not** auto-skip when the regions API errors
@@ -167,25 +175,43 @@ required residency pick during a transient failure. This PR adds a Retry button
 (safe). Whether a persistent error should eventually allow "continue without a
 region" is a residency-policy decision left for review.
 
-### F4 — P2: success-page starter prompts don't match the dataset
+### F4 — ✅ P2: success-page starter prompts don't match the dataset (#3935 → PR #3937)
 
 `/signup/success` shows hardcoded generic prompts (e.g. "Show me churn risk by
 plan tier") that don't fit the connected NovaMart e-commerce schema. Consider
 deriving them from the connected dataset's semantic layer (as the in-chat
 adaptive starters already do).
 
-### F5 — P2: demo empty-state has no starter prompts / loading state
+**Resolution (#3935 → PR #3937).** `/signup/success` now derives its prompts
+from the workspace semantic layer via the same adaptive resolver the in-chat
+empty state uses (`useSuccessStarterPrompts` → `/api/v1/starter-prompts`,
+session-cookie auth), with a shared static fallback (`ui/lib/starter-prompt-fallback.ts`,
+drawn from the canonical NovaMart question set) for cold-start / not-yet-ready /
+transient-fault cases. `isError` is surfaced so a 4xx stays distinguishable from
+a benign cold-start.
+
+### F5 — ✅ P2: demo empty-state has no starter prompts / loading state (#3936 → PR #3938)
 
 In the demo chat empty state, adaptive starter prompts are generated server-side
 (~15s for the semantic index) with no loading skeleton or fallback shown, so a
 cold user briefly faces a blank "ask anything" with no suggestions. Consider a
 loading state or static fallback prompts until the adaptive set resolves.
 
+**Resolution (#3936 → PR #3938).** The `AtlasChat` demo empty state renders
+skeleton chips (same grid + chip dimensions, no layout shift) while the adaptive
+list is in flight, then swaps in adaptive prompts once resolved — or a shared
+static fallback (`DEFAULT_STARTER_PROMPTS`, exported from `@useatlas/react` so
+F4's success page reuses the same set) when the adaptive list comes back empty.
+The host-override path (`starterPrompts` prop) is unchanged: no fetch, no
+skeleton, no fallback.
+
 ## Acceptance-criteria status
 
 - [x] End-to-end Playwright walkthrough with friction documented (screenshots above)
 - [x] Safe polish fixes applied (nonce error, region retry) + see flagged items
 - [x] Time-to-first-answer instrumented / measurable (`activation.first_answer_latency`)
-- [x] Cold visitor reaches a real answer without a dead end — **on the demo path**
-      (verified); the authed-onboard path is blocked by F1, flagged for review
-- [x] Judgment-heavy changes implemented conventionally + flagged (F1–F5)
+- [x] Cold visitor reaches a real answer without a dead end — demo path verified;
+      the authed-onboard path's blocking dead-end (F1) is now fixed (#3932)
+- [x] Judgment-heavy changes implemented conventionally + flagged (F1–F5).
+      Shipped since: F1 (#3932), F2 (#3933), F4 (#3935), F5 (#3936). Remaining:
+      F3 (#3934, region residency-policy decision) — still flagged for human review.

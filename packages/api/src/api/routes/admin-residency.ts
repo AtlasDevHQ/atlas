@@ -588,9 +588,10 @@ adminResidency.openapi(assignRegionRoute, async (c) => {
         }),
       );
       log.info({ orgId, region }, "Workspace region assigned via self-serve");
-      // Permanent decision — `permanent: true` surfaces the irreversibility
-      // on the audit row so triage flags it at read time rather than
-      // requiring reviewers to remember that residency is immutable.
+      // Irreversible via self-serve — `permanent: true` surfaces on the audit
+      // row that this assignment can't be undone through the assign path, so
+      // triage flags it at read time. (Changing it later is possible, but only
+      // via the deliberate operator cross-region migration flow below.)
       logAdminAction({
         actionType: ADMIN_ACTIONS.residency.workspaceAssign,
         targetType: "residency",

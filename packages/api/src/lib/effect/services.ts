@@ -1261,7 +1261,8 @@ export interface ResidencyResolverShape {
   readonly getDefaultRegion: () => string;
   /** Region-id → config map. Throws `ResidencyError("not_configured")` synchronously when no-op. */
   readonly getConfiguredRegions: () => ResidencyConfigRegions;
-  /** Assign a region to a workspace. Region is immutable once set. */
+  /** Assign a region to a workspace. One-way: rejects re-assignment once set —
+   * changing a region goes through the admin cross-region migration flow. */
   readonly assignWorkspaceRegion: (
     workspaceId: string,
     region: string,

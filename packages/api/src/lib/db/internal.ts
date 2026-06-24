@@ -2456,16 +2456,19 @@ export async function getWorkspaceRegion(orgId: string): Promise<string | null> 
 }
 
 /**
- * Assign a region to a workspace. Region is immutable — once set, returns
- * `{ assigned: false, existing: <current region> }` without updating.
- * On first assignment, returns `{ assigned: true }`. If the workspace
- * does not exist, returns `{ assigned: false }` without an `existing` field.
+ * Assign a region to a workspace. One-way: once set, returns
+ * `{ assigned: false, existing: <current region> }` without updating — this
+ * path never changes an existing region (that goes through the admin
+ * cross-region migration flow). On first assignment, returns
+ * `{ assigned: true }`. If the workspace does not exist, returns
+ * `{ assigned: false }` without an `existing` field.
  */
 export async function setWorkspaceRegion(
   orgId: string,
   region: string,
 ): Promise<{ assigned: boolean; existing?: string }> {
-  // Only assign if region is currently NULL (immutable after first assignment)
+  // Only assign if region is currently NULL — this path is one-way; an
+  // existing region is changed only via the admin cross-region migration flow.
   const rows = await internalQuery<{ id: string }>(
     `UPDATE organization SET region = $1, region_assigned_at = now()
      WHERE id = $2 AND region IS NULL RETURNING id`,

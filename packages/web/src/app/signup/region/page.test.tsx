@@ -113,6 +113,26 @@ describe("RegionPage — load failure recovery (#3925)", () => {
       expect(fetchMock.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
     });
   });
+
+  test("a persistent load failure swaps in support copy + a Contact support link (#3934)", async () => {
+    fetchMock.mockImplementation(async () => regionsFailure());
+    render(<RegionPage />);
+
+    // First failure: generic copy, Retry only, no support escape yet.
+    const retry = await screen.findByRole("button", { name: /^retry$/i });
+    expect(screen.queryByRole("link", { name: /contact support/i })).toBeNull();
+
+    // Second failure (retry also fails) => persistent: copy + support path.
+    await act(async () => {
+      fireEvent.click(retry);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/still unable to load region options/i)).toBeDefined();
+    });
+    const support = screen.getByRole("link", { name: /contact support/i });
+    expect((support as HTMLAnchorElement).href).toContain("mailto:support@useatlas.dev");
+  });
 });
 
 describe("RegionPage — auto-skip when no residency configured", () => {

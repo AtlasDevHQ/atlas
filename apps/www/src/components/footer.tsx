@@ -5,11 +5,32 @@ import { AtlasLogo, GitHubIcon } from "./shared";
 const STATUS_URL =
   process.env.NEXT_PUBLIC_STATUS_URL || "https://atlas.openstatus.dev";
 
+// Primary footer links: product + resources. Legal links live in the dimmer
+// baseline row below so the two readings stay distinct and neither crowds out
+// the other as the legal set grows.
+const PRIMARY_LINKS = [
+  { href: "/pricing", label: "Pricing" },
+  { href: "/blog", label: "Blog" },
+  { href: "https://docs.useatlas.dev", label: "Docs" },
+  { href: "https://app.useatlas.dev", label: "Atlas Cloud" },
+  { href: STATUS_URL, label: "Status" },
+];
+
+const LEGAL_LINKS = [
+  { href: "/security", label: "Security" },
+  { href: "/terms", label: "Terms" },
+  { href: "/privacy", label: "Privacy" },
+  { href: "/aup", label: "AUP" },
+  { href: "/dpa", label: "DPA" },
+];
+
 export function Footer() {
   return (
     <footer className="mx-auto max-w-5xl px-6 pb-12">
       <div className="h-px bg-gradient-to-r from-transparent via-border to-transparent" />
-      <div className="flex flex-col items-center justify-between gap-4 pt-8 sm:flex-row">
+
+      {/* Primary row: brand cluster + product/resource nav */}
+      <div className="flex flex-col items-center justify-between gap-6 pt-8 sm:flex-row">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
             <AtlasLogo className="h-4 w-4 text-accent" />
@@ -23,41 +44,40 @@ export function Footer() {
             Open source
           </a>
         </div>
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-          <a href="/pricing" className="text-xs text-fg-muted transition-colors hover:text-fg">
-            Pricing
-          </a>
-          <a href="/blog" className="text-xs text-fg-muted transition-colors hover:text-fg">
-            Blog
-          </a>
-          <a href="https://docs.useatlas.dev" className="text-xs text-fg-muted transition-colors hover:text-fg">
-            Docs
-          </a>
-          <a href="https://app.useatlas.dev" className="text-xs text-fg-muted transition-colors hover:text-fg">
-            Atlas Cloud
-          </a>
-          <a href={STATUS_URL} className="text-xs text-fg-muted transition-colors hover:text-fg">
-            Status
-          </a>
-          <a href="/security" className="text-xs text-fg-muted transition-colors hover:text-fg">
-            Security
-          </a>
-          <a href="/terms" className="text-xs text-fg-muted transition-colors hover:text-fg">
-            Terms
-          </a>
-          <a href="/privacy" className="text-xs text-fg-muted transition-colors hover:text-fg">
-            Privacy
-          </a>
-          <a href="/aup" className="text-xs text-fg-muted transition-colors hover:text-fg">
-            AUP
-          </a>
-          <a href="/dpa" className="text-xs text-fg-muted transition-colors hover:text-fg">
-            DPA
-          </a>
-          <a href="https://github.com/AtlasDevHQ/atlas" className="whitespace-nowrap text-xs text-fg-muted transition-colors hover:text-fg">
-            Built by humans and AI
-          </a>
-        </div>
+        <nav
+          aria-label="Footer"
+          className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2"
+        >
+          {PRIMARY_LINKS.map((link) => (
+            <a
+              key={link.label}
+              href={link.href}
+              className="text-sm text-fg-muted transition-colors hover:text-fg"
+            >
+              {link.label}
+            </a>
+          ))}
+        </nav>
+      </div>
+
+      {/* Baseline row: credit + legal — dimmer and smaller so it reads as a
+          sub-tier, not a second primary nav. */}
+      <div className="mt-6 flex flex-col-reverse items-center justify-between gap-3 border-t border-border-soft pt-6 sm:flex-row">
+        <p className="text-xs text-fg-faint">Built by humans and AI</p>
+        <nav
+          aria-label="Legal"
+          className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2"
+        >
+          {LEGAL_LINKS.map((link) => (
+            <a
+              key={link.label}
+              href={link.href}
+              className="text-xs text-fg-faint transition-colors hover:text-fg-muted"
+            >
+              {link.label}
+            </a>
+          ))}
+        </nav>
       </div>
     </footer>
   );

@@ -7,7 +7,13 @@ import { AtlasProvider } from "@/ui/context";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { PUBLIC_ROUTE_PREFIXES } from "@/lib/public-routes";
 
-const AUTH_MODE = process.env.NEXT_PUBLIC_ATLAS_AUTH_MODE ?? "";
+// Resolved at render time inside the effect (not a module-load const): Next
+// inlines `process.env.NEXT_PUBLIC_*` everywhere identically, so this is free,
+// and it matches how the rest of the workspace UI resolves auth mode at runtime
+// (`useAtlasTransport`) rather than at import.
+function getAuthMode(): string {
+  return process.env.NEXT_PUBLIC_ATLAS_AUTH_MODE ?? "";
+}
 
 /** Routes that don't require authentication. */
 const publicPrefixes = [...PUBLIC_ROUTE_PREFIXES, "/login", "/signup", "/wizard"];
@@ -58,7 +64,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (
-      AUTH_MODE !== "managed" ||
+      getAuthMode() !== "managed" ||
       session.isPending ||
       // A transient get-session error (API down / network) is NOT a stale
       // cookie — recovering would needlessly destroy a possibly-valid session

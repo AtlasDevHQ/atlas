@@ -1032,6 +1032,24 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "platform",
     saasVisible: false,
   },
+  {
+    // #3931 — demo LLM override. The anonymous /demo path is top-of-funnel and
+    // an unbounded, unattributed cost center; this lets an operator pick a
+    // cheaper demo model without a redeploy. Blank ⇒ Haiku on the gateway
+    // (SaaS — the curated NovaMart dataset de-risks the cheaper model), else
+    // the platform default so a non-gateway deploy can never break. Resolved
+    // per demo turn via `getDemoModelId()`.
+    key: "ATLAS_DEMO_MODEL",
+    section: "Demo",
+    label: "Demo Model",
+    description:
+      "Model the public /demo path runs on — a gateway model id (e.g. anthropic/claude-haiku-4.5) or a direct model id matching the configured provider. Leave blank to default to Haiku on the gateway (SaaS) or the platform default on a non-gateway deploy.",
+    type: "string",
+    default: "",
+    envVar: "ATLAS_DEMO_MODEL",
+    scope: "platform",
+    saasVisible: false,
+  },
 
   // Abuse Prevention — anomaly-detection thresholds (lib/security/abuse.ts).
   // Hot-reloadable: `getAbuseConfig()` reads per query-event. Platform-only and

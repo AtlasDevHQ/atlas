@@ -49,6 +49,10 @@ mock.module("@atlas/api/lib/db/connection", () => {
 
 mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic",
+  // demo.ts (mounted via the app) statically imports getModelForConfig — it
+  // must be present so the mock links, even though the anthropic default
+  // resolves no demo override and never calls it. (#3931)
+  getModelForConfig: () => ({ model: {}, providerType: "anthropic", modelId: "claude-test" }),
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({

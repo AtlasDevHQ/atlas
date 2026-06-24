@@ -43,6 +43,7 @@ import {
   demoUserId,
   checkDemoRateLimit,
   getDemoMaxSteps,
+  demoRunAgentModelParams,
   captureDemoLead,
   countDemoConversations,
 } from "@atlas/api/lib/demo";
@@ -638,11 +639,17 @@ demo.openapi(demoChatRoute, async (c) => {
       }
 
       try {
+        // #3931 — demo turns run on the configured demo model (Haiku on the
+        // gateway by default); `demoRunAgentModelParams()` yields `{}` on a
+        // non-gateway deploy so runAgent resolves the platform default.
+        // Passing `aiModel` makes the demo model authoritative, so
+        // `token_usage.model`/`provider` reflect it.
         // Demo uses default tools only — no actions, no plugin tools
         const agentResult = await runAgent({
           messages,
           conversationId,
           maxSteps: getDemoMaxSteps(),
+          ...demoRunAgentModelParams(),
         });
 
         const stream = createUIMessageStream({

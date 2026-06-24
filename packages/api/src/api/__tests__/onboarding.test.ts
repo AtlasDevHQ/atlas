@@ -737,16 +737,21 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     expect(params[3]).toBe("__demo__");   // install_id
   });
 
-  it("imports semantic entities with connectionId='__demo__'", async () => {
+  it("imports semantic entities with connectionId='__demo__' as PUBLISHED (#3932)", async () => {
     await request("/api/v1/onboarding/use-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ demoType: "cybersec" }),
     });
 
+    // The demo layer is curated + read-only with no human-review step, so it
+    // seeds as `published` (not the import default `draft`). A fresh signup runs
+    // in published atlas-mode by default; draft entities would be invisible to
+    // both the chat data-setup gate AND the agent's published-mode whitelist,
+    // dead-ending the user at the activation moment (#3932).
     expect(mockImportFromDisk).toHaveBeenCalledWith(
       "org-1",
-      expect.objectContaining({ connectionId: "__demo__" }),
+      expect.objectContaining({ connectionId: "__demo__", status: "published" }),
     );
   });
 

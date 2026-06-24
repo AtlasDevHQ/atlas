@@ -635,6 +635,13 @@ export async function importFromDisk(
      * where partial imports are tolerated and counted via `dbFailures`.
      */
     exec?: import("@atlas/api/lib/db/internal").InternalQueryExecutor;
+    /**
+     * Content-mode status for the imported rows. Defaults to `draft` (the
+     * admin-import / auth-migrate "review-then-publish" workflow). The /use-demo
+     * seed passes `published` so the curated, read-only demo layer is queryable
+     * in published mode for a fresh signup (#3932).
+     */
+    status?: "draft" | "published";
   },
 ): Promise<ImportResult> {
   const { bulkUpsertEntities } = await import("@atlas/api/lib/semantic/entities");
@@ -694,7 +701,7 @@ export async function importFromDisk(
     // On the transactional path (`options.exec` set) this throws on the first
     // row failure so the enclosing transaction rolls back — `dbFailures` below
     // is then unreachable and always 0 on the value that does return (#3683).
-    imported = await bulkUpsertEntities(orgId, entities, options?.exec);
+    imported = await bulkUpsertEntities(orgId, entities, options?.exec, options?.status ?? "draft");
   } finally {
     // Always invalidate — partial writes may have occurred
     invalidateOrgWhitelist(orgId);

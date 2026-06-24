@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.26",
+    title: "Cream + Forest Brand",
+    date: "2026-06-24",
+    summary:
+      "Atlas adopts a new brand — warm cream and deep forest green, light-first — across every surface: the landing site, the documentation, and the product (app, admin, and demo). The look steps away from the saturated dark dev-tool default toward something calmer and more legible for dense data work, with deep forest as the primary accent and a bright teal spark reserved for highlights on dark and green surfaces. Two fixes ride along: the plan-tier reconciliation safety net now runs correctly, and a deployment with no default analytics datasource no longer fails its health check.",
+    highlights: [
+      "Brand redesign (ADR-0023) — cream + forest light mode across the landing site, docs, and the product app/admin/demo, driven from one shared brand.css token source",
+      "Billing reconciliation fix — the plan-tier reconcile sweep no longer errored on a non-existent subscription column, so plan-tier drift is healed from the Stripe source of truth as intended (#3922)",
+      "Health robustness — a deployment with no default analytics datasource now reports 'degraded' (HTTP 200) instead of failing its health probe; the default registers only when configured (#3921)",
+    ],
+  },
+  {
     version: "v0.0.25",
     title: "Cross-Source Composition",
     date: "2026-06-23",

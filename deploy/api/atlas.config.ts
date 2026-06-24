@@ -97,12 +97,21 @@ const proactiveAiRuntime = getProactiveAiRuntime();
 
 export default defineConfig({
   // ── Datasource ──────────────────────────────────────────────────
-  // The default analytics datasource — env var fallback handles this,
-  // but being explicit here for documentation.
+  // The default analytics datasource — registered only when
+  // ATLAS_DATASOURCE_URL is set. A region/env with no default analytics
+  // source (e.g. staging, which soaks via per-workspace connection groups
+  // rather than a shared default) must NOT register a `default` with an
+  // empty URL: `applyDatasources` registers every entry unconditionally,
+  // so a blank URL would either fail config validation at boot or leave a
+  // `default` whose health probe fails — flipping the region's /api/health
+  // to 503 (the primary-datasource gate, #3907) for a source it never
+  // needed. Omitting it lets the health probe report `degraded` (HTTP 200)
+  // instead. See #3896 (staging's default formerly reached prod's demo-data
+  // over a public TCP proxy that was deleted as a security fix).
   datasources: {
-    default: {
-      url: process.env.ATLAS_DATASOURCE_URL!,
-    },
+    ...(process.env.ATLAS_DATASOURCE_URL
+      ? { default: { url: process.env.ATLAS_DATASOURCE_URL } }
+      : {}),
   },
 
   // ── Tools ───────────────────────────────────────────────────────

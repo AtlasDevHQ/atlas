@@ -119,7 +119,12 @@ export async function reconcilePlanTiers(): Promise<PlanTierReconcileResult> {
               SELECT 1 FROM stripe_webhook_events w
                WHERE w.stripe_subscription_id = s."stripeSubscriptionId"
                  AND w.event_type = 'customer.subscription.deleted')
-          ORDER BY s."createdAt" DESC
+          -- Better Auth's subscription table has NO createdAt column; periodStart
+          -- (newest current-period start) is the right "most recent subscription"
+          -- proxy when an org has more than one active/trialing row. Ordering by a
+          -- non-existent createdAt threw "column s.createdAt does not exist",
+          -- silently breaking every reconcile pass. Covered by reconcile-plan-tiers-pg.
+          ORDER BY s."periodStart" DESC NULLS LAST
           LIMIT 1
        ) sub ON true
        LEFT JOIN LATERAL (

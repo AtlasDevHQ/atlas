@@ -73305,6 +73305,841 @@
         "operationId": "postPlatformCrmOutboxByIdMarkDead"
       }
     },
+    "/api/v1/platform/demo/config": {
+      "get": {
+        "tags": [
+          "Platform Admin — Demo"
+        ],
+        "summary": "Get demo model + limits config",
+        "responses": {
+          "200": {
+            "description": "Demo config",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "model": {
+                      "type": "string",
+                      "description": "Configured ATLAS_DEMO_MODEL override (a gateway model id, e.g. anthropic/claude-haiku-4.5). Empty string = use the resolved default.",
+                      "example": "anthropic/claude-haiku-4.5"
+                    },
+                    "maxSteps": {
+                      "type": "integer"
+                    },
+                    "rpm": {
+                      "type": "integer"
+                    },
+                    "effectiveModel": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "What the demo model resolves to right now: the override if set, else the gateway Haiku default (SaaS), else null (non-gateway → platform default)."
+                    }
+                  },
+                  "required": [
+                    "model",
+                    "maxSteps",
+                    "rpm",
+                    "effectiveModel"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No internal database",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getPlatformDemoConfig"
+      },
+      "put": {
+        "tags": [
+          "Platform Admin — Demo"
+        ],
+        "summary": "Update demo model + limits config",
+        "description": "Writes ATLAS_DEMO_MODEL / ATLAS_DEMO_MAX_STEPS / ATLAS_DEMO_RATE_LIMIT_RPM to the settings registry (platform scope). Hot-reloadable — takes effect within the ~30s settings refresh window, no redeploy.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "description": "Gateway model id, or empty string to clear the override.",
+                    "example": "anthropic/claude-haiku-4.5"
+                  },
+                  "maxSteps": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                  },
+                  "rpm": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "model",
+                  "maxSteps",
+                  "rpm"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Config saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "model": {
+                      "type": "string",
+                      "description": "Configured ATLAS_DEMO_MODEL override (a gateway model id, e.g. anthropic/claude-haiku-4.5). Empty string = use the resolved default.",
+                      "example": "anthropic/claude-haiku-4.5"
+                    },
+                    "maxSteps": {
+                      "type": "integer"
+                    },
+                    "rpm": {
+                      "type": "integer"
+                    },
+                    "effectiveModel": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "What the demo model resolves to right now: the override if set, else the gateway Haiku default (SaaS), else null (non-gateway → platform default)."
+                    }
+                  },
+                  "required": [
+                    "model",
+                    "maxSteps",
+                    "rpm",
+                    "effectiveModel"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No internal database",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "putPlatformDemoConfig"
+      }
+    },
+    "/api/v1/platform/demo/leads": {
+      "get": {
+        "tags": [
+          "Platform Admin — Demo"
+        ],
+        "summary": "List demo leads with per-email spend rollup",
+        "responses": {
+          "200": {
+            "description": "Demo leads",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "leads": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "email": {
+                            "type": "string"
+                          },
+                          "sessionCount": {
+                            "type": "integer"
+                          },
+                          "firstSeen": {
+                            "type": "string"
+                          },
+                          "lastActive": {
+                            "type": "string"
+                          },
+                          "conversationCount": {
+                            "type": "integer"
+                          },
+                          "usage": {
+                            "type": "object",
+                            "properties": {
+                              "turns": {
+                                "type": "integer"
+                              },
+                              "promptTokens": {
+                                "type": "integer"
+                              },
+                              "completionTokens": {
+                                "type": "integer"
+                              },
+                              "cacheReadTokens": {
+                                "type": "integer"
+                              },
+                              "cacheWriteTokens": {
+                                "type": "integer"
+                              },
+                              "avgLatencyMs": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "estimatedCostUsd": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "turns",
+                              "promptTokens",
+                              "completionTokens",
+                              "cacheReadTokens",
+                              "cacheWriteTokens",
+                              "avgLatencyMs",
+                              "estimatedCostUsd"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "email",
+                          "sessionCount",
+                          "firstSeen",
+                          "lastActive",
+                          "conversationCount",
+                          "usage"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "leads"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No internal database",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getPlatformDemoLeads"
+      }
+    },
+    "/api/v1/platform/demo/transcript": {
+      "get": {
+        "tags": [
+          "Platform Admin — Demo"
+        ],
+        "summary": "Get the demo question/answer transcript for one lead",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "email",
+              "description": "Demo lead email whose transcript to load.",
+              "example": "lead@example.com"
+            },
+            "required": true,
+            "description": "Demo lead email whose transcript to load.",
+            "name": "email",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Demo transcript",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "email": {
+                      "type": "string"
+                    },
+                    "conversations": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "messages": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "role": {
+                                  "type": "string"
+                                },
+                                "content": {},
+                                "createdAt": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "role",
+                                "createdAt"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "title",
+                          "createdAt",
+                          "messages"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "email",
+                    "conversations"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No internal database",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getPlatformDemoTranscript"
+      }
+    },
+    "/api/v1/platform/demo/metrics": {
+      "get": {
+        "tags": [
+          "Platform Admin — Demo"
+        ],
+        "summary": "Demo token + cache + latency rollup",
+        "responses": {
+          "200": {
+            "description": "Demo metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "leadCount": {
+                      "type": "integer"
+                    },
+                    "sessionCount": {
+                      "type": "integer"
+                    },
+                    "totals": {
+                      "type": "object",
+                      "properties": {
+                        "turns": {
+                          "type": "integer"
+                        },
+                        "promptTokens": {
+                          "type": "integer"
+                        },
+                        "completionTokens": {
+                          "type": "integer"
+                        },
+                        "cacheReadTokens": {
+                          "type": "integer"
+                        },
+                        "cacheWriteTokens": {
+                          "type": "integer"
+                        },
+                        "avgLatencyMs": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "estimatedCostUsd": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "costComplete": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "turns",
+                        "promptTokens",
+                        "completionTokens",
+                        "cacheReadTokens",
+                        "cacheWriteTokens",
+                        "avgLatencyMs",
+                        "estimatedCostUsd",
+                        "costComplete"
+                      ]
+                    },
+                    "perModel": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "turns": {
+                            "type": "integer"
+                          },
+                          "promptTokens": {
+                            "type": "integer"
+                          },
+                          "completionTokens": {
+                            "type": "integer"
+                          },
+                          "cacheReadTokens": {
+                            "type": "integer"
+                          },
+                          "cacheWriteTokens": {
+                            "type": "integer"
+                          },
+                          "avgLatencyMs": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "estimatedCostUsd": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "model": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "provider": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "turns",
+                          "promptTokens",
+                          "completionTokens",
+                          "cacheReadTokens",
+                          "cacheWriteTokens",
+                          "avgLatencyMs",
+                          "estimatedCostUsd",
+                          "model",
+                          "provider"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "leadCount",
+                    "sessionCount",
+                    "totals",
+                    "perModel"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No internal database",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getPlatformDemoMetrics"
+      }
+    },
     "/api/v1/platform/residency/regions": {
       "get": {
         "tags": [
@@ -79669,6 +80504,9 @@
     },
     {
       "name": "Platform Admin — Custom Domains"
+    },
+    {
+      "name": "Platform Admin — Demo"
     },
     {
       "name": "Platform Admin — Residency"

@@ -79,6 +79,7 @@
     "platform-admin-backups",
     "platform-admin-crm-outbox",
     "platform-admin-custom-domains",
+    "platform-admin-demo",
     "platform-admin-residency",
     "platform-admin-sla",
     "platform-operator-integrations",

@@ -533,3 +533,78 @@ export type {
   WorkspaceSecurityMetrics,
   PlatformSecurityMetrics,
 } from "@useatlas/types";
+
+// ── Demo tracking (#3931) ────────────────────────────────────────────
+// Web-local mirrors of the inline shapes in
+// `packages/api/src/api/routes/platform-demo.ts`. Kept here (not in
+// `@useatlas/schemas`) so the scaffold template's pinned-version build never
+// blocks on a not-yet-published symbol. Keep field names in lockstep with the
+// route's response schemas.
+
+export const DemoConfigSchema = z.object({
+  model: z.string(),
+  maxSteps: z.number().int(),
+  rpm: z.number().int(),
+  effectiveModel: z.string().nullable(),
+});
+export type DemoConfig = z.infer<typeof DemoConfigSchema>;
+
+// Token/cache counts are integers (kept in lockstep with the API's
+// TokenRollupSchema + the lib DemoTokenRollup interface); avgLatencyMs and
+// estimatedCostUsd are genuine floats and stay un-`.int()`.
+const DemoTokenRollupSchema = z.object({
+  turns: z.number().int(),
+  promptTokens: z.number().int(),
+  completionTokens: z.number().int(),
+  cacheReadTokens: z.number().int(),
+  cacheWriteTokens: z.number().int(),
+  avgLatencyMs: z.number().nullable(),
+  estimatedCostUsd: z.number().nullable(),
+});
+export type DemoTokenRollup = z.infer<typeof DemoTokenRollupSchema>;
+
+export const DemoLeadSchema = z.object({
+  email: z.string(),
+  sessionCount: z.number().int(),
+  firstSeen: z.string(),
+  lastActive: z.string(),
+  conversationCount: z.number().int(),
+  usage: DemoTokenRollupSchema,
+});
+export type DemoLead = z.infer<typeof DemoLeadSchema>;
+
+export const DemoLeadsResponseSchema = z.object({
+  leads: z.array(DemoLeadSchema),
+});
+
+export const DemoPerModelSchema = DemoTokenRollupSchema.extend({
+  model: z.string().nullable(),
+  provider: z.string().nullable(),
+});
+export type DemoPerModel = z.infer<typeof DemoPerModelSchema>;
+
+export const DemoMetricsResponseSchema = z.object({
+  leadCount: z.number().int(),
+  sessionCount: z.number().int(),
+  totals: DemoTokenRollupSchema.extend({ costComplete: z.boolean() }),
+  perModel: z.array(DemoPerModelSchema),
+});
+export type DemoMetricsResponse = z.infer<typeof DemoMetricsResponseSchema>;
+
+const DemoTranscriptMessageSchema = z.object({
+  role: z.string(),
+  content: z.unknown(),
+  createdAt: z.string(),
+});
+const DemoTranscriptConversationSchema = z.object({
+  id: z.string(),
+  title: z.string().nullable(),
+  createdAt: z.string(),
+  messages: z.array(DemoTranscriptMessageSchema),
+});
+export const DemoTranscriptResponseSchema = z.object({
+  email: z.string(),
+  conversations: z.array(DemoTranscriptConversationSchema),
+});
+export type DemoTranscriptResponse = z.infer<typeof DemoTranscriptResponseSchema>;
+export type DemoTranscriptConversation = z.infer<typeof DemoTranscriptConversationSchema>;

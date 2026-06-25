@@ -174,7 +174,9 @@ describe("runMigrations", () => {
     //   metadata, ADR-0022 §4, #3894) = 149.
     //   Plus 0149 (conversations.group_reach per-conversation Group reach,
     //   ADR-0022 §5, #3895) = 150.
-    expect(count).toBe(150);
+    //   Plus 0150 (token_usage.latency_ms per-turn latency, demo tracking,
+    //   #3931) = 151.
+    expect(count).toBe(151);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -353,6 +355,7 @@ describe("runMigrations", () => {
         "0147_elasticsearch_auth_mode_selector_config_schema.sql",
         "0148_connection_group_descriptions.sql",
         "0149_conversation_group_reach.sql",
+        "0150_token_usage_latency.sql",
       ],
     });
 

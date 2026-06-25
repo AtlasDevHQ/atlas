@@ -1023,6 +1023,12 @@ export async function runAgent({
    */
   runId?: string;
 }) {
+  // #3931 — per-turn latency clock. Captured at runAgent entry so the
+  // token_usage INSERT in onFinish can persist the agent-turn wall-clock
+  // (entry → finish) on the same row as the turn's tokens + cache split.
+  // A close proxy for the log-only `first_answer_latency` minus the caller's
+  // pre-agent overhead; uniform across every surface (demo + chat).
+  const turnStartedAt = Date.now();
   // Capture context eagerly — AsyncLocalStorage may have exited by the time onFinish fires
   const reqCtx = getRequestContext();
   const userId = reqCtx?.user?.id ?? null;
@@ -1976,8 +1982,8 @@ export async function runAgent({
         if (hasInternalDB() && totalUsage) {
           try {
             internalExecute(
-              `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, model, provider, org_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+              `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, model, provider, org_id, latency_ms)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
               [
                 userId,
                 conversationId ?? null,
@@ -1988,6 +1994,10 @@ export async function runAgent({
                 resolvedModelId,
                 providerType,
                 orgId ?? null,
+                // #3931 — agent-turn wall-clock (entry → onFinish), persisted
+                // alongside the turn's usage so the demo tracking rollup reads
+                // tokens + cache + latency from one row.
+                Math.max(0, Date.now() - turnStartedAt),
               ],
             );
           } catch (err) {

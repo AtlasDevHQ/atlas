@@ -1,33 +1,44 @@
 /**
- * Signup data-residency picker projection.
+ * Residency region selectability — the single source of truth for "may a
+ * customer be assigned this region?".
  *
- * Maps the configured residency regions to the customer-facing list returned by
- * `GET /api/v1/onboarding/regions` (the `/signup/region` step). Regions flagged
- * `selectable: false` are excluded: they exist in the config for the boot guard
- * (`RegionGuardLive`) and region routing, but must never be a selectable
- * residency choice for real signups (#3948 — e.g. the shared-config `staging`
- * arm the api-staging soak service claims). Existence ≠ selectability, so the
- * filter lives here at the picker layer rather than by removing the region from
- * the config (which would crash-loop the staging service — see #3948 → #3951).
+ * A region's *existence* in `residency.regions` (load-bearing for the boot guard
+ * `RegionGuardLive` + region routing) is independent of its *selectability*. A
+ * region flagged `selectable: false` exists for boot/routing but must never be a
+ * customer residency choice — neither offered in the signup picker NOR accepted
+ * by the assignment write path (#3948 — e.g. the shared-config `staging` arm the
+ * api-staging soak service claims). Existence ≠ selectability.
+ *
+ * Both the read path (this module's `buildAvailableRegions`, used by
+ * `GET /api/v1/onboarding/regions` and the admin residency surface) and the
+ * write path (`ee/src/platform/residency.ts` `assignWorkspaceRegion`) share
+ * `isRegionSelectable` so the two can never drift — closing the UI affordance
+ * without closing the actual write would leave the #3948 leak reachable via a
+ * direct `POST /assign-region`.
  */
 import type { ResidencyConfig } from "@atlas/api/lib/config";
+import type { RegionPickerItem } from "@useatlas/types";
 
-export interface AvailableRegion {
-  id: string;
-  label: string;
-  isDefault: boolean;
+type RegionConfig = ResidencyConfig["regions"][string];
+
+/**
+ * Whether a region may be chosen by a customer. `true` when the region exists
+ * and is not flagged `selectable: false` (an omitted flag defaults to
+ * selectable). `undefined` (an unknown region id) is not selectable.
+ */
+export function isRegionSelectable(region: RegionConfig | undefined): boolean {
+  return region !== undefined && region.selectable !== false;
 }
 
 /**
  * Project the configured regions to the signup picker, excluding any region
- * marked `selectable: false`. A region with `selectable` omitted is selectable
- * (default `true`).
+ * that is not selectable (see {@link isRegionSelectable}).
  */
 export function buildAvailableRegions(
   regions: ResidencyConfig["regions"],
   defaultRegion: string,
-): AvailableRegion[] {
+): RegionPickerItem[] {
   return Object.entries(regions)
-    .filter(([, cfg]) => cfg.selectable !== false)
+    .filter(([, cfg]) => isRegionSelectable(cfg))
     .map(([id, cfg]) => ({ id, label: cfg.label, isDefault: id === defaultRegion }));
 }

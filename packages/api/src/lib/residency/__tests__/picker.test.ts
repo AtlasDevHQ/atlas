@@ -5,7 +5,7 @@
  * but must never be a selectable residency choice for real signups (#3948).
  */
 import { describe, it, expect } from "bun:test";
-import { buildAvailableRegions } from "@atlas/api/lib/residency/picker";
+import { buildAvailableRegions, isRegionSelectable } from "@atlas/api/lib/residency/picker";
 import type { ResidencyConfig } from "@atlas/api/lib/config";
 
 type Regions = ResidencyConfig["regions"];
@@ -46,5 +46,25 @@ describe("buildAvailableRegions (#3948)", () => {
     // region must not leak that region into the picker.
     const ids = buildAvailableRegions(REGIONS, "staging").map((r) => r.id);
     expect(ids).not.toContain("staging");
+  });
+});
+
+describe("isRegionSelectable (#3948 — shared read/write predicate)", () => {
+  it("is true for a region with selectable omitted (default true)", () => {
+    expect(isRegionSelectable({ label: "United States" })).toBe(true);
+  });
+
+  it("is true for a region explicitly selectable", () => {
+    expect(isRegionSelectable({ label: "Europe", selectable: true })).toBe(true);
+  });
+
+  it("is false for a region flagged selectable: false", () => {
+    expect(isRegionSelectable({ label: "Staging", selectable: false })).toBe(false);
+  });
+
+  it("is false for an unknown region (undefined)", () => {
+    // The write path looks up `regions[region]` which is undefined for an
+    // unknown id — assignment must reject it, not treat it as selectable.
+    expect(isRegionSelectable(undefined)).toBe(false);
   });
 });

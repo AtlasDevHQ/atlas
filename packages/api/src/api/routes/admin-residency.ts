@@ -24,6 +24,8 @@ import {
   cancelMigration,
 } from "@atlas/api/lib/residency/migrate";
 import { ResidencyError } from "@atlas/api/lib/residency/errors";
+import { buildAvailableRegions } from "@atlas/api/lib/residency/picker";
+import type { RegionPickerItem } from "@useatlas/types";
 import { MIGRATION_STATUSES, type RegionMigration } from "@useatlas/types";
 import { RegionMigrationSchema, MigrationStatusResponseSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -498,16 +500,20 @@ adminResidency.openapi(getStatusRoute, async (c) => {
 
       let configured = true;
       let defaultRegion = "";
-      let availableRegions: Array<{ id: string; label: string; isDefault: boolean }> = [];
+      let availableRegions: RegionPickerItem[] = [];
+      // Full id→label map (incl. non-selectable regions) for resolving the
+      // label of an already-assigned region below; the picker list itself
+      // excludes non-selectable regions.
+      let regionLabels: Record<string, string> = {};
 
       try {
         defaultRegion = mod.getDefaultRegion();
         const regions = mod.getConfiguredRegions();
-        availableRegions = Object.entries(regions).map(([id, cfg]) => ({
-          id,
-          label: cfg.label,
-          isDefault: id === defaultRegion,
-        }));
+        // Filter out non-selectable regions (e.g. staging) so a prod admin is
+        // never offered an unassignable region — the assign write path rejects
+        // them anyway (#3948). Shares the picker predicate with onboarding.
+        availableRegions = buildAvailableRegions(regions, defaultRegion);
+        regionLabels = Object.fromEntries(Object.entries(regions).map(([id, cfg]) => [id, cfg.label]));
       } catch (err) {
         if (err instanceof ResidencyError && err.code === "not_configured") {
           configured = false;
@@ -524,8 +530,7 @@ adminResidency.openapi(getStatusRoute, async (c) => {
         const assignment = yield* mod.getWorkspaceRegionAssignment(orgId!);
         if (assignment) {
           region = assignment.region;
-          regionLabel =
-            availableRegions.find((r) => r.id === assignment.region)?.label ?? assignment.region;
+          regionLabel = regionLabels[assignment.region] ?? assignment.region;
           assignedAt = assignment.assignedAt;
         }
       }

@@ -78,6 +78,36 @@ export function isFirstTurn(
 }
 
 /**
+ * Whether an agent turn actually *answered* a data question — i.e. `executeSQL`
+ * ran a query that came back successfully. Gates the onboarding
+ * `first_query_executed` milestone (#3962): the milestone must reflect a query
+ * the user got a real answer to, not merely "a chat turn happened". Firing it at
+ * stream-creation on any turn (the prior behavior) marked the milestone even for
+ * a turn whose SQL was rejected by the table whitelist (#3961), errored, or
+ * never touched the database — none of which is a first answer.
+ *
+ * Reads the success-discriminated `executeSQL` tool output (`{ success: true, … }`
+ * for an answered query; `{ success: false, error }` for a rejected/failed one —
+ * see `lib/tools/sql.ts`). Pure over the resolved agent steps, so it is unit
+ * testable without driving the route.
+ */
+export function turnAnsweredQuery(
+  steps: ReadonlyArray<{
+    readonly toolResults?: ReadonlyArray<{ readonly toolName: string; readonly output: unknown }>;
+  }>,
+): boolean {
+  return steps.some((step) =>
+    (step.toolResults ?? []).some(
+      (tr) =>
+        tr.toolName === "executeSQL" &&
+        typeof tr.output === "object" &&
+        tr.output !== null &&
+        (tr.output as { success?: unknown }).success === true,
+    ),
+  );
+}
+
+/**
  * Shape the structured first-answer-latency event. Pure: clamps to a
  * non-negative integer (a backwards clock or a finish reading taken before the
  * start must never emit a negative latency) and omits correlation ids that

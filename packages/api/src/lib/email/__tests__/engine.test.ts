@@ -130,7 +130,59 @@ describe("sendOnboardingEmail", () => {
   });
 });
 
-describe("onMilestoneReached", () => {
+describe("sendOnboardingEmail demo-awareness (#3962 — reads datasource state, not the drip marker)", () => {
+  beforeEach(() => {
+    process.env.ATLAS_ONBOARDING_EMAILS_ENABLED = "true";
+    mockHasDB = true;
+    mockDeliveryResult = { success: true, provider: "log" };
+  });
+
+  // workspace_plugins state → (has_demo, has_real_sql) the isDemoOnlyWorkspace probe returns.
+  async function sendFirstQueryWith(pluginRow: { has_demo: boolean | null; has_real_sql: boolean | null }) {
+    const { internalQuery } = await import("@atlas/api/lib/db/internal");
+    const { sendEmail } = await import("../delivery");
+    (internalQuery as ReturnType<typeof mock>).mockClear();
+    (sendEmail as ReturnType<typeof mock>).mockClear();
+    (internalQuery as ReturnType<typeof mock>).mockImplementation((sql: string) => {
+      if (typeof sql === "string" && sql.includes("workspace_plugins")) return Promise.resolve([pluginRow]);
+      // not unsubscribed / nothing sent yet / no branding
+      return Promise.resolve([]);
+    });
+    await sendOnboardingEmail("u1", "demo@example.com", "org1", "first_query", "time_based");
+    const call = (sendEmail as ReturnType<typeof mock>).mock.calls[0];
+    return (call?.[0] as { html?: string } | undefined)?.html ?? "";
+  }
+
+  it("uses demo copy for a demo-only workspace (demo datasource, no real SQL one)", async () => {
+    const html = await sendFirstQueryWith({ has_demo: true, has_real_sql: false });
+    expect(html).toContain("Your demo dataset is loaded");
+    expect(html).not.toContain("Your database is connected");
+  });
+
+  it("uses BYO copy once the workspace graduates to a real SQL datasource (demo + real SQL)", async () => {
+    // The graduation case the marker-based check missed: a demo workspace that
+    // later connects its own DB must NOT keep getting demo copy.
+    const html = await sendFirstQueryWith({ has_demo: true, has_real_sql: true });
+    expect(html).toContain("Your database is connected");
+    expect(html).not.toContain("Your demo dataset is loaded");
+  });
+
+  it("keeps demo copy for demo + a REST datasource (no SQL pool → has_real_sql false)", async () => {
+    // A REST/OpenAPI datasource is pillar='datasource' but not a SQL pool, so it
+    // must NOT flip the workspace to the SQL-centric "your database is connected"
+    // copy. The query's allowlist join yields has_real_sql=false for demo+REST.
+    const html = await sendFirstQueryWith({ has_demo: true, has_real_sql: false });
+    expect(html).toContain("Your demo dataset is loaded");
+    expect(html).not.toContain("Your database is connected");
+  });
+
+  it("uses BYO copy for a workspace with no datasource at all (bool_or → null)", async () => {
+    const html = await sendFirstQueryWith({ has_demo: null, has_real_sql: null });
+    expect(html).toContain("Your database is connected");
+  });
+});
+
+describe("onMilestoneReached (#3962 — action milestones suppress the nudge, no in-turn email)", () => {
   beforeEach(() => {
     process.env.ATLAS_ONBOARDING_EMAILS_ENABLED = "true";
     mockHasDB = true;
@@ -138,14 +190,33 @@ describe("onMilestoneReached", () => {
     mockDeliveryResult = { success: true, provider: "log" };
   });
 
-  it("sends email for mapped milestone", async () => {
-    await onMilestoneReached("database_connected", "u1", "test@example.com", "org1");
-    // No assertion needed beyond not throwing — delivery is mocked
+  it("records the step satisfied WITHOUT dispatching the nudge email", async () => {
+    const { internalQuery } = await import("@atlas/api/lib/db/internal");
+    const { sendEmail } = await import("../delivery");
+    (internalQuery as ReturnType<typeof mock>).mockClear();
+    (sendEmail as ReturnType<typeof mock>).mockClear();
+    // Not unsubscribed.
+    (internalQuery as ReturnType<typeof mock>).mockImplementation(() => Promise.resolve([]));
+
+    await onMilestoneReached("first_query_executed", "u1", "org1");
+
+    // The "ask your first question" nudge is NOT mailed back in the same turn.
+    expect(sendEmail as ReturnType<typeof mock>).not.toHaveBeenCalled();
+
+    // The first_query step was recorded with the milestone as its trigger so the
+    // 72h fallback nudge is suppressed.
+    const insertCall = (internalQuery as ReturnType<typeof mock>).mock.calls.find(
+      (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("INSERT INTO onboarding_emails"),
+    );
+    expect(insertCall).toBeDefined();
+    const params = insertCall![1] as unknown[];
+    expect(params[2]).toBe("first_query");
+    expect(params[3]).toBe("first_query_executed");
   });
 
   it("handles unknown milestone gracefully", async () => {
     // @ts-expect-error testing invalid input
-    await onMilestoneReached("unknown_milestone", "u1", "test@example.com", "org1");
+    await onMilestoneReached("unknown_milestone", "u1", "org1");
     // Should not throw
   });
 });
@@ -263,13 +334,13 @@ describe("checkFallbackEmails skips a connect_database step satisfied by demo (#
   });
 });
 
-describe("getOnboardingStatuses distinguishes suppressed (demo) steps from sent (#3949)", () => {
+describe("getOnboardingStatuses distinguishes suppressed steps from sent (#3949, #3962)", () => {
   beforeEach(() => {
     process.env.ATLAS_ONBOARDING_EMAILS_ENABLED = "true";
     mockHasDB = true;
   });
 
-  it("reports a demo-satisfied connect_database in suppressedSteps, not sentSteps", async () => {
+  it("classifies by trigger: welcome/time_based = sent; demo + action milestones = suppressed", async () => {
     const { internalQuery } = await import("@atlas/api/lib/db/internal");
     (internalQuery as ReturnType<typeof mock>).mockImplementation((sql: string) => {
       if (typeof sql === "string" && sql.includes("COUNT(DISTINCT")) {
@@ -278,14 +349,18 @@ describe("getOnboardingStatuses distinguishes suppressed (demo) steps from sent 
       if (typeof sql === "string" && sql.includes('SELECT m."userId" as user_id')) {
         return Promise.resolve([{ user_id: "u1", email: "demo@example.com", created_at: "2026-03-20T00:00:00Z" }]);
       }
-      // getSuppressedSteps — the triggered_by-filtered query MUST be matched
-      // before the generic getSentSteps query (which is a prefix of it).
-      if (typeof sql === "string" && sql.includes("triggered_by = 'demo_activated'")) {
-        return Promise.resolve([{ step: "connect_database" }]);
-      }
-      // getSentSteps — every recorded step.
+      // getSentSteps + getSuppressedSteps now both read `SELECT step, triggered_by …`
+      // (no triggered_by filter); the suppressed/sent split is computed in JS from
+      // the trigger. welcome (signup_completed) + an invite_team fallback nudge
+      // (time_based) are sent; connect_database (demo_activated) + first_query
+      // (the action milestone) are suppressed.
       if (typeof sql === "string" && sql.includes("FROM onboarding_emails")) {
-        return Promise.resolve([{ step: "welcome" }, { step: "connect_database" }]);
+        return Promise.resolve([
+          { step: "welcome", triggered_by: "signup_completed" },
+          { step: "connect_database", triggered_by: "demo_activated" },
+          { step: "first_query", triggered_by: "first_query_executed" },
+          { step: "invite_team", triggered_by: "time_based" },
+        ]);
       }
       if (typeof sql === "string" && sql.includes("email_preferences")) {
         return Promise.resolve([]); // not unsubscribed
@@ -297,12 +372,14 @@ describe("getOnboardingStatuses distinguishes suppressed (demo) steps from sent 
     expect(total).toBe(1);
     expect(statuses).toHaveLength(1);
     const s = statuses[0];
-    // welcome was genuinely sent; connect_database was demo-suppressed.
-    expect(s.sentSteps).toEqual(["welcome"]);
-    expect(s.suppressedSteps).toEqual(["connect_database"]);
-    // Both are "completed", so neither appears in pendingSteps.
-    expect(s.pendingSteps).not.toContain("welcome");
-    expect(s.pendingSteps).not.toContain("connect_database");
-    expect(s.pendingSteps).toContain("first_query");
+    // welcome + invite_team had emails dispatched; connect_database (demo) and
+    // first_query (action milestone) were satisfied without a send.
+    expect(s.sentSteps.toSorted()).toEqual(["invite_team", "welcome"]);
+    expect(s.suppressedSteps.toSorted()).toEqual(["connect_database", "first_query"]);
+    // All four are "completed", so none appear in pendingSteps.
+    for (const completed of ["welcome", "connect_database", "first_query", "invite_team"]) {
+      expect(s.pendingSteps).not.toContain(completed);
+    }
+    expect(s.pendingSteps).toContain("explore_features");
   });
 });

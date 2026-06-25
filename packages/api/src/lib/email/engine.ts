@@ -10,6 +10,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { resolveOnboardingEmailsEnabled } from "@atlas/api/lib/env-profile";
 import type { OnboardingEmailStep, OnboardingMilestone, OnboardingEmailTrigger, OnboardingEmailStatus } from "@useatlas/types";
+import { BUILTIN_DATASOURCE_CATALOG_SLUGS } from "@atlas/api/lib/db/datasource-pool-resolver";
 import { ONBOARDING_SEQUENCE, MILESTONE_TO_STEP } from "./sequence";
 import { renderOnboardingEmail } from "./templates";
 import { sendEmail } from "./delivery";
@@ -81,24 +82,103 @@ async function getSentSteps(userId: string): Promise<OnboardingEmailStep[]> {
 }
 
 /**
- * Steps a user activated WITHOUT an email being dispatched — i.e. recorded via
- * {@link markStepSatisfied} (trigger `demo_activated`), not a real send (#3949).
+ * Triggers under which a recorded `onboarding_emails` row means an email was
+ * actually dispatched — the welcome send (`signup_completed`) and time-based
+ * fallback nudges (`time_based`). Every *other* trigger is a satisfaction
+ * marker: the step is complete for drip-progression purposes but no message
+ * went out. See {@link getSuppressedSteps}.
+ */
+const EMAIL_SENT_TRIGGERS = new Set<OnboardingEmailTrigger>(["signup_completed", "time_based"]);
+
+/**
+ * Steps a user completed WITHOUT an email being dispatched — recorded via
+ * {@link markStepSatisfied}, not a real send.
  *
  * A row in `onboarding_emails` historically meant "this email was sent", and the
- * admin status view treats {@link getSentSteps} that way. Demo activation breaks
- * that 1:1 — the `connect_database` step is *completed* in the drip but no email
- * went out. This surfaces the suppressed subset so the admin view can label
- * "satisfied (no email)" distinctly from "sent" instead of silently conflating
- * the two. The completed-step partition (sent + suppressed → pending) is
- * unchanged, so the drip-progression semantics `getSentSteps` drives are intact.
+ * admin status view treats {@link getSentSteps} that way. Two paths break that
+ * 1:1, and both record a satisfaction marker instead of sending:
+ *   - demo activation (#3949) — `connect_database` satisfied by the bundled demo
+ *     (trigger `demo_activated`);
+ *   - reaching any action milestone (#3962) — e.g. answering a first query
+ *     satisfies `first_query`, inviting a teammate satisfies `invite_team`, etc.
+ *     {@link onMilestoneReached} suppresses the now-moot "go do X" nudge rather
+ *     than mailing it back to a user who just did X (trigger = the milestone).
+ *
+ * Both are "completed, no email", so the suppressed subset is everything
+ * recorded whose trigger is NOT an {@link EMAIL_SENT_TRIGGERS} member. The
+ * admin view can then label "satisfied (no email)" distinctly from "sent". The
+ * completed-step partition (sent + suppressed → pending) is unchanged, so the
+ * drip-progression semantics `getSentSteps` drives are intact.
+ *
+ * (Rows written before #3962 by the old send-on-milestone behavior carry a
+ * milestone trigger yet did dispatch an email; this reclassifies them as
+ * suppressed in the admin view. Cosmetic only — no live drip decision reads
+ * the suppressed/sent split — and the onboarding-email feature is recent, so
+ * the affected history is small. No backfill.)
  */
 async function getSuppressedSteps(userId: string): Promise<OnboardingEmailStep[]> {
-  const rows = await internalQuery<{ step: string }>(
-    `SELECT step FROM onboarding_emails WHERE user_id = $1 AND triggered_by = 'demo_activated'`,
+  const rows = await internalQuery<{ step: string; triggered_by: string }>(
+    `SELECT step, triggered_by FROM onboarding_emails WHERE user_id = $1`,
     [userId],
   );
   const onboardingSteps = new Set<string>(ONBOARDING_SEQUENCE.map((s) => s.step));
-  return rows.map((r) => r.step).filter((s): s is OnboardingEmailStep => onboardingSteps.has(s));
+  return rows
+    .filter((r) => !EMAIL_SENT_TRIGGERS.has(r.triggered_by as OnboardingEmailTrigger))
+    .map((r) => r.step)
+    .filter((s): s is OnboardingEmailStep => onboardingSteps.has(s));
+}
+
+/**
+ * Whether this workspace is on the bundled demo and has NOT connected its own
+ * production SQL database — true when a published `__demo__` datasource install
+ * exists and no non-demo *SQL* one does. Drives demo-aware email copy (#3962):
+ * a demo-only workspace must never receive the `first_query` nudge asserting
+ * "your database is connected" (and "Atlas will translate it to SQL").
+ *
+ * "Real" is the positive SQL allowlist `BUILTIN_DATASOURCE_CATALOG_SLUGS` (the
+ * catalog slugs ConnectionRegistry resolves into a SQL pool — postgres, mysql,
+ * snowflake, …, INCLUDING `demo-postgres`, which the `install_id <> '__demo__'`
+ * filter then excludes), NOT merely "any non-demo datasource". A REST/OpenAPI
+ * datasource (`openapi-generic`) is `pillar = 'datasource'` too but is
+ * deliberately OUT of that allowlist — it has no SQL pool — so a demo + REST
+ * workspace stays demo-only and keeps demo copy rather than getting the
+ * SQL-centric "your database is connected" claim (which would be false: no SQL
+ * DB is connected). Any future non-SQL query layer is excluded for free by the
+ * same allowlist. `bool_or` over zero rows is NULL → false.
+ *
+ * This reads the live datasource install state (`workspace_plugins`), NOT the
+ * onboarding drip's `demo_activated` marker, deliberately. The marker is a
+ * per-user, write-once record: the `(user_id, step)` unique index means a later
+ * real `database_connected` can never overwrite it, and the admin-console
+ * connect path doesn't fire that milestone at all — so a workspace that
+ * *graduates* from the demo to its own DB would keep looking "demo-only" by the
+ * marker forever. The install state is org-scoped ground truth that flips
+ * correctly however the real datasource was added, and a workspace with no
+ * datasource at all reads false (BYO default) rather than a false "demo loaded"
+ * claim.
+ *
+ * Defaults to false (BYO copy) on any read error — the same safe default the
+ * BYO drip already assumes.
+ */
+async function isDemoOnlyWorkspace(orgId: string): Promise<boolean> {
+  try {
+    const rows = await internalQuery<{ has_demo: boolean | null; has_real_sql: boolean | null }>(
+      `SELECT bool_or(wp.install_id = '__demo__') AS has_demo,
+              bool_or(wp.install_id <> '__demo__' AND pc.slug = ANY($2)) AS has_real_sql
+         FROM workspace_plugins wp
+         JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+        WHERE wp.workspace_id = $1 AND wp.pillar = 'datasource' AND wp.status = 'published'`,
+      [orgId, BUILTIN_DATASOURCE_CATALOG_SLUGS as readonly string[]],
+    );
+    const row = rows[0];
+    return Boolean(row?.has_demo) && !row?.has_real_sql;
+  } catch (err) {
+    log.warn(
+      { orgId, err: err instanceof Error ? err.message : String(err) },
+      "Failed to resolve demo-only status — defaulting to BYO email copy",
+    );
+    return false;
+  }
 }
 
 async function isUnsubscribed(userId: string): Promise<boolean> {
@@ -181,13 +261,18 @@ export async function sendOnboardingEmail(
       return false;
     }
 
-    // Resolve branding
-    const branding = await getBrandingForOrg(orgId);
+    // Resolve branding + demo-awareness. A demo-only signup connected the
+    // bundled demo, not their own production DB, so the copy must not assert
+    // "your database is connected" (#3962). Independent reads — run together.
+    const [branding, demoMode] = await Promise.all([
+      getBrandingForOrg(orgId),
+      isDemoOnlyWorkspace(orgId),
+    ]);
     const baseUrl = getBaseUrl();
     const unsubscribeUrl = buildUnsubscribeUrl(userId);
 
     // Render and send
-    const rendered = renderOnboardingEmail(step, baseUrl, unsubscribeUrl, branding);
+    const rendered = renderOnboardingEmail(step, baseUrl, unsubscribeUrl, branding, { demoMode });
     const result = await sendEmail({
       to: email,
       subject: rendered.subject,
@@ -214,13 +299,26 @@ export async function sendOnboardingEmail(
 // ── Milestone trigger ───────────────────────────────────────────────
 
 /**
- * Called when a user hits an onboarding milestone.
- * Sends the corresponding email if not already sent.
+ * Called when a user hits an action onboarding milestone (connected a DB, ran
+ * their first query, invited a teammate, explored a feature).
+ *
+ * Marks the corresponding step satisfied WITHOUT sending its email — it does
+ * NOT dispatch the step's nudge. Every non-welcome step in the sequence is a
+ * "go do X" prompt; reaching its milestone means the user already did X, so
+ * mailing the nudge in the same breath is backwards (it surfaced live as a
+ * demo-only signup getting "ask your first question" the instant they asked —
+ * #3962). The nudge therefore exists ONLY as the time-based fallback in
+ * {@link checkFallbackEmails}, fired when the milestone is NOT reached in time;
+ * recording the step here suppresses that fallback. This generalizes the
+ * demo-activation suppression from #3949 to every action milestone.
+ *
+ * The sole proactive send is `welcome` (the `signup_completed` milestone),
+ * which {@link onUserSignup} dispatches directly via {@link sendOnboardingEmail}
+ * and never routes through here.
  */
 export async function onMilestoneReached(
   milestone: OnboardingMilestone,
   userId: string,
-  email: string,
   orgId: string,
 ): Promise<void> {
   const step = MILESTONE_TO_STEP.get(milestone);
@@ -229,7 +327,7 @@ export async function onMilestoneReached(
     return;
   }
 
-  await sendOnboardingEmail(userId, email, orgId, step, milestone);
+  await markStepSatisfied(userId, orgId, step, milestone);
 }
 
 // ── Step satisfaction (no email) ────────────────────────────────────

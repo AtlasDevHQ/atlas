@@ -21,7 +21,7 @@ import { corsResponseHeaders } from "@atlas/api/lib/cors";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
-import { logFirstAnswerLatency, isFirstTurn } from "@atlas/api/lib/activation-metrics";
+import { logFirstAnswerLatency, isFirstTurn, turnAnsweredQuery } from "@atlas/api/lib/activation-metrics";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import {
   authenticateRequest,
@@ -1699,18 +1699,31 @@ chat.openapi(chatRoute, async (c) => {
             },
           });
   
-          // Fire-and-forget: trigger onboarding "first query" milestone.
-          // AtlasUser.label is the user's email in managed auth mode.
+          // Fire-and-forget: trigger the onboarding "first query executed"
+          // milestone — but ONLY once the turn actually answered a question, i.e.
+          // a successful executeSQL result is present in the resolved steps. The
+          // previous code fired here at stream-creation on EVERY chat turn, gated
+          // only on "user has an email", so it marked the milestone even for a
+          // turn whose SQL was rejected by the whitelist (#3961) or that never ran
+          // SQL — misrepresenting activation. Resolving `agentResult.steps` also
+          // naturally defers the fire to after the agent loop completes (and skips
+          // it when the stream errors → the promise rejects). The milestone itself
+          // now records the step satisfied to suppress the 72h fallback nudge
+          // WITHOUT sending an in-turn "ask your first question" email (#3962 —
+          // see lib/email/hooks.ts). AtlasUser.label is the user's email in
+          // managed auth mode.
           if (authResult.user?.id && authResult.user.label?.includes("@")) {
             const uid = authResult.user.id;
             const uemail = authResult.user.label;
             const uorg = authResult.user.activeOrganizationId ?? "default";
-            void import("@atlas/api/lib/email/hooks")
-              .then(({ onFirstQueryExecuted }) => {
+            void Promise.resolve(agentResult.steps)
+              .then(async (steps) => {
+                if (!turnAnsweredQuery(steps)) return;
+                const { onFirstQueryExecuted } = await import("@atlas/api/lib/email/hooks");
                 onFirstQueryExecuted({ userId: uid, email: uemail, orgId: uorg });
               })
               .catch((err: unknown) => {
-                log.debug({ err: err instanceof Error ? err.message : String(err) }, "Onboarding email hook not available — non-blocking");
+                log.debug({ err: err instanceof Error ? err.message : String(err) }, "Onboarding first-query milestone skipped — non-blocking");
               });
           }
   

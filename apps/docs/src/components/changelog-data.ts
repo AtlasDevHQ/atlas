@@ -20,6 +20,17 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.29",
+    title: "Demo Activation Hardening",
+    date: "2026-06-25",
+    summary:
+      "A follow-up patch to v0.0.28 that makes the hosted demo's first answer actually work in production. The previous demo first-answer fix didn't take in prod — its query whitelist keyed on a literal placeholder connection rather than the real conversation's connection — so a fresh demo could still dead-end on its very first question; it now keys on the real connection and answers immediately. The onboarding email sequence also becomes demo-aware: a demo-only signup is no longer sent a 'your database is connected' message it never earned, and that activation milestone no longer fires prematurely.",
+    highlights: [
+      "Demo first-answer works in prod — the default query whitelist now keys on the real conversation's connection id instead of a literal placeholder, fixing the dead-end that v0.0.28's fix missed in production (#3961)",
+      "Demo-aware onboarding drip — demo-only signups are no longer sent a 'your database is connected' first-query email, and the first-query activation milestone no longer fires eagerly (#3962)",
+    ],
+  },
+  {
     version: "v0.0.28",
     title: "Demo Activation Fixes & Residency Hardening",
     date: "2026-06-25",

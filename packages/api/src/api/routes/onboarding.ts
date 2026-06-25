@@ -958,6 +958,31 @@ onboarding.openapi(
         "Demo onboarding complete",
       );
 
+      // Advance the onboarding drip past the `connect_database` step without
+      // sending the "Connect your database" email (#3949). A demo-only signup
+      // connected the bundled demo, not their *own* production DB — so firing
+      // the `database_connected` milestone (as the BYO `/complete` path does via
+      // `onDatabaseConnected`) would mislead them, and leaving the step
+      // unsatisfied would trip the 24h "connect your database" fallback nudge.
+      // Marking the step satisfied suppresses both. Fire-and-forget, mirroring
+      // the BYO hook. AtlasUser.label is the user's email in managed auth mode.
+      if (user?.id && user.label?.includes("@")) {
+        yield* Effect.tryPromise({
+          try: async () => {
+            const { onDemoActivated } = await import("@atlas/api/lib/email/hooks");
+            onDemoActivated({
+              userId: user.id,
+              email: user.label!,
+              orgId,
+            });
+          },
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        }).pipe(Effect.catchAll((err) => {
+          log.debug({ err: err.message, requestId, orgId, userId: user.id }, "Onboarding email hook not available");
+          return Effect.void;
+        }));
+      }
+
       return c.json({
         connectionId: id,
         dbType,

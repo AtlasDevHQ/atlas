@@ -29,8 +29,20 @@ export const ONBOARDING_MILESTONES = [
 
 export type OnboardingMilestone = (typeof ONBOARDING_MILESTONES)[number];
 
-/** Trigger source for an onboarding email — either a milestone or a time-based fallback. */
-export type OnboardingEmailTrigger = OnboardingMilestone | "time_based";
+/**
+ * Trigger source for an onboarding email record.
+ *
+ * - a {@link OnboardingMilestone} — the milestone whose email actually sent;
+ * - `"time_based"` — a fallback nudge sent because the milestone wasn't hit in time;
+ * - `"demo_activated"` — a *satisfaction marker*, NOT an email send. Recorded when a
+ *   demo-only signup activates the bundled demo so the `connect_database` drip step
+ *   is marked done (drip advances, the 24h "connect your database" nudge is suppressed)
+ *   without ever sending the misleading "connect your *own* database" copy (#3949).
+ *   Unlike a milestone, it is never a key in the milestone→step map
+ *   (`MILESTONE_TO_STEP`, api/lib/email/sequence.ts) — it only ever appears in a
+ *   persisted record's `triggeredBy`.
+ */
+export type OnboardingEmailTrigger = OnboardingMilestone | "time_based" | "demo_activated";
 
 // ── Email record (persisted in onboarding_emails table) ─────────────
 

@@ -175,6 +175,24 @@ mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
 }));
 
+// Onboarding-email milestone hooks. The route dynamically imports this module
+// post-commit; mock all exports so we can assert which hook fires on each
+// path (#3949: /use-demo must fire onDemoActivated, NOT onDatabaseConnected).
+const mockOnUserSignup = mock(() => {});
+const mockOnDatabaseConnected = mock(() => {});
+const mockOnDemoActivated = mock(() => {});
+const mockOnFirstQueryExecuted = mock(() => {});
+const mockOnTeamMemberInvited = mock(() => {});
+const mockOnFeatureExplored = mock(() => {});
+mock.module("@atlas/api/lib/email/hooks", () => ({
+  onUserSignup: mockOnUserSignup,
+  onDatabaseConnected: mockOnDatabaseConnected,
+  onDemoActivated: mockOnDemoActivated,
+  onFirstQueryExecuted: mockOnFirstQueryExecuted,
+  onTeamMemberInvited: mockOnTeamMemberInvited,
+  onFeatureExplored: mockOnFeatureExplored,
+}));
+
 const mockSetSetting: Mock<(key: string, value: string, userId?: string, orgId?: string) => Promise<void>> = mock(async () => {});
 
 mock.module("@atlas/api/lib/settings", () => ({
@@ -386,6 +404,8 @@ describe("POST /api/v1/onboarding/complete", () => {
     mockHasInternalDB.mockImplementation(() => true);
     mockInternalQuery.mockImplementation(async () => [{ id: "default" }]);
     mockEncryptUrl.mockImplementation((url: string) => `encrypted:${url}`);
+    mockOnDatabaseConnected.mockClear();
+    mockOnDemoActivated.mockClear();
   });
 
   it("rejects when no active organization", async () => {
@@ -429,6 +449,21 @@ describe("POST /api/v1/onboarding/complete", () => {
     const data = await json(res);
     expect(data.connectionId).toBe("default");
     expect(data.dbType).toBe("postgres");
+  });
+
+  it("fires onDatabaseConnected (BYO milestone unchanged) and NOT onDemoActivated (#3949)", async () => {
+    const res = await request("/api/v1/onboarding/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: "postgresql://user:pass@localhost:5432/mydb" }),
+    });
+    expect(res.status).toBe(201);
+    await new Promise((r) => setTimeout(r, 10));
+    // A real BYO connection still triggers the existing milestone unchanged.
+    expect(mockOnDatabaseConnected).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "user-1", email: "test@example.com", orgId: "org-1" }),
+    );
+    expect(mockOnDemoActivated).not.toHaveBeenCalled();
   });
 
   it("uses custom connectionId when provided", async () => {
@@ -687,6 +722,8 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     mockLogInfo.mockClear();
     mockLogWarn.mockClear();
     mockLogError.mockClear();
+    mockOnDemoActivated.mockClear();
+    mockOnDatabaseConnected.mockClear();
     // Reset filesystem stub to "all paths exist" — individual tests may
     // override `existsSyncImpl` to exercise the getDemoSemanticDir fallback.
     existsSyncImpl = () => true;
@@ -708,6 +745,59 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     expect(data.connectionId).toBe("__demo__");
     expect(data.dbType).toBe("postgres");
     expect(data.entitiesImported).toBe(5);
+  });
+
+  it("fires onDemoActivated (suppresses connect_database) and NOT onDatabaseConnected (#3949)", async () => {
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(201);
+    // Dynamic import + fire-and-forget hook resolves on a microtask.
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Demo activation marks the connect_database step satisfied (no email)…
+    expect(mockOnDemoActivated).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "user-1", email: "test@example.com", orgId: "org-1" }),
+    );
+    // …and must NOT fire the BYO milestone that would send the misleading
+    // "Connect your database" email.
+    expect(mockOnDatabaseConnected).not.toHaveBeenCalled();
+  });
+
+  it("does not fire onDemoActivated when the seed fails (no demo activated)", async () => {
+    // Import returns zero entities → DemoSeedFailure → 500, no hook.
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 0, skipped: 0, errors: [], total: 0, dbFailures: 0 }));
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(500);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mockOnDemoActivated).not.toHaveBeenCalled();
+  });
+
+  it("does not fire onDemoActivated when the user label is not an email (boundary, #3949)", async () => {
+    // Forces the `user.label?.includes("@")` guard's false branch with a
+    // non-email label (the shape a non-managed-auth label can take). The demo
+    // still seeds successfully (201) — only the email-drip decoration is skipped.
+    mockAuthenticate.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: { id: "user-1", mode: "managed", label: "no-email-label", role: "admin", activeOrganizationId: "org-1" },
+      }),
+    );
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(201);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mockOnDemoActivated).not.toHaveBeenCalled();
   });
 
   it("saves connection with status='published' in workspace_plugins upsert SQL", async () => {

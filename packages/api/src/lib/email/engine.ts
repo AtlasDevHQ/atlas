@@ -211,6 +211,56 @@ export async function onMilestoneReached(
   await sendOnboardingEmail(userId, email, orgId, step, milestone);
 }
 
+// ── Step satisfaction (no email) ────────────────────────────────────
+
+/**
+ * Mark an onboarding step as satisfied WITHOUT sending its email.
+ *
+ * Records the step in `onboarding_emails` (idempotent via the
+ * `(user_id, step)` unique index) so the drip advances past it and the
+ * time-based fallback nudge in {@link checkFallbackEmails} skips it — but
+ * never renders or dispatches a template.
+ *
+ * Used by the demo-activation path (#3949): a demo-only signup never
+ * connects their *own* database, so firing the `database_connected`
+ * milestone would send the misleading "Connect your database" email. Marking
+ * the `connect_database` step satisfied suppresses both that send and the 24h
+ * nudge while keeping the rest of the sequence on schedule.
+ *
+ * @returns true if a row was recorded (or already present), false if skipped
+ *   (feature disabled, unsubscribed).
+ */
+export async function markStepSatisfied(
+  userId: string,
+  orgId: string,
+  step: OnboardingEmailStep,
+  triggeredBy: OnboardingEmailTrigger,
+): Promise<boolean> {
+  if (!isOnboardingEmailEnabled()) {
+    log.debug({ userId, step }, "Onboarding emails disabled — skipping step-satisfy");
+    return false;
+  }
+
+  try {
+    // Respect unsubscribe for symmetry with sendOnboardingEmail: an
+    // unsubscribed user gets no drip rows written on their behalf.
+    if (await isUnsubscribed(userId)) {
+      log.debug({ userId, step }, "User unsubscribed — skipping step-satisfy");
+      return false;
+    }
+
+    await recordSentEmail(userId, orgId, step, triggeredBy);
+    log.info({ userId, step, triggeredBy }, "Onboarding step marked satisfied (no email sent)");
+    return true;
+  } catch (err) {
+    log.error(
+      { userId, step, err: err instanceof Error ? err.message : String(err) },
+      "Error marking onboarding step satisfied",
+    );
+    return false;
+  }
+}
+
 // ── Time-based fallback check ───────────────────────────────────────
 
 /**

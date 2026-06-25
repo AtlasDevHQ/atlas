@@ -109,6 +109,7 @@ describe("GET /api/v1/admin/onboarding-emails", () => {
           email: "user@example.com",
           orgId: "org-1",
           sentSteps: ["welcome"],
+          suppressedSteps: [],
           pendingSteps: ["connect_database", "first_query", "invite_team", "explore_features"],
           unsubscribed: false,
           createdAt: "2026-03-20T00:00:00Z",

@@ -80,6 +80,27 @@ async function getSentSteps(userId: string): Promise<OnboardingEmailStep[]> {
   return rows.map((r) => r.step).filter((s): s is OnboardingEmailStep => onboardingSteps.has(s));
 }
 
+/**
+ * Steps a user activated WITHOUT an email being dispatched — i.e. recorded via
+ * {@link markStepSatisfied} (trigger `demo_activated`), not a real send (#3949).
+ *
+ * A row in `onboarding_emails` historically meant "this email was sent", and the
+ * admin status view treats {@link getSentSteps} that way. Demo activation breaks
+ * that 1:1 — the `connect_database` step is *completed* in the drip but no email
+ * went out. This surfaces the suppressed subset so the admin view can label
+ * "satisfied (no email)" distinctly from "sent" instead of silently conflating
+ * the two. The completed-step partition (sent + suppressed → pending) is
+ * unchanged, so the drip-progression semantics `getSentSteps` drives are intact.
+ */
+async function getSuppressedSteps(userId: string): Promise<OnboardingEmailStep[]> {
+  const rows = await internalQuery<{ step: string }>(
+    `SELECT step FROM onboarding_emails WHERE user_id = $1 AND triggered_by = 'demo_activated'`,
+    [userId],
+  );
+  const onboardingSteps = new Set<string>(ONBOARDING_SEQUENCE.map((s) => s.step));
+  return rows.map((r) => r.step).filter((s): s is OnboardingEmailStep => onboardingSteps.has(s));
+}
+
 async function isUnsubscribed(userId: string): Promise<boolean> {
   const rows = await internalQuery<{ onboarding_emails: boolean }>(
     `SELECT onboarding_emails FROM email_preferences WHERE user_id = $1 LIMIT 1`,
@@ -410,16 +431,29 @@ export async function getOnboardingStatuses(
             try: () => isUnsubscribed(user.user_id),
             catch: normalizeError,
           }),
+          Effect.tryPromise({
+            try: () => getSuppressedSteps(user.user_id),
+            catch: normalizeError,
+          }),
         ], { concurrency: "unbounded" }).pipe(
-          Effect.map(([sentSteps, unsub]) => ({
-            userId: user.user_id,
-            email: user.email,
-            orgId,
-            sentSteps,
-            pendingSteps: ALL_STEPS.filter((s) => !sentSteps.includes(s)),
-            unsubscribed: unsub,
-            createdAt: user.created_at,
-          })),
+          // `sentSteps` from getSentSteps is every recorded step (the
+          // completed-vs-pending partition the drip relies on). `suppressedSteps`
+          // is the subset satisfied without a real send; subtract it so
+          // `sentSteps` reflects only truly-dispatched emails in the admin view
+          // (#3949), while the union of the two still complements `pendingSteps`.
+          Effect.map(([recordedSteps, unsub, suppressedSteps]) => {
+            const suppressed = new Set<OnboardingEmailStep>(suppressedSteps);
+            return {
+              userId: user.user_id,
+              email: user.email,
+              orgId,
+              sentSteps: recordedSteps.filter((s) => !suppressed.has(s)),
+              suppressedSteps,
+              pendingSteps: ALL_STEPS.filter((s) => !recordedSteps.includes(s)),
+              unsubscribed: unsub,
+              createdAt: user.created_at,
+            };
+          }),
           Effect.timeoutFail({
             duration: Duration.seconds(10),
             onTimeout: () => new Error("Onboarding status fetch timed out after 10s"),
@@ -431,6 +465,7 @@ export async function getOnboardingStatuses(
               email: user.email,
               orgId,
               sentSteps: [] as OnboardingEmailStep[],
+              suppressedSteps: [] as OnboardingEmailStep[],
               pendingSteps: ALL_STEPS,
               unsubscribed: false,
               createdAt: user.created_at,

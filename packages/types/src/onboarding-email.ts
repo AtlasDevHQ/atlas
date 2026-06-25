@@ -62,9 +62,20 @@ export interface OnboardingEmailStatus {
   userId: string;
   email: string;
   orgId: string;
-  /** Steps that have been sent. Together with pendingSteps, partitions all OnboardingEmailStep values. */
+  /**
+   * Steps whose email was actually dispatched. Excludes steps satisfied without
+   * a send (see `suppressedSteps`). `sentSteps ∪ suppressedSteps` are the
+   * completed steps, and together with `pendingSteps` they partition the full
+   * sequence.
+   */
   sentSteps: OnboardingEmailStep[];
-  /** Steps remaining. Complement of sentSteps against the full sequence. */
+  /**
+   * Steps marked complete WITHOUT an email being sent — e.g. `connect_database`
+   * satisfied by activating the demo (#3949). Completed for drip-progression
+   * purposes (so they are not in `pendingSteps`) but no message went out.
+   */
+  suppressedSteps: OnboardingEmailStep[];
+  /** Steps remaining. Complement of the completed steps (sent + suppressed) against the full sequence. */
   pendingSteps: OnboardingEmailStep[];
   /** Whether the user has unsubscribed from onboarding emails. */
   unsubscribed: boolean;

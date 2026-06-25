@@ -39,7 +39,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 // Now import the module under test
-const { sendOnboardingEmail, isOnboardingEmailEnabled, onMilestoneReached, markStepSatisfied, checkFallbackEmails } = await import("../engine");
+const { sendOnboardingEmail, isOnboardingEmailEnabled, onMilestoneReached, markStepSatisfied, checkFallbackEmails, getOnboardingStatuses } = await import("../engine");
 
 describe("isOnboardingEmailEnabled", () => {
   beforeEach(() => {
@@ -260,5 +260,49 @@ describe("checkFallbackEmails skips a connect_database step satisfied by demo (#
       (call: unknown[]) => (call[0] as { subject?: string }).subject ?? "",
     );
     expect(sentSteps.some((s: string) => s.includes("Connect your database"))).toBe(false);
+  });
+});
+
+describe("getOnboardingStatuses distinguishes suppressed (demo) steps from sent (#3949)", () => {
+  beforeEach(() => {
+    process.env.ATLAS_ONBOARDING_EMAILS_ENABLED = "true";
+    mockHasDB = true;
+  });
+
+  it("reports a demo-satisfied connect_database in suppressedSteps, not sentSteps", async () => {
+    const { internalQuery } = await import("@atlas/api/lib/db/internal");
+    (internalQuery as ReturnType<typeof mock>).mockImplementation((sql: string) => {
+      if (typeof sql === "string" && sql.includes("COUNT(DISTINCT")) {
+        return Promise.resolve([{ count: "1" }]);
+      }
+      if (typeof sql === "string" && sql.includes('SELECT m."userId" as user_id')) {
+        return Promise.resolve([{ user_id: "u1", email: "demo@example.com", created_at: "2026-03-20T00:00:00Z" }]);
+      }
+      // getSuppressedSteps — the triggered_by-filtered query MUST be matched
+      // before the generic getSentSteps query (which is a prefix of it).
+      if (typeof sql === "string" && sql.includes("triggered_by = 'demo_activated'")) {
+        return Promise.resolve([{ step: "connect_database" }]);
+      }
+      // getSentSteps — every recorded step.
+      if (typeof sql === "string" && sql.includes("FROM onboarding_emails")) {
+        return Promise.resolve([{ step: "welcome" }, { step: "connect_database" }]);
+      }
+      if (typeof sql === "string" && sql.includes("email_preferences")) {
+        return Promise.resolve([]); // not unsubscribed
+      }
+      return Promise.resolve([]);
+    });
+
+    const { statuses, total } = await getOnboardingStatuses("org1");
+    expect(total).toBe(1);
+    expect(statuses).toHaveLength(1);
+    const s = statuses[0];
+    // welcome was genuinely sent; connect_database was demo-suppressed.
+    expect(s.sentSteps).toEqual(["welcome"]);
+    expect(s.suppressedSteps).toEqual(["connect_database"]);
+    // Both are "completed", so neither appears in pendingSteps.
+    expect(s.pendingSteps).not.toContain("welcome");
+    expect(s.pendingSteps).not.toContain("connect_database");
+    expect(s.pendingSteps).toContain("first_query");
   });
 });

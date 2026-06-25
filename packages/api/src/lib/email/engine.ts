@@ -10,6 +10,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { resolveOnboardingEmailsEnabled } from "@atlas/api/lib/env-profile";
 import type { OnboardingEmailStep, OnboardingMilestone, OnboardingEmailTrigger, OnboardingEmailStatus } from "@useatlas/types";
+import { BUILTIN_DATASOURCE_CATALOG_SLUGS } from "@atlas/api/lib/db/datasource-pool-resolver";
 import { ONBOARDING_SEQUENCE, MILESTONE_TO_STEP } from "./sequence";
 import { renderOnboardingEmail } from "./templates";
 import { sendEmail } from "./delivery";
@@ -129,10 +130,21 @@ async function getSuppressedSteps(userId: string): Promise<OnboardingEmailStep[]
 
 /**
  * Whether this workspace is on the bundled demo and has NOT connected its own
- * production datasource — true when a published `__demo__` datasource install
- * exists and no non-demo one does. Drives demo-aware email copy (#3962): a
- * demo-only workspace must never receive a nudge asserting "your database is
- * connected".
+ * production SQL database — true when a published `__demo__` datasource install
+ * exists and no non-demo *SQL* one does. Drives demo-aware email copy (#3962):
+ * a demo-only workspace must never receive the `first_query` nudge asserting
+ * "your database is connected" (and "Atlas will translate it to SQL").
+ *
+ * "Real" is the positive SQL allowlist `BUILTIN_DATASOURCE_CATALOG_SLUGS` (the
+ * catalog slugs ConnectionRegistry resolves into a SQL pool — postgres, mysql,
+ * snowflake, …, INCLUDING `demo-postgres`, which the `install_id <> '__demo__'`
+ * filter then excludes), NOT merely "any non-demo datasource". A REST/OpenAPI
+ * datasource (`openapi-generic`) is `pillar = 'datasource'` too but is
+ * deliberately OUT of that allowlist — it has no SQL pool — so a demo + REST
+ * workspace stays demo-only and keeps demo copy rather than getting the
+ * SQL-centric "your database is connected" claim (which would be false: no SQL
+ * DB is connected). Any future non-SQL query layer is excluded for free by the
+ * same allowlist. `bool_or` over zero rows is NULL → false.
  *
  * This reads the live datasource install state (`workspace_plugins`), NOT the
  * onboarding drip's `demo_activated` marker, deliberately. The marker is a
@@ -143,22 +155,23 @@ async function getSuppressedSteps(userId: string): Promise<OnboardingEmailStep[]
  * marker forever. The install state is org-scoped ground truth that flips
  * correctly however the real datasource was added, and a workspace with no
  * datasource at all reads false (BYO default) rather than a false "demo loaded"
- * claim. `bool_or` over zero rows is NULL → false.
+ * claim.
  *
  * Defaults to false (BYO copy) on any read error — the same safe default the
  * BYO drip already assumes.
  */
 async function isDemoOnlyWorkspace(orgId: string): Promise<boolean> {
   try {
-    const rows = await internalQuery<{ has_demo: boolean | null; has_real: boolean | null }>(
-      `SELECT bool_or(install_id = '__demo__')  AS has_demo,
-              bool_or(install_id <> '__demo__') AS has_real
-         FROM workspace_plugins
-        WHERE workspace_id = $1 AND pillar = 'datasource' AND status = 'published'`,
-      [orgId],
+    const rows = await internalQuery<{ has_demo: boolean | null; has_real_sql: boolean | null }>(
+      `SELECT bool_or(wp.install_id = '__demo__') AS has_demo,
+              bool_or(wp.install_id <> '__demo__' AND pc.slug = ANY($2)) AS has_real_sql
+         FROM workspace_plugins wp
+         JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+        WHERE wp.workspace_id = $1 AND wp.pillar = 'datasource' AND wp.status = 'published'`,
+      [orgId, BUILTIN_DATASOURCE_CATALOG_SLUGS as readonly string[]],
     );
     const row = rows[0];
-    return Boolean(row?.has_demo) && !row?.has_real;
+    return Boolean(row?.has_demo) && !row?.has_real_sql;
   } catch (err) {
     log.warn(
       { orgId, err: err instanceof Error ? err.message : String(err) },

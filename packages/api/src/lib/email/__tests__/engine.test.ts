@@ -137,8 +137,8 @@ describe("sendOnboardingEmail demo-awareness (#3962 — reads datasource state, 
     mockDeliveryResult = { success: true, provider: "log" };
   });
 
-  // workspace_plugins state → (has_demo, has_real) the isDemoOnlyWorkspace probe returns.
-  async function sendFirstQueryWith(pluginRow: { has_demo: boolean | null; has_real: boolean | null }) {
+  // workspace_plugins state → (has_demo, has_real_sql) the isDemoOnlyWorkspace probe returns.
+  async function sendFirstQueryWith(pluginRow: { has_demo: boolean | null; has_real_sql: boolean | null }) {
     const { internalQuery } = await import("@atlas/api/lib/db/internal");
     const { sendEmail } = await import("../delivery");
     (internalQuery as ReturnType<typeof mock>).mockClear();
@@ -153,22 +153,31 @@ describe("sendOnboardingEmail demo-awareness (#3962 — reads datasource state, 
     return (call?.[0] as { html?: string } | undefined)?.html ?? "";
   }
 
-  it("uses demo copy for a demo-only workspace (demo datasource, no real one)", async () => {
-    const html = await sendFirstQueryWith({ has_demo: true, has_real: false });
+  it("uses demo copy for a demo-only workspace (demo datasource, no real SQL one)", async () => {
+    const html = await sendFirstQueryWith({ has_demo: true, has_real_sql: false });
     expect(html).toContain("Your demo dataset is loaded");
     expect(html).not.toContain("Your database is connected");
   });
 
-  it("uses BYO copy once the workspace graduates to a real datasource (demo + real)", async () => {
+  it("uses BYO copy once the workspace graduates to a real SQL datasource (demo + real SQL)", async () => {
     // The graduation case the marker-based check missed: a demo workspace that
     // later connects its own DB must NOT keep getting demo copy.
-    const html = await sendFirstQueryWith({ has_demo: true, has_real: true });
+    const html = await sendFirstQueryWith({ has_demo: true, has_real_sql: true });
     expect(html).toContain("Your database is connected");
     expect(html).not.toContain("Your demo dataset is loaded");
   });
 
+  it("keeps demo copy for demo + a REST datasource (no SQL pool → has_real_sql false)", async () => {
+    // A REST/OpenAPI datasource is pillar='datasource' but not a SQL pool, so it
+    // must NOT flip the workspace to the SQL-centric "your database is connected"
+    // copy. The query's allowlist join yields has_real_sql=false for demo+REST.
+    const html = await sendFirstQueryWith({ has_demo: true, has_real_sql: false });
+    expect(html).toContain("Your demo dataset is loaded");
+    expect(html).not.toContain("Your database is connected");
+  });
+
   it("uses BYO copy for a workspace with no datasource at all (bool_or → null)", async () => {
-    const html = await sendFirstQueryWith({ has_demo: null, has_real: null });
+    const html = await sendFirstQueryWith({ has_demo: null, has_real_sql: null });
     expect(html).toContain("Your database is connected");
   });
 });

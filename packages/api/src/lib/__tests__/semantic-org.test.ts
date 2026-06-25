@@ -283,10 +283,13 @@ describe("getOrgWhitelistedTables", () => {
     expect(tables.size).toBe(0);
   });
 
-  it("does NOT fall back when the org has multiple connections", async () => {
-    // Multi-source orgs require explicit connectionId; a "default" lookup
-    // with no matching key returns empty rather than picking one
-    // arbitrarily.
+  it("unpinned 'default' resolves the UNION of all buckets on a multi-connection org (#3947)", async () => {
+    // An unpinned conversation collapses to connectionId="default" (reach = All
+    // sources). When the org has several connection buckets and none is literally
+    // "default", the lookup must return EVERY reachable table — not the empty set.
+    // The pre-#3947 behavior returned empty here, dead-ending the demo first
+    // answer the moment a second connection bucket existed (an explicit
+    // config.group_id, or a second datasource alongside the demo).
     mockListEntities.mockImplementation(() =>
       Promise.resolve([
         makeEntityRow("customers", "customers", "warehouse"),
@@ -296,7 +299,25 @@ describe("getOrgWhitelistedTables", () => {
 
     await loadOrgWhitelist("org-multi");
     const tables = getOrgWhitelistedTables("org-multi", "default");
-    expect(tables.size).toBe(0);
+    expect(tables.has("customers")).toBe(true);
+    expect(tables.has("events")).toBe(true);
+  });
+
+  it("a PINNED connectionId is never widened to the union — isolation holds on multi-connection orgs", async () => {
+    // The union fallback fires ONLY for the unpinned "default" sentinel. A query
+    // pinned to a specific connection must see exactly that connection's bucket,
+    // so multi-source orgs can't cross-route a pinned query.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        makeEntityRow("customers", "customers", "warehouse"),
+        makeEntityRow("events", "events", "ops"),
+      ]),
+    );
+
+    await loadOrgWhitelist("org-multi");
+    const warehouse = getOrgWhitelistedTables("org-multi", "warehouse");
+    expect(warehouse.has("customers")).toBe(true);
+    expect(warehouse.has("events")).toBe(false);
   });
 
   it("prefers a real 'default' entry over the fallback path", async () => {

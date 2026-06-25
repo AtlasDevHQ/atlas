@@ -38,6 +38,7 @@ import {
 import { bulkUpsertEntities, listEntityRows } from "@atlas/api/lib/semantic/entities";
 import {
   loadOrgWhitelist,
+  getOrgWhitelistedTables,
   invalidateOrgWhitelist,
   _resetOrgWhitelists,
   _resetWhitelists,
@@ -188,5 +189,213 @@ describeIfPg("demo seed → published-mode visibility (#3932)", () => {
       [orgId, table],
     );
     expect(rows.rows[0]?.count).toBe("1");
+  });
+});
+
+/**
+ * LIVE-Postgres regression for the demo first-answer dead-end (#3947).
+ *
+ * The agent loop's `executeSQL` validates against `getOrgWhitelistedTables(orgId,
+ * connectionId, mode)` where, for a fresh conversation with no pinned connection,
+ * `connectionId` collapses to the literal `"default"` (sql.ts: `currentMember =
+ * groupTargetMember ?? connectionId ?? requestContextConnectionId ?? "default"`).
+ * Demo entities, however, are keyed under their `connection_group_id` (`__demo__`
+ * for a group-of-one demo install), NOT `"default"`. The single-connection
+ * fallback that bridged this (#2142) only fires when the org has EXACTLY ONE
+ * connection bucket — so the moment a second bucket exists (the demo install
+ * carries an explicit `config.group_id`, or a second datasource is connected),
+ * the `"default"` lookup returns the empty set and the agent rejects every demo
+ * table as "not in the allowed list" — while `GET /api/v1/tables`, which resolves
+ * through `resolveAllowedTables` with the demo connection id, still lists them.
+ *
+ * The fix broadens the unpinned-`"default"` fallback in `getOrgWhitelistedTables`
+ * to the UNION of every org bucket (the "All sources" reach an unpinned default
+ * query has), so the query-time whitelist resolves the SAME table set the demo
+ * workspace advertises — for one OR many connection buckets.
+ *
+ * These tests pin the exact lookup `executeSQL` performs (`connectionId =
+ * "default"`) against the realistic multi-bucket shapes, so a regression that
+ * re-narrows the fallback fails here.
+ */
+describeIfPg("demo first-answer: executeSQL whitelist resolves the demo tables (#3947)", () => {
+  let pool: Pool;
+  const schemaName = `demo_3947_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  let prevDatabaseUrl: string | undefined;
+
+  /** Insert a published datasource install for one org. */
+  async function install(orgId: string, installId: string, config: Record<string, unknown>): Promise<void> {
+    await pool.query(
+      `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, status, installed_at)
+       VALUES ($1, $2, 'catalog:demo-3947', $3, 'datasource', $4::jsonb, true, 'published', NOW())
+       ON CONFLICT (workspace_id, catalog_id, install_id)
+         DO UPDATE SET status = 'published', config = EXCLUDED.config`,
+      [`${orgId}-${installId}`, orgId, installId, JSON.stringify(config)],
+    );
+  }
+
+  /** Import published entities scoped to one connection install. */
+  async function seedEntities(orgId: string, installId: string, tables: string[]): Promise<void> {
+    await bulkUpsertEntities(
+      orgId,
+      tables.map((t) => ({
+        entityType: "entity" as const,
+        name: t,
+        yamlContent: `table: ${t}\ndescription: ${t}\n`,
+        connectionId: installId,
+      })),
+      internalQuery,
+      "published",
+    );
+  }
+
+  beforeAll(async () => {
+    prevDatabaseUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = TEST_DB_URL;
+    pool = new Pool({ connectionString: TEST_DB_URL });
+    pool.on("connect", (client) => {
+      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`demo-3947: SET search_path failed: ${message}`);
+      });
+    });
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+    _resetPool(pool as unknown as InternalPool);
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+       VALUES ('catalog:demo-3947', 'Demo Postgres', 'demo-3947', 'datasource', 'datasource', 'form')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+  }, PG_TEST_TIMEOUT_MS * 2);
+
+  afterEach(() => {
+    _resetWhitelists();
+    _resetOrgWhitelists();
+    _resetPluginEntities();
+  });
+
+  afterAll(async () => {
+    _resetPool(null);
+    if (prevDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = prevDatabaseUrl;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`demo-3947: schema cleanup failed: ${message}`);
+    });
+    await pool.end();
+  });
+
+  const DEMO_TABLES = ["order_items", "products", "categories", "orders"];
+
+  it("single demo connection: the unpinned `default` lookup resolves the demo tables (baseline #2142)", async () => {
+    const orgId = `org-3947-single-${Math.floor(Math.random() * 1e6)}`;
+    await install(orgId, DEMO_INSTALL, { db_type: "postgres" }); // group-of-one, no group_id
+    await seedEntities(orgId, DEMO_INSTALL, DEMO_TABLES);
+
+    invalidateOrgWhitelist(orgId);
+    await loadOrgWhitelist(orgId, "published");
+    // What executeSQL asks for on a fresh conversation: connectionId === "default".
+    const allowed = getOrgWhitelistedTables(orgId, "default", "published");
+    for (const t of DEMO_TABLES) expect(allowed.has(t)).toBe(true);
+  });
+
+  it("demo install with an explicit config.group_id: unpinned `default` STILL resolves the demo tables (the #3947 dead-end)", async () => {
+    // Two whitelist buckets land for this org: the entity's resolved
+    // `connection_group_id` (the explicit group) AND that group's member
+    // install id. `byConnection.size > 1`, so the old single-connection
+    // fallback could not fire and `getOrgWhitelistedTables(orgId, "default")`
+    // returned EMPTY — every demo table rejected on the user's first query.
+    const orgId = `org-3947-groupid-${Math.floor(Math.random() * 1e6)}`;
+    await install(orgId, DEMO_INSTALL, { db_type: "postgres", group_id: "grp_demo" });
+    await seedEntities(orgId, DEMO_INSTALL, DEMO_TABLES);
+
+    invalidateOrgWhitelist(orgId);
+    const wl = await loadOrgWhitelist(orgId, "published");
+    expect(wl.size).toBeGreaterThan(1); // pin the multi-bucket shape that broke the old fallback
+
+    const allowed = getOrgWhitelistedTables(orgId, "default", "published");
+    for (const t of DEMO_TABLES) {
+      expect(allowed.has(t)).toBe(true);
+    }
+  });
+
+  it("demo + a second datasource: unpinned `default` resolves the UNION of both (no more empty set)", async () => {
+    // A fresh workspace that connected the demo AND a real datasource has two
+    // buckets. The unpinned `default` agent query (reach = All sources) must
+    // see every reachable table, not nothing.
+    const orgId = `org-3947-multi-${Math.floor(Math.random() * 1e6)}`;
+    await install(orgId, DEMO_INSTALL, { db_type: "postgres" });
+    await install(orgId, "warehouse", { db_type: "postgres" });
+    await seedEntities(orgId, DEMO_INSTALL, ["order_items", "products"]);
+    await seedEntities(orgId, "warehouse", ["widgets"]);
+
+    invalidateOrgWhitelist(orgId);
+    const wl = await loadOrgWhitelist(orgId, "published");
+    expect(wl.size).toBeGreaterThan(1);
+
+    const allowed = getOrgWhitelistedTables(orgId, "default", "published");
+    expect(allowed.has("order_items")).toBe(true);
+    expect(allowed.has("products")).toBe(true);
+    expect(allowed.has("widgets")).toBe(true);
+  });
+
+  it("a PINNED connection id is NOT widened — it still sees only its own bucket (isolation preserved)", async () => {
+    // The broadened fallback fires only for the unpinned `default` sentinel.
+    // A query pinned to a specific connection must keep seeing exactly that
+    // connection's tables — never the union — or cross-connection isolation
+    // would regress.
+    const orgId = `org-3947-pinned-${Math.floor(Math.random() * 1e6)}`;
+    await install(orgId, DEMO_INSTALL, { db_type: "postgres" });
+    await install(orgId, "warehouse", { db_type: "postgres" });
+    await seedEntities(orgId, DEMO_INSTALL, ["order_items", "products"]);
+    await seedEntities(orgId, "warehouse", ["widgets"]);
+
+    invalidateOrgWhitelist(orgId);
+    await loadOrgWhitelist(orgId, "published");
+
+    const demoOnly = getOrgWhitelistedTables(orgId, DEMO_INSTALL, "published");
+    expect(demoOnly.has("order_items")).toBe(true);
+    expect(demoOnly.has("widgets")).toBe(false); // the warehouse table must NOT leak into the demo connection
+
+    const warehouseOnly = getOrgWhitelistedTables(orgId, "warehouse", "published");
+    expect(warehouseOnly.has("widgets")).toBe(true);
+    expect(warehouseOnly.has("order_items")).toBe(false);
+  });
+
+  it("a real `default` bucket short-circuits the union — direct hit wins even with a second bucket", async () => {
+    // An org that genuinely has a `default`-keyed bucket (an entity scoped to a
+    // connection with no `workspace_plugins` install row → resolves to the flat
+    // NULL/`default` group) alongside the demo bucket must, on a `default`
+    // lookup, return ONLY the `default` bucket — never the union. Guards against
+    // a future "simplification" of the `!byConnection.has("default")` guard that
+    // would let the union fire and silently widen a non-demo org's first query.
+    const orgId = `org-3947-realdefault-${Math.floor(Math.random() * 1e6)}`;
+    await install(orgId, DEMO_INSTALL, { db_type: "postgres" });
+    // No install row for "default" → entity keys under the flat `default` bucket.
+    await seedEntities(orgId, "default", ["base_users"]);
+    await seedEntities(orgId, DEMO_INSTALL, ["order_items"]);
+
+    invalidateOrgWhitelist(orgId);
+    const wl = await loadOrgWhitelist(orgId, "published");
+    expect(wl.has("default")).toBe(true);
+    expect(wl.size).toBeGreaterThan(1);
+
+    const allowed = getOrgWhitelistedTables(orgId, "default", "published");
+    expect(allowed.has("base_users")).toBe(true);
+    expect(allowed.has("order_items")).toBe(false); // the demo bucket must NOT be unioned in when a real default exists
+  });
+
+  it("an org with no entities resolves the unpinned `default` to an empty set (fail-closed)", async () => {
+    // The `byConnection.size >= 1` guard means a loaded-but-empty org never
+    // accidentally unions a non-existent bucket. With no entities, the `default`
+    // lookup must be empty — every query rejected, fail-closed.
+    const orgId = `org-3947-empty-${Math.floor(Math.random() * 1e6)}`;
+    await install(orgId, DEMO_INSTALL, { db_type: "postgres" });
+    // Intentionally seed NO entities.
+
+    invalidateOrgWhitelist(orgId);
+    await loadOrgWhitelist(orgId, "published");
+    const allowed = getOrgWhitelistedTables(orgId, "default", "published");
+    expect(allowed.size).toBe(0);
   });
 });

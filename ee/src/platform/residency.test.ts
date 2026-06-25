@@ -191,6 +191,41 @@ describe("residency", () => {
       await expect(run(assignWorkspaceRegion("org-1", "ap-south"))).rejects.toThrow("Invalid region");
     });
 
+    it("rejects a non-selectable region and omits it from the available list (#3948 write-path guard)", async () => {
+      // A `selectable: false` arm (e.g. the shared-config staging region) exists
+      // for the boot guard + routing but must never be assignable — otherwise a
+      // prod workspace could POST {"region":"staging"} and route its metadata to
+      // the staging Postgres, the exact leak #3948 closes. The error must list
+      // only selectable regions so it can't leak the internal id.
+      mockConfig = {
+        residency: {
+          regions: {
+            "us-east": { label: "US East", databaseUrl: "postgresql://us-east/atlas" },
+            "staging": { label: "Staging", databaseUrl: "postgresql://staging/atlas", selectable: false },
+          },
+          defaultRegion: "us-east",
+        },
+      };
+      await expect(run(assignWorkspaceRegion("org-1", "staging"))).rejects.toThrow(
+        'Invalid region "staging". Available regions: us-east',
+      );
+    });
+
+    it("still assigns a selectable region when a non-selectable arm is present", async () => {
+      mockConfig = {
+        residency: {
+          regions: {
+            "us-east": { label: "US East", databaseUrl: "postgresql://us-east/atlas" },
+            "staging": { label: "Staging", databaseUrl: "postgresql://staging/atlas", selectable: false },
+          },
+          defaultRegion: "us-east",
+        },
+      };
+      mockRows.push([]);
+      const result = await run(assignWorkspaceRegion("org-2", "us-east"));
+      expect(result.region).toBe("us-east");
+    });
+
     it("rejects reassignment (immutability)", async () => {
       mockRows.push([{ assigned: false, existing: "us-east" }]);
       await expect(run(assignWorkspaceRegion("org-1", "eu-west"))).rejects.toThrow("already assigned");

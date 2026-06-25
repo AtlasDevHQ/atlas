@@ -34,6 +34,7 @@ import {
   ResidencyError,
   type ResidencyErrorCode,
 } from "@atlas/api/lib/residency/errors";
+import { isRegionSelectable } from "@atlas/api/lib/residency/picker";
 import { isDeployRegion, type DeployRegion, type RegionStatus, type WorkspaceRegion } from "@useatlas/types";
 
 const log = createLogger("ee:residency");
@@ -110,8 +111,11 @@ function getResidencyConfigEffect(): Effect.Effect<ResidencyConfig, ResidencyErr
   return Effect.succeed(config.residency);
 }
 
-function isValidRegion(region: string, residency: ResidencyConfig): boolean {
-  return region in residency.regions;
+/** Region ids a customer may be assigned — excludes `selectable: false` arms. */
+function selectableRegionIds(residency: ResidencyConfig): string[] {
+  return Object.entries(residency.regions)
+    .filter(([, cfg]) => isRegionSelectable(cfg))
+    .map(([id]) => id);
 }
 
 /** Coerce a DB value (Date or string) to an ISO 8601 string. Throws on null/undefined/unexpected types. */
@@ -190,8 +194,17 @@ export const assignWorkspaceRegion = (
 
     yield* requireInternalDBEffect("data residency", () => new ResidencyError({ message: "Internal database is required for data residency.", code: "no_internal_db" }));
 
-    if (!isValidRegion(region, residency)) {
-      const available = Object.keys(residency.regions).join(", ");
+    // Gate on selectability, not mere existence (#3948): a `selectable: false`
+    // arm (e.g. the shared-config `staging` region the api-staging soak service
+    // claims) is load-bearing for the boot guard + routing but must never be an
+    // assignable residency choice — otherwise a real prod workspace could
+    // `POST /assign-region {"region":"staging"}` and route its metadata to the
+    // staging Postgres, the exact leak #3948 closes. The signup/admin pickers
+    // already filter these out via the same `isRegionSelectable` predicate; this
+    // is the authoritative write-path guard so a direct request can't bypass the
+    // UI. The error lists only selectable regions so it can't leak internal ids.
+    if (!isRegionSelectable(residency.regions[region])) {
+      const available = selectableRegionIds(residency).join(", ");
       return yield* Effect.fail(new ResidencyError({ message: `Invalid region "${region}". Available regions: ${available}`, code: "invalid_region" }));
     }
 

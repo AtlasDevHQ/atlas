@@ -1008,6 +1008,7 @@ onboarding.openapi(
 
 import { residencyDomainError } from "./shared-residency";
 import { ResidencyError } from "@atlas/api/lib/residency/errors";
+import { buildAvailableRegions } from "@atlas/api/lib/residency/picker";
 import { RegionPickerItemSchema } from "@useatlas/schemas";
 
 // OnboardingRegionSchema previously duplicated this shape inline; the signup
@@ -1137,11 +1138,10 @@ onboarding.openapi(getRegionsRoute, async (c) => {
     try {
       const defaultRegion = mod.getDefaultRegion();
       const regions = mod.getConfiguredRegions();
-      const availableRegions = Object.entries(regions).map(([id, cfg]) => ({
-        id,
-        label: cfg.label,
-        isDefault: id === defaultRegion,
-      }));
+      // Exclude regions flagged `selectable: false` (e.g. the internal `staging`
+      // arm) from the customer-facing picker — they exist for the boot guard +
+      // routing only, never as a selectable residency choice for signups (#3948).
+      const availableRegions = buildAvailableRegions(regions, defaultRegion);
       return c.json({ configured: true, defaultRegion, availableRegions }, 200);
     } catch (err) {
       if (err instanceof ResidencyError && err.code === "not_configured") {

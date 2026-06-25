@@ -1129,19 +1129,29 @@ export default defineConfig({
         databaseUrl: process.env.ATLAS_REGION_APAC_DB_URL!,
         apiUrl: "https://api-apac.useatlas.dev",
       },
-      // NO "staging" arm here — staging is NOT a prod residency region (#3948).
-      // The prod services (api/api-eu/api-apac) only ever claim us|eu|apac via
-      // ATLAS_API_REGION, so RegionGuardLive (lib/effect/saas-guards.ts) never
-      // needs a "staging" entry in THIS config to boot. The staging soak service
-      // is a SEPARATE Railway service that loads `deploy/api-staging/atlas.config.ts`
-      // (its Dockerfile/railway.json wiring lands in staging slices 19–22) — that
-      // file owns the single-region `{ staging }` map its own boot guard requires
-      // (ATLAS_API_REGION=staging). A "staging" entry leaking into this
-      // prod map is the bug it caused: `getConfiguredRegions()` returns the whole
-      // map verbatim, so the signup region picker (GET /api/v1/onboarding/regions
-      // → /signup/region) offered "Staging" as a selectable data-residency region
-      // to real prod users, who could route their workspace metadata to the
-      // staging Postgres. Keep staging scoped to the staging deploy only.
+      // ⚠️ LOAD-BEARING — DO NOT REMOVE this "staging" arm.
+      //
+      // The api-staging soak service builds from THIS image/config
+      // (`RAILWAY_DOCKERFILE_PATH=deploy/api/Dockerfile`, which COPYs this file)
+      // and claims `ATLAS_API_REGION=staging`. `RegionGuardLive`
+      // (lib/effect/saas-guards.ts) fail-closes boot if the claimed region is
+      // absent from this map — so deleting this entry crash-loops api-staging
+      // ("Layer DAG could not initialize"). The separate
+      // `deploy/api-staging/atlas.config.ts` is NOT wired into any image yet, so
+      // it does not cover the staging service's boot. (This exact deletion
+      // already caused an outage: #3948 → PR #3951 → the staging crash loop.)
+      //
+      // `selectable: false` is the actual #3948 fix: existence ≠ selectability.
+      // The region stays present for the boot guard + residency routing, but the
+      // signup picker (GET /api/v1/onboarding/regions → /signup/region) filters
+      // out non-selectable regions, so real prod signups only ever see us/eu/apac
+      // and can never route their workspace metadata to the staging Postgres.
+      "staging": {
+        label: "Staging",
+        databaseUrl: process.env.DATABASE_URL!,
+        apiUrl: "https://api.staging.useatlas.dev",
+        selectable: false,
+      },
     },
   },
 });

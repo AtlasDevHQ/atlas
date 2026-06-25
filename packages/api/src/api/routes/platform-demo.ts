@@ -296,13 +296,22 @@ platformDemo.openapi(updateConfigRoute, async (c) => {
       const model = body.model.trim();
       const userId = c.get("authResult")?.user?.id;
 
+      // Written sequentially, not as a concurrent Promise.all. The three are
+      // INDEPENDENT, individually-valid platform knobs (no cross-key invariant)
+      // persisted as idempotent `INSERT … ON CONFLICT` UPSERTs, so a partial
+      // failure is self-healed by the operator's retry (which re-writes all
+      // three). True cross-key atomicity would need a DB transaction, but
+      // `setSetting` also mutates an in-process settings cache after its own
+      // write — a rollback couldn't unwind that cleanly — so a transaction isn't
+      // the right seam here. Sequential keeps the partial-failure boundary
+      // deterministic: everything before the failing write committed, nothing
+      // after.
       yield* Effect.tryPromise({
-        try: () =>
-          Promise.all([
-            setSetting("ATLAS_DEMO_MODEL", model, userId),
-            setSetting("ATLAS_DEMO_MAX_STEPS", String(body.maxSteps), userId),
-            setSetting("ATLAS_DEMO_RATE_LIMIT_RPM", String(body.rpm), userId),
-          ]),
+        try: async () => {
+          await setSetting("ATLAS_DEMO_MODEL", model, userId);
+          await setSetting("ATLAS_DEMO_MAX_STEPS", String(body.maxSteps), userId);
+          await setSetting("ATLAS_DEMO_RATE_LIMIT_RPM", String(body.rpm), userId);
+        },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 

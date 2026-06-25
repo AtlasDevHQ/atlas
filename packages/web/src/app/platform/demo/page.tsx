@@ -493,7 +493,7 @@ function TranscriptSheet({
   email: string | null;
   onClose: () => void;
 }) {
-  const { data, loading } = useAdminFetch(
+  const { data, loading, error, refetch } = useAdminFetch(
     email
       ? `/api/v1/platform/demo/transcript?email=${encodeURIComponent(email)}`
       : "",
@@ -511,6 +511,15 @@ function TranscriptSheet({
         </SheetHeader>
         {loading ? (
           <LoadingState message="Loading transcript..." />
+        ) : error ? (
+          // Surface a failed load instead of misreporting it as empty history.
+          <div className="mt-4">
+            <MutationErrorSurface
+              error={error}
+              feature="Demo Tracking"
+              onRetry={refetch}
+            />
+          </div>
         ) : data && data.conversations.length > 0 ? (
           <div className="mt-4 space-y-6">
             {data.conversations.map((conv) => (

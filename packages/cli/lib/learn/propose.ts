@@ -380,7 +380,7 @@ export function applyProposals(proposalSet: ProposalSet): { written: string[]; f
   const written: string[] = [];
   const failed: Array<{ path: string; error: string }> = [];
 
-  const dumpOpts = { lineWidth: -1, noRefs: true, sortKeys: false, quotingType: "'" as const };
+  const dumpOpts = { lineWidth: -1, noRefs: true, sortKeys: false, quoteStyle: "single" as const };
 
   for (const [filePath, entity] of proposalSet.entityUpdates) {
     try {

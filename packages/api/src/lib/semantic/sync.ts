@@ -18,6 +18,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { loadYaml } from "./yaml";
 import { getSemanticRoot as getBaseSemanticRoot } from "./files";
 import { GROUPS_DIR } from "./scanner";
 
@@ -646,7 +647,6 @@ export async function importFromDisk(
 ): Promise<ImportResult> {
   const { bulkUpsertEntities } = await import("@atlas/api/lib/semantic/entities");
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
-  const yaml = await import("js-yaml");
 
   const root = options?.sourceDir ?? getSemanticRoot(orgId);
   const errors: ImportError[] = [];
@@ -657,19 +657,19 @@ export async function importFromDisk(
   // and legacy `<source>/entities/`. Hardcoding `root/entities` skipped grouped
   // entities entirely, so the DB-backed whitelist/admin view was empty for
   // those groups even though the file-based whitelist read them (#3245).
-  const { duplicateSkips } = await _scanEntityDirs(root, entities, errors, yaml, options?.connectionId);
+  const { duplicateSkips } = await _scanEntityDirs(root, entities, errors, options?.connectionId);
 
   // Scan metrics/*.yml — metrics group-namespace traversal is out of scope
   // here (#3240), so metrics stay flat + scoped by the install id.
   const metricsDir = path.join(root, "metrics");
-  await _scanYamlDir(metricsDir, "metric", entities, errors, yaml, options?.connectionId);
+  await _scanYamlDir(metricsDir, "metric", entities, errors, options?.connectionId);
 
   // Scan glossary.yml at root
   const glossaryPath = path.join(root, "glossary.yml");
   try {
     const content = await fs.promises.readFile(glossaryPath, "utf-8");
     try {
-      yaml.load(content); // validate parseable
+      loadYaml(content); // validate parseable (undefined for an empty glossary, as in v4)
       entities.push({
         entityType: "glossary",
         name: "glossary",
@@ -736,7 +736,6 @@ async function _scanYamlDir(
   entityType: SemanticEntityType,
   out: CollectedEntity[],
   errors: ImportError[],
-  yaml: typeof import("js-yaml"),
   connectionId?: string,
 ): Promise<void> {
   let files: string[];
@@ -753,7 +752,7 @@ async function _scanYamlDir(
     const name = file.replace(/\.yml$/, "");
     try {
       const content = await fs.promises.readFile(filePath, "utf-8");
-      const parsed = yaml.load(content);
+      const parsed = loadYaml(content);
 
       // Validate entities have a table field
       if (entityType === "entity") {
@@ -789,7 +788,6 @@ async function _scanEntityDirs(
   root: string,
   out: CollectedEntity[],
   errors: ImportError[],
-  yaml: typeof import("js-yaml"),
   defaultConnectionId?: string,
 ): Promise<{ duplicateSkips: number }> {
   let duplicateSkips = 0;
@@ -829,7 +827,7 @@ async function _scanEntityDirs(
       const name = file.replace(/\.yml$/, "");
       try {
         const content = await fs.promises.readFile(filePath, "utf-8");
-        const parsed = yaml.load(content);
+        const parsed = loadYaml(content);
 
         if (!parsed || typeof parsed !== "object" || !("table" in (parsed as Record<string, unknown>))) {
           errors.push({ file, reason: "Entity YAML must contain a 'table' field" });

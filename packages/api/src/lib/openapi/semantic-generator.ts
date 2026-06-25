@@ -829,7 +829,7 @@ const YAML_OPTIONS: yaml.DumpOptions = {
   lineWidth: -1, // never wrap (keeps long filter-syntax strings on one line)
   noRefs: true,
   sortKeys: false, // we control key order via insertion order below
-  quotingType: '"',
+  quoteStyle: "double",
 };
 
 /**

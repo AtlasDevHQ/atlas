@@ -38,6 +38,11 @@ export interface SeedPromptsOptions {
 }
 
 export function parsePromptLibrary(raw: string): PromptLibrary {
+  // js-yaml v5 throws on empty input where v4 returned undefined; surface a
+  // clear, file-attributed message instead of a raw YAMLException.
+  if (!raw.trim()) {
+    throw new Error("library.yml: file is empty");
+  }
   const parsed = yaml.load(raw) as PromptLibrary;
   if (!parsed?.collection?.name || !parsed?.collection?.industry) {
     throw new Error("library.yml: missing collection.name or collection.industry");

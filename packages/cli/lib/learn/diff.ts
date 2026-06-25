@@ -110,7 +110,7 @@ function serializeEntity(entity: EntityYaml): string {
     lineWidth: -1,
     noRefs: true,
     sortKeys: false,
-    quotingType: "'",
+    quoteStyle: "single",
   });
 }
 
@@ -159,7 +159,7 @@ export function formatDiff(proposalSet: ProposalSet): string {
       lineWidth: -1,
       noRefs: true,
       sortKeys: false,
-      quotingType: "'",
+      quoteStyle: "single",
     });
 
     const relativePath = proposalSet.glossaryPath.replace(process.cwd() + "/", "");

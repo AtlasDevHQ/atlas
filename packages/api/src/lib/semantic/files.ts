@@ -7,7 +7,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import * as yaml from "js-yaml";
+import { loadYaml } from "./yaml";
 import { scanEntities, getEntityDirs, resolveEntityGroup, readGroupField } from "./scanner";
 
 // ---------------------------------------------------------------------------
@@ -53,8 +53,9 @@ export function isValidEntityName(name: string): boolean {
 // ---------------------------------------------------------------------------
 
 export function readYamlFile(filePath: string): unknown {
-  const content = fs.readFileSync(filePath, "utf-8");
-  return yaml.load(content);
+  // `loadYaml` preserves js-yaml v4's `undefined`-on-empty behavior (v5 throws
+  // on a document-less file); callers treat the missing object as a no-op.
+  return loadYaml(fs.readFileSync(filePath, "utf-8"));
 }
 
 export interface EntitySummary {

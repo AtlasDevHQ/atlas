@@ -18,6 +18,7 @@ import type { TableProfile } from "@useatlas/types";
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
+import { loadYaml } from "../yaml";
 
 const SEMANTIC_DIR = path.resolve("semantic");
 
@@ -64,7 +65,7 @@ function extractYamlBlock(text: string): string {
  */
 function safeParse(text: string): Record<string, unknown> | null {
   try {
-    const parsed = yaml.load(text);
+    const parsed = loadYaml(text);
     if (parsed && typeof parsed === "object") {
       return parsed as Record<string, unknown>;
     }
@@ -270,7 +271,9 @@ Important:
     return { yaml: existingContent, enriched: false };
   }
 
-  const existingYaml = yaml.load(existingContent) as Record<string, unknown>;
+  // `loadYaml` preserves v4's undefined-on-empty (v5 throws on a blank file);
+  // `?? {}` keeps the cast honest and makes an empty file a clean no-op merge.
+  const existingYaml = (loadYaml(existingContent) ?? {}) as Record<string, unknown>;
   const merged = deepMerge(existingYaml, enriched);
   const output = yaml.dump(merged, { lineWidth: 120, noRefs: true });
   return { yaml: output, enriched: true };
@@ -327,7 +330,11 @@ export async function enrichGlossary(
   console.log("  Enriching glossary.yml...");
 
   const existingContent = fs.readFileSync(glossaryPath, "utf-8");
-  const existingYaml = yaml.load(existingContent) as Record<string, unknown>;
+  // This load sits OUTSIDE the try/catch below, so a document-less glossary.yml
+  // must not throw: `loadYaml` returns undefined (v4's behavior; v5 would throw)
+  // and `?? {}` makes the downstream `.terms` access a clean no-op rather than
+  // a caught TypeError, so the run proceeds instead of aborting the pass.
+  const existingYaml = (loadYaml(existingContent) ?? {}) as Record<string, unknown>;
   const tablesOverview = formatAllTablesOverview(profiles);
 
   try {
@@ -420,7 +427,11 @@ export async function enrichMetric(
   console.log(`  Enriching ${fileName}...`);
 
   const existingContent = fs.readFileSync(filePath, "utf-8");
-  const existingYaml = yaml.load(existingContent) as Record<string, unknown>;
+  // This load sits OUTSIDE the try/catch below, so a document-less metrics file
+  // must not throw: `loadYaml` returns undefined (v4's behavior; v5 would throw)
+  // and `?? {}` makes the downstream `.metrics` access a clean no-op rather than
+  // a caught TypeError, so the run proceeds instead of aborting the pass.
+  const existingYaml = (loadYaml(existingContent) ?? {}) as Record<string, unknown>;
   const profileText = formatTableProfile(profile);
 
   try {

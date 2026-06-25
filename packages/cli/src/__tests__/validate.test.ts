@@ -249,7 +249,9 @@ describe("checkEntities", () => {
     const dir = makeTmpDir();
     const semanticDir = createSemanticDir(dir, {
       entities: {
-        "bad.yml": ": invalid yaml [",
+        // Unclosed flow sequence — invalid under js-yaml v5's spec-compliant
+        // parser (v4-era ": broken [yaml" now parses to {null: "..."}).
+        "bad.yml": "broken: [unclosed",
       },
     });
     const { results } = checkEntities(semanticDir);
@@ -382,7 +384,7 @@ describe("checkGlossary", () => {
   test("fail on invalid YAML", () => {
     const dir = makeTmpDir();
     const semanticDir = createSemanticDir(dir, {
-      glossary: ": broken [yaml",
+      glossary: "broken: [unclosed",
     });
     const result = checkGlossary(semanticDir);
     expect(result.status).toBe("fail");
@@ -455,7 +457,7 @@ describe("checkMetrics", () => {
     const dir = makeTmpDir();
     const semanticDir = createSemanticDir(dir, {
       metrics: {
-        "bad.yml": ": broken [yaml",
+        "bad.yml": "broken: [unclosed",
         "good.yml": "metric: ok\ntable: users\n",
       },
     });

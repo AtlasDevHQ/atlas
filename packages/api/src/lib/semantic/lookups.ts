@@ -10,7 +10,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import * as yaml from "js-yaml";
+import { loadYaml } from "./yaml";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSemanticRoot, isValidEntityName } from "./files";
 import {
@@ -138,7 +138,7 @@ function loadGlossaryFile(
   let raw: unknown;
   try {
     const content = fs.readFileSync(filePath, "utf-8");
-    raw = yaml.load(content);
+    raw = loadYaml(content);
   } catch (err) {
     log.warn(
       { filePath, err: err instanceof Error ? err.message : String(err) },
@@ -274,7 +274,7 @@ function loadMetricsFromDir(
     const filePath = path.join(dir, file);
     let raw: unknown;
     try {
-      raw = yaml.load(fs.readFileSync(filePath, "utf-8"));
+      raw = loadYaml(fs.readFileSync(filePath, "utf-8"));
     } catch (err) {
       log.warn(
         { filePath, err: err instanceof Error ? err.message : String(err) },

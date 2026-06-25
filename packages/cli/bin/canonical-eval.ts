@@ -228,7 +228,10 @@ export function loadQuestions(filePath: string): Question[] {
     throw new Error(`Canonical questions file not found: ${filePath}`);
   }
 
-  const raw = yaml.load(fs.readFileSync(filePath, "utf-8"));
+  const text = fs.readFileSync(filePath, "utf-8");
+  // js-yaml v5 throws on empty input (v4 returned undefined); treat an empty
+  // file as "not an object" so the controlled error below fires with context.
+  const raw = text.trim() ? yaml.load(text) : undefined;
   if (!raw || typeof raw !== "object") {
     throw new Error(`Invalid questions file (not an object): ${filePath}`);
   }

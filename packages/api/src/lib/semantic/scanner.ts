@@ -10,7 +10,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import * as yaml from "js-yaml";
+import { loadYaml } from "./yaml";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("semantic-scanner");
@@ -293,8 +293,9 @@ export function readEntityYaml(
   filePath: string,
 ): Record<string, unknown> | null {
   try {
-    const content = fs.readFileSync(filePath, "utf-8");
-    const raw = yaml.load(content);
+    // `loadYaml` returns undefined for a document-less file (v5 throws where v4
+    // returned undefined); the `!raw` guard below maps that to null, silently.
+    const raw = loadYaml(fs.readFileSync(filePath, "utf-8"));
     if (!raw || typeof raw !== "object") return null;
     return raw as Record<string, unknown>;
   } catch (err) {

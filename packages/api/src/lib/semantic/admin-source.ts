@@ -17,7 +17,7 @@
  */
 
 import * as path from "path";
-import * as yaml from "js-yaml";
+import { loadYaml } from "./yaml";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   getEntity,
@@ -195,7 +195,7 @@ function sectionLength(value: unknown): number {
 export function parseRowToAdminSummary(row: SemanticEntityRow): AdminEntitySummary | null {
   let raw: unknown;
   try {
-    raw = yaml.load(row.yaml_content);
+    raw = loadYaml(row.yaml_content);
   } catch (err) {
     log.warn(
       { orgId: row.org_id, name: row.name, err: err instanceof Error ? err.message : String(err) },
@@ -467,7 +467,12 @@ export async function getAdminEntity(opts: GetAdminEntityOptions): Promise<Admin
     const row = await getEntity(orgId, "entity", name, connectionGroupId, mode);
     if (!row) return null;
 
-    const detail = parseEntityYaml(name, "db", () => yaml.load(row.yaml_content), requestId);
+    // A blank entity row is a SHAPE problem, not a parse error: `loadYaml`
+    // returns undefined for document-less content (v5 would otherwise throw),
+    // so the non-object guard in `parseEntityYaml` surfaces it as the
+    // "malformed" 500 the route contracts for — matching the disk path, which
+    // also routes through `loadYaml` via `readYamlFile`.
+    const detail = parseEntityYaml(name, "db", () => loadYaml(row.yaml_content), requestId);
     const status: AdminEntityStatus = row.status === "draft" ? "draft" : "published";
     return { entity: detail, status, source: "db" };
   }

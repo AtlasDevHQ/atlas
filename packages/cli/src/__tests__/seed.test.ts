@@ -80,6 +80,13 @@ categories: []
 `),
     ).toThrow("categories array is empty");
   });
+
+  it("rejects an empty/whitespace library file with a clear message", () => {
+    // js-yaml v5 throws on empty input where v4 returned undefined; the guard
+    // surfaces a file-attributed message instead of a raw YAMLException.
+    expect(() => parsePromptLibrary("")).toThrow("library.yml: file is empty");
+    expect(() => parsePromptLibrary("   \n  ")).toThrow("library.yml: file is empty");
+  });
 });
 
 // --- seedPrompts ---

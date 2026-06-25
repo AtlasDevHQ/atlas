@@ -20,6 +20,22 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.27",
+    title: "Cold-Start Activation",
+    date: "2026-06-25",
+    summary:
+      "A focused pass on the first five minutes — getting a new user from landing to their first answer without hitting a dead end. The hosted demo onboarding flow gets a cluster of fixes: a composer that no longer strands you on an empty semantic layer, recovery from a stale or expired session instead of a trap, clearer retry guidance when datasource region resolution fails, and a warmer empty state with a loading skeleton and starter prompts derived from the dataset you just connected. The demo itself becomes cheaper and more observable to run, with a configurable model (defaulting to Haiku on the gateway) and a per-turn latency tracking page. A new public /security page rounds it out, making Atlas's read-only, SELECT-only SQL-safety story legible to anyone evaluating it.",
+    highlights: [
+      "Cold-start activation polish — first-answer instrumentation and funnel fixes across the demo onboarding path (#3925)",
+      "Demo composer dead-end fixed — the demo semantic layer now seeds as published, so a fresh demo can ask a question immediately (#3932)",
+      "Session resilience — the onboarding flow recovers from a stale or expired session-cookie instead of trapping the user (#3933)",
+      "Region-step clarity — retry guidance plus a regions-error alert when datasource region resolution fails (#3945)",
+      "Warmer empty state — a loading skeleton and starter prompts derived from your connected dataset instead of a blank box (#3938, #3935)",
+      "Demo observability — a per-turn latency tracking page and a configurable demo model defaulting to Haiku on the gateway (#3931)",
+      "Public /security page — the read-only, SELECT-only SQL-safety story made legible for anyone evaluating Atlas (#3923)",
+    ],
+  },
+  {
     version: "v0.0.26",
     title: "Cream + Forest Brand",
     date: "2026-06-24",

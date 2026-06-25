@@ -71,7 +71,7 @@
     "@atlas/mcp": "workspace:*",
     "@atlas/oauth-helper": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "hono": "^4.12.25",
+    "hono": "^4.12.27",
     "zod": "^4.4.3",
     "@useatlas/plugin-sdk": "workspace:*"
   }

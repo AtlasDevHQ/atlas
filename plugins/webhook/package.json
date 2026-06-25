@@ -45,7 +45,7 @@
     "@useatlas/plugin-sdk": ">=0.0.1"
   },
   "devDependencies": {
-    "hono": "^4.12.25",
+    "hono": "^4.12.27",
     "zod": "^4.4.3",
     "@useatlas/plugin-sdk": "workspace:*"
   }

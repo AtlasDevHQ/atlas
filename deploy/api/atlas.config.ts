@@ -1129,16 +1129,19 @@ export default defineConfig({
         databaseUrl: process.env.ATLAS_REGION_APAC_DB_URL!,
         apiUrl: "https://api-apac.useatlas.dev",
       },
-      // Staging arm — single-region soak environment. Per PRD #2894 it shares
-      // the prod NovaMart datasource but its own Postgres (DATABASE_URL). No
-      // real cross-region traffic ever claims residency="staging"; this arm
-      // exists so the SaaS region guard at saas-guards.ts:570 accepts
-      // ATLAS_API_REGION=staging without a hard-fail boot.
-      "staging": {
-        label: "Staging",
-        databaseUrl: process.env.DATABASE_URL!,
-        apiUrl: "https://api.staging.useatlas.dev",
-      },
+      // NO "staging" arm here — staging is NOT a prod residency region (#3948).
+      // The prod services (api/api-eu/api-apac) only ever claim us|eu|apac via
+      // ATLAS_API_REGION, so RegionGuardLive (lib/effect/saas-guards.ts) never
+      // needs a "staging" entry in THIS config to boot. The staging soak service
+      // is a SEPARATE Railway service that loads `deploy/api-staging/atlas.config.ts`
+      // (its Dockerfile/railway.json wiring lands in staging slices 19–22) — that
+      // file owns the single-region `{ staging }` map its own boot guard requires
+      // (ATLAS_API_REGION=staging). A "staging" entry leaking into this
+      // prod map is the bug it caused: `getConfiguredRegions()` returns the whole
+      // map verbatim, so the signup region picker (GET /api/v1/onboarding/regions
+      // → /signup/region) offered "Staging" as a selectable data-residency region
+      // to real prod users, who could route their workspace metadata to the
+      // staging Postgres. Keep staging scoped to the staging deploy only.
     },
   },
 });

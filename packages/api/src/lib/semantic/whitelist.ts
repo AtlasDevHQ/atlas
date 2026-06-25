@@ -795,6 +795,17 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
  * so a published-mode load won't satisfy a developer-mode lookup. Returns an
  * empty set if the requested cache has not been loaded.
  *
+ * When `connectionId` is the unpinned sentinel `"default"`, the direct lookup
+ * yields no tables, and the org has no bucket literally keyed `"default"` (the
+ * usual case — entities key under their `connection_group_id`: `"__demo__"`, a
+ * wizard id, an explicit group), the lookup falls back to the UNION of every
+ * connection bucket the org has — the "All sources" reach an unpinned query
+ * carries. This is what keeps the agent's query-time whitelist in lockstep with
+ * `/api/v1/tables` for a demo / multi-connection workspace (#2142, broadened in
+ * #3947). A real `"default"` bucket short-circuits the fallback (direct hit
+ * wins), and a query pinned to a real connection id resolves that connection's
+ * bucket alone (no widening).
+ *
  * @param mode - `"published"` → published-only cache; `"developer"` → overlay
  *   cache (drafts on published, tombstones hidden, archived-connection entities
  *   excluded); omitted → legacy cache built from `listEntityRows` with no status
@@ -809,21 +820,46 @@ export function getOrgWhitelistedTables(orgId: string, connectionId: string = "d
   }
   const byConnection = cached.tables;
 
-  // Single-connection orgs: callers default to "default", but demo stores
-  // under "__demo__" and wizard orgs under user-chosen ids (#2142).
+  // Unpinned-`default` fallback (#2142, broadened for #3947).
+  //
+  // `executeSQL` collapses an unpinned conversation to the literal sentinel
+  // `connectionId = "default"` (tools/sql.ts: `currentMember = … ?? "default"`),
+  // but org entities are keyed under their `connection_group_id` — `"__demo__"` for
+  // a group-of-one demo install, a user-chosen id for a wizard datasource, or an
+  // explicit `config.group_id`. None of those is `"default"`, so the direct
+  // lookup misses and the agent rejects every table on the user's first query
+  // ("not in the allowed list") even though `/api/v1/tables` — which resolves the
+  // demo connection id explicitly — lists them.
+  //
+  // The original fallback only rescued the SINGLE-bucket org (exactly one
+  // connection group, not named "default"). That broke the moment a second
+  // bucket existed — the demo install carrying an explicit `config.group_id`
+  // (which keys entities under both the group AND its member id), or a second
+  // datasource connected alongside the demo (#3947). An unpinned `default` query
+  // has reach = "All sources" (no group focus), so the correct resolution is the
+  // UNION of every bucket the org has — exactly the set the workspace advertises.
+  // This fires ONLY for the unpinned `"default"` sentinel with no own bucket; a
+  // query pinned to a real connection id still resolves that connection's bucket
+  // alone, so cross-connection isolation is preserved.
   let tables = new Set(byConnection.get(connectionId) ?? []);
   if (
     tables.size === 0 &&
     connectionId === "default" &&
-    byConnection.size === 1 &&
+    byConnection.size >= 1 &&
     !byConnection.has("default")
   ) {
-    const [storedKey] = byConnection.keys();
-    const [onlyTables] = byConnection.values();
-    tables = new Set(onlyTables);
+    tables = new Set<string>();
+    for (const bucket of byConnection.values()) {
+      for (const t of bucket) tables.add(t);
+    }
     log.debug(
-      { orgId, requestedConnectionId: connectionId, resolvedConnectionId: storedKey, mode: mode ?? "developer" },
-      "getOrgWhitelistedTables: single-connection fallback",
+      {
+        orgId,
+        requestedConnectionId: connectionId,
+        resolvedConnectionIds: Array.from(byConnection.keys()),
+        mode: mode ?? "developer",
+      },
+      "getOrgWhitelistedTables: unpinned-default fallback resolved the union of all connection buckets",
     );
   }
 

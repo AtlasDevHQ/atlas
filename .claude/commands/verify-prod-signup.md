@@ -37,10 +37,15 @@ Start each region from a clean session: if already signed in, open the user menu
 
 ## Verification primitives (run in the authed browser via `browser_evaluate`)
 
-All are same-origin-credentialed `fetch`es from `app.useatlas.dev` to the region API:
+All are credentialed `fetch`es from `app.useatlas.dev` (the `.useatlas.dev` session cookie rides cross-subdomain) to the region API — substitute the per-region host below, don't hard-code `api.useatlas.dev`:
 
 ```js
+// Region API base — pick the host for the region under test. eu/apac MUST use their own
+// host, or the routing proof below silently hits the US instance and falsely passes.
+const API = { us: 'https://api.useatlas.dev', eu: 'https://api-eu.useatlas.dev', apac: 'https://api-apac.useatlas.dev' }[region];
+
 // 1. Regions offered at /signup/region — expect ONLY real prod regions, default us.
+//    Global pre-assignment config served by the web app's default API, so this one stays on api.useatlas.dev.
 await fetch('https://api.useatlas.dev/api/v1/onboarding/regions', { credentials: 'include' }).then(r => r.json())
 // → { configured: true, defaultRegion: "us", availableRegions: [us, eu, apac] }   // staging present = defect (#3948)
 
@@ -48,8 +53,9 @@ await fetch('https://api.useatlas.dev/api/v1/onboarding/regions', { credentials:
 // → { workspaceId, region: "<picked>", assignedAt }   // region MUST equal the picked region
 
 // 3. Workspace table whitelist — proves the workspace metadata routes to the picked region's DB
-//    AND that the demo seed landed (should be the 13 NovaMart entities).
-await fetch('https://api.useatlas.dev/api/v1/tables', { credentials: 'include' }).then(r => r.json())
+//    AND that the demo seed landed (should be the 13 NovaMart entities). Hits the region's OWN API
+//    (api-eu / api-apac for eu/apac) — querying api.useatlas.dev for an eu/apac workspace proves nothing.
+await fetch(`${API}/api/v1/tables`, { credentials: 'include' }).then(r => r.json())
 // → 13 tables incl. order_items/products/categories/orders
 ```
 

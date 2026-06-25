@@ -1122,6 +1122,18 @@ onboarding.openapi(getRegionsRoute, async (c) => {
       if (err instanceof ResidencyError && err.code === "not_configured") {
         return c.json({ configured: false, defaultRegion: "none", availableRegions: [] }, 200);
       }
+      // Alertable: in a configured managed deploy the regions lookup reads
+      // config synchronously and should never throw anything but
+      // `not_configured` (handled above). A non-`not_configured` failure here
+      // is the *only* server-side cause of the F3 signup dead-end, so emit a
+      // named event monitoring can key on instead of letting it blend into
+      // generic 500 noise. (The realistic client-network failure mode never
+      // reaches the server — it's covered by the region step's retry copy and
+      // API uptime monitoring.) (#3934)
+      log.error(
+        { event: "onboarding.regions_error", requestId, err: err instanceof Error ? err.message : String(err) },
+        "Onboarding regions lookup failed unexpectedly",
+      );
       throw err;
     }
   }), { label: "get onboarding regions" });

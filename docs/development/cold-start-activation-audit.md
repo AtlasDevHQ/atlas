@@ -167,13 +167,58 @@ are skipped, and a failed clear releases the one-shot so a later route/session
 change retries (no loop, no permanent latch-off). Auth mode is resolved at
 render time.
 
-### F3 — P1: region auto-skip policy on API error
+### F3 — ✅ P1: region step policy on API error (#3934)
 
 The region step intentionally does **not** auto-skip when the regions API errors
 (only on an explicit "not configured" 200), to avoid pushing a user past a
-required residency pick during a transient failure. This PR adds a Retry button
-(safe). Whether a persistent error should eventually allow "continue without a
-region" is a residency-policy decision left for review.
+required residency pick during a transient failure. #3928 added a Retry button
+(safe). The open question was whether a *persistent* error should eventually
+allow "continue without a region."
+
+**Decision: block + Retry is correct — no "continue without a region" escape
+hatch.** The reasoning, grounded in how residency actually works:
+
+- **Skipping gains nothing on residency.** By the region step the workspace
+  already physically exists (created at `/signup/workspace`) on whatever
+  regional instance the user was routed to. While `organization.region` is NULL,
+  `resolveRegionDatabaseUrl` returns null and routing falls through to that same
+  home region — so an unassigned workspace already lives exactly where a "skip"
+  would leave it. The escape hatch would not move data anywhere safer.
+- **The only realistic error is transient and client-side.** The handler reads
+  residency config synchronously; the `not_configured` case returns a 200 (and
+  auto-skips). A genuine failure is a network/CORS/edge blip on the cross-origin
+  `app → api` fetch — which **Retry already resolves**.
+- **A *persistent* failure is a bug or a full-API outage, not a user state.** If
+  only `/regions` is broken while the rest of the API is healthy, that is a
+  defect to fix and alert on — not to route users around. If the whole API host
+  is down, the next steps (`assign-region`, `/connect`) are down too, so a skip
+  doesn't rescue the funnel; it defers the failure one step.
+- **Region is recoverable anyway.** Self-serve assignment is one-way (rejects
+  re-assignment), but region can be changed via the admin **cross-region
+  migration** flow (`POST /admin/residency/migrate`, rate-limited 1/30 days).
+  So nothing here is a one-way door — which argues *against* over-engineering a
+  signup escape, and against auto-guessing a region during an outage (we can't
+  even fetch the default region — it's the same failing endpoint).
+
+**Implemented (this PR).** Two small, launch-defensible changes instead of an
+escape hatch:
+
+1. **Honest persistent-error copy.** After ≥2 consecutive failed loads, the
+   region step swaps the generic "Unable to load region options" for a message
+   that names the likely cause and surfaces a **Contact support** path
+   (`mailto:support@useatlas.dev`) alongside Retry — no silent dead-end, no
+   blind skip. (`packages/web/src/app/signup/region/page.tsx`)
+2. **Alertable server event.** `GET /api/v1/onboarding/regions` now emits a
+   named `onboarding.regions_error` log event on any non-`not_configured`
+   failure, so a real prod occurrence is caught by monitoring rather than
+   discovered through a quietly-stuck signup. The realistic client-network mode
+   never reaches the server — it's covered by the retry copy and API uptime
+   monitoring. (`packages/api/src/api/routes/onboarding.ts`)
+
+Also corrected in passing: several stale "region is immutable once set" comments
+(`services.ts`, `ee/platform/residency.ts`, `db/internal.ts`, `admin-residency.ts`)
+that predated the cross-region migration flow — they now say "one-way via the
+assign path; changeable via admin migration."
 
 ### F4 — ✅ P2: success-page starter prompts don't match the dataset (#3935 → PR #3937)
 
@@ -213,5 +258,5 @@ skeleton, no fallback.
 - [x] Cold visitor reaches a real answer without a dead end — demo path verified;
       the authed-onboard path's blocking dead-end (F1) is now fixed (#3932)
 - [x] Judgment-heavy changes implemented conventionally + flagged (F1–F5).
-      Shipped since: F1 (#3932), F2 (#3933), F4 (#3935), F5 (#3936). Remaining:
-      F3 (#3934, region residency-policy decision) — still flagged for human review.
+      Shipped since: F1 (#3932), F2 (#3933), F4 (#3935), F5 (#3936),
+      F3 (#3934, region policy decided — block + Retry + alerting, no skip).

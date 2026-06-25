@@ -5,8 +5,11 @@
  * database URLs for connection routing. Access-gated via platformAdminAuth
  * middleware (platform_admin role required).
  *
- * Region assignment is immutable after creation — changing a workspace's
- * region requires data migration (separate future work).
+ * Region assignment is one-way via the self-serve/assign path: once a
+ * workspace has a region, re-assignment is rejected. Changing a region is a
+ * deliberate, operator-driven cross-region migration (`POST /admin/residency/
+ * migrate`, rate-limited to one per 30 days) that relocates the workspace's
+ * data — not a casual re-pick.
  *
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
@@ -174,7 +177,9 @@ export function getConfiguredRegions(): ResidencyConfig["regions"] {
 }
 
 /**
- * Assign a region to a workspace. Region is immutable once set.
+ * Assign a region to a workspace. One-way: rejects with `already_assigned`
+ * once a region is set — changing it goes through the admin cross-region
+ * migration flow (`POST /admin/residency/migrate`), not this path.
  */
 export const assignWorkspaceRegion = (
   workspaceId: string,

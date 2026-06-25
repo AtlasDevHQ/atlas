@@ -44,6 +44,10 @@ export default function RegionPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [skipping, setSkipping] = useState(false);
+  // Count consecutive load failures so a persistent outage swaps the generic
+  // "retry" copy for an honest support path instead of a silent dead-end
+  // (#3934). The initial load + one failed retry both failing => persistent.
+  const [loadAttempts, setLoadAttempts] = useState(0);
 
   const loadRegions = useCallback(() => {
     setLoading(true);
@@ -66,6 +70,10 @@ export default function RegionPage() {
         setDefaultRegion(data.defaultRegion);
         // Pre-select the default region
         setSelected(data.defaultRegion);
+        // Reset on success so a later, unrelated failure (e.g. assign-region
+        // in handleContinue) doesn't inherit the "persistent load outage" copy
+        // — the count tracks region-*load* failures only.
+        setLoadAttempts(0);
         setLoading(false);
       })
       .catch((err: unknown) => {
@@ -75,6 +83,7 @@ export default function RegionPage() {
         // transient failure can't push someone past a deploy's required region
         // pick. #3925 — pair the error with an in-place Retry so the user isn't
         // dead-ended on a disabled Continue with only the Back link.
+        setLoadAttempts((n) => n + 1);
         setError("Unable to load region options.");
         setLoading(false);
       });
@@ -168,20 +177,35 @@ export default function RegionPage() {
 
           {error && (
             <div role="alert" className="space-y-3 text-sm text-destructive">
-              <p>{error}</p>
+              <p>
+                {loadAttempts >= 2
+                  ? "We're still unable to load region options. This is usually a temporary network issue — retry, or contact support if it keeps happening."
+                  : error}
+              </p>
               {/* Load failure leaves no region to select, so Continue stays
                   disabled — offer an in-place retry instead of a dead end whose
-                  only escape is the Back link. (#3925) */}
+                  only escape is the Back link. After repeated failures the copy
+                  swaps to a support path so a persistent outage isn't a silent
+                  dead-end (#3934). (#3925) */}
               {regions.length === 0 && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={loadRegions}
-                  disabled={saving}
-                  className="w-full"
-                >
-                  Retry
-                </Button>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={loadRegions}
+                    disabled={saving}
+                    className="w-full"
+                  >
+                    Retry
+                  </Button>
+                  {loadAttempts >= 2 && (
+                    <Button asChild type="button" variant="ghost" className="w-full">
+                      <a href="mailto:support@useatlas.dev?subject=Trouble%20loading%20signup%20regions">
+                        Contact support
+                      </a>
+                    </Button>
+                  )}
+                </div>
               )}
             </div>
           )}

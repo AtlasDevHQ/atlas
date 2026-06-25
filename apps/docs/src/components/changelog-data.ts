@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.28",
+    title: "Demo Activation Fixes & Residency Hardening",
+    date: "2026-06-25",
+    summary:
+      "A follow-up patch to v0.0.27's cold-start work, closing two demo activation gaps and tightening data-residency region selection. The hosted demo's very first question no longer dead-ends — the default query whitelist is now unioned across every org bucket, so a fresh demo can answer immediately. Demo-only signups are also no longer sent the 'connect your database' onboarding nudge, which doesn't apply to them. On the hosted service, the data-residency region picker no longer offers the internal 'staging' region as a selectable choice, and region selectability is enforced at assignment time.",
+    highlights: [
+      "Demo first-answer dead-end fixed — the default query whitelist is unioned across all org buckets, so a fresh hosted demo can answer its first question immediately (#3947)",
+      "Demo-only signups no longer nudged to connect a database — the 'connect your database' onboarding email is suppressed for demo-only accounts it doesn't apply to (#3953)",
+      "Data-residency hardening — the non-production 'staging' region is no longer a selectable prod residency option, and region selectability is enforced on assignment (#3948)",
+    ],
+  },
+  {
     version: "v0.0.27",
     title: "Cold-Start Activation",
     date: "2026-06-25",

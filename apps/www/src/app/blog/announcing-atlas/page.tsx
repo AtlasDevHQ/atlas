@@ -2,75 +2,42 @@ import type { Metadata } from "next";
 
 import { Footer } from "../../../components/footer";
 import { Nav } from "../../../components/nav";
-import { ArrowIcon, Divider, TopGlow } from "../../../components/shared";
+import {
+  Article,
+  BackToBlog,
+  CodeBlock,
+  DefItem,
+  DefList,
+  H2,
+  InlineCode,
+  Lead,
+  P,
+  PostActions,
+  PostHeader,
+  PullQuote,
+  Signoff,
+  StatStrip,
+  Step,
+  Steps,
+} from "../../../components/prose";
+import { Divider, TopGlow } from "../../../components/shared";
 import { StickyNav } from "../../../components/sticky-nav";
 
 export const metadata: Metadata = {
-  title: "Announcing Atlas: Open-Source Text-to-SQL with a Semantic Layer",
+  title: "The Road to Launch: Everything I Shipped in Atlas's Beta",
   description:
-    "Atlas is in open beta. Connect your database, auto-generate a semantic layer, and let an AI agent query your data. Self-hosted or on Atlas Cloud.",
+    "Atlas goes GA in July 2026. A recap of the first half of the year — SQL safety, new datasources, a smarter agent, a grown-up MCP server, dashboards, and Atlas Cloud, across nearly 4,000 issues and pull requests.",
+  authors: [{ name: "Matt Sywulak" }],
   openGraph: {
-    title: "Announcing Atlas: Open-Source Text-to-SQL with a Semantic Layer",
+    title: "The Road to Launch: Everything I Shipped in Atlas's Beta",
     description:
-      "Atlas is in open beta. Connect your database, auto-generate a semantic layer, and let an AI agent query your data.",
+      "Atlas goes GA in July 2026. A recap of the first half of 2026 — a run of internal milestones from 0.1 through 1.6, then twenty-nine public releases in under a month. By Matt Sywulak.",
     url: "https://www.useatlas.dev/blog/announcing-atlas",
     siteName: "Atlas",
     type: "article",
+    authors: ["Matt Sywulak"],
   },
 };
-
-// ---------------------------------------------------------------------------
-// Inline components
-// ---------------------------------------------------------------------------
-
-function SectionHeading({ children }: { children: React.ReactNode }) {
-  return (
-    <h2 className="mt-16 mb-6 text-xl font-semibold tracking-tight text-fg md:text-2xl">
-      {children}
-    </h2>
-  );
-}
-
-function Paragraph({ children }: { children: React.ReactNode }) {
-  return <p className="mb-5 text-[15px] leading-relaxed text-fg-muted">{children}</p>;
-}
-
-function InlineCode({ children }: { children: React.ReactNode }) {
-  return (
-    <code className="rounded bg-bg-sunken px-1.5 py-0.5 font-mono text-[13px] text-fg">
-      {children}
-    </code>
-  );
-}
-
-function BlockCode({ title, children }: { title: string; children: string }) {
-  return (
-    <div className="my-6 overflow-hidden rounded-xl border border-code-border bg-code-bg shadow-pane">
-      <div className="flex items-center gap-2 border-b border-code-border px-4 py-3">
-        <span className="h-2.5 w-2.5 rounded-full bg-code-muted" />
-        <span className="h-2.5 w-2.5 rounded-full bg-code-muted" />
-        <span className="h-2.5 w-2.5 rounded-full bg-code-muted" />
-        <span className="ml-3 font-mono text-xs text-code-muted">{title}</span>
-      </div>
-      <pre className="overflow-x-auto p-5 font-mono text-sm leading-relaxed text-code-fg">
-        <code>{children}</code>
-      </pre>
-    </div>
-  );
-}
-
-function FeatureBullet({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <li className="mb-4">
-      <span className="font-medium text-fg">{title}</span>
-      <span className="text-fg-muted">: {children}</span>
-    </li>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
 
 export default function AnnouncingAtlas() {
   return (
@@ -79,269 +46,303 @@ export default function AnnouncingAtlas() {
       <TopGlow />
       <Nav currentPage="/blog" />
 
-      <article className="mx-auto max-w-2xl px-6 pt-24 pb-20 md:pt-36 md:pb-28">
-        {/* Header */}
-        <header className="mb-12">
-          <div className="mb-5 flex items-center gap-3">
-            <span className="rounded-full border border-accent/20 bg-accent-quiet px-2.5 py-0.5 font-mono text-[10px] font-medium tracking-wider text-accent uppercase">
-              Launch
-            </span>
-            <time dateTime="2026-03-25" className="font-mono text-xs text-fg-faint">2026-03-25</time>
-          </div>
-          <h1 className="animate-fade-in-up delay-100 text-2xl font-semibold leading-tight tracking-tight text-fg md:text-4xl">
-            Announcing Atlas: open-source text-to-SQL with a semantic layer
-          </h1>
-          <p className="animate-fade-in-up delay-200 mt-5 text-lg leading-relaxed text-fg-muted">
-            You&apos;re already using AI to query your data. Atlas makes it
-            safe, accurate, and deployable.
-          </p>
-        </header>
+      <Article>
+        <PostHeader
+          tag="Road to launch"
+          isoDate="2026-06-25"
+          dateLabel="June 25, 2026"
+          readingTime="6 min read"
+          title="The road to launch: everything I shipped in beta"
+          dek="Atlas goes GA in July. Here's the recap of the first half of 2026, from a single commit to a hosted cloud, and a product you can trust in production."
+        />
 
-        {/* ── The problem ── */}
-        <SectionHeading>The problem: everyone is already doing this</SectionHeading>
-        <Paragraph>
-          Every data team we talk to is using ChatGPT or Copilot to write SQL.
-          Paste your schema, describe the question, copy the query back into
-          your database client, and hope it works.
-        </Paragraph>
-        <Paragraph>
-          It works surprisingly often. But it fails in ways that are hard to
-          catch: silently wrong column references, missing WHERE clauses that
-          filter soft-deletes, metrics calculated before discounts instead of
-          after. The AI doesn&apos;t know your business rules. It guesses from
-          column names like <InlineCode>fact_txn_amt</InlineCode> and{" "}
-          <InlineCode>is_del_flg</InlineCode>, and it gets the semantics wrong
-          often enough that you can&apos;t trust the output without reading
-          every query line by line.
-        </Paragraph>
-        <Paragraph>
-          The other problem is operational. ChatGPT can&apos;t run the query.
-          It doesn&apos;t validate that the SQL is read-only. It doesn&apos;t
-          enforce row-level access. There&apos;s no audit trail. You can&apos;t
-          embed it in a product. It&apos;s a parlor trick, not
-          infrastructure.
-        </Paragraph>
+        <H2>Where I started</H2>
+        <Lead>
+          A few months ago I announced Atlas with a simple argument: text-to-SQL
+          should be safe, accurate, and deployable infrastructure. A data
+          analyst you embed in your own product, not another standalone BI tool
+          you send people to, and not a chatbot parlor trick that hands you SQL
+          it can&apos;t run, validate, or audit.
+        </Lead>
+        <P>
+          Since then, I&apos;ve shipped without letting up. Atlas began as a
+          single commit in February; by the time I cut the first public release
+          tag in late May, it had already grown a semantic layer, multi-tenancy,
+          and a hosted SaaS platform across a run of internal milestones from{" "}
+          <InlineCode>0.1</InlineCode> through <InlineCode>1.6</InlineCode>. The
+          public train that followed sits on top of all of it.
+        </P>
 
-        {/* ── What Atlas is ── */}
-        <SectionHeading>What Atlas is</SectionHeading>
-        <Paragraph>
-          Atlas is a text-to-SQL agent that connects to your database,
-          understands your schema through a semantic layer, validates every
-          query, and runs it. All in one place. Self-host it with Docker,
-          Railway, or Vercel, or use Atlas Cloud at{" "}
-          <a
-            href="https://app.useatlas.dev"
-            className="text-accent hover:underline"
-          >
-            app.useatlas.dev
-          </a>{" "}
-          and skip infrastructure entirely.
-        </Paragraph>
-        <Paragraph>
-          The core idea: give the AI the context it needs to write correct SQL,
-          then validate the output before it touches your database. No training
-          data, no vector databases, no fine-tuning. Just a YAML semantic layer
-          that describes what your tables and columns actually mean.
-        </Paragraph>
+        <StatStrip
+          items={[
+            { value: "29", label: "releases in 27 days" },
+            { value: "~4,000", label: "issues & pull requests" },
+            { value: "1,300+", label: "commits" },
+          ]}
+        />
 
-        <BlockCode title="terminal">{`$ bun create atlas-agent my-app --demo
-$ cd my-app && bun run dev
+        <P>
+          But the count isn&apos;t the point; what shipped is. The agent got
+          smarter, the datasource list grew, the MCP server grew up, and Atlas
+          Cloud became a real hosted product with billing, trials, and
+          enterprise controls.
+        </P>
+        <P>
+          A note on that pace, since I keep writing &ldquo;I&rdquo; and not
+          &ldquo;we&rdquo;: it&apos;s been me and an AI coding agent the whole
+          way, no team hiding behind the usual corporate plural. That&apos;s
+          also, quietly, the thesis. Atlas is a data analyst you run as an agent
+          against your database; it was built by one person running an agent
+          against a codebase.
+        </P>
 
-> Ready on http://localhost:3000
-> Connected to PostgreSQL - 42 tables profiled
-> Semantic layer generated at ./semantic/`}</BlockCode>
+        <PullQuote>Same wager, both ends.</PullQuote>
 
-        <Paragraph>
-          Run <InlineCode>atlas init</InlineCode> against your database and it
-          profiles every table (column types, sample values, cardinality,
-          nullability) and generates YAML entity files that the agent reads
-          before writing SQL. You can enrich these with descriptions, business
-          terms, and known query patterns. Changes go through pull requests.
-          The semantic layer lives in your repo, versioned like code.
-        </Paragraph>
-
-        {/* ── How it works ── */}
-        <SectionHeading>How it works under the hood</SectionHeading>
-        <Paragraph>
-          When a user asks a question, the agent reads the semantic layer to
-          understand what tables exist, what columns mean, how tables join, and
-          what metrics are defined. Then it writes SQL. Before the query
-          reaches your database, it passes through a 7-layer validation
-          pipeline:
-        </Paragraph>
-        <ol className="mb-6 list-inside list-decimal space-y-2 text-[15px] text-fg-muted">
-          <li><span className="text-fg">Empty check</span>: rejects blank input</li>
-          <li><span className="text-fg">Regex mutation guard</span>: blocks INSERT, UPDATE, DELETE, DROP</li>
-          <li><span className="text-fg">AST parse</span>: confirms a single SELECT statement</li>
-          <li><span className="text-fg">Table whitelist</span>: only tables in the semantic layer are queryable</li>
-          <li><span className="text-fg">RLS injection</span>: appends WHERE clauses for tenant isolation</li>
-          <li><span className="text-fg">Auto LIMIT</span>: prevents unbounded result sets</li>
-          <li><span className="text-fg">Statement timeout</span>: kills runaway queries</li>
-        </ol>
-        <Paragraph>
-          This is defense-in-depth. Any single layer can fail, but the pipeline
-          makes it so all of them would have to fail simultaneously for a
-          dangerous query to execute.
-        </Paragraph>
-
-        {/* ── What ships today ── */}
-        <SectionHeading>What ships today</SectionHeading>
-        <ul className="mb-6 list-none space-y-1 text-[15px]">
-          <FeatureBullet title="7 databases">
-            PostgreSQL, MySQL, BigQuery, ClickHouse, DuckDB, Snowflake, and
-            Salesforce via datasource plugins
-          </FeatureBullet>
-          <FeatureBullet title="6 LLM providers">
-            Anthropic, OpenAI, Bedrock, Ollama, OpenAI-compatible (vLLM, TGI,
-            LiteLLM), and AI Gateway. Bring your own keys or use Atlas
-            Cloud&apos;s managed tokens
-          </FeatureBullet>
-          <FeatureBullet title="21+ plugins">
-            Datasource adapters, sandbox backends, interaction channels (Slack,
-            Teams, MCP), action triggers (email, JIRA, webhooks). Build your
-            own with the Plugin SDK
-          </FeatureBullet>
-          <FeatureBullet title="Embeddable everywhere">
-            Script tag widget, React component, TypeScript SDK, headless API.
-            Works with Next.js, Nuxt, SvelteKit, or any HTTP client
-          </FeatureBullet>
-          <FeatureBullet title="Chat SDK">
-            8 platform adapters: Slack, Teams, Discord, Telegram, Google Chat,
-            GitHub, Linear, and WhatsApp
-          </FeatureBullet>
-          <FeatureBullet title="Enterprise features">
-            SSO (SAML/OIDC), SCIM provisioning, custom roles, IP allowlists,
-            approval workflows, audit log retention and export, data residency
-          </FeatureBullet>
-          <FeatureBullet title="Effect.ts architecture">
-            The entire backend uses Effect.ts for structured concurrency,
-            typed errors, composable Layers, and graceful shutdown. The agent
-            loop runs on @effect/ai, database connections on @effect/sql
-          </FeatureBullet>
-          <FeatureBullet title="Admin console">
-            Connections, users, plugin marketplace, semantic layer editor
-            with autocomplete, query analytics, learned patterns, billing,
-            and settings. All in one place
-          </FeatureBullet>
-        </ul>
-
-        {/* ── How Atlas compares ── */}
-        <SectionHeading>How Atlas compares</SectionHeading>
-        <Paragraph>
-          There are good tools in this space. Atlas is different in a few
-          specific ways.
-        </Paragraph>
-        <Paragraph>
-          <span className="text-fg">vs Vanna AI:</span> Vanna is a Python
-          library that learns from historical queries via RAG. Atlas uses an
-          explicit YAML semantic layer. You know exactly what context the agent
-          sees, and changes go through code review. Vanna is great for Python
-          shops that want a library. Atlas is a deployable product with auth,
-          admin, and embedding built in.
-        </Paragraph>
-        <Paragraph>
-          <span className="text-fg">vs WrenAI:</span> WrenAI is a GenBI
-          platform with a UI-based semantic modeling layer. It&apos;s closer to
-          &ldquo;replace Looker&rdquo; than &ldquo;embed an analyst.&rdquo;
-          Atlas is designed to be a component in your application, not a
-          standalone BI tool. WrenAI is also AGPL-3.0 end-to-end. Atlas&apos;s
-          client libraries are MIT.
-        </Paragraph>
-        <Paragraph>
-          <span className="text-fg">vs raw MCP:</span> Connecting Claude
-          Desktop directly to your database via a MCP server gives the AI raw
-          schema with no business context, no validation, and no audit trail.
-          Atlas has its own MCP server that provides the same semantic layer and
-          validation pipeline. Context + safety, not just connectivity.
-        </Paragraph>
-        <Paragraph>
-          <span className="text-fg">vs enterprise platforms:</span>{" "}
-          ThoughtSpot, Databricks AI/BI, and Looker AI are powerful but
-          proprietary and locked to their ecosystems. Atlas is open-source,
-          deploy-anywhere, and designed for embedding, not for replacing your
-          entire BI stack.
-        </Paragraph>
-        <Paragraph>
-          Detailed comparisons:{" "}
-          <a href="https://docs.useatlas.dev/comparisons" className="text-accent hover:underline">
-            docs.useatlas.dev/comparisons
+        <P>
+          It&apos;s also the first thing I&apos;ve ever actually finished. My
+          GitHub is a graveyard of half-built repos, including one security
+          product I rebuilt a dozen times and never shipped. I wrote about why
+          this one made it over the line, and the rest didn&apos;t, in{" "}
+          <a href="/blog/the-first-thing-i-finished" className="link-accent">
+            The first thing I ever finished
           </a>
-        </Paragraph>
+          .
+        </P>
+        <P>
+          Here&apos;s the recap of the changes that matter, ahead of the{" "}
+          <InlineCode>v0.1.0</InlineCode> public launch in July.
+        </P>
 
-        {/* ── Pricing ── */}
-        <SectionHeading>Self-hosted is free. Cloud is for teams.</SectionHeading>
-        <Paragraph>
-          Atlas is AGPL-3.0 licensed. You can self-host the full product,
-          every feature, no artificial limits, for free. Run{" "}
-          <InlineCode>bun create atlas-agent</InlineCode>, connect your
-          database, and you&apos;re done.
-        </Paragraph>
-        <Paragraph>
-          <a href="https://app.useatlas.dev" className="text-accent hover:underline">
+        <H2>The safety core, deeper</H2>
+        <P>
+          The thing that made Atlas worth trusting on day one is still the thing
+          I hardened most. Every query the agent writes passes through a 7-layer
+          validation pipeline before it reaches your database:
+        </P>
+        <Steps>
+          <Step n={1} title="Empty check">rejects blank input</Step>
+          <Step n={2} title="Regex mutation guard">
+            blocks INSERT, UPDATE, DELETE, DROP
+          </Step>
+          <Step n={3} title="AST parse">confirms a single SELECT statement</Step>
+          <Step n={4} title="Table whitelist">
+            only tables in your semantic layer are queryable
+          </Step>
+          <Step n={5} title="RLS injection">
+            optional WHERE clauses for tenant isolation
+          </Step>
+          <Step n={6} title="Auto LIMIT">caps unbounded result sets</Step>
+          <Step n={7} title="Statement timeout">kills runaway queries</Step>
+        </Steps>
+        <P>
+          Reads only. No writes, no shell escapes, no surprises. I also made
+          that story legible to anyone evaluating Atlas: there&apos;s now a
+          public{" "}
+          <a href="https://www.useatlas.dev/security" className="link-accent">
+            security page
+          </a>{" "}
+          that lays out the read-only, SELECT-only model in plain language, and
+          a production-observability pass means request traces and metrics now
+          export to a collector so operators can actually see what the agent is
+          doing.
+        </P>
+
+        <H2>From two databases to a dozen sources</H2>
+        <P>
+          Atlas launched with PostgreSQL and MySQL. It now connects to BigQuery,
+          ClickHouse, Snowflake, DuckDB, Salesforce, and Elasticsearch/OpenSearch
+          through datasource plugins, and to{" "}
+          <span className="text-fg">any REST service</span> that publishes an
+          OpenAPI 3.x spec, as a first-class datasource the agent queries right
+          alongside your SQL connections. Twenty, Stripe, GitHub, and Notion
+          ship as ready-made connectors on that same primitive.
+        </P>
+        <P>
+          Just as important, onboarding a datasource no longer means a trip to
+          the terminal. Add a connection and Atlas profiles its schema into a
+          queryable semantic layer in-product, through the install wizard, the
+          CLI, or the MCP server alike. The rule underneath is now simply:{" "}
+          <span className="text-fg">if Atlas can connect to it, it can profile it.</span>
+        </P>
+
+        <H2>A semantic layer that builds itself</H2>
+        <P>
+          The semantic layer is what lets Atlas write correct SQL instead of
+          guessing from column names. Generating one used to be a manual step;
+          now it&apos;s two phases. First, an instant, free, no-AI mechanical
+          baseline you can query immediately. Then optional per-table
+          enrichment, AI-written descriptions, business terms, and known query
+          patterns, that never runs by accident and always shows the cost first.
+        </P>
+        <P>
+          The layer also learned about performance. The profiler now harvests
+          index metadata and column cardinality, so the agent knows which
+          predicates are sargable and which columns are selective before it
+          writes a query. Generated SQL that&apos;s more likely to be fast, not
+          just correct.
+        </P>
+
+        <H2>A smarter agent</H2>
+        <DefList>
+          <DefItem term="Cross-source reach">
+            Ask one question and Atlas composes the answer across every
+            connected datasource in a single turn, correlating the separate
+            result sets and telling you which source each part came from. If it
+            can&apos;t reach a source, the answer is reported as partial, never
+            silently narrowed to one.
+          </DefItem>
+          <DefItem term="Performance-aware patterns">
+            Learned query patterns now carry a rolling latency average, scoring
+            favors the patterns that actually run fast, and a nightly job
+            auto-promotes the winners and decays stale ones.
+          </DefItem>
+          <DefItem term="Durable long-running turns">
+            The long, multi-step turns that real analysis sometimes needs now
+            checkpoint per step and resume after a crash, and a turn that hits
+            an approval gate parks instead of failing, then auto-resumes once
+            approved. Context compaction keeps long turns inside the
+            model&apos;s window. All opt-in, all degrading cleanly to
+            today&apos;s behavior.
+          </DefItem>
+        </DefList>
+
+        <H2>The MCP server grew up</H2>
+        <P>
+          Atlas&apos;s MCP server went from a read-only data analyst to a
+          complete, production-grade surface AI assistants can safely act
+          through. It speaks the latest MCP spec, tool annotations, structured
+          results, progress and cancellation, pagination, resource
+          subscriptions, and sits on a real security spine: roles resolved
+          against the live database, an explicit <InlineCode>mcp:write</InlineCode>{" "}
+          scope for mutations, an approval gate on sensitive actions, and a
+          per-workspace action policy that can only be tightened, never
+          loosened. You can even provision, profile, and manage datasources
+          end-to-end from an MCP client, with credentials gathered through
+          masked forms so secrets never pass through the model.
+        </P>
+        <P>
+          And the front door opens straight from an AI client: a{" "}
+          <InlineCode>start_trial</InlineCode> tool at{" "}
+          <a href="https://mcp.useatlas.dev" className="link-accent">
+            mcp.useatlas.dev
+          </a>{" "}
+          provisions a trial workspace on the spot and hands back a connect URL,
+          business-email-only, abuse-protected, and claimed on the web with a
+          one-time passcode.
+        </P>
+
+        <H2>Dashboards became a BI surface</H2>
+        <P>
+          The dashboard surface grew from a saved-query gallery toward a real BI
+          tool. KPI cards gained period-over-period deltas, value formatting,
+          and inline sparklines; charts carry goal lines, thresholds, and event
+          annotations to mark releases or incidents on the timeline. Dashboards
+          became explorable too: click a data point to drill down, filter every
+          card from one with cross-filtering, and export a single card to CSV or
+          a whole dashboard to PDF. You can even edit a dashboard from chat, with
+          every change landing in your personal draft until you publish.
+        </P>
+
+        <H2>Atlas Cloud became a real product</H2>
+        <P>
+          Self-hosting Atlas was always free and complete. What landed during
+          beta is the hosted option for teams that don&apos;t want to run
+          infrastructure:{" "}
+          <a href="https://app.useatlas.dev" className="link-accent">
             Atlas Cloud
-          </a>{" "}
-          is the managed option for teams that don&apos;t want to run
-          infrastructure. It starts with a 14-day free trial (no credit card),
-          then Starter, Pro, and Business tiers.{" "}
-          <a href="/pricing" className="text-accent hover:underline">
-            See pricing
-          </a>.
-        </Paragraph>
-
-        {/* ── CTA ── */}
-        <SectionHeading>Try it</SectionHeading>
-        <Paragraph>
-          The fastest way to see Atlas is the live demo. No signup, no
-          installation. It&apos;s connected to NovaMart — an e-commerce DTC brand
-          with 52 tables and ~480K rows of realistic, messy data.
-        </Paragraph>
-
-        <div className="mt-8 flex flex-wrap items-center gap-4">
-          <a
-            href="https://app.useatlas.dev/demo"
-            className="group inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-2.5 text-sm font-medium text-accent-ink transition-all hover:bg-accent-hover"
-          >
-            Try the live demo
-            <ArrowIcon />
           </a>
-          <a
-            href="https://github.com/AtlasDevHQ/atlas"
-            className="group inline-flex items-center gap-2 rounded-lg border border-border px-5 py-2.5 text-sm font-medium text-fg-muted transition-all hover:border-border-strong hover:text-fg"
-          >
-            GitHub
-            <ArrowIcon />
-          </a>
+          . Pick a plan and pay from the billing page, subscriptions scope to
+          your organization rather than the admin who clicked, a failed payment
+          starts a recovery sequence instead of an abrupt lockout, and usage
+          accounting lines up exactly across the usage page, the billing page,
+          and live enforcement. Here&apos;s the snapshot of what ships today:
+        </P>
+        <DefList>
+          <DefItem term="Eight databases & warehouses">
+            PostgreSQL, MySQL, BigQuery, ClickHouse, Snowflake, DuckDB,
+            Salesforce, and Elasticsearch/OpenSearch, plus any REST/OpenAPI
+            service
+          </DefItem>
+          <DefItem term="Six LLM providers">
+            Anthropic, OpenAI, Bedrock, Ollama, OpenAI-compatible endpoints, and
+            the Vercel AI Gateway. Bring your own keys or use Atlas Cloud&apos;s
+            managed tokens
+          </DefItem>
+          <DefItem term="20+ plugins">
+            Datasource adapters, sandbox backends, chat-platform channels, and
+            action triggers. Build your own with the Plugin SDK
+          </DefItem>
+          <DefItem term="Embeddable everywhere">
+            A script-tag widget, a React component, a TypeScript SDK, the
+            headless API, and the MCP server
+          </DefItem>
+          <DefItem term="Eight chat platforms">
+            Slack live today; Teams, Discord, Telegram, WhatsApp, Linear,
+            GitHub, and Google Chat wired
+          </DefItem>
+          <DefItem term="Enterprise controls">
+            SSO (SAML/OIDC), SCIM provisioning, custom roles, IP allowlists,
+            approval workflows, audit-log retention and export, and data
+            residency
+          </DefItem>
+        </DefList>
+
+        <H2>A new look</H2>
+        <P>
+          Atlas also got a new brand, warm cream and deep forest green,
+          light-first, across every surface: the landing site, the docs, and
+          the product. It steps away from the saturated dark dev-tool default
+          toward something calmer and more legible for the dense work of reading
+          data.
+        </P>
+
+        <H2>What&apos;s next: July</H2>
+        <P>
+          <InlineCode>v0.1.0</InlineCode> is the public launch, and it lands in
+          July. A short list is still in flight, a final live security pass and
+          finishing multi-region data-residency routing, and then I cut it. The
+          fastest way to see where things are right now is the live demo: no
+          signup, no installation, connected to a realistic e-commerce dataset
+          with dozens of tables and hundreds of thousands of messy rows.
+        </P>
+
+        <PostActions />
+
+        <div className="mt-12">
+          <P>
+            Or run it yourself. Self-hosting is free and complete under
+            AGPL-3.0, no artificial limits:
+          </P>
         </div>
 
-        <BlockCode title="terminal">{`$ bun create atlas-agent my-app
+        <CodeBlock title="terminal">{`$ bun create atlas-agent my-app
 $ cd my-app
 $ cp .env.example .env   # add your ANTHROPIC_API_KEY + ATLAS_DATASOURCE_URL
-$ bun run dev`}</BlockCode>
+$ bun run dev`}</CodeBlock>
 
-        <Paragraph>
+        <P>
           Read the{" "}
-          <a href="https://docs.useatlas.dev/getting-started/quick-start" className="text-accent hover:underline">
+          <a href="https://docs.useatlas.dev/getting-started/quick-start" className="link-accent">
             quick start guide
           </a>{" "}
           for the full walkthrough, or jump straight to{" "}
-          <a href="https://docs.useatlas.dev/getting-started/connect-your-data" className="text-accent hover:underline">
+          <a href="https://docs.useatlas.dev/getting-started/connect-your-data" className="link-accent">
             connecting your database
-          </a>.
-        </Paragraph>
-
-        {/* Back to blog */}
-        <div className="mt-16 border-t border-border pt-8">
-          <a
-            href="/blog"
-            className="inline-flex items-center gap-1.5 font-mono text-xs text-fg-faint transition-colors hover:text-fg-muted"
-          >
-            <svg className="h-3 w-3 rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
-            </svg>
-            Back to blog
           </a>
-        </div>
-      </article>
+          .
+        </P>
+        <P>
+          If you try it, I&apos;d genuinely like to hear what breaks. Open an
+          issue on{" "}
+          <a href="https://github.com/AtlasDevHQ/atlas" className="link-accent">
+            GitHub
+          </a>{" "}
+          and it reaches me directly. See you at the launch.
+        </P>
+        <Signoff />
+
+        <BackToBlog />
+      </Article>
 
       <Divider />
       <Footer />

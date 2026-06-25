@@ -225,6 +225,22 @@
   background-size: 256px 256px;
 }
 
+/* Blog body links — refined underline (forest, offset) shared across /blog
+ * posts. Matches the legal-prose link treatment with a touch more offset for
+ * the larger reading size. */
+.link-accent {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--accent) 32%, transparent);
+  text-underline-offset: 3px;
+  transition: color 150ms ease, text-decoration-color 150ms ease;
+}
+
+.link-accent:hover {
+  color: var(--accent-hover);
+  text-decoration-color: var(--accent-hover);
+}
+
 /* Legal prose — used by app/terms/, app/privacy/, app/dpa/ pages */
 .legal-prose ul {
   list-style-type: disc;

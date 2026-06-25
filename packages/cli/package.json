@@ -17,7 +17,7 @@
     "@duckdb/node-api": "^1.5.3-r.3",
     "ai": "^6.0.208",
     "hono": "^4.12.27",
-    "js-yaml": "^4.2.0",
+    "js-yaml": "^5.1.0",
     "node-sql-parser": "^5.4.0",
     "jsforce": "^3.10.16",
     "mysql2": "^3.22.4",
@@ -26,7 +26,6 @@
   },
   "devDependencies": {
     "@clack/prompts": "^1.6.0",
-    "@types/js-yaml": "^4.0.9",
     "@types/pg": "^8.20.0",
     "picocolors": "^1.1.1"
   }

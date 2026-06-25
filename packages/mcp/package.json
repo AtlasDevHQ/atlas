@@ -32,12 +32,11 @@
     "better-auth": "^1.6.20",
     "effect": "^3.21.4",
     "hono": "^4.12.27",
-    "js-yaml": "^4.2.0",
+    "js-yaml": "^5.1.0",
     "pino": "^10.3.1"
   },
   "devDependencies": {
     "@better-auth/oauth-provider": "^1.6.20",
-    "@types/js-yaml": "^4.0.9",
     "zod": "^4.4.3"
   }
 }

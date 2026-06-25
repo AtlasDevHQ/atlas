@@ -10,6 +10,7 @@ import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
+import { loadYaml } from "../semantic/yaml";
 import { createTwoFilesPatch } from "diff";
 import { hasInternalDB, insertSemanticAmendment } from "@atlas/api/lib/db/internal";
 import { connections, getDB } from "@atlas/api/lib/db/connection";
@@ -140,7 +141,9 @@ The amendment object should match the YAML structure for that type (e.g., { name
 
       if (fs.existsSync(entityPath)) {
         beforeYaml = fs.readFileSync(entityPath, "utf-8");
-        const raw = yaml.load(beforeYaml);
+        // `loadYaml` returns undefined for an empty file (v5 would throw),
+        // routing it into the tailored "empty or malformed" error below.
+        const raw = loadYaml(beforeYaml);
         if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
           return {
             error: `Entity file ${entityName}.yml could not be parsed as a YAML mapping. The file may be empty or malformed.`,
@@ -162,7 +165,7 @@ The amendment object should match the YAML structure for that type (e.g., { name
       const dumpOpts: yaml.DumpOptions = {
         lineWidth: 120,
         noRefs: true,
-        quotingType: '"',
+        quoteStyle: "double",
       };
       const beforeNormalized = yaml.dump(entity, dumpOpts);
       const afterYaml = yaml.dump(updated, dumpOpts);

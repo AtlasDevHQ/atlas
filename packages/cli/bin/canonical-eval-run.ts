@@ -256,16 +256,24 @@ function findPatternSqlFromDisk(
     if (!file.endsWith(".yml") && !file.endsWith(".yaml")) continue;
     const filePath = path.join(entitiesDir, file);
     let raw: unknown;
-    try {
-      raw = yaml.load(fs.readFileSync(filePath, "utf-8"));
-    } catch (err) {
-      // Re-throw with file context so a malformed entity YAML is debuggable
-      // — yaml.load's default error references neither the file nor the
-      // calling harness.
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to parse semantic entity ${filePath}: ${msg}`, {
-        cause: err,
-      });
+    const text = fs.readFileSync(filePath, "utf-8");
+    // js-yaml v5 throws on empty input where v4 returned undefined; an empty
+    // entity file should be skipped (the `!raw` branch below), not abort the
+    // whole run via the malformed-YAML rethrow.
+    if (!text.trim()) {
+      raw = undefined;
+    } else {
+      try {
+        raw = yaml.load(text);
+      } catch (err) {
+        // Re-throw with file context so a malformed entity YAML is debuggable
+        // — yaml.load's default error references neither the file nor the
+        // calling harness.
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`Failed to parse semantic entity ${filePath}: ${msg}`, {
+          cause: err,
+        });
+      }
     }
     if (!raw || typeof raw !== "object") {
       process.stderr.write(

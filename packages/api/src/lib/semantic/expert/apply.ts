@@ -6,6 +6,7 @@
  */
 
 import * as yaml from "js-yaml";
+import { loadYaml } from "../yaml";
 import { ANALYSIS_CATEGORIES, type AnalysisResult, type AnalysisCategory } from "./types";
 import { AMENDMENT_TYPES, type AmendmentType } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -82,7 +83,9 @@ export async function applyAmendmentToEntity(
   const targetGroupId = entity.connection_group_id ?? null;
 
   // Parse current YAML
-  const parsed = yaml.load(entity.yaml_content) as Record<string, unknown>;
+  // `loadYaml` returns undefined for a document-less row (v5 would throw),
+  // routing it into the "expected a mapping" guard below.
+  const parsed = loadYaml(entity.yaml_content) as Record<string, unknown>;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`Failed to parse YAML for entity "${result.entityName}": expected a mapping`);
   }

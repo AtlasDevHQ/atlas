@@ -116,7 +116,16 @@ export function loadEvalCases(casesDir: string = CASES_DIR): EvalCase[] {
     for (const file of files) {
       const filePath = path.join(dirPath, file);
       const content = fs.readFileSync(filePath, "utf-8");
-      const doc = yaml.load(content) as Record<string, unknown>;
+      let doc: Record<string, unknown>;
+      try {
+        doc = yaml.load(content) as Record<string, unknown>;
+      } catch (err) {
+        // js-yaml v5 throws on empty/malformed input (v4 returned undefined and
+        // failed later in validateCase with a less specific message); attribute
+        // the file so a bad eval case is debuggable.
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`Failed to parse eval case ${filePath}: ${msg}`, { cause: err });
+      }
 
       validateCase(doc, filePath);
       // validateCase is an assertion function — TS now narrows `doc` to a

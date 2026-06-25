@@ -45,12 +45,15 @@ export function onUserSignup(user: UserContext): void {
 
 /**
  * Called after a database connection is created or completed via onboarding.
- * Fire-and-forget.
+ *
+ * Marks the `connect_database` step satisfied (the user just connected, so the
+ * "connect your database" nudge is moot) without sending an email — see
+ * {@link onMilestoneReached}. Fire-and-forget.
  */
 export function onDatabaseConnected(user: UserContext): void {
   if (!isOnboardingEmailEnabled()) return;
 
-  void onMilestoneReached("database_connected", user.userId, user.email, user.orgId).catch(
+  void onMilestoneReached("database_connected", user.userId, user.orgId).catch(
     (err) => {
       log.warn(
         { userId: user.userId, err: err instanceof Error ? err.message : String(err) },
@@ -87,13 +90,18 @@ export function onDemoActivated(user: UserContext): void {
 }
 
 /**
- * Called after a user's first successful chat query.
+ * Called after a user's first successful chat query (the caller gates on an
+ * actually-answered query — see `turnAnsweredQuery` in activation-metrics.ts).
+ *
+ * Marks the `first_query` step satisfied so the 72h fallback nudge is
+ * suppressed, WITHOUT mailing the "ask your first question" prompt back in the
+ * same turn the user asked it (#3962) — see {@link onMilestoneReached}.
  * Fire-and-forget.
  */
 export function onFirstQueryExecuted(user: UserContext): void {
   if (!isOnboardingEmailEnabled()) return;
 
-  void onMilestoneReached("first_query_executed", user.userId, user.email, user.orgId).catch(
+  void onMilestoneReached("first_query_executed", user.userId, user.orgId).catch(
     (err) => {
       log.warn(
         { userId: user.userId, err: err instanceof Error ? err.message : String(err) },
@@ -105,12 +113,14 @@ export function onFirstQueryExecuted(user: UserContext): void {
 
 /**
  * Called after a team member is invited to the workspace.
- * Fire-and-forget.
+ *
+ * Marks the `invite_team` step satisfied (no email) — see
+ * {@link onMilestoneReached}. Fire-and-forget.
  */
 export function onTeamMemberInvited(user: UserContext): void {
   if (!isOnboardingEmailEnabled()) return;
 
-  void onMilestoneReached("team_member_invited", user.userId, user.email, user.orgId).catch(
+  void onMilestoneReached("team_member_invited", user.userId, user.orgId).catch(
     (err) => {
       log.warn(
         { userId: user.userId, err: err instanceof Error ? err.message : String(err) },
@@ -122,12 +132,14 @@ export function onTeamMemberInvited(user: UserContext): void {
 
 /**
  * Called when a user explores a feature (notebook, admin console, etc.).
- * Fire-and-forget.
+ *
+ * Marks the `explore_features` step satisfied (no email) — see
+ * {@link onMilestoneReached}. Fire-and-forget.
  */
 export function onFeatureExplored(user: UserContext): void {
   if (!isOnboardingEmailEnabled()) return;
 
-  void onMilestoneReached("feature_explored", user.userId, user.email, user.orgId).catch(
+  void onMilestoneReached("feature_explored", user.userId, user.orgId).catch(
     (err) => {
       log.warn(
         { userId: user.userId, err: err instanceof Error ? err.message : String(err) },

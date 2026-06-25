@@ -124,11 +124,18 @@ function connectDatabaseContent(ctx: BrandingContext, baseUrl: string): string {
     </div>`;
 }
 
-function firstQueryContent(ctx: BrandingContext, baseUrl: string): string {
+function firstQueryContent(ctx: BrandingContext, baseUrl: string, demoMode: boolean): string {
+  // A demo-only signup activated the bundled demo, not their own production DB
+  // (#3962). Asserting "your database is connected" to them is the same
+  // demo-blindness #3949 fixed for connect_database, one step further down the
+  // drip — so the demo variant points at the loaded demo dataset instead.
+  const lede = demoMode
+    ? `Your demo dataset is loaded — try asking a question in plain English. ${escapeHtml(ctx.appName)} will translate it to SQL and return the results.`
+    : `Your database is connected — now try asking a question in plain English. ${escapeHtml(ctx.appName)} will translate it to SQL and return the results.`;
   return `
     <h1 style="margin:0 0 16px;font-size:24px;color:${ctx.primaryColor};">Ask your first question</h1>
     <p style="margin:0 0 16px;font-size:15px;color:#404040;line-height:1.6;">
-      Your database is connected — now try asking a question in plain English. ${escapeHtml(ctx.appName)} will translate it to SQL and return the results.
+      ${lede}
     </p>
     <p style="margin:0 0 8px;font-size:14px;font-weight:600;color:${ctx.primaryColor};">Try something like:</p>
     <ul style="margin:0 0 24px;padding-left:20px;font-size:14px;color:#404040;line-height:1.8;">
@@ -141,6 +148,11 @@ function firstQueryContent(ctx: BrandingContext, baseUrl: string): string {
     </div>`;
 }
 
+// invite_team / explore_features audited for the #3962 BYO assumption: neither
+// asserts "your database is connected" nor implies a connected production DB.
+// "your data" reads as the loaded demo dataset for a demo-only signup, and the
+// feature tour is datasource-agnostic — so both are demo-appropriate as-is and
+// take no demoMode branch.
 function inviteTeamContent(ctx: BrandingContext, baseUrl: string): string {
   return `
     <h1 style="margin:0 0 16px;font-size:24px;color:${ctx.primaryColor};">Invite your team</h1>
@@ -172,7 +184,12 @@ function exploreFeaturesContent(ctx: BrandingContext, baseUrl: string): string {
     </div>`;
 }
 
-const STEP_CONTENT: Record<OnboardingEmailStep, (ctx: BrandingContext, baseUrl: string) => string> = {
+// All step renderers take `demoMode` for a uniform signature; only first_query
+// branches on it today (#3962). The rest ignore the extra arg.
+const STEP_CONTENT: Record<
+  OnboardingEmailStep,
+  (ctx: BrandingContext, baseUrl: string, demoMode: boolean) => string
+> = {
   welcome: welcomeContent,
   connect_database: connectDatabaseContent,
   first_query: firstQueryContent,
@@ -194,16 +211,19 @@ export interface RenderedEmail {
  * @param baseUrl - The app base URL (e.g. https://app.useatlas.dev)
  * @param unsubscribeUrl - Full URL to unsubscribe endpoint
  * @param branding - Optional workspace branding to apply
+ * @param opts.demoMode - The recipient activated the bundled demo rather than
+ *   connecting their own database (#3962); selects demo-appropriate copy.
  */
 export function renderOnboardingEmail(
   step: OnboardingEmailStep,
   baseUrl: string,
   unsubscribeUrl: string,
   branding?: WorkspaceBrandingPublic | null,
+  opts?: { demoMode?: boolean },
 ): RenderedEmail {
   const ctx = buildBrandingContext(branding);
   const contentFn = STEP_CONTENT[step];
-  const content = contentFn(ctx, baseUrl);
+  const content = contentFn(ctx, baseUrl, opts?.demoMode ?? false);
   const html = wrap(ctx, content, unsubscribeUrl);
 
   // Resolve subject template

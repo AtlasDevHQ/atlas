@@ -3,6 +3,7 @@ import {
   buildFirstAnswerLatencyEvent,
   logFirstAnswerLatency,
   isFirstTurn,
+  turnAnsweredQuery,
 } from "@atlas/api/lib/activation-metrics";
 
 describe("buildFirstAnswerLatencyEvent", () => {
@@ -92,6 +93,44 @@ describe("isFirstTurn", () => {
         { role: "assistant" },
       ]),
     ).toBe(true);
+  });
+});
+
+describe("turnAnsweredQuery (#3962 — gates first_query milestone on a real answer)", () => {
+  test("true when an executeSQL result came back successful", () => {
+    expect(
+      turnAnsweredQuery([
+        { toolResults: [{ toolName: "executeSQL", output: { success: true, columns: ["n"], rows: [{ n: 1 }] } }] },
+      ]),
+    ).toBe(true);
+  });
+
+  test("false when the only executeSQL result was rejected (#3961 whitelist case)", () => {
+    expect(
+      turnAnsweredQuery([
+        { toolResults: [{ toolName: "executeSQL", output: { success: false, error: "Table not in allowed list" } }] },
+      ]),
+    ).toBe(false);
+  });
+
+  test("false when the turn ran no SQL at all", () => {
+    expect(turnAnsweredQuery([{ toolResults: [{ toolName: "explore", output: { ok: true } }] }])).toBe(false);
+    expect(turnAnsweredQuery([{}])).toBe(false);
+    expect(turnAnsweredQuery([])).toBe(false);
+  });
+
+  test("true if any step has a successful query, even alongside a rejected one", () => {
+    expect(
+      turnAnsweredQuery([
+        { toolResults: [{ toolName: "executeSQL", output: { success: false, error: "bad" } }] },
+        { toolResults: [{ toolName: "executeSQL", output: { success: true, rows: [] } }] },
+      ]),
+    ).toBe(true);
+  });
+
+  test("ignores a non-object / null output defensively", () => {
+    expect(turnAnsweredQuery([{ toolResults: [{ toolName: "executeSQL", output: null }] }])).toBe(false);
+    expect(turnAnsweredQuery([{ toolResults: [{ toolName: "executeSQL", output: "done" }] }])).toBe(false);
   });
 });
 

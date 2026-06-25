@@ -30,17 +30,29 @@ export const ONBOARDING_MILESTONES = [
 export type OnboardingMilestone = (typeof ONBOARDING_MILESTONES)[number];
 
 /**
- * Trigger source for an onboarding email record.
+ * Trigger source for an onboarding email record. Splits into two classes —
+ * triggers under which an email was *dispatched*, and *satisfaction markers*
+ * under which the step is recorded complete but no message was sent:
  *
- * - a {@link OnboardingMilestone} — the milestone whose email actually sent;
- * - `"time_based"` — a fallback nudge sent because the milestone wasn't hit in time;
- * - `"demo_activated"` — a *satisfaction marker*, NOT an email send. Recorded when a
- *   demo-only signup activates the bundled demo so the `connect_database` drip step
- *   is marked done (drip advances, the 24h "connect your database" nudge is suppressed)
- *   without ever sending the misleading "connect your *own* database" copy (#3949).
- *   Unlike a milestone, it is never a key in the milestone→step map
- *   (`MILESTONE_TO_STEP`, api/lib/email/sequence.ts) — it only ever appears in a
- *   persisted record's `triggeredBy`.
+ * Dispatched:
+ * - `"signup_completed"` — the welcome email (sent immediately on signup). The
+ *   only milestone that mails proactively.
+ * - `"time_based"` — a fallback nudge sent because the step's milestone wasn't
+ *   hit within its `fallbackHours` window.
+ *
+ * Satisfaction markers (NO email — see api/lib/email/engine.ts `getSuppressedSteps`):
+ * - an *action* {@link OnboardingMilestone} (`database_connected`,
+ *   `first_query_executed`, `team_member_invited`, `feature_explored`) — recorded
+ *   when the user does the thing the step nudges toward. Mailing the nudge in the
+ *   same breath is backwards (a demo-only signup got "ask your first question" the
+ *   instant they asked — #3962), so reaching the milestone *suppresses* the nudge
+ *   instead: it marks the step done (the time-based fallback then skips it) without
+ *   sending. Recorded via `onMilestoneReached`.
+ * - `"demo_activated"` — the demo-only analogue for `connect_database`: a demo
+ *   signup activates the bundled demo, satisfying the step without the misleading
+ *   "connect your *own* database" copy (#3949). Never a key in the milestone→step
+ *   map (`MILESTONE_TO_STEP`, api/lib/email/sequence.ts) — it only ever appears in
+ *   a persisted record's `triggeredBy`.
  */
 export type OnboardingEmailTrigger = OnboardingMilestone | "time_based" | "demo_activated";
 

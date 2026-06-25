@@ -62,6 +62,25 @@ describe("renderOnboardingEmail", () => {
     expect(result.html).toContain(`${BASE_URL}/admin/connections`);
   });
 
+  it("first_query asserts the connected DB for a BYO signup (default)", () => {
+    const result = renderOnboardingEmail("first_query", BASE_URL, UNSUB_URL);
+    expect(result.html).toContain("Your database is connected");
+    expect(result.html).not.toContain("Your demo dataset is loaded");
+  });
+
+  it("first_query uses demo copy for a demo-only signup (#3962)", () => {
+    const result = renderOnboardingEmail("first_query", BASE_URL, UNSUB_URL, null, { demoMode: true });
+    // A demo-only signup never connected their own production DB, so the nudge
+    // must not assert it (the #3962 bug).
+    expect(result.html).not.toContain("Your database is connected");
+    expect(result.html).toContain("Your demo dataset is loaded");
+  });
+
+  it("explicit demoMode:false keeps BYO copy", () => {
+    const result = renderOnboardingEmail("first_query", BASE_URL, UNSUB_URL, null, { demoMode: false });
+    expect(result.html).toContain("Your database is connected");
+  });
+
   it("escapes HTML in branding text", () => {
     const result = renderOnboardingEmail("welcome", BASE_URL, UNSUB_URL, {
       logoUrl: null,

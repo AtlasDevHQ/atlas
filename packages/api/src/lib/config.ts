@@ -288,6 +288,20 @@ const RegionConfigSchema = z.object({
   datasourceUrl: z.string().min(1).optional(),
   /** Public API endpoint for this region (e.g. "https://api-eu.useatlas.dev"). */
   apiUrl: z.string().url().optional(),
+  /**
+   * Whether this region is offered to customers in the signup data-residency
+   * picker (`GET /api/v1/onboarding/regions`). Defaults to `true` when omitted.
+   *
+   * Set `false` for an **internal** region that must exist in the map for the
+   * boot guard (`RegionGuardLive`, `lib/effect/saas-guards.ts`) and region
+   * routing, but must never be a selectable residency choice for real signups.
+   * The canonical case is the shared-config `staging` arm: the api-staging soak
+   * service builds from the prod image/config and claims `ATLAS_API_REGION=
+   * staging`, so the entry is load-bearing for its boot — yet a real prod signup
+   * must not be able to pick it (#3948). `selectable: false` keeps the region
+   * present for boot/routing while filtering it out of the picker only.
+   */
+  selectable: z.boolean().optional(),
 });
 
 export type RegionConfigInput = z.input<typeof RegionConfigSchema>;

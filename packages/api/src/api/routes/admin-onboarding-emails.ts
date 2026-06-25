@@ -31,6 +31,9 @@ const OnboardingEmailStatusSchema = z.object({
   email: z.string(),
   orgId: z.string(),
   sentSteps: z.array(stepEnum),
+  // Steps satisfied without a send (e.g. demo activation) — completed in the
+  // drip but no email dispatched (#3949). Distinct from sentSteps.
+  suppressedSteps: z.array(stepEnum),
   pendingSteps: z.array(stepEnum),
   unsubscribed: z.boolean(),
   createdAt: z.string(),

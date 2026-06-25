@@ -9,19 +9,23 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 let mockEnabled = true;
 const mockSendOnboardingEmail = mock(() => Promise.resolve(true));
 const mockOnMilestoneReached = mock(() => Promise.resolve());
+const mockMarkStepSatisfied = mock(() => Promise.resolve(true));
 
 mock.module("../engine", () => ({
   isOnboardingEmailEnabled: () => mockEnabled,
   sendOnboardingEmail: mockSendOnboardingEmail,
   onMilestoneReached: mockOnMilestoneReached,
+  markStepSatisfied: mockMarkStepSatisfied,
 }));
 
 // --- Mock logger ---
 
+const mockLogWarn = mock(() => {});
+
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
-    warn: () => {},
+    warn: mockLogWarn,
     error: () => {},
     debug: () => {},
   }),
@@ -30,6 +34,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 const {
   onUserSignup,
   onDatabaseConnected,
+  onDemoActivated,
   onFirstQueryExecuted,
   onTeamMemberInvited,
   onFeatureExplored,
@@ -75,6 +80,46 @@ describe("onDatabaseConnected", () => {
     onDatabaseConnected(USER);
     await new Promise((r) => setTimeout(r, 10));
     expect(mockOnMilestoneReached).not.toHaveBeenCalled();
+  });
+});
+
+describe("onDemoActivated (#3949)", () => {
+  beforeEach(() => {
+    mockEnabled = true;
+    mockMarkStepSatisfied.mockClear();
+    mockOnMilestoneReached.mockClear();
+    mockSendOnboardingEmail.mockClear();
+  });
+
+  it("marks the connect_database step satisfied with the demo_activated trigger", async () => {
+    onDemoActivated(USER);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mockMarkStepSatisfied).toHaveBeenCalledWith("u1", "org1", "connect_database", "demo_activated");
+  });
+
+  it("does NOT fire the database_connected milestone (no 'connect your database' email)", async () => {
+    onDemoActivated(USER);
+    await new Promise((r) => setTimeout(r, 10));
+    // The demo path must never send the BYO connect_database email.
+    expect(mockOnMilestoneReached).not.toHaveBeenCalled();
+    expect(mockSendOnboardingEmail).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when feature disabled", async () => {
+    mockEnabled = false;
+    onDemoActivated(USER);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mockMarkStepSatisfied).not.toHaveBeenCalled();
+  });
+
+  it("catches errors and logs a warning (never silently swallows)", async () => {
+    mockLogWarn.mockClear();
+    mockMarkStepSatisfied.mockImplementation(() => Promise.reject(new Error("boom")));
+    onDemoActivated(USER);
+    await new Promise((r) => setTimeout(r, 10));
+    // The rejection was caught AND logged — not silently swallowed.
+    expect(mockLogWarn).toHaveBeenCalled();
+    mockMarkStepSatisfied.mockImplementation(() => Promise.resolve(true));
   });
 });
 

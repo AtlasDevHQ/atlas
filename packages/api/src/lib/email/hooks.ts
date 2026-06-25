@@ -7,7 +7,12 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { isOnboardingEmailEnabled, onMilestoneReached, sendOnboardingEmail } from "./engine";
+import {
+  isOnboardingEmailEnabled,
+  markStepSatisfied,
+  onMilestoneReached,
+  sendOnboardingEmail,
+} from "./engine";
 
 const log = createLogger("onboarding-hooks");
 
@@ -50,6 +55,32 @@ export function onDatabaseConnected(user: UserContext): void {
       log.warn(
         { userId: user.userId, err: err instanceof Error ? err.message : String(err) },
         "Failed to trigger database_connected milestone email",
+      );
+    },
+  );
+}
+
+/**
+ * Called after a demo-only signup activates the bundled demo (`/use-demo`).
+ *
+ * A demo user never connects their *own* database, so the `connect_database`
+ * step has two bad outcomes if left to the normal flow: firing the
+ * `database_connected` milestone would *send* the misleading "Connect your
+ * database" email, and conversely leaving the step unrecorded would let the 24h
+ * fallback nudge fire later. Marking the step satisfied (no email) avoids both
+ * and advances the drip cleanly. The rest of the sequence (first_query,
+ * invite_team, …) is unaffected.
+ *
+ * Fire-and-forget — errors are logged, not thrown.
+ */
+export function onDemoActivated(user: UserContext): void {
+  if (!isOnboardingEmailEnabled()) return;
+
+  void markStepSatisfied(user.userId, user.orgId, "connect_database", "demo_activated").catch(
+    (err) => {
+      log.warn(
+        { userId: user.userId, err: err instanceof Error ? err.message : String(err) },
+        "Failed to mark connect_database step satisfied for demo activation",
       );
     },
   );

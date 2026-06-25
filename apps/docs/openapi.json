@@ -45158,6 +45158,19 @@
                               ]
                             }
                           },
+                          "suppressedSteps": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "welcome",
+                                "connect_database",
+                                "first_query",
+                                "invite_team",
+                                "explore_features"
+                              ]
+                            }
+                          },
                           "pendingSteps": {
                             "type": "array",
                             "items": {
@@ -45183,6 +45196,7 @@
                           "email",
                           "orgId",
                           "sentSteps",
+                          "suppressedSteps",
                           "pendingSteps",
                           "unsubscribed",
                           "createdAt"

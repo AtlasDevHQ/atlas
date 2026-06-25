@@ -68,6 +68,17 @@ function regionsUnconfigured(): Response {
   );
 }
 
+function regionsConfigured(): Response {
+  return new Response(
+    JSON.stringify({
+      configured: true,
+      defaultRegion: "us",
+      availableRegions: [{ id: "us", label: "United States", isDefault: true }],
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
 beforeEach(() => {
   routerReplaceMock.mockReset();
   routerPushMock.mockReset();
@@ -132,6 +143,40 @@ describe("RegionPage — load failure recovery (#3925)", () => {
     });
     const support = screen.getByRole("link", { name: /contact support/i });
     expect((support as HTMLAnchorElement).href).toContain("mailto:support@useatlas.dev");
+  });
+
+  test("a successful load after failures clears the persistent copy — no leak into later errors (#3945)", async () => {
+    // Two failed /regions loads, then success — the persistent-outage copy must
+    // not survive the successful load (loadAttempts resets), so a later
+    // assign-region failure can't inherit the wrong message.
+    let regionsCalls = 0;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/onboarding/regions")) {
+        regionsCalls += 1;
+        return regionsCalls <= 2 ? regionsFailure() : regionsConfigured();
+      }
+      return regionsFailure();
+    });
+    render(<RegionPage />);
+
+    // Drive into the persistent state (initial load + one retry both fail).
+    const retry = await screen.findByRole("button", { name: /^retry$/i });
+    await act(async () => {
+      fireEvent.click(retry);
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/still unable to load region options/i)).toBeDefined();
+    });
+
+    // Retry once more — this load succeeds; persistent copy + support link clear.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /continue with default region/i })).toBeDefined();
+    });
+    expect(screen.queryByText(/still unable to load region options/i)).toBeNull();
+    expect(screen.queryByRole("link", { name: /contact support/i })).toBeNull();
   });
 });
 

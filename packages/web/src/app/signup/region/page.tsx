@@ -70,6 +70,10 @@ export default function RegionPage() {
         setDefaultRegion(data.defaultRegion);
         // Pre-select the default region
         setSelected(data.defaultRegion);
+        // Reset on success so a later, unrelated failure (e.g. assign-region
+        // in handleContinue) doesn't inherit the "persistent load outage" copy
+        // — the count tracks region-*load* failures only.
+        setLoadAttempts(0);
         setLoading(false);
       })
       .catch((err: unknown) => {

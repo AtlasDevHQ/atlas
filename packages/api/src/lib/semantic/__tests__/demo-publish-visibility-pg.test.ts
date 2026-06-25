@@ -44,6 +44,9 @@ import {
   _resetWhitelists,
   _resetPluginEntities,
 } from "@atlas/api/lib/semantic/whitelist";
+import { connections } from "@atlas/api/lib/db/connection";
+import { withRequestContext } from "@atlas/api/lib/logger";
+import { validateSQL } from "@atlas/api/lib/tools/sql";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -397,5 +400,273 @@ describeIfPg("demo first-answer: executeSQL whitelist resolves the demo tables (
     await loadOrgWhitelist(orgId, "published");
     const allowed = getOrgWhitelistedTables(orgId, "default", "published");
     expect(allowed.size).toBe(0);
+  });
+});
+
+/**
+ * LIVE-Postgres regression for the demo first-answer dead-end STILL not fixed in
+ * prod after #3947 (#3961).
+ *
+ * #3947 broadened the union fallback in `getOrgWhitelistedTables`, but ONLY for
+ * the literal `connectionId === "default"` sentinel. The real prod path never
+ * passes `"default"`: an unpinned chat conversation (reach = "All sources", no
+ * agent-named group) collapses `executeSQL`'s `currentMember` to the
+ * conversation's own `requestContextConnectionId` — a REAL, non-`"default"`
+ * connection id stamped by the chat route — which matches NO entity bucket
+ * (entities key under `connection_group_id`). So the direct lookup missed AND the
+ * literal-`"default"` union was bypassed → every demo table rejected on the first
+ * answer, while `GET /api/v1/tables` (the web page fetches it with no
+ * `connectionId` → resolves `"default"` → unions) still listed the full demo set.
+ * That asymmetry is exactly what `/verify-prod-signup` caught post-v0.0.28.
+ *
+ * The fix threads an explicit `unpinned` signal from `validateSQL` (derived from
+ * the RequestContext: All-sources reach AND the lookup id IS the conversation's
+ * own connection) into `getOrgWhitelistedTables`, so the union fires for the
+ * real-id unpinned case too — not only the literal sentinel.
+ *
+ * These tests feed the lookup the ACTUAL `requestContextConnectionId` a demo
+ * conversation carries (a real id, NOT `"default"`), so a fix that only satisfies
+ * the literal-`"default"` unit test (the #3947 gap) fails here. The final test
+ * drives the full `validateSQL` boundary inside a `withRequestContext`, pinning
+ * the RequestContext → `unpinned` derivation end-to-end.
+ */
+describeIfPg("demo first-answer: real requestContextConnectionId resolves the demo tables (#3961)", () => {
+  let pool: Pool;
+  const schemaName = `demo_3961_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  let prevDatabaseUrl: string | undefined;
+
+  /** The real, non-`"default"` connection id an unpinned demo conversation carries. */
+  const CONV_CONN_ID = "demo-conn-7f3a";
+
+  async function install(orgId: string, installId: string, config: Record<string, unknown>): Promise<void> {
+    await pool.query(
+      `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, status, installed_at)
+       VALUES ($1, $2, 'catalog:demo-3961', $3, 'datasource', $4::jsonb, true, 'published', NOW())
+       ON CONFLICT (workspace_id, catalog_id, install_id)
+         DO UPDATE SET status = 'published', config = EXCLUDED.config`,
+      [`${orgId}-${installId}`, orgId, installId, JSON.stringify(config)],
+    );
+  }
+
+  async function seedEntities(orgId: string, installId: string, tables: string[]): Promise<void> {
+    await bulkUpsertEntities(
+      orgId,
+      tables.map((t) => ({
+        entityType: "entity" as const,
+        name: t,
+        yamlContent: `table: ${t}\ndescription: ${t}\n`,
+        connectionId: installId,
+      })),
+      internalQuery,
+      "published",
+    );
+  }
+
+  beforeAll(async () => {
+    prevDatabaseUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = TEST_DB_URL;
+    pool = new Pool({ connectionString: TEST_DB_URL });
+    pool.on("connect", (client) => {
+      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`demo-3961: SET search_path failed: ${message}`);
+      });
+    });
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+    _resetPool(pool as unknown as InternalPool);
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+       VALUES ('catalog:demo-3961', 'Demo Postgres', 'demo-3961', 'datasource', 'datasource', 'form')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+  }, PG_TEST_TIMEOUT_MS * 2);
+
+  /** The conversation's own connection id, a sibling WITH a bucket, and an empty sibling. */
+  const SIBLING_CONN_ID = "warehouse";
+  const EMPTY_SIBLING_CONN_ID = "warehouse-empty";
+
+  afterEach(() => {
+    _resetWhitelists();
+    _resetOrgWhitelists();
+    _resetPluginEntities();
+    connections.unregister(CONV_CONN_ID);
+    connections.unregister(SIBLING_CONN_ID);
+    connections.unregister(EMPTY_SIBLING_CONN_ID);
+  });
+
+  afterAll(async () => {
+    _resetPool(null);
+    if (prevDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = prevDatabaseUrl;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`demo-3961: schema cleanup failed: ${message}`);
+    });
+    await pool.end();
+  });
+
+  const DEMO_TABLES = ["order_items", "products", "categories", "orders"];
+
+  it("the REAL conversation connection id (not `default`) dead-ends WITHOUT the unpinned flag — reproduces the #3961 prod bug", async () => {
+    // Entities key under the demo install bucket (`__demo__`); the conversation
+    // carries a different real connection id. This is the prod shape: the
+    // pre-#3961 lookup (`getOrgWhitelistedTables(orgId, <real id>)`, no union)
+    // returns EMPTY — the exact dead-end `/verify-prod-signup` hit, and exactly
+    // what the literal-`"default"` #3947 test could never catch.
+    const orgId = `org-3961-repro-${Math.floor(Math.random() * 1e6)}`;
+    await install(orgId, DEMO_INSTALL, { db_type: "postgres" });
+    await seedEntities(orgId, DEMO_INSTALL, DEMO_TABLES);
+
+    invalidateOrgWhitelist(orgId);
+    await loadOrgWhitelist(orgId, "published");
+
+    const deadEnd = getOrgWhitelistedTables(orgId, CONV_CONN_ID, "published");
+    expect(deadEnd.size).toBe(0); // every demo table rejected — the bug
+
+    const fixed = getOrgWhitelistedTables(orgId, CONV_CONN_ID, "published", { unpinned: true });
+    for (const t of DEMO_TABLES) expect(fixed.has(t)).toBe(true); // the fix
+  });
+
+  it("unpinned union across multiple buckets resolves the demo tables for the real conversation id (config.group_id shape)", async () => {
+    // The realistic multi-bucket shape: the demo install carries an explicit
+    // `config.group_id`, so entities key under BOTH the group AND its member.
+    // The conversation still carries its own distinct connection id → direct miss
+    // → without the union, empty. The unpinned union must resolve the full set.
+    const orgId = `org-3961-groupid-${Math.floor(Math.random() * 1e6)}`;
+    await install(orgId, DEMO_INSTALL, { db_type: "postgres", group_id: "grp_demo" });
+    await seedEntities(orgId, DEMO_INSTALL, DEMO_TABLES);
+
+    invalidateOrgWhitelist(orgId);
+    const wl = await loadOrgWhitelist(orgId, "published");
+    expect(wl.size).toBeGreaterThan(1); // multi-bucket — the shape #3947 missed
+    expect(wl.has(CONV_CONN_ID)).toBe(false); // the conversation id is NOT a bucket key
+
+    const fixed = getOrgWhitelistedTables(orgId, CONV_CONN_ID, "published", { unpinned: true });
+    for (const t of DEMO_TABLES) expect(fixed.has(t)).toBe(true);
+  });
+
+  it("a PINNED real connection id is NOT widened by the absence of the unpinned flag (isolation preserved)", async () => {
+    // The unpinned union fires ONLY when the caller passes `unpinned: true`. A
+    // query the agent pinned to a real connection/group id is resolved WITHOUT
+    // the flag, so it sees its own bucket alone — a connection with no bucket
+    // gets the empty set, never the union of its siblings.
+    const orgId = `org-3961-pinned-${Math.floor(Math.random() * 1e6)}`;
+    await install(orgId, DEMO_INSTALL, { db_type: "postgres" });
+    await install(orgId, "warehouse", { db_type: "postgres" });
+    await seedEntities(orgId, DEMO_INSTALL, ["order_items", "products"]);
+    await seedEntities(orgId, "warehouse", ["widgets"]);
+
+    invalidateOrgWhitelist(orgId);
+    await loadOrgWhitelist(orgId, "published");
+
+    // Pinned to a real bucket → that bucket alone (direct hit), no union.
+    const warehouseOnly = getOrgWhitelistedTables(orgId, "warehouse", "published");
+    expect(warehouseOnly.has("widgets")).toBe(true);
+    expect(warehouseOnly.has("order_items")).toBe(false);
+
+    // Pinned to a real id with NO bucket, WITHOUT the unpinned flag → empty, not
+    // the union (the leak the flag-gating prevents).
+    const pinnedMiss = getOrgWhitelistedTables(orgId, CONV_CONN_ID, "published");
+    expect(pinnedMiss.size).toBe(0);
+  });
+
+  it("validateSQL accepts a demo table for an UNPINNED conversation carrying the real connection id (full boundary)", async () => {
+    // The end-to-end #3961 boundary: drive `validateSQL` exactly as `executeSQL`
+    // does on a demo first answer — a RequestContext with All-sources reach
+    // (`groupReach` absent) and `connectionId` = the conversation's own real id,
+    // and the SAME id as the lookup `connId`. `validateSQL` must derive
+    // `unpinned: true` and accept the demo table, instead of rejecting it as "not
+    // in the allowed list".
+    const orgId = `org-3961-validate-${Math.floor(Math.random() * 1e6)}`;
+    await install(orgId, DEMO_INSTALL, { db_type: "postgres" });
+    await seedEntities(orgId, DEMO_INSTALL, DEMO_TABLES);
+    invalidateOrgWhitelist(orgId);
+    await loadOrgWhitelist(orgId, "published");
+
+    // Register the conversation's connection so `getDBType` resolves (postgres);
+    // no pool is opened — `validateSQL` only parses + whitelist-checks.
+    connections.register(CONV_CONN_ID, { url: TEST_DB_URL! });
+
+    // Unpinned conversation: groupReach omitted (All sources), connectionId = the
+    // real conversation id. `executeSQL`'s `currentMember` collapses to this same
+    // id, so we pass it as the validateSQL `connId`.
+    const accepted = await withRequestContext(
+      { requestId: "test-3961-unpinned", atlasMode: "published", connectionId: CONV_CONN_ID },
+      () => validateSQL("SELECT order_total FROM orders LIMIT 10", CONV_CONN_ID, orgId),
+    );
+    expect(accepted.valid).toBe(true);
+
+    // Contrast: a FOCUSED conversation (groupReach set to a different group) is
+    // not All-sources → `unpinned` stays false → the demo bucket is not unioned
+    // in → the same query is rejected. Locks the derivation's isolation side.
+    const rejected = await withRequestContext(
+      {
+        requestId: "test-3961-focused",
+        atlasMode: "published",
+        connectionId: CONV_CONN_ID,
+        groupReach: "grp_other",
+      },
+      () => validateSQL("SELECT order_total FROM orders LIMIT 10", CONV_CONN_ID, orgId),
+    );
+    expect(rejected.valid).toBe(false);
+  });
+
+  it("validateSQL does NOT widen an agent pin to a SIBLING connection under All-sources reach (isolation — locks the equality clause)", async () => {
+    // The load-bearing half of the derivation: `unpinned` requires the lookup id
+    // to BE the conversation's own connection. When the agent pins a different
+    // (sibling) connection while reach is still All-sources, `currentMember` is
+    // the sibling id ≠ `reqCtx.connectionId`, so `unpinned` MUST stay false and
+    // the sibling resolves its own bucket alone — never the org-wide union.
+    //
+    // The EMPTY-bucket sibling is what actually locks the equality clause: a
+    // sibling WITH a bucket is isolated by the `tables.size === 0` direct-hit
+    // short-circuit regardless of the flag, so dropping the clause would still
+    // pass. Only an empty-bucket pin reaches the union, so the empty-sibling
+    // assertion below FLIPS (reject → accept, demo tables leak) if a future edit
+    // drops `connectionId === sqlReqCtx?.connectionId`.
+    const orgId = `org-3961-sibling-${Math.floor(Math.random() * 1e6)}`;
+    await install(orgId, DEMO_INSTALL, { db_type: "postgres" });
+    await install(orgId, SIBLING_CONN_ID, { db_type: "postgres" });
+    await install(orgId, EMPTY_SIBLING_CONN_ID, { db_type: "postgres" });
+    await seedEntities(orgId, DEMO_INSTALL, DEMO_TABLES);
+    await seedEntities(orgId, SIBLING_CONN_ID, ["widgets"]);
+    // EMPTY_SIBLING_CONN_ID intentionally gets NO entities — an empty bucket.
+    invalidateOrgWhitelist(orgId);
+    await loadOrgWhitelist(orgId, "published");
+
+    // Registered so `getDBType` resolves (postgres); no pool is opened.
+    connections.register(CONV_CONN_ID, { url: TEST_DB_URL! });
+    connections.register(SIBLING_CONN_ID, { url: TEST_DB_URL! });
+    connections.register(EMPTY_SIBLING_CONN_ID, { url: TEST_DB_URL! });
+
+    // Conversation is unpinned (All sources), but the agent pins a SIBLING for
+    // this query → lookup connId = sibling ≠ the conversation id.
+    const ctx = {
+      requestId: "test-3961-sibling",
+      atlasMode: "published" as const,
+      connectionId: CONV_CONN_ID,
+    };
+
+    // THE LOCK: an EMPTY-bucket sibling pin would reach the union if `unpinned`
+    // wrongly flipped true (dropped equality clause) → demo `orders` would leak.
+    // With the clause, `unpinned` stays false → empty set → demo `orders` rejected.
+    const emptySiblingLeak = await withRequestContext(ctx, () =>
+      validateSQL("SELECT order_total FROM orders LIMIT 10", EMPTY_SIBLING_CONN_ID, orgId),
+    );
+    expect(emptySiblingLeak.valid).toBe(false);
+
+    // A non-empty sibling pin is also not widened (here the direct-hit
+    // short-circuit does the isolating) — demo `orders` still rejected.
+    const fullSiblingLeak = await withRequestContext(ctx, () =>
+      validateSQL("SELECT order_total FROM orders LIMIT 10", SIBLING_CONN_ID, orgId),
+    );
+    expect(fullSiblingLeak.valid).toBe(false);
+
+    // The sibling's OWN table still validates — isolation, not a blanket deny.
+    const ownBucket = await withRequestContext(ctx, () =>
+      validateSQL("SELECT id FROM widgets LIMIT 10", SIBLING_CONN_ID, orgId),
+    );
+    expect(ownBucket.valid).toBe(true);
   });
 });

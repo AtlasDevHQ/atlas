@@ -635,8 +635,36 @@ export async function validateSQL(sql: string, connectionId?: string, workspaceI
       if (orgId) {
         await loadOrgWhitelist(orgId, sqlReqCtx?.atlasMode);
       }
+      // #3961 — an UNPINNED chat conversation ("All sources" reach, no
+      // agent-named group) carries the conversation's own connection id as
+      // `currentMember` (`requestContextConnectionId`), NOT the literal
+      // `"default"` sentinel the #3947 union fallback keyed on. That real id
+      // matches no entity bucket (entities key under `connection_group_id`), so
+      // the direct lookup missed AND the literal-`"default"` union was bypassed →
+      // every demo table rejected on the first answer, while `/api/v1/tables`
+      // (fetched with no connectionId → resolves "default" → unions) still listed
+      // the full demo set. Detect the unpinned case here — All-sources reach AND
+      // the lookup id IS the conversation's own connection — and tell the
+      // whitelist to union every bucket, matching `/api/v1/tables`.
+      //
+      // The `connectionId === sqlReqCtx?.connectionId` clause is load-bearing: it
+      // keeps `unpinned = false` for an agent pin to a SIBLING connection
+      // (`currentMember` ≠ the conversation's own id), so an explicit pin is never
+      // widened to the union. A user-pinned or fanout self-leg CAN still derive
+      // `unpinned = true`, but its own bucket is non-empty, so isolation there is
+      // preserved by the `tables.size === 0` direct-hit short-circuit in
+      // `getOrgWhitelistedTables` — not by this flag. Reach is decoded via the
+      // canonical `reachStateFromColumn` SSOT so this notion of "All sources"
+      // can't drift from `executeSQL`'s reach gate (a falsy-but-non-null
+      // `groupReach` is "all", which a bare `?? null` check would miss).
+      const unpinnedAllSources =
+        reachStateFromColumn(sqlReqCtx?.groupReach).kind === "all" &&
+        connectionId !== undefined &&
+        connectionId === sqlReqCtx?.connectionId;
       const allowed = orgId
-        ? getOrgWhitelistedTables(orgId, connectionId, sqlReqCtx?.atlasMode)
+        ? getOrgWhitelistedTables(orgId, connectionId, sqlReqCtx?.atlasMode, {
+            unpinned: unpinnedAllSources,
+          })
         : getWhitelistedTables(connectionId);
 
       // Self-hosted reads its whitelist from on-disk `catalog.yml` / entity

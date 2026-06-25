@@ -130,6 +130,49 @@ describe("sendOnboardingEmail", () => {
   });
 });
 
+describe("sendOnboardingEmail demo-awareness (#3962 — reads datasource state, not the drip marker)", () => {
+  beforeEach(() => {
+    process.env.ATLAS_ONBOARDING_EMAILS_ENABLED = "true";
+    mockHasDB = true;
+    mockDeliveryResult = { success: true, provider: "log" };
+  });
+
+  // workspace_plugins state → (has_demo, has_real) the isDemoOnlyWorkspace probe returns.
+  async function sendFirstQueryWith(pluginRow: { has_demo: boolean | null; has_real: boolean | null }) {
+    const { internalQuery } = await import("@atlas/api/lib/db/internal");
+    const { sendEmail } = await import("../delivery");
+    (internalQuery as ReturnType<typeof mock>).mockClear();
+    (sendEmail as ReturnType<typeof mock>).mockClear();
+    (internalQuery as ReturnType<typeof mock>).mockImplementation((sql: string) => {
+      if (typeof sql === "string" && sql.includes("workspace_plugins")) return Promise.resolve([pluginRow]);
+      // not unsubscribed / nothing sent yet / no branding
+      return Promise.resolve([]);
+    });
+    await sendOnboardingEmail("u1", "demo@example.com", "org1", "first_query", "time_based");
+    const call = (sendEmail as ReturnType<typeof mock>).mock.calls[0];
+    return (call?.[0] as { html?: string } | undefined)?.html ?? "";
+  }
+
+  it("uses demo copy for a demo-only workspace (demo datasource, no real one)", async () => {
+    const html = await sendFirstQueryWith({ has_demo: true, has_real: false });
+    expect(html).toContain("Your demo dataset is loaded");
+    expect(html).not.toContain("Your database is connected");
+  });
+
+  it("uses BYO copy once the workspace graduates to a real datasource (demo + real)", async () => {
+    // The graduation case the marker-based check missed: a demo workspace that
+    // later connects its own DB must NOT keep getting demo copy.
+    const html = await sendFirstQueryWith({ has_demo: true, has_real: true });
+    expect(html).toContain("Your database is connected");
+    expect(html).not.toContain("Your demo dataset is loaded");
+  });
+
+  it("uses BYO copy for a workspace with no datasource at all (bool_or → null)", async () => {
+    const html = await sendFirstQueryWith({ has_demo: null, has_real: null });
+    expect(html).toContain("Your database is connected");
+  });
+});
+
 describe("onMilestoneReached (#3962 — action milestones suppress the nudge, no in-turn email)", () => {
   beforeEach(() => {
     process.env.ATLAS_ONBOARDING_EMAILS_ENABLED = "true";
@@ -296,10 +339,6 @@ describe("getOnboardingStatuses distinguishes suppressed steps from sent (#3949,
       }
       if (typeof sql === "string" && sql.includes('SELECT m."userId" as user_id')) {
         return Promise.resolve([{ user_id: "u1", email: "demo@example.com", created_at: "2026-03-20T00:00:00Z" }]);
-      }
-      // isDemoOnlySignup probe (LIMIT 1) — only matters for send-time copy, harmless here.
-      if (typeof sql === "string" && sql.includes("LIMIT 1") && sql.includes("'demo_activated'")) {
-        return Promise.resolve([{ one: 1 }]);
       }
       // getSentSteps + getSuppressedSteps now both read `SELECT step, triggered_by …`
       // (no triggered_by filter); the suppressed/sent split is computed in JS from

@@ -128,26 +128,40 @@ async function getSuppressedSteps(userId: string): Promise<OnboardingEmailStep[]
 }
 
 /**
- * Whether this signup activated the bundled demo rather than connecting their
- * own production database — true when the `connect_database` step was satisfied
- * by demo activation (#3949). Drives demo-aware email copy (#3962): a demo-only
- * user must never receive a nudge asserting "your database is connected".
+ * Whether this workspace is on the bundled demo and has NOT connected its own
+ * production datasource — true when a published `__demo__` datasource install
+ * exists and no non-demo one does. Drives demo-aware email copy (#3962): a
+ * demo-only workspace must never receive a nudge asserting "your database is
+ * connected".
  *
- * Defaults to false (BYO copy) on any read error or when the marker is absent —
- * the same safe default the BYO drip already assumes.
+ * This reads the live datasource install state (`workspace_plugins`), NOT the
+ * onboarding drip's `demo_activated` marker, deliberately. The marker is a
+ * per-user, write-once record: the `(user_id, step)` unique index means a later
+ * real `database_connected` can never overwrite it, and the admin-console
+ * connect path doesn't fire that milestone at all — so a workspace that
+ * *graduates* from the demo to its own DB would keep looking "demo-only" by the
+ * marker forever. The install state is org-scoped ground truth that flips
+ * correctly however the real datasource was added, and a workspace with no
+ * datasource at all reads false (BYO default) rather than a false "demo loaded"
+ * claim. `bool_or` over zero rows is NULL → false.
+ *
+ * Defaults to false (BYO copy) on any read error — the same safe default the
+ * BYO drip already assumes.
  */
-async function isDemoOnlySignup(userId: string): Promise<boolean> {
+async function isDemoOnlyWorkspace(orgId: string): Promise<boolean> {
   try {
-    const rows = await internalQuery<{ one: number }>(
-      `SELECT 1 AS one FROM onboarding_emails
-       WHERE user_id = $1 AND step = 'connect_database' AND triggered_by = 'demo_activated'
-       LIMIT 1`,
-      [userId],
+    const rows = await internalQuery<{ has_demo: boolean | null; has_real: boolean | null }>(
+      `SELECT bool_or(install_id = '__demo__')  AS has_demo,
+              bool_or(install_id <> '__demo__') AS has_real
+         FROM workspace_plugins
+        WHERE workspace_id = $1 AND pillar = 'datasource' AND status = 'published'`,
+      [orgId],
     );
-    return rows.length > 0;
+    const row = rows[0];
+    return Boolean(row?.has_demo) && !row?.has_real;
   } catch (err) {
     log.warn(
-      { userId, err: err instanceof Error ? err.message : String(err) },
+      { orgId, err: err instanceof Error ? err.message : String(err) },
       "Failed to resolve demo-only status — defaulting to BYO email copy",
     );
     return false;
@@ -239,7 +253,7 @@ export async function sendOnboardingEmail(
     // "your database is connected" (#3962). Independent reads — run together.
     const [branding, demoMode] = await Promise.all([
       getBrandingForOrg(orgId),
-      isDemoOnlySignup(userId),
+      isDemoOnlyWorkspace(orgId),
     ]);
     const baseUrl = getBaseUrl();
     const unsubscribeUrl = buildUnsubscribeUrl(userId);

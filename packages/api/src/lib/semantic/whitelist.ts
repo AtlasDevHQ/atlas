@@ -797,23 +797,29 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
  * so a published-mode load won't satisfy a developer-mode lookup. Returns an
  * empty set if the requested cache has not been loaded.
  *
- * When `connectionId` is the unpinned sentinel `"default"`, the direct lookup
- * yields no tables, and the org has no bucket literally keyed `"default"` (the
- * usual case — entities key under their `connection_group_id`: `"__demo__"`, a
- * wizard id, an explicit group), the lookup falls back to the UNION of every
- * connection bucket the org has — the "All sources" reach an unpinned query
- * carries. This is what keeps the agent's query-time whitelist in lockstep with
- * `/api/v1/tables` for a demo / multi-connection workspace (#2142, broadened in
- * #3947). A real `"default"` bucket short-circuits the fallback (direct hit
- * wins), and a query pinned to a real connection id resolves that connection's
- * bucket alone (no widening).
+ * When the query is UNPINNED ("All sources" reach, no agent-named group), the
+ * direct lookup yields no tables (entities key under their `connection_group_id`:
+ * `"__demo__"`, a wizard id, an explicit group — never `"default"`), so the
+ * lookup falls back to the UNION of every connection bucket the org has. This is
+ * what keeps the agent's query-time whitelist in lockstep with `/api/v1/tables`
+ * for a demo / multi-connection workspace (#2142, broadened in #3947). The
+ * unpinned signal is either the literal `"default"` sentinel (no-context callers)
+ * or `opts.unpinned` (the chat path, whose `currentMember` is the conversation's
+ * own real `requestContextConnectionId` — #3961). A non-empty direct hit
+ * short-circuits the fallback (direct hit wins), and a query pinned to a real
+ * connection id resolves that connection's bucket alone (no widening).
  *
  * @param mode - `"published"` → published-only cache; `"developer"` → overlay
  *   cache (drafts on published, tombstones hidden, archived-connection entities
  *   excluded); omitted → legacy cache built from `listEntityRows` with no status
  *   filter (includes tombstones and archived rows).
  */
-export function getOrgWhitelistedTables(orgId: string, connectionId: string = "default", mode?: "published" | "developer"): Set<string> {
+export function getOrgWhitelistedTables(
+  orgId: string,
+  connectionId: string = "default",
+  mode?: "published" | "developer",
+  opts?: { readonly unpinned?: boolean },
+): Set<string> {
   const cacheKey = whitelistCacheKey(orgId, mode);
   const cached = _orgWhitelists.get(cacheKey);
   if (!cached) {
@@ -822,34 +828,40 @@ export function getOrgWhitelistedTables(orgId: string, connectionId: string = "d
   }
   const byConnection = cached.tables;
 
-  // Unpinned-`default` fallback (#2142, broadened for #3947).
+  // Unpinned "All sources" fallback (#2142, broadened for #3947, fixed for #3961).
   //
-  // `executeSQL` collapses an unpinned conversation to the literal sentinel
-  // `connectionId = "default"` (tools/sql.ts: `currentMember = … ?? "default"`),
-  // but org entities are keyed under their `connection_group_id` — `"__demo__"` for
-  // a group-of-one demo install, a user-chosen id for a wizard datasource, or an
-  // explicit `config.group_id`. None of those is `"default"`, so the direct
-  // lookup misses and the agent rejects every table on the user's first query
-  // ("not in the allowed list") even though `/api/v1/tables` — which resolves the
-  // demo connection id explicitly — lists them.
+  // Org entities are keyed under their `connection_group_id` — `"__demo__"` for a
+  // group-of-one demo install, a user-chosen id for a wizard datasource, or an
+  // explicit `config.group_id`. An UNPINNED conversation (reach = "All sources",
+  // no agent-named group) has no single bucket to point at — its correct answer
+  // is the UNION of every bucket the org has, exactly the set `/api/v1/tables`
+  // advertises. Without this, the direct lookup misses and the agent rejects
+  // every table on the user's first query ("not in the allowed list").
   //
-  // The original fallback only rescued the SINGLE-bucket org (exactly one
-  // connection group, not named "default"). That broke the moment a second
-  // bucket existed — the demo install carrying an explicit `config.group_id`
-  // (which keys entities under both the group AND its member id), or a second
-  // datasource connected alongside the demo (#3947). An unpinned `default` query
-  // has reach = "All sources" (no group focus), so the correct resolution is the
-  // UNION of every bucket the org has — exactly the set the workspace advertises.
-  // This fires ONLY for the unpinned `"default"` sentinel with no own bucket; a
-  // query pinned to a real connection id still resolves that connection's bucket
-  // alone, so cross-connection isolation is preserved.
+  // The "is this query unpinned?" signal arrives two ways, because `executeSQL`'s
+  // `currentMember` resolves differently per caller:
+  //   • Literal `"default"` sentinel — callers with no RequestContext (MCP /
+  //     scheduler / direct tool calls) collapse to `… ?? "default"`.
+  //   • `opts.unpinned` — the chat path's `currentMember` collapses to the
+  //     conversation's own `requestContextConnectionId` (a REAL, non-`"default"`
+  //     id), so the literal check alone missed it and dead-ended the demo first
+  //     answer in prod even after #3947. `validateSQL` derives the flag from the
+  //     RequestContext (All-sources reach + the lookup id IS the conversation's
+  //     own connection) and threads it here (#3961).
+  //
+  // Fires ONLY for the unpinned case; a query the agent pinned to a real
+  // connection/group id resolves that bucket alone (direct hit), so
+  // cross-connection isolation is preserved. The `tables.size === 0` guard means
+  // a non-empty direct hit always wins over the union, and `byConnection.size >= 1`
+  // keeps a loaded-but-empty org fail-closed (no phantom union).
   let tables = new Set(byConnection.get(connectionId) ?? []);
-  if (
-    tables.size === 0 &&
-    connectionId === "default" &&
-    byConnection.size >= 1 &&
-    !byConnection.has("default")
-  ) {
+  const unionUnpinned =
+    // Literal sentinel with no own `"default"` bucket (a real default bucket
+    // would have been a non-empty direct hit, short-circuiting via tables.size).
+    (connectionId === "default" && !byConnection.has("default")) ||
+    // Real `requestContextConnectionId` carried by an unpinned chat conversation.
+    opts?.unpinned === true;
+  if (tables.size === 0 && unionUnpinned && byConnection.size >= 1) {
     tables = new Set<string>();
     for (const bucket of byConnection.values()) {
       for (const t of bucket) tables.add(t);
@@ -859,9 +871,10 @@ export function getOrgWhitelistedTables(orgId: string, connectionId: string = "d
         orgId,
         requestedConnectionId: connectionId,
         resolvedConnectionIds: Array.from(byConnection.keys()),
+        unpinned: opts?.unpinned === true,
         mode: mode ?? "developer",
       },
-      "getOrgWhitelistedTables: unpinned-default fallback resolved the union of all connection buckets",
+      "getOrgWhitelistedTables: unpinned All-sources fallback resolved the union of all connection buckets",
     );
   }
 

@@ -31,7 +31,6 @@ mock.module("@/lib/api-url", () => ({
   // getApiBase() falls back to window.location.origin when getApiUrl() is empty.
   getApiUrl: () => "",
   isCrossOrigin: () => false,
-  setRegionalApiUrl: () => {},
   _resetApiUrl: () => {},
 }));
 

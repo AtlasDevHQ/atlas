@@ -162,7 +162,11 @@ const RegionMapResponseSchema = RegionRoutingMapSchema.openapi("RegionRoutingMap
 // Routes
 // ---------------------------------------------------------------------------
 
-const regionRouting = new OpenAPIHono({ defaultHook: validationHook });
+// `requestId` Variable so the public region-map handler can seed one for 500
+// correlation (no auth middleware runs on these pre-auth routes to set it).
+const regionRouting = new OpenAPIHono<{ Variables: { requestId: string } }>({
+  defaultHook: validationHook,
+});
 
 const regionMapRoute = createRoute({
   method: "get",
@@ -233,6 +237,10 @@ const regionProbeRoute = createRoute({
 
 // GET /region-map — the front-door's routing map (public, EE-gated config read).
 regionRouting.openapi(regionMapRoute, async (c) => {
+  // This is a public pre-auth route with no requestId middleware, so seed one
+  // (parity with POST /region-probe) — otherwise runEffect's generic 500 path
+  // would log + return `requestId: "unknown"`, defeating log↔response correlation.
+  c.set("requestId", crypto.randomUUID());
   return runEffect(
     c,
     Effect.gen(function* () {

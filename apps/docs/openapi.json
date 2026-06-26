@@ -29,27 +29,7 @@
           "regions": {
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "label": {
-                  "type": "string"
-                },
-                "apiUrl": {
-                  "type": "string"
-                },
-                "isDefault": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "id",
-                "label",
-                "apiUrl",
-                "isDefault"
-              ]
+              "$ref": "#/components/schemas/RegionRoutingMapEntry"
             }
           }
         },
@@ -57,6 +37,29 @@
           "configured",
           "defaultRegion",
           "regions"
+        ]
+      },
+      "RegionRoutingMapEntry": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "apiUrl": {
+            "type": "string"
+          },
+          "isDefault": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "apiUrl",
+          "isDefault"
         ]
       },
       "RegionProbeResponse": {

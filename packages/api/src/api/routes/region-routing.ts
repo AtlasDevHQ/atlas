@@ -50,8 +50,7 @@ import {
 } from "@atlas/api/lib/public-rate-limit";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema } from "./shared-schemas";
-import { RegionRoutingMapSchema } from "@useatlas/schemas";
-import type { RegionRoutingMapEntry } from "@useatlas/types";
+import type { RegionRoutingMap, RegionRoutingMapEntry } from "@useatlas/types";
 import type { ResidencyConfig } from "@atlas/api/lib/config";
 
 const log = createLogger("region-routing");
@@ -153,10 +152,29 @@ const RegionProbeResponseSchema = z
   .object({ exists: z.boolean() })
   .openapi("RegionProbeResponse");
 
-// The region-map response shape is the SSOT `RegionRoutingMapSchema` from
-// `@useatlas/schemas` (mirrors `RegionRoutingMap` in `@useatlas/types`), shared
-// verbatim with the web front-door consumer.
-const RegionMapResponseSchema = RegionRoutingMapSchema.openapi("RegionRoutingMap");
+// OpenAPI doc schema for the region-map response. Built with @hono/zod-openapi's
+// `z` (it carries `.openapi()`, which @useatlas/schemas' plain-zod schema does
+// not), and `satisfies z.ZodType<RegionRoutingMap>` so it stays locked to the
+// SSOT *type* in @useatlas/types — a field rename fails the build. The runtime
+// validation of the SAME wire shape lives in @useatlas/schemas
+// (`RegionRoutingMapSchema`), which the web front-door uses to Zod-parse the
+// fetched map; both ends pin to the one `RegionRoutingMap` type.
+const RegionMapEntrySchema = z
+  .object({
+    id: z.string(),
+    label: z.string(),
+    apiUrl: z.string(),
+    isDefault: z.boolean(),
+  })
+  .openapi("RegionRoutingMapEntry");
+
+const RegionMapResponseSchema = z
+  .object({
+    configured: z.boolean(),
+    defaultRegion: z.string(),
+    regions: z.array(RegionMapEntrySchema),
+  })
+  .openapi("RegionRoutingMap") satisfies z.ZodType<RegionRoutingMap>;
 
 // ---------------------------------------------------------------------------
 // Routes

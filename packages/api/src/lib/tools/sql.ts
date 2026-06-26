@@ -17,7 +17,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { Cause, Effect } from "effect";
 import { Parser } from "node-sql-parser";
-import { connections, detectDBType, getRegionAwareConnection, isConnectionVisibleInMode, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
+import { connections, detectDBType, isConnectionVisibleInMode, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
 import type { DBConnection, DBType } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTables, getOrgWhitelistedTables, loadOrgWhitelist } from "@atlas/api/lib/semantic";
 import { logQueryAudit } from "@atlas/api/lib/auth/audit";
@@ -817,7 +817,7 @@ function resolveConnectionEffect(
   // on the org-pooling-OFF path is the one that gets accounted/auto-drained,
   // not the unrelated bare entry (#3109, Codex review).
   { db: DBConnection; dbType: DBType; poolOrgId: string | undefined },
-  ConnectionNotFoundError | PoolExhaustedError | NoDatasourceError | EnterpriseUnavailableError
+  ConnectionNotFoundError | PoolExhaustedError | NoDatasourceError
 > {
   // Sentinel thrown by the mode-visibility gate so the catch arm can return an
   // error without leaking the full registered-connection list — in published
@@ -845,14 +845,15 @@ function resolveConnectionEffect(
       }
 
       let db: DBConnection;
-      let resolvedConnId = connId;
+      const resolvedConnId = connId;
       // Org under which the served pool is keyed (for pool metrics). When org
       // pooling is ON this IS `orgId`; the bare paths leave it undefined.
       let poolOrgId = orgId;
       if (orgId) {
-        const result = await getRegionAwareConnection(orgId, connId);
-        db = result.db;
-        resolvedConnId = result.resolvedConnId;
+        // Region is a deploy-time constant — the process IS the region
+        // (ADR-0024). Resolve the normal org-scoped pool; there is no
+        // per-request region routing to overlay.
+        db = connections.getForOrg(orgId, connId);
       } else if (connId === "default") {
         db = connections.getDefault();
       } else if (authOrgId) {
@@ -870,11 +871,9 @@ function resolveConnectionEffect(
       } else {
         db = connections.get(connId);
       }
-      // Scope dbType to the querying workspace too — even when org pooling is ON
-      // (resolvedConnId === connId), the bare `getDBType` would return a
-      // sibling's dialect for a shared install_id. Region-routed pools
-      // (resolvedConnId === "region:…") have no per-workspace config, so this
-      // falls back to the bare entry (#3109).
+      // Scope dbType to the querying workspace too — even when org pooling is ON,
+      // the bare `getDBType` would return a sibling's dialect for a shared
+      // install_id (#3109).
       const dbType = connections.getDBType(resolvedConnId, authOrgId);
       return { db, dbType, poolOrgId };
     },
@@ -913,15 +912,6 @@ function resolveConnectionEffect(
           current: err.currentSlots,
           max: err.maxTotalConnections,
         });
-      }
-      // #2593 — preserve the `enterprise_load_failed` signal from
-      // `getRegionAwareConnection` instead of collapsing it into a generic
-      // `connection_unavailable` ConnectionNotFoundError. The residency Tag
-      // is unavailable while ATLAS_ENTERPRISE_ENABLED=true; SaaS monitoring
-      // needs the distinct 503 code to correlate with the
-      // `enterprise.load_failed` structured log.
-      if (err instanceof EnterpriseUnavailableError) {
-        return err;
       }
       const message = err instanceof Error ? err.message : String(err);
       log.error({ err, connectionId: connId }, "Unexpected error during connection lookup");

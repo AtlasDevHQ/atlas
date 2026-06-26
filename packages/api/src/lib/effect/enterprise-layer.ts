@@ -80,17 +80,19 @@ function isEnterpriseEnabledLocal(): boolean {
  * then falls through to `Layer.empty`. Every enterprise subsystem then
  * resolves to its no-op default for the request.
  *
- * **Consumer-side fail-closed audit complete at 4 high-impact call
+ * **Consumer-side fail-closed audit complete at 3 high-impact call
  * sites (#2593, second half).** Each site yields the Tag, then
  * short-circuits with `EnterpriseUnavailableError` (→ 503
  * `enterprise_load_failed`) when `isEnterpriseEnabled() === true` but
  * `tag.available === false`. Self-hosted
  * (`ATLAS_ENTERPRISE_ENABLED !== true`) keeps the no-op pass-through
  * path; the 503 only fires on SaaS where the EE load actually failed.
+ * (The ResidencyResolver site, `getRegionAwareConnection`, was retired in
+ * ADR-0024 — region is a deploy-time constant, so there is no per-request
+ * residency-routing site left to fail closed.)
  *
  *   - MaskingPolicy → `lib/tools/sql.ts:applyMaskingViaTag`
  *   - ApprovalGate → `lib/tools/sql.ts:loadApprovalGate`
- *   - ResidencyResolver → `lib/db/connection.ts:getRegionAwareConnection`
  *   - AuditRetention → `api/routes/admin-{audit,action}-retention.ts`
  *     (via `yieldAuditRetentionFailClosed` helpers)
  *

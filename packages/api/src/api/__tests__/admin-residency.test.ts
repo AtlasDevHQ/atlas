@@ -282,7 +282,6 @@ const fakeResidencyResolver = {
   [Symbol.iterator]: function* (): Generator<unknown, unknown> {
     return yield {
       get available() { return mockResidencyAvailable; },
-      resolveRegionDatabaseUrl: () => mockEffectIterable(null),
       listRegions: () => mockEffectIterable([]),
       getDefaultRegion: () => {
         if (!mockResidencyConfigured)

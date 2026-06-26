@@ -25,10 +25,6 @@ import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { getConfig } from "@atlas/api/lib/config";
 import type { HealthStatus } from "@atlas/api/lib/connection-types";
-import { ResidencyResolver } from "@atlas/api/lib/effect/services";
-import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
-import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
-import { EnterpriseUnavailableError } from "@atlas/api/lib/effect/errors";
 
 export type { HealthStatus } from "@atlas/api/lib/connection-types";
 
@@ -731,8 +727,9 @@ export class ConnectionRegistry {
 
   private _orgKey(orgId: string, connectionId: string, region?: string): string {
     // orgId and region must not contain ':' (they are the first/last segments).
-    // connectionId CAN contain ':' (e.g. "region:us-east-1") because _parseOrgKey
-    // uses indexOf/lastIndexOf to extract it from the middle segment.
+    // connectionId CAN structurally contain ':' because _parseOrgKey splits on
+    // the FIRST and LAST separator (indexOf/lastIndexOf), tolerating colons in
+    // the middle segment; orgId and region (the outer segments) may not.
     const regionStr = region ?? "default";
     if (orgId.includes(":")) {
       throw new Error(`orgId must not contain ':' — got orgId="${orgId}"`);
@@ -1275,9 +1272,15 @@ export class ConnectionRegistry {
 
   /**
    * Find an org pool entry. Tries exact key first, then falls back to prefix scan.
-   * The prefix fallback handles region-aware pools where the caller only knows
-   * the original connectionId (e.g. "default") but the pool was created under
-   * "region:<region>" by getRegionAwareConnection().
+   * The prefix fallback resolves a pool when the caller knows only the original
+   * connectionId (e.g. "default") but the entry is keyed with a non-default
+   * region segment in `_orgKey` (`orgId:connectionId:<region>`).
+   *
+   * The region-segment machinery is currently dormant: post-ADR-0024 ("the
+   * process is the region") no caller supplies a `region` argument, so the
+   * segment is always "default" and priority #2 is unreachable in practice. It
+   * is retained for forward-compat — the prefix scan is harmless when no region
+   * pools exist and still serves priorities #1 and #3.
    *
    * Prefix scan priority:
    * 1. Exact key match (orgId + connectionId + default region)
@@ -2110,95 +2113,4 @@ export async function isConnectionVisibleInMode(
     );
     return false;
   }
-}
-
-/** Result from region-aware connection resolution. */
-export interface RegionAwareResult {
-  db: DBConnection;
-  /** The actual connection ID used (may differ from requested if region-routed). */
-  resolvedConnId: string;
-}
-
-/**
- * Resolve a region-aware connection for a workspace.
- *
- * If the workspace has a region assigned and residency is configured,
- * registers (or reuses) a region-specific analytics datasource and returns
- * the org-scoped pool for that region. Falls back to the default connection
- * if the ee module is unavailable, residency is not configured, or the
- * workspace has no region.
- *
- * Note: this routes the analytics datasource only. Internal database routing
- * (conversations, audit logs) is not yet implemented.
- */
-export async function getRegionAwareConnection(
-  orgId: string,
-  connectionId: string = "default",
-): Promise<RegionAwareResult> {
-  // Inverts the pre-#2564 `await import("@atlas/ee/platform/residency")`.
-  // Resolves the route via the `ResidencyResolver` Tag — EE provides the
-  // real implementation through `EnterpriseLayer`, self-hosted falls
-  // through to the no-op (`resolveRegionDatabaseUrl => null`). Layer
-  // construction is referentially stable across calls; the dynamic
-  // `await import("@atlas/ee/layers")` inside `ConditionalEELayer` hits
-  // Node's module cache after the first load.
-  //
-  // #2593 — consumer-side fail-closed: on SaaS (`ATLAS_ENTERPRISE_ENABLED=true`)
-  // where the EE Layer was supposed to overlay the live ResidencyResolver
-  // but the dynamic import failed, the Tag still resolves to its no-op
-  // (`available: false`). Falling through to the default datasource on an
-  // EU workspace is a compliance break — surface a 503 with the
-  // operator-visible `enterprise_load_failed` code instead. Self-hosted
-  // (no enterprise flag) keeps the old fall-through-to-default behavior.
-  const resolveRegion = Effect.gen(function* () {
-    const residency = yield* ResidencyResolver;
-    if (isEnterpriseEnabled() && !residency.available) {
-      return yield* Effect.fail(
-        new EnterpriseUnavailableError({
-          message:
-            "Residency resolution unavailable — region routing cannot be evaluated. Contact your administrator.",
-          tag: "ResidencyResolver",
-        }),
-      );
-    }
-    return yield* residency.resolveRegionDatabaseUrl(orgId);
-  });
-
-  let regionInfo: { databaseUrl?: string; datasourceUrl?: string; region: string } | null;
-  try {
-    regionInfo = await runEnterprise(resolveRegion);
-  } catch (err) {
-    if (err instanceof EnterpriseUnavailableError) {
-      // Operator-visible: this fired because EE was supposed to bind but
-      // didn't. The `enterprise.load_failed` log already fired from
-      // `ConditionalEELayer`; correlate via orgId + workspace.
-      log.error(
-        { err: errorMessage(err), orgId, event: "residency.fail_closed" },
-        "Residency Tag unavailable while ATLAS_ENTERPRISE_ENABLED=true — failing closed",
-      );
-      throw err;
-    }
-    log.warn(
-      { err: errorMessage(err), orgId },
-      "Region resolution failed — falling back to default datasource",
-    );
-    return { db: connections.getForOrg(orgId, connectionId), resolvedConnId: connectionId };
-  }
-
-  if (regionInfo?.datasourceUrl) {
-    const regionConnId = `region:${regionInfo.region}`;
-    if (!connections.has(regionConnId)) {
-      connections.register(regionConnId, {
-        url: regionInfo.datasourceUrl,
-        description: `Region ${regionInfo.region} datasource`,
-      });
-      log.info({ connectionId: regionConnId, region: regionInfo.region }, "Registered region datasource");
-    }
-    return {
-      db: connections.getForOrg(orgId, regionConnId, regionInfo.region),
-      resolvedConnId: regionConnId,
-    };
-  }
-
-  return { db: connections.getForOrg(orgId, connectionId), resolvedConnId: connectionId };
 }

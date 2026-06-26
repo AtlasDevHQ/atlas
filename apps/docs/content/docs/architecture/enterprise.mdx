@@ -320,10 +320,8 @@ From [`packages/api/src/lib/effect/services.ts`](https://github.com/AtlasDevHQ/a
 export interface ResidencyResolverShape {
   /** False when EE residency is not loaded — routes should surface "not_available". */
   readonly available: boolean;
-  readonly resolveRegionDatabaseUrl: (
-    workspaceId: string,
-  ) => Effect.Effect<ResidencyRegionRoute | null>;
   readonly listRegions: () => Effect.Effect<RegionStatus[], ResidencyError>;
+  readonly getDefaultRegion: () => string;
   // ...
 }
 export class ResidencyResolver extends Context.Tag("ResidencyResolver")<
@@ -340,8 +338,8 @@ export const NoopResidencyResolverLayer: Layer.Layer<ResidencyResolver> =
     });
     return {
       available: false,
-      resolveRegionDatabaseUrl: () => Effect.succeed(null),
       listRegions: () => Effect.fail(notConfigured()),
+      getDefaultRegion: () => { throw notConfigured(); },
       // ...
     } satisfies ResidencyResolverShape;
   });

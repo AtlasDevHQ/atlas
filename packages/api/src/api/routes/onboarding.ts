@@ -22,7 +22,8 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
 import { isAuthEmailDeliveryConfigured } from "@atlas/api/lib/email/delivery";
-import { hasInternalDB, internalQuery, queryEffect, encryptSecret, withDemoSeedLock } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, queryEffect, encryptSecret, withDemoSeedLock, setWorkspaceRegion } from "@atlas/api/lib/db/internal";
+import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { importFromDisk } from "@atlas/api/lib/semantic/sync";
@@ -1181,16 +1182,35 @@ onboarding.openapi(
         return c.json({ error: "no_organization", message: "No active organization. Create a workspace first.", requestId }, 400);
       }
 
-      const { region } = c.req.valid("json");
-
+      // The body's `region` stays required + validated by the route contract
+      // (the signup picker sends it; the validation hook 422s a missing one)
+      // but the handler ignores its value: under regional identity (ADR-0024)
+      // the process IS the region, so a workspace created on a regional API is
+      // in that region by definition. The org is stamped with the ambient
+      // region at creation (`stampOrgRegion`); this step is reduced to
+      // confirming that stamp — idempotent (`setWorkspaceRegion` writes only
+      // when still NULL) — and returning it, rather than recording a per-pick
+      // region that the process can't actually honor.
       const mod = yield* ResidencyResolver;
       if (!mod.available) {
         return c.json({ error: "not_available", message: "Data residency is not available in this deployment.", requestId }, 404);
       }
 
-      const result = yield* mod.assignWorkspaceRegion(orgId, region);
-      log.info({ orgId, region, requestId }, "Workspace region assigned during signup");
-      return c.json(result, 200);
+      // Best-effort re-stamp in case the creation-time hook didn't fire; the
+      // authoritative read is `getWorkspaceRegionAssignment` below. Guarded on
+      // `hasInternalDB()` so a missing internal DB surfaces as the resolver's
+      // typed `no_internal_db` (503) rather than a rejected-promise defect.
+      const apiRegion = getApiRegion();
+      if (apiRegion && hasInternalDB()) {
+        yield* Effect.promise(() => setWorkspaceRegion(orgId, apiRegion));
+      }
+
+      const assignment = yield* mod.getWorkspaceRegionAssignment(orgId);
+      if (!assignment) {
+        return c.json({ error: "no_region", message: "No region is configured for this workspace.", requestId }, 400);
+      }
+      log.info({ orgId, region: assignment.region, requestId }, "Workspace region confirmed during signup");
+      return c.json(assignment, 200);
     }), { label: "assign region during signup", domainErrors: [residencyDomainError] });
   },
   (result, c) => {

@@ -35,7 +35,8 @@ import { listUserWorkspaceIds } from "@atlas/api/lib/auth/oauth-workspace-grants
 import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit";
 import { getSettingOverride } from "@atlas/api/lib/settings";
 import Stripe from "stripe";
-import { getInternalDB, getWorkspaceDetails, hasInternalDB, internalQuery, isPlanOverrideActive, updateWorkspacePlanTier, updateWorkspaceStatus, withStripeSubscriptionLock, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
+import { getInternalDB, getWorkspaceDetails, hasInternalDB, internalQuery, isPlanOverrideActive, setWorkspaceRegion, updateWorkspacePlanTier, updateWorkspaceStatus, withStripeSubscriptionLock, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
+import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
 import { createLogger } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { type Attributes } from "@opentelemetry/api";
@@ -297,6 +298,56 @@ export async function assignSaasTrial(args: {
     log.error(
       { err: errorMessage(err), userId: user.id, orgId: org.id },
       "Failed to assign SaaS trial — workspace stays on plan_tier='free'",
+    );
+  }
+}
+
+/**
+ * Stamp the new org with this API instance's region at creation time.
+ *
+ * Under regional identity (ADR-0024), the process *is* the region: an org
+ * created on a regional API (`api-eu`, …) is in that region by definition, so
+ * region is stamped from the ambient `ATLAS_API_REGION` (via
+ * {@link getApiRegion}, which falls back to `residency.defaultRegion`) at
+ * creation — not recorded as after-the-fact metadata by a separate post-hoc
+ * assign step. Idempotent and one-way: `setWorkspaceRegion` writes only when the
+ * org's `region` is still NULL, so re-invocations and a later operator
+ * cross-region migration are never clobbered.
+ *
+ * No-op when this instance has no region identity (`getApiRegion()` → null:
+ * self-hosted, or SaaS with residency unconfigured) — region is not a concept
+ * there. Wired into `organizationHooks.afterCreateOrganization` in
+ * {@link buildPlugins}; failures are logged, never thrown, so a stamp failure
+ * can't poison org creation.
+ *
+ * Exported for direct unit testing — the org plugin closes over its options, so
+ * the only way to assert this hook's contract from outside the plugin is to
+ * test the function in isolation.
+ *
+ * @internal
+ */
+export async function stampOrgRegion(args: {
+  organization: { id: string };
+}): Promise<void> {
+  const { organization: org } = args;
+  try {
+    if (!hasInternalDB()) return;
+    const region = getApiRegion();
+    if (!region) return;
+    const result = await setWorkspaceRegion(org.id, region);
+    if (result.assigned) {
+      log.info(
+        { orgId: org.id, region },
+        "Stamped workspace region from ambient ATLAS_API_REGION at creation",
+      );
+    }
+  } catch (err) {
+    // log.error (not warn) — a sustained failure means the region stamp is
+    // silently not landing, leaving new orgs region-unset on a residency
+    // deploy. Org creation continues regardless.
+    log.error(
+      { err: errorMessage(err), orgId: org.id },
+      "Failed to stamp workspace region at creation — workspace stays region-unset",
     );
   }
 }
@@ -2279,6 +2330,9 @@ export function buildPlugins() {
           // Org creator is already member.role='owner' via the org plugin's
           // creatorRole default — no user.role promotion needed (#2890).
           await assignSaasTrial(args);
+          // The process IS the region (ADR-0024): stamp the ambient region at
+          // creation rather than recording it via a post-hoc assign step.
+          await stampOrgRegion(args);
         },
         // Defense-in-depth role gate + seat-limit. Better Auth's schema
         // already restricts `role` to the configured roles map above, but a

@@ -1,10 +1,14 @@
 /**
  * Consumer-side fail-closed audit (#2593, second half).
  *
- * Four of the highest-impact load-bearing call sites yield their EE Tag,
+ * The highest-impact load-bearing call sites yield their EE Tag,
  * check `tag.available`, and short-circuit with
  * `EnterpriseUnavailableError` (→ HTTP 503 `enterprise_load_failed`) when
  * `isEnterpriseEnabled() === true` but `tag.available === false`.
+ *
+ * The ResidencyResolver site (`getRegionAwareConnection`) was retired in
+ * ADR-0024 — region is a deploy-time constant (the process IS the region), so
+ * there is no per-request residency routing site left to fail closed.
  *
  * Self-hosted (no `ATLAS_ENTERPRISE_ENABLED=true`) keeps the original
  * no-op pass-through behaviour: the no-op IS the expected self-hosted
@@ -26,11 +30,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Cause, Effect, Exit, Layer } from "effect";
 import {
-  ResidencyResolver,
   MaskingPolicy,
   ApprovalGate,
   AuditRetention,
-  type ResidencyResolverShape,
   type MaskingPolicyShape,
   type ApprovalGateShape,
   type AuditRetentionShape,
@@ -44,18 +46,6 @@ import { isEnterpriseEnabled } from "../enterprise-config";
 // method exercised by the consumer-side check are populated; other
 // methods stay defensive `Effect.die` so a test that pulls in a new
 // branch surfaces a loud failure.
-
-const noopResidency: ResidencyResolverShape = {
-  available: false,
-  resolveRegionDatabaseUrl: () => Effect.succeed(null),
-  listRegions: () => Effect.die("not stubbed"),
-  getDefaultRegion: () => { throw new Error("not stubbed"); },
-  getConfiguredRegions: () => { throw new Error("not stubbed"); },
-  assignWorkspaceRegion: () => Effect.die("not stubbed"),
-  getWorkspaceRegionAssignment: () => Effect.die("not stubbed"),
-  listWorkspaceRegions: () => Effect.die("not stubbed"),
-  isConfiguredRegion: () => false,
-};
 
 const noopMasking: MaskingPolicyShape = {
   available: false,
@@ -122,24 +112,6 @@ interface FailClosedCase {
 }
 
 const cases: FailClosedCase[] = [
-  {
-    name: "ResidencyResolver",
-    tagName: "ResidencyResolver",
-    buildLayer: () => Layer.succeed(ResidencyResolver, noopResidency),
-    buildProbe: () =>
-      Effect.gen(function* () {
-        const t = yield* ResidencyResolver;
-        if (isEnterpriseEnabled() && !t.available) {
-          return yield* Effect.fail(
-            new EnterpriseUnavailableError({
-              message: "Residency unavailable",
-              tag: "ResidencyResolver",
-            }),
-          );
-        }
-        return yield* t.resolveRegionDatabaseUrl("org-1");
-      }),
-  },
   {
     name: "MaskingPolicy",
     tagName: "MaskingPolicy",

@@ -9,6 +9,8 @@
  *   • organizationHooks.afterCreateOrganization (in `buildPlugins`)
  *       → assignSaasTrial (org-owner promotion was removed in #2890 —
  *         the creator is already member.role='owner')
+ *       → stampOrgRegion (the process IS the region, ADR-0024 — region is
+ *         stamped from the ambient ATLAS_API_REGION at creation)
  *   • databaseHooks.user.create.after (in `buildAuthOptions`)
  *       → dispatchSignupCrmLead, the deferred welcome-email path,
  *         _autoProvisionSsoMember
@@ -282,6 +284,28 @@ describe("organizationHooks.afterCreateOrganization wiring", () => {
       trialUpdate?.params,
       "assignSaasTrial must be wired — expected the trial-assignment UPDATE bound to the new org's id",
     ).toContain("org_1");
+  });
+
+  it("stamps the ambient region on the new org (the process IS the region, ADR-0024)", async () => {
+    // Drive getApiRegion() to a non-null value so stampOrgRegion reaches its
+    // region UPDATE — proving the `await stampOrgRegion(args)` line is wired
+    // into the composed hook. Env set+restored in-test so siblings don't see it.
+    const prevApiRegion = process.env.ATLAS_API_REGION;
+    process.env.ATLAS_API_REGION = "us";
+    try {
+      const afterCreateOrganization = getAfterCreateOrganization();
+
+      await afterCreateOrganization({ user: { id: "user_org_region" }, organization: { id: "org_region" } });
+
+      const regionStamp = queries.find((q) => /UPDATE\s+organization\s+SET\s+region\s*=/i.test(q.sql));
+      expect(
+        regionStamp?.params,
+        "stampOrgRegion must be wired — expected the region UPDATE bound to the new org's id",
+      ).toContain("org_region");
+    } finally {
+      if (prevApiRegion === undefined) delete process.env.ATLAS_API_REGION;
+      else process.env.ATLAS_API_REGION = prevApiRegion;
+    }
   });
 });
 

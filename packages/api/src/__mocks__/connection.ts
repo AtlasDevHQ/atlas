@@ -132,12 +132,6 @@ export function createConnectionMock(overrides?: ConnectionMockOverrides) {
   return {
     getDB: getDBOverride ?? (() => dbConn),
     connections,
-    // getRegionAwareConnection delegates to connections.getForOrg so tests
-    // that mock getForOrg still see their mock called through the async path.
-    getRegionAwareConnection: async (orgId: string, connId?: string) => ({
-      db: connections.getForOrg(orgId, connId ?? "default"),
-      resolvedConnId: connId ?? "default",
-    }),
     resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || undefined,
     detectDBType: () => "postgres" as const,
     extractTargetHost: () => "localhost",

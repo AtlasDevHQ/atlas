@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.30",
+    title: "Landing Blog Refresh",
+    date: "2026-06-26",
+    summary:
+      "A content release. The useatlas.dev blog gets a cleaner redesign and three new posts — a road-to-launch update, a revised founder note, and \"Out of the runtime,\" which lays out why Atlas runs as a real service outside the chat runtime rather than as an ephemeral in-chat tool. No product code changed in this tag; the accompanying work is documentation, including ADR-0024, which records that data residency isolates the entire workspace, identity included.",
+    highlights: [
+      "Redesigned blog on useatlas.dev with three new posts (#3976, #3978, #3979)",
+      "New post: \"Out of the runtime\" — why Atlas runs as a service outside the chat runtime (#3979)",
+      "ADR-0024 — data residency isolates the whole workspace, identity included (#3975)",
+    ],
+  },
+  {
     version: "v0.0.29",
     title: "Demo Activation Hardening",
     date: "2026-06-25",

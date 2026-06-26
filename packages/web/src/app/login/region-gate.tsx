@@ -100,13 +100,17 @@ export function LoginRegionGate({ email, onEmailChange, onResolved }: LoginRegio
           onResolved();
           return;
         case "error":
-        default:
-          setError(
-            "message" in result && result.message
-              ? result.message
-              : "We couldn't route your sign-in. Please try again.",
-          );
+          setError(result.message || "We couldn't route your sign-in. Please try again.");
           return;
+        default: {
+          // Compile-time exhaustiveness: a new RegionResolution variant fails
+          // the build here. At runtime this is also the malformed-payload net —
+          // the response is an unchecked cast over the network.
+          const _exhaustive: never = result;
+          void _exhaustive;
+          setError("We couldn't route your sign-in. Please try again.");
+          return;
+        }
       }
     } catch (err) {
       console.warn(

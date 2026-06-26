@@ -22,12 +22,14 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
 import * as realInternal from "@atlas/api/lib/db/internal";
 let internalDbAvailable = true;
 let existsResult = false;
+let queryThrows = false;
 let internalQueryCalls: Array<{ sql: string; params?: unknown[] }> = [];
 mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   hasInternalDB: () => internalDbAvailable,
   internalQuery: async (sql: string, params?: unknown[]) => {
     internalQueryCalls.push({ sql, params });
+    if (queryThrows) throw new Error("simulated DB failure");
     return [{ exists: existsResult }];
   },
 }));
@@ -89,6 +91,7 @@ describe("POST /region-probe", () => {
     authMode = "managed";
     internalDbAvailable = true;
     existsResult = false;
+    queryThrows = false;
     internalQueryCalls = [];
     _resetRegionProbeRateLimit();
     process.env.ATLAS_TRUST_PROXY = "true";
@@ -145,6 +148,15 @@ describe("POST /region-probe", () => {
     const res = await probe({ emailHash: HASH }, { "x-forwarded-for": "203.0.113.7" });
     expect(res.status).toBe(404);
     expect(internalQueryCalls).toHaveLength(0);
+  });
+
+  it("returns 500 (never a misleading exists:false) when the existence query throws", async () => {
+    queryThrows = true;
+    const res = await probe({ emailHash: HASH }, { "x-forwarded-for": "203.0.113.8" });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.exists).toBeUndefined();
+    expect(body.requestId).toBeDefined();
   });
 
   it("rate-limits a single IP after the per-IP ceiling and returns 429", async () => {

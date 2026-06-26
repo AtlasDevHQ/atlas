@@ -17,7 +17,7 @@
   ],
   "components": {
     "schemas": {
-      "RegionMapResponse": {
+      "RegionRoutingMap": {
         "type": "object",
         "properties": {
           "configured": {
@@ -29,7 +29,27 @@
           "regions": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/RegionMapItem"
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "apiUrl": {
+                  "type": "string"
+                },
+                "isDefault": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "apiUrl",
+                "isDefault"
+              ]
             }
           }
         },
@@ -37,29 +57,6 @@
           "configured",
           "defaultRegion",
           "regions"
-        ]
-      },
-      "RegionMapItem": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "label": {
-            "type": "string"
-          },
-          "apiUrl": {
-            "type": "string"
-          },
-          "isDefault": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "id",
-          "label",
-          "apiUrl",
-          "isDefault"
         ]
       },
       "RegionProbeResponse": {
@@ -1944,7 +1941,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RegionMapResponse"
+                  "$ref": "#/components/schemas/RegionRoutingMap"
                 }
               }
             }

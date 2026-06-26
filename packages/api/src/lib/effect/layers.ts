@@ -183,7 +183,9 @@ function withFiberDeathLog<A, E, R>(
 //     `trial_rate_limit_cleanup` (#3654), sweeps the unauthenticated
 //     `start_trial` per-IP/email attempt-limiter maps. The eleventh,
 //     `agent_runs_retention_sweep` (#3745, ADR-0020), deletes terminal
-//     durable-session runs past the retention window.
+//     durable-session runs past the retention window. The twelfth,
+//     `region_probe_rate_sweep` (#3973, ADR-0024 §3), evicts expired per-IP
+//     buckets from the login front-door's hashed-email existence-probe limiter.
 //
 //   • SCHEDULER_WORK_SPAN_NAMES — 5 background-work fibers (they perform
 //     recurring side-effecting work rather than evicting state):

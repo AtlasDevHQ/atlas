@@ -26,9 +26,11 @@ import {
   resolveRegion,
   parseRegionCookie,
   isLikelyEmail,
-  type RegionMap,
+  type RegionResolution,
 } from "@/lib/login-frontdoor";
 import { REGION_COOKIE } from "@/lib/api-url";
+import { RegionRoutingMapSchema } from "@useatlas/schemas";
+import type { RegionRoutingMap } from "@useatlas/types";
 
 // Web Crypto + per-request work; never cache an account-existence oracle.
 export const runtime = "nodejs";
@@ -56,7 +58,14 @@ const FRONTDOOR_WINDOW_MS = 60_000;
 const FRONTDOOR_MAX_RPM = 20;
 const buckets = new Map<string, { count: number; resetAt: number }>();
 
-/** First hop of X-Forwarded-For, or null when no client IP can be resolved. */
+/**
+ * First hop of X-Forwarded-For (falling back to X-Real-IP), or null when no
+ * client IP can be resolved. Trust assumption: app.useatlas.dev sits behind the
+ * platform edge (Railway/Vercel), which sets X-Forwarded-For — the leftmost hop
+ * is the client. This is the same leftmost-XFF convention as the API's
+ * `getClientIP`; the regional probe's independent per-IP limit is the backstop
+ * if a topology ever let a client spoof the header here.
+ */
 function clientIp(req: NextRequest): string | null {
   const xff = req.headers.get("x-forwarded-for");
   if (xff) {
@@ -91,7 +100,7 @@ function allow(ip: string | null): boolean {
 const PROBE_TIMEOUT_MS = 4_000;
 const MAP_TIMEOUT_MS = 4_000;
 
-async function fetchRegionMap(): Promise<RegionMap> {
+async function fetchRegionMap(): Promise<RegionRoutingMap> {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), MAP_TIMEOUT_MS);
   try {
@@ -102,17 +111,30 @@ async function fetchRegionMap(): Promise<RegionMap> {
       next: { revalidate: 300 },
     });
     if (!res.ok) throw new Error(`region-map returned ${res.status}`);
-    return (await res.json()) as RegionMap;
+    // Validate the boundary instead of trusting the wire — the SSOT schema
+    // catches a drifted/garbled map rather than letting it fan out blindly.
+    return RegionRoutingMapSchema.parse(await res.json());
+  } catch (err) {
+    // Log at the I/O boundary (the pure resolver stays logger-free): an
+    // unreachable/garbled map is why the front-door returns a retryable error.
+    console.warn(
+      "[login-frontdoor] region-map fetch failed:",
+      err instanceof Error ? err.message : String(err),
+    );
+    throw err;
   } finally {
     clearTimeout(t);
   }
 }
 
 /**
- * Probe one region for the hashed email. A 404 (region not managed / no
- * front-door) is "not a hit", not a failure; a 429 / 5xx / network error
- * throws so `resolveRegion` treats the region as inconclusive rather than a
- * confident miss.
+ * Probe one region for the hashed email. ANY non-2xx (a 404 deploy-skew /
+ * not-yet-provisioned region, a 429, a 5xx) or network error throws, so
+ * `resolveRegion` counts the region as INCONCLUSIVE — never a confident miss.
+ * A region only reaches this fan-out if it is a selectable, configured (hence
+ * managed) region, so a 404 from it is deploy skew, not "this region has no
+ * users"; reporting it as a clean miss would dead-end a real returning user
+ * whose account lives in the lagging region during a rollout.
  */
 async function probeRegion(apiUrl: string, emailHash: string): Promise<boolean> {
   const controller = new AbortController();
@@ -125,10 +147,15 @@ async function probeRegion(apiUrl: string, emailHash: string): Promise<boolean> 
       signal: controller.signal,
       cache: "no-store",
     });
-    if (res.status === 404) return false;
-    if (!res.ok) throw new Error(`region-probe returned ${res.status}`);
+    if (!res.ok) throw new Error(`region-probe ${apiUrl} returned ${res.status}`);
     const body = (await res.json()) as { exists?: unknown };
     return body.exists === true;
+  } catch (err) {
+    console.warn(
+      `[login-frontdoor] probe failed for ${apiUrl}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    throw err; // re-throw so resolveRegion treats the region as inconclusive
   } finally {
     clearTimeout(t);
   }
@@ -160,12 +187,28 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const cookieRegion = parseRegionCookie(req.cookies.get(REGION_COOKIE)?.value);
 
-  const result = await resolveRegion({
-    email,
-    cookieRegion,
-    fetchRegionMap,
-    probe: probeRegion,
-  });
+  let result: RegionResolution;
+  try {
+    result = await resolveRegion({ email, cookieRegion, fetchRegionMap, probe: probeRegion });
+  } catch (err) {
+    // resolveRegion guards its own I/O; this is the defense-in-depth net for an
+    // unexpected throw (e.g. crypto.subtle unavailable) so this pre-auth surface
+    // always returns the structured {outcome} envelope, never a framework 500.
+    console.error(
+      "[login-frontdoor] unexpected region resolution failure:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return NextResponse.json(
+      { outcome: "error", message: "We couldn't route your sign-in. Please try again." },
+      { status: 502 },
+    );
+  }
+
+  if (result.outcome === "error") {
+    // Why the front-door returned a retryable verdict — correlate a 502 here
+    // with the per-region probe/map failures logged above.
+    console.warn(`[login-frontdoor] inconclusive fan-out: ${result.message}`);
+  }
 
   // `error` is the only non-2xx routing verdict — it means "inconclusive, let
   // the user retry". Every other outcome is a successful resolution (including

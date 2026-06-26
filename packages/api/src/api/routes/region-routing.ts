@@ -26,7 +26,7 @@
  *   2. It returns ONLY a boolean.
  *   3. It is per-IP rate-limited (the regional backstop against direct abuse;
  *      the front-door additionally rate-limits per real client IP — see
- *      packages/web/src/lib/login-frontdoor.ts).
+ *      packages/web/src/app/api/login/resolve-region/route.ts).
  *   4. There is NO global email→region storage — the front-door computes the
  *      hash transiently per request, and each region only ever checks its own
  *      `user` table. The match runs in-database via the pgcrypto functional
@@ -50,6 +50,8 @@ import {
 } from "@atlas/api/lib/public-rate-limit";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema } from "./shared-schemas";
+import { RegionRoutingMapSchema } from "@useatlas/schemas";
+import type { RegionRoutingMapEntry } from "@useatlas/types";
 import type { ResidencyConfig } from "@atlas/api/lib/config";
 
 const log = createLogger("region-routing");
@@ -92,39 +94,23 @@ export function _resetRegionProbeRateLimit(): void {
 // Region map projection (pure, testable)
 // ---------------------------------------------------------------------------
 
-/** A region the front-door can route a login to. */
-export interface RegionMapItem {
-  /** Region identifier (e.g. "eu"). */
-  id: string;
-  /** Human-readable label (e.g. "Europe"). */
-  label: string;
-  /** Regional API base the front-door probes and the browser is repointed at. */
-  apiUrl: string;
-  /** Whether this is the deployment's default region. */
-  isDefault: boolean;
-}
-
 /**
  * Project the configured regions to the front-door's routing map: selectable
  * regions (excludes the internal `staging` arm, #3948) that also carry a
  * configured `apiUrl` (a region with no apiUrl can't be probed or routed to).
+ * Single-pass `flatMap` so the apiUrl-present guard and use share one scope —
+ * the `apiUrl` narrows to `string` with no cast.
  */
 export function projectRegionMap(
   regions: ResidencyConfig["regions"],
   defaultRegion: string,
-): RegionMapItem[] {
-  return Object.entries(regions)
-    .filter(
-      ([, cfg]) =>
-        isRegionSelectable(cfg) && typeof cfg.apiUrl === "string" && cfg.apiUrl.length > 0,
-    )
-    .map(([id, cfg]) => ({
-      id,
-      label: cfg.label,
-      // Narrowed by the filter above.
-      apiUrl: cfg.apiUrl as string,
-      isDefault: id === defaultRegion,
-    }));
+): RegionRoutingMapEntry[] {
+  return Object.entries(regions).flatMap(([id, cfg]) => {
+    if (!isRegionSelectable(cfg) || typeof cfg.apiUrl !== "string" || cfg.apiUrl.length === 0) {
+      return [];
+    }
+    return [{ id, label: cfg.label, apiUrl: cfg.apiUrl, isDefault: id === defaultRegion }];
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -167,22 +153,10 @@ const RegionProbeResponseSchema = z
   .object({ exists: z.boolean() })
   .openapi("RegionProbeResponse");
 
-const RegionMapItemSchema = z
-  .object({
-    id: z.string(),
-    label: z.string(),
-    apiUrl: z.string(),
-    isDefault: z.boolean(),
-  })
-  .openapi("RegionMapItem");
-
-const RegionMapResponseSchema = z
-  .object({
-    configured: z.boolean(),
-    defaultRegion: z.string(),
-    regions: z.array(RegionMapItemSchema),
-  })
-  .openapi("RegionMapResponse");
+// The region-map response shape is the SSOT `RegionRoutingMapSchema` from
+// `@useatlas/schemas` (mirrors `RegionRoutingMap` in `@useatlas/types`), shared
+// verbatim with the web front-door consumer.
+const RegionMapResponseSchema = RegionRoutingMapSchema.openapi("RegionRoutingMap");
 
 // ---------------------------------------------------------------------------
 // Routes

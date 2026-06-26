@@ -21,20 +21,7 @@
  * (`app/api/login/resolve-region/route.ts`) wires the real fetch-backed ones.
  */
 
-/** A region the front-door can route a login to (from `GET /api/v1/auth/region-map`). */
-export interface RegionMapEntry {
-  id: string;
-  label: string;
-  apiUrl: string;
-  isDefault: boolean;
-}
-
-/** The region-routing map served identically by every regional API. */
-export interface RegionMap {
-  configured: boolean;
-  defaultRegion: string;
-  regions: RegionMapEntry[];
-}
+import type { RegionRoutingMap } from "@useatlas/types";
 
 /** One region a multi-region returning user can choose between. */
 export interface RegionChoice {
@@ -45,7 +32,8 @@ export interface RegionChoice {
 
 /**
  * The front-door's verdict for a typed email:
- *   - `single`   — route straight here (apply the region signal, send the OTP).
+ *   - `single`   — route here (apply the region signal and reload onto that
+ *                  region's credentials form; sign-in then hits that region).
  *   - `multiple` — same email exists in >1 region; present a chooser (§6).
  *   - `none`     — no account in any region (offer signup).
  *   - `skip`     — region routing is not applicable (self-hosted / single
@@ -61,7 +49,11 @@ export type RegionResolution =
   | { outcome: "skip" }
   | { outcome: "error"; message: string };
 
-/** Trim + lower-case, matching the SQL `lower(email)` the probe index hashes. */
+/**
+ * Trim + lower-case. The DB index hashes `lower(email)` over already-clean
+ * stored addresses, so the lower-case is the load-bearing match; the trim is
+ * belt-and-suspenders for whatever the user pastes into the field.
+ */
 export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
@@ -115,7 +107,7 @@ export interface ResolveRegionDeps {
   /** The region key from a valid `atlas_region` cookie, or null. */
   cookieRegion: string | null;
   /** Fetch the region-routing map (throws on network failure). */
-  fetchRegionMap: () => Promise<RegionMap>;
+  fetchRegionMap: () => Promise<RegionRoutingMap>;
   /** Probe one region for the hashed email (throws on network failure). */
   probe: (apiUrl: string, emailHash: string) => Promise<boolean>;
 }
@@ -132,7 +124,7 @@ export interface ResolveRegionDeps {
 export async function resolveRegion(deps: ResolveRegionDeps): Promise<RegionResolution> {
   const { email, cookieRegion, fetchRegionMap, probe } = deps;
 
-  let map: RegionMap;
+  let map: RegionRoutingMap;
   try {
     map = await fetchRegionMap();
   } catch {

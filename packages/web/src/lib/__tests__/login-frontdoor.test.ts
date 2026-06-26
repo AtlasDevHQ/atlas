@@ -14,10 +14,10 @@ import {
   parseRegionCookie,
   normalizeEmail,
   isLikelyEmail,
-  type RegionMap,
 } from "../login-frontdoor";
+import type { RegionRoutingMap } from "@useatlas/types";
 
-const MAP: RegionMap = {
+const MAP: RegionRoutingMap = {
   configured: true,
   defaultRegion: "us",
   regions: [
@@ -27,7 +27,7 @@ const MAP: RegionMap = {
   ],
 };
 
-const mapOf = (m: RegionMap) => () => Promise.resolve(m);
+const mapOf = (m: RegionRoutingMap) => () => Promise.resolve(m);
 /** A probe that reports the email exists only in the named regions (by apiUrl). */
 function probeHitting(...apiUrls: string[]) {
   const hits = new Set(apiUrls);

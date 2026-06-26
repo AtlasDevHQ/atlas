@@ -15,9 +15,10 @@
 -- see `region-routing.ts`. All three functions (lower/digest/encode) are
 -- IMMUTABLE, so the expression is index-eligible.
 --
--- Like 0142 (normalizedEmail), this ALTERs the Better Auth-owned `user` table,
--- so it joins MANAGED_AUTH_MIGRATIONS (db/internal.ts) and is skipped in
--- non-managed auth modes where Better Auth never creates `user`. The `user`
+-- Like 0142 (normalizedEmail), this depends on the Better Auth-owned `user`
+-- table existing (here a CREATE INDEX over it, plus CREATE EXTENSION), so it
+-- joins MANAGED_AUTH_MIGRATIONS (db/internal.ts) and is skipped in non-managed
+-- auth modes where Better Auth never creates `user`. The `user`
 -- table is not a Drizzle pgTable in db/schema.ts (Better Auth owns it), so
 -- there is no schema.ts mirror to add — same as 0142. scripts/
 -- check-schema-drift.sh only diffs CREATE TABLE statements, so a CREATE INDEX

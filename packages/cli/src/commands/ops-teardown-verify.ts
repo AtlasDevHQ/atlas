@@ -522,7 +522,7 @@ export function printTeardownReport(report: TeardownReport): void {
     `\n[ops:teardown-verify-accounts] ${report.dryRun ? "would tear down" : "tore down"} ` +
       `${report.dryRun ? t.orgsWouldTearDown : t.orgsTornDown} workspace(s)` +
       (report.dryRun ? "" : `, ${t.rowsPurged} rows purged`) +
-      (t.stripeWarnings > 0 ? `, ${t.stripeWarnings} Stripe warning(s)` : "") +
+      (t.stripeWarnings > 0 ? `, ${t.stripeWarnings} workspace(s) with Stripe warnings` : "") +
       (t.errors > 0 ? `, ${t.errors} error(s)` : ""),
   );
 }
@@ -588,15 +588,21 @@ export async function handleTeardownVerifyAccounts(args: string[]): Promise<void
       softDelete: (orgId) => updateWorkspaceStatus(orgId, "deleted"),
       hardDelete: async (orgId) => {
         const purged = await hardDeleteWorkspace(orgId);
-        return Object.values(purged).reduce((sum, n) => sum + n, 0);
+        // HardDeleteResult is an all-number per-table count map; assert that so
+        // the sum can't silently become NaN/string-concat if a non-number field
+        // is ever added (Object.values on an index-signature-less type widens to any).
+        return (Object.values(purged) as number[]).reduce((sum, n) => sum + n, 0);
       },
     }, dryRun);
 
     printTeardownReport(report);
-    // Exit non-zero on a row-purge error OR a left-behind Stripe customer — a
+    // Exit non-zero on a row-purge error OR a left-behind Stripe linkage — a
     // scripted cleanup must fail loudly rather than report a clean "success"
-    // while a billable Stripe linkage survives (it's enqueued for durable retry,
-    // but the operator/CI should still know it didn't fully complete).
+    // while a billable Stripe customer survives. A failed customer-delete /
+    // subscription-cancel is enqueued in `stripe_teardown_pending` for durable
+    // retry; some warnings (a subscription-read or outbox-write failure) are
+    // manual-follow-up only — either way the operator/CI should know it didn't
+    // fully complete.
     if (report.totals.errors > 0 || report.totals.stripeWarnings > 0) process.exitCode = 1;
   } catch (err) {
     console.error(

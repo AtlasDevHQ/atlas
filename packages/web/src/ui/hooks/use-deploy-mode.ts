@@ -35,8 +35,9 @@ interface SettingsResponse {
  *
  * This hook does **not** resolve the regional API base. Under ADR-0024 the
  * region is known pre-auth (a signup selection or the `atlas_region` cookie,
- * see `@/lib/api-url`); it is never discovered by reading `regionApiUrl` off
- * the US admin-settings response — that circular path is retired (#3971).
+ * see `@/lib/api-url`); the web client no longer reads `regionApiUrl` off the
+ * US admin-settings response to discover its regional host (#3971). (The server
+ * still returns that field for now — vestigial, pending a follow-up removal.)
  */
 function guessDeployModeFromHost(): DeployMode {
   if (typeof window === "undefined") return "self-hosted";

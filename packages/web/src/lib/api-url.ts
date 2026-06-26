@@ -3,22 +3,30 @@
  *
  * The browser must target its workspace's regional API *before* any
  * authenticated call. Region is therefore a signal the browser knows up
- * front — a region selection during signup, or the `atlas_region` cookie on
- * a returning visit — never something it learns by first calling the US API.
- * (The retired path did exactly that: it discovered the regional host from
- * the US admin-settings response, which only worked while data was wrongly
- * readable from US. ADR-0024 deletes that circular dependency.)
+ * front — never something it learns by first calling the US API. (The retired
+ * path did exactly that: it discovered the regional host from the US
+ * admin-settings response, which only worked while data was wrongly readable
+ * from US. ADR-0024 deletes that circular dependency.)
+ *
+ * What this module implements:
+ *   - applyRegionSignal(region, apiUrl): point the API base at a region and
+ *     persist `{ region, apiUrl }` in the `atlas_region` cookie.
+ *   - restore-on-import + initRegionFromCookie(): a returning visit resolves
+ *     the regional base straight from that cookie, with no network round-trip.
  *
  * Resolution order for getApiUrl():
- *   1. An active region signal — a selection this session, or the
- *      `atlas_region` cookie restored on load → that region's apiUrl.
- *   2. Otherwise the build-time default (NEXT_PUBLIC_ATLAS_API_URL), which is
- *      empty on self-hosted → same-origin, unaffected by any of this.
+ *   1. An active region signal — applied this session, or restored from the
+ *      `atlas_region` cookie on load → that region's apiUrl.
+ *   2. Otherwise the build-time default (NEXT_PUBLIC_ATLAS_API_URL), empty on
+ *      self-hosted → same-origin, unaffected by any of this.
  *
- * The `atlas_region` cookie persists `{ region, apiUrl }` so the regional
- * base survives reloads with no network round-trip, and the region key seeds
- * the login fast-path (it short-circuits the front-door region fan-out).
+ * Intended consumers (separate slices): the signup region step calls
+ * applyRegionSignal so the choice is made before the first identity write, and
+ * a login fast-path reads getActiveRegion() to short-circuit the front-door
+ * region fan-out. Neither is wired here — this is the primitive they build on.
  */
+
+import type { Region } from "@useatlas/types";
 
 const DEFAULT_API_URL = (process.env.NEXT_PUBLIC_ATLAS_API_URL ?? "").replace(/\/+$/, "");
 
@@ -28,12 +36,15 @@ export const REGION_COOKIE = "atlas_region";
 /** 1 year — region rarely changes; a returning user keeps the fast-path. */
 const REGION_COOKIE_MAX_AGE = 31_536_000;
 
+/** Hosts allowed to serve a regional base over plain http (local dev only). */
+const LOCAL_HOSTS = /^(localhost|127\.0\.0\.1|\[::1\])$/;
+
 /** A region selection projected onto the API base it resolves to. */
 export interface RegionSignal {
   /** Region identifier (e.g. "eu") — seeds the login fast-path. */
-  region: string;
+  readonly region: Region;
   /** Resolved regional API base (e.g. "https://api-eu.useatlas.dev"). */
-  apiUrl: string;
+  readonly apiUrl: string;
 }
 
 /**
@@ -42,16 +53,28 @@ export interface RegionSignal {
  */
 let activeSignal: RegionSignal | null = null;
 
-/** Trim + strip trailing slashes; return null unless it parses as a URL. */
+/**
+ * Trim + strip trailing slashes; return null unless the value parses as a URL
+ * on a credential-safe scheme. Requires https (the regional bases are https),
+ * allowing http only for localhost so local dev still works. The regional base
+ * is fed to credentialed fetches and the `atlas_region` cookie is
+ * client-writable, so rejecting arbitrary http/`javascript:` origins here keeps
+ * a tampered cookie from repointing authenticated traffic at an attacker host.
+ */
 function normalizeUrl(url: string): string | null {
   const cleaned = url.trim().replace(/\/+$/, "");
   if (!cleaned) return null;
+  let parsed: URL;
   try {
-    new URL(cleaned);
-    return cleaned;
+    parsed = new URL(cleaned);
   } catch {
+    // intentionally ignored: a parse failure IS the "invalid URL" signal; the
+    // caller (applyRegionSignal / readRegionCookie) surfaces the rejection.
     return null;
   }
+  if (parsed.protocol === "https:") return cleaned;
+  if (parsed.protocol === "http:" && LOCAL_HOSTS.test(parsed.hostname)) return cleaned;
+  return null;
 }
 
 /** Validate a raw `{ region, apiUrl }` shape into a RegionSignal, or null. */
@@ -71,43 +94,62 @@ function readRegionCookie(): RegionSignal | null {
     .split("; ")
     .find((c) => c.startsWith(`${REGION_COOKIE}=`));
   const raw = match?.slice(REGION_COOKIE.length + 1);
-  if (!raw) return null;
+  if (!raw) return null; // no cookie — the normal, default-base path; stay quiet
+
+  let parsed: unknown;
   try {
-    return toSignal(JSON.parse(decodeURIComponent(raw)));
+    parsed = JSON.parse(decodeURIComponent(raw));
   } catch (err) {
-    // A tampered or stale-format cookie must not strand the browser — fall
-    // back to the default base rather than throwing on every call.
     console.warn(
-      "api-url: ignoring malformed atlas_region cookie:",
+      "api-url: ignoring atlas_region cookie with an unparseable value:",
       err instanceof Error ? err.message : String(err),
     );
     return null;
   }
+
+  const signal = toSignal(parsed);
+  if (!signal) {
+    // Present but shape-invalid — a tampered value, or a cookie left by an
+    // older format after a RegionSignal change. Surface it: silently demoting
+    // a regional user to the US build-time default is the residency failure
+    // #3971 exists to kill, so it must be observable, not swallowed.
+    console.warn("api-url: ignoring atlas_region cookie with an invalid shape.");
+  }
+  return signal;
 }
 
 /**
- * `Secure` on https (prod regional hosts) but omitted on http so the cookie
- * is actually stored during local development (and in the test DOM, which
- * runs on http://localhost).
+ * `; Secure` on https (prod regional hosts), omitted on http so the cookie is
+ * actually stored during local development (and in the test DOM, which runs on
+ * http://localhost). Pure on `protocol` so the https branch is unit-testable —
+ * the test DOM can't exercise it via a real document.cookie write.
  */
-function cookieSecureAttr(): string {
-  if (typeof window !== "undefined" && window.location?.protocol === "http:") return "";
-  return "; Secure";
+export function secureCookieAttr(protocol: string | undefined): string {
+  return protocol === "http:" ? "" : "; Secure";
+}
+
+function currentProtocol(): string | undefined {
+  return typeof window !== "undefined" ? window.location?.protocol : undefined;
 }
 
 function writeRegionCookie(signal: RegionSignal | null): void {
   if (typeof document === "undefined") return;
+  const secure = secureCookieAttr(currentProtocol());
   if (signal === null) {
-    document.cookie = `${REGION_COOKIE}=; path=/; max-age=0; SameSite=Lax${cookieSecureAttr()}`;
+    document.cookie = `${REGION_COOKIE}=; path=/; max-age=0; SameSite=Lax${secure}`;
     return;
   }
   const value = encodeURIComponent(JSON.stringify(signal));
   document.cookie =
-    `${REGION_COOKIE}=${value}; path=/; max-age=${REGION_COOKIE_MAX_AGE}; SameSite=Lax${cookieSecureAttr()}`;
+    `${REGION_COOKIE}=${value}; path=/; max-age=${REGION_COOKIE_MAX_AGE}; SameSite=Lax${secure}`;
 }
 
 // Restore synchronously at module load (browser only) so getApiUrl() is
-// already regional on the very first call, before any component renders.
+// already regional on the very first call, before any component renders. SSR
+// resolves to the default base (no `document`) while the client resolves
+// regional after this restore — an intentional divergence that is safe because
+// `apiUrl` is only ever used to address fetches, never rendered as hydrated
+// text.
 if (typeof document !== "undefined") {
   activeSignal = readRegionCookie();
 }
@@ -126,7 +168,7 @@ export function isCrossOrigin(): boolean {
 }
 
 /** The active region key, if any — seeds the login fast-path. */
-export function getActiveRegion(): string | null {
+export function getActiveRegion(): Region | null {
   return activeSignal?.region ?? null;
 }
 
@@ -134,8 +176,8 @@ export function getActiveRegion(): string | null {
  * Apply a region selection: point the API base at the region's `apiUrl` and
  * persist `{ region, apiUrl }` in the `atlas_region` cookie so it survives
  * reloads. Returns `false` (base unchanged, cookie untouched) when the region
- * is empty or the `apiUrl` doesn't parse — a bad signal must never strand the
- * browser on an unreachable host.
+ * is empty or the `apiUrl` is not a credential-safe URL — a bad signal must
+ * never strand the browser on an unreachable host.
  */
 export function applyRegionSignal(region: string, apiUrl: string): boolean {
   const signal = toSignal({ region, apiUrl });

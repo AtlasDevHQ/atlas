@@ -54,14 +54,15 @@ function getBaseURL(): string {
 }
 
 // The auth client targets whatever `getApiUrl()` resolves at import. Under
-// ADR-0024 identity is regional, so when the `atlas_region` cookie is already
-// set — a returning user, or a fresh user after a region selection + the
-// signup flow's hard navigation — this is the workspace's own regional API,
-// and session cookies are minted host-only there (§5). With no region signal
-// it's the build-time default. The client is a module-level singleton built
-// after api-url.ts restores the cookie on import, so a returning user's
-// regional base is already in effect. Region is never discovered post-auth by
-// calling the US API — that circular path is retired (#3971).
+// ADR-0024 identity is regional, so for a returning user whose `atlas_region`
+// cookie is already set, api-url.ts restores it on import (before this
+// module-level singleton is built) and the client targets that workspace's own
+// regional API — where its session cookie was minted host-only (§5). With no
+// region signal it's the build-time default. Persisting the selection during
+// signup and consuming the region key on login land in follow-up slices; until
+// then only a cookie left by a prior session takes effect. Region is never
+// discovered post-auth by calling the US API — that circular path is retired
+// (#3971).
 const _authClient = createAuthClient({
   baseURL: getBaseURL(),
   plugins: [

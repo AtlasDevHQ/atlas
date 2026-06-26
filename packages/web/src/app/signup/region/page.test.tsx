@@ -27,13 +27,10 @@ mock.module("next/navigation", () => ({
   useRouter: () => routerMock,
 }));
 
-mock.module("@/lib/api-url", () => ({
-  // getApiBase() falls back to window.location.origin when getApiUrl() is empty.
-  getApiUrl: () => "",
-  isCrossOrigin: () => false,
-  _resetApiUrl: () => {},
-}));
-
+// `@/lib/api-url` is used unmocked: with NEXT_PUBLIC_ATLAS_API_URL empty in the
+// test env, getApiUrl() → "" and isCrossOrigin() → false (so getApiBase() falls
+// back to window.location.origin). No atlas_region cookie is set here, so the
+// module's import-time restore is a no-op.
 mock.module("@/ui/components/signup/signup-shell", () => ({
   SignupShell: ({ children, back }: { children: unknown; back?: { href: string } }) => (
     <div>

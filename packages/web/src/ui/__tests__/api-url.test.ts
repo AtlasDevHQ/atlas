@@ -6,6 +6,7 @@ import {
   applyRegionSignal,
   clearRegionSignal,
   initRegionFromCookie,
+  secureCookieAttr,
   _resetApiUrl,
   REGION_COOKIE,
 } from "../../lib/api-url";
@@ -177,6 +178,50 @@ describe("api-url", () => {
 
     it("returns true on a successful apply", () => {
       expect(applyRegionSignal("eu", EU)).toBe(true);
+    });
+  });
+
+  describe("apiUrl scheme policy (client-writable cookie → credentialed fetch)", () => {
+    it("accepts an https regional base", () => {
+      expect(applyRegionSignal("eu", "https://api-eu.useatlas.dev")).toBe(true);
+    });
+
+    it("accepts http only for localhost (local dev)", () => {
+      expect(applyRegionSignal("dev", "http://localhost:3001")).toBe(true);
+      expect(getApiUrl()).toBe("http://localhost:3001");
+    });
+
+    it("rejects http on a non-localhost host", () => {
+      expect(applyRegionSignal("eu", "http://api-eu.useatlas.dev")).toBe(false);
+      expect(getApiUrl()).toBe(DEFAULT_URL);
+    });
+
+    it("rejects a javascript: scheme even though it parses", () => {
+      expect(applyRegionSignal("eu", "javascript:alert(1)")).toBe(false);
+      expect(getApiUrl()).toBe(DEFAULT_URL);
+    });
+
+    it("ignores a cookie whose apiUrl uses a disallowed scheme", () => {
+      seedRegionCookie(
+        encodeURIComponent(JSON.stringify({ region: "eu", apiUrl: "http://evil.example.com" })),
+      );
+      initRegionFromCookie();
+      expect(getActiveRegion()).toBeNull();
+      expect(getApiUrl()).toBe(DEFAULT_URL);
+    });
+  });
+
+  describe("secureCookieAttr", () => {
+    it("omits Secure on http so the cookie stores in local dev / the test DOM", () => {
+      expect(secureCookieAttr("http:")).toBe("");
+    });
+
+    it("adds Secure on https (prod regional hosts)", () => {
+      expect(secureCookieAttr("https:")).toBe("; Secure");
+    });
+
+    it("defaults to Secure when the protocol is unknown (SSR)", () => {
+      expect(secureCookieAttr(undefined)).toBe("; Secure");
     });
   });
 });

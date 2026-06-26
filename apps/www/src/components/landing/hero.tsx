@@ -153,20 +153,21 @@ export function Hero() {
           <p className="animate-fade-in-up delay-100 mt-6 max-w-[460px] text-base leading-[1.6] text-fg-muted">{SUBHEAD}</p>
           <div className="animate-fade-in-up delay-200 mt-7 flex flex-wrap gap-2.5">
             <a
-              href="https://app.useatlas.dev/demo"
+              href="https://app.useatlas.dev/signup"
               className="inline-flex items-center gap-2 rounded-lg bg-accent px-[18px] py-[11px] text-[13.5px] font-semibold text-accent-ink transition-colors hover:bg-accent-hover"
             >
-              Try the demo →
+              Start free trial →
             </a>
             <a
-              href="https://docs.useatlas.dev/getting-started/quick-start"
-              className="inline-flex items-center rounded-lg border border-border bg-transparent px-3.5 py-2.5 text-fg transition-colors hover:border-border-strong hover:bg-bg-sunken"
+              href="https://app.useatlas.dev/demo"
+              className="inline-flex items-center rounded-lg border border-border bg-transparent px-3.5 py-2.5 text-[13.5px] text-fg transition-colors hover:border-border-strong hover:bg-bg-sunken"
             >
-              <code className="font-mono text-[12.5px]">$ bun create atlas-agent</code>
+              Try the live demo →
             </a>
           </div>
           <p className="animate-fade-in-up delay-300 mt-3.5 text-[13px] text-fg-muted">
-            Self-host is free and open source.
+            14-day trial, no credit card. Or self-host — free and open source:{" "}
+            <code className="font-mono text-[12px] text-fg">bun create atlas-agent</code>
           </p>
         </div>
 

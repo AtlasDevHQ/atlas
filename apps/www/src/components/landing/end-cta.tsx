@@ -23,22 +23,25 @@ export function EndCta() {
         </h2>
         <div className="flex flex-wrap justify-center gap-2.5">
           <a
-            href="https://app.useatlas.dev/demo"
+            href="https://app.useatlas.dev/signup"
             className="inline-flex items-center rounded-lg px-[18px] py-[11px] text-[13.5px] font-semibold transition-opacity hover:opacity-90"
             style={{ background: "var(--drench-accent)", color: "var(--drench-ink)" }}
           >
-            Try the NovaMart demo →
+            Start free trial →
           </a>
           <a
-            href="https://docs.useatlas.dev/getting-started/quick-start"
+            href="https://app.useatlas.dev/demo"
             className="inline-flex items-center rounded-lg border bg-transparent px-3.5 py-2.5 text-[13.5px] transition-colors hover:bg-white/5"
             style={{ borderColor: "oklch(1 0 0 / 0.22)", color: "var(--drench-fg)" }}
           >
-            <code className="font-mono text-[12.5px]">$ bun create atlas-agent</code>
+            Try the NovaMart demo →
           </a>
         </div>
         <p className="mt-3.5 text-[13px]" style={{ color: "var(--drench-muted)" }}>
-          Self-host is free and open source.
+          14-day trial, no credit card. Or self-host — free and open source:{" "}
+          <code className="font-mono text-[12px]" style={{ color: "var(--drench-fg)" }}>
+            bun create atlas-agent
+          </code>
         </p>
       </div>
     </section>

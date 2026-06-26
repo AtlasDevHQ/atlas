@@ -18,6 +18,13 @@
  *                          staging-smoke gate, not per-PR CI. Optional
  *                          `--wipe-twenty` is double-gated by
  *                          `ATLAS_SMOKE_WIPE_OK=1`. See ./ops-smoke-crm.ts.
+ *   teardown-verify-accounts  Surgically tear down the throwaway
+ *                          `/verify-prod-signup` test accounts (user + org +
+ *                          Stripe customer) left in a region's internal DB after
+ *                          a 3-region residency verification (ADR-0024, #3974).
+ *                          DRY RUN by default; EXECUTE is double-gated by
+ *                          `ATLAS_TEARDOWN_OK=1` + `--confirm`. One region DB per
+ *                          invocation. See ./ops-teardown-verify.ts.
  *
  * Wipe replaces internal/wipe-prod.sh's per-DB logic; the script's
  * Railway-credential fetching and 3-region orchestration are operator concerns
@@ -269,9 +276,13 @@ export async function handleOps(args: string[]): Promise<void> {
     const { handleOpsSmokeCrm } = await import("./ops-smoke-crm");
     return handleOpsSmokeCrm(args);
   }
+  if (subcommand === "teardown-verify-accounts") {
+    const { handleTeardownVerifyAccounts } = await import("./ops-teardown-verify");
+    return handleTeardownVerifyAccounts(args);
+  }
 
   console.error(
-    "Usage: atlas ops <wipe|backfill-crm-leads|smoke-crm> [options]\n\n" +
+    "Usage: atlas ops <wipe|backfill-crm-leads|smoke-crm|teardown-verify-accounts> [options]\n\n" +
       "Subcommands:\n" +
       "  wipe                 TRUNCATE every public table in the tenant DB. DESTRUCTIVE — requires ATLAS_WIPE_OK=1 + --confirm.\n" +
       "  backfill-crm-leads   Enqueue every demo_leads row into crm_outbox for dispatch to Twenty.\n" +
@@ -279,7 +290,11 @@ export async function handleOps(args: string[]): Promise<void> {
       "  smoke-crm            End-to-end CRM lead-capture verification (below Turnstile).\n" +
       "                       Flags: --personas <path> (required), --wipe-twenty (requires ATLAS_SMOKE_WIPE_OK=1),\n" +
       "                              --twenty-base-url <url>, --twenty-api-key <key>, --timeout-seconds N (default 60),\n" +
-      "                              --database-url <url>\n",
+      "                              --database-url <url>\n" +
+      "  teardown-verify-accounts  Surgically delete throwaway /verify-prod-signup accounts (user + org + Stripe customer)\n" +
+      "                       from one region's internal DB. DRY RUN by default; EXECUTE requires ATLAS_TEARDOWN_OK=1 + --confirm.\n" +
+      "                       Flags: --email <addr[,addr]> (required, repeatable), --region <us|eu|apac> OR --database-url <url>,\n" +
+      "                              --dry-run, --force (allow non-plus-addressed emails)\n",
   );
   process.exit(1);
 }

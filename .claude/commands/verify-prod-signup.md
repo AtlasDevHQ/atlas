@@ -12,7 +12,7 @@ Human-in-the-loop verification that a **real, end-to-end signup works through ea
 
 ## Prerequisites
 
-- **Prod release shipped.** Confirm the 5 prod services are on the intended tag SHA (`/deploy` or Railway `list_deployments`). Verifying against a stale build is worthless.
+- **Prod release shipped.** Confirm the 4 tag-gated prod services (`api`, `api-eu`, `api-apac`, `web`) are on the intended tag SHA (`/deploy` or Railway `list_deployments`). Verifying against a stale build is worthless. (`docs` and `www` deploy direct-from-`main` and aren't part of the tag gate.)
 - **A business-domain inbox you can read in real time.** Prod's env-profile sets `requireEmailVerification: true` — signup sends an **8-character OTP** via Resend (10-min expiry), **no bypass**. The business-email gate (`packages/api/src/lib/auth/business-email.ts`) rejects free-mail (gmail/outlook/proton/…) and disposable domains.
   - Use plus-addressing on a business domain so all OTPs land in one inbox and each region is a distinct user (→ fresh trial, not the `locked` churn tier): **`matt+us@useatlas.dev` / `matt+eu@…` / `matt+apac@…`**.
 - **Playwright MCP** connected (`mcp__playwright__browser_*`). Resize the viewport tall (e.g. `1280×1600`) — the region step's Continue button sits below the fold on a short viewport and won't scroll into view.

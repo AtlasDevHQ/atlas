@@ -34,8 +34,8 @@ Quick strategic orientation — where the project stands right now. Read-only, n
    # Latest CI on main
    gh run list -R AtlasDevHQ/atlas --branch main --limit 3 --json status,conclusion,name,createdAt
 
-   # Railway deploy statuses on main = staging health (api-staging/web-staging/www-staging) + docs.
-   # Prod (api/web/www) is gated by /release advancing the `prod` branch.
+   # Railway deploy statuses on main = staging health (api-staging/web-staging) + docs + www (both direct-from-main).
+   # Prod (api/web) is gated by /release advancing the `prod` branch.
    gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state}] | unique_by(.context) | .[] | "\(.context): \(.state)"'
    git fetch origin prod --quiet 2>/dev/null; echo "prod branch at: $(git rev-parse --short origin/prod 2>/dev/null || echo unknown)"
    ```
@@ -91,8 +91,8 @@ Categorize open issues:
 ### 2d. Health Snapshot
 
 - **CI**: Green on main? If not, what's failing?
-- **Railway staging** (tracks `main`): `api-staging` / `web-staging` / `www-staging` + `docs` deployed? Any pending/failing?
-- **Railway prod** (tracks `prod` branch, last advanced by `/release` tag): `api` / `api-eu` / `api-apac` / `web` / `www` green? How far behind `main` is the `prod` SHA?
+- **Railway staging** (tracks `main`): `api-staging` / `web-staging` + the direct-from-main `docs` / `www` deployed? Any pending/failing?
+- **Railway prod** (tracks `prod` branch, last advanced by `/release` tag): `api` / `api-eu` / `api-apac` / `web` green? How far behind `main` is the `prod` SHA?
 - **Test coverage**: How many test files across API, CLI, EE, browser?
 - **Package versions**: Current published versions of @useatlas/* packages
 
@@ -133,9 +133,9 @@ Use this format:
 | System | Status |
 |--------|--------|
 | CI (main) | ✓ green / ✗ failing — <details> |
-| Railway staging (main) | api-staging / web-staging / www-staging ✓ / ⏳ / ✗ |
-| Railway prod (`prod` @ <tag>) | api / api-eu / api-apac / web / www ✓ / ⏳ / ✗ |
-| Railway docs (direct-from-main) | ✓ / ⏳ / ✗ |
+| Railway staging (main) | api-staging / web-staging ✓ / ⏳ / ✗ |
+| Railway prod (`prod` @ <tag>) | api / api-eu / api-apac / web ✓ / ⏳ / ✗ |
+| Railway docs + www (direct-from-main) | ✓ / ⏳ / ✗ |
 
 ### Packages (@useatlas/*)
 | Package | Version |

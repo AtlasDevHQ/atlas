@@ -63,13 +63,13 @@ Report: `CI gates: lint, type, test, syncpack, drift, railway-watch, schema-drif
 
 **After local gates pass, check remote CI and deployments:**
 
-A merge to `main` deploys to **staging** (`api-staging` / `web-staging` / `www-staging`) plus the `docs` prod service (direct-from-main). Production (`api` / `api-eu` / `api-apac` / `web` / `www`) is gated behind `/release` advancing the `prod` branch — so the `main` deploy statuses below are about **staging health**, not prod. See [release-process.md § Mental model](../../docs/development/release-process.md#mental-model).
+A merge to `main` deploys to **staging** (`api-staging` / `web-staging`) plus the `docs` and `www` prod services (both direct-from-main). Production (`api` / `api-eu` / `api-apac` / `web`) is gated behind `/release` advancing the `prod` branch — so the `main` deploy statuses below are about **staging health** (plus the direct-from-main `docs`/`www`), not the gated prod set. See [release-process.md § Mental model](../../docs/development/release-process.md#mental-model).
 
 ```bash
 # GitHub Actions CI + Sync Starters (last 5 runs on main)
 gh run list -R AtlasDevHQ/atlas --branch main --limit 5 --json status,conclusion,name,createdAt,databaseId
 
-# Railway deployment status on main (staging services + docs — uses commit statuses, not check-runs)
+# Railway deployment status on main (staging services + docs + www — uses commit statuses, not check-runs)
 gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state, description}] | unique_by(.context) | .[] | "\(.context)\t\(.state)\t\(.description)"'
 ```
 
@@ -79,13 +79,13 @@ gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state
 | `Sync Starters` (GitHub Actions) | Must be `success` |
 | `satisfied-creation - api-staging` | Must be `Success`. If `Deployment failed`, check Railway dashboard for build/startup errors |
 | `satisfied-creation - web-staging` | Must be `Success` |
-| `satisfied-creation - www-staging` | `No deployment needed` is fine (only deploys on `apps/www/` changes) |
+| `satisfied-creation - www` | Direct-from-main: must be `Success` when `apps/www/` changed; `No deployment needed` otherwise |
 | `satisfied-creation - docs` | Must be `Success` (deploys direct-from-main) |
 | `satisfied-creation - sidecar` | `No deployment needed` is fine (only deploys on sandbox changes) |
-| `satisfied-creation - api` / `web` / `www` | Prod — only updates when `/release` advances `prod`; stale relative to `main` is expected |
+| `satisfied-creation - api` / `web` | Prod — only updates when `/release` advances `prod`; stale relative to `main` is expected |
 
 **If a Railway deployment fails:**
-1. Check which service failed (api-staging, web-staging, docs)
+1. Check which service failed (api-staging, web-staging, docs, www)
 2. Common causes:
    - **Build failure**: new dependency not in `serverExternalPackages`, TypeScript error in production build
    - **Startup crash**: missing env var on Railway, DB migration error, new table requires `DATABASE_URL`

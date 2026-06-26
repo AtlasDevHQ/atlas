@@ -126,6 +126,8 @@ The maintainer's daily loop changes by exactly two steps: (1) wait ~5 min for st
 
   Prod `www` joins the `prod`-branch group because `apps/www` IS gated per Q2 — leaving prod www on `main` push would let CSP/embed changes like #2856/#2857 ship without ever transiting staging, contradicting the design.
 
+  > **Superseded (2026-06, `docs/www-off-release-pipeline`):** `www` was later moved **off** the prod-branch gate. It now deploys direct from `main` to prod like `docs` — both are static `output: "export"` exports with no runtime surface to gate — and the `www-staging` service was deleted (so `www.staging.useatlas.dev` no longer exists). The current prod-branch (tag-gated) set is the **four** services `api` / `api-eu` / `api-apac` / `web`; `docs` **and `www`** deploy direct-from-`main`. The staging set is `api-staging` / `web-staging` only. The Q2 gating rationale above is retained as the original design record, not the current wiring.
+
   This shape was originally drafted as "Railway tag-pattern `v*.*.*`". Railway has no native tag trigger and the Railway CLI cannot deploy an arbitrary SHA on a GitHub-linked service (`railway up` ships a local tarball, severing the GitHub Deployments link). The `prod`-branch tracker is the simplest composable primitive that preserves Railway's branch-driven autodeploy semantics. The `prod` branch is a Railway-tracking artifact, not an integration branch — no PRs target it, only `/release` advances it. Branch protection enforces this. See [ADR-0008 § Release branches: none](../adr/0008-versioning-and-release-tags.md#release-branches-none).
 
 ### Configuration file

@@ -2,7 +2,7 @@
 
 Check deployment health across all Railway services — staging and production. Diagnose issues, tail logs, and trigger redeploys.
 
-**Deploy model (dual-trigger):** merges to `main` auto-deploy to **staging** (`api-staging` / `web-staging` / `www-staging`); `docs` deploys direct-from-`main` to its prod service (static export, no runtime to gate). **Production** (`api` / `api-eu` / `api-apac` / `web` / `www`) is gated — it deploys only when `/release` advances the `prod` branch to a `v*.*.*` tag. See [release-process.md § Mental model](../../docs/development/release-process.md#mental-model).
+**Deploy model (dual-trigger):** merges to `main` auto-deploy to **staging** (`api-staging` / `web-staging`); `docs` **and `www`** deploy direct-from-`main` to their prod services (both static `output: "export"` exports, no runtime to gate). **Production** (`api` / `api-eu` / `api-apac` / `web`) is gated — it deploys only when `/release` advances the `prod` branch to a `v*.*.*` tag. See [release-process.md § Mental model](../../docs/development/release-process.md#mental-model).
 
 **Run this** after a merge to verify **staging** landed, after `/release` to verify the **prod** promote landed, or anytime you're investigating a live issue.
 
@@ -30,9 +30,9 @@ Run these in parallel:
    curl -sf -o /dev/null -w "%{http_code}\n" https://docs.useatlas.dev
 
    # --- Staging (auto-deployed on every merge to main) ---
+   # (www has no staging twin — it deploys direct from main to prod, like docs)
    curl -sf https://api.staging.useatlas.dev/api/health | jq '{status, region}'   # region should be "staging"
    curl -sf -o /dev/null -w "%{http_code}\n" https://app.staging.useatlas.dev
-   curl -sf -o /dev/null -w "%{http_code}\n" https://www.staging.useatlas.dev
    ```
 
 3. CI status (merges to `main` deploy to **staging**; prod deploys are gated by `/release` tags advancing the `prod` branch):
@@ -43,8 +43,8 @@ Run these in parallel:
 4. Railway deploy statuses (catches per-service deploy failures that live health checks miss — Railway keeps the previous deployment running when a new build fails):
    ```bash
    # Railway reports via commit statuses API (not check runs). Dedupe to latest per service.
-   # A plain main commit shows the staging services (api-staging/web-staging/www-staging) + docs;
-   # prod-service statuses (api/api-eu/api-apac/web/www) live on the SHA the `prod` branch points at.
+   # A plain main commit shows the staging services (api-staging/web-staging) + docs + www;
+   # prod-service statuses (api/api-eu/api-apac/web) live on the SHA the `prod` branch points at.
    echo "main HEAD ($(git rev-parse --short HEAD)):"
    gh api repos/AtlasDevHQ/atlas/commits/$(git rev-parse HEAD)/statuses --jq '[.[] | {context, state, description}] | group_by(.context) | map(.[0]) | .[] | "\(.context): \(.state) — \(.description)"' 2>/dev/null
 
@@ -67,9 +67,8 @@ Run these in parallel:
    | api-eu | `5de4ea32-0d74-4ce5-907d-67d0d785bcd4` |
    | api-apac | `4b47dffe-aa4d-4eb0-bb5b-009de2735e05` |
    | web | `9c00bb31-808a-40d5-92d4-184a03a10bdc` |
-   | www | `86d6e4e8-a2f0-4e6e-9dcf-c7f052c4cdde` |
 
-   Returns `id | status | timestamp | commit-hash`. **Pass:** latest deployment is `SUCCESS` with commit-hash == `git rev-parse origin/prod`, prior deployment `REMOVED`. **Legit skip:** a service unchanged by the diff stays `SUCCESS` on the old SHA with note `No deployment needed - watched paths not modified` (e.g. `www` for an api-only release). **Fail:** latest `FAILED`/`CRASHED`/stuck `WAITING`, or `SUCCESS` still on an older SHA with no skip reason — the endpoint may still look healthy on the old build. `docs` tracks `main` (not `prod`), so it won't match the tag SHA — verify it at `docs.useatlas.dev`. (Railway MCP logged out → `Unauthorized`; reconnect via `/mcp` or read the source commit from the dashboard.)
+   Returns `id | status | timestamp | commit-hash`. **Pass:** latest deployment is `SUCCESS` with commit-hash == `git rev-parse origin/prod`, prior deployment `REMOVED`. **Legit skip:** a service unchanged by the diff stays `SUCCESS` on the old SHA with note `No deployment needed - watched paths not modified` (e.g. `web` for an api-only release). **Fail:** latest `FAILED`/`CRASHED`/stuck `WAITING`, or `SUCCESS` still on an older SHA with no skip reason — the endpoint may still look healthy on the old build. `docs` and `www` track `main` (not `prod`), so they won't match the tag SHA — verify `docs` at `docs.useatlas.dev` and `www` at `www.useatlas.dev`. (Railway MCP logged out → `Unauthorized`; reconnect via `/mcp` or read the source commit from the dashboard.)
 
 **Step 2: Diagnose any failures**
 
@@ -94,7 +93,7 @@ railway service logs --service api-staging --limit 50  # staging
 ```bash
 railway service logs --service web --limit 50          # also web-staging
 railway service logs --service docs --limit 50         # direct-from-main, no staging variant
-railway service logs --service www --limit 50          # also www-staging
+railway service logs --service www --limit 50          # direct-from-main, no staging variant
 
 # Common causes:
 # - Build failure (check Railway build logs)
@@ -124,7 +123,7 @@ Output a summary table:
 | API (EU) | api-eu.useatlas.dev | ✓ healthy / ✗ down | <time> |
 | API (APAC) | api-apac.useatlas.dev | ✓ healthy / ✗ down | <time> |
 | Web | app.useatlas.dev | ✓ 200 / ✗ <code> | <time> |
-| WWW | www.useatlas.dev | ✓ 200 / ✗ <code> | <time> |
+| WWW | www.useatlas.dev | ✓ 200 / ✗ <code> | <time> | (direct-from-main)
 | Docs | docs.useatlas.dev | ✓ 200 / ✗ <code> | <time> | (direct-from-main)
 | Sidecar | (internal) | ✓ via API / ✗ down | <time> |
 
@@ -133,7 +132,6 @@ Output a summary table:
 |---------|-----|--------|-------------|
 | API | api.staging.useatlas.dev | ✓ healthy / ✗ down | <time> |
 | Web | app.staging.useatlas.dev | ✓ 200 / ✗ <code> | <time> |
-| WWW | www.staging.useatlas.dev | ✓ 200 / ✗ <code> | <time> |
 
 CI: last run <status> (<time>)
 Last push to main: <commit hash> <message> (<time>) → deploys staging
@@ -174,12 +172,11 @@ railway service logs --service <name> --follow
 | api-eu | api-eu.useatlas.dev | deploy/api-eu/ | `prod` branch (tag) |
 | api-apac | api-apac.useatlas.dev | deploy/api-apac/ | `prod` branch (tag) |
 | web | app.useatlas.dev | deploy/web/ | `prod` branch (tag) |
-| www | www.useatlas.dev | deploy/www/ | `prod` branch (tag) |
+| www | www.useatlas.dev | deploy/www/ | `main` (direct) |
 | docs | docs.useatlas.dev | deploy/docs/ | `main` (direct) |
 | sidecar | (internal) | deploy/sidecar/ | sandbox changes |
 | api-staging | api.staging.useatlas.dev | (Railway-side; `deploy/api-staging/` pending #2912) | `main` (auto) |
 | web-staging | app.staging.useatlas.dev | deploy/web/ | `main` (auto) |
-| www-staging | www.staging.useatlas.dev | deploy/www/ | `main` (auto) |
 
 **Project:** `satisfied-creation` (08fe35c3-d1c7-4e34-b6a4-ec5e51c6f241)
 

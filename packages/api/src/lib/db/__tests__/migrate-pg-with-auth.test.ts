@@ -29,6 +29,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 
@@ -326,6 +327,52 @@ describeIfPg("migrate-pg-with-auth (real Postgres, Better Auth tables present)",
         ["device-cookie-1"],
       );
       expect(result.rows).toHaveLength(0);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ── 0151 pgcrypto hashed-email index — the login front-door linchpin (#3973) ──
+  //
+  // The returning-user front-door routes only if the JS `hashEmail` (Web Crypto
+  // sha256 of lower(email), hex) is byte-identical to what Postgres computes via
+  // the index expression `encode(digest(lower(email),'sha256'),'hex')`. If they
+  // ever diverge (pgcrypto missing, encoding, hex case, lower() vs toLowerCase),
+  // EVERY returning user in a non-default region silently gets routed to "no
+  // account — sign up". This pins the SQL side against an independent SHA-256
+  // (node:crypto) so a pgcrypto/expression regression fails loudly in CI.
+  it(
+    "0151: digest index expression equals sha256(lower(email)) hex, and the functional index exists",
+    async () => {
+      // Mixed-case input → the index lower()s it, so the hash must match the
+      // lower-cased address (exactly what the browser's hashEmail produces).
+      const email = "Alice@Corp.com";
+      const expected = createHash("sha256").update(email.toLowerCase()).digest("hex");
+
+      await pool.query(`INSERT INTO "user" (id, email) VALUES ($1, $2)`, ["u-0151", email]);
+
+      const hashed = await pool.query<{ h: string }>(
+        `SELECT encode(digest(lower(email), 'sha256'), 'hex') AS h
+           FROM "user" WHERE id = $1`,
+        ["u-0151"],
+      );
+      expect(hashed.rows[0]?.h).toBe(expected);
+
+      // EXISTS-probe round-trip against the hash (the shape emailHashExists runs).
+      const exists = await pool.query<{ exists: boolean }>(
+        `SELECT EXISTS(
+           SELECT 1 FROM "user"
+           WHERE encode(digest(lower(email), 'sha256'), 'hex') = $1
+         ) AS "exists"`,
+        [expected],
+      );
+      expect(exists.rows[0]?.exists).toBe(true);
+
+      // The functional index 0151 creates must be present (so the probe is an
+      // indexed lookup, not a seq scan).
+      const idx = await pool.query<{ indexname: string }>(
+        `SELECT indexname FROM pg_indexes WHERE indexname = 'user_email_sha256_idx'`,
+      );
+      expect(idx.rows).toHaveLength(1);
     },
     PG_TEST_TIMEOUT_MS,
   );

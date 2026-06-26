@@ -5,6 +5,7 @@ import {
   WorkspaceRegionSchema,
   RegionMigrationSchema,
   RegionsResponseSchema,
+  RegionRoutingMapSchema,
   AssignmentsResponseSchema,
   MigrationStatusResponseSchema,
 } from "../residency";
@@ -48,6 +49,27 @@ describe("happy-path parses", () => {
 
   test("RegionStatusSchema parses a region-status row", () => {
     expect(RegionStatusSchema.parse(validStatus)).toEqual(validStatus);
+  });
+
+  test("RegionRoutingMapSchema parses the login front-door map", () => {
+    const map = {
+      configured: true,
+      defaultRegion: "us",
+      regions: [
+        { id: "us", label: "United States", apiUrl: "https://api.useatlas.dev", isDefault: true },
+        { id: "eu", label: "Europe", apiUrl: "https://api-eu.useatlas.dev", isDefault: false },
+      ],
+    };
+    expect(RegionRoutingMapSchema.parse(map)).toEqual(map);
+  });
+
+  test("RegionRoutingMapSchema rejects a drifted entry (missing apiUrl)", () => {
+    const drifted = {
+      configured: true,
+      defaultRegion: "us",
+      regions: [{ id: "us", label: "United States", isDefault: true }],
+    };
+    expect(RegionRoutingMapSchema.safeParse(drifted).success).toBe(false);
   });
 
   test("WorkspaceRegionSchema parses an assignment", () => {
@@ -252,6 +274,16 @@ describe("structural rejection", () => {
   test("RegionPickerItemSchema rejects missing isDefault", () => {
     const { isDefault: _d, ...missing } = validPicker;
     expect(RegionPickerItemSchema.safeParse(missing).success).toBe(false);
+  });
+
+  test("RegionPickerItemSchema parses the optional apiUrl (ADR-0024 §4)", () => {
+    const withApiUrl = { ...validPicker, apiUrl: "https://api-eu.useatlas.dev" };
+    expect(RegionPickerItemSchema.parse(withApiUrl)).toEqual(withApiUrl);
+  });
+
+  test("RegionPickerItemSchema rejects a malformed apiUrl", () => {
+    const bad = { ...validPicker, apiUrl: "not-a-url" };
+    expect(RegionPickerItemSchema.safeParse(bad).success).toBe(false);
   });
 
   test("RegionMigrationSchema rejects undefined on nullable field", () => {

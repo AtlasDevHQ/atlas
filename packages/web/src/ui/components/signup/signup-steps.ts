@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Building2, CheckCircle2, Database, MapPin, UserPlus } from "lucide-react";
+import { Building2, CheckCircle2, Database, Mail, MapPin, UserPlus } from "lucide-react";
 
 export interface SignupStepDef {
   readonly id: string;
@@ -11,10 +11,18 @@ export interface SignupStepDef {
 // is derived from a single source of truth. Adding, removing, or renaming an
 // entry here is the only thing needed — every consumer picks it up at compile
 // time.
+//
+// Order encodes ADR-0024 §4's signup reorder: **email → region → account** →
+// workspace → connect. Region is chosen *before* the first identity write
+// (account creation), so the workspace is provisioned in the selected region's
+// DB rather than US. "Email" (identifier entry, not a write) leads so the
+// region picker can repoint the browser at the regional API before account
+// creation. The order is strictly forward — each page maps to exactly one step.
 export const FULL_STEPS = [
+  { id: "email", label: "Email", icon: Mail },
+  { id: "region", label: "Region", icon: MapPin },
   { id: "account", label: "Account", icon: UserPlus },
   { id: "workspace", label: "Workspace", icon: Building2 },
-  { id: "region", label: "Region", icon: MapPin },
   { id: "connect", label: "Connect", icon: Database },
   { id: "done", label: "Done", icon: CheckCircle2 },
 ] as const satisfies readonly SignupStepDef[];

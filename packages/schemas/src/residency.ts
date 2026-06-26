@@ -28,6 +28,8 @@ import {
   MIGRATION_STATUSES,
   type RegionMigration,
   type RegionPickerItem,
+  type RegionRoutingMap,
+  type RegionRoutingMapEntry,
   type RegionStatus,
   type WorkspaceRegion,
 } from "@useatlas/types";
@@ -43,6 +45,11 @@ export const RegionPickerItemSchema = z.object({
   id: z.string(),
   label: z.string(),
   isDefault: z.boolean(),
+  // Region's public API base — lets the signup picker repoint the browser at
+  // the chosen region before the first identity write (ADR-0024 §4). Optional:
+  // single-region / local-dev configs omit it. `.url()` rejects a malformed
+  // base before it ever reaches `applyRegionSignal`'s own credential-safe check.
+  apiUrl: z.string().url().optional(),
 }) satisfies z.ZodType<RegionPickerItem>;
 
 export const RegionStatusSchema = z.object({
@@ -51,6 +58,20 @@ export const RegionStatusSchema = z.object({
   workspaceCount: z.number().int().nonnegative(),
   healthy: z.boolean(),
 }) satisfies z.ZodType<RegionStatus>;
+
+export const RegionRoutingMapEntrySchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  apiUrl: z.string(),
+  isDefault: z.boolean(),
+}) satisfies z.ZodType<RegionRoutingMapEntry>;
+
+/** Wire shape of `GET /api/v1/auth/region-map` (login front-door, ADR-0024 §3). */
+export const RegionRoutingMapSchema = z.object({
+  configured: z.boolean(),
+  defaultRegion: z.string(),
+  regions: z.array(RegionRoutingMapEntrySchema),
+}) satisfies z.ZodType<RegionRoutingMap>;
 
 export const WorkspaceRegionSchema = z.object({
   workspaceId: z.string(),

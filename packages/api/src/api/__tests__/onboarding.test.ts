@@ -278,6 +278,37 @@ describe("GET /api/v1/onboarding/social-providers", () => {
   });
 });
 
+describe("GET /api/v1/onboarding/regions (public — pre-auth, ADR-0024 §4)", () => {
+  it("returns 200 without a session — the picker renders before any identity write", async () => {
+    // Under the signup reorder the region step precedes account creation, so
+    // there is NO session yet. `standardAuth` would 401 this; the route is now
+    // public. Force an unauthenticated `authenticate` to prove the route never
+    // consults it (withRequestId runs no auth).
+    mockAuthMode = "managed";
+    mockAuthenticate.mockImplementation(() =>
+      Promise.resolve({ authenticated: false, mode: "managed", status: 401, error: "No session" }),
+    );
+    const res = await request("/api/v1/onboarding/regions");
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    // Residency resolver is unavailable in the test runtime → configured:false
+    // (still a 200; the frontend reads `configured` to skip the region step).
+    expect(data.configured).toBe(false);
+    expect(data.availableRegions).toEqual([]);
+  });
+
+  it("404s when auth mode is not managed", async () => {
+    mockAuthMode = "none";
+    try {
+      const res = await request("/api/v1/onboarding/regions");
+      expect(res.status).toBe(404);
+    } finally {
+      // Restore even if the assertion throws, so the mode can't leak forward.
+      mockAuthMode = "managed";
+    }
+  });
+});
+
 describe("POST /api/v1/onboarding/test-connection", () => {
   beforeEach(() => {
     mockAuthMode = "managed";

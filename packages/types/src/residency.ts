@@ -69,6 +69,52 @@ export interface RegionPickerItem {
   label: string;
   /** Whether this region is the deployment's default. */
   isDefault: boolean;
+  /**
+   * Public API base for this region (e.g. "https://api-eu.useatlas.dev").
+   *
+   * Carries the region→apiUrl map to the browser so the signup region step can
+   * point the API base at the chosen region *before* the first identity write
+   * (ADR-0024 §4 — `applyRegionSignal` in `@/lib/api-url`). Omitted when the
+   * region config declares no `apiUrl` (single-region / local dev), where the
+   * browser stays on its same-origin base and no repoint is possible.
+   */
+  apiUrl?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Region routing map (login front-door — ADR-0024 §3)
+// ---------------------------------------------------------------------------
+
+/**
+ * One region the returning-user login front-door can route to — a selectable
+ * region projected with the API base the browser is repointed at. Unlike
+ * {@link RegionPickerItem} (signup picker), this carries the `apiUrl` the
+ * front-door fans its hashed-email existence probe out to.
+ */
+export interface RegionRoutingMapEntry {
+  /** Region identifier (e.g. "eu"). */
+  id: string;
+  /** Human-readable label (e.g. "Europe"). */
+  label: string;
+  /** Regional API base the front-door probes and the browser targets. */
+  apiUrl: string;
+  /** Whether this is the deployment's default region. */
+  isDefault: boolean;
+}
+
+/**
+ * Response of `GET /api/v1/auth/region-map` — the region→apiUrl map served
+ * identically by every regional API, consumed by the login front-door. SSOT
+ * for the wire shape shared by `@atlas/api` (producer) and `@atlas/web`
+ * (consumer); the Zod mirror lives in `@useatlas/schemas`.
+ */
+export interface RegionRoutingMap {
+  /** False when residency is not configured (self-hosted / single region). */
+  configured: boolean;
+  /** Default region id, or "none" when not configured. */
+  defaultRegion: string;
+  /** Selectable regions with a configured apiUrl. */
+  regions: RegionRoutingMapEntry[];
 }
 
 // ---------------------------------------------------------------------------

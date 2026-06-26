@@ -1,11 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSearchParams } from "next/navigation";
-import { authClient } from "@/lib/auth/client";
+import { useRouter, useSearchParams } from "next/navigation";
 import { savePlanIntent } from "@/lib/billing/plan-intent";
-import { navigatePostAuth } from "@/lib/auth/post-auth-nav";
-import { getApiUrl } from "@/lib/api-url";
+import { saveSignupDraft, readSignupDraft } from "@/lib/signup-draft";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,169 +14,64 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
-import { GoogleIcon, GitHubIcon, MicrosoftIcon } from "@/ui/components/social-icons";
 import { SignupShell } from "@/ui/components/signup/signup-shell";
-import { VerifyEmailOTPForm } from "@/ui/components/auth/verify-email-otp-form";
-import { MailCheck } from "lucide-react";
 
-function getApiBase(): string {
-  const url = getApiUrl();
-  if (url) return url;
-  if (typeof window !== "undefined") return window.location.origin;
-  return "http://localhost:3000";
-}
-
+/**
+ * Email-entry step — the start of the ADR-0024 §4 signup order
+ * (**email → region → create-account**).
+ *
+ * Collecting the email here is NOT an identity write, so picking a region on
+ * the next step still precedes the first Better-Auth write. The email is
+ * stashed in the signup draft (sessionStorage) so it survives the region step's
+ * hard reload, then consumed by `/signup/account`. Region selection points the
+ * browser at the regional API; account creation, OTP, workspace, and connect
+ * then all run in-region.
+ */
 export default function SignupPage() {
-  // `?invitationId=…` is set when the user clicks an org-invitation
-  // email link while signed out and picks "Create account". Threading it
-  // through the signup + OTP flow lets us route to /accept-invitation
-  // post-verify instead of /signup/workspace (joining an existing org
-  // rather than creating their own).
+  const router = useRouter();
+  // `?invitationId=…` is set when the user clicks an org-invitation email link
+  // while signed out and picks "Create account". It rides in the draft so the
+  // account step routes to /accept-invitation post-verify (joining an existing
+  // org) rather than /signup/workspace. An invitee joins an org that already
+  // has a region, so they skip the region picker.
   const searchParams = useSearchParams();
   const invitationId = searchParams.get("invitationId");
-  // `?plan=…` is the pricing-page CTA intent (#3418). The signup flow
-  // spans five hard-navigated steps plus optional OAuth redirects, so the
-  // param can't survive as URL state — stash it; the billing plan picker
-  // consumes it for preselection. Saved in an effect (not render) so
-  // React strict-mode double-render doesn't double-write.
+  // `?plan=…` is the pricing-page CTA intent (#3418). Stashed (not URL state)
+  // because the multi-step flow + OAuth redirects drop the param; the billing
+  // plan picker consumes it later. Saved in an effect so strict-mode's double
+  // render doesn't double-write.
   const planParam = searchParams.get("plan");
   useEffect(() => {
     savePlanIntent(planParam);
   }, [planParam]);
-  const postSignupPath = invitationId
-    ? `/accept-invitation/${encodeURIComponent(invitationId)}`
-    : "/signup/workspace";
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [socialLoading, setSocialLoading] = useState<string | null>(null);
-  const [socialProviders, setSocialProviders] = useState<string[]>([]);
-  // When email verification is required server-side, signup does not create
-  // a session — we can't push to /signup/workspace because the proxy will
-  // bounce the unauthenticated user to /login. Hold the email here to
-  // render the "check your inbox" interstitial instead. The verification
-  // link's callbackURL bounces the user back to /signup/workspace post-verify
-  // (Better Auth auto-signs them in via `autoSignInAfterVerification`).
-  const [pendingEmail, setPendingEmail] = useState<string | null>(null);
 
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  // Pre-fill from an existing draft so Back from the region/account step keeps
+  // the email the user already typed.
   useEffect(() => {
-    const base = getApiBase();
-    fetch(`${base}/api/v1/onboarding/social-providers`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`Social providers returned ${r.status}`);
-        return r.json();
-      })
-      .then((data: { providers?: string[] }) => {
-        if (Array.isArray(data.providers)) setSocialProviders(data.providers);
-      })
-      .catch((err: unknown) => {
-        // Graceful degradation: email/password form still works
-        console.warn("Social providers unavailable:", err instanceof Error ? err.message : String(err));
-      });
+    const draft = readSignupDraft();
+    if (draft?.email) setEmail(draft.email);
   }, []);
 
-  async function handleSubmit(e: React.FormEvent) {
+  function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!email || !password) return;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const res = await authClient.signUp.email({
-        email,
-        password,
-        name: name || email.split("@")[0],
-      });
-      if (res.error) {
-        setError(res.error.message ?? "Sign up failed");
-        return;
-      }
-      // When verification is required server-side, Better Auth omits the
-      // session token from the signup response and the emailOTP plugin's
-      // `sendVerificationOnSignUp: true` has already dispatched the OTP.
-      // Switch to the OTP entry view; the form will land the user back on
-      // /signup/workspace once the code is verified (session is established
-      // as part of the verify call). When verification is off (self-hosted
-      // dev), the response carries a token and we can push directly.
-      const token = (res.data as { token?: string | null } | undefined)?.token;
-      if (token) {
-        // Hard nav after auth — see post-auth-nav for the rationale. Same
-        // applies on the OTP-verified branch below.
-        navigatePostAuth(postSignupPath);
-      } else {
-        setPendingEmail(email);
-      }
-    } catch (err) {
-      console.warn("Signup failed:", err instanceof Error ? err.message : String(err));
-      setError(
-        err instanceof TypeError
-          ? "Unable to reach the server. Check your connection and try again."
-          : err instanceof Error
-            ? err.message
-            : "Sign up failed. Please try again.",
-      );
-    } finally {
-      setLoading(false);
+    const trimmed = email.trim();
+    if (!trimmed) {
+      setError("Enter your work email to continue.");
+      return;
     }
-  }
-
-  async function handleSocialLogin(provider: string) {
     setError(null);
-    setSocialLoading(provider);
-    try {
-      await authClient.signIn.social({
-        provider: provider as "google" | "github" | "microsoft",
-        callbackURL: postSignupPath,
-      });
-    } catch (err) {
-      console.warn("Social login failed:", err instanceof Error ? err.message : String(err));
-      setError(err instanceof Error ? err.message : "Social login failed");
-    } finally {
-      setSocialLoading(null);
-    }
-  }
-
-  if (pendingEmail) {
-    return (
-      <SignupShell step="account">
-        <Card>
-          <CardHeader className="space-y-3 text-center">
-            <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <MailCheck className="size-6" aria-hidden="true" />
-            </div>
-            <CardTitle className="text-2xl tracking-tight">Enter your code</CardTitle>
-            <CardDescription>
-              We sent an 8-character code to{" "}
-              <span className="font-medium text-foreground">{pendingEmail}</span>.
-              It&apos;s good for the next 10 minutes.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <VerifyEmailOTPForm
-              email={pendingEmail}
-              onVerified={() => navigatePostAuth(postSignupPath)}
-            />
-            <p className="text-center text-xs text-muted-foreground">
-              <button
-                type="button"
-                onClick={() => setPendingEmail(null)}
-                className="font-medium text-primary hover:underline"
-              >
-                Use a different email
-              </button>
-            </p>
-          </CardContent>
-        </Card>
-      </SignupShell>
-    );
+    saveSignupDraft({ email: trimmed, invitationId: invitationId ?? undefined });
+    // Invitees join an existing org (fixed region) — skip the picker. Everyone
+    // else goes to the region step; it auto-skips to /signup/account when no
+    // residency is configured (self-hosted / single-region).
+    router.push(invitationId ? "/signup/account" : "/signup/region");
   }
 
   return (
-    <SignupShell step="account">
+    <SignupShell step="email">
       <Card>
         <CardHeader className="space-y-1.5 text-center">
           <CardTitle className="text-2xl tracking-tight">Create your account</CardTitle>
@@ -187,63 +80,7 @@ export default function SignupPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {socialProviders.length > 0 && (
-            <>
-              <div className="grid gap-2">
-                {socialProviders.includes("google") && (
-                  <Button
-                    variant="outline"
-                    className="w-full"
-                    disabled={socialLoading !== null}
-                    onClick={() => handleSocialLogin("google")}
-                  >
-                    <GoogleIcon />
-                    {socialLoading === "google" ? "Redirecting..." : "Continue with Google"}
-                  </Button>
-                )}
-                {socialProviders.includes("github") && (
-                  <Button
-                    variant="outline"
-                    className="w-full"
-                    disabled={socialLoading !== null}
-                    onClick={() => handleSocialLogin("github")}
-                  >
-                    <GitHubIcon />
-                    {socialLoading === "github" ? "Redirecting..." : "Continue with GitHub"}
-                  </Button>
-                )}
-                {socialProviders.includes("microsoft") && (
-                  <Button
-                    variant="outline"
-                    className="w-full"
-                    disabled={socialLoading !== null}
-                    onClick={() => handleSocialLogin("microsoft")}
-                  >
-                    <MicrosoftIcon />
-                    {socialLoading === "microsoft" ? "Redirecting..." : "Continue with Microsoft"}
-                  </Button>
-                )}
-              </div>
-              <div className="relative">
-                <Separator />
-                <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-card px-2 text-[11px] uppercase tracking-wider text-muted-foreground">
-                  or
-                </span>
-              </div>
-            </>
-          )}
-
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="signup-name">Name</Label>
-              <Input
-                id="signup-name"
-                placeholder="Jane Doe"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                autoFocus
-              />
-            </div>
             <div className="space-y-2">
               <Label htmlFor="signup-email">Work email</Label>
               <Input
@@ -253,18 +90,7 @@ export default function SignupPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="signup-password">Password</Label>
-              <Input
-                id="signup-password"
-                type="password"
-                placeholder="At least 8 characters"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                minLength={8}
+                autoFocus
               />
             </div>
             {error && (
@@ -272,17 +98,13 @@ export default function SignupPage() {
                 {error}
               </p>
             )}
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={loading || !email || !password}
-            >
-              {loading ? "Creating account..." : "Create account"}
+            <Button type="submit" className="w-full" disabled={!email.trim()}>
+              Continue
             </Button>
           </form>
 
           <p className="text-center text-xs text-muted-foreground">
-            By signing up, you agree to our{" "}
+            By continuing, you agree to our{" "}
             <a href="https://www.useatlas.dev/terms" className="text-primary hover:underline" target="_blank" rel="noopener noreferrer">
               Terms of Service
             </a>{" "}

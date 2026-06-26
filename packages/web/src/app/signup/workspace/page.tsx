@@ -100,7 +100,10 @@ export default function WorkspacePage() {
         }
       }
 
-      router.push("/signup/region");
+      // Region was chosen before account creation (ADR-0024 §4) and the org was
+      // stamped with the ambient region at creation (#3969) — workspace setup
+      // flows straight to connecting a datasource, not a post-hoc region pick.
+      router.push("/signup/connect");
     } catch (err) {
       setSubmitError(
         err instanceof TypeError

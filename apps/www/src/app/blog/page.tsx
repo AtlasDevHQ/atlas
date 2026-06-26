@@ -137,7 +137,7 @@ export default function BlogIndex() {
           Blog
         </p>
         <h1 className="animate-fade-in-up delay-200 text-[clamp(2.25rem,1.8rem+2vw,3.25rem)] font-semibold leading-[1.05] tracking-[-0.03em] text-balance text-fg">
-          Writing
+          Field notes
         </h1>
         <p className="animate-fade-in-up delay-300 mt-5 max-w-[52ch] text-[17px] leading-relaxed text-pretty text-fg-muted">
           Launch notes, technical deep dives, and the occasional founder note,

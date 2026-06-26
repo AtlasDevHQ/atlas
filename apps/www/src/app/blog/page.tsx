@@ -38,17 +38,17 @@ const POSTS: Post[] = [
     slug: "announcing-atlas",
     title: "The road to launch: everything I shipped in beta",
     description:
-      "A recap of the first half of 2026 — a run of internal milestones from 0.1 through 1.6, then twenty-nine public releases in under a month: SQL safety, new datasources, a smarter agent, MCP, dashboards, and Atlas Cloud.",
+      "A recap of the first half of 2026: a run of internal milestones from 0.1 through 1.6, then twenty-nine public releases in under a month, covering SQL safety, new datasources, a smarter agent, MCP, dashboards, and Atlas Cloud.",
     isoDate: "2026-06-25",
     dateLabel: "June 25, 2026",
     readingTime: "6 min read",
     tag: "Road to launch",
   },
   {
-    slug: "the-first-thing-i-finished",
-    title: "The first thing I ever finished",
+    slug: "why-this-one-stuck",
+    title: "Why this one stuck",
     description:
-      "Thirty-two repositories since 2023, most dead within two weeks. Why Atlas is the first one I got over the line, and the first I built start-to-finish with an AI agent.",
+      "Thirty-two repositories since 2023, most dead within two weeks. Why Atlas is the first one I got over the line, and the first I built end to end with an AI agent.",
     isoDate: "2026-06-25",
     dateLabel: "June 25, 2026",
     readingTime: "3 min read",

@@ -19,7 +19,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       priority: 0.7,
     },
     {
-      url: `${baseUrl}/blog/the-first-thing-i-finished`,
+      url: `${baseUrl}/blog/why-this-one-stuck`,
       lastModified,
       changeFrequency: "weekly",
       priority: 0.7,

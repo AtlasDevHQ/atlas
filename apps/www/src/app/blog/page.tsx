@@ -35,6 +35,16 @@ interface Post {
 
 const POSTS: Post[] = [
   {
+    slug: "out-of-the-runtime",
+    title: "Out of the runtime",
+    description:
+      "Atlas got built by one person and an agent. Here's the part the launch recap skipped: the commands, the work queue, and the memory I built around the agent, and how they went from copy-paste at midnight to a loop that ships a milestone while I sleep.",
+    isoDate: "2026-06-26",
+    dateLabel: "June 26, 2026",
+    readingTime: "7 min read",
+    tag: "How I build",
+  },
+  {
     slug: "announcing-atlas",
     title: "The road to launch: everything I shipped in beta",
     description:

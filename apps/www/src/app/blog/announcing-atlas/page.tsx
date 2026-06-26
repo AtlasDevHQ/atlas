@@ -92,7 +92,12 @@ export default function AnnouncingAtlas() {
           way, no team hiding behind the corporate plural. There&apos;s a thesis
           in that. Atlas is a data analyst you run as an agent against your
           database, and it got built by one person running an agent against a
-          codebase.
+          codebase. I wrote up how that actually worked, the commands, the loops,
+          and the memory, in{" "}
+          <a href="/blog/out-of-the-runtime" className="link-accent">
+            Out of the runtime
+          </a>
+          .
         </P>
 
         <PullQuote>Same wager, both ends.</PullQuote>

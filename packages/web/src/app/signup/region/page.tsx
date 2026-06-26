@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { z } from "zod";
-import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
+import { getApiUrl, isCrossOrigin, applyRegionSignal } from "@/lib/api-url";
+import { navigatePostAuth } from "@/lib/auth/post-auth-nav";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -61,9 +62,11 @@ export default function RegionPage() {
       .then((raw) => RegionsResponseSchema.parse(raw))
       .then((data) => {
         if (!data.configured || data.availableRegions.length === 0) {
-          // No residency configured — skip to connect
+          // No residency configured (self-hosted / single-region) — there's
+          // nothing to pick and only one API base, so skip straight to account
+          // creation on it. `replace` keeps this transient step out of history.
           setSkipping(true);
-          router.replace("/signup/connect");
+          router.replace("/signup/account");
           return;
         }
         setRegions(data.availableRegions);
@@ -93,47 +96,52 @@ export default function RegionPage() {
     loadRegions();
   }, [loadRegions]);
 
-  async function handleContinue() {
+  function handleContinue() {
     if (!selected) return;
 
     setSaving(true);
     setError(null);
 
-    try {
-      const base = getApiBase();
-      const res = await fetch(`${base}/api/v1/onboarding/assign-region`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: getCredentials(),
-        body: JSON.stringify({ region: selected }),
-      });
+    // Under ADR-0024 §4 the region is chosen BEFORE the first identity write,
+    // so there is no session yet and nothing to POST to a server. Instead, the
+    // selection repoints the browser at the region's API base and persists the
+    // `atlas_region` cookie (`applyRegionSignal`, #3971). The org's region is
+    // then stamped from the ambient `ATLAS_API_REGION` when the workspace is
+    // created on that regional API (#3969) — no post-hoc `assign-region`.
+    const region = regions.find((r) => r.id === selected);
+    const apiUrl = region?.apiUrl;
 
-      let data: Record<string, unknown>;
-      try {
-        data = await res.json() as Record<string, unknown>;
-      } catch (parseErr) {
-        console.warn("Failed to parse assign-region response:", parseErr instanceof Error ? parseErr.message : String(parseErr));
-        setError("Server returned an unexpected response. Please try again.");
+    if (apiUrl) {
+      if (!applyRegionSignal(selected, apiUrl)) {
+        // applyRegionSignal logged the rejected base; surface it rather than
+        // hard-navigate to a region we couldn't actually point the browser at,
+        // which would silently create the account in the default (US) region.
+        setError("We couldn't route you to the selected region. Please try again or contact support.");
+        setSaving(false);
         return;
       }
-
-      if (!res.ok) {
-        setError(typeof data.message === "string" ? data.message : "Failed to assign region");
-        return;
-      }
-
-      router.push("/signup/connect");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn("Region assignment failed:", message);
-      setError(
-        err instanceof TypeError
-          ? "Unable to reach the server. Check your connection and try again."
-          : `Failed to assign region: ${message}`,
-      );
-    } finally {
+    } else if (!region?.isDefault) {
+      // A *non-default* selectable region with no apiUrl is a deploy
+      // misconfiguration: there's nothing to repoint to, so falling through
+      // would create the account on the default (US) base — the exact silent
+      // wrong-region dead-end this flow exists to kill (#3967/#3971). Refuse,
+      // the same as a rejected signal, instead of proceeding on a warning.
+      console.error(`Region "${selected}" is selectable but has no apiUrl; refusing to fall back to the default region.`);
+      setError("This region isn't fully configured for signup yet. Please contact support.");
       setSaving(false);
+      return;
     }
+    // Only path left without a repoint: the DEFAULT region on a single-region /
+    // local deploy (its own apiUrl omitted) — the same-origin base IS that one
+    // region, so creating the account on it is correct, not a fallback.
+
+    // HARD navigation (full reload via navigatePostAuth), not router.push:
+    // `@/lib/auth/client`'s Better-Auth singleton captured its baseURL at module
+    // import, so only a fresh page load re-reads the `atlas_region` cookie and
+    // rebuilds the client against the regional base. A soft nav would create the
+    // account on the pre-region (default) API. The account step then runs
+    // entirely in-region.
+    navigatePostAuth("/signup/account");
   }
 
   if (loading || skipping) {
@@ -149,7 +157,7 @@ export default function RegionPage() {
   }
 
   return (
-    <SignupShell step="region" width="wide" back={{ href: "/signup/workspace" }}>
+    <SignupShell step="region" width="wide" back={{ href: "/signup" }}>
       <Card>
         <CardHeader className="space-y-1.5 text-center">
           <CardTitle className="text-2xl tracking-tight">Choose your data region</CardTitle>

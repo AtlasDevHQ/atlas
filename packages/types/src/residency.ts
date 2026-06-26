@@ -69,6 +69,16 @@ export interface RegionPickerItem {
   label: string;
   /** Whether this region is the deployment's default. */
   isDefault: boolean;
+  /**
+   * Public API base for this region (e.g. "https://api-eu.useatlas.dev").
+   *
+   * Carries the region→apiUrl map to the browser so the signup region step can
+   * point the API base at the chosen region *before* the first identity write
+   * (ADR-0024 §4 — `applyRegionSignal` in `@/lib/api-url`). Omitted when the
+   * region config declares no `apiUrl` (single-region / local dev), where the
+   * browser stays on its same-origin base and no repoint is possible.
+   */
+  apiUrl?: string;
 }
 
 // ---------------------------------------------------------------------------

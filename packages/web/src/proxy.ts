@@ -82,8 +82,25 @@ const cspEnv = process.env.NODE_ENV === "development" ? "dev" : "prod";
 // default/trim (mirrors the API's resolveCookiePrefix and is unit-tested).
 const cookiePrefix = resolveWebCookiePrefix(process.env.NEXT_PUBLIC_ATLAS_COOKIE_PREFIX);
 
-/** Routes that only unauthenticated users should see (exact match). */
-const authRoutes = ["/signup", "/login", "/forgot-password", "/reset-password"];
+/**
+ * Routes that only unauthenticated users should see (exact match).
+ *
+ * `/signup/region` and `/signup/account` are the pre-auth signup steps under
+ * ADR-0024 §4 (email → region → create-account): the region is picked and the
+ * account is created BEFORE any session exists, so on a same-origin managed
+ * deploy they must be reachable while signed out — otherwise the redirect below
+ * bounces every regional signup to /login mid-flow. The remaining sub-steps
+ * (/signup/workspace, /signup/connect, /signup/success) run post-account and
+ * stay session-gated (absent from this list).
+ */
+const authRoutes = [
+  "/signup",
+  "/signup/region",
+  "/signup/account",
+  "/login",
+  "/forgot-password",
+  "/reset-password",
+];
 
 /** Routes that are always accessible regardless of auth state. */
 const publicPrefixes = [...PUBLIC_ROUTE_PREFIXES, "/api", "/_next"];
@@ -92,9 +109,14 @@ function isPublicRoute(pathname: string): boolean {
   return publicPrefixes.some((prefix) => pathname.startsWith(prefix));
 }
 
-function isAuthRoute(pathname: string): boolean {
-  // Exact match only — sub-routes like /signup/workspace are onboarding
-  // steps that require an active session and must not redirect away.
+// Exported for unit testing the pre-auth-route membership (ADR-0024 §4) without
+// standing up a NextRequest + the module-level NEXT_PUBLIC_* env reads, which
+// the `??=` import-hoist gotcha (#3939) makes brittle across local vs CI.
+export function isAuthRoute(pathname: string): boolean {
+  // Exact match only — the post-account sub-steps (/signup/workspace,
+  // /signup/connect, /signup/success) are NOT listed and so require an active
+  // session and must not redirect away. The pre-auth steps (/signup/region,
+  // /signup/account) ARE listed (ADR-0024 §4) so signed-out users can reach them.
   return authRoutes.some((route) => pathname === route);
 }
 

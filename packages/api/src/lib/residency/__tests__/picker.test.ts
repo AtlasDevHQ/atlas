@@ -33,12 +33,23 @@ describe("buildAvailableRegions (#3948)", () => {
     expect(ids.toSorted()).toEqual(["eu", "us"]);
   });
 
-  it("marks the default region and passes the label through", () => {
+  it("marks the default region and passes the label + apiUrl through", () => {
     const available = buildAvailableRegions(REGIONS, "eu");
     const eu = available.find((r) => r.id === "eu");
     const us = available.find((r) => r.id === "us");
-    expect(eu).toEqual({ id: "eu", label: "Europe", isDefault: true });
+    // apiUrl rides along so the signup picker can repoint the browser at the
+    // chosen region before the first identity write (ADR-0024 §4).
+    expect(eu).toEqual({ id: "eu", label: "Europe", isDefault: true, apiUrl: "https://api-eu.useatlas.dev" });
     expect(us?.isDefault).toBe(false);
+    expect(us?.apiUrl).toBe("https://api.useatlas.dev");
+  });
+
+  it("passes apiUrl through as undefined when the region config omits it", () => {
+    // Single-region / local-dev configs omit apiUrl; the browser then stays on
+    // its same-origin base (no repoint possible) rather than getting a bad URL.
+    const regions: Regions = { us: { label: "United States" } };
+    const us = buildAvailableRegions(regions, "us").find((r) => r.id === "us");
+    expect(us).toEqual({ id: "us", label: "United States", isDefault: true, apiUrl: undefined });
   });
 
   it("never marks a non-selectable region as default even if it is the configured default", () => {

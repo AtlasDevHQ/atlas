@@ -90,7 +90,6 @@ function isEnterpriseEnabledLocal(): boolean {
  *
  *   - MaskingPolicy → `lib/tools/sql.ts:applyMaskingViaTag`
  *   - ApprovalGate → `lib/tools/sql.ts:loadApprovalGate`
- *   - ResidencyResolver → `lib/db/connection.ts:getRegionAwareConnection`
  *   - AuditRetention → `api/routes/admin-{audit,action}-retention.ts`
  *     (via `yieldAuditRetentionFailClosed` helpers)
  *

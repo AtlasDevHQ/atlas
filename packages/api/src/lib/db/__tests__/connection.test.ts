@@ -246,9 +246,9 @@ describe("ConnectionRegistry — DB-stored plugin datasources (#3253 seam)", () 
 
   it("getForOrg returns the plugin connection (the org-pooling-ON / SaaS resolution path)", () => {
     // Regression guard: with pool.perOrg.enabled (staging + prod), the SQL path
-    // resolves via getForOrg/getRegionAwareConnection, NOT getForWorkspace. A
-    // plugin install lives only in workspacePluginEntries, so getForOrg must
-    // short-circuit to it instead of throwing ConnectionNotRegisteredError.
+    // resolves via getForOrg, NOT getForWorkspace. A plugin install lives only
+    // in workspacePluginEntries, so getForOrg must short-circuit to it instead
+    // of throwing ConnectionNotRegisteredError.
     const registry = new ConnectionRegistry();
     const conn = fakeConn("ch");
     registry.registerDirectForWorkspace("ws-1", "ch", conn, "clickhouse");

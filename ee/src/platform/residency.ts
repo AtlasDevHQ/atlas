@@ -21,11 +21,9 @@ import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
-  getWorkspaceRegion,
   setWorkspaceRegion,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
-import { resolveDeployEnv } from "@atlas/api/lib/env-profile";
 import {
   ResidencyResolver,
   type ResidencyResolverShape,
@@ -35,51 +33,9 @@ import {
   type ResidencyErrorCode,
 } from "@atlas/api/lib/residency/errors";
 import { isRegionSelectable } from "@atlas/api/lib/residency/picker";
-import { isDeployRegion, type DeployRegion, type RegionStatus, type WorkspaceRegion } from "@useatlas/types";
+import type { RegionStatus, WorkspaceRegion } from "@useatlas/types";
 
 const log = createLogger("ee:residency");
-
-/**
- * The pre-prod soak deploy region (#2897 / #2908). Staging is a
- * `DeployRegion` keyed `"staging"` (under `*.staging.useatlas.dev`) but is
- * deliberately *excluded* from the residency router: a workspace keyed here
- * resolves to a `null` region route and falls through to the local DB
- * connection rather than any residency-mapped pool — see
- * `resolveRegionDatabaseUrl`. `satisfies DeployRegion` anchors the literal to
- * the union so dropping `"staging"` from `@useatlas/types` fails compilation
- * here rather than silently re-enabling routing.
- */
-const STAGING_REGION = "staging" satisfies DeployRegion;
-
-/**
- * Per-deploy-region routing intent (#2983). Maps every closed first-party
- * {@link DeployRegion} to whether `resolveRegionDatabaseUrl` routes it through
- * the residency pool (`"residency"`) or short-circuits to a `null` route that
- * falls through to the local DB connection (`"local"`).
- *
- * The point is to force a *conscious* decision per region. Because the type is
- * keyed `Record<DeployRegion, …>`, adding a member to the `DeployRegion` union
- * fails to type-check this table until its routing intent is recorded here — a
- * new region can never silently inherit a default route through the structural
- * `config.residency.regions[region]` lookup. This COMPLEMENTS, and does not
- * duplicate, `_AssertDeployRegionsExhaustive` in `@useatlas/types`: that guard
- * keeps the runtime `DEPLOY_REGIONS` tuple in sync with the union (tuple
- * membership); this keeps the *routing intent* in sync with it.
- *
- * Today only `staging` routes `"local"` (the pre-prod soak instance — see
- * {@link STAGING_REGION}); `us` / `eu` / `apac` are real residency targets.
- * Mind the OPEN/CLOSED distinction (see `@useatlas/types` `deploy.ts`): only the
- * closed `DeployRegion` union keys this table. A workspace's stored region is an
- * OPEN `Region` string (operator-defined, e.g. `us-east`) and is NOT keyed here,
- * so callers must narrow through `isDeployRegion` before consulting it — open
- * regions route through the residency map directly.
- */
-export const DEPLOY_REGION_ROUTING = {
-  us: "residency",
-  eu: "residency",
-  apac: "residency",
-  staging: "local",
-} as const satisfies Record<DeployRegion, "residency" | "local">;
 
 // ── Typed errors ────────────────────────────────────────────────────
 
@@ -249,100 +205,6 @@ export const getWorkspaceRegionAssignment = (
   });
 
 /**
- * Resolve region-specific database URLs for a workspace.
- * Returns null if no residency is configured or workspace has no region.
- * Currently used by connection routing to override the analytics datasource
- * for region-assigned workspaces. The returned `databaseUrl` is available
- * for future internal DB routing.
- *
- * Returns null when no region config exists or workspace has no assignment.
- */
-export const resolveRegionDatabaseUrl = (
-  workspaceId: string,
-): Effect.Effect<{ databaseUrl?: string; datasourceUrl?: string; region: string } | null> =>
-  Effect.gen(function* () {
-    const config = getConfig();
-    if (!config?.residency) return null;
-
-    const region = yield* Effect.promise(() => getWorkspaceRegion(workspaceId));
-    if (!region) return null;
-
-    // Staging arm (#2983 / #2908): the per-deploy-region routing table
-    // (DEPLOY_REGION_ROUTING) marks staging `"local"`, so it is never a
-    // residency target. `region` is an OPEN `Region` string, so the guard below
-    // narrows it through `isDeployRegion` before consulting the (closed-union-
-    // keyed) table — open operator-defined regions are not keyed there and fall
-    // through to the residency map; closed deploy regions marked `"residency"`
-    // (us|eu|apac) likewise fall through, so only `"local"` regions short-
-    // circuit here. Return null *before* the regionConfig lookup so a staging-
-    // keyed workspace falls through to the local DB connection — without tripping
-    // the "region no longer configured / contract may be violated" error path
-    // below. Short-circuiting here also wins over any `staging` entry in
-    // residency.regions, so staging can never claim to be a residency-mapped
-    // region. us|eu|apac are untouched.
-    //
-    // Observability is deploy-aware, and keyed PURELY on the deploy env (#3097).
-    // On the staging deploy a staging-keyed workspace is routine — every
-    // residency-configured request lands here — so it's debug-level noise. The
-    // `staging` entry that `deploy/api-staging/atlas.config.ts` declares in
-    // residency.regions is NOT dead config there: it is REQUIRED by
-    // RegionGuardLive (`lib/effect/saas-guards.ts`) to boot the api-staging
-    // service. So its presence must NOT promote this fall-through to a warn on
-    // the staging deploy — that contradiction (boot demands the entry; this
-    // resolver warned because of it) was the #3097 seam. On any OTHER deploy a
-    // staging-keyed workspace is an impossible-by-policy state (a workspace
-    // believed residency-pinned is being silently served the default pool — a
-    // compliance signal that must be loud + alertable), and a `staging` entry
-    // in a prod config IS genuinely dead config. Either case warns off-staging.
-    // `stagingInResidencyConfig` is retained in the event payload for operator
-    // context (it tells prod operators a dead entry sits in their map) but no
-    // longer gates the log level.
-    if (isDeployRegion(region) && DEPLOY_REGION_ROUTING[region] === "local") {
-      const stagingInResidencyConfig = STAGING_REGION in config.residency.regions;
-      const onStagingDeploy = resolveDeployEnv() === "staging";
-      const event = {
-        workspaceId,
-        region,
-        event: "residency.staging_excluded",
-        stagingInResidencyConfig,
-      };
-      const message =
-        "Workspace keyed to staging region — excluded from residency routing, falling through to local DB";
-      if (onStagingDeploy) {
-        log.debug(event, message);
-      } else {
-        log.warn(event, message);
-      }
-      return null;
-    }
-
-    const regionConfig = config.residency.regions[region];
-    if (!regionConfig) {
-      log.error(
-        { workspaceId, region, configuredRegions: Object.keys(config.residency.regions) },
-        "Workspace assigned to region that is no longer configured — data residency contract may be violated",
-      );
-      return null;
-    }
-
-    // `databaseUrl` is optional on `RegionConfig` (#3176): a non-claimed
-    // region's internal-DB URL may be unset on an instance that doesn't serve
-    // it. Do NOT bail to null on an empty/absent `databaseUrl` — the only
-    // consumer (`getRegionAwareConnection`) routes the analytics datasource off
-    // `datasourceUrl`/`region` and never reads `databaseUrl`, so returning null
-    // here would silently DROP a region's datasource routing and fall the query
-    // through to the default datasource (#3198 Codex P1). Pass the route through
-    // unchanged; `databaseUrl` is omitted when unset so no empty connection
-    // string reaches a pool. Routing semantics are identical to before the
-    // schema relaxation — `datasourceUrl` was always the routing key.
-    return {
-      ...(regionConfig.databaseUrl ? { databaseUrl: regionConfig.databaseUrl } : {}),
-      datasourceUrl: regionConfig.datasourceUrl,
-      region,
-    };
-  });
-
-/**
  * List all workspace region assignments (for admin views).
  */
 export const listWorkspaceRegions = (): Effect.Effect<WorkspaceRegion[], ResidencyError | Error> =>
@@ -386,7 +248,6 @@ export function isConfiguredRegion(region: string): boolean {
  */
 export const makeResidencyResolverLive = (): ResidencyResolverShape => ({
   available: true,
-  resolveRegionDatabaseUrl,
   listRegions,
   getDefaultRegion,
   getConfiguredRegions,

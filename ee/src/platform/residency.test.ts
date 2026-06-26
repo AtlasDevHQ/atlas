@@ -1,18 +1,11 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 import { Effect } from "effect";
-import { isDeployRegion } from "@useatlas/types";
 import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ───────────────────────────────────────────────────────────
 
 const ee = createEEMock({
   internalDB: {
-    getWorkspaceRegion: async (orgId: string) => {
-      ee.capturedQueries.push({ sql: "getWorkspaceRegion", params: [orgId] });
-      const rows = mockRows[queryCallCount] ?? [];
-      queryCallCount++;
-      return (rows[0] as Record<string, unknown> | undefined)?.region ?? null;
-    },
     setWorkspaceRegion: async (orgId: string, region: string) => {
       ee.capturedQueries.push({ sql: "setWorkspaceRegion", params: [orgId, region] });
       const rows = mockRows[queryCallCount] ?? [];
@@ -26,29 +19,11 @@ const ee = createEEMock({
       return { assigned: true };
     },
   },
-  // Capture log calls by level so the staging-arm tests can pin observability.
-  // `error` distinguishes the intentional staging short-circuit from the
-  // "region no longer configured / contract may be violated" misconfiguration
-  // path (which also returns null, but logs error). `warn` / `debug` pin the
-  // deploy-aware level: staging-keying is debug-quiet only on the staging
-  // deploy, and a loud warn everywhere else (impossible-by-policy state) or
-  // whenever a dead `staging` entry sits in residency.regions.
-  logger: {
-    createLogger: () => ({
-      info: () => {},
-      warn: (...args: unknown[]) => { loggerWarns.push(args); },
-      error: (...args: unknown[]) => { loggerErrors.push(args); },
-      debug: (...args: unknown[]) => { loggerDebugs.push(args); },
-    }),
-  },
 });
 
 // Extra state for the custom overrides above
 const mockRows: Record<string, unknown>[][] = [];
 let queryCallCount = 0;
-const loggerErrors: unknown[][] = [];
-const loggerWarns: unknown[][] = [];
-const loggerDebugs: unknown[][] = [];
 
 mock.module("../index", () => ee.enterpriseMock);
 const hasDB = () => (ee.internalDBMock.hasInternalDB as () => boolean)();
@@ -83,10 +58,8 @@ const {
   getConfiguredRegions,
   assignWorkspaceRegion,
   getWorkspaceRegionAssignment,
-  resolveRegionDatabaseUrl,
   listWorkspaceRegions,
   isConfiguredRegion,
-  DEPLOY_REGION_ROUTING,
   ResidencyError,
 } = await import("./residency");
 
@@ -96,32 +69,10 @@ const {
 const run = <A, E>(effect: Effect.Effect<A, E>) =>
   Effect.runPromise(effect as Effect.Effect<A, never>);
 
-/**
- * Run `fn` with `ATLAS_DEPLOY_ENV` pinned to `value` (or unset), restoring the
- * prior value afterward. `resolveDeployEnv()` reads `process.env` at call time
- * (not cached at module scope), so this deterministically drives the staging
- * arm's deploy-aware log level without depending on the parent env. Kept in a
- * try/finally so a failing assertion can't leak the override into sibling tests.
- */
-async function withDeployEnv<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
-  const prev = process.env.ATLAS_DEPLOY_ENV;
-  if (value === undefined) delete process.env.ATLAS_DEPLOY_ENV;
-  else process.env.ATLAS_DEPLOY_ENV = value;
-  try {
-    return await fn();
-  } finally {
-    if (prev === undefined) delete process.env.ATLAS_DEPLOY_ENV;
-    else process.env.ATLAS_DEPLOY_ENV = prev;
-  }
-}
-
 function resetMocks() {
   ee.reset();
   mockRows.length = 0;
   queryCallCount = 0;
-  loggerErrors.length = 0;
-  loggerWarns.length = 0;
-  loggerDebugs.length = 0;
   mockConfig = {
     residency: {
       regions: {
@@ -259,189 +210,6 @@ describe("residency", () => {
     });
   });
 
-  describe("resolveRegionDatabaseUrl", () => {
-    it("resolves database URLs for workspace with region", async () => {
-      mockRows.push([{ region: "eu-west" }]);
-      const result = await run(resolveRegionDatabaseUrl("org-1"));
-      expect(result).not.toBeNull();
-      expect(result!.databaseUrl).toBe("postgresql://eu-west/atlas");
-      expect(result!.datasourceUrl).toBe("postgresql://eu-west/data");
-      expect(result!.region).toBe("eu-west");
-    });
-
-    // #3176/#3198 — a region whose internal-DB `databaseUrl` is unset on this
-    // instance (now allowed, so a non-claimed region URL can't abort boot
-    // fleet-wide) must STILL resolve its analytics datasource routing. The
-    // caller routes off `datasourceUrl`/`region` and never reads `databaseUrl`,
-    // so the resolver must NOT bail to null (that would silently drop the
-    // region's datasource and fall through to the default datasource — the
-    // Codex P1 on PR #3198). `databaseUrl` is simply omitted.
-    it("preserves datasource routing when a region's databaseUrl is unset (#3198)", async () => {
-      mockConfig = {
-        residency: {
-          regions: {
-            "us": { label: "US", databaseUrl: "postgresql://us/atlas" },
-            // EU's internal-DB URL is unset on this US box, but it still
-            // declares a per-region analytics datasource override.
-            "eu-west": { label: "EU West", datasourceUrl: "postgresql://eu-west/data" },
-          },
-          defaultRegion: "us",
-        },
-      };
-      mockRows.push([{ region: "eu-west" }]);
-      const result = await run(resolveRegionDatabaseUrl("org-1"));
-      expect(result).not.toBeNull();
-      expect(result!.region).toBe("eu-west");
-      expect(result!.datasourceUrl).toBe("postgresql://eu-west/data");
-      expect(result!.databaseUrl).toBeUndefined();
-      // No "contract may be violated" error — this is the expected per-service
-      // omission state, not a misconfiguration.
-      expect(loggerErrors).toHaveLength(0);
-    });
-
-    it("returns null when residency is not configured", async () => {
-      mockConfig = {};
-      const result = await run(resolveRegionDatabaseUrl("org-1"));
-      expect(result).toBeNull();
-    });
-
-    it("returns null when workspace has no region", async () => {
-      mockRows.push([{ region: null }]);
-      const result = await run(resolveRegionDatabaseUrl("org-1"));
-      expect(result).toBeNull();
-    });
-
-    it("a closed deploy region marked 'residency' (us) routes through the residency map (#2983)", async () => {
-      // `us` is a closed DeployRegion (isDeployRegion("us") === true) but its
-      // DEPLOY_REGION_ROUTING intent is "residency", so it must NOT short-circuit
-      // like the "local" staging arm — it falls through to the structural
-      // config.residency.regions["us"] lookup and resolves a real datasource. No
-      // staging-exclusion log fires.
-      mockConfig = {
-        residency: {
-          regions: {
-            us: { label: "US", databaseUrl: "postgresql://us/atlas", datasourceUrl: "postgresql://us/data" },
-          },
-          defaultRegion: "us",
-        },
-      };
-      mockRows.push([{ region: "us" }]);
-      const result = await run(resolveRegionDatabaseUrl("org-1"));
-      expect(result).not.toBeNull();
-      expect(result!.region).toBe("us");
-      expect(result!.databaseUrl).toBe("postgresql://us/atlas");
-      expect(result!.datasourceUrl).toBe("postgresql://us/data");
-      expect(loggerDebugs).toHaveLength(0);
-      expect(loggerWarns).toHaveLength(0);
-      expect(loggerErrors).toHaveLength(0);
-    });
-
-    // ── Staging arm (#2908 / #3097) ───────────────────────────────────
-    // Staging is a DeployRegion but never a residency target — a
-    // staging-keyed workspace always falls through to the local DB connection
-    // (result is null, never an error). What varies is the *observability*
-    // level, which is deploy-aware. These four tests are the full 2×2 truth
-    // table of (on staging deploy?) × (staging present in residency.regions?):
-    //   • the loud "contract may be violated" error path NEVER fires (the
-    //     log assertion is what distinguishes the staging arm from the
-    //     misconfiguration path — both return null), and
-    //   • the level is keyed PURELY on the deploy env (#3097): debug-quiet on
-    //     the staging deploy (regardless of whether `staging` sits in
-    //     residency.regions — there it's the RegionGuardLive boot requirement,
-    //     NOT dead config), and a structured warn on every other deploy so prod
-    //     mis-keying / dead config is alertable rather than a silent
-    //     fall-through to the default pool.
-    // `STAGING_REGION` is anchored via `satisfies DeployRegion`, so a mis-cased
-    // literal can't reach the equality check — no case-variant test needed.
-
-    it("off the staging deploy: returns null and warns (no contract-violation error)", async () => {
-      // "staging" is absent from residency.regions (us-east / eu-west) and we
-      // are NOT on the staging deploy — an impossible-by-policy state, so the
-      // arm short-circuits to null (before the regionConfig lookup, so no loud
-      // "contract may be violated" error) but surfaces a structured warn.
-      mockRows.push([{ region: "staging" }]);
-      const result = await withDeployEnv("production", () => run(resolveRegionDatabaseUrl("org-1")));
-      expect(result).toBeNull();
-      expect(loggerErrors).toHaveLength(0);
-      expect(loggerDebugs).toHaveLength(0);
-      expect(loggerWarns).toHaveLength(1);
-      expect(loggerWarns[0][0]).toMatchObject({
-        region: "staging",
-        event: "residency.staging_excluded",
-        stagingInResidencyConfig: false,
-      });
-    });
-
-    it("off the staging deploy: warns and flags dead config when staging is present in residency.regions", async () => {
-      // Defensive: even if an operator adds a `staging` entry to the regions
-      // map, the staging arm wins and routing stays null (without it, this
-      // would resolve a non-null staging datasource). The dead entry is
-      // surfaced via `stagingInResidencyConfig: true` so the operator learns
-      // it is silently ignored.
-      mockConfig = {
-        residency: {
-          regions: {
-            "us-east": { label: "US East", databaseUrl: "postgresql://us-east/atlas" },
-            staging: { label: "Staging", databaseUrl: "postgresql://staging/atlas", datasourceUrl: "postgresql://staging/data" },
-          },
-          defaultRegion: "us-east",
-        },
-      };
-      mockRows.push([{ region: "staging" }]);
-      const result = await withDeployEnv("production", () => run(resolveRegionDatabaseUrl("org-1")));
-      expect(result).toBeNull();
-      expect(loggerErrors).toHaveLength(0);
-      expect(loggerWarns).toHaveLength(1);
-      expect(loggerWarns[0][0]).toMatchObject({
-        event: "residency.staging_excluded",
-        stagingInResidencyConfig: true,
-      });
-    });
-
-    it("on the staging deploy: stays debug-quiet (staging-keying is routine)", async () => {
-      // On the staging deploy every residency-configured request is staging-
-      // keyed, so the exclusion is routine — debug-level, no warn, no error.
-      mockRows.push([{ region: "staging" }]);
-      const result = await withDeployEnv("staging", () => run(resolveRegionDatabaseUrl("org-1")));
-      expect(result).toBeNull();
-      expect(loggerErrors).toHaveLength(0);
-      expect(loggerWarns).toHaveLength(0);
-      expect(loggerDebugs).toHaveLength(1);
-      expect(loggerDebugs[0][0]).toMatchObject({
-        event: "residency.staging_excluded",
-        stagingInResidencyConfig: false,
-      });
-    });
-
-    it("on the staging deploy: stays debug-quiet even when staging is declared in residency.regions (#3097)", async () => {
-      // #3097 reconciliation (option 2): on the staging deploy, a `staging`
-      // entry in residency.regions is the RegionGuardLive boot requirement —
-      // `deploy/api-staging/atlas.config.ts` declares it precisely so the
-      // api-staging service can boot — NOT dead config. So the fall-through
-      // stays routine (debug), and `stagingInResidencyConfig: true` must NOT
-      // promote it to a warn. This mirrors the actual api-staging config shape:
-      // `defaultRegion: "staging"` with a single `staging` region arm.
-      mockConfig = {
-        residency: {
-          regions: {
-            staging: { label: "Staging", databaseUrl: "postgresql://staging/atlas", datasourceUrl: "postgresql://staging/data" },
-          },
-          defaultRegion: "staging",
-        },
-      };
-      mockRows.push([{ region: "staging" }]);
-      const result = await withDeployEnv("staging", () => run(resolveRegionDatabaseUrl("org-1")));
-      expect(result).toBeNull();
-      expect(loggerErrors).toHaveLength(0);
-      expect(loggerWarns).toHaveLength(0);
-      expect(loggerDebugs).toHaveLength(1);
-      expect(loggerDebugs[0][0]).toMatchObject({
-        event: "residency.staging_excluded",
-        stagingInResidencyConfig: true,
-      });
-    });
-  });
-
   describe("listWorkspaceRegions", () => {
     it("returns all assignments", async () => {
       ee.queueMockRows([
@@ -467,44 +235,6 @@ describe("residency", () => {
     it("returns false when residency is not configured", () => {
       mockConfig = {};
       expect(isConfiguredRegion("us-east")).toBe(false);
-    });
-  });
-
-  // ── Routing intent table (#2983) ──────────────────────────────────────
-  // DEPLOY_REGION_ROUTING is the SSOT for the residency-vs-local decision in
-  // resolveRegionDatabaseUrl. Its `Record<DeployRegion, …>` type is the real
-  // tripwire: adding a member to the DeployRegion union fails to compile until
-  // its routing intent is recorded here. These runtime assertions pin the
-  // *values* and confirm the table composes with (rather than duplicates) the
-  // DEPLOY_REGIONS tuple guard — every key is a genuine closed DeployRegion and
-  // every value is a recognised intent.
-  describe("DEPLOY_REGION_ROUTING (#2983)", () => {
-    it("records a routing intent for exactly the four deploy regions", () => {
-      expect(Object.keys(DEPLOY_REGION_ROUTING).toSorted()).toEqual([
-        "apac",
-        "eu",
-        "staging",
-        "us",
-      ]);
-    });
-
-    it("every key is a genuine closed DeployRegion (no open Region keys)", () => {
-      for (const region of Object.keys(DEPLOY_REGION_ROUTING)) {
-        expect(isDeployRegion(region)).toBe(true);
-      }
-    });
-
-    it("every intent is 'residency' or 'local'", () => {
-      for (const intent of Object.values(DEPLOY_REGION_ROUTING)) {
-        expect(["residency", "local"]).toContain(intent);
-      }
-    });
-
-    it("us/eu/apac route to residency; staging routes to local", () => {
-      expect(DEPLOY_REGION_ROUTING.us).toBe("residency");
-      expect(DEPLOY_REGION_ROUTING.eu).toBe("residency");
-      expect(DEPLOY_REGION_ROUTING.apac).toBe("residency");
-      expect(DEPLOY_REGION_ROUTING.staging).toBe("local");
     });
   });
 

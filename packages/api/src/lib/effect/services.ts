@@ -1233,16 +1233,6 @@ export function createAuthContextTestLayer(
 // `Layer.effect`. `ResidencyError` lives in `lib/residency/errors.ts`
 // so this contract can be typed without pulling in `@atlas/ee`.
 
-type ResidencyRegionRoute = {
-  // Optional (#3176/#3198): a region's internal-DB URL may be unset on an
-  // instance that doesn't claim it. `getRegionAwareConnection` routes the
-  // analytics datasource off `datasourceUrl`/`region` and never reads
-  // `databaseUrl`, so it is passenger data here — omitted when unconfigured
-  // rather than coerced to an empty string.
-  readonly databaseUrl?: string;
-  readonly datasourceUrl?: string;
-  readonly region: string;
-};
 type RegionStatus = import("@useatlas/types").RegionStatus;
 type WorkspaceRegion = import("@useatlas/types").WorkspaceRegion;
 type ResidencyConfigRegions = import("@atlas/api/lib/config").ResidencyConfig["regions"];
@@ -1251,10 +1241,6 @@ type ResidencyError = import("@atlas/api/lib/residency/errors").ResidencyError;
 export interface ResidencyResolverShape {
   /** False when EE residency is not loaded — routes should surface "not_available". */
   readonly available: boolean;
-  /** Region-route lookup used by `connection.ts` to overlay per-region datasources. */
-  readonly resolveRegionDatabaseUrl: (
-    workspaceId: string,
-  ) => Effect.Effect<ResidencyRegionRoute | null>;
   /** Configured regions with workspace counts. Fails with `ResidencyError("not_configured")` when no-op. */
   readonly listRegions: () => Effect.Effect<RegionStatus[], ResidencyError>;
   /** Default region. Throws `ResidencyError("not_configured")` synchronously when no-op. */
@@ -1308,7 +1294,6 @@ export const NoopResidencyResolverLayer: Layer.Layer<ResidencyResolver> =
       });
     return {
       available: false,
-      resolveRegionDatabaseUrl: () => Effect.succeed(null),
       listRegions: () => Effect.fail(notConfigured()),
       getDefaultRegion: () => {
         throw notConfigured();

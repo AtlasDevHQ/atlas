@@ -194,8 +194,8 @@ export function Deploy() {
       </header>
 
       <div className="grid gap-4 md:grid-cols-2">
-        <SelfHostCard />
         <CloudCard />
+        <SelfHostCard />
       </div>
     </section>
   );

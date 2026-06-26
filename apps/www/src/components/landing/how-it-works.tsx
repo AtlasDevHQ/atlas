@@ -199,10 +199,11 @@ export function HowItWorks() {
           Why you can trust the answer.
         </h2>
         <p className="m-0 text-base leading-[1.65] text-fg-muted">
-          You define your data once in YAML: the entities, joins, and the terms
-          your team actually uses, versioned in your repo and reviewed in pull
-          requests. Atlas reads it on every question, writes the SQL, and runs it
-          read-only behind seven validators. You see exactly what ran.
+          You define your data once in YAML — the entities, joins, and the terms
+          your team actually uses. Atlas reads it on every question, writes the
+          SQL, and runs it read-only behind seven validators, so you see exactly
+          what ran. Self-host Atlas and that YAML lives in your own repo,
+          versioned and reviewed in pull requests like the rest of your code.
         </p>
       </header>
 

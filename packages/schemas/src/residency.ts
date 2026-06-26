@@ -28,6 +28,8 @@ import {
   MIGRATION_STATUSES,
   type RegionMigration,
   type RegionPickerItem,
+  type RegionRoutingMap,
+  type RegionRoutingMapEntry,
   type RegionStatus,
   type WorkspaceRegion,
 } from "@useatlas/types";
@@ -56,6 +58,20 @@ export const RegionStatusSchema = z.object({
   workspaceCount: z.number().int().nonnegative(),
   healthy: z.boolean(),
 }) satisfies z.ZodType<RegionStatus>;
+
+export const RegionRoutingMapEntrySchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  apiUrl: z.string(),
+  isDefault: z.boolean(),
+}) satisfies z.ZodType<RegionRoutingMapEntry>;
+
+/** Wire shape of `GET /api/v1/auth/region-map` (login front-door, ADR-0024 §3). */
+export const RegionRoutingMapSchema = z.object({
+  configured: z.boolean(),
+  defaultRegion: z.string(),
+  regions: z.array(RegionRoutingMapEntrySchema),
+}) satisfies z.ZodType<RegionRoutingMap>;
 
 export const WorkspaceRegionSchema = z.object({
   workspaceId: z.string(),

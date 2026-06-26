@@ -4,7 +4,8 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
 import { navigatePostAuth } from "@/lib/auth/post-auth-nav";
-import { getApiUrl } from "@/lib/api-url";
+import { getApiUrl, isCrossOrigin, getActiveRegion } from "@/lib/api-url";
+import { LoginRegionGate, takePendingLoginEmail } from "./region-gate";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -72,6 +73,33 @@ export default function LoginPage() {
   const [socialLoading, setSocialLoading] = useState<SocialProvider | null>(null);
   const [socialProviders, setSocialProviders] = useState<readonly SocialProvider[]>([]);
   const [passwordResetEnabled, setPasswordResetEnabled] = useState(false);
+  // Returning-user region gate (ADR-0024 §3, #3973). In cross-origin SaaS mode
+  // a returning user must resolve email→region BEFORE the credentials form, so
+  // their sign-in hits their own regional API. `regionResolved` starts true for
+  // self-hosted / same-origin (no region step, so the existing form renders
+  // immediately and the test env is unaffected); the effect below flips it true
+  // on the `atlas_region` cookie fast-path (the auth client already targets that
+  // region — see lib/auth/client.ts). Otherwise the email-first gate shows.
+  const [regionResolved, setRegionResolved] = useState<boolean>(() => !isCrossOrigin());
+
+  useEffect(() => {
+    // Same-origin / self-hosted never needs a region step.
+    if (!isCrossOrigin()) {
+      setRegionResolved(true);
+      return;
+    }
+    // Cookie fast-path: a region the browser already pinned (restored at module
+    // import) means the auth client is already regional — skip the gate.
+    if (getActiveRegion() !== null) setRegionResolved(true);
+  }, []);
+
+  useEffect(() => {
+    // After the gate's post-resolution reload, restore the email the user
+    // already typed so they don't re-enter it on the credentials form.
+    const pending = takePendingLoginEmail();
+    if (pending) setEmail(pending);
+  }, []);
+
   // The passkey button is hidden entirely on unsupported browsers (no banner —
   // see issue #2091). `webAuthnSupport.kind === "supported"` is the load-bearing
   // gate; `unknown` (pre-effect / SSR) hides the button to avoid hydration
@@ -316,6 +344,19 @@ export default function LoginPage() {
   const visibleProviders = SOCIAL_PROVIDERS.filter((p) =>
     socialProviders.includes(p.id),
   );
+
+  // Returning-user region gate: in cross-origin SaaS with no pinned region yet,
+  // resolve email→region first so the credentials form (and its sign-in) targets
+  // the user's own regional API. Reveals the form via `onResolved`.
+  if (!regionResolved) {
+    return (
+      <LoginRegionGate
+        email={email}
+        onEmailChange={setEmail}
+        onResolved={() => setRegionResolved(true)}
+      />
+    );
+  }
 
   // Email-not-verified is a recoverable signin failure: the server has
   // already auto-sent a verification OTP via `sendOnSignIn: true`, so the

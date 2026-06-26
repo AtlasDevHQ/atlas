@@ -16,7 +16,78 @@
     }
   ],
   "components": {
-    "schemas": {},
+    "schemas": {
+      "RegionRoutingMap": {
+        "type": "object",
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "defaultRegion": {
+            "type": "string"
+          },
+          "regions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RegionRoutingMapEntry"
+            }
+          }
+        },
+        "required": [
+          "configured",
+          "defaultRegion",
+          "regions"
+        ]
+      },
+      "RegionRoutingMapEntry": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "apiUrl": {
+            "type": "string"
+          },
+          "isDefault": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "apiUrl",
+          "isDefault"
+        ]
+      },
+      "RegionProbeResponse": {
+        "type": "object",
+        "properties": {
+          "exists": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "exists"
+        ]
+      },
+      "RegionProbeBody": {
+        "type": "object",
+        "properties": {
+          "emailHash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "example": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "description": "sha256(lower(email)) as 64-char lowercase hex"
+          }
+        },
+        "required": [
+          "emailHash"
+        ]
+      }
+    },
     "parameters": {},
     "securitySchemes": {
       "bearerAuth": {
@@ -1858,6 +1929,189 @@
           }
         },
         "operationId": "getHealth"
+      }
+    },
+    "/api/v1/auth/region-map": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Region routing map for the login front-door",
+        "description": "Public, pre-auth. Returns the selectable regions and their API bases so the login front-door knows which regions to fan a hashed-email existence probe out to. `configured: false` when residency is not configured (self-hosted or single-region) — the front-door then skips the fan-out entirely.",
+        "responses": {
+          "200": {
+            "description": "Region routing map",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegionRoutingMap"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAuthRegionMap"
+      }
+    },
+    "/api/v1/auth/region-probe": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Hashed-email existence probe (per region)",
+        "description": "Public, pre-auth, rate-limited. Answers whether an account with `sha256(lower(email))` exists in THIS region's identity store, as a boolean. Accepts ONLY the hash, never the raw email. It is an account-existence oracle (like forgot-password) — mitigated by hash-only input, boolean-only output, and per-IP rate-limiting.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegionProbeBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Existence result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegionProbeResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Front-door routing not available (non-managed auth / no internal DB)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error (emailHash not a 64-char lowercase hex)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "array",
+                      "items": {}
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAuthRegionProbe"
       }
     },
     "/api/v1/query": {

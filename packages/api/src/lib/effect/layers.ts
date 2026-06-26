@@ -172,7 +172,7 @@ function withFiberDeathLog<A, E, R>(
 //
 // Membership splits into two single-source records, by fiber kind:
 //
-//   • SCHEDULER_CLEANUP_SPAN_NAMES — 11 cleanup/sweep fibers (they evict
+//   • SCHEDULER_CLEANUP_SPAN_NAMES — 12 cleanup/sweep fibers (they evict
 //     expired in-memory or DB state). Eight were retrofitted with a span by
 //     #2945 (the TTL/ratelimit/state sweeps below); the ninth,
 //     `orphan_task_reconcile` (#2944), shipped with its span from day one and
@@ -183,7 +183,9 @@ function withFiberDeathLog<A, E, R>(
 //     `trial_rate_limit_cleanup` (#3654), sweeps the unauthenticated
 //     `start_trial` per-IP/email attempt-limiter maps. The eleventh,
 //     `agent_runs_retention_sweep` (#3745, ADR-0020), deletes terminal
-//     durable-session runs past the retention window.
+//     durable-session runs past the retention window. The twelfth,
+//     `region_probe_rate_sweep` (#3973, ADR-0024 §3), evicts expired per-IP
+//     buckets from the login front-door's hashed-email existence-probe limiter.
 //
 //   • SCHEDULER_WORK_SPAN_NAMES — 5 background-work fibers (they perform
 //     recurring side-effecting work rather than evicting state):
@@ -231,6 +233,7 @@ export const SCHEDULER_CLEANUP_SPAN_NAMES = {
   abuse_cleanup: "atlas.scheduler.abuse_cleanup",
   dashboard_rate_limit_cleanup: "atlas.scheduler.dashboard_rate_limit_cleanup",
   conversation_rate_sweep: "atlas.scheduler.conversation_rate_sweep",
+  region_probe_rate_sweep: "atlas.scheduler.region_probe_rate_sweep",
   share_token_cleanup: "atlas.scheduler.share_token_cleanup",
   orphan_task_reconcile: "atlas.scheduler.orphan_task_reconcile",
   agent_runs_retention_sweep: "atlas.scheduler.agent_runs_retention_sweep",
@@ -2225,6 +2228,40 @@ export function makeSchedulerLive(
           "conversation_rate_sweep",
           withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.conversation_rate_sweep, {}, convSweepTick).pipe(
             Effect.repeat(Schedule.spaced(Duration.millis(CONVERSATION_RATE_SWEEP_INTERVAL_MS))),
+          ),
+        ),
+      );
+
+      // ── Periodic fiber: region-probe public rate sweep — every 60s ──
+      const regionProbeSweepTick = Effect.try({
+        try: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { regionProbeRateSweepTick } = require("@atlas/api/api/routes/region-routing") as {
+            regionProbeRateSweepTick: () => void;
+          };
+          regionProbeRateSweepTick();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.warn(
+              { err: errorMessage(err) },
+              "Region probe rate sweep tick failed",
+            );
+          }),
+        ),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { REGION_PROBE_RATE_SWEEP_INTERVAL_MS } = require("@atlas/api/api/routes/region-routing") as {
+        REGION_PROBE_RATE_SWEEP_INTERVAL_MS: number;
+      };
+      // forkScoped, not fork — see SettingsLive for rationale.
+      yield* Effect.forkScoped(
+        withFiberDeathLog(
+          "region_probe_rate_sweep",
+          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.region_probe_rate_sweep, {}, regionProbeSweepTick).pipe(
+            Effect.repeat(Schedule.spaced(Duration.millis(REGION_PROBE_RATE_SWEEP_INTERVAL_MS))),
           ),
         ),
       );

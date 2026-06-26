@@ -980,6 +980,10 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // Adds normalizedEmail (+ unique index) to Better Auth's "user" table for
   // business-email-only signup / one-trial-per-user teeth (#3650).
   "0142_user_normalized_email.sql",
+  // Adds the pgcrypto functional index on sha256(lower(email)) over Better
+  // Auth's "user" table that backs the returning-user login front-door's
+  // hashed-email existence probe (ADR-0024 §3, #3973).
+  "0151_user_email_hash_index.sql",
 ];
 
 /**

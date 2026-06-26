@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
 
-import { ArrowIcon, AtlasLogo } from "./shared";
+import { ArrowIcon, AtlasLogo, GitHubIcon, LinkedInIcon } from "./shared";
 
 /* ---------------------------------------------------------------------------
  * Blog prose system — shared long-form primitives for /blog posts.
@@ -81,6 +81,26 @@ export function Byline() {
           Founder, Atlas
         </span>
       </span>
+      <div className="ml-auto flex items-center gap-1">
+        <a
+          href="https://www.linkedin.com/in/matt-sywulak/"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Matt Sywulak on LinkedIn"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-fg-faint transition-colors hover:bg-bg-sunken hover:text-fg"
+        >
+          <LinkedInIcon className="h-3.75 w-3.75" />
+        </a>
+        <a
+          href="https://github.com/msywulak"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Matt Sywulak on GitHub"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-fg-faint transition-colors hover:bg-bg-sunken hover:text-fg"
+        >
+          <GitHubIcon className="h-3.75 w-3.75" />
+        </a>
+      </div>
     </div>
   );
 }

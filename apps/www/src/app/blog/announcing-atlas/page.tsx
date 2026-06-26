@@ -53,16 +53,16 @@ export default function AnnouncingAtlas() {
           dateLabel="June 25, 2026"
           readingTime="6 min read"
           title="The road to launch: everything I shipped in beta"
-          dek="Atlas goes GA in July. Here's the recap of the first half of 2026, from a single commit to a hosted cloud, and a product you can trust in production."
+          dek="Atlas goes GA in July. Here's the recap of the first half of 2026, from a single commit to a hosted cloud you can trust in production."
         />
 
         <H2>Where I started</H2>
         <Lead>
           A few months ago I announced Atlas with a simple argument: text-to-SQL
           should be safe, accurate, and deployable infrastructure. A data
-          analyst you embed in your own product, not another standalone BI tool
-          you send people to, and not a chatbot parlor trick that hands you SQL
-          it can&apos;t run, validate, or audit.
+          analyst you embed in your own product, one that writes SQL it can
+          actually run, validate, and audit, and answers straight from your
+          database instead of sending people off to a separate BI tool.
         </Lead>
         <P>
           Since then, I&apos;ve shipped without letting up. Atlas began as a
@@ -82,29 +82,28 @@ export default function AnnouncingAtlas() {
         />
 
         <P>
-          But the count isn&apos;t the point; what shipped is. The agent got
-          smarter, the datasource list grew, the MCP server grew up, and Atlas
-          Cloud became a real hosted product with billing, trials, and
-          enterprise controls.
+          Underneath the numbers: the agent got smarter, the datasource list
+          grew, the MCP server grew up, and Atlas Cloud became a real hosted
+          product with billing, trials, and enterprise controls.
         </P>
         <P>
-          A note on that pace, since I keep writing &ldquo;I&rdquo; and not
+          A note on the pace, since I keep writing &ldquo;I&rdquo; and not
           &ldquo;we&rdquo;: it&apos;s been me and an AI coding agent the whole
-          way, no team hiding behind the usual corporate plural. That&apos;s
-          also, quietly, the thesis. Atlas is a data analyst you run as an agent
-          against your database; it was built by one person running an agent
-          against a codebase.
+          way, no team hiding behind the corporate plural. There&apos;s a thesis
+          in that. Atlas is a data analyst you run as an agent against your
+          database, and it got built by one person running an agent against a
+          codebase.
         </P>
 
         <PullQuote>Same wager, both ends.</PullQuote>
 
         <P>
-          It&apos;s also the first thing I&apos;ve ever actually finished. My
+          It&apos;s also the first side project I&apos;ve ever shipped. My
           GitHub is a graveyard of half-built repos, including one security
           product I rebuilt a dozen times and never shipped. I wrote about why
           this one made it over the line, and the rest didn&apos;t, in{" "}
-          <a href="/blog/the-first-thing-i-finished" className="link-accent">
-            The first thing I ever finished
+          <a href="/blog/why-this-one-stuck" className="link-accent">
+            Why this one stuck
           </a>
           .
         </P>
@@ -136,8 +135,8 @@ export default function AnnouncingAtlas() {
         </Steps>
         <P>
           Reads only. No writes, no shell escapes, no surprises. I also made
-          that story legible to anyone evaluating Atlas: there&apos;s now a
-          public{" "}
+          that story easy to check for anyone evaluating Atlas: there&apos;s now
+          a public{" "}
           <a href="https://www.useatlas.dev/security" className="link-accent">
             security page
           </a>{" "}
@@ -178,8 +177,8 @@ export default function AnnouncingAtlas() {
           The layer also learned about performance. The profiler now harvests
           index metadata and column cardinality, so the agent knows which
           predicates are sargable and which columns are selective before it
-          writes a query. Generated SQL that&apos;s more likely to be fast, not
-          just correct.
+          writes a query. Correctness was always the floor; now the generated
+          SQL is tuned to run fast as well.
         </P>
 
         <H2>A smarter agent</H2>
@@ -291,9 +290,9 @@ export default function AnnouncingAtlas() {
         <P>
           Atlas also got a new brand, warm cream and deep forest green,
           light-first, across every surface: the landing site, the docs, and
-          the product. It steps away from the saturated dark dev-tool default
-          toward something calmer and more legible for the dense work of reading
-          data.
+          the product. It trades the saturated dark dev-tool default for
+          something calmer and easier to read during the dense work of staring
+          at data.
         </P>
 
         <H2>What&apos;s next: July</H2>

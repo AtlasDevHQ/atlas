@@ -429,6 +429,7 @@ describe("makeSchedulerLive", () => {
         "abuse_cleanup",
         "dashboard_rate_limit_cleanup",
         "conversation_rate_sweep",
+        "region_probe_rate_sweep",
         "share_token_cleanup",
         "orphan_task_reconcile",
         "agent_runs_retention_sweep",

@@ -22,6 +22,7 @@ import { validationHook } from "./routes/validation-hook";
 import { chat } from "./routes/chat";
 import { health } from "./routes/health";
 import { auth } from "./routes/auth";
+import { regionRouting } from "./routes/region-routing";
 import { query } from "./routes/query";
 import { staticPaths, staticTags, securitySchemes } from "./routes/openapi";
 import { conversations, publicConversations } from "./routes/conversations";
@@ -170,6 +171,9 @@ app.use("/api/*", async (c, next) => {
 app.route("/api/v1/chat", chat);
 app.route("/api/health", health);
 app.route("/api/auth", auth);
+// Region-routing front-door endpoints (region map + hashed-email existence
+// probe) for the returning-user login fan-out router (ADR-0024 §3, #3973).
+app.route("/api/v1/auth", regionRouting);
 app.route("/api/v1/query", query);
 // OpenAPI spec served below via merged auto + static endpoint
 app.route("/api/v1/conversations", conversations);

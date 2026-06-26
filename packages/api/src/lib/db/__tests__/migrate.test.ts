@@ -176,7 +176,9 @@ describe("runMigrations", () => {
     //   ADR-0022 §5, #3895) = 150.
     //   Plus 0150 (token_usage.latency_ms per-turn latency, demo tracking,
     //   #3931) = 151.
-    expect(count).toBe(151);
+    //   Plus 0151 (user pgcrypto sha256(lower(email)) functional index for the
+    //   returning-user login front-door probe, ADR-0024 §3, #3973) = 152.
+    expect(count).toBe(152);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -356,6 +358,7 @@ describe("runMigrations", () => {
         "0148_connection_group_descriptions.sql",
         "0149_conversation_group_reach.sql",
         "0150_token_usage_latency.sql",
+        "0151_user_email_hash_index.sql",
       ],
     });
 

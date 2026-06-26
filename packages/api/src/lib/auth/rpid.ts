@@ -32,10 +32,11 @@ export const DEFAULT_RP_ID = "app.useatlas.dev";
  * but `app.useatlas.dev` is NOT (the exact footgun this module fixes: prod's
  * rpID silently inherited on a staging host).
  *
- * No public-suffix-list awareness (same caveat as `deriveCookieDomain`): a
- * plain dotted-label check. Atlas's app host and rpID are always the same
- * registrable domain, and the browser is the backstop for a pathological rpID
- * like a bare public suffix.
+ * No public-suffix-list awareness: a plain dotted-label check (the rpID is a
+ * registrable-domain suffix of the app host, never a cross-host cookie domain —
+ * session cookies are host-only, ADR-0024 §5). Atlas's app host and rpID are
+ * always the same registrable domain, and the browser is the backstop for a
+ * pathological rpID like a bare public suffix.
  */
 function isRegistrableDomainSuffixOrEqual(rpID: string, host: string): boolean {
   // Hostnames are case-insensitive (DNS), and browsers lowercase the rpID
@@ -138,10 +139,10 @@ function parseOriginHostForRpId(webOrigin: string): string | null {
  * domain` — fires only at ceremony time, in the user's browser, with no
  * boot-time signal. So whenever a web origin IS configured we assert the
  * effective rpID is valid for it and throw with an actionable message
- * otherwise. (This is stronger than the cross-origin cookie-domain check in
- * `getAuthInstance()`, which only `log.warn`s — a wrong rpID can't work at
- * all, so it warrants a hard fail.) A bogus *explicit* `ATLAS_RPID` is caught
- * here too; the derived path can never produce an invalid value, so unset
+ * otherwise. (Unlike most boot-time config, which we only `log.warn` on, a
+ * wrong rpID can't be repaired at runtime and fails silently in the browser
+ * ceremony — so it warrants a hard fail.) A bogus *explicit* `ATLAS_RPID` is
+ * caught here too; the derived path can never produce an invalid value, so unset
  * deploys never throw. Hostnames aren't secrets (CLAUDE.md), so they're safe
  * to log/surface.
  *

@@ -13,7 +13,14 @@
  *    resolved mode without parsing cookies.
  *
  * Auth is an optimistic check — it reads the session cookie without hitting
- * the database. Actual auth enforcement happens at the API layer.
+ * the database. Actual auth enforcement happens at the API layer. It runs ONLY
+ * for same-origin deploys: when the API is a separate origin
+ * (`NEXT_PUBLIC_ATLAS_API_URL` set — SaaS app.useatlas.dev ↔ api[-region]),
+ * the session cookie is host-only on the regional API host (ADR-0024 §5) and is
+ * never delivered to this app origin, so a presence check here would see no
+ * cookie for *everyone* and loop signed-in users to /login. In that mode the
+ * redirect is skipped and the client-side `AuthGuard` (a real `useSession()`
+ * round-trip) owns the auth UX, with the API as the enforcement boundary.
  *
  * --- CSP: why the nonce posture lives in the proxy (#3899) ---
  *
@@ -54,6 +61,7 @@ import { ATLAS_MODES } from "@useatlas/types/auth";
 import { PUBLIC_ROUTE_PREFIXES } from "./lib/public-routes";
 import { resolveWebCookiePrefix } from "./lib/cookie-prefix";
 import { buildCsp, frameAncestorsFor } from "./lib/csp";
+import { isCrossOriginApi } from "./lib/cross-origin-api";
 
 const authMode = process.env.NEXT_PUBLIC_ATLAS_AUTH_MODE ?? "";
 const VALID_MODES = new Set<string>(ATLAS_MODES);
@@ -66,9 +74,9 @@ const cspEnv = process.env.NODE_ENV === "development" ? "dev" : "prod";
 // to "atlas" to match the API's `production` profile, so unconfigured
 // self-hosted deploys agree without extra wiring. Atlas staging sets
 // NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=atlas-staging; local dev sets atlas-dev.
-// Without this, prod's `.useatlas.dev` cookie (delivered to staging because
-// staging is a subdomain) would satisfy this optimistic presence check and
-// suppress the /login redirect on a different environment.
+// Host-only cookies (ADR-0024 §5) already keep each env's session token on its
+// own host, but a distinct prefix per env stays a defensive guard so this
+// same-origin presence check never mistakes another env's cookie for this one.
 // `process.env.NEXT_PUBLIC_*` is read here as a direct static reference so
 // Next inlines it at build time; `resolveWebCookiePrefix` only applies the
 // default/trim (mirrors the API's resolveCookiePrefix and is unit-tested).
@@ -138,6 +146,15 @@ export function proxy(request: NextRequest) {
 
   // Always allow public routes (demo, shared conversations, API, Next.js internals)
   if (isPublicRoute(pathname)) {
+    return withModeHeader(request, nonce, csp);
+  }
+
+  // Cross-origin deploy: the session cookie is host-only on the regional API
+  // host (ADR-0024 §5) and isn't delivered to this app origin, so the optimistic
+  // presence check below can't see it. Skip it (else every user looks logged-out
+  // and authenticated users loop to /login); the client-side AuthGuard enforces
+  // auth instead. Same-origin self-hosted deploys keep the optimistic redirect.
+  if (isCrossOriginApi()) {
     return withModeHeader(request, nonce, csp);
   }
 

@@ -38,7 +38,6 @@ function makeDeps(overrides: Partial<BuildAuthOptionsDeps> = {}): BuildAuthOptio
     secret: SECRET,
     baseURL: "http://localhost:3000",
     database: undefined,
-    cookieDomain: undefined,
     cookiePrefix: "atlas",
     socialProviders: undefined,
     // Mirror the production wiring in `buildPlugins()` — passkey is loaded

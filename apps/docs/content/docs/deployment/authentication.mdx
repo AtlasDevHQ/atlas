@@ -174,7 +174,7 @@ BETTER_AUTH_URL=https://api.example.com
 
 > **Both variables are required together.** If you set `ATLAS_CORS_ORIGIN` but not `BETTER_AUTH_TRUSTED_ORIGINS`, CORS will pass but CSRF protection will reject auth requests. If you set `BETTER_AUTH_TRUSTED_ORIGINS` but not `ATLAS_CORS_ORIGIN`, the browser will block cross-origin requests entirely. Always set both for cross-origin managed auth.
 
-> **Cross-subdomain cookies:** When `ATLAS_CORS_ORIGIN` and `BETTER_AUTH_URL` are on different subdomains (e.g. `app.example.com` and `api.example.com`), the session cookie domain is automatically derived to the parent domain (`.example.com`). This allows cookies set by the API to be sent from the frontend subdomain. No manual cookie configuration is needed.
+> **Host-only session cookies:** The session cookie is **host-only** — scoped to the API host that issued it (`api.example.com`), with no parent-domain (`.example.com`) attribute. When the app and API are on different subdomains of the same registrable domain (e.g. `app.example.com` and `api.example.com`), the browser still sends the cookie on credentialed requests because they are *same-site* (cross-origin): the cookie rides `credentials: include` + the CORS allowlist with `SameSite=Lax` — no `SameSite=None` and no shared cookie domain are needed. Host-only scoping is deliberate: a session minted by one API host never transits another (the foundation for per-region data residency). No manual cookie configuration is needed.
 
 ### Frontend integration (All Deployments)
 

@@ -83,15 +83,14 @@ export interface EnvProfile {
 
   /**
    * Better Auth session-cookie name prefix (`advanced.cookiePrefix`). The
-   * session cookie is named `${cookiePrefix}.session_token`. A distinct
-   * prefix per deployment env is what isolates prod from staging: both live
-   * under the shared `.useatlas.dev` parent (staging is `*.staging.useatlas.dev`,
-   * a *subdomain* of the prod cookie domain), so prod's broadly-scoped
-   * `.useatlas.dev` cookie reaches staging hosts regardless of how staging's
-   * own cookie domain is scoped — the prefix, not the domain, is what isolates.
-   * A different name means each env's optimistic proxy gate
+   * session cookie is named `${cookiePrefix}.session_token`. Session cookies are
+   * host-only (ADR-0024 §5 — no `Domain=.useatlas.dev`), so prod's cookie is
+   * already scoped to `api.useatlas.dev` and never reaches a staging host. The
+   * distinct prefix per deployment env stays a defensive second guard: a
+   * different name means each env's optimistic proxy gate
    * (`packages/web/src/proxy.ts` → `getSessionCookie`) and Better Auth ignore
-   * the other env's cookie instead of being fooled by its mere presence.
+   * the other env's cookie even if one ever did reach the wrong host, instead of
+   * being fooled by its mere presence.
    *
    * MUST stay in lockstep with the web proxy's `getSessionCookie` read, which
    * CANNOT import this module (the frontend never imports `@atlas/api`). The

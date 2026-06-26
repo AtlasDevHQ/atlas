@@ -2,12 +2,13 @@
  * `getWebOrigin()` resolution-order tests.
  *
  * The web origin anchors the passkey rpID, the `ATLAS_CORS_ORIGIN` default, and
- * the cross-subdomain cookie domain (`getAuthInstance` in `auth/server.ts`).
- * #3706 dropped the former `ATLAS_CORS_ORIGIN`-set gate on the cookie-domain
- * path, so `getWebOrigin()` is now consulted unconditionally — which means the
- * `BETTER_AUTH_TRUSTED_ORIGINS` fallback (the tier SaaS relies on once
- * `ATLAS_CORS_ORIGIN` is no longer stamped) and the region fallback must stay
- * pinned. Self-hosted single-origin deploys still resolve to `null`.
+ * Better Auth's `trustedOrigins` allowlist (`getAuthInstance` in
+ * `auth/server.ts`). (Session cookies are host-only, ADR-0024 §5, so there is no
+ * cross-subdomain cookie domain to anchor anymore.) `getWebOrigin()` is consulted
+ * unconditionally, so the `BETTER_AUTH_TRUSTED_ORIGINS` fallback (the tier SaaS
+ * relies on once `ATLAS_CORS_ORIGIN` is no longer stamped) and the region
+ * fallback must stay pinned. Self-hosted single-origin deploys still resolve to
+ * `null`.
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";

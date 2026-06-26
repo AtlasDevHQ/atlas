@@ -7,7 +7,9 @@
  * browser sessions use cookies automatically.
  *
  * Base URL resolution priority:
- *   1. NEXT_PUBLIC_ATLAS_API_URL — cross-origin API (set when frontend and API are separate)
+ *   1. getApiUrl()               — the regional override if set, else the
+ *                                  build-time NEXT_PUBLIC_ATLAS_API_URL (the
+ *                                  cross-origin API host when frontend ≠ API)
  *   2. window.location.origin    — same-origin fallback (browser)
  *   3. http://localhost:3000      — SSR / prerender fallback
  *
@@ -57,8 +59,11 @@ function getBaseURL(): string {
 // ADR-0024 identity is regional, so for a returning user whose `atlas_region`
 // cookie is already set, api-url.ts restores it on import (before this
 // module-level singleton is built) and the client targets that workspace's own
-// regional API — where its session cookie was minted host-only (§5). With no
-// region signal it's the build-time default. Persisting the selection during
+// regional API — where its session cookie was minted host-only (§5 — no
+// `Domain=.useatlas.dev`, so the session is non-portable across regions). With
+// no region signal it's the build-time default. `credentials: "include"` (below)
+// lets the browser store and send that host-only cookie on same-site,
+// cross-origin calls from `app.useatlas.dev`. Persisting the selection during
 // signup and consuming the region key on login land in follow-up slices; until
 // then only a cookie left by a prior session takes effect. Region is never
 // discovered post-auth by calling the US API — that circular path is retired

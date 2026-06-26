@@ -13,6 +13,12 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     { url: `${baseUrl}/pricing`, lastModified, changeFrequency: "daily", priority: 0.9 },
     { url: `${baseUrl}/blog`, lastModified, changeFrequency: "weekly", priority: 0.7 },
     {
+      url: `${baseUrl}/blog/out-of-the-runtime`,
+      lastModified,
+      changeFrequency: "weekly",
+      priority: 0.7,
+    },
+    {
       url: `${baseUrl}/blog/announcing-atlas`,
       lastModified,
       changeFrequency: "weekly",

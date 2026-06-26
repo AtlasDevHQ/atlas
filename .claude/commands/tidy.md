@@ -43,8 +43,8 @@ Run these in parallel:
    # GitHub Actions (CI + Sync Starters)
    gh run list -R AtlasDevHQ/atlas --branch main --limit 5 --json status,conclusion,name,createdAt,databaseId
 
-   # Railway deployments — on a main commit these are the staging services (api-staging, web-staging,
-   # www-staging) + docs (direct-from-main). Prod (api/api-eu/api-apac/web/www) tracks the `prod` branch,
+   # Railway deployments — on a main commit these are the staging services (api-staging, web-staging)
+   # + docs and www (both direct-from-main). Prod (api/api-eu/api-apac/web) tracks the `prod` branch,
    # advanced only by /release tags. Uses commit statuses, not check-runs.
    gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state, description}] | unique_by(.context) | .[] | "\(.context)\t\(.state)\t\(.description)"'
    ```
@@ -86,7 +86,7 @@ For each category, build a list of actions needed:
 
 ### 2c. CI + deployment health
 - If CI is failing on main, this is **urgent** — diagnose the failure and fix it before other tidy work
-- If a Railway **staging** deployment is failing (api-staging, web-staging, docs), this is urgent — `main` is broken on staging, which blocks the next `/release` to prod. If a **prod** service (api/api-eu/api-apac/web/www) is failing, that's a customer-facing P1 — the last `/release` tag is bad; roll forward via the next patch tag (see `/release` rollback note)
+- If a Railway **main-tracking** deployment is failing (staging: api-staging, web-staging; direct-from-main: docs, www), this is urgent — `main` is broken, which blocks the next `/release` to prod (and a www failure is already live on www.useatlas.dev). If a **prod** service (api/api-eu/api-apac/web) is failing, that's a customer-facing P1 — the last `/release` tag is bad; roll forward via the next patch tag (see `/release` rollback note)
 - Check if failures are from recently merged PRs (regressions) or pre-existing
 - Common CI causes: type errors in new code, missing test mocks, dependency drift
 - Common Railway causes: missing env var, new dependency not in `serverExternalPackages`, DB migration error, health check timeout

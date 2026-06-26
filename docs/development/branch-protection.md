@@ -131,7 +131,7 @@ PRs that change the required-checks list should reference the incident or motiva
 
 # Branch Protection (`prod`)
 
-The `prod` branch is the Railway-tracking artifact: each `/release` fast-forwards it to the tagged SHA via `git push origin <tag-sha>^{}:prod --force-with-lease`, and the 5 prod services (`api`, `api-eu`, `api-apac`, `web`, `www`) deploy from it. See [ADR-0008 § Release branches: none](../adr/0008-versioning-and-release-tags.md#release-branches-none) and [release-process.md § Mental model](./release-process.md#mental-model).
+The `prod` branch is the Railway-tracking artifact: each `/release` fast-forwards it to the tagged SHA via `git push origin <tag-sha>^{}:prod --force-with-lease`, and the 4 prod services (`api`, `api-eu`, `api-apac`, `web`) deploy from it (`docs` and `www` deploy direct from `main` and aren't part of the tag gate). See [ADR-0008 § Release branches: none](../adr/0008-versioning-and-release-tags.md#release-branches-none) and [release-process.md § Mental model](./release-process.md#mental-model).
 
 ## What's protected
 

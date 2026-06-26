@@ -6,8 +6,8 @@ How Atlas ships to prod. Two flows: **normal release** (merge → soak → tag) 
 
 ## Mental model
 
-- **`main`** is the single integration branch. Every merge to `main` triggers a deploy to **staging** across 3 services (`api-staging`, `web-staging`, `www-staging`). `docs` continues to deploy direct from `main` to its production service — static export + Caddy, no runtime surface to gate.
-- **Annotated git tags** (`v0.0.1`, `v0.0.2`, `v0.1.0`) gate **prod**. The wiring: `/release` creates the tag, then fast-forwards a dedicated `prod` branch to the tagged SHA via `git push origin <tag-sha>^{}:prod --force-with-lease`. The 5 prod services (`api` / `api-eu` / `api-apac` / `web` / `www`) watch the `prod` branch; the branch push triggers their Railway autodeploys.
+- **`main`** is the single integration branch. Every merge to `main` triggers a deploy to **staging** across 2 services (`api-staging`, `web-staging`). `docs` **and `www`** deploy direct from `main` to their production services — both are static `output: "export"` exports (Caddy / no runtime surface to gate), so a merge touching `apps/www/**` goes live on www.useatlas.dev immediately. Neither has a staging twin.
+- **Annotated git tags** (`v0.0.1`, `v0.0.2`, `v0.1.0`) gate **prod**. The wiring: `/release` creates the tag, then fast-forwards a dedicated `prod` branch to the tagged SHA via `git push origin <tag-sha>^{}:prod --force-with-lease`. The 4 prod services (`api` / `api-eu` / `api-apac` / `web`) watch the `prod` branch; the branch push triggers their Railway autodeploys.
 - **Tags are the prod gate.** A merge to `main` does not reach customers until `/release` advances `prod`.
 
 Why a `prod` branch instead of a direct tag trigger: Railway has no native git-tag trigger and the Railway CLI cannot deploy an arbitrary SHA on a GitHub-linked service (`railway up` ships a local tarball and severs the GitHub Deployments link). The prod-branch tracker is the simplest composable primitive that preserves Railway's branch-driven autodeploy semantics, the GitHub Deployments integration, and the option to layer "Wait for CI" on prod services. The `prod` branch is a Railway-tracking artifact, not an integration branch — no PR ever targets it, no work happens on it. See [ADR-0008 § Release branches: none](../adr/0008-versioning-and-release-tags.md#release-branches-none) for the longer reasoning.
@@ -32,19 +32,18 @@ PR → /ci → /pr → review → merge to main
 
 ### 1. Land changes on `main`
 
-Standard PR flow — `/ci` to pass gates, `/pr` to open the PR, review, merge. The merge triggers a Railway deploy of `main` to staging across the 3 staging services (`api-staging`, `web-staging`, `www-staging`), and to the `docs` prod service (docs is direct-from-main).
+Standard PR flow — `/ci` to pass gates, `/pr` to open the PR, review, merge. The merge triggers a Railway deploy of `main` to staging across the 2 staging services (`api-staging`, `web-staging`), and to the `docs` and `www` prod services (both are direct-from-main).
 
 ### 2. Soak on staging
 
 Staging URLs:
 - API: `https://api.staging.useatlas.dev` (health: `https://api.staging.useatlas.dev/api/health`)
 - Web: `https://app.staging.useatlas.dev`
-- www: `https://www.staging.useatlas.dev`
 
-All three share the `.staging.useatlas.dev` parent so cross-subdomain session cookies stay isolated from prod's `.useatlas.dev` namespace (issue caught in Codex review of #2933).
+Both share the `.staging.useatlas.dev` parent so cross-subdomain session cookies stay isolated from prod's `.useatlas.dev` namespace (issue caught in Codex review of #2933). `www` has no staging twin — like `docs`, it deploys direct from `main` to prod, so there's nothing to soak.
 
 What to check before tagging:
-- All 3 staging Railway services (`api-staging`, `web-staging`, `www-staging`) are green.
+- Both staging Railway services (`api-staging`, `web-staging`) are green.
 - `https://api.staging.useatlas.dev/api/health` returns OK with `region: "staging"`.
 - Any user-visible changes shipped since the last tag work as expected. Run the change yourself; don't infer from a green CI.
 - For risky changes (new migration, new agent tool, new admin surface), monitor staging logs for ~30 min before tagging.
@@ -70,7 +69,7 @@ The curated, customer-facing changelog for each tag lives in the docs-site chang
 
 ### 4. Watch prod
 
-The `prod` branch push triggers Railway prod deploys across the 5 prod services watching it (`api`, `api-eu`, `api-apac`, `web`, `www`). Monitor via:
+The `prod` branch push triggers Railway prod deploys across the 4 prod services watching it (`api`, `api-eu`, `api-apac`, `web`). Monitor via:
 - Railway dashboard (manual)
 - `gh api repos/AtlasDevHQ/atlas/commits/$(git rev-list -n 1 <version>)/statuses` for commit-status mirrors on the tagged SHA (not `main` — they diverge during rollback, where the new patch tag points at the previous good SHA)
 - `gh api repos/AtlasDevHQ/atlas/deployments?ref=prod` for the Railway-driven GitHub Deployments list
@@ -120,7 +119,7 @@ The `/release` skill infers the bump from the previous tag if you don't pass one
 ## Common pitfalls
 
 **"I tagged but prod didn't deploy."**
-Check the Railway dashboard — the 5 prod services (`api`, `api-eu`, `api-apac`, `web`, `www`) must each be watching the `prod` branch (not `main`). If a service slipped back to `main`, prod won't fire from a `prod`-branch push. The `docs` service is intentionally on `main` and isn't part of the tag gate.
+Check the Railway dashboard — the 4 prod services (`api`, `api-eu`, `api-apac`, `web`) must each be watching the `prod` branch (not `main`). If a service slipped back to `main`, prod won't fire from a `prod`-branch push. The `docs` and `www` services are intentionally on `main` and aren't part of the tag gate.
 
 Also verify the prod-branch push happened: `git rev-parse origin/prod` should equal the tag's SHA. The `/release` skill normally handles this; if it ran in a partial-success state, push manually with `git push origin <tag>^{}:prod --force-with-lease`.
 

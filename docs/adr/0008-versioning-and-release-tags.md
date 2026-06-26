@@ -108,7 +108,7 @@ Bump every train together — npm package versions match the git tag, milestone 
 ## Consequences
 
 **For deploys:**
-- The dual Railway trigger (Q5) hangs off this ADR. `main` push → staging autodeploy (3 services: api/web/www). Annotated tag → `/release` fast-forwards `prod` branch to the tag SHA → prod autodeploy across 5 services (api/api-eu/api-apac/web/www). `docs` continues watching `main` directly. See `docs/development/release-process.md`.
+- The dual Railway trigger (Q5) hangs off this ADR. `main` push → staging autodeploy (3 services: api/web/www). Annotated tag → `/release` fast-forwards `prod` branch to the tag SHA → prod autodeploy across 5 services (api/api-eu/api-apac/web/www). `docs` continues watching `main` directly. See `docs/development/release-process.md`. **Amended 2026-06 (`docs/www-off-release-pipeline`):** `www` was moved **off** the prod-branch gate to deploy direct from `main` like `docs` (both static `output: export`, no runtime to gate), and `www-staging` was deleted. Current wiring: staging autodeploy = 2 services (api-staging/web-staging); tag-gated prod set = 4 services (api/api-eu/api-apac/web); `docs` **and `www`** are direct-from-`main`.
 - The first prod deploy under tag-gating was `v0.0.1`, cut 2026-05-29 (`9c68fc17`). The prior "every merge to `main` auto-deploys prod" flow is retired. The public launch (`v0.1.0`, July 2026) is a separate event, tracked independently.
 
 **For the changelog:**

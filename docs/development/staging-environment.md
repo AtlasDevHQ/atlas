@@ -62,13 +62,13 @@ this runbook is the **how**, the PRD is the **why**.
 | ------- | ---------------------------- | --------------------- |
 | App     | `app.staging.useatlas.dev`   | `app.useatlas.dev`    |
 | API     | `api.staging.useatlas.dev`   | `api.useatlas.dev`    |
-| Landing | `www.staging.useatlas.dev`   | `useatlas.dev`        |
+| Landing | — *(no staging twin — `www` deploys direct from `main`, like `docs`)* | `www.useatlas.dev` |
 
 > **Subdomain order matters.** It is `api.staging.useatlas.dev`, not
 > `staging.api.useatlas.dev`. The transposed form was a real bug
-> ([#2969](https://github.com/AtlasDevHQ/atlas/issues/2969)). All three staging
-> hosts share the `.staging.useatlas.dev` parent so their session cookies stay
-> isolated from prod's `.useatlas.dev` namespace.
+> ([#2969](https://github.com/AtlasDevHQ/atlas/issues/2969)). Both staging
+> hosts (`api.staging` + `app.staging`) share the `.staging.useatlas.dev` parent
+> so their session cookies stay isolated from prod's `.useatlas.dev` namespace.
 
 ### How you know you're on staging
 
@@ -135,9 +135,9 @@ landed**):
 
 | Branch / ref          | Target                                     | Trigger                                        |
 | --------------------- | ------------------------------------------ | ---------------------------------------------- |
-| `main`                | staging (api / app / www)                  | every merge, automatically                     |
-| `v*.*.*` tag → `prod` | prod (api / api-eu / api-apac / web / www) | `/release` fast-forwards `prod` to the tag SHA |
-| `docs`                | docs.useatlas.dev                          | direct from `main`                             |
+| `main`                | staging (api / app)                        | every merge, automatically                     |
+| `v*.*.*` tag → `prod` | prod (api / api-eu / api-apac / web)        | `/release` fast-forwards `prod` to the tag SHA |
+| `main` (direct)       | docs.useatlas.dev, www.useatlas.dev        | direct from `main` (static `output: export`, no runtime to gate) |
 
 The `prod` branch is a Railway-tracking artifact advanced only by `/release`
 (`git push origin <tag-sha>^{}:prod --force-with-lease`). No PRs target `prod`.
@@ -145,15 +145,15 @@ See [release-process.md § Mental model](./release-process.md#mental-model).
 
 ### Railway topology (target shape)
 
-Same Railway project (`satisfied-creation`), new environment `staging`, four new
+Same Railway project (`satisfied-creation`), new environment `staging`, three new
 resources:
 
 - `api-staging` — Hono API service
 - `web-staging` — Next.js service
-- `www-staging` — Caddy static landing
 - `staging-postgres` — Railway-managed Postgres (Atlas internal DB)
 
-There is **no** staging `docs` service (docs deploys direct from `main`) and
+There is **no** staging `docs` **or `www`** service (both deploy direct from
+`main` to prod — static `output: export`, no runtime surface to gate) and
 **no** staging sandbox sidecar — staging shares the prod Vercel Sandbox, which is
 a per-request Firecracker microVM with `networkPolicy: "deny-all"`, so cross-env
 contamination is structurally impossible.
@@ -191,10 +191,11 @@ contamination is structurally impossible.
 
 > 📸 _Screenshot placeholder: Railway staging env with the `staging-postgres` service provisioned._
 
-### 1c. Clone the three runtime services — *pending slice 20 (#2916)*
+### 1c. Clone the two runtime services — *pending slice 20 (#2916)*
 
-Create `api-staging`, `web-staging`, and `www-staging` from the same GitHub repo
-as their prod counterparts (`api`, `web`, `www`):
+Create `api-staging` and `web-staging` from the same GitHub repo as their prod
+counterparts (`api`, `web`). There is **no** `www-staging` — `www` deploys direct
+from `main` to prod (static `output: export`, like `docs`), so it has no staging twin:
 
 1. **New** → **GitHub Repo** → `AtlasDevHQ/atlas`.
 2. For each service set:
@@ -227,7 +228,6 @@ the `useatlas.dev` DNS zone:
 | -------------------------- | --------------- | --------------------------------------- |
 | `api.staging.useatlas.dev` | `api-staging`   | CNAME → Railway-provided target         |
 | `app.staging.useatlas.dev` | `web-staging`   | CNAME → Railway-provided target         |
-| `www.staging.useatlas.dev` | `www-staging`   | CNAME → Railway-provided target         |
 
 1. In Railway: service → **Settings** → **Networking** → **Custom Domain** →
    enter the host. Railway returns a CNAME target.
@@ -432,7 +432,7 @@ entry in that file is accounted for here. Legend:
 | ------ | ----- | -------------------- |
 | `BETTER_AUTH_SECRET` | 🔒 | Distinct 32-byte random (`openssl rand -base64 32`). Doubles as the at-rest key fallback — keep it off prod's value. |
 | `BETTER_AUTH_URL` | 🟦 | `https://api.staging.useatlas.dev`. |
-| `BETTER_AUTH_TRUSTED_ORIGINS` | 🟦 | `https://app.staging.useatlas.dev` (+ `www.staging.useatlas.dev` if needed). |
+| `BETTER_AUTH_TRUSTED_ORIGINS` | 🟦 | `https://app.staging.useatlas.dev`. (No `www.staging` origin — `www` has no staging deploy.) |
 | `ATLAS_ADMIN_EMAIL` | 🟦 | The deterministic staging admin (e.g. `admin@staging.useatlas.dev`). Note `StagingSeed` separately seeds an admin at the **fixed constant** `admin@staging.useatlas.dev` (`STAGING_ADMIN_EMAIL` in `seed.ts` — not an env var), reading only `STAGING_ADMIN_PASSWORD` from the environment (see [§7](#7-incidental-findings)). |
 | `ATLAS_ALLOW_FIRST_SIGNUP_ADMIN` | ⚪ | Leave unset (`ATLAS_ADMIN_EMAIL` is set). |
 | `ATLAS_AUTH_MODE` | ⚪ | Unset — auto-detected to `managed` (matches prod SaaS). |
@@ -533,7 +533,7 @@ entry in that file is accounted for here. Legend:
 | Var(s) | Class | Staging value source |
 | ------ | ----- | -------------------- |
 | `TURNSTILE_SECRET_KEY` | 🔒 | Staging Cloudflare Turnstile secret (paired with the site key). |
-| `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | 🟦 | Staging Turnstile site key (set on `web-staging`/`www-staging`). |
+| `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | 🟦 | Staging Turnstile site key (set on `web-staging`). |
 | `ATLAS_CONTACT_RATE_LIMIT_RPM` | ♻️ | Default `5`. |
 
 ### Python tool & OpenAPI/REST datasources
@@ -566,13 +566,13 @@ entry in that file is accounted for here. Legend:
 | ------ | ----- | -------------------- |
 | `ATLAS_PUBLIC_API_URL` | 🟦 | **`https://api.staging.useatlas.dev` — required.** `resolvePublicApiUrl()` builds every OAuth install handler's redirect URI from this; unset ⇒ Slack/Linear/GitHub/Salesforce install routes return 501 ([§2](#2-oauth--provider-apps)). Now a declared `.env.example` entry under **Networking** ([#3096](https://github.com/AtlasDevHQ/atlas/issues/3096), landed). |
 | `ATLAS_PUBLIC_URL` | 🟦 | `https://api.staging.useatlas.dev`. Distinct from `ATLAS_PUBLIC_API_URL` — this one is the action-approval URL base; it is **not** a fallback for the OAuth redirect URI. |
-| `ATLAS_CORS_ORIGIN` | 🟦 | `https://app.staging.useatlas.dev` (+ `www.staging.useatlas.dev` as needed). |
+| `ATLAS_CORS_ORIGIN` | 🟦 | `https://app.staging.useatlas.dev`. (No `www.staging` origin — `www` has no staging deploy.) |
 | `ATLAS_API_URL` | ⚪ | Dev rewrite target — unset in deployed staging. |
 | `ATLAS_PUBLIC_WEB_URL` | 🟦 | `https://app.staging.useatlas.dev`. |
 | `NEXT_PUBLIC_ATLAS_API_URL` | 🟦🏗️ | `https://api.staging.useatlas.dev` (`web-staging`). **Build-time** — the `deploy/web/Dockerfile` already declares this as a build `ARG`; pass it as a Railway build arg, not just a runtime var. |
 | `NEXT_PUBLIC_ATLAS_AUTH_MODE` | 🟦🏗️ | `managed` (`web-staging`). **Build-time** — already a `deploy/web/Dockerfile` build `ARG`. |
 | `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX` | 🟦🏗️ | `atlas-staging` — **must equal** the API's `ATLAS_COOKIE_PREFIX`. **Build-time and load-bearing for prod/staging isolation:** `packages/web/src/proxy.ts` reads it as a static `process.env.NEXT_PUBLIC_*` inlined at build. `deploy/web/Dockerfile` now threads it as a build `ARG` (alongside `NEXT_PUBLIC_ATLAS_API_URL` + `NEXT_PUBLIC_ATLAS_AUTH_MODE`) ([#3096](https://github.com/AtlasDevHQ/atlas/issues/3096), landed) — pass it as a Railway **build arg**, not just a runtime var, or the proxy defaults to `atlas` and treats prod's broadly-scoped cookie as a staging session. |
-| `NEXT_PUBLIC_ATLAS_API_BASE` | 🟦🏗️ | `https://api.staging.useatlas.dev` (`www-staging`). **Build-time, www-only.** `apps/www/src/components/talk-to-sales-form.tsx` posts to `NEXT_PUBLIC_ATLAS_API_BASE ?? "https://api.useatlas.dev"`; unset ⇒ the staging landing page's talk-to-sales form submits to the **prod** API. Now documented in `.env.example` ([#3096](https://github.com/AtlasDevHQ/atlas/issues/3096), landed); `www` builds with NIXPACKS so the Railway service var is inlined at build (no Dockerfile to thread). |
+| `NEXT_PUBLIC_ATLAS_API_BASE` | ⚪🏗️ | **Build-time, www-only — not a staging var.** `www` has no staging deploy (it ships direct from `main` to prod), so there's no staging `www` service to set this on. `apps/www/src/components/talk-to-sales-form.tsx` posts to `NEXT_PUBLIC_ATLAS_API_BASE ?? "https://api.useatlas.dev"`, so on the prod `www` service it can be left unset (defaults to the prod API). Documented in `.env.example` ([#3096](https://github.com/AtlasDevHQ/atlas/issues/3096), landed); `www` builds with NIXPACKS so the Railway service var is inlined at build (no Dockerfile to thread). |
 
 > 🏗️ = **build-time** `NEXT_PUBLIC_*` variable. Next.js inlines these into the
 > client bundle at `bun run build`, so they must be present as build args/ENV
@@ -793,9 +793,9 @@ reference and re-verification; the remaining slice-22 scope is confirming that
 
 **Steps:**
 
-1. **Pre-flight.** Confirm staging is fully green: all three staging services
-   deployed, `GET /api/health` returns `region: "staging"`, and a smoke run
-   passed. Don't cut over onto a broken staging.
+1. **Pre-flight.** Confirm staging is fully green: both staging services
+   (`api-staging`, `web-staging`) deployed, `GET /api/health` returns
+   `region: "staging"`, and a smoke run passed. Don't cut over onto a broken staging.
 2. **Create the `prod` branch at the current prod SHA.** It must point at exactly
    what prod is running right now:
    ```bash
@@ -804,11 +804,12 @@ reference and re-verification; the remaining slice-22 scope is confirming that
    ```
    (Branch protection treats `prod` as a Railway-tracking artifact — no PRs, only
    `/release` advances it.)
-3. **Repoint each prod service to `prod`.** In Railway, for `api`, `api-eu`,
-   `api-apac`, `web`, **and** `www` (www IS gated — CSP/embed/origin changes are
-   exactly the class staging catches): **Settings → Source → Branch** → change
-   `main` to `prod`. Leave `docs` on `main` (direct-from-main, no runtime
-   surface).
+3. **Repoint each gated prod service to `prod`.** In Railway, for `api`, `api-eu`,
+   `api-apac`, and `web`: **Settings → Source → Branch** → change `main` to `prod`.
+   Leave `docs` **and `www`** on `main` (both direct-from-main static `output: export`
+   exports, no runtime surface to gate). (`www` was prod-gated at the original
+   cutover but has since moved to direct-from-`main` like `docs` — a merge touching
+   `apps/www/**` now goes live on www.useatlas.dev immediately.)
 4. **Bridge the gap immediately with the first tag.** Any PR merged on cutover
    day *after* the flip but *before* the first prod tag won't reach prod until a
    tag fires. The first regular tag (`v0.0.1`, cut 2026-05-29) closed this window
@@ -816,7 +817,8 @@ reference and re-verification; the remaining slice-22 scope is confirming that
    single coordinated step. If you ever re-run a cutover, push the next tag in
    train (`/release`) immediately after repointing.
 5. **Verify lineage.** `git rev-parse origin/prod` should equal the tagged SHA,
-   and the five prod services should show a fresh deploy sourced from `prod`.
+   and the four prod services (`api`, `api-eu`, `api-apac`, `web`) should show a
+   fresh deploy sourced from `prod`.
 6. **Update the memory + docs.** Cutover is reflected in the
    `feedback_no_staging_env` / staging-environment memory ("staging shipped —
    see `docs/development/staging-environment.md`"), and `release-process.md`
@@ -826,7 +828,8 @@ reference and re-verification; the remaining slice-22 scope is confirming that
 `prod`-sourced deploy, Railway's per-service health-check rollback restores the
 prior image for that region while the others proceed. To revert the whole
 experiment, repoint the services back to `main` — but only as an emergency; the
-intended end state is all five prod services on `prod`.
+intended end state is all four prod services (`api`, `api-eu`, `api-apac`, `web`)
+on `prod` (with `docs` and `www` direct-from-`main`).
 
 See [release-process.md § Common pitfalls](./release-process.md#common-pitfalls)
 for "I tagged but prod didn't deploy" once cutover is complete.

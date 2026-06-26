@@ -254,6 +254,16 @@ describe("structural rejection", () => {
     expect(RegionPickerItemSchema.safeParse(missing).success).toBe(false);
   });
 
+  test("RegionPickerItemSchema parses the optional apiUrl (ADR-0024 §4)", () => {
+    const withApiUrl = { ...validPicker, apiUrl: "https://api-eu.useatlas.dev" };
+    expect(RegionPickerItemSchema.parse(withApiUrl)).toEqual(withApiUrl);
+  });
+
+  test("RegionPickerItemSchema rejects a malformed apiUrl", () => {
+    const bad = { ...validPicker, apiUrl: "not-a-url" };
+    expect(RegionPickerItemSchema.safeParse(bad).success).toBe(false);
+  });
+
   test("RegionMigrationSchema rejects undefined on nullable field", () => {
     // Zod's `.nullable()` accepts null but not undefined. This guards the
     // route-serialization / web-parse contract — the API emits explicit

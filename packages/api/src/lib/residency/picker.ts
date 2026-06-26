@@ -40,5 +40,9 @@ export function buildAvailableRegions(
 ): RegionPickerItem[] {
   return Object.entries(regions)
     .filter(([, cfg]) => isRegionSelectable(cfg))
-    .map(([id, cfg]) => ({ id, label: cfg.label, isDefault: id === defaultRegion }));
+    // `apiUrl` carries the region→base map to the signup picker so the browser
+    // can point its API base at the chosen region before the first identity
+    // write (ADR-0024 §4). Passed through verbatim — `undefined` when the region
+    // config omits it (single-region / local dev), where no repoint is possible.
+    .map(([id, cfg]) => ({ id, label: cfg.label, isDefault: id === defaultRegion, apiUrl: cfg.apiUrl }));
 }

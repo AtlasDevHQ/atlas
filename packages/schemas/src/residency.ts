@@ -43,6 +43,11 @@ export const RegionPickerItemSchema = z.object({
   id: z.string(),
   label: z.string(),
   isDefault: z.boolean(),
+  // Region's public API base — lets the signup picker repoint the browser at
+  // the chosen region before the first identity write (ADR-0024 §4). Optional:
+  // single-region / local-dev configs omit it. `.url()` rejects a malformed
+  // base before it ever reaches `applyRegionSignal`'s own credential-safe check.
+  apiUrl: z.string().url().optional(),
 }) satisfies z.ZodType<RegionPickerItem>;
 
 export const RegionStatusSchema = z.object({

@@ -29,7 +29,7 @@ import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { importFromDisk } from "@atlas/api/lib/semantic/sync";
 import { setSetting } from "@atlas/api/lib/settings";
 import { ErrorSchema } from "./shared-schemas";
-import { standardAuth, requestContext, type AuthEnv } from "./middleware";
+import { standardAuth, requestContext, withRequestId, type AuthEnv } from "./middleware";
 import {
   DEMO_CONNECTION_ID,
   DEMO_INDUSTRY,
@@ -1116,8 +1116,14 @@ const assignRegionRoute = createRoute({
   },
 });
 
-onboarding.use("/regions", standardAuth);
-onboarding.use("/regions", requestContext);
+// `/regions` is PUBLIC (pre-auth). Under ADR-0024 §4 the signup order is
+// email → region → create-account, so the region picker is rendered *before*
+// any Better Auth session exists — gating this behind `standardAuth` would 401
+// the picker and dead-end every regional signup. The payload is static deploy
+// config (region id/label/apiUrl), carries no PII, and mirrors the already-public
+// `/social-providers`. `withRequestId` still stamps a requestId for log
+// correlation; the handler reads only `RequestContext` (no `orgId`/session).
+onboarding.use("/regions", withRequestId);
 onboarding.use("/assign-region", standardAuth);
 onboarding.use("/assign-region", requestContext);
 

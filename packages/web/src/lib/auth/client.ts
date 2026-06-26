@@ -55,20 +55,19 @@ function getBaseURL(): string {
   return "http://localhost:3000/api/auth";
 }
 
-// Session cookies are HOST-ONLY per region (ADR-0024 §5): a session minted by a
-// regional API (`api-eu.useatlas.dev`) is scoped to that host and accepted by no
-// other region — there is no global cross-region session. `credentials:
-// "include"` (below) lets the browser store and send that host-only cookie on
-// same-site, cross-origin calls from `app.useatlas.dev`.
-//
-// The client is a module-level singleton built at import time against
-// `getBaseURL()` → `getApiUrl()`. At import that resolves to the BUILD-TIME
-// default (`NEXT_PUBLIC_ATLAS_API_URL`); the runtime regional override
-// (`setRegionalApiUrl`) lands after this singleton is constructed, so it does
-// not re-point it. Pointing the auth client at a non-default region's API before
-// the first auth call is the browser-region-awareness slice's job (#3971 — it
-// must resolve the region synchronously, e.g. from the `atlas_region` cookie,
-// before import); this slice lands the API-side host-only cookies it relies on.
+// The auth client targets whatever `getApiUrl()` resolves at import. Under
+// ADR-0024 identity is regional, so for a returning user whose `atlas_region`
+// cookie is already set, api-url.ts restores it on import (before this
+// module-level singleton is built) and the client targets that workspace's own
+// regional API — where its session cookie was minted host-only (§5 — no
+// `Domain=.useatlas.dev`, so the session is non-portable across regions). With
+// no region signal it's the build-time default. `credentials: "include"` (below)
+// lets the browser store and send that host-only cookie on same-site,
+// cross-origin calls from `app.useatlas.dev`. Persisting the selection during
+// signup and consuming the region key on login land in follow-up slices; until
+// then only a cookie left by a prior session takes effect. Region is never
+// discovered post-auth by calling the US API — that circular path is retired
+// (#3971).
 const _authClient = createAuthClient({
   baseURL: getBaseURL(),
   plugins: [

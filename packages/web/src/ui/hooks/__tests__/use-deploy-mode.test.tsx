@@ -28,11 +28,6 @@ mock.module("@/ui/hooks/use-admin-fetch", () => ({
   friendlyError: (e: unknown) => (e instanceof Error ? e.message : String(e)),
 }));
 
-mock.module("@/lib/api-url", () => ({
-  setRegionalApiUrl: () => {},
-  getApiUrl: () => "http://localhost:3001",
-}));
-
 const { useDeployMode } = await import("../use-deploy-mode");
 
 function staged(overrides: Partial<typeof fetchReturn>) {

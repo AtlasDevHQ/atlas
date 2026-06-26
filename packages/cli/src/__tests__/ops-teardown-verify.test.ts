@@ -18,6 +18,8 @@ import {
   MAX_TEARDOWN_TARGETS,
   REGION_DB_ENV,
   checkTeardownGate,
+  isDryRun,
+  checkBlastRadius,
   resolveRegionDbUrl,
   parseTargetEmails,
   isThrowawayVerifyEmail,
@@ -62,39 +64,77 @@ describe("checkTeardownGate", () => {
 // --- resolveRegionDbUrl ---
 
 describe("resolveRegionDbUrl", () => {
-  it("returns --database-url when set, regardless of --region", () => {
+  it("returns --database-url when set (region null), regardless of --region", () => {
     const r = resolveRegionDbUrl(
       ["--database-url", "postgresql://x/y", "--region", "eu"],
       { ATLAS_REGION_EU_DB_URL: "postgresql://eu" } as NodeJS.ProcessEnv,
     );
-    expect(r).toEqual({ url: "postgresql://x/y", source: "--database-url" });
+    expect(r).toEqual({ ok: true, url: "postgresql://x/y", source: "--database-url", region: null });
   });
 
-  it("maps --region us|eu|apac to the matching ATLAS_REGION_*_DB_URL", () => {
+  it("maps --region us|eu|apac to the matching ATLAS_REGION_*_DB_URL with the region key", () => {
     const env = {
       ATLAS_REGION_US_DB_URL: "postgresql://us",
       ATLAS_REGION_EU_DB_URL: "postgresql://eu",
       ATLAS_REGION_APAC_DB_URL: "postgresql://apac",
     } as NodeJS.ProcessEnv;
-    expect(resolveRegionDbUrl(["--region", "us"], env)).toMatchObject({ url: "postgresql://us" });
-    expect(resolveRegionDbUrl(["--region", "eu"], env)).toMatchObject({ url: "postgresql://eu" });
-    expect(resolveRegionDbUrl(["--region", "apac"], env)).toMatchObject({ url: "postgresql://apac" });
+    expect(resolveRegionDbUrl(["--region", "us"], env)).toMatchObject({ ok: true, url: "postgresql://us", region: "us" });
+    expect(resolveRegionDbUrl(["--region", "eu"], env)).toMatchObject({ ok: true, url: "postgresql://eu", region: "eu" });
+    expect(resolveRegionDbUrl(["--region", "apac"], env)).toMatchObject({ ok: true, url: "postgresql://apac", region: "apac" });
   });
 
   it("errors on an unknown region", () => {
     const r = resolveRegionDbUrl(["--region", "moon"], {} as NodeJS.ProcessEnv);
-    expect(r).toHaveProperty("error");
-    expect((r as { error: string }).error).toContain("--region must be one of");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("--region must be one of");
+  });
+
+  it("rejects a prototype-chain key (constructor) — own-key check, not `in`", () => {
+    const r = resolveRegionDbUrl(["--region", "constructor"], {} as NodeJS.ProcessEnv);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("--region must be one of");
   });
 
   it("errors when the region's env var is unset", () => {
     const r = resolveRegionDbUrl(["--region", "eu"], {} as NodeJS.ProcessEnv);
-    expect((r as { error: string }).error).toContain(REGION_DB_ENV.eu);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain(REGION_DB_ENV.eu);
   });
 
   it("errors with no DATABASE_URL fallback when neither flag is given", () => {
     const r = resolveRegionDbUrl([], { DATABASE_URL: "postgresql://wrong" } as NodeJS.ProcessEnv);
-    expect((r as { error: string }).error).toContain("no DATABASE_URL fallback");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("no DATABASE_URL fallback");
+  });
+});
+
+// --- isDryRun / checkBlastRadius (the two execute safety gates) ---
+
+describe("isDryRun", () => {
+  const exec = { [TEARDOWN_OK_ENV]: "1" } as NodeJS.ProcessEnv;
+  it("is true when the gate is not satisfied (preview by default)", () => {
+    expect(isDryRun(["--confirm"], {} as NodeJS.ProcessEnv)).toBe(true);
+    expect(isDryRun([], exec)).toBe(true);
+  });
+  it("is false only when both gate halves are present", () => {
+    expect(isDryRun(["--confirm"], exec)).toBe(false);
+  });
+  it("--dry-run forces preview even when the gate is fully open", () => {
+    expect(isDryRun(["--confirm", "--dry-run"], exec)).toBe(true);
+  });
+});
+
+describe("checkBlastRadius", () => {
+  it("allows any count on dry-run (preview uncapped)", () => {
+    expect(checkBlastRadius(MAX_TEARDOWN_TARGETS + 50, true)).toBeNull();
+  });
+  it("allows up to the cap on execute (boundary)", () => {
+    expect(checkBlastRadius(MAX_TEARDOWN_TARGETS, false)).toBeNull();
+  });
+  it("refuses above the cap on execute (boundary + 1)", () => {
+    const r = checkBlastRadius(MAX_TEARDOWN_TARGETS + 1, false);
+    expect(r).toContain("Refusing to execute");
+    expect(r).toContain(String(MAX_TEARDOWN_TARGETS));
   });
 });
 
@@ -128,6 +168,10 @@ describe("parseTargetEmails", () => {
     expect(() => parseTargetEmails(["--email"])).toThrow(/requires a value/);
     expect(() => parseTargetEmails(["--email", "--confirm"])).toThrow(/requires a value/);
   });
+
+  it("trims whitespace and drops empty parts (trailing comma, spaces)", () => {
+    expect(parseTargetEmails(["--email", "a@x.com, ,b@x.com,"])).toEqual(["a@x.com", "b@x.com"]);
+  });
 });
 
 // --- isThrowawayVerifyEmail / assertTargetsAllowed ---
@@ -141,6 +185,14 @@ describe("isThrowawayVerifyEmail", () => {
     expect(isThrowawayVerifyEmail("ceo@bigcustomer.com")).toBe(false);
     expect(isThrowawayVerifyEmail("not-an-email")).toBe(false);
     expect(isThrowawayVerifyEmail("+leadingplus@x.com")).toBe(true);
+  });
+
+  it("only the local part counts — a `+` in the domain is not a throwaway signal", () => {
+    expect(isThrowawayVerifyEmail("matt@x+.com")).toBe(false);
+  });
+
+  it("rejects an address with an empty local part (at index 0)", () => {
+    expect(isThrowawayVerifyEmail("@x.com")).toBe(false);
   });
 });
 
@@ -239,6 +291,24 @@ describe("resolveVerifyTargets", () => {
       ["org_owned", true],
       ["org_shared", false],
     ]);
+  });
+
+  it("resolves each email independently across a multi-email list", async () => {
+    const q = fakeQuery({
+      "matt+us@useatlas.dev": [row({ userId: "u_us", orgId: "org_us", region: "us" })],
+      "matt+eu@useatlas.dev": [row({ userId: "u_eu", orgId: "org_eu", region: "eu" })],
+    });
+    const targets = await resolveVerifyTargets(q, [
+      "matt+us@useatlas.dev",
+      "matt+eu@useatlas.dev",
+      "ghost+apac@useatlas.dev",
+    ]);
+    expect(targets).toHaveLength(3);
+    expect(targets[0]).toMatchObject({ email: "matt+us@useatlas.dev", found: true });
+    expect(targets[0]!.orgs[0]!.orgId).toBe("org_us");
+    expect(targets[1]).toMatchObject({ email: "matt+eu@useatlas.dev", found: true });
+    expect(targets[1]!.orgs[0]!.orgId).toBe("org_eu");
+    expect(targets[2]).toMatchObject({ email: "ghost+apac@useatlas.dev", found: false, orgs: [] });
   });
 });
 
@@ -345,7 +415,7 @@ describe("teardownTargets", () => {
     expect(report.targets[0]!.orgs[0]!.status).toBe("skipped-not-owner");
   });
 
-  it("surfaces Stripe teardown warnings on the org result", async () => {
+  it("surfaces Stripe teardown warnings on the org result and counts them in totals", async () => {
     const deps: TeardownDeps = {
       purgeStripe: async () => okStripe({ warnings: ["Failed to delete Stripe customer cus_1: boom"] }),
       softDelete: async () => true,
@@ -353,6 +423,20 @@ describe("teardownTargets", () => {
     };
     const report = await teardownTargets([target({ orgs: [ownedOrg({ stripeCustomerId: "cus_1" })] })], deps, false);
     expect(report.targets[0]!.orgs[0]!.warnings).toContain("Failed to delete Stripe customer cus_1: boom");
+    // A left-behind billable customer is a non-clean outcome — counted so the
+    // handler can exit non-zero even though the row purge (status "torn-down") ran.
+    expect(report.targets[0]!.orgs[0]!.status).toBe("torn-down");
+    expect(report.totals.stripeWarnings).toBe(1);
+  });
+
+  it("warns (not silently) when soft-delete affects 0 rows", async () => {
+    const deps: TeardownDeps = {
+      purgeStripe: async () => okStripe(),
+      softDelete: async () => false, // org concurrently reactivated/removed
+      hardDelete: async () => 3,
+    };
+    const report = await teardownTargets([target({ orgs: [ownedOrg()] })], deps, false);
+    expect(report.targets[0]!.orgs[0]!.warnings.some((w) => w.includes("Soft-delete affected 0 rows"))).toBe(true);
   });
 
   it("records a per-org failure and continues to the next org", async () => {

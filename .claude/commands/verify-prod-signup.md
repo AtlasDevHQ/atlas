@@ -91,7 +91,9 @@ await fetch('https://app.useatlas.dev/api/login/resolve-region', {
   method: 'POST', headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ email: `matt+${region}@useatlas.dev` }),
 }).then(r => r.json())
-// → { outcome: "single", region: "<region>", apiUrl: "https://api-<region>.useatlas.dev" }
+// → { outcome: "single", region: "<region>", apiUrl: EDGES[region] }
+//   (apiUrl is the region's edge: api-eu/api-apac for eu/apac, but the bare
+//    api.useatlas.dev for us — it has no `-us` suffix.)
 
 // 6. MULTI-REGION CHOOSER (ADR-0024 §6 — same email = two accounts). Requires a
 //    SHARED email signed up in ≥2 regions: do an extra signup of matt+multi@useatlas.dev

@@ -9,7 +9,7 @@
  * defect mislocated into the US DB.
  *
  * Why reuse, not re-implement: the per-org row set is large and grows (see
- * `hardDeleteWorkspace` in db/internal.ts — ~40 tables). Re-implementing that
+ * `hardDeleteWorkspace` in db/internal.ts — 50+ tables). Re-implementing that
  * cascade here would silently drift the moment a new org-scoped table lands,
  * leaving secrets/rows behind on a "torn-down" account. So this command binds
  * the internal-DB pool to the chosen region's DB and delegates to the same
@@ -81,44 +81,62 @@ export function checkTeardownGate(args: string[], env: NodeJS.ProcessEnv): strin
   return null;
 }
 
-/** Resolved region DB target — the URL plus a label for log lines. */
-export interface ResolvedRegionDb {
-  url: string;
-  /** e.g. "--database-url" or "region eu (ATLAS_REGION_EU_DB_URL)". */
-  source: string;
+/**
+ * Whether this invocation is a DRY RUN (preview, no deletes). True unless the
+ * execute double-gate is satisfied — and `--dry-run` always forces preview
+ * even when the gate is open, so an operator can belt-and-braces a gated run.
+ */
+export function isDryRun(args: string[], env: NodeJS.ProcessEnv): boolean {
+  return checkTeardownGate(args, env) !== null || args.includes("--dry-run");
 }
+
+/**
+ * Resolved region DB target. Tagged union so the handler narrows on `ok`
+ * rather than probing for an `error` key. `region` is the selected region key
+ * when `--region` was used, or `null` for a raw `--database-url` (whose region
+ * we can't know — see the note on the region label in `handleTeardownVerifyAccounts`).
+ */
+export type RegionDbResolution =
+  | { ok: true; url: string; source: string; region: TeardownRegion | null }
+  | { ok: false; error: string };
 
 /**
  * Resolve which region DB to operate on. Precedence: an explicit
  * `--database-url` wins (escape hatch for a non-standard URL); otherwise
  * `--region <us|eu|apac>` maps to that region's `ATLAS_REGION_*_DB_URL`.
- * Returns an error string (never throws) when neither is usable — there is
- * deliberately NO fallback to a bare DATABASE_URL, so an operator can never
+ * Returns `{ ok: false, error }` (never throws) when neither is usable — there
+ * is deliberately NO fallback to a bare DATABASE_URL, so an operator can never
  * tear down the wrong DB by forgetting the flag.
  */
 export function resolveRegionDbUrl(
   args: string[],
   env: NodeJS.ProcessEnv,
-): ResolvedRegionDb | { error: string } {
+): RegionDbResolution {
   const explicit = getFlag(args, "--database-url");
-  if (explicit) return { url: explicit, source: "--database-url" };
+  if (explicit) return { ok: true, url: explicit, source: "--database-url", region: null };
 
   const region = getFlag(args, "--region");
   if (region) {
-    if (!(region in REGION_DB_ENV)) {
+    // Own-key check (not `in`, which walks the prototype chain and would let
+    // `--region constructor` slip past) — keeps the runtime whitelist locked
+    // to the `TeardownRegion` keyof so the cast below is provably sound.
+    if (!Object.hasOwn(REGION_DB_ENV, region)) {
       return {
+        ok: false,
         error: `--region must be one of: ${Object.keys(REGION_DB_ENV).join(", ")} (got "${region}")`,
       };
     }
-    const envVar = REGION_DB_ENV[region as TeardownRegion];
+    const regionKey = region as TeardownRegion;
+    const envVar = REGION_DB_ENV[regionKey];
     const url = env[envVar];
     if (!url) {
-      return { error: `--region ${region} requires ${envVar} to be set in the environment.` };
+      return { ok: false, error: `--region ${region} requires ${envVar} to be set in the environment.` };
     }
-    return { url, source: `region ${region} (${envVar})` };
+    return { ok: true, url, source: `region ${region} (${envVar})`, region: regionKey };
   }
 
   return {
+    ok: false,
     error:
       "No region DB selected. Pass --region <us|eu|apac> (resolves ATLAS_REGION_<R>_DB_URL) " +
       "or --database-url <url>. There is no DATABASE_URL fallback — pick the region explicitly.",
@@ -209,6 +227,23 @@ export interface VerifyTarget {
  */
 export function countOwnedOrgs(targets: VerifyTarget[]): number {
   return targets.reduce((n, t) => n + t.orgs.filter((o) => o.isOwner).length, 0);
+}
+
+/**
+ * The blast-radius guard: refuse to EXECUTE against more owned workspaces than
+ * {@link MAX_TEARDOWN_TARGETS} — a verification run creates one account per
+ * region, so a larger set is almost certainly a too-broad `--email` list or a
+ * wrong DB where one address matches many orgs. Returns a refusal reason, or
+ * null when the run may proceed. Dry-run is always uncapped (preview anything).
+ */
+export function checkBlastRadius(ownedOrgCount: number, dryRun: boolean): string | null {
+  if (!dryRun && ownedOrgCount > MAX_TEARDOWN_TARGETS) {
+    return (
+      `Refusing to execute: ${ownedOrgCount} owned workspaces resolved (> ${MAX_TEARDOWN_TARGETS}). ` +
+      "This looks too broad for a verification cleanup — narrow --email or re-check the target DB."
+    );
+  }
+  return null;
 }
 
 /** Minimal row-returning query surface — `internalQuery` or a test fake. */
@@ -315,6 +350,10 @@ export interface TeardownReport {
     orgsWouldTearDown: number;
     rowsPurged: number;
     errors: number;
+    /** Orgs whose DB cascade succeeded but whose Stripe teardown left a
+     *  warning (e.g. a customer that couldn't be deleted) — a non-clean
+     *  outcome the handler exits non-zero on, even though the row purge ran. */
+    stripeWarnings: number;
   };
 }
 
@@ -343,7 +382,13 @@ export async function teardownTargets(
   dryRun: boolean,
 ): Promise<TeardownReport> {
   const results: TargetTeardownResult[] = [];
-  const totals = { orgsTornDown: 0, orgsWouldTearDown: 0, rowsPurged: 0, errors: 0 };
+  const totals = {
+    orgsTornDown: 0,
+    orgsWouldTearDown: 0,
+    rowsPurged: 0,
+    errors: 0,
+    stripeWarnings: 0,
+  };
 
   for (const target of targets) {
     const targetWarnings: string[] = [];
@@ -392,7 +437,17 @@ export async function teardownTargets(
 
       try {
         const stripe = await deps.purgeStripe(org.orgId, org.stripeCustomerId);
-        await deps.softDelete(org.orgId);
+        // softDelete returns false when no row matched (e.g. the org was
+        // concurrently reactivated/removed between resolve and execute). Surface
+        // that as the cause rather than letting hardDelete throw the downstream
+        // "not in deleted status" error with a misattributed message.
+        const softDeleted = await deps.softDelete(org.orgId);
+        const warnings = [...stripe.warnings];
+        if (!softDeleted) {
+          warnings.push(
+            "Soft-delete affected 0 rows (org concurrently reactivated or removed?) — hard-delete may abort.",
+          );
+        }
         const rowsPurged = await deps.hardDelete(org.orgId);
         orgResults.push({
           orgId: org.orgId,
@@ -402,10 +457,11 @@ export async function teardownTargets(
           status: "torn-down",
           rowsPurged,
           stripeActions: stripe.actions,
-          warnings: stripe.warnings,
+          warnings,
         });
         totals.orgsTornDown += 1;
         totals.rowsPurged += rowsPurged;
+        if (stripe.warnings.length > 0) totals.stripeWarnings += 1;
       } catch (err) {
         totals.errors += 1;
         orgResults.push({
@@ -466,15 +522,15 @@ export function printTeardownReport(report: TeardownReport): void {
     `\n[ops:teardown-verify-accounts] ${report.dryRun ? "would tear down" : "tore down"} ` +
       `${report.dryRun ? t.orgsWouldTearDown : t.orgsTornDown} workspace(s)` +
       (report.dryRun ? "" : `, ${t.rowsPurged} rows purged`) +
+      (t.stripeWarnings > 0 ? `, ${t.stripeWarnings} Stripe warning(s)` : "") +
       (t.errors > 0 ? `, ${t.errors} error(s)` : ""),
   );
 }
 
 /** Wire the command: resolve gate/region/targets, bind the pool, run, report. */
 export async function handleTeardownVerifyAccounts(args: string[]): Promise<void> {
-  // DRY RUN unless the double-gate is satisfied AND --dry-run was not forced.
-  const gateReason = checkTeardownGate(args, process.env);
-  const dryRun = gateReason !== null || args.includes("--dry-run");
+  // DRY RUN unless the execute double-gate is satisfied AND --dry-run wasn't forced.
+  const dryRun = isDryRun(args, process.env);
   const force = args.includes("--force");
 
   let emails: string[];
@@ -489,16 +545,22 @@ export async function handleTeardownVerifyAccounts(args: string[]): Promise<void
   }
 
   const resolved = resolveRegionDbUrl(args, process.env);
-  if ("error" in resolved) {
+  if (!resolved.ok) {
     console.error(`[ops:teardown-verify-accounts] ${resolved.error}`);
     process.exit(1);
   }
 
-  // Bind the internal-DB pool to the chosen region DB. The reused SSOT
-  // teardown functions all operate on the pool that getInternalDB() lazily
-  // initializes from DATABASE_URL; nothing in this code path touches the pool
-  // before this assignment, so it binds to the region we resolved (one-shot
-  // CLI process). Set after resolution so a bad target never rebinds it.
+  // Bind the internal-DB pool to the chosen region DB. The reused SSOT teardown
+  // functions all operate on the pool getInternalDB() lazily initializes from
+  // DATABASE_URL. Close any pre-bound pool FIRST so this rebind is authoritative
+  // rather than a silent no-op against a previously-bound DB — the wrong-DB
+  // footgun would otherwise delete from the wrong region. (In the normal
+  // one-shot CLI path no pool exists yet, so this is a cheap no-op.)
+  await closeInternalDB().catch(() => {
+    // intentionally ignored: best-effort discard of any pre-bound pool before
+    // rebinding; a close failure here doesn't change which URL the next
+    // getInternalDB() binds to.
+  });
   process.env.DATABASE_URL = resolved.url;
   console.log(
     `[ops:teardown-verify-accounts] target DB: ${resolved.source} · ${dryRun ? "DRY RUN" : "EXECUTE"} · ${emails.length} email(s)`,
@@ -507,13 +569,16 @@ export async function handleTeardownVerifyAccounts(args: string[]): Promise<void
   try {
     const targets = await resolveVerifyTargets(internalQuery, emails);
 
+    // Deliberately NO "org.region must equal --region" guard: the stamped
+    // organization.region label is exactly the untrustworthy #3967 artifact this
+    // tool cleans up (an EU/APAC label on a row mislocated in the US DB). The
+    // physical DB selected by --region/--database-url is the ground truth; the
+    // label is surfaced in the report as mislocation evidence, never gated on.
+
     // Blast-radius guard — only on EXECUTE. A preview can list any number.
-    const ownedOrgCount = countOwnedOrgs(targets);
-    if (!dryRun && ownedOrgCount > MAX_TEARDOWN_TARGETS) {
-      console.error(
-        `[ops:teardown-verify-accounts] Refusing to execute: ${ownedOrgCount} owned workspaces resolved ` +
-          `(> ${MAX_TEARDOWN_TARGETS}). This looks too broad for a verification cleanup — narrow --email or re-check the target DB.`,
-      );
+    const blastRefusal = checkBlastRadius(countOwnedOrgs(targets), dryRun);
+    if (blastRefusal) {
+      console.error(`[ops:teardown-verify-accounts] ${blastRefusal}`);
       process.exitCode = 1;
       return;
     }
@@ -528,7 +593,11 @@ export async function handleTeardownVerifyAccounts(args: string[]): Promise<void
     }, dryRun);
 
     printTeardownReport(report);
-    if (report.totals.errors > 0) process.exitCode = 1;
+    // Exit non-zero on a row-purge error OR a left-behind Stripe customer — a
+    // scripted cleanup must fail loudly rather than report a clean "success"
+    // while a billable Stripe linkage survives (it's enqueued for durable retry,
+    // but the operator/CI should still know it didn't fully complete).
+    if (report.totals.errors > 0 || report.totals.stripeWarnings > 0) process.exitCode = 1;
   } catch (err) {
     console.error(
       `[ops:teardown-verify-accounts] failed: ${err instanceof Error ? err.message : String(err)}`,

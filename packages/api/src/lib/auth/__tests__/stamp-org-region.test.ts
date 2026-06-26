@@ -133,7 +133,7 @@ describe("stampOrgRegion — body", () => {
     expect(queries).toHaveLength(0);
   });
 
-  it("does not throw when the region UPDATE fails — failure is logged, signup continues", async () => {
+  it("does not throw when the region UPDATE fails — signup continues (failure is swallowed + logged)", async () => {
     process.env.ATLAS_API_REGION = "us";
     const { pool } = makeMockPool({ updateThrows: true });
     _resetPool(pool);

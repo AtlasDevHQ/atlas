@@ -727,8 +727,9 @@ export class ConnectionRegistry {
 
   private _orgKey(orgId: string, connectionId: string, region?: string): string {
     // orgId and region must not contain ':' (they are the first/last segments).
-    // connectionId CAN contain ':' (e.g. "region:us-east-1") because _parseOrgKey
-    // uses indexOf/lastIndexOf to extract it from the middle segment.
+    // connectionId CAN structurally contain ':' because _parseOrgKey splits on
+    // the FIRST and LAST separator (indexOf/lastIndexOf), tolerating colons in
+    // the middle segment; orgId and region (the outer segments) may not.
     const regionStr = region ?? "default";
     if (orgId.includes(":")) {
       throw new Error(`orgId must not contain ':' — got orgId="${orgId}"`);
@@ -1274,6 +1275,12 @@ export class ConnectionRegistry {
    * The prefix fallback resolves a pool when the caller knows only the original
    * connectionId (e.g. "default") but the entry is keyed with a non-default
    * region segment in `_orgKey` (`orgId:connectionId:<region>`).
+   *
+   * The region-segment machinery is currently dormant: post-ADR-0024 ("the
+   * process is the region") no caller supplies a `region` argument, so the
+   * segment is always "default" and priority #2 is unreachable in practice. It
+   * is retained for forward-compat — the prefix scan is harmless when no region
+   * pools exist and still serves priorities #1 and #3.
    *
    * Prefix scan priority:
    * 1. Exact key match (orgId + connectionId + default region)

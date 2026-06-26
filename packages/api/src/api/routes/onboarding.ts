@@ -1183,12 +1183,12 @@ onboarding.openapi(
       }
 
       // The body's `region` stays required + validated by the route contract
-      // (the signup picker sends it; the validation hook below 422s a missing
-      // one) but the handler ignores its value: under regional identity
-      // (ADR-0024) the process IS the region, so a workspace created on a
-      // regional API is in that region by definition. The org is stamped with
-      // the ambient region at creation (`stampOrgRegion`); this step is reduced
-      // to confirming that stamp — idempotent (`setWorkspaceRegion` writes only
+      // (the signup picker sends it; the validation hook 422s a missing one)
+      // but the handler ignores its value: under regional identity (ADR-0024)
+      // the process IS the region, so a workspace created on a regional API is
+      // in that region by definition. The org is stamped with the ambient
+      // region at creation (`stampOrgRegion`); this step is reduced to
+      // confirming that stamp — idempotent (`setWorkspaceRegion` writes only
       // when still NULL) — and returning it, rather than recording a per-pick
       // region that the process can't actually honor.
       const mod = yield* ResidencyResolver;
@@ -1196,8 +1196,12 @@ onboarding.openapi(
         return c.json({ error: "not_available", message: "Data residency is not available in this deployment.", requestId }, 404);
       }
 
+      // Best-effort re-stamp in case the creation-time hook didn't fire; the
+      // authoritative read is `getWorkspaceRegionAssignment` below. Guarded on
+      // `hasInternalDB()` so a missing internal DB surfaces as the resolver's
+      // typed `no_internal_db` (503) rather than a rejected-promise defect.
       const apiRegion = getApiRegion();
-      if (apiRegion) {
+      if (apiRegion && hasInternalDB()) {
         yield* Effect.promise(() => setWorkspaceRegion(orgId, apiRegion));
       }
 

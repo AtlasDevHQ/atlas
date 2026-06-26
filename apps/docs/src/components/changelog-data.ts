@@ -20,6 +20,19 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.31",
+    title: "Regional Residency Routing",
+    date: "2026-06-26",
+    summary:
+      "Data residency now isolates the entire workspace — identity included. When you choose Europe or Asia Pacific at signup, your account and your data are created in and served from that region, and the US endpoint genuinely rejects a non-US workspace — no cross-region leakage. This closes a gap where EU/APAC selections were quietly served from the US. It is built on the principle that each region is its own independent stack (ADR-0024, \"the process is the region\"): host-only per-region sessions, region chosen before the first account write, and a returning-user login that routes you to your region without any global store of who lives where.",
+    highlights: [
+      "EU/APAC signups are provisioned in and served from the selected region; api.useatlas.dev returns 401 for a non-US workspace — no cross-region data leakage (#3967)",
+      "Host-only per-region session cookies + cross-origin CORS — a regional session never transits another region's infrastructure (#3970)",
+      "Signup chooses your region before the first identity write, so your account lands in-region from the start (#3972)",
+      "Returning-user login resolves your region via a stateless fan-out front-door with a cookie fast-path — no global email→region store (#3973)",
+    ],
+  },
+  {
     version: "v0.0.30",
     title: "Landing Blog Refresh",
     date: "2026-06-26",

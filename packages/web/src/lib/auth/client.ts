@@ -53,11 +53,16 @@ function getBaseURL(): string {
   return "http://localhost:3000/api/auth";
 }
 
-// Auth always authenticates against the global API (not the regional endpoint).
-// The client is a module-level singleton created at import time, before
-// setRegionalApiUrl() is called. This is intentional: session cookies and
-// auth operations stay on the global endpoint; only data-plane calls (chat,
-// admin fetches) switch to the regional API after settings load.
+// The auth client targets whatever `getApiUrl()` resolves at import. Under
+// ADR-0024 identity is regional, so for a returning user whose `atlas_region`
+// cookie is already set, api-url.ts restores it on import (before this
+// module-level singleton is built) and the client targets that workspace's own
+// regional API — where its session cookie was minted host-only (§5). With no
+// region signal it's the build-time default. Persisting the selection during
+// signup and consuming the region key on login land in follow-up slices; until
+// then only a cookie left by a prior session takes effect. Region is never
+// discovered post-auth by calling the US API — that circular path is retired
+// (#3971).
 const _authClient = createAuthClient({
   baseURL: getBaseURL(),
   plugins: [

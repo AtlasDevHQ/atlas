@@ -2,14 +2,12 @@
 
 import { useEffect } from "react";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
-import { setRegionalApiUrl, getApiUrl } from "@/lib/api-url";
 import type { DeployMode } from "@/ui/lib/types";
 
 interface SettingsResponse {
   settings: unknown[];
   manageable: boolean;
   deployMode: DeployMode;
-  regionApiUrl?: string;
 }
 
 /**
@@ -35,8 +33,11 @@ interface SettingsResponse {
  *   is `true` or `error` is non-null — a guessed mode never decides what
  *   gets persisted.
  *
- * Also applies the regional API URL override when the settings response
- * includes a `regionApiUrl` (tier-2 data residency).
+ * This hook does **not** resolve the regional API base. Under ADR-0024 the
+ * region is known pre-auth (a signup selection or the `atlas_region` cookie,
+ * see `@/lib/api-url`); the web client no longer reads `regionApiUrl` off the
+ * US admin-settings response to discover its regional host (#3971). (The server
+ * still returns that field for now — vestigial, pending a follow-up removal.)
  */
 function guessDeployModeFromHost(): DeployMode {
   if (typeof window === "undefined") return "self-hosted";
@@ -74,18 +75,6 @@ export function useDeployMode(opts?: { enabled?: boolean }): {
       console.warn("useDeployMode: settings fetch failed — using hostname-based deploy mode guess:", error);
     }
   }, [error]);
-
-  // Apply or clear regional API URL override based on settings response
-  useEffect(() => {
-    if (!data) return;
-    if (data.regionApiUrl) {
-      if (data.regionApiUrl !== getApiUrl()) {
-        setRegionalApiUrl(data.regionApiUrl);
-      }
-    } else {
-      setRegionalApiUrl(null);
-    }
-  }, [data?.regionApiUrl]);
 
   return {
     deployMode: data?.deployMode ?? guessDeployModeFromHost(),

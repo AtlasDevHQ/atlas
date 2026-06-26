@@ -96,7 +96,6 @@ function authDeps(plugins: ReturnType<typeof buildPlugins>) {
     secret: parseAuthSecret("test-secret-at-least-32-characters-long"),
     baseURL: undefined,
     database: undefined,
-    cookieDomain: undefined,
     cookiePrefix: "atlas",
     socialProviders: undefined,
     plugins,

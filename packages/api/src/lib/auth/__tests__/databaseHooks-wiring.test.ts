@@ -186,7 +186,6 @@ function authDeps(plugins: ReturnType<typeof buildPlugins>) {
     // undefined → Better Auth's in-memory adapter. `hasInternalDB()` is
     // driven at runtime by DATABASE_URL + the injected pool, not by this.
     database: undefined,
-    cookieDomain: undefined,
     cookiePrefix: "atlas",
     socialProviders: undefined,
     plugins,

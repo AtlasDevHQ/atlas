@@ -1,5 +1,5 @@
 /**
- * Region-derivation integration (#3706).
+ * Region-derivation integration (#3706, extended #3970).
  *
  * Walks the whole chain that used to require per-service env stamping —
  * `getWebOrigin()` → the `ATLAS_CORS_ORIGIN` default (`resolveCorsOrigin`) and
@@ -7,6 +7,12 @@
  * `ATLAS_API_REGION` + the residency map. Locks the derived CORS origin and
  * rpID for each SaaS region so a refactor can't silently shift the cookie CORS
  * allowlist or invalidate enrolled passkeys.
+ *
+ * #3970 extends the same "process is the region" derivation to Better Auth's
+ * own `baseURL`: `deriveRegionApiUrl()` returns the issuing regional API host
+ * (the value `resolveAuthBaseURL` falls back to when BETTER_AUTH_URL is unset),
+ * so each regional Better Auth instance is bound to its own host without per-
+ * service env stamping.
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
@@ -35,6 +41,7 @@ mock.module("@atlas/api/lib/settings", () => ({
 const { getWebOrigin } = await import("@atlas/api/lib/web-origin");
 const { resolveCorsOrigin } = await import("@atlas/api/lib/cors");
 const { resolvePasskeyRpId } = await import("@atlas/api/lib/auth/rpid");
+const { deriveRegionApiUrl } = await import("@atlas/api/lib/residency/origins");
 
 const PROD_RESIDENCY = {
   defaultRegion: "us",
@@ -65,19 +72,32 @@ describe("region-derived web origin → CORS default + passkey rpID", () => {
 
   // Every prod region collapses onto the single app.useatlas.dev web service;
   // staging keeps its own. rpID is the web origin's host (the value enrolled
-  // passkeys are bound to — must NOT drift).
+  // passkeys are bound to — must NOT drift). The Better Auth baseURL, by
+  // contrast, is the issuing region's OWN API host (#3970) — that is exactly
+  // what makes the minted cookie host-only to that region.
   it.each([
-    ["us", "https://app.useatlas.dev", "app.useatlas.dev"],
-    ["eu", "https://app.useatlas.dev", "app.useatlas.dev"],
-    ["apac", "https://app.useatlas.dev", "app.useatlas.dev"],
-    ["staging", "https://app.staging.useatlas.dev", "app.staging.useatlas.dev"],
-  ] as const)("region %s derives CORS origin %s and rpID %s", (region, expectedOrigin, expectedRpId) => {
-    process.env.ATLAS_API_REGION = region;
+    ["us", "https://app.useatlas.dev", "app.useatlas.dev", "https://api.useatlas.dev"],
+    ["eu", "https://app.useatlas.dev", "app.useatlas.dev", "https://api-eu.useatlas.dev"],
+    ["apac", "https://app.useatlas.dev", "app.useatlas.dev", "https://api-apac.useatlas.dev"],
+    [
+      "staging",
+      "https://app.staging.useatlas.dev",
+      "app.staging.useatlas.dev",
+      "https://api.staging.useatlas.dev",
+    ],
+  ] as const)(
+    "region %s derives CORS origin %s, rpID %s, auth baseURL %s",
+    (region, expectedOrigin, expectedRpId, expectedApiUrl) => {
+      process.env.ATLAS_API_REGION = region;
 
-    expect(getWebOrigin()).toBe(expectedOrigin);
-    expect(resolveCorsOrigin()).toBe(expectedOrigin);
-    expect(resolvePasskeyRpId(process.env, getWebOrigin())).toBe(expectedRpId);
-  });
+      expect(getWebOrigin()).toBe(expectedOrigin);
+      expect(resolveCorsOrigin()).toBe(expectedOrigin);
+      expect(resolvePasskeyRpId(process.env, getWebOrigin())).toBe(expectedRpId);
+      // The region's own API host — fed to resolveAuthBaseURL as the
+      // BETTER_AUTH_URL fallback so each regional process self-binds.
+      expect(deriveRegionApiUrl()).toBe(expectedApiUrl);
+    },
+  );
 
   it("explicit ATLAS_RPID overrides the region-derived value", () => {
     process.env.ATLAS_API_REGION = "us";
@@ -90,5 +110,8 @@ describe("region-derived web origin → CORS default + passkey rpID", () => {
     expect(getWebOrigin()).toBeNull();
     expect(resolveCorsOrigin()).toBe("*");
     expect(resolvePasskeyRpId(process.env, getWebOrigin())).toBe("app.useatlas.dev");
+    // No residency map → no derived API host; resolveAuthBaseURL then falls
+    // through to BETTER_AUTH_URL / Vercel / Better Auth's own auto-detect.
+    expect(deriveRegionApiUrl()).toBeNull();
   });
 });

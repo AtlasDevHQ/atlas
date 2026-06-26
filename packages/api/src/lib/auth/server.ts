@@ -45,6 +45,7 @@ import {
   resolveCookiePrefix,
 } from "@atlas/api/lib/env-profile";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
+import { deriveRegionApiUrl } from "@atlas/api/lib/residency/origins";
 // rpID resolution lives in its own pure module so `startup.ts` can validate it
 // eagerly without importing better-auth (#3045). Re-exported here so the auth
 // surface (and its tests) keep a single import site.
@@ -862,95 +863,92 @@ export function buildEmailAndPasswordConfig(deps: BuildEmailAndPasswordConfigDep
  * reopens F-06. The tests assert this list is exactly the one custom
  * header we set in `withClientIpHeader`.
  *
- * `cookieDomain` is optional; when present the returned block also sets
- * the shared-subdomain cookie attribute for SaaS deployments.
+ * Session cookies are deliberately **host-only** (ADR-0024 §5): we set NO
+ * `defaultCookieAttributes.domain`, so Better Auth scopes the cookie to the
+ * issuing host (the resolved `baseURL` — `BETTER_AUTH_URL`, else the
+ * region-derived API host) only. Each region's API mints a cookie that
+ * is sent *only* back to that region's host — never to another region's
+ * (`api.useatlas.dev` ↔ `api-eu.useatlas.dev`), which is what makes a regional
+ * session non-portable across regions. `app.useatlas.dev` still authenticates
+ * because it shares the registrable domain `useatlas.dev` (same-site,
+ * cross-origin), so the host-only `SameSite=Lax` cookie rides credentialed
+ * fetches with the CORS allowlist. A parent-domain `.useatlas.dev` cookie would
+ * leak the token to every regional host and is rejected. Better Auth's cookie
+ * defaults (SameSite=Lax, Secure on an https baseURL, httpOnly) stand
+ * unmodified — we only withhold the domain.
  *
  * `cookiePrefix` names the session cookie (`${cookiePrefix}.session_token`)
  * and is resolved per deployment env (`resolveCookiePrefix`). It MUST match
  * the web proxy's `getSessionCookie({ cookiePrefix })` read — see
  * {@link import("@atlas/api/lib/env-profile").EnvProfile.cookiePrefix}.
  */
-export function buildAdvancedConfig(
-  cookieDomain: string | undefined,
-  cookiePrefix: string,
-): {
+export function buildAdvancedConfig(cookiePrefix: string): {
   ipAddress: { ipAddressHeaders: string[] };
   cookiePrefix: string;
-  defaultCookieAttributes?: { domain: string };
 } {
   return {
     ipAddress: {
       ipAddressHeaders: ["x-atlas-client-ip"],
     },
     cookiePrefix,
-    ...(cookieDomain
-      ? { defaultCookieAttributes: { domain: `.${cookieDomain}` } }
-      : {}),
   };
 }
 
 /**
- * Derive the parent domain for cross-subdomain session cookies, scoped as
- * tightly as the deployment allows.
+ * Resolve Better Auth's `baseURL` — the issuing host for the regional API.
  *
- * The cookie must be valid for both the API host (`BETTER_AUTH_URL`) and the
- * web app host (`webOrigin`), so the correct domain is the **longest dotted
- * suffix common to the two** — e.g.
- *   - prod:    `api.useatlas.dev` + `app.useatlas.dev` → `useatlas.dev`
- *   - staging: `api.staging.useatlas.dev` + `app.staging.useatlas.dev`
- *              → `staging.useatlas.dev` (NOT `useatlas.dev`)
+ * Per ADR-0024 §2 ("the process is the region"), each regional API process is
+ * bound to its own host, and the host-only session cookie it mints (see
+ * {@link buildAdvancedConfig}) is scoped to exactly this `baseURL`. Resolution
+ * order:
+ *   1. An explicit `BETTER_AUTH_URL` always wins (operator override / dev).
+ *   2. `regionApiUrl` — the region-derived API host (`deriveRegionApiUrl()`,
+ *      from `ATLAS_API_REGION` + the residency map). This is the "process is the
+ *      region" fallback, so SaaS need not stamp `BETTER_AUTH_URL` on each
+ *      regional service.
+ *   3. Vercel's auto-detected production/preview URL (standalone template).
+ *   4. `undefined` — Better Auth falls back to its own request-host auto-detect
+ *      (self-hosted single-origin), at the cost of a cold-start warning.
  *
- * `webOrigin` is the single canonical app origin (`getWebOrigin()` — the first
- * `ATLAS_CORS_ORIGIN` entry). We deliberately do NOT fold in the rest of the
- * CORS allowlist: an unrelated allowlisted origin (an embed/partner site on a
- * different registrable domain) would otherwise collapse the common suffix to
- * nothing, drop the cookie domain, and scope the session cookie to the API
- * host only — so the app host can't see it after login and users stick at
- * `/login`.
- *
- * The previous `host.split(".").slice(-2)` heuristic always collapsed to the
- * last two labels, so staging resolved to `useatlas.dev` — the same slot as
- * prod — which is exactly the cross-env cookie bleed this fixes.
- *
- * Returns `undefined` (host-only cookies) when either input is absent
- * (single-origin / self-hosted), when a URL is malformed, when the common
- * suffix is fewer than 2 labels (different sites), or when it looks like a
- * bare IPv4 (cookie domains can't be IPs).
- *
- * NOTE: there is no public-suffix-list awareness. Two *different* registrable
- * domains under a 2-label public suffix (`a.co.uk` + `b.co.uk`) resolve to
- * `co.uk`; browsers reject that via the PSL so the cookie simply fails to set
- * (no leak), and Atlas's API + app are always the same registrable domain.
- * Same-tenant multi-label TLDs (`api.acme.co.uk` + `app.acme.co.uk` →
- * `acme.co.uk`) work correctly.
+ * `regionApiUrl` is passed in (not read here) so this stays a pure resolver the
+ * unit tests can drive without standing up the config/residency map.
  */
-export function deriveCookieDomain(
-  authUrl: string | undefined,
-  webOrigin: string | undefined,
+export function resolveAuthBaseURL(
+  env: NodeJS.ProcessEnv,
+  regionApiUrl: string | null,
 ): string | undefined {
-  if (!authUrl || !webOrigin) return undefined;
+  return (
+    env.BETTER_AUTH_URL ||
+    regionApiUrl ||
+    (env.VERCEL_PROJECT_PRODUCTION_URL
+      ? `https://${env.VERCEL_PROJECT_PRODUCTION_URL}`
+      : env.VERCEL_URL
+        ? `https://${env.VERCEL_URL}`
+        : undefined)
+  );
+}
 
-  let authHost: string;
-  let webHost: string;
-  try {
-    authHost = new URL(authUrl).hostname;
-    webHost = new URL(webOrigin).hostname;
-  } catch {
-    return undefined;
-  }
-
-  // Longest common dotted suffix of the two hosts, compared from the right.
-  const a = authHost.split(".").reverse();
-  const b = webHost.split(".").reverse();
-  const common: string[] = [];
-  const len = Math.min(a.length, b.length);
-  for (let i = 0; i < len && a[i] === b[i]; i++) {
-    common.push(a[i]);
-  }
-  if (common.length < 2) return undefined;
-  if (common.every((label) => /^\d+$/.test(label))) return undefined; // bare IPv4
-
-  return common.reverse().join(".");
+/**
+ * Resolve Better Auth's `trustedOrigins` allowlist (redirect/callback hosts).
+ *
+ * For SaaS this must be `[app.useatlas.dev]`. An explicit
+ * `BETTER_AUTH_TRUSTED_ORIGINS` (comma-separated) always wins; when it is
+ * unset/blank, the region-derived web origin (`getWebOrigin()`, passed in as
+ * `webOrigin`) supplies it — the same "process is the region" derivation used
+ * for the CORS default (#3706), so a regional service need not stamp the value.
+ * Returns `[]` only when neither source yields an origin (self-hosted
+ * single-origin, where Better Auth's own request-host check governs).
+ */
+export function resolveTrustedOrigins(
+  env: NodeJS.ProcessEnv,
+  webOrigin: string | null,
+): string[] {
+  const fromEnv =
+    env.BETTER_AUTH_TRUSTED_ORIGINS?.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean) ?? [];
+  if (fromEnv.length > 0) return fromEnv;
+  return webOrigin ? [webOrigin] : [];
 }
 
 /**
@@ -2958,8 +2956,8 @@ export async function _autoProvisionSsoMember(user: { id: string; email: string 
 /**
  * Inputs to {@link buildAuthOptions}. Split out so `getAuthInstance()` can
  * resolve all boot-time concerns (env parsing, secret validation, plugin
- * assembly, cookie-domain derivation) and hand a pure struct to the options
- * builder — and so tests can drive the builder without standing up Better
+ * assembly, baseURL / trusted-origin derivation) and hand a pure struct to the
+ * options builder — and so tests can drive the builder without standing up Better
  * Auth's full plugin graph or an internal Postgres.
  *
  * Design notes:
@@ -2987,7 +2985,6 @@ export interface BuildAuthOptionsDeps {
    * lockstep.
    */
   database: InternalPool | undefined;
-  cookieDomain: string | undefined;
   /** Better Auth session-cookie prefix; see {@link buildAdvancedConfig}. */
   cookiePrefix: string;
   socialProviders: ReturnType<typeof buildSocialProviders>;
@@ -3186,7 +3183,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
     // F-06: the `advanced` block wires Better Auth's rate limiter to
     // read only the trusted `x-atlas-client-ip` header that our
     // middleware injects. See `buildAdvancedConfig` for the invariant.
-    advanced: buildAdvancedConfig(deps.cookieDomain, deps.cookiePrefix),
+    advanced: buildAdvancedConfig(deps.cookiePrefix),
     databaseHooks: {
       session: {
         create: {
@@ -3451,53 +3448,46 @@ export function getAuthInstance(): AuthInstance {
     );
   }
 
-  // Derive parent domain for cross-subdomain cookies — the longest dotted
-  // suffix common to the API host (BETTER_AUTH_URL) and the canonical app
-  // origin. Only for cross-origin deploys (a web origin is resolvable); without
-  // it, cookies are host-scoped and won't be sent from the frontend subdomain.
-  // Use getWebOrigin() (the FIRST CORS entry, else BETTER_AUTH_TRUSTED_ORIGINS,
-  // else the region-derived origin — #3706) rather than the whole allowlist, so
-  // an unrelated allowlisted origin can't veto the shared domain, and so the
-  // domain still derives once SaaS stops stamping ATLAS_CORS_ORIGIN per service
-  // (BETTER_AUTH_TRUSTED_ORIGINS stays env, so getWebOrigin() still resolves).
-  // NB: this dropped the former `ATLAS_CORS_ORIGIN`-set gate. A self-hosted
-  // deploy that sets BETTER_AUTH_TRUSTED_ORIGINS but NOT ATLAS_CORS_ORIGIN now
-  // also derives a parent cookie domain (previously host-scoped) — the intended
-  // cross-subdomain behavior, and a no-op for single-origin deploys where the
-  // API host and app origin share no 2+ label suffix (cookieDomain stays
-  // undefined). See `deriveCookieDomain` for why the env-specific suffix matters.
+  // The canonical app origin — `app.useatlas.dev` in SaaS — resolved from the
+  // first ATLAS_CORS_ORIGIN entry, else BETTER_AUTH_TRUSTED_ORIGINS, else the
+  // region-derived origin (#3706). Feeds `trustedOrigins` below (Better Auth's
+  // redirect/callback allowlist). Session cookies are HOST-ONLY (ADR-0024 §5 —
+  // see `buildAdvancedConfig`), so there is no parent-domain cookie to derive:
+  // `app.useatlas.dev` authenticates against the regional API as a same-site,
+  // cross-origin caller (credentials:include + the CORS allowlist), and the
+  // cookie stays scoped to the issuing region's host so it never transits
+  // another region.
   const webOrigin = getWebOrigin();
-  const cookieDomain = deriveCookieDomain(process.env.BETTER_AUTH_URL, webOrigin ?? undefined);
-  // Fail loud on the silent footgun: a cross-origin deploy that yields no
-  // shared domain — usually a malformed BETTER_AUTH_URL or an app origin that
-  // shares no 2+ label suffix with it — leaves session cookies host-only, so
-  // the app subdomain never receives them and auth breaks with no other
-  // signal. Hostnames aren't secrets (CLAUDE.md), so log them.
-  if (process.env.BETTER_AUTH_URL && webOrigin && !cookieDomain) {
-    log.warn(
-      { authUrl: process.env.BETTER_AUTH_URL, webOrigin },
-      "Cross-origin deploy (web origin resolved) but no shared cookie domain could be "
-        + "derived from the API host and the app origin — session cookies will be host-only "
-        + "and won't reach the app subdomain. Verify BETTER_AUTH_URL and the first "
-        + "ATLAS_CORS_ORIGIN / BETTER_AUTH_TRUSTED_ORIGINS entry are valid URLs sharing a 2+ label suffix.",
-    );
-  }
 
-  // Session-cookie name prefix — distinct per deployment env so prod and
-  // staging (which share the `.useatlas.dev` cookie zone) don't collide on a
-  // single cookie slot. MUST match web's NEXT_PUBLIC_ATLAS_COOKIE_PREFIX.
+  // Session-cookie name prefix — distinct per deployment env. Host-only cookies
+  // already keep prod (`api.useatlas.dev`) and staging (`api.staging.useatlas.dev`)
+  // on separate hosts, but the prefix stays a defensive second guard and MUST
+  // match web's NEXT_PUBLIC_ATLAS_COOKIE_PREFIX.
   const cookiePrefix = resolveCookiePrefix(process.env);
 
-  // Resolve base URL: explicit env var > Vercel auto-detect > undefined (Better Auth auto-detect).
-  // On Vercel, VERCEL_PROJECT_PRODUCTION_URL or VERCEL_URL are always set.
-  // Without a baseURL, Better Auth logs a noisy warning on every cold start.
-  const baseURL =
-    process.env.BETTER_AUTH_URL ||
-    (process.env.VERCEL_PROJECT_PRODUCTION_URL
-      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-      : process.env.VERCEL_URL
-        ? `https://${process.env.VERCEL_URL}`
-        : undefined);
+  // Better Auth baseURL = this region's own API host (the cookie issuer). An
+  // explicit BETTER_AUTH_URL wins; otherwise the region-derived API host
+  // (`deriveRegionApiUrl()`) self-binds the process to its region (ADR-0024 §2),
+  // then Vercel auto-detect, then Better Auth's own request-host fallback.
+  const regionApiUrl = deriveRegionApiUrl();
+  const baseURL = resolveAuthBaseURL(process.env, regionApiUrl);
+
+  // Better Auth's redirect/callback + CSRF allowlist (`app.useatlas.dev` in
+  // SaaS). Env wins; else the region-derived web origin.
+  const trustedOrigins = resolveTrustedOrigins(process.env, webOrigin);
+  // Fail loud at boot on a residency misconfig: a regional (cross-origin) deploy
+  // that resolves an EMPTY allowlist will 403 every credentialed app→api auth
+  // request as an untrusted origin, with no other boot signal. This restores the
+  // fail-loud parity of the cross-subdomain cookie-domain guard that host-only
+  // cookies (ADR-0024 §5) retired. Hostnames aren't secrets (CLAUDE.md).
+  if (regionApiUrl && trustedOrigins.length === 0) {
+    log.warn(
+      { baseURL, regionApiUrl },
+      "Regional (cross-origin) deploy resolved an EMPTY trustedOrigins allowlist — "
+        + "credentialed app→api auth requests will be rejected as untrusted origins. Set "
+        + "BETTER_AUTH_TRUSTED_ORIGINS (or ATLAS_CORS_ORIGIN) to the app origin (e.g. https://app.useatlas.dev).",
+    );
+  }
 
   const socialProviders = buildSocialProviders();
   if (socialProviders) {
@@ -3535,14 +3525,10 @@ export function getAuthInstance(): AuthInstance {
     secret,
     baseURL,
     database: internalDbAvailable ? getInternalDB() : undefined,
-    cookieDomain,
     cookiePrefix,
     socialProviders,
     plugins: buildPlugins(),
-    trustedOrigins:
-      process.env.BETTER_AUTH_TRUSTED_ORIGINS?.split(",")
-        .map((s) => s.trim())
-        .filter(Boolean) || [],
+    trustedOrigins,
     bootstrapAdmin: resolveBootstrapAdminConfig(adminEmail, allowFirstSignupAdmin),
   });
 

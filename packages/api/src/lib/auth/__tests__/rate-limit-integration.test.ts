@@ -81,7 +81,6 @@ function makeDeps(overrides: Partial<BuildAuthOptionsDeps> = {}): BuildAuthOptio
     // `undefined` → Better Auth falls back to its built-in memory adapter;
     // the builder also derives `internalDbAvailable: false` from this.
     database: undefined,
-    cookieDomain: undefined,
     cookiePrefix: "atlas",
     socialProviders: undefined,
     plugins: [],
@@ -154,7 +153,7 @@ function sortKeys(value: unknown): unknown {
 /**
  * Build a POST /api/auth/<path> request with pinned IP headers.
  *
- * `x-atlas-client-ip` must match `buildAdvancedConfig(undefined).ipAddress.ipAddressHeaders`
+ * `x-atlas-client-ip` must match `buildAdvancedConfig(prefix).ipAddress.ipAddressHeaders`
  * — it's the single header Better Auth should read. `x-forwarded-for`
  * is supplied so the IP-spoof-resistance test can vary it without
  * affecting the rate-limit bucket; the default `forwardedFor === ip`
@@ -179,13 +178,19 @@ function authRequest(
 }
 
 describe("config wiring snapshot — buildAuthOptions", () => {
-  it("wires `advanced` to buildAdvancedConfig (F-06 IP header pin)", () => {
-    const options = buildAuthOptions(makeDeps({ cookieDomain: "useatlas.dev" }));
-    expect(options.advanced).toEqual(buildAdvancedConfig("useatlas.dev", "atlas"));
+  it("wires `advanced` to buildAdvancedConfig (F-06 IP header pin + host-only cookies)", () => {
+    const options = buildAuthOptions(makeDeps());
+    expect(options.advanced).toEqual(buildAdvancedConfig("atlas"));
     // The ipAddressHeaders list MUST be exactly [`x-atlas-client-ip`].
     // Adding `x-forwarded-for` here reopens F-06 — attackers spoof the
     // rate-limit bucket by sending the header themselves.
     expect(options.advanced?.ipAddress?.ipAddressHeaders).toEqual(["x-atlas-client-ip"]);
+    // ADR-0024 §5: the composed options must NOT pin a cookie domain — a
+    // parent-domain cookie would leak a regional session token to other
+    // regions' API hosts. Host-only is the residency invariant.
+    expect(
+      (options.advanced as Record<string, unknown> | undefined)?.defaultCookieAttributes,
+    ).toBeUndefined();
   });
 
   it("wires `rateLimit` to resolveAuthRateLimitConfig (F-06 /api/auth rules)", () => {
@@ -527,5 +532,23 @@ describe("session cookie name reflects cookiePrefix — prod↔staging isolation
     expect(prod).toContain("atlas.session_token");
     expect(prod).not.toContain("atlas-staging.session_token");
     expect(staging).toContain("atlas-staging.session_token");
+  });
+
+  it("mints a HOST-ONLY session cookie — no Domain attribute (ADR-0024 §5, criterion #3)", async () => {
+    // The actual residency invariant, asserted against the REAL minted cookie
+    // (not just the config): a regional session token must never carry a
+    // parent-domain (`Domain=.useatlas.dev`) attribute, or the browser would
+    // send it to every region's API host. Host-only = scoped to the issuing host
+    // only. A `Domain=` could be reintroduced via Better Auth's
+    // `crossSubDomainCookies`, a plugin, or a default change — none of which flow
+    // through `buildAdvancedConfig`, so this live check guards what the config
+    // tests can't.
+    const setCookie = await signUpSetCookie("atlas", "192.0.2.53");
+    expect(setCookie).toContain("atlas.session_token");
+    expect(setCookie).not.toContain("Domain=");
+    // Still SameSite=Lax, so the host-only cookie rides credentialed same-site
+    // cross-origin fetches from app.useatlas.dev. (Secure is verified at deploy —
+    // makeAuth uses an http baseURL, so Better Auth omits Secure in this env.)
+    expect(setCookie).toContain("SameSite=Lax");
   });
 });

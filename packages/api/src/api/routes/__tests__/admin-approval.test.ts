@@ -7,6 +7,10 @@
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 import { Data, Effect } from "effect";
+import {
+  isFeatureEntitlementQuery,
+  workspaceTierRows,
+} from "@atlas/api/testing/api-test-mocks";
 
 // Declared at module scope so `mock.module()` factories — which run before
 // imported module code — can capture this class reference. An inline require()
@@ -22,9 +26,19 @@ class MockApprovalError extends Data.TaggedError("ApprovalError")<{
 
 let mockHasInternalDB = true;
 
+// WS1 (#3987) — the per-tier feature-entitlement guard now runs before every
+// approval handler and reads the workspace's `plan_tier` / `is_operator_workspace`
+// off the `organization` table via `internalQuery`. This test forces enterprise
+// on (below) so deploy mode resolves to `saas` and the guard actually fires;
+// approvals gate to Business, so the entitlement query must read back `business`
+// or every route 403s with `plan_upgrade_required`. All other queries keep
+// returning []. The SQL-shape coupling lives in the shared
+// `isFeatureEntitlementQuery` helper so the regex has one definition.
+let mockWorkspaceTier: string | null = "business";
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
-  internalQuery: async () => [],
+  internalQuery: async (sql: string) =>
+    isFeatureEntitlementQuery(sql) ? workspaceTierRows(mockWorkspaceTier) : [],
   internalExecute: async () => {},
   setWorkspaceRegion: async () => {},
   insertSemanticAmendment: async () => "mock-amendment-id",
@@ -134,6 +148,10 @@ mock.module("@atlas/api/lib/chat-plugin/resume-delivery", () => ({
 // overwrites. Files that need to restore env do so in their own
 // afterAll; the `??=` here is the module-load contract, not teardown.
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
+// WS1 (#3987) — pin SaaS deploy mode so the per-tier feature-entitlement guard
+// fires deterministically (it is a no-op off the SaaS path), regardless of the
+// ambient ATLAS_DEPLOY_MODE / ATLAS_DEPLOY_ENV.
+process.env.ATLAS_DEPLOY_MODE ??= "saas";
 
 // Core ApprovalError class mock so the route's `domainError(ApprovalError, ...)`
 // mapping matches the test's `MockApprovalError`.
@@ -446,5 +464,72 @@ describe("POST /queue/:id — approval-park resolution (#3748)", () => {
     const res = await reviewRequest("req-deliver-boom", { action: "approve" });
     expect(res.status).toBe(200);
     expect(loggedErrors.some((e) => e.msg.includes("chat resume delivery threw"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-tier feature-entitlement gating (WS1 #3987)
+//
+// Proves the approval-workflow surface is gated at the route/handler layer
+// (not UI-only): on the SaaS per-tier ladder a below-Business workspace is
+// denied with 403 `plan_upgrade_required` even though the deployment is
+// enterprise-enabled (the EE ApprovalGate mock is live), and a Business
+// workspace passes through to the gate. `approvals` defaults to Business in
+// the FEATURE_ENTITLEMENTS SSOT.
+// ---------------------------------------------------------------------------
+
+describe("admin approval — per-tier entitlement gate (#3987)", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockWorkspaceTier = "business";
+    mockAuthenticateRequest.mockReset();
+    mockAuthenticateRequest.mockImplementation(defaultAuthResponse);
+    mockListApprovalRequests.mockClear();
+    mockListApprovalRequests.mockImplementation(() => Effect.succeed([]));
+    mockExpireStaleRequests.mockClear();
+    mockExpireStaleRequests.mockImplementation(() => Effect.succeed(0));
+    mockReviewApprovalRequest.mockClear();
+    mockReviewApprovalRequest.mockImplementation(() =>
+      Effect.succeed({ id: "req-1", status: "approved", origin: null } as never),
+    );
+  });
+
+  it("denies a below-tier (Pro) workspace listing rules with 403 plan_upgrade_required", async () => {
+    mockWorkspaceTier = "pro";
+    const res = await adminApproval.request("/rules");
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as {
+      error: string;
+      required_plan: string;
+      current_plan: string;
+    };
+    expect(body.error).toBe("plan_upgrade_required");
+    expect(body.required_plan).toBe("business");
+    expect(body.current_plan).toBe("pro");
+  });
+
+  it("denies a below-tier (Starter) workspace reviewing a request", async () => {
+    mockWorkspaceTier = "starter";
+    const res = await reviewRequest("req-1", { action: "approve" });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "plan_upgrade_required",
+    );
+    // The gate fires BEFORE the EE service — the decision must never be recorded.
+    expect(mockReviewApprovalRequest).not.toHaveBeenCalled();
+  });
+
+  it("denies the queue listing for a below-tier workspace", async () => {
+    mockWorkspaceTier = "free";
+    const res = await adminApproval.request("/queue");
+    expect(res.status).toBe(403);
+    expect(mockListApprovalRequests).not.toHaveBeenCalled();
+  });
+
+  it("allows a Business workspace through to the approval gate", async () => {
+    mockWorkspaceTier = "business";
+    const res = await adminApproval.request("/queue");
+    expect(res.status).toBe(200);
+    expect(mockListApprovalRequests).toHaveBeenCalledTimes(1);
   });
 });

@@ -24,7 +24,11 @@ import {
   type Mock,
 } from "bun:test";
 import { Effect } from "effect";
-import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
+import {
+  createApiTestMocks,
+  isFeatureEntitlementQuery,
+  workspaceTierRows,
+} from "@atlas/api/testing/api-test-mocks";
 // Real ADMIN_ACTIONS values so assertions pin to the canonical strings,
 // not hand-typed copies that drift when the catalog changes.
 import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
@@ -221,7 +225,15 @@ beforeEach(() => {
   mockListRoleMembers.mockReset();
   mockAssignRole.mockReset();
   mocks.mockInternalQuery.mockReset();
-  mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+  // WS1 (#3987) — the per-tier feature-entitlement guard runs before every
+  // roles handler and reads the workspace's `plan_tier` off `organization`.
+  // `custom_roles` gates to Business, so return `business` for that lookup;
+  // every other query (e.g. the `member` prior-role pre-fetch) stays `[]`.
+  mocks.mockInternalQuery.mockImplementation((sql: string) =>
+    Promise.resolve(
+      isFeatureEntitlementQuery(sql) ? workspaceTierRows("business") : [],
+    ),
+  );
 });
 
 // ---------------------------------------------------------------------------

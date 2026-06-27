@@ -33,6 +33,38 @@ import * as fs from "fs";
 import * as path from "path";
 
 /**
+ * Matches the per-tier feature-entitlement lookup the `requireFeatureEntitlement`
+ * guard (WS1 #3987) issues before every gated admin surface (SSO, SCIM, custom
+ * roles, IP allowlist, approvals). The single SSOT for the SQL-shape coupling:
+ * `getWorkspaceEntitlement` runs `SELECT plan_tier, is_operator_workspace FROM
+ * organization WHERE id = $1` (see `lib/integrations/install/workspace-entitlement.ts`).
+ *
+ * Tests that drive a specific tier (`admin-sso.test.ts`,
+ * `admin-access-governance-entitlement.test.ts`, `admin-approval.test.ts`,
+ * `admin-roles.test.ts`) import this so the regex lives in exactly one place —
+ * if that SELECT is ever reordered/aliased, only this predicate needs updating
+ * rather than five drifting copies that would each silently revert to `[]`
+ * (→ `free` → spurious 403) instead of failing loudly.
+ */
+export function isFeatureEntitlementQuery(sql: string): boolean {
+  return /plan_tier[\s\S]*is_operator_workspace|is_operator_workspace[\s\S]*plan_tier/.test(
+    sql,
+  );
+}
+
+/**
+ * A single-row `organization` result for the feature-entitlement lookup, shaped
+ * exactly as `getWorkspaceEntitlement` reads it. Use in an `internalQuery` mock
+ * branch gated on {@link isFeatureEntitlementQuery} to drive a workspace's tier.
+ */
+export function workspaceTierRows(
+  tier: string | null,
+  isOperator = false,
+): Array<{ plan_tier: string | null; is_operator_workspace: boolean }> {
+  return [{ plan_tier: tier, is_operator_workspace: isOperator }];
+}
+
+/**
  * Mock `InternalDB` Context.Tag — identity preserved for tests that load
  * modules (e.g. `ContentModeRegistry`) which `yield* InternalDB` from
  * Effect context. The tag is declared here so the factory can hand the
@@ -474,9 +506,26 @@ export function createApiTestMocks(
 
   let _hasInternalDB = true;
 
+  // Default `internalQuery`: empty result set, EXCEPT the per-tier
+  // feature-entitlement lookup (WS1 #3987). The `requireFeatureEntitlement`
+  // guard now resolves a workspace's `plan_tier` / `is_operator_workspace`
+  // off the `organization` table before every gated admin surface (SSO, SCIM,
+  // custom roles, IP allowlist, approvals). In SaaS deploy mode an empty result
+  // collapses to `null` → `free` → a 403 `plan_upgrade_required` before the
+  // route's own logic runs, which would spuriously fail every harness test that
+  // exercises a gated route. Defaulting this one query to a `business` workspace
+  // (the tier every gated feature unlocks at) keeps those tests green; a test
+  // that wants to drive a specific tier overrides `mockInternalQuery` itself
+  // (see admin-sso.test.ts / admin-access-governance-entitlement.test.ts). The
+  // SQL-shape coupling lives in the exported `isFeatureEntitlementQuery` helper
+  // above so the regex has exactly one definition.
   const mockInternalQuery: Mock<
     (sql: string, params?: unknown[]) => Promise<unknown[]>
-  > = mock(() => Promise.resolve([]));
+  > = mock((sql: string) =>
+    Promise.resolve(
+      isFeatureEntitlementQuery(sql) ? workspaceTierRows("business") : [],
+    ),
+  );
 
   const mockInternalExecute: Mock<AnyFn> = mock(() => {});
 

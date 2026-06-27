@@ -84,11 +84,9 @@ export type IssueRef = `#${number}`;
  * empty or prose value won't typecheck.
  */
 export const ENFORCEMENT_PENDING: Partial<Record<GatedFeature, IssueRef>> = {
-  // #3987 — SCIM, custom roles, IP allowlist, approval workflows.
-  scim: "#3987",
-  custom_roles: "#3987",
-  ip_allowlist: "#3987",
-  approvals: "#3987",
+  // #3987 gated SCIM, custom roles, IP allowlist, and approval workflows — those
+  // four now have route-layer requireFeatureEntitlement gates and were removed
+  // from this allowlist when that slice landed (rule 2 forces the shrink).
   // Remaining WS1 surfaces (audit-retention, masking, residency, backups,
   // white-label, proactive) — gated in their own follow-up slices under #3984.
   audit_retention: "#3984",

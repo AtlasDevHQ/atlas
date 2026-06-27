@@ -61,10 +61,12 @@ trap restore EXIT
 check pass "committed tree: every SSOT feature gated or pending"
 
 # --- rule 1: an ungated, unacknowledged feature fails -----------------------
-# Drop `scim` from ENFORCEMENT_PENDING. It's in the SSOT and has no route gate,
-# so the guard must catch the now-silently-open ladder.
+# Drop `masking` from ENFORCEMENT_PENDING. It's in the SSOT and has no route
+# gate yet (#3984), so the guard must catch the now-silently-open ladder.
+# (`scim`/`custom_roles`/`ip_allowlist`/`approvals` are no longer usable here —
+# #3987 gated them, so dropping their pending entry creates no drift.)
 cp "$PENDING_BAK" "$PENDING"
-perl -0pi -e 's/^\s*scim:\s*"#3987",\n//m' "$PENDING"
+perl -0pi -e 's/^\s*masking:\s*"#3984",\n//m' "$PENDING"
 check fail "removing a pending entry for an ungated feature trips the gate"
 cp "$PENDING_BAK" "$PENDING"
 
@@ -76,10 +78,12 @@ check fail "a phantom pending entry (not in the SSOT) trips the gate"
 cp "$PENDING_BAK" "$PENDING"
 
 # --- rule 2: a stale pending entry (feature now enforced) fails -------------
-# Simulate `scim` getting wired: add a route-layer gate call for it AND leave
+# Simulate `masking` getting wired: add a route-layer gate call for it AND leave
 # it in ENFORCEMENT_PENDING. The guard must flag the stale allowlist entry.
+# (Use a still-pending feature — `scim` et al. are already enforced + removed
+# from pending by #3987, so they can't fake a stale-pending state.)
 cp "$SSO_BAK" "$SSO_ROUTE"
-perl -0pi -e 's/(yield\* requireFeatureEntitlement\(orgId, "sso"\);)/$1\n    yield* requireFeatureEntitlement(orgId, "scim");/' "$SSO_ROUTE"
+perl -0pi -e 's/(yield\* requireFeatureEntitlement\(orgId, "sso"\);)/$1\n    yield* requireFeatureEntitlement(orgId, "masking");/' "$SSO_ROUTE"
 check fail "a feature that is enforced but still listed pending trips the gate"
 cp "$SSO_BAK" "$SSO_ROUTE"
 

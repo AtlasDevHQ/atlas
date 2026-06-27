@@ -17,6 +17,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext, RolesPolicy } from "@atlas/api/lib/effect/services";
+import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { internalQuery } from "@atlas/api/lib/db/internal";
@@ -219,6 +220,7 @@ adminRoles.use(requirePermission("admin:roles"));
 adminRoles.openapi(listRolesRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "custom_roles");
     const rolesPolicy = yield* RolesPolicy;
 
     const roles = yield* rolesPolicy.listRoles(orgId!);
@@ -234,6 +236,7 @@ adminRoles.openapi(createRoleRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "custom_roles");
     const rolesPolicy = yield* RolesPolicy;
 
     if (!body.name || !body.permissions || !Array.isArray(body.permissions)) {
@@ -296,6 +299,7 @@ adminRoles.openapi(updateRoleRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "custom_roles");
     const rolesPolicy = yield* RolesPolicy;
 
     if (!isValidId(roleId)) {
@@ -363,6 +367,7 @@ adminRoles.openapi(deleteRoleRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "custom_roles");
     const rolesPolicy = yield* RolesPolicy;
 
     if (!isValidId(roleId)) {
@@ -454,6 +459,7 @@ adminRoles.openapi(deleteRoleRoute, async (c) => {
 adminRoles.openapi(listRoleMembersRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "custom_roles");
     const rolesPolicy = yield* RolesPolicy;
     const { id: roleId } = c.req.valid("param");
 
@@ -475,6 +481,7 @@ adminRoles.openapi(assignRoleRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "custom_roles");
     const rolesPolicy = yield* RolesPolicy;
 
     if (!isValidId(userId)) {

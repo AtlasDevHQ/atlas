@@ -31,6 +31,7 @@ import { oauthProviderClient } from "@better-auth/oauth-provider/client";
 // loaded unconditionally next to twoFactor().
 import { passkeyClient } from "@better-auth/passkey/client";
 import {
+  deviceAuthorizationClient,
   emailOTPClient,
   organizationClient,
   twoFactorClient,
@@ -93,6 +94,10 @@ const _authClient = createAuthClient({
     emailOTPClient(),
     stripeClient({ subscription: true }),
     oauthProviderClient(),
+    // #4043 / ADR-0025 — device-authorization client mirror gives us
+    // `authClient.device.{approve,deny}` for the /device approval page that
+    // backs `atlas login`.
+    deviceAuthorizationClient(),
   ],
   // Cross-origin deployments (app.useatlas.dev → api.useatlas.dev) require
   // credentials: "include" so the browser stores and sends session cookies.
@@ -242,6 +247,20 @@ type OrgClient = Omit<typeof _authClient, "useSession"> & {
       data?: { redirect: boolean; url: string };
       error?: { message?: string };
     } | undefined>;
+  };
+
+  // deviceAuthorizationClient — `device.{approve,deny}` resolve the /device
+  // approval screen that backs `atlas login` (#4043 / ADR-0025). The chain
+  // inference loses the namespace, so the two methods we call are typed here.
+  device?: {
+    approve: (opts: { userCode: string }) => Promise<{
+      data?: unknown;
+      error?: { message?: string; code?: string } | null;
+    }>;
+    deny: (opts: { userCode: string }) => Promise<{
+      data?: unknown;
+      error?: { message?: string; code?: string } | null;
+    }>;
   };
 
   // emailOTPClient — verify + resend used by post-signup interstitial.

@@ -1090,7 +1090,7 @@ export const approvalRules = pgTable(
     check("chk_approval_rule_type", sql`rule_type IN ('table', 'column', 'cost', 'datasource')`),
     check(
       "chk_approval_rule_origin",
-      sql`origin IN ('any', 'chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'discord', 'whatsapp', 'gchat', 'webhook')`,
+      sql`origin IN ('any', 'chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'discord', 'whatsapp', 'gchat', 'webhook', 'cli')`,
     ),
     index("idx_approval_rules_org").on(t.orgId),
     index("idx_approval_rules_org_enabled").on(t.orgId).where(sql`enabled = true`),
@@ -1135,7 +1135,7 @@ export const approvalQueue = pgTable(
     check("chk_approval_status", sql`status IN ('pending', 'approved', 'denied', 'expired')`),
     check(
       "chk_approval_request_origin",
-      sql`origin IS NULL OR origin IN ('chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'discord', 'whatsapp', 'gchat', 'webhook')`,
+      sql`origin IS NULL OR origin IN ('chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'discord', 'whatsapp', 'gchat', 'webhook', 'cli')`,
     ),
     // 0094 / #2744 — composite FK to `connection_groups (id, org_id)`
     // dropped with the table. `connection_group_id` stays as a

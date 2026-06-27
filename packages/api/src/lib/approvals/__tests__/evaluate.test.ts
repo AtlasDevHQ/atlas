@@ -123,6 +123,9 @@ describe("originMatchesRule (#2072)", () => {
       { rule: "slack", req: "slack" },
       { rule: "teams", req: "teams" },
       { rule: "webhook", req: "webhook" },
+      // #4043 / ADR-0025 — the atlas-login device flow is audited origin=cli;
+      // an admin can scope an approval rule to the CLI transport.
+      { rule: "cli", req: "cli" },
     ];
 
     for (const { rule, req } of cases) {

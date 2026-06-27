@@ -2794,11 +2794,69 @@ export async function buildCustomSessionPayload({
     typeof session.activeOrganizationId === "string"
       ? session.activeOrganizationId
       : undefined;
-  const effectiveRole = await resolveEffectiveRole(userRole, user.id, activeOrganizationId);
+  // #4043 / ADR-0025 §2 — the atlas-login device flow stamps `origin='cli'`
+  // onto its session (the `session.create.before` hook). A cli credential is a
+  // portable file-stored bearer, so its authority is the ORG (member) role for
+  // the bound workspace ONLY: withhold the user-level role so a `platform_admin`
+  // user's cli token never carries cross-tenant god-mode (mirrors the hosted
+  // MCP arm in resolveMcpActorRole). Every other session resolves the
+  // user-level role as before. The downgrade lives HERE — the single point
+  // where `effectiveRole` is stamped onto getSession — so validateManaged and
+  // the client both read the org-scoped role with no second seam.
+  const sessionOrigin = typeof session.origin === "string" ? session.origin : undefined;
+  const userRoleForResolution = sessionOrigin === "cli" ? undefined : userRole;
+  const effectiveRole = await resolveEffectiveRole(
+    userRoleForResolution,
+    user.id,
+    activeOrganizationId,
+  );
   return {
     user: { ...user, effectiveRole: effectiveRole ?? null },
     session,
   };
+}
+
+/**
+ * The Better Auth device-authorization token endpoint, relative to the auth
+ * base. `internalAdapter.createSession` is invoked from inside this endpoint's
+ * handler when a device is approved, so the `session.create.before` hook sees
+ * this as `ctx.path` — the signal that the new session is an atlas-login (cli)
+ * credential rather than a normal web login. (#4043 / ADR-0025.)
+ */
+const DEVICE_TOKEN_ENDPOINT_PATH = "/device/token";
+
+/**
+ * Decide whether a `session.create` hook is firing inside the device-flow
+ * token endpoint — i.e. the session being created is an `atlas login` (cli)
+ * credential. Better Auth's endpoint context exposes the matched endpoint
+ * `path`; we also accept a `request.url` pathname match as a defensive
+ * fallback for context shapes that omit `path`.
+ *
+ * Exported for the unit test that pins the detection contract. A false
+ * negative here would leave a cli session unmarked and therefore resolving the
+ * user-level role — so the device-flow integration test additionally asserts
+ * the real flow stamps `origin='cli'`.
+ *
+ * @internal
+ */
+export function isDeviceTokenSessionContext(
+  ctx: { path?: unknown; request?: { url?: unknown } } | null | undefined,
+): boolean {
+  if (!ctx) return false;
+  if (typeof ctx.path === "string" && ctx.path.endsWith(DEVICE_TOKEN_ENDPOINT_PATH)) {
+    return true;
+  }
+  const url = ctx.request?.url;
+  if (typeof url === "string") {
+    try {
+      return new URL(url).pathname.endsWith(DEVICE_TOKEN_ENDPOINT_PATH);
+    } catch {
+      // intentionally ignored: a non-absolute URL falls through to "not a
+      // device-token request" — the safe default is to not mark a session cli.
+      return false;
+    }
+  }
+  return false;
 }
 
 /**
@@ -3191,6 +3249,16 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
       expiresIn: 60 * 60 * 24 * 7,
       updateAge: 60 * 60 * 24,
       cookieCache: { enabled: true, maxAge: resolveSessionCookieCacheMaxAge(deps.env) },
+      // #4043 / ADR-0025 — `origin` marks which agent origin minted the
+      // session. NULL for normal web/login sessions; stamped `'cli'` by the
+      // `session.create.before` hook for the atlas-login device flow so
+      // managed-auth role resolution (`buildCustomSessionPayload`) treats it as
+      // org-role-only. `input: false` — a client can never self-assign it on a
+      // signup/sign-in payload. Backed by migration 0157 (session.origin column,
+      // a MANAGED_AUTH_MIGRATION).
+      additionalFields: {
+        origin: { type: "string", required: false, input: false },
+      },
     },
     // #3159 — these `user` columns were contributed by the removed admin()
     // plugin's schema. Re-declared here as `additionalFields` with the same
@@ -3238,7 +3306,10 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
           // signature upstream uses to allow further plugin fields.
           // Naming the org extension explicitly keeps `.activeOrganizationId`
           // typed where other fields go through `unknown`.
-          before: async (session: Session & { activeOrganizationId?: string | null } & Record<string, unknown>) => {
+          before: async (
+            session: Session & { activeOrganizationId?: string | null } & Record<string, unknown>,
+            ctx?: { path?: unknown; request?: { url?: unknown } } | null,
+          ) => {
             // #3159 — reproduce the admin plugin's ban guard: block new-session
             // creation for a banned user (auto-unbanning when `banExpires` has
             // passed). Runs OUTSIDE the try/catch below so its BANNED_USER
@@ -3247,36 +3318,47 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
             // failure fails open (the per-request check in managed.ts backstops).
             await enforceBanOnSessionCreate(session.userId);
 
+            // #4043 / ADR-0025 — mark device-flow (atlas-login) sessions
+            // `origin='cli'` so managed-auth role resolution downgrades them to
+            // org-role-only. Detected from the endpoint the createSession fired
+            // under (the device/token poll). Composed with the active-org
+            // auto-set below into ONE patch so a single-workspace cli login gets
+            // both its only org AND the cli marker in the same row write.
+            const isCliSession = isDeviceTokenSessionContext(ctx);
+
             // Auto-set the active org on login when the user has exactly one
             // org and the session doesn't already have one. Uses the `before`
             // hook so Better Auth writes the activeOrganizationId directly
-            // into the session row (no post-hoc UPDATE needed).
+            // into the session row (no post-hoc UPDATE needed). Multi-org cli
+            // logins get NO active org here — the minimal atlas command surfaces
+            // the clear workspace-selection handoff (ADR-0025 §6).
+            let resolvedActiveOrgId: string | undefined;
             try {
-              if (session.activeOrganizationId) return;
-              if (!hasInternalDB()) return;
-
-              const orgs = await internalQuery<{ organizationId: string }>(
-                `SELECT "organizationId" FROM member WHERE "userId" = $1 LIMIT 2`,
-                [session.userId],
-              );
-              if (orgs.length !== 1) return;
-
-              log.info(
-                { userId: session.userId, orgId: orgs[0].organizationId },
-                "Auto-set active organization for new session",
-              );
-              return {
-                data: {
-                  ...session,
-                  activeOrganizationId: orgs[0].organizationId,
-                },
-              };
+              if (!session.activeOrganizationId && hasInternalDB()) {
+                const orgs = await internalQuery<{ organizationId: string }>(
+                  `SELECT "organizationId" FROM member WHERE "userId" = $1 LIMIT 2`,
+                  [session.userId],
+                );
+                if (orgs.length === 1) {
+                  resolvedActiveOrgId = orgs[0].organizationId;
+                  log.info(
+                    { userId: session.userId, orgId: resolvedActiveOrgId, origin: isCliSession ? "cli" : undefined },
+                    "Auto-set active organization for new session",
+                  );
+                }
+              }
             } catch (err) {
               log.warn(
                 { err: errorMessage(err), userId: session.userId },
                 "Failed to auto-set active org — user may need to switch manually",
               );
             }
+
+            const patch: Record<string, unknown> = {};
+            if (isCliSession) patch.origin = "cli";
+            if (resolvedActiveOrgId) patch.activeOrganizationId = resolvedActiveOrgId;
+            if (Object.keys(patch).length === 0) return;
+            return { data: { ...session, ...patch } };
           },
           after: async (session: Session & { activeOrganizationId?: string | null }) => {
             // Emit a login usage event for active-user tracking.

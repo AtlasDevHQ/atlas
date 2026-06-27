@@ -68,7 +68,26 @@ export interface PlanDefinition {
   pricePerSeat: number;
   /** Default AI model for this plan tier. */
   defaultModel: string;
-  /** Cost in USD per 1M output-equivalent tokens above the included budget. 0 = no overage. */
+  /**
+   * Included at-cost usage credit per seat per month, in USD (Structure B,
+   * #4034). Pooled per-seat: the workspace's included usage budget is
+   * `includedUsageDollarsPerSeat × seatCount`, so team size ladders the pool and
+   * there is no per-tier credit ladder. 0 = no included credit (free/locked).
+   * AI usage is metered at provider cost (zero markup) and drawn against this;
+   * enforcement against it lands in #4038. The flat $20 on every paid tier is a
+   * working number — hot-reloadable, recalibrate ~30d post-launch.
+   */
+  includedUsageDollarsPerSeat: number;
+  /**
+   * DEPRECATED (Structure B, #4034): the legacy synthetic $/1M-token overage
+   * rate. Zeroed on every tier — Structure B bills usage at provider cost (zero
+   * markup) via the at-cost meter, not a per-token markup. Zeroing here only
+   * neutralizes the DISPLAY accrual (`computeOverageCost` → $0); the token-based
+   * OverageMeter (#3992) keeps reporting token deltas to its Stripe price until
+   * the at-cost meter repoint lands (#4039). Retained only so the field doesn't
+   * break the wire type mid-migration; removed when dollar-native enforcement
+   * lands (#4038).
+   */
   overagePerMillionTokens: number;
   limits: PlanLimits;
   features: PlanFeatures;
@@ -126,6 +145,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     displayName: "Self-Hosted",
     pricePerSeat: 0,
     defaultModel: "user-configured",
+    includedUsageDollarsPerSeat: 0,
     overagePerMillionTokens: 0,
     limits: {
       tokenBudgetPerSeat: UNLIMITED,
@@ -145,6 +165,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     // hyphen format (`claude-haiku-4-5`) is migrated lazily by the
     // billing-page alias map for any legacy `ATLAS_MODEL` settings.
     defaultModel: "anthropic/claude-haiku-4.5",
+    includedUsageDollarsPerSeat: 20,
     overagePerMillionTokens: 0,
     trialDays: TRIAL_DAYS,
     limits: {
@@ -159,9 +180,10 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
   starter: {
     name: "starter",
     displayName: "Starter",
-    pricePerSeat: 29,
+    pricePerSeat: 39,
     defaultModel: "anthropic/claude-haiku-4.5",
-    overagePerMillionTokens: 1.0,
+    includedUsageDollarsPerSeat: 20,
+    overagePerMillionTokens: 0,
     limits: {
       tokenBudgetPerSeat: 2_000_000,
       maxSeats: 10,
@@ -174,9 +196,10 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
   pro: {
     name: "pro",
     displayName: "Pro",
-    pricePerSeat: 59,
+    pricePerSeat: 69,
     defaultModel: "anthropic/claude-sonnet-4.6",
-    overagePerMillionTokens: 1.0,
+    includedUsageDollarsPerSeat: 20,
+    overagePerMillionTokens: 0,
     limits: {
       tokenBudgetPerSeat: 5_000_000,
       maxSeats: 25,
@@ -201,6 +224,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     displayName: "Locked",
     pricePerSeat: 0,
     defaultModel: "anthropic/claude-haiku-4.5",
+    includedUsageDollarsPerSeat: 0,
     overagePerMillionTokens: 0,
     limits: {
       tokenBudgetPerSeat: 0,
@@ -214,9 +238,10 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
   business: {
     name: "business",
     displayName: "Business",
-    pricePerSeat: 99,
+    pricePerSeat: 149,
     defaultModel: "anthropic/claude-sonnet-4.6",
-    overagePerMillionTokens: 1.0,
+    includedUsageDollarsPerSeat: 20,
+    overagePerMillionTokens: 0,
     limits: {
       tokenBudgetPerSeat: 15_000_000,
       maxSeats: UNLIMITED,

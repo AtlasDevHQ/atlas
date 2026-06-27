@@ -12,7 +12,8 @@ const validStatus = {
   plan: {
     tier: "starter" as const,
     displayName: "Starter",
-    pricePerSeat: 29,
+    pricePerSeat: 39,
+    includedUsageDollarsPerSeat: 20,
     defaultModel: "claude-haiku-4-5",
     byot: false,
     trialEndsAt: null,
@@ -87,6 +88,20 @@ describe("happy-path parses", () => {
     const parsed = BillingStatusSchema.parse(validStatus);
     const serialized = JSON.parse(JSON.stringify(parsed));
     expect(BillingStatusSchema.parse(serialized)).toEqual(validStatus);
+  });
+
+  test("preserves the Structure B includedUsageDollarsPerSeat credit (#4037)", () => {
+    const parsed = BillingStatusSchema.parse(validStatus);
+    expect(parsed.plan.includedUsageDollarsPerSeat).toBe(20);
+  });
+
+  test("tolerates an older bundle omitting includedUsageDollarsPerSeat", () => {
+    // The credit is optional on the wire; a web bundle pinned to a pre-#4037
+    // published schema must still parse a response without the field.
+    const { includedUsageDollarsPerSeat: _omit, ...planNoCredit } = validStatus.plan;
+    const older = { ...validStatus, plan: planNoCredit };
+    const parsed = BillingStatusSchema.parse(older);
+    expect(parsed.plan.includedUsageDollarsPerSeat).toBeUndefined();
   });
 });
 

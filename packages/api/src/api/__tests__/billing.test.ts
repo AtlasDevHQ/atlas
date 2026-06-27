@@ -221,7 +221,9 @@ describe("billing routes", () => {
       expect(body.plan.tier).toBe("starter");
       expect(body.plan.displayName).toBe("Starter");
       expect(body.plan.byot).toBe(false);
-      expect(body.plan.pricePerSeat).toBe(29);
+      expect(body.plan.pricePerSeat).toBe(39);
+      // Structure B at-cost included credit ($20/seat, #4034) surfaced on the wire.
+      expect(body.plan.includedUsageDollarsPerSeat).toBe(20);
       expect(body.limits.tokenBudgetPerSeat).toBeGreaterThan(0);
       // #3438 — the chat-integration cap the install gate enforces must reach
       // the wire so the billing page can display it (Starter = 1).
@@ -235,7 +237,9 @@ describe("billing routes", () => {
       // against the shared resolver guards against the picker advertising one
       // model while another is billed.
       expect(body.currentModel).toBe(resolveModelId(undefined, undefined));
-      expect(body.overagePerMillionTokens).toBe(1.0);
+      // Structure B (#4034): the synthetic per-token overage rate is zeroed —
+      // usage is billed at provider cost via the at-cost meter, not a markup.
+      expect(body.overagePerMillionTokens).toBe(0);
       // Total token budget = tokenBudgetPerSeat * seatCount = 2M * 3 = 6M
       expect(body.limits.totalTokenBudget).toBe(6_000_000);
       // #3418 — the plan picker's source of truth. All three paid tiers are
@@ -249,7 +253,7 @@ describe("billing routes", () => {
       expect(body.availablePlans[0]).toMatchObject({
         tier: "starter",
         displayName: "Starter",
-        pricePerSeat: 29,
+        pricePerSeat: 39,
         tokenBudgetPerSeat: 2_000_000,
         maxSeats: 10,
         maxConnections: 1,
@@ -265,10 +269,13 @@ describe("billing routes", () => {
       expect(body.plan.trialDays).toBeNull();
     });
 
-    it("surfaces metered overage + accrued cost when over budget (#3990)", async () => {
+    it("surfaces the metered band over budget, with no synthetic overage cost (Structure B, #4034)", async () => {
       // Starter: 2M/seat. 3 seats → 6M budget. Spend 7M (≈117%) — over budget
       // but, with the ceiling disabled in this test's settings mock, metered
-      // (served + billed), never hard-blocked. 1M overage at $1.00/M = $1.00.
+      // (served), never hard-blocked. The metered BAND is still reported
+      // (overageTokens = 1M), but Structure B zeroes the synthetic $/Mtok rate,
+      // so the accrued overageCost is $0 — real at-cost overage is billed via the
+      // at-cost meter (#4038/#4039), not this display field.
       mockInternalQuery.mockImplementation((...args: unknown[]) => {
         const sql = args[0];
         if (typeof sql === "string" && sql.includes("member")) {
@@ -287,7 +294,7 @@ describe("billing routes", () => {
       const body = await res.json() as any;
       expect(body.usage.tokenOverageStatus).toBe("metered");
       expect(body.usage.overageTokens).toBe(1_000_000);
-      expect(body.usage.overageCost).toBeCloseTo(1.0, 6);
+      expect(body.usage.overageCost).toBe(0);
     });
 
     it("never reports overage for a BYOT workspace, even over budget (#3990)", async () => {

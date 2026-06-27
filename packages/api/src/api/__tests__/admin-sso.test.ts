@@ -181,6 +181,10 @@ mock.module("@atlas/ee/layers", () => {
 // overwrites. Files that need to restore env do so in their own
 // afterAll; the `??=` here is the module-load contract, not teardown.
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
+// The per-tier SSO entitlement gate (WS1 #3986) only fires in SaaS deploy mode.
+// Pin it so the gate-enforcement tests below are deterministic regardless of the
+// ambient ATLAS_DEPLOY_MODE / DATABASE_URL.
+process.env.ATLAS_DEPLOY_MODE ??= "saas";
 
 // --- Import app after mocks ---
 
@@ -680,5 +684,27 @@ describe("admin SSO — per-tier entitlement gate", () => {
       adminRequest("/api/v1/admin/sso/providers"),
     );
     expect(res.status).toBe(200);
+  });
+
+  it("fails closed with 503 billing_check_failed when the tier lookup throws", async () => {
+    // A transient internal-DB fault must NOT silently widen access to a
+    // Business feature — the per-tier guard fails closed end-to-end.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (
+        /plan_tier[\s\S]*is_operator_workspace|is_operator_workspace[\s\S]*plan_tier/.test(
+          sql,
+        )
+      ) {
+        throw new Error("db unavailable");
+      }
+      return [];
+    });
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/sso/providers"),
+    );
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "billing_check_failed",
+    );
   });
 });

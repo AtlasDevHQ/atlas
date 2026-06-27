@@ -14,6 +14,7 @@ import type { PlanTier } from "@useatlas/types";
 // --- Mocks ---
 
 let mockHasInternalDB = true;
+let mockDeployMode: "saas" | "self-hosted" = "saas";
 let mockEntitlement: { planTier: PlanTier | null; isOperator: boolean } = {
   planTier: "business",
   isOperator: false,
@@ -25,6 +26,12 @@ const actualInternal = await import("@atlas/api/lib/db/internal");
 mock.module("@atlas/api/lib/db/internal", () => ({
   ...actualInternal,
   hasInternalDB: () => mockHasInternalDB,
+}));
+
+const actualDeployMode = await import("@atlas/api/lib/effect/deploy-mode");
+mock.module("@atlas/api/lib/effect/deploy-mode", () => ({
+  ...actualDeployMode,
+  resolveDeployMode: () => mockDeployMode,
 }));
 
 mock.module(
@@ -44,6 +51,7 @@ const { requireFeatureEntitlement } = await import(
 
 beforeEach(() => {
   mockHasInternalDB = true;
+  mockDeployMode = "saas";
   mockEntitlement = { planTier: "business", isOperator: false };
   mockEntitlementShouldThrow = false;
   mockEntitlementCallCount = 0;
@@ -62,6 +70,20 @@ function failureOf(exit: Exit.Exit<void, unknown>): unknown {
   }
   return undefined;
 }
+
+describe("requireFeatureEntitlement — non-SaaS deploy mode", () => {
+  it("passes (no-op) on a self-hosted deploy even with a below-tier org", async () => {
+    // A self-hosted enterprise build has its workspaces on `free`; the per-tier
+    // ladder must not fire there or SSO would be wrongly denied. The enterprise
+    // license Tag is what gates the feature in that topology.
+    mockDeployMode = "self-hosted";
+    mockEntitlement = { planTier: "free", isOperator: false };
+    const exit = await runGuard("org_selfhosted");
+    expect(Exit.isSuccess(exit)).toBe(true);
+    // Must not even attempt a workspace lookup off the SaaS path.
+    expect(mockEntitlementCallCount).toBe(0);
+  });
+});
 
 describe("requireFeatureEntitlement — self-hosted / no billing context", () => {
   it("passes when no internal DB is configured (self-hosted)", async () => {

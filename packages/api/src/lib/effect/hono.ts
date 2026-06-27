@@ -387,7 +387,7 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
         code: "billing_check_failed",
         message: error.message,
       };
-    // WS1 (#3986) — a tier-gated feature whose minimum plan ranks above the
+    // WS1 (#3984 / #3986) — a tier-gated feature whose minimum plan ranks above the
     // workspace's current tier. 403 + `plan_upgrade_required` matches the
     // integration install endpoints' upgrade envelope
     // (`PlanUpgradeRequiredBody`) so the admin UI's upgrade toast renders

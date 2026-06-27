@@ -17,6 +17,7 @@
  */
 
 import { Data } from "effect";
+import type { PlanTier } from "@useatlas/types";
 
 // Content-mode errors live in `lib/content-mode/port.ts` so that module
 // stays self-contained and pure. They are folded into the `AtlasError`
@@ -842,8 +843,12 @@ export class BillingCheckFailedError extends Data.TaggedError("BillingCheckFaile
 export class FeatureEntitlementError extends Data.TaggedError("FeatureEntitlementError")<{
   readonly message: string;
   readonly feature: string;
-  readonly requiredPlan: string;
-  readonly currentPlan: string;
+  // Typed `PlanTier` (not `string`) so this producer of the
+  // `plan_upgrade_required` envelope agrees at compile time with the wire SSOT
+  // (`PlanUpgradeRequiredBody.required_plan` / `current_plan`, both `PlanTier`)
+  // and the install endpoints' OpenAPI schema (`z.enum(PLAN_TIERS)`).
+  readonly requiredPlan: PlanTier;
+  readonly currentPlan: PlanTier;
 }> {}
 
 // ── Backups (#2989 — verify/restore structural error mapping) ──────

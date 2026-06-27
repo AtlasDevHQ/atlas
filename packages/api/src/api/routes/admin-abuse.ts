@@ -9,20 +9,13 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import {
-  listFlaggedWorkspaces,
-  reinstateWorkspace,
-  getAbuseEvents,
-  getAbuseConfig,
-  getAbuseDetail,
-} from "@atlas/api/lib/security/abuse";
 import { getWorkspaceNamesByIds, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 
 const log = createLogger("admin-abuse");
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
+import { RequestContext, AuthContext, AbuseResponse } from "@atlas/api/lib/effect/services";
 import {
   AbuseStatusSchema,
   AbuseDetailSchema,
@@ -88,6 +81,10 @@ const listFlaggedRoute = createRoute({
       description: "Flagged workspaces",
       content: { "application/json": { schema: ListResponseSchema } },
     },
+    404: {
+      description: "Enterprise feature not enabled — abuse prevention requires EE",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     401: {
       description: "Authentication required",
       content: { "application/json": { schema: AuthErrorSchema } },
@@ -125,6 +122,10 @@ const reinstateRoute = createRoute({
     },
     400: {
       description: "Workspace not flagged",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Enterprise feature not enabled — abuse prevention requires EE",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: {
@@ -197,6 +198,10 @@ const getConfigRoute = createRoute({
       description: "Threshold configuration",
       content: { "application/json": { schema: AbuseThresholdConfigSchema } },
     },
+    404: {
+      description: "Enterprise feature not enabled — abuse prevention requires EE",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     401: {
       description: "Authentication required",
       content: { "application/json": { schema: AuthErrorSchema } },
@@ -226,7 +231,13 @@ const adminAbuse = createPlatformRouter();
 adminAbuse.openapi(listFlaggedRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const workspaces = listFlaggedWorkspaces();
+
+    const abuse = yield* AbuseResponse;
+    if (!abuse.available) {
+      return c.json({ error: "not_available", message: "Abuse prevention requires enterprise features to be enabled.", requestId }, 404);
+    }
+
+    const workspaces = yield* abuse.listFlaggedWorkspaces();
 
     // Enrich with recent events from DB + resolve workspace names so the
     // admin table shows "Acme Corp" instead of "org_01K...". Names are a
@@ -236,28 +247,32 @@ adminAbuse.openapi(listFlaggedRoute, async (c) => {
     // banner — without it a platform admin could mis-identify a row and
     // reinstate the wrong tenant.
     const warnings: string[] = [];
+    // Per-workspace event history is resolved through the Tag (the engine's
+    // `getAbuseEvents` Effect); the name-resolution batch fetch stays a raw
+    // Promise inside `Effect.promise` because it has its own advisory
+    // catch-and-warn degradation contract.
+    const eventResults = yield* Effect.all(
+      workspaces.map((ws) => abuse.getAbuseEvents(ws.workspaceId, 10)),
+    );
     const enriched = yield* Effect.promise(async () => {
       const orgIds = workspaces.map((ws) => ws.workspaceId);
-      const [eventResults, names] = await Promise.all([
-        Promise.all(workspaces.map((ws) => getAbuseEvents(ws.workspaceId, 10))),
-        getWorkspaceNamesByIds(orgIds).catch((err) => {
-          const message = err instanceof Error ? err.message : String(err);
-          log.error(
-            {
-              err: err instanceof Error
-                ? { message: err.message, stack: err.stack }
-                : String(err),
-              orgIdCount: orgIds.length,
-              // First 5 ids for on-call correlation without flooding logs.
-              sampleOrgIds: orgIds.slice(0, 5),
-              requestId,
-            },
-            "abuse list: workspace name resolution failed",
-          );
-          warnings.push(`name_resolution_failed: ${message}`);
-          return new Map<string, string | null>();
-        }),
-      ]);
+      const names = await getWorkspaceNamesByIds(orgIds).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        log.error(
+          {
+            err: err instanceof Error
+              ? { message: err.message, stack: err.stack }
+              : String(err),
+            orgIdCount: orgIds.length,
+            // First 5 ids for on-call correlation without flooding logs.
+            sampleOrgIds: orgIds.slice(0, 5),
+            requestId,
+          },
+          "abuse list: workspace name resolution failed",
+        );
+        warnings.push(`name_resolution_failed: ${message}`);
+        return new Map<string, string | null>();
+      });
       return workspaces.map((ws, i) => {
         // Promise.all preserves order, so `eventResults[i]` always exists —
         // but optional chaining + nullish fallback is the CLAUDE.md-preferred
@@ -294,7 +309,12 @@ adminAbuse.openapi(reinstateRoute, async (c) => {
     const { workspaceId } = c.req.valid("param");
     const actorId = user?.id ?? "unknown";
 
-    const previousLevel = reinstateWorkspace(workspaceId, actorId);
+    const abuse = yield* AbuseResponse;
+    if (!abuse.available) {
+      return c.json({ error: "not_available", message: "Abuse prevention requires enterprise features to be enabled.", requestId }, 404);
+    }
+
+    const previousLevel = yield* abuse.reinstateWorkspace(workspaceId, actorId);
     // `== null` on purpose: the contract is `ReinstatedLevel | null` so only
     // `null` is reachable today, but `== null` also catches an `undefined`
     // that would slip in if a future refactor ever returns a bare `return`.
@@ -361,7 +381,12 @@ adminAbuse.openapi(getDetailRoute, async (c) => {
     const { requestId } = yield* RequestContext;
     const { workspaceId } = c.req.valid("param");
 
-    const detail = yield* Effect.promise(() => getAbuseDetail(workspaceId));
+    const abuse = yield* AbuseResponse;
+    if (!abuse.available) {
+      return c.json({ error: "not_available", message: "Abuse prevention requires enterprise features to be enabled.", requestId }, 404);
+    }
+
+    const detail = yield* abuse.getAbuseDetail(workspaceId);
     if (!detail) {
       return c.json(
         {
@@ -406,8 +431,16 @@ adminAbuse.openapi(getDetailRoute, async (c) => {
 
 // GET /config — current threshold configuration
 adminAbuse.openapi(getConfigRoute, async (c) => {
-  return runEffect(c, Effect.sync(() => {
-    return c.json(getAbuseConfig(), 200);
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+
+    const abuse = yield* AbuseResponse;
+    if (!abuse.available) {
+      return c.json({ error: "not_available", message: "Abuse prevention requires enterprise features to be enabled.", requestId }, 404);
+    }
+
+    const config = yield* abuse.getAbuseConfig();
+    return c.json(config, 200);
   }), { label: "read abuse config" });
 });
 

@@ -68,6 +68,8 @@ mock.module("@atlas/api/lib/security/abuse", () => ({
   checkAbuseStatus: mock(() => ({ level: "none" })),
   recordQueryEvent: mock(() => {}),
   restoreAbuseState: mock(async () => {}),
+  getAbuseRestoreStatus: mock(() => "ok" as const),
+  ABUSE_RESTORE_STATUSES: ["pending", "ok", "db_unavailable", "load_failed"] as const,
   _resetAbuseState: mock(() => {}),
   abuseCleanupTick: mock(() => {}),
   ABUSE_CLEANUP_INTERVAL_MS: 300_000,

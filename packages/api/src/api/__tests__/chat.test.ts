@@ -235,6 +235,41 @@ mock.module("@atlas/api/lib/billing/enforcement", () => ({
   severityOf: () => 0,
 }));
 
+// Abuse shim mock (#4000 — WS5). The chat path consults the abuse verdict
+// through `agent-gate.ts → checkAbuseStatus` (imported from the shim). Post-
+// split the graduated-response engine lives in `@atlas/ee` and a core test
+// can't reach it, so we mock the shim's `checkAbuseStatus` here to drive the
+// route-level contract directly. `mockCheckAbuseStatus` defaults to `none` so
+// every OTHER chat test is unaffected; the #2269 block below flips it to
+// exercise the suspended (403) and allowlist-shadowed (none → 200) verdicts.
+// Mock-all-exports per CLAUDE.md — the rest are inert stubs the chat path
+// never touches.
+const mockCheckAbuseStatus: Mock<(orgId: string) => { level: string; throttleDelayMs?: number }> =
+  mock(() => ({ level: "none" }));
+
+mock.module("@atlas/api/lib/security/abuse", () => ({
+  checkAbuseStatus: mockCheckAbuseStatus,
+  recordQueryEvent: mock(() => {}),
+  listFlaggedWorkspaces: mock(() => []),
+  getAbuseDetail: mock(async () => null),
+  getAbuseEvents: mock(async () => ({ events: [], status: "db_unavailable" })),
+  reinstateWorkspace: mock(() => null),
+  getAbuseConfig: mock(() => ({
+    queryRateLimit: 200,
+    queryRateWindowSeconds: 300,
+    errorRateThreshold: 0.5,
+    uniqueTablesLimit: 50,
+    throttleDelayMs: 2000,
+    escalationCooldownMs: 60_000,
+  })),
+  restoreAbuseState: mock(async () => {}),
+  getAbuseRestoreStatus: mock(() => "db_unavailable" as const),
+  abuseCleanupTick: mock(() => {}),
+  _resetAbuseState: mock(() => {}),
+  ABUSE_RESTORE_STATUSES: ["pending", "ok", "db_unavailable", "load_failed"] as const,
+  ABUSE_CLEANUP_INTERVAL_MS: 300_000,
+}));
+
 // Import after mocks are registered
 const { app } = await import("../index");
 
@@ -2102,63 +2137,65 @@ describe("POST /api/v1/chat", () => {
     });
   });
 
-  // Asserts the chat route honors the lib-level allowlist guard
-  // end-to-end. A regression that re-reads `state.level` directly
-  // (bypassing the `checkAbuseStatus` short-circuit) passes the unit
-  // test in abuse.test.ts but fails here.
+  // Asserts the chat route honors the abuse-status verdict end-to-end:
+  // when `checkAbuseStatus` reports `none` (which the EE engine's read-time
+  // allowlist guard produces for an allowlisted-but-stale-suspended
+  // workspace — #2269), the chat route must NOT 403.
+  //
+  // Post-#4000 (WS5) the graduated-response engine — including the allowlist
+  // read-time shadow that *makes* `checkAbuseStatus` return `none` — moved to
+  // `@atlas/ee/abuse-prevention/engine`, and that behavior is unit-tested
+  // there (a core test can't import `@atlas/ee`; the ee-import guard scans
+  // `packages/api/src`). What stays verifiable at this core route boundary is
+  // the integration contract: the chat route trusts the `checkAbuseStatus`
+  // verdict it gets from the shim. So we mock the shim's `checkAbuseStatus` to
+  // the allowlist-shadowed result (`none`) and assert the route returns 200.
+  // A regression that re-derived suspension at the route layer (bypassing the
+  // shim verdict) would still 403 here and fail.
   describe("#2269 — allowlisted-with-stale-suspended workspace", () => {
-    it("returns non-403 when checkAbuseStatus is shadowed by the allowlist", async () => {
-      const origAllowlist = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
-      const origDeployMode = process.env.ATLAS_DEPLOY_MODE;
-      const origCooldown = process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS;
-      const abuse = await import("@atlas/api/lib/security/abuse");
-      abuse._resetAbuseState();
-      try {
-        // Self-hosted bypass: the abuse engine no-ops unless deploy mode is
-        // SaaS. Without this the entire test is moot — the suspended-then-
-        // allowlisted setup below would just return "none" both times via
-        // the deploy-mode gate, not via the allowlist read-time guard.
-        // Cooldown=0 so the tight-loop seeder can walk the full ladder.
-        process.env.ATLAS_DEPLOY_MODE = "saas";
-        process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = "0";
-        // Order matters: drive suspended BEFORE allowlisting, since
-        // recordQueryEvent short-circuits on allowlist membership.
-        delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
-        const config = abuse.getAbuseConfig();
-        for (let i = 0; i <= config.queryRateLimit + 5; i++) {
-          abuse.recordQueryEvent("ws-loadtest-stale", { success: true });
-        }
-        expect(abuse.checkAbuseStatus("ws-loadtest-stale").level).toBe("suspended");
-
-        process.env.ATLAS_LOADTEST_ALLOWED_ORGS = "ws-loadtest-stale";
-        mockAuthenticateRequest.mockResolvedValue({
-          authenticated: true as const,
+    beforeEach(() => {
+      mockAuthenticateRequest.mockResolvedValue({
+        authenticated: true as const,
+        mode: "managed" as const,
+        user: {
+          id: "user-loadtest",
           mode: "managed" as const,
-          user: {
-            id: "user-loadtest",
-            mode: "managed" as const,
-            label: "loadtest@useatlas.dev",
-            role: "admin",
-            activeOrganizationId: "ws-loadtest-stale",
-            claims: { twoFactorEnabled: true },
-          },
-        });
+          label: "loadtest@useatlas.dev",
+          role: "admin",
+          activeOrganizationId: "ws-loadtest-stale",
+          claims: { twoFactorEnabled: true },
+        },
+      });
+    });
+    afterEach(() => {
+      // Restore the file-wide default so sibling tests stay on `none`.
+      mockCheckAbuseStatus.mockImplementation(() => ({ level: "none" }));
+    });
 
-        const response = await app.fetch(makeRequest());
-        // Both assertions on purpose — `not.toBe(403)` is the regression
-        // guard; `.toBe(200)` keeps a refactor that returns 503 (or any
-        // non-200) for a different reason from passing vacuously.
-        expect(response.status).not.toBe(403);
-        expect(response.status).toBe(200);
-      } finally {
-        if (origAllowlist === undefined) delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
-        else process.env.ATLAS_LOADTEST_ALLOWED_ORGS = origAllowlist;
-        if (origDeployMode === undefined) delete process.env.ATLAS_DEPLOY_MODE;
-        else process.env.ATLAS_DEPLOY_MODE = origDeployMode;
-        if (origCooldown === undefined) delete process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS;
-        else process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = origCooldown;
-        abuse._resetAbuseState();
-      }
+    // Positive pin (the contrast that keeps the negative case below honest):
+    // the chat route MUST block on a non-`none` abuse verdict. If a refactor
+    // dropped the abuse check from the agent gate, this would fail.
+    it("blocks with 403 when checkAbuseStatus reports suspended", async () => {
+      mockCheckAbuseStatus.mockImplementation(() => ({ level: "suspended" }));
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(403);
+    });
+
+    // The #2269 regression: for an allowlisted-but-stale-suspended workspace
+    // the EE engine's read-time allowlist shadow makes `checkAbuseStatus`
+    // report `none`. The chat route must TRUST that verdict and return 200 —
+    // not re-derive suspension at the route layer. We drive the shadowed
+    // verdict directly (`none`); paired with the 403 pin above, a route that
+    // ignored the verdict (always blocking) or ignored the gate (never
+    // blocking) fails one of the two.
+    it("returns 200 when checkAbuseStatus reports none (allowlist-shadowed)", async () => {
+      mockCheckAbuseStatus.mockImplementation(() => ({ level: "none" }));
+      const response = await app.fetch(makeRequest());
+      // Both assertions on purpose — `not.toBe(403)` is the regression
+      // guard; `.toBe(200)` keeps a refactor that returns 503 (or any
+      // non-200) for a different reason from passing vacuously.
+      expect(response.status).not.toBe(403);
+      expect(response.status).toBe(200);
     });
   });
 });

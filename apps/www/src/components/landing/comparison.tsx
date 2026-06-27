@@ -19,20 +19,35 @@ const ROWS: ReadonlyArray<Row> = [
   {
     feature: "Agent-native",
     atlas:
-      "MCP server first: Claude Desktop, Cursor, Continue with bunx @useatlas/mcp init; read tools open, datasource writes gated by OAuth scope + RBAC",
+      "MCP server first (stdio + SSE): Claude Desktop, Cursor, Continue with bunx @useatlas/mcp init; read tools open, datasource writes gated by OAuth scope + RBAC",
     bi: "Bolted-on AI feature",
     textToSql: "Standalone chat UI",
   },
   {
     feature: "Embeddable",
-    atlas: "Script tag, React component, headless API, MCP, 6 chat platforms",
+    atlas:
+      "Script-tag widget, <AtlasChat /> React component, typed @useatlas/sdk, MCP, 6 chat platforms",
     bi: "Standalone app",
     textToSql: "Standalone app",
   },
   {
+    feature: "Long-running turns",
+    atlas:
+      "Durable agent loop: a turn interrupted by a deploy, crash, or serverless timeout resumes from its last checkpoint — security re-verified on resume",
+    bi: "N/A",
+    textToSql: "Restarts from scratch",
+  },
+  {
+    feature: "Semantic layer editing",
+    atlas:
+      "Author entities, dimensions, measures, joins and query patterns in the in-product admin editor — or as YAML in your repo, versioned in PRs",
+    bi: "GUI-only, proprietary store",
+    textToSql: "None",
+  },
+  {
     feature: "Dashboards as conversations",
     atlas:
-      "Chat drawer is the editor: per-user drafts + atomic three-way-merge Publish over a persisted baseline",
+      "Chat drawer is the editor: per-user drafts + atomic three-way-merge Publish over a versioned baseline; bound-mode editing keeps the agent on the dashboard you opened",
     bi: "Static dashboards with separate edit mode",
     textToSql: "No dashboards",
   },
@@ -51,7 +66,8 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     feature: "Plugin ecosystem",
-    atlas: "21 plugins across 5 types, extend anything",
+    atlas:
+      "24 plugins across 5 types (datasource, context, interaction, action, sandbox); author your own with @useatlas/plugin-sdk and install from the in-product registry",
     bi: "Closed",
     textToSql: "Limited",
   },
@@ -64,7 +80,7 @@ const ROWS: ReadonlyArray<Row> = [
   {
     feature: "Multi-database",
     atlas:
-      "PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Elasticsearch, Salesforce",
+      "PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Elasticsearch / OpenSearch, Salesforce",
     bi: "Usually one",
     textToSql: "Usually one",
   },
@@ -76,6 +92,28 @@ const ROWS: ReadonlyArray<Row> = [
     textToSql: "None",
   },
 ];
+
+// ---------------------------------------------------------------------------
+// CLAIM-ACCURACY NOTE (#3994). Every cell above is verified against shipped
+// code. Specifically:
+//   - "Multi-database" lists only queryable read datasources. Elasticsearch
+//     and OpenSearch are one unified plugin (engine flag), so both are named.
+//     Twenty (CRM) and Obsidian are deliberately NOT here — Twenty is an
+//     action/write target and Obsidian is a surface + vault-reader action,
+//     not analytics datasources.
+//   - "24 plugins across 5 types" = directories under plugins/ whose
+//     definePlugin() declares a PluginType (the `obsidian` client app extends
+//     Obsidian's own Plugin class and declares none, so it's excluded). This
+//     is a hand-counted figure — recount it whenever plugins/ changes.
+//   - The REST/OpenAPI datasources named on the landing page (Stripe, Notion,
+//     GitHub, any OpenAPI spec) are OpenAPI presets in
+//     packages/api/src/lib/openapi/data-candidates.ts, NOT plugins/ entries —
+//     the absence of a plugins/github dir is expected, not drift.
+//   - "Long-running turns", "Semantic layer editing", MCP stdio+SSE, and the
+//     @useatlas/sdk / <AtlasChat /> embed claims are each backed by shipped
+//     packages — see #3994 for the verification trail.
+// Do not add a capability row without the same verification.
+// ---------------------------------------------------------------------------
 
 export function Comparison() {
   return (

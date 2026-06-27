@@ -249,19 +249,11 @@ type OrgClient = Omit<typeof _authClient, "useSession"> & {
     } | undefined>;
   };
 
-  // deviceAuthorizationClient — `device.{approve,deny}` resolve the /device
-  // approval screen that backs `atlas login` (#4043 / ADR-0025). The chain
-  // inference loses the namespace, so the two methods we call are typed here.
-  device?: {
-    approve: (opts: { userCode: string }) => Promise<{
-      data?: unknown;
-      error?: { message?: string; code?: string } | null;
-    }>;
-    deny: (opts: { userCode: string }) => Promise<{
-      data?: unknown;
-      error?: { message?: string; code?: string } | null;
-    }>;
-  };
+  // deviceAuthorizationClient contributes `device.{approve,deny}` for the
+  // /device approval screen that backs `atlas login` (#4043 / ADR-0025).
+  // Unlike oauth2/passkey/etc., this namespace survives the client-chain
+  // inference, so it is NOT re-declared here — the device page reads the
+  // inferred `{ error, error_description }` result via `deviceErrorMessage`.
 
   // emailOTPClient — verify + resend used by post-signup interstitial.
   emailOtp?: {

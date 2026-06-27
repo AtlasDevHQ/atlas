@@ -39,6 +39,23 @@ import {
 } from "lucide-react";
 import { normalizeUserCode } from "./normalize-user-code";
 
+/**
+ * Pull a human-readable message from a Better Auth device-endpoint error. The
+ * device-flow error shape is `{ error, error_description, status, statusText }`
+ * (RFC 8628), not the `{ message }` shape other plugins use — read it
+ * defensively so a shape change degrades to a sensible default rather than a
+ * crash.
+ */
+function deviceErrorMessage(err: unknown): string {
+  if (err && typeof err === "object") {
+    const e = err as Record<string, unknown>;
+    if (typeof e.error_description === "string" && e.error_description) return e.error_description;
+    if (typeof e.message === "string" && e.message) return e.message;
+    if (typeof e.error === "string" && e.error) return e.error;
+  }
+  return "That code is invalid or has expired. Check your terminal and try again.";
+}
+
 function DeviceApproval() {
   const searchParams = useSearchParams();
   const session = authClient.useSession();
@@ -67,7 +84,7 @@ function DeviceApproval() {
     try {
       const res = await action({ userCode: trimmedCode });
       if (res?.error) {
-        setError(res.error.message ?? "That code is invalid or has expired. Check your terminal and try again.");
+        setError(deviceErrorMessage(res.error));
         return;
       }
       setOutcome(decision === "approve" ? "approved" : "denied");

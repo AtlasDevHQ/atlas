@@ -15,6 +15,21 @@
 /** Marketing comparison-table columns, in display order. */
 export type PricingColumn = "selfHosted" | "starter" | "pro" | "business";
 
+/**
+ * Per-seat monthly base price (USD) for each marketing column, mirrored from
+ * `plans.ts` `pricePerSeat` — Atlas's internal price SSOT (kept in lockstep
+ * with the Stripe `STRIPE_*_PRICE_ID` Price objects, which it does not
+ * auto-sync). The pricing page reads the paid columns (`starter`/`pro`/
+ * `business`) for its tier cards instead of hand-coding them, so an advertised
+ * base price can't drift from `plans.ts`; `scripts/check-pricing-parity.sh`
+ * fails CI when this file is stale relative to `plans.ts`. `selfHosted` is 0
+ * for ladder completeness — the Self-Hosted card hard-codes "Free" and doesn't
+ * read it.
+ */
+export const TIER_MONTHLY_PRICE: Readonly<Record<PricingColumn, number>> = {
+  selfHosted: 0, starter: 39, pro: 69, business: 149,
+};
+
 /** Comparison-table section a gated feature renders under. */
 export type EntitlementSection = "hosting" | "security & compliance";
 

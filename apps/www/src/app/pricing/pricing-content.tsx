@@ -6,6 +6,7 @@ import { TalkToSalesDialog } from "../../components/talk-to-sales-dialog";
 import {
   ENTITLEMENT_ROWS,
   ENTITLEMENT_SECTION_ORDER,
+  TIER_MONTHLY_PRICE,
   type EntitlementRow,
   type EntitlementSection,
   type FeatureId,
@@ -59,6 +60,11 @@ interface FAQ {
 // Data
 // ---------------------------------------------------------------------------
 
+// Paid-tier base prices are read from TIER_MONTHLY_PRICE — the generated
+// mirror of `plans.ts` `pricePerSeat` (Atlas's internal price SSOT) — never
+// hand-coded, so an advertised base price can't drift from `plans.ts` (#4060).
+// Self-Hosted is the free OSS tier and renders "Free forever", so it stays
+// `null` rather than the mirror's $0.
 const TIERS: Tier[] = [
   {
     kind: "open source",
@@ -81,7 +87,7 @@ const TIERS: Tier[] = [
   {
     kind: "atlas cloud",
     name: "Starter",
-    monthlyPrice: 29,
+    monthlyPrice: TIER_MONTHLY_PRICE.starter,
     tagline: "Solo + small teams.",
     badge: "14-day free trial",
     cta: "Start free trial",
@@ -101,7 +107,7 @@ const TIERS: Tier[] = [
   {
     kind: "atlas cloud",
     name: "Pro",
-    monthlyPrice: 59,
+    monthlyPrice: TIER_MONTHLY_PRICE.pro,
     tagline: "Growing teams.",
     badge: "14-day free trial",
     cta: "Start free trial",
@@ -123,7 +129,7 @@ const TIERS: Tier[] = [
   {
     kind: "enterprise",
     name: "Business",
-    monthlyPrice: 99,
+    monthlyPrice: TIER_MONTHLY_PRICE.business,
     tagline: "Regulated teams at scale.",
     badge: "14-day free trial",
     cta: "Start free trial",

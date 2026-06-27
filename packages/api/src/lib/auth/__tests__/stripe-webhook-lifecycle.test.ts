@@ -357,6 +357,21 @@ describe("buildStripePluginOptions — org-scoped configuration (#3416)", () => 
     }
   });
 
+  // Pin the org-scoped billing contract: NO user-level customer on signup.
+  // Atlas bills `organization.stripeCustomerId` exclusively; a per-signup user
+  // customer is never used for billing and required a plugin-managed
+  // `user.stripeCustomerId` column that drifted across region DBs (US had it,
+  // EU/APAC didn't → an orphaned-customer leak on EU/APAC signup). A revert to
+  // `true` would reintroduce that. This is the config-shape guard; the behavioral
+  // counterpart (signup mints no customer) is in stripe-checkout.test.ts. See #4012.
+  it("does NOT create a user-level Stripe customer on signup (org-scoped only)", () => {
+    const options = buildStripePluginOptions({
+      stripeClient: makeStripeClient(),
+      webhookSecret: "whsec_test",
+    });
+    expect(options.createCustomerOnSignUp).toBe(false);
+  });
+
   // #3703 — pin the hot-reload contract: `plans` must be the resolver FUNCTION,
   // not an eager array snapshot. A revert to `plans: getStripePlans()` would
   // restore the redeploy-required footgun, and only this assertion would catch

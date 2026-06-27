@@ -1,7 +1,16 @@
 /**
- * Unit tests for abuse prevention engine.
+ * Unit tests for the abuse prevention graduated-response ENGINE (enterprise).
  *
  * Tests anomaly detection, graduated escalation, reinstatement, and config.
+ *
+ * Post-#4000 (WS5) the engine lives in `@atlas/ee` (this directory); the core
+ * `lib/security/abuse.ts` is a thin delegating shim. These tests exercise
+ * engine internals directly (escalation ladder, dwell-time cooldown,
+ * `restoreAbuseState` rehydration, `getAbuseDetail` data path), so they import
+ * from `./engine`. They still mock the CORE modules the engine depends on
+ * (`logger`, `db/internal`, `metrics`) — `mock.module` targets the import path,
+ * which is identical whether the importer is core or EE. `getAbuseConfig` is
+ * baseline (core-resident), imported from there.
  */
 
 import {
@@ -87,15 +96,18 @@ const {
   checkAbuseStatus,
   listFlaggedWorkspaces,
   reinstateWorkspace,
-  getAbuseConfig,
   getAbuseEvents,
   getAbuseDetail,
   restoreAbuseState,
   getAbuseRestoreStatus,
   _resetAbuseState,
-} = await import("../abuse");
+} = await import("./engine");
 
-const { isLoadTestWorkspace } = await import("../../auth/load-test-allowlist");
+// `getAbuseConfig` is baseline (core-resident); the engine re-exports it, but
+// import it from baseline so the test asserts against the canonical source.
+const { getAbuseConfig } = await import("@atlas/api/lib/security/abuse-baseline");
+
+const { isLoadTestWorkspace } = await import("@atlas/api/lib/auth/load-test-allowlist");
 
 describe("Abuse Prevention Engine", () => {
   beforeEach(() => {

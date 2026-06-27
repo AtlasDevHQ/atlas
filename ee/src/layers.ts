@@ -28,6 +28,7 @@ import type {
   SCIMProvenance,
   SSOPolicy,
   SlaMetrics,
+  AbuseResponse,
 } from "@atlas/api/lib/effect/services";
 import { ResidencyResolverLive } from "./platform/residency";
 import { ModelRouterLive } from "./platform/model-routing";
@@ -35,6 +36,7 @@ import { MaskingPolicyLive } from "./compliance/masking";
 import { ComplianceReportsLive } from "./compliance/reports";
 import { ApprovalGateLive } from "./governance/approval";
 import { SlaMetricsLive } from "./sla/index";
+import { AbuseResponseLive } from "./abuse-prevention/policy";
 import { BackupsManagerLive } from "./backups/index";
 import { AuditRetentionLive } from "./audit/retention";
 import { AuditPurgeSchedulerLive } from "./audit/purge-scheduler";
@@ -73,6 +75,7 @@ export const EELayer: Layer.Layer<
   | SCIMProvenance
   | SSOPolicy
   | SlaMetrics
+  | AbuseResponse
 > = Layer.mergeAll(
   ResidencyResolverLive,
   ModelRouterLive,
@@ -80,6 +83,7 @@ export const EELayer: Layer.Layer<
   ComplianceReportsLive,
   ApprovalGateLive,
   SlaMetricsLive,
+  AbuseResponseLive,
   BackupsManagerLive,
   AuditRetentionLive,
   AuditPurgeSchedulerLive,

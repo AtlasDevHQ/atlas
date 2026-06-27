@@ -1799,6 +1799,80 @@ export const NoopSlaMetricsLayer: Layer.Layer<SlaMetrics> = Layer.sync(
   },
 );
 
+// ── AbuseResponse (#4000 — WS5 abuse-prevention split) ───────────────
+//
+// The graduated multi-tenant warn→throttle→suspend response engine moved
+// to `@atlas/ee` (`ee/src/abuse-prevention/`); core keeps only the baseline
+// detector/config (`lib/security/abuse-baseline.ts`). This Tag is the Effect
+// seam the admin routes (`api/routes/admin-abuse.ts`) resolve the engine
+// through — exactly like `SlaMetrics`. The non-Effect hot-path call sites
+// (`audit.ts:recordQueryEvent`, `agent-gate.ts:checkAbuseStatus`) reach the
+// same engine through the sync `AbuseResponsePolicy` holder instead (see
+// `lib/security/abuse-response-policy.ts`), because routing a per-query
+// counter bump through Effect would force those callers into the runtime.
+// The no-op default reports `available: false` so the admin routes surface
+// the 404 `not_available` envelope when EE isn't loaded.
+
+type AbuseStatusShape = import("@useatlas/types").AbuseStatus;
+type AbuseDetailShape = import("@useatlas/types").AbuseDetail;
+type AbuseEventShape = import("@useatlas/types").AbuseEvent;
+type AbuseEventsStatusShape = import("@useatlas/types").AbuseEventsStatus;
+type AbuseThresholdConfigShape = import("@useatlas/types").AbuseThresholdConfig;
+type ReinstatedLevelShape = import("@atlas/api/lib/security/abuse-baseline").ReinstatedLevel;
+
+export interface AbuseResponseShape {
+  /** False when the EE response engine isn't loaded — `admin-abuse.ts` returns 404 `not_available`. */
+  readonly available: boolean;
+  readonly listFlaggedWorkspaces: () => Effect.Effect<AbuseStatusShape[]>;
+  readonly getAbuseDetail: (
+    workspaceId: string,
+    priorLimit?: number,
+    eventLimit?: number,
+  ) => Effect.Effect<AbuseDetailShape | null>;
+  readonly getAbuseEvents: (
+    workspaceId: string,
+    limit?: number,
+  ) => Effect.Effect<{ events: AbuseEventShape[]; status: AbuseEventsStatusShape }>;
+  readonly reinstateWorkspace: (
+    workspaceId: string,
+    actorId: string,
+  ) => Effect.Effect<ReinstatedLevelShape | null>;
+  readonly getAbuseConfig: () => Effect.Effect<AbuseThresholdConfigShape>;
+}
+export class AbuseResponse extends Context.Tag("AbuseResponse")<
+  AbuseResponse,
+  AbuseResponseShape
+>() {}
+// No-op default: graduated response engine not loaded. Reads succeed with
+// the disengaged shape (empty list / null detail / `db_unavailable` events /
+// `null` reinstate) so the admin route renders the 404 `not_available`
+// envelope via the `available: false` branch rather than failing. The one
+// method that returns real data is `getAbuseConfig`, which delegates to the
+// core baseline config (threshold config is core-resident, read by the
+// detector regardless of EE). Note the config *route* gates on `available`
+// and 404s before reaching it on the Noop, so this branch is for shape parity
+// with the live layer + any future non-route caller — not currently reached
+// through `admin-abuse.ts`.
+export const NoopAbuseResponseLayer: Layer.Layer<AbuseResponse> = Layer.sync(
+  AbuseResponse,
+  () => {
+    return {
+      available: false,
+      listFlaggedWorkspaces: () => Effect.succeed([]),
+      getAbuseDetail: () => Effect.succeed(null),
+      getAbuseEvents: () =>
+        Effect.succeed({ events: [], status: "db_unavailable" as AbuseEventsStatusShape }),
+      reinstateWorkspace: () => Effect.succeed(null),
+      getAbuseConfig: () =>
+        Effect.sync(() => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const baseline = require("@atlas/api/lib/security/abuse-baseline") as typeof import("@atlas/api/lib/security/abuse-baseline");
+          return baseline.getAbuseConfig();
+        }),
+    } satisfies AbuseResponseShape;
+  },
+);
+
 // ── BackupsManager (#2568 — slice 6/11 of #2017) ─────────────────────
 //
 // Inverts the `BackupsModule` lazy-loader in
@@ -2966,6 +3040,7 @@ export const NoopEnterpriseDefaultsLayer: Layer.Layer<
   | ComplianceReports
   | ApprovalGate
   | SlaMetrics
+  | AbuseResponse
   | BackupsManager
   | AuditRetention
   | AuditPurgeScheduler
@@ -2985,6 +3060,7 @@ export const NoopEnterpriseDefaultsLayer: Layer.Layer<
   NoopComplianceReportsLayer,
   NoopApprovalGateLayer,
   NoopSlaMetricsLayer,
+  NoopAbuseResponseLayer,
   NoopBackupsManagerLayer,
   NoopAuditRetentionLayer,
   NoopAuditPurgeSchedulerLayer,

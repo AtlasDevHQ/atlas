@@ -36,6 +36,14 @@ export interface UsageEvent {
   userId: string | null;
   eventType: UsageEventType;
   quantity: number;
+  /**
+   * Output-equivalent (model-weighted) token count for `token` events (#3989).
+   * Computed at agent-step accounting time via the TokenWeighting module and
+   * persisted to `usage_events.weighted_quantity` alongside the raw `quantity`,
+   * so budget math can denominate in output-equivalent tokens. Omit (or pass
+   * `null`) for non-token events — the column is NULL for those.
+   */
+  weightedQuantity?: number | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -85,13 +93,14 @@ export function logUsageEvent(event: UsageEvent): void {
   // after 5 consecutive failures. No try/catch needed here — hasInternalDB()
   // guards against the only synchronous throw path (DATABASE_URL unset).
   internalExecute(
-    `INSERT INTO usage_events (workspace_id, user_id, event_type, quantity, metadata)
-     VALUES ($1, $2, $3, $4, $5)`,
+    `INSERT INTO usage_events (workspace_id, user_id, event_type, quantity, weighted_quantity, metadata)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
     [
       event.workspaceId ?? null,
       event.userId ?? null,
       event.eventType,
       event.quantity,
+      event.weightedQuantity ?? null,
       event.metadata ? JSON.stringify(event.metadata) : null,
     ],
   );
@@ -223,7 +232,17 @@ export interface UsageSummaryRow {
 
 export interface UsageCurrentPeriod {
   queryCount: number;
+  /** Raw token spend for the period (sum of `token` event `quantity`). */
   tokenCount: number;
+  /**
+   * Output-equivalent (model-weighted) token spend for the period (#3989): the
+   * sum of `COALESCE(weighted_quantity, quantity)` over `token` events. This is
+   * the budget denominator — a turn on a pricier model contributes more here
+   * than its raw `tokenCount`. Token rows predating migration 0152 have a NULL
+   * `weighted_quantity` and fall back to their raw `quantity`, so this is never
+   * less than it should be for un-backfilled history.
+   */
+  weightedTokenCount: number;
   activeUsers: number;
   /** Inclusive ISO start of the metering window. */
   periodStart: string;
@@ -260,6 +279,7 @@ export async function getCurrentPeriodUsage(
     return {
       queryCount: 0,
       tokenCount: 0,
+      weightedTokenCount: 0,
       activeUsers: 0,
       periodStart: "",
       periodEnd: "",
@@ -272,11 +292,13 @@ export async function getCurrentPeriodUsage(
   const rows = await internalQuery<{
     query_count: number;
     token_count: number;
+    weighted_token_count: number;
     active_users: number;
   }>(
     `SELECT
        COALESCE(SUM(CASE WHEN event_type = 'query' THEN quantity ELSE 0 END), 0)::int AS query_count,
        COALESCE(SUM(CASE WHEN event_type = 'token' THEN quantity ELSE 0 END), 0)::int AS token_count,
+       COALESCE(SUM(CASE WHEN event_type = 'token' THEN COALESCE(weighted_quantity, quantity) ELSE 0 END), 0)::int AS weighted_token_count,
        COALESCE(COUNT(DISTINCT CASE WHEN event_type = 'login' THEN user_id END), 0)::int AS active_users
      FROM usage_events
      WHERE workspace_id = $1
@@ -289,6 +311,7 @@ export async function getCurrentPeriodUsage(
   return {
     queryCount: row?.query_count ?? 0,
     tokenCount: row?.token_count ?? 0,
+    weightedTokenCount: row?.weighted_token_count ?? 0,
     activeUsers: row?.active_users ?? 0,
     periodStart: period.start.toISOString(),
     periodEnd: period.end.toISOString(),

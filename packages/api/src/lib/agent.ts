@@ -62,6 +62,7 @@ import {
 } from "./durable-state";
 import { loadGroupRoutingContext } from "./env-routing/lookup";
 import { logUsageEvent } from "./metering";
+import { toOutputEquivalentTokens } from "./billing/token-weighting";
 import { buildRetrievalQuery, getRetrievalTurns } from "./learn/pattern-cache";
 import { resolveOrgKnowledgeSection } from "./learn/org-knowledge-section";
 import { dispatchMutableHook } from "./plugins/hooks";
@@ -2008,7 +2009,17 @@ export async function runAgent({
           // Wrapped in its own try/catch to ensure a metering failure
           // never disrupts the onFinish callback or stream finalization.
           try {
-            const totalTokens = (totalUsage.inputTokens ?? 0) + (totalUsage.outputTokens ?? 0);
+            const inputTokens = totalUsage.inputTokens ?? 0;
+            const outputTokens = totalUsage.outputTokens ?? 0;
+            const totalTokens = inputTokens + outputTokens;
+            // Output-equivalent (model-weighted) tokens (#3989): normalize the
+            // turn's raw tokens by the per-model weight so budget math can
+            // denominate in output-equivalent tokens. Recorded alongside the raw
+            // `quantity` on the same agent-step accounting event.
+            const weightedTokens = toOutputEquivalentTokens(
+              { inputTokens, outputTokens },
+              resolvedModelId,
+            );
             logUsageEvent({
               workspaceId: orgId ?? null,
               userId: userId ?? null,
@@ -2022,7 +2033,8 @@ export async function runAgent({
                 userId: userId ?? null,
                 eventType: "token",
                 quantity: totalTokens,
-                metadata: { input: totalUsage.inputTokens ?? 0, output: totalUsage.outputTokens ?? 0 },
+                weightedQuantity: weightedTokens,
+                metadata: { input: inputTokens, output: outputTokens, weighted: weightedTokens },
               });
             }
           } catch (err) {

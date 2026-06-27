@@ -374,8 +374,13 @@ billing.openapi(getBillingStatusRoute, async (c) => {
     const totalTokenBudget = computeTokenBudget(workspace.plan_tier, seatCount);
     const tokenLimit = isUnlimited(totalTokenBudget) ? null : totalTokenBudget;
 
+    // The budget gauge denominates in output-equivalent (model-weighted)
+    // tokens (#3989) — the SAME denominator enforcement uses — so the page's
+    // usage percent can never diverge from the 429 the workspace actually hits.
+    // `?? tokenCount` mirrors the enforcement consumer: if the weighted field is
+    // ever absent, the gauge degrades to raw rather than showing a false 0%.
     const tokenOverage = tokenLimit !== null
-      ? buildMetricStatus("tokens", usage.tokenCount, tokenLimit)
+      ? buildMetricStatus("tokens", usage.weightedTokenCount ?? usage.tokenCount, tokenLimit)
       : { usagePercent: 0, status: "ok" as const };
 
     return c.json({
@@ -408,6 +413,7 @@ billing.openapi(getBillingStatusRoute, async (c) => {
       usage: {
         queryCount: usage.queryCount,
         tokenCount: usage.tokenCount,
+        weightedTokenCount: usage.weightedTokenCount,
         seatCount,
         tokenUsagePercent: tokenOverage.usagePercent,
         tokenOverageStatus: tokenOverage.status,

@@ -57,7 +57,13 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 mock.module("@atlas/api/lib/metering", () => ({
-  getCurrentPeriodUsage: async () => mockUsage,
+  // Budget enforcement denominates in output-equivalent tokens (#3989); this
+  // parity test drives the budget via `tokenCount`, so mirror it onto
+  // `weightedTokenCount` (the denominator enforcement actually reads).
+  getCurrentPeriodUsage: async () => ({
+    weightedTokenCount: mockUsage.tokenCount,
+    ...mockUsage,
+  }),
   logUsageEvent: () => {},
   aggregateUsageSummary: async () => {},
   getUsageHistory: async () => [],

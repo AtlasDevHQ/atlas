@@ -197,16 +197,16 @@ describe("checkAgentBillingGate", () => {
     planVerdict = {
       allowed: false,
       errorCode: "plan_limit_exceeded",
-      errorMessage: "You have exceeded your plan's token budget.",
+      errorMessage: "You have reached your workspace's spend ceiling.",
       httpStatus: 429,
-      usage: { currentUsage: 2_300_000, limit: 2_000_000, metric: "tokens" },
+      usage: { currentUsage: 100, limit: 20, metric: "usd" },
     };
     const result = await checkAgentBillingGate("org-1");
     expect(result.allowed).toBe(false);
     if (result.allowed) throw new Error("expected block");
     expect(result.errorCode).toBe("plan_limit_exceeded");
     expect(result.httpStatus).toBe(429);
-    expect(result.usage).toEqual({ currentUsage: 2_300_000, limit: 2_000_000, metric: "tokens" });
+    expect(result.usage).toEqual({ currentUsage: 100, limit: 20, metric: "usd" });
   });
 
   it("blocks a churned (locked) workspace with 403 subscription_required", async () => {

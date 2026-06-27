@@ -410,12 +410,12 @@ describe("POST /api/v1/query", () => {
     expect(body.usage).toEqual({ currentUsage: 23, limit: 20, metric: "usd" });
   });
 
-  it("attaches the 80–109% planWarning to a successful response without blocking", async () => {
+  it("attaches the approaching-credit planWarning to a successful response without blocking", async () => {
     billingGateVerdict = {
       allowed: true,
       warning: {
         code: "plan_limit_warning",
-        message: "You are approaching your plan's token budget",
+        message: "You are approaching your included usage credit",
         metrics: [],
       },
     };

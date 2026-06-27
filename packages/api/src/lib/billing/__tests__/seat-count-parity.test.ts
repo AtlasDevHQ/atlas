@@ -62,9 +62,9 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 mock.module("@atlas/api/lib/metering", () => ({
-  // Dollar enforcement denominates on `costUsd` (#4038); the page-budget parity
-  // assertions still exercise the token budget figure (`computeTokenBudget`),
-  // so mirror `tokenCount` onto `weightedTokenCount` too.
+  // Dollar enforcement denominates on `costUsd` (#4038); the page-budget figure
+  // derives from the seat count (`computeTokenBudget(tier, seatCount)`), not from
+  // usage. The `weightedTokenCount` mirror just keeps the returned shape realistic.
   getCurrentPeriodUsage: async () => ({
     weightedTokenCount: mockUsage.tokenCount,
     ...mockUsage,

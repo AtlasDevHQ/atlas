@@ -153,6 +153,7 @@ let computeOverageTokens: typeof import("@atlas/api/lib/billing/enforcement").co
 let computeOverageDollars: typeof import("@atlas/api/lib/billing/enforcement").computeOverageDollars;
 let resolveAbuseCeilingPercent: typeof import("@atlas/api/lib/billing/enforcement").resolveAbuseCeilingPercent;
 let resolveSpendPolicy: typeof import("@atlas/api/lib/billing/enforcement").resolveSpendPolicy;
+let resolveUsageCeiling: typeof import("@atlas/api/lib/billing/enforcement").resolveUsageCeiling;
 let _resetSettingsCache: typeof import("@atlas/api/lib/settings")._resetSettingsCache;
 
 beforeAll(async () => {
@@ -168,6 +169,7 @@ beforeAll(async () => {
     computeOverageDollars,
     resolveAbuseCeilingPercent,
     resolveSpendPolicy,
+    resolveUsageCeiling,
   } = await import("@atlas/api/lib/billing/enforcement"));
   ({ _resetSettingsCache } = await import("@atlas/api/lib/settings"));
 });
@@ -770,6 +772,76 @@ describe("billing/enforcement", () => {
     expect(String(bypassAlert!.msg)).toContain("BYPASSED");
   });
 
+  // ── Cost-basis gap alert (#4038) ──────────────────────────────────
+  // costUsd sums gateway_cost_usd, which is NULL for non-gateway providers and
+  // pre-#4036 token rows. When tokens were recorded but the cost basis summed to
+  // $0, the dollar gauge reads ~0% and the workspace is effectively un-metered —
+  // a SILENT fade-out. Enforcement must surface it as an operator-visible alert
+  // (matching the #3428 bypass) while still failing open.
+
+  it("emits an operator-visible alert when tokens were recorded but costUsd is $0 (#4038)", async () => {
+    mockWorkspace = makeWorkspace();
+    // Tokens recorded this period, but no cost basis (NULL gateway_cost_usd).
+    mockUsage = { queryCount: 0, tokenCount: 1_500_000, costUsd: 0, activeUsers: 0, periodStart: "p", periodEnd: "" };
+
+    // Still ALLOWED (fail-open: meter on the under-counted $0, never block).
+    const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
+    expect(result.warning).toBeUndefined();
+
+    const alert = errorLogs.find(
+      (e) =>
+        typeof e.ctx === "object" &&
+        e.ctx !== null &&
+        (e.ctx as Record<string, unknown>).reason === "cost_basis_missing",
+    );
+    expect(alert).toBeDefined();
+    expect(alert!.ctx).toMatchObject({ orgId: "org-1", reason: "cost_basis_missing", tokenCount: 1_500_000 });
+    expect(String(alert!.msg)).toContain("#4038");
+  });
+
+  it("does NOT alert cost-basis when there is genuinely no usage (costUsd $0, no tokens)", async () => {
+    mockWorkspace = makeWorkspace();
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    await checkPlanLimits("org-1", SEATS);
+    const alert = errorLogs.find(
+      (e) => typeof e.ctx === "object" && e.ctx !== null && (e.ctx as Record<string, unknown>).reason === "cost_basis_missing",
+    );
+    expect(alert).toBeUndefined();
+  });
+
+  // ── Disabled-ceiling extreme-overage alert (#3990, dollars #4038) ──
+  // A workspace metering past the default ceiling WITH its abuse ceiling disabled
+  // (continue policy) is accruing unbounded overage with no cutoff. evaluateUsage
+  // must elevate that to an operator-visible log.error, distinct from an ordinary
+  // metered warning.
+
+  it("emits an operator alert at extreme overage when the abuse ceiling is disabled", async () => {
+    mockWorkspace = makeWorkspace({ id: "org-uncapped" });
+    // 2000% of the $20 credit ($400) with the ceiling disabled → metered (no
+    // cutoff) but the unbounded-overage alert fires.
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 400, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const prev = process.env.ATLAS_ABUSE_CEILING;
+    process.env.ATLAS_ABUSE_CEILING = "0"; // disable the ceiling
+    _resetSettingsCache();
+    invalidatePlanCache();
+    try {
+      const result = expectAllowed(await checkPlanLimits("org-uncapped", SEATS));
+      expect(result.warning).toBeDefined();
+      const alert = errorLogs.find(
+        (e) =>
+          typeof e.ctx === "object" &&
+          e.ctx !== null &&
+          (e.ctx as Record<string, unknown>).reason === "abuse_ceiling_disabled_extreme_overage",
+      );
+      expect(alert).toBeDefined();
+      expect(alert!.ctx).toMatchObject({ reason: "abuse_ceiling_disabled_extreme_overage", overageDollars: 380 });
+    } finally {
+      if (prev === undefined) delete process.env.ATLAS_ABUSE_CEILING;
+      else process.env.ATLAS_ABUSE_CEILING = prev;
+      _resetSettingsCache();
+    }
+  });
+
   // ── Caching ───────────────────────────────────────────────────────
 
   it("uses cached workspace on second call", async () => {
@@ -1049,6 +1121,81 @@ describe("resolveSpendPolicy — settings parsing (#4038)", () => {
   it("falls back to 'continue' for an unrecognised value (never silent cutoff)", async () => {
     const policy = await withPolicyEnv("stop-everything", () => resolveSpendPolicy("org-policy-garbage"));
     expect(policy).toBe("continue");
+  });
+
+  it("falls back to 'continue' (never throws) when the settings read fails", async () => {
+    // Force getSettingLive → loadSettings → internalQuery to throw; the catch
+    // must degrade to the default posture, not propagate (a paying workspace is
+    // never silently flipped to a hard cutoff by an internal-DB blip).
+    mockInternalQueryShouldThrow = true;
+    try {
+      expect(await resolveSpendPolicy("org-policy-throws")).toBe("continue");
+    } finally {
+      mockInternalQueryShouldThrow = false;
+    }
+  });
+});
+
+// ===========================================================================
+// resolveUsageCeiling — the spend-policy × ceiling SSOT (#4038)
+//
+// The single source both enforcement and the billing page read, so the gauge
+// and the 429 can never disagree. The load-bearing property: `cutoff` clamps to
+// 100% of credit WITHOUT consulting the abuse ceiling (so an unrelated
+// ATLAS_ABUSE_CEILING can never defeat a customer's hard cutoff); `continue`
+// tracks resolveAbuseCeilingPercent.
+// ===========================================================================
+
+describe("resolveUsageCeiling — policy × ceiling SSOT (#4038)", () => {
+  async function withEnv<T>(
+    spendPolicy: string | undefined,
+    abuseCeiling: string | undefined,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const prevPolicy = process.env.ATLAS_SPEND_POLICY;
+    const prevCeiling = process.env.ATLAS_ABUSE_CEILING;
+    if (spendPolicy === undefined) delete process.env.ATLAS_SPEND_POLICY;
+    else process.env.ATLAS_SPEND_POLICY = spendPolicy;
+    if (abuseCeiling === undefined) delete process.env.ATLAS_ABUSE_CEILING;
+    else process.env.ATLAS_ABUSE_CEILING = abuseCeiling;
+    _resetSettingsCache();
+    try {
+      return await fn();
+    } finally {
+      if (prevPolicy === undefined) delete process.env.ATLAS_SPEND_POLICY;
+      else process.env.ATLAS_SPEND_POLICY = prevPolicy;
+      if (prevCeiling === undefined) delete process.env.ATLAS_ABUSE_CEILING;
+      else process.env.ATLAS_ABUSE_CEILING = prevCeiling;
+      _resetSettingsCache();
+    }
+  }
+
+  it("continue → ceiling tracks resolveAbuseCeilingPercent (default 500)", async () => {
+    const r = await withEnv("continue", undefined, () => resolveUsageCeiling("org-rc-1"));
+    expect(r).toEqual({ spendPolicy: "continue", ceilingPercent: 500 });
+  });
+
+  it("continue → honours a custom abuse ceiling", async () => {
+    const r = await withEnv("continue", "250", () => resolveUsageCeiling("org-rc-2"));
+    expect(r).toEqual({ spendPolicy: "continue", ceilingPercent: 250 });
+  });
+
+  it("continue → null ceiling when the abuse ceiling is disabled (0)", async () => {
+    const r = await withEnv("continue", "0", () => resolveUsageCeiling("org-rc-3"));
+    expect(r).toEqual({ spendPolicy: "continue", ceilingPercent: null });
+  });
+
+  it("cutoff → clamps to 100% of credit, IGNORING a disabled abuse ceiling", async () => {
+    // The defeat case: a `cutoff` customer with ATLAS_ABUSE_CEILING=0 must still
+    // hard-block at the credit — cutoff must NOT route through the abuse-ceiling
+    // resolver (which would return null/disabled and serve unlimited).
+    const r = await withEnv("cutoff", "0", () => resolveUsageCeiling("org-rc-4"));
+    expect(r).toEqual({ spendPolicy: "cutoff", ceilingPercent: 100 });
+  });
+
+  it("cutoff → clamps to 100% regardless of a high abuse ceiling", async () => {
+    const r = await withEnv("cutoff", "9999", () => resolveUsageCeiling("org-rc-5"));
+    expect(r).toEqual({ spendPolicy: "cutoff", ceilingPercent: 100 });
   });
 });
 

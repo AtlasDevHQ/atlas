@@ -384,7 +384,7 @@ export async function checkPlanLimits(
   if (tier === "locked") {
     // Defense-in-depth breadcrumb: every current caller logs the block at the
     // seam, but logging the decision here too means a future caller can't
-    // accidentally make a billing-block invisible (parity with the token
+    // accidentally make a billing-block invisible (parity with the spend
     // hard-limit log in evaluateUsage).
     log.warn({ orgId, tier, reason: "subscription_required" }, "Plan enforcement blocked request — workspace locked (subscription ended)");
     return {
@@ -396,7 +396,7 @@ export async function checkPlanLimits(
     };
   }
 
-  // BYOT workspaces skip token enforcement (unlimited when bringing own keys)
+  // BYOT workspaces skip usage enforcement (no metered usage accrues when bringing own keys)
   if (byot) {
     return { allowed: true };
   }
@@ -457,6 +457,25 @@ export async function checkPlanLimits(
       // Settings takes effect without a redeploy.
       const { spendPolicy, ceilingPercent } = await resolveUsageCeiling(orgId);
       const usage = await getCurrentPeriodUsage(orgId);
+      // COST-BASIS GAP ALERT (#4038): `costUsd` sums `gateway_cost_usd`, which is
+      // NULL for non-gateway providers and for token rows predating the at-cost
+      // capture (#4036, incl. the current period at cutover). When tokens were
+      // recorded but the cost basis summed to $0, the dollar gauge reads ~0% and
+      // the workspace runs effectively un-metered — a SILENT enforcement fade-out,
+      // the exact false-negative the old token belt (`weightedTokenCount ??
+      // tokenCount`) was written to prevent. The #3428 fail-open below only fires
+      // when the read THROWS; a successful read returning a legitimately-zero sum
+      // is invisible to it. So surface it as an operator-visible alert here —
+      // matching the #3428 bypass `log.error` so the same metering-impaired
+      // dashboards catch it. Still fail-open: we proceed and meter on the
+      // (under-counted) cost, never block on a $0 basis.
+      if (usage.tokenCount > 0 && usage.costUsd === 0) {
+        log.error(
+          { orgId, tier, tokenCount: usage.tokenCount, periodStart: usage.periodStart, reason: "cost_basis_missing" },
+          "Dollar enforcement has no cost basis — tokens recorded but gateway_cost_usd summed to $0; " +
+            "usage gauge reads ~0%% and the workspace is effectively un-metered (non-gateway provider, or token rows predating #4036) (#4038)",
+        );
+      }
       // Denominate against the summed at-cost provider spend (#4036) — the exact
       // zero-markup dollars Atlas paid the gateway — so the enforced gauge is the
       // real billed amount and no token-equivalent enters the decision.
@@ -697,8 +716,10 @@ export function buildMetricStatus(
   ceilingPercent: number | null = DEFAULT_ABUSE_CEILING_PERCENT,
 ): PlanLimitStatus {
   if (limit <= 0) {
-    // Invalid limit (not the -1 unlimited sentinel, which is filtered upstream).
-    // Fail safe: treat as hard limit so misconfigured plans don't silently allow everything.
+    // Non-positive credit — the dollar credit is always finite (no unlimited
+    // sentinel; free/locked $0 are short-circuited upstream), so this is the
+    // defensive 0-credit guard. Fail safe: treat as hard limit so a misconfigured
+    // credit doesn't silently allow everything.
     log.error({ metric, limit }, "Invalid plan limit value — treating as hard limit");
     return { metric, currentUsage, limit, usagePercent: 999, status: "hard_limit" };
   }
@@ -715,9 +736,10 @@ export function buildMetricStatus(
 /**
  * Classify usage into the metered soft-cap bands (#3990).
  *
- * - `>= ceilingPercent` → `hard_limit` (abuse ceiling cutoff). Skipped when
- *   `ceilingPercent` is null (ceiling disabled — pure metering, no cutoff).
- * - `>= 100%` → `metered` (over budget, served + billed).
+ * - `>= ceilingPercent` → `hard_limit` (the cutoff — the abuse ceiling under
+ *   `continue`, or 100% of credit under `cutoff`). Skipped when `ceilingPercent`
+ *   is null (ceiling disabled — pure metering, no cutoff).
+ * - `>= 100%` → `metered` (over the credit, served at provider cost).
  * - `>= 80%` → `warning`.
  * - otherwise `ok`.
  *

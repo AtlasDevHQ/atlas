@@ -16,8 +16,8 @@
  *     self-hosted *enterprise* build) has no per-tier billing ladder; its
  *     workspaces sit on the unlimited `free` tier (see `plans.ts`). The feature
  *     is gated there by the enterprise-license Tag, NOT by plan tier: when
- *     enterprise is disabled the `SSOPolicy` *Noop* layer fails its methods
- *     with `EnterpriseError` (403); when enterprise is enabled the EE layer is
+ *     enterprise is disabled the `SSOPolicy` *Noop* layer fails its
+ *     enforcement/mutation methods with `EnterpriseError` (403); when enterprise is enabled the EE layer is
  *     active and SSO is unlocked. Either way this per-tier guard must not fire,
  *     or a self-hosted enterprise customer would be wrongly denied SSO because
  *     their tier is `free`.

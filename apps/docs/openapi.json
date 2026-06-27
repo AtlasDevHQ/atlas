@@ -77178,8 +77178,15 @@
                             "ok",
                             "warning",
                             "soft_limit",
+                            "metered",
                             "hard_limit"
                           ]
+                        },
+                        "overageTokens": {
+                          "type": "number"
+                        },
+                        "overageCost": {
+                          "type": "number"
                         },
                         "periodStart": {
                           "type": "string"

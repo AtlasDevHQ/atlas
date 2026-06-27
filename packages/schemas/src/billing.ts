@@ -41,7 +41,7 @@
 import { z } from "zod";
 import { PLAN_TIERS, type PlanTier, type OverageStatus } from "@useatlas/types";
 
-const OVERAGE_STATUSES = ["ok", "warning", "soft_limit", "hard_limit"] as const;
+const OVERAGE_STATUSES = ["ok", "warning", "soft_limit", "metered", "hard_limit"] as const;
 const OverageStatusEnum = z.enum(OVERAGE_STATUSES) satisfies z.ZodType<OverageStatus>;
 const PlanTierEnum = z.enum(PLAN_TIERS);
 
@@ -108,6 +108,24 @@ export interface BillingUsage {
   seatCount: number;
   tokenUsagePercent: number;
   tokenOverageStatus: OverageStatus;
+  /**
+   * #3990 — output-equivalent tokens consumed BEYOND the included budget this
+   * period (max(0, weighted usage − budget)). 0 when at or under the included
+   * budget; positive once usage exceeds it (i.e. within the `metered` /
+   * `hard_limit` bands — note it is still 0 at exactly 100%, where the status
+   * is already `metered`). Denominated in the SAME output-equivalent tokens
+   * enforcement meters, so the accrued cost below is the real one. Optional for
+   * older-bundle tolerance; absent ⇒ render as 0.
+   */
+  overageTokens?: number;
+  /**
+   * #3990 — accrued billable overage cost in USD this period, i.e.
+   * `(overageTokens / 1_000_000) * overagePerMillionTokens`. Drives the
+   * billing page's "in overage, $X.XX so far" surface. 0 when not in overage
+   * or when the plan has no overage rate (`overagePerMillionTokens === 0`).
+   * Optional for older-bundle tolerance; absent ⇒ render as 0.
+   */
+  overageCost?: number;
   periodStart: string;
   periodEnd: string;
   /**
@@ -225,6 +243,8 @@ export const BillingUsageSchema = z.object({
   seatCount: z.number(),
   tokenUsagePercent: z.number(),
   tokenOverageStatus: OverageStatusEnum,
+  overageTokens: z.number().optional(),
+  overageCost: z.number().optional(),
   periodStart: z.string(),
   periodEnd: z.string(),
   periodSource: z.enum(["stripe", "utc-month"]).optional(),

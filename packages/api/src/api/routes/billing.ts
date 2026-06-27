@@ -32,7 +32,7 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, getStripePlans, computeTokenBudget, isUnlimited, type PaidPlanTier } from "@atlas/api/lib/billing/plans";
-import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
+import { buildMetricStatus, resolveAbuseCeilingPercent, computeOverageTokens, computeOverageCost } from "@atlas/api/lib/billing/enforcement";
 import { getSeatCount } from "@atlas/api/lib/billing/seat-count";
 import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-expiry";
 import { getSettingLive } from "@atlas/api/lib/settings";
@@ -374,14 +374,48 @@ billing.openapi(getBillingStatusRoute, async (c) => {
     const totalTokenBudget = computeTokenBudget(workspace.plan_tier, seatCount);
     const tokenLimit = isUnlimited(totalTokenBudget) ? null : totalTokenBudget;
 
+    // Whether a real budget is enforced for this workspace. BYOT workspaces
+    // bypass token enforcement entirely (checkPlanLimits returns early before
+    // any usage evaluation), so they must NEVER show metered status or accrued
+    // overage on the page — "BYOT never accrues overage" (#3990). Treating BYOT
+    // like the unlimited case (null limit) keeps the page surface in lockstep
+    // with what enforcement actually charges: nothing.
+    const enforcesBudget = tokenLimit !== null && !workspace.byot;
+
     // The budget gauge denominates in output-equivalent (model-weighted)
     // tokens (#3989) — the SAME denominator enforcement uses — so the page's
     // usage percent can never diverge from the 429 the workspace actually hits.
     // `?? tokenCount` mirrors the enforcement consumer: if the weighted field is
     // ever absent, the gauge degrades to raw rather than showing a false 0%.
-    const tokenOverage = tokenLimit !== null
-      ? buildMetricStatus("tokens", usage.weightedTokenCount ?? usage.tokenCount, tokenLimit)
+    //
+    // Resolve the workspace's abuse ceiling so the page's `metered` vs
+    // `hard_limit` classification matches enforcement exactly (#3990), then
+    // surface the accrued overage so the UI can render "in overage, $X.XX so
+    // far". `overagePerMillionTokens` comes from the plan definition (0 ⇒ no
+    // billable overage ⇒ $0 cost even while metered).
+    const weightedUsage = usage.weightedTokenCount ?? usage.tokenCount;
+    const ceilingPercent = enforcesBudget
+      ? yield* Effect.promise(() => resolveAbuseCeilingPercent(orgId).catch((err) => {
+          log.warn(
+            { err: err instanceof Error ? err.message : String(err), orgId },
+            "Failed to resolve abuse ceiling for billing page — using default classification",
+          );
+          return undefined;
+        }))
+      : null;
+    // Forward `undefined` (resolution failed → route `.catch` returned it) so
+    // buildMetricStatus falls to its conservative default-ceiling param,
+    // matching enforcement's own failure fallback (500). A resolved `null`
+    // (operator-disabled ceiling) is passed through verbatim to disable the
+    // cutoff on the page too — hence the explicit undefined-vs-null distinction
+    // rather than a `?? default` coalesce.
+    const tokenOverage = enforcesBudget && tokenLimit !== null
+      ? buildMetricStatus("tokens", weightedUsage, tokenLimit, ceilingPercent === undefined ? undefined : ceilingPercent)
       : { usagePercent: 0, status: "ok" as const };
+    const overageTokens = enforcesBudget && tokenLimit !== null ? computeOverageTokens(weightedUsage, tokenLimit) : 0;
+    const overageCost = enforcesBudget && tokenLimit !== null
+      ? computeOverageCost(weightedUsage, tokenLimit, plan.overagePerMillionTokens)
+      : 0;
 
     return c.json({
       workspaceId: orgId,
@@ -417,6 +451,8 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         seatCount,
         tokenUsagePercent: tokenOverage.usagePercent,
         tokenOverageStatus: tokenOverage.status,
+        overageTokens,
+        overageCost,
         periodStart: usage.periodStart,
         periodEnd: usage.periodEnd,
         periodSource: usage.periodSource,

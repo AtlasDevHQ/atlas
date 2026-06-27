@@ -770,6 +770,30 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
+  // Abuse ceiling (#3990) — the metered soft-cap cutoff. Usage past 100% of
+  // the included budget is METERED (served, accruing billable overage), NOT
+  // blocked; the hard 429 cutoff fires only at this ceiling, expressed as a
+  // percent of the plan budget. It bounds runaway / abusive spend, not normal
+  // paying overage. Workspace-scoped so an operator can lift it per tenant
+  // (e.g. a known heavy customer) from Admin → Settings without a redeploy;
+  // hot-reloadable (no requiresRestart — checkPlanLimits reads it live per
+  // request). Conservative default 500% = 5× the included budget: high enough
+  // that ordinary metered overage never trips it, low enough to cap a runaway
+  // loop or compromised key at a bounded multiple of the plan. 0 or empty
+  // disables the ceiling entirely (pure metering, no cutoff) — only set that
+  // for a trusted workspace.
+  {
+    key: "ATLAS_ABUSE_CEILING",
+    section: "Billing",
+    label: "Abuse Ceiling (% of budget)",
+    description:
+      "Hard cutoff for metered overage, as a percent of the plan's token budget (default 500 = 5× budget). Usage between 100% and this ceiling is served and billed as overage; at or above it, requests are blocked with a 429. 0 or empty disables the cutoff (pure metering).",
+    type: "number",
+    default: "500",
+    envVar: "ATLAS_ABUSE_CEILING",
+    scope: "workspace",
+  },
+
   // Stripe Billing — the six paid-tier price IDs (#3703). These are
   // NON-SECRET Stripe constants (the genuine secrets — STRIPE_SECRET_KEY,
   // STRIPE_WEBHOOK_SECRET — stay env-only and are never registry-backed).

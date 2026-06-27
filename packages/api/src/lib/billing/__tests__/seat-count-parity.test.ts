@@ -43,9 +43,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     end: mock(() => {}),
     on: mock(() => {}),
   }),
-  // Both the seat-count query (member COUNT) and any other internalQuery
-  // consumer route through here; the parity test only triggers the seat-count
-  // path, so returning the member rows is sufficient.
+  // Both the seat-count query (member COUNT) and the settings-load query
+  // (checkPlanLimits → resolveAbuseCeilingPercent → getSettingLive →
+  // loadSettings) route through here. Returning the member rows is sufficient:
+  // loadSettings maps a `{count}` row to a `key: undefined` cache entry, so the
+  // ATLAS_ABUSE_CEILING lookup finds no override and falls to the registry
+  // default (500) — exactly the ceiling the 100M/110M math below assumes.
   internalQuery: async () => mockSeatRows,
   internalExecute: () => {},
   updateWorkspacePlanTier: async () => true,
@@ -131,9 +134,10 @@ describe("token budget parity across surfaces (#3430)", () => {
   });
 
   it("enforcement uses the same member-derived budget as the pages", async () => {
-    // Usage just under the 10-seat hard limit (110% of 20M = 22M) but FAR over
-    // the old 1-seat budget's hard limit (110% of 2M = 2.2M). If enforcement
-    // were still keyed off a smaller seat count, this would 429.
+    // 19M = 95% of the 10-seat budget (20M) → a warning, allowed. The point is
+    // that it's read against the 10-seat budget at all: 19M is 950% of the
+    // 1-seat budget (2M), which under the 500% abuse ceiling would be a hard
+    // 429 if enforcement had collapsed to a smaller seat count.
     mockUsage.tokenCount = 19_000_000;
 
     const result = await checkPlanLimits("org-1"); // seatCount omitted → shared source
@@ -144,14 +148,35 @@ describe("token budget parity across surfaces (#3430)", () => {
     expect(pageLimit).toBe(TEN_SEAT_BUDGET);
   });
 
-  it("blocks only when usage exceeds the member-derived budget, not the 1-seat budget", async () => {
-    // Over the 10-seat hard limit (> 22M).
-    mockUsage.tokenCount = 23_000_000;
+  it("meters past the member-derived budget without collapsing to the 1-seat budget (#3990)", async () => {
+    // 30M usage = 150% of the 10-seat budget (20M) — over budget, so metered
+    // (served + billed), NOT blocked. Crucially it is also 1500% of the 1-seat
+    // budget (2M), which under the default 500% ceiling WOULD have been a hard
+    // cutoff if enforcement had collapsed to 1 seat. That it's merely metered
+    // proves the threshold keys off the 10-seat budget.
+    mockUsage.tokenCount = 30_000_000;
+
+    const result = await checkPlanLimits("org-1");
+    expect(result.allowed).toBe(true);
+    if (!result.allowed) {
+      throw new Error(`expected metered allow, got ${JSON.stringify(result)}`);
+    }
+    const tokenMetric = result.warning?.metrics.find((m) => m.metric === "tokens");
+    expect(tokenMetric?.status).toBe("metered");
+    // The reported limit is the full 10-seat budget, not the collapsed 1-seat one.
+    expect(tokenMetric?.limit).toBe(TEN_SEAT_BUDGET);
+    expect(tokenMetric?.limit).not.toBe(ONE_SEAT_BUDGET);
+  });
+
+  it("blocks at the member-derived abuse ceiling, not the 1-seat ceiling (#3990)", async () => {
+    // Abuse ceiling = 500% of budget. 10-seat budget 20M → ceiling 100M;
+    // 1-seat budget 2M → ceiling 10M. 110M usage clears the 10-seat ceiling and
+    // hard-blocks; the reported limit proves it's the 10-seat budget.
+    mockUsage.tokenCount = 110_000_000;
 
     const result = await checkPlanLimits("org-1");
     expect(result.allowed).toBe(false);
     if (!result.allowed && result.errorCode === "plan_limit_exceeded") {
-      // The reported limit is the full 10-seat budget, not the collapsed 1-seat one.
       expect(result.usage.limit).toBe(TEN_SEAT_BUDGET);
       expect(result.usage.limit).not.toBe(ONE_SEAT_BUDGET);
     } else {

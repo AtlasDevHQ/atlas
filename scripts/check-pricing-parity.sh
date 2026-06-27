@@ -38,3 +38,50 @@ echo ":: Verifying pricing entitlement artifact against FEATURE_ENTITLEMENTS..."
 bun scripts/generate-pricing-entitlements.ts --check
 
 echo "Pricing-parity drift check passed — entitlement artifact is in sync with FEATURE_ENTITLEMENTS."
+
+# --- static llms.txt base-price parity (#4060) ------------------------------
+# apps/www/public/llms.txt is a static marketing asset: it can't import the
+# generated mirror (it's not TS), so its per-seat prices are hand-maintained
+# and could silently drift from plans.ts — the exact #4060 bug class, in the
+# one surface the generated mirror can't reach. The --check above already
+# proved the artifact's TIER_MONTHLY_PRICE matches plans.ts, so assert llms.txt
+# advertises those same per-seat prices, each BOUND TO ITS TIER LABEL on the
+# line ("Starter ($39/seat/mo)") — a membership-only check would pass a
+# Starter↔Pro price swap that merely preserves the set of price tokens.
+echo ":: Verifying apps/www/public/llms.txt base prices against the artifact..."
+ARTIFACT="apps/www/src/app/pricing/entitlements.generated.ts"
+LLMS="apps/www/public/llms.txt"
+
+# The per-column base prices live on a single generated line, e.g.
+#   selfHosted: 0, starter: 39, pro: 69, business: 149,
+# Entitlement-row cells render booleans (`starter: false`), so a numeric
+# `selfHosted: <n>` uniquely identifies the TIER_MONTHLY_PRICE values line —
+# read it once rather than grepping `<tier>: <n>` over the whole file, so the
+# read stays robust if the generator ever emits other per-column numerics.
+# `|| true` keeps the empty result from tripping `set -e`/`pipefail` so the
+# actionable -z branch below can run instead of a bare exit.
+price_line="$(grep -E 'selfHosted: [0-9]+' "$ARTIFACT" | head -n1 || true)"
+if [ -z "$price_line" ]; then
+  echo "Could not find the TIER_MONTHLY_PRICE values in $ARTIFACT — has the generated format changed?" >&2
+  exit 1
+fi
+
+# Tier key -> the capitalized label it appears under in llms.txt.
+for pair in "starter:Starter" "pro:Pro" "business:Business"; do
+  key="${pair%%:*}"
+  label="${pair##*:}"
+  price="$(printf '%s' "$price_line" | grep -oE "${key}: [0-9]+" | grep -oE '[0-9]+' || true)"
+  if [ -z "$price" ]; then
+    echo "Could not read the ${key} price from $ARTIFACT — has TIER_MONTHLY_PRICE moved?" >&2
+    exit 1
+  fi
+  # ERE: `${label} \(\$${price}/seat` → e.g. `Starter \(\$39/seat` (literal
+  # paren + dollar), binding the price to its tier label on the same line.
+  if ! grep -qE "${label} \(\\\$${price}/seat" "$LLMS"; then
+    echo "llms.txt: ${label} must advertise \$${price}/seat (from $ARTIFACT) — it has drifted from plans.ts." >&2
+    echo "Update apps/www/public/llms.txt so ${label} reads \$${price}/seat." >&2
+    exit 1
+  fi
+done
+
+echo "llms.txt base prices match the drift-checked artifact."

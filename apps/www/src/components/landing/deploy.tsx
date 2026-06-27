@@ -1,4 +1,10 @@
 import { type CSSProperties } from "react";
+import { TIER_MONTHLY_PRICE } from "../../app/pricing/entitlements.generated";
+
+// "from $X" advertises the Atlas Cloud entry price — the Starter tier — read
+// from the generated mirror of `plans.ts` `pricePerSeat` (Atlas's internal
+// price SSOT) so this landing figure can't drift from `plans.ts` (#4060).
+const CLOUD_FROM_PRICE = TIER_MONTHLY_PRICE.starter;
 
 function SelfHostCard() {
   return (
@@ -117,7 +123,7 @@ function CloudCard() {
             // atlas cloud
           </p>
           <p className="text-[38px] font-semibold leading-none tracking-[-0.03em] text-fg">
-            <span className="text-base font-normal text-fg-muted">from </span>$29
+            <span className="text-base font-normal text-fg-muted">from </span>${CLOUD_FROM_PRICE}
             <span className="ml-1 text-base font-normal text-fg-muted">/ seat</span>
           </p>
           <p className="mt-2 text-sm text-fg">Hosted. Zero ops.</p>

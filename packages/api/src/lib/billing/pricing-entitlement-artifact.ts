@@ -26,6 +26,7 @@ import {
   FEATURE_ENTITLEMENTS,
   type GatedFeature,
 } from "@atlas/api/lib/billing/feature-entitlement";
+import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
 import { isPlanEligible } from "@atlas/api/lib/integrations/install/plan-rank";
 import type { PlanTier } from "@useatlas/types";
 
@@ -181,15 +182,44 @@ export function buildEntitlementRows(): GeneratedEntitlementRow[] {
 }
 
 /**
+ * Per-column monthly base price (USD per seat), mirrored from `plans.ts`
+ * `pricePerSeat` — Atlas's internal price SSOT. (`pricePerSeat` must be kept in
+ * lockstep with the Stripe `STRIPE_*_PRICE_ID` Price objects, which it does not
+ * auto-sync; the parity guard only proves page == `plans.ts`, not `plans.ts` ==
+ * Stripe.) Keyed by the same {@link COLUMN_TIERS} ladder as the entitlement
+ * cells, so the marketing page's advertised base price is derived from the same
+ * tier definitions the rest of the app reads and can't silently diverge (#4060:
+ * the page once advertised $29/$59/$99 while `plans.ts` declared $39/$69/$149).
+ * The page consumes only the paid columns (`starter`/`pro`/`business`); the
+ * `selfHosted` column (the `free` tier) is 0 for ladder completeness, but the
+ * page hard-codes the Self-Hosted card to `null` ("Free forever") and never
+ * reads this 0.
+ */
+export function buildTierMonthlyPrice(): Record<PricingColumn, number> {
+  const columns = Object.entries(COLUMN_TIERS) as [PricingColumn, PlanTier][];
+  return Object.fromEntries(
+    columns.map(([column, tier]) => [
+      column,
+      getPlanDefinition(tier).pricePerSeat,
+    ]),
+  ) as Record<PricingColumn, number>;
+}
+
+/**
  * Render the full artifact source. The whole file is machine-written, so the
  * drift guard compares the rendered string against the on-disk file verbatim
  * (no marker splice needed). The shape is a flat list of rows, each with
- * per-column booleans — a pure data module with zero `@atlas/api` import, so
- * the marketing bundle never pulls in the API package.
+ * per-column booleans, plus the per-column base price — a pure data module
+ * with zero `@atlas/api` import, so the marketing bundle never pulls in the
+ * API package.
  */
 export function renderArtifact(): string {
   const rows = buildEntitlementRows();
   const columnNames = Object.keys(COLUMN_TIERS) as PricingColumn[];
+  const tierPrice = buildTierMonthlyPrice();
+  const priceLiteral = columnNames
+    .map((c) => `${c}: ${tierPrice[c]}`)
+    .join(", ");
 
   // Derive every emitted union from its source so there is exactly one
   // spelling per union, not a hand-written literal that can drift from the
@@ -239,6 +269,21 @@ export function renderArtifact(): string {
 
 /** Marketing comparison-table columns, in display order. */
 export type PricingColumn = ${columnUnion};
+
+/**
+ * Per-seat monthly base price (USD) for each marketing column, mirrored from
+ * \`plans.ts\` \`pricePerSeat\` — Atlas's internal price SSOT (kept in lockstep
+ * with the Stripe \`STRIPE_*_PRICE_ID\` Price objects, which it does not
+ * auto-sync). The pricing page reads the paid columns (\`starter\`/\`pro\`/
+ * \`business\`) for its tier cards instead of hand-coding them, so an advertised
+ * base price can't drift from \`plans.ts\`; \`scripts/check-pricing-parity.sh\`
+ * fails CI when this file is stale relative to \`plans.ts\`. \`selfHosted\` is 0
+ * for ladder completeness — the Self-Hosted card hard-codes "Free" and doesn't
+ * read it.
+ */
+export const TIER_MONTHLY_PRICE: Readonly<Record<PricingColumn, number>> = {
+  ${priceLiteral},
+};
 
 /** Comparison-table section a gated feature renders under. */
 export type EntitlementSection = ${sectionUnion};

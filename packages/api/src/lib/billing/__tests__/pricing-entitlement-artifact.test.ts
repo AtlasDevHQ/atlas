@@ -13,6 +13,7 @@
 import { describe, expect, it } from "bun:test";
 import type { PlanTier } from "@useatlas/types";
 import { isPlanEligible } from "@atlas/api/lib/integrations/install/plan-rank";
+import { getPlanDefinition } from "../plans";
 import {
   FEATURE_ENTITLEMENTS,
   isFeatureEntitled,
@@ -24,6 +25,7 @@ import {
   SECTION_ORDER,
   assertDisplayExhaustive,
   buildEntitlementRows,
+  buildTierMonthlyPrice,
   renderArtifact,
   type PricingColumn,
 } from "../pricing-entitlement-artifact";
@@ -123,6 +125,44 @@ describe("buildEntitlementRows", () => {
     for (const row of buildEntitlementRows()) {
       expect(row.label).toBe(FEATURE_DISPLAY[row.feature].label);
       expect(row.label.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("buildTierMonthlyPrice — the base-price mirror (#4060)", () => {
+  it("mirrors plans.ts pricePerSeat for every column (SSOT-derived)", () => {
+    // The load-bearing invariant: the page's advertised base price equals the
+    // tier's pricePerSeat in plans.ts — Atlas's internal price SSOT — so the
+    // page can't advertise a price plans.ts doesn't declare.
+    const prices = buildTierMonthlyPrice();
+    for (const [column, tier] of Object.entries(COLUMN_TIERS) as [
+      PricingColumn,
+      PlanTier,
+    ][]) {
+      expect(prices[column]).toBe(getPlanDefinition(tier).pricePerSeat);
+    }
+  });
+
+  it("matches the locked Structure B ladder (hard-coded oracle, not SSOT-derived)", () => {
+    // A tripwire pinned to the locked $39/$69/$149 ladder (#4034), independent
+    // of the live SSOT: changing plans.ts pricePerSeat forces an intentional
+    // update here (and a regenerate), so a fat-fingered price can't sail
+    // through just because both the mirror and an SSOT-derived assertion moved
+    // together. Self-Hosted is the free OSS column → $0.
+    expect(buildTierMonthlyPrice()).toEqual({
+      selfHosted: 0,
+      starter: 39,
+      pro: 69,
+      business: 149,
+    });
+  });
+
+  it("renders TIER_MONTHLY_PRICE into the artifact source", () => {
+    const src = renderArtifact();
+    expect(src).toContain("export const TIER_MONTHLY_PRICE");
+    const prices = buildTierMonthlyPrice();
+    for (const [column, price] of Object.entries(prices)) {
+      expect(src).toContain(`${column}: ${price}`);
     }
   });
 });

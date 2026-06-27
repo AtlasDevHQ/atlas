@@ -618,6 +618,9 @@ export function printOverviewHelp(): void {
       "  improve          Analyze semantic layer and propose data-driven improvements\n" +
       "  diff             Compare DB schema against existing semantic layer\n" +
       "  query            Ask a question via the Atlas API\n" +
+      "  login            Authenticate the CLI via the device flow (stores a session bearer)\n" +
+      "  logout           Remove the stored CLI credentials\n" +
+      "  entities         List semantic entities visible to your logged-in workspace\n" +
       "  validate         Validate config, semantic layer, and connectivity\n" +
       "  doctor           Alias for validate\n" +
       "  eval             Run eval pipeline against demo schemas\n" +

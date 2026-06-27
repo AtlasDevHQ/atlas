@@ -60,6 +60,12 @@ export const APPROVAL_RULE_ORIGINS = [
   "whatsapp",
   "gchat",
   "webhook",
+  // #4043 / ADR-0026 — the `atlas login` device-authorization flow admits a
+  // workspace-scoped CLI bearer audited as `origin=cli`. Mirrored in
+  // packages/api/src/lib/db/migrations/0157_approval_surface_cli.sql + the
+  // schema.ts CHECK constraints (chk_approval_rule_origin /
+  // chk_approval_request_origin).
+  "cli",
 ] as const;
 export type ApprovalRuleOrigin = (typeof APPROVAL_RULE_ORIGINS)[number];
 

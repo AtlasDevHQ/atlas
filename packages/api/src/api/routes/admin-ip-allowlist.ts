@@ -13,6 +13,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext, IpAllowlistPolicy } from "@atlas/api/lib/effect/services";
+import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -179,6 +180,7 @@ adminIPAllowlist.use(requireOrgContext());
 adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "ip_allowlist");
     const callerIP = getClientIP(c.req.raw);
 
     const ee = yield* IpAllowlistPolicy;
@@ -216,6 +218,7 @@ adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
 adminIPAllowlist.openapi(addEntryRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId, user } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "ip_allowlist");
     const body = c.req.valid("json");
 
     if (!body.cidr) {
@@ -276,6 +279,7 @@ adminIPAllowlist.openapi(addEntryRoute, async (c) => {
 adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "ip_allowlist");
     const { id: entryId } = c.req.valid("param");
 
     if (!isValidId(entryId)) {

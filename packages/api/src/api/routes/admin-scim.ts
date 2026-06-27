@@ -14,6 +14,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext, SCIMProvenance } from "@atlas/api/lib/effect/services";
+import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { SCIMError } from "@atlas/api/lib/auth/auth-errors";
@@ -188,6 +189,7 @@ adminScim.use(requireOrgContext());
 adminScim.openapi(getStatusRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "scim");
     const scim = yield* SCIMProvenance;
 
     const [scimConnections, syncStatus] = yield* Effect.all([
@@ -207,6 +209,7 @@ adminScim.openapi(deleteConnectionRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "scim");
 
     const deleted = yield* (yield* SCIMProvenance).deleteConnection(orgId!, connectionId);
     if (!deleted) {
@@ -250,6 +253,7 @@ adminScim.openapi(deleteConnectionRoute, async (c) => {
 adminScim.openapi(listGroupMappingsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "scim");
 
     const mappings = yield* (yield* SCIMProvenance).listGroupMappings(orgId!);
     return c.json({ mappings, total: mappings.length }, 200);
@@ -264,6 +268,7 @@ adminScim.openapi(createGroupMappingRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "scim");
 
     const mapping = yield* (yield* SCIMProvenance).createGroupMapping(orgId!, scimGroupName, roleName);
 
@@ -312,6 +317,7 @@ adminScim.openapi(deleteGroupMappingRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "scim");
 
     // Fetch the mapping before delete so the audit row captures the
     // group→role grant that was revoked — without this, a deletion leaves

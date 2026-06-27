@@ -30,6 +30,7 @@ import {
   AuthContext,
   ApprovalGate,
 } from "@atlas/api/lib/effect/services";
+import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { ApprovalError } from "@atlas/api/lib/governance/errors";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -318,6 +319,7 @@ adminApproval.openapi(pendingCountRoute, async (c) => {
     if (!orgId) {
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
     }
+    yield* requireFeatureEntitlement(orgId, "approvals");
 
     const count = yield* (yield* ApprovalGate).getPendingCount(orgId);
     return c.json({ count }, 200);
@@ -333,6 +335,7 @@ adminApproval.use(requireOrgContext());
 adminApproval.openapi(expireRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "approvals");
     const expired = yield* (yield* ApprovalGate).expireStaleRequests(orgId!);
 
     // Manual sweep that flips pending requests to expired. An admin
@@ -355,6 +358,7 @@ adminApproval.openapi(expireRoute, async (c) => {
 adminApproval.openapi(listRulesRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "approvals");
 
     const rules = yield* (yield* ApprovalGate).listApprovalRules(orgId!);
     return c.json({ rules }, 200);
@@ -365,6 +369,7 @@ adminApproval.openapi(listRulesRoute, async (c) => {
 adminApproval.openapi(createRuleRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "approvals");
     const body = c.req.valid("json");
 
     // `body` is narrowed by the discriminated union (#1660); pass it
@@ -399,6 +404,7 @@ adminApproval.openapi(createRuleRoute, async (c) => {
 adminApproval.openapi(updateRuleRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "approvals");
     const ruleId = c.req.param("id");
     const body = c.req.valid("json");
 
@@ -429,6 +435,7 @@ adminApproval.openapi(updateRuleRoute, async (c) => {
 adminApproval.openapi(deleteRuleRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "approvals");
     const ruleId = c.req.param("id");
 
     const deleted = yield* (yield* ApprovalGate).deleteApprovalRule(orgId!, ruleId);
@@ -456,6 +463,7 @@ adminApproval.openapi(listQueueRoute, async (c) => {
   const { status } = c.req.valid("query");
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "approvals");
     const requests = yield* (yield* ApprovalGate).listApprovalRequests(orgId!, status);
     return c.json({ requests }, 200);
   }), { label: "list approval requests", domainErrors: [approvalDomainError] });
@@ -465,6 +473,7 @@ adminApproval.openapi(listQueueRoute, async (c) => {
 adminApproval.openapi(getQueueItemRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "approvals");
     const itemId = c.req.param("id");
 
     const item = yield* (yield* ApprovalGate).getApprovalRequest(orgId!, itemId);
@@ -479,6 +488,7 @@ adminApproval.openapi(getQueueItemRoute, async (c) => {
 adminApproval.openapi(reviewRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId, user } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "approvals");
 
     const itemId = c.req.param("id");
     const body = c.req.valid("json");

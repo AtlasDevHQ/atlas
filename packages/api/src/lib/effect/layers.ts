@@ -188,13 +188,15 @@ function withFiberDeathLog<A, E, R>(
 //     `region_probe_rate_sweep` (#3973, ADR-0024 §3), evicts expired per-IP
 //     buckets from the login front-door's hashed-email existence-probe limiter.
 //
-//   • SCHEDULER_WORK_SPAN_NAMES — 5 background-work fibers (they perform
+//   • SCHEDULER_WORK_SPAN_NAMES — background-work fibers (they perform
 //     recurring side-effecting work rather than evicting state):
 //     `sub_processor_publisher`, `settings_refresh`, `onboarding_email`,
-//     `expert_scheduler`, `billing_reconcile`. Spanned by #2987 (+#3423
-//     for billing_reconcile) — identical rationale and wrap shape, no
-//     result attributes (each tick returns void, matching the 8
-//     attribute-less cleanup fibers).
+//     `expert_scheduler`, `promote_decay`, `billing_reconcile`,
+//     `stripe_teardown_sweep`, `unclaimed_grace_reap`, `overage_report`.
+//     Spanned by #2987 (+#3423 for billing_reconcile, #3992 for
+//     overage_report) — identical rationale and wrap shape, no result
+//     attributes (each tick returns void, matching the attribute-less
+//     cleanup fibers).
 //
 // Two records, not one: "cleanup sweep" vs "background work" is a real
 // distinction (it drives the log wording and the operator's mental model),
@@ -252,6 +254,7 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   billing_reconcile: "atlas.scheduler.billing_reconcile",
   stripe_teardown_sweep: "atlas.scheduler.stripe_teardown_sweep",
   unclaimed_grace_reap: "atlas.scheduler.unclaimed_grace_reap",
+  overage_report: "atlas.scheduler.overage_report",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1821,6 +1824,78 @@ export function makeSchedulerLive(
       } else {
         log.debug(
           "Stripe teardown outbox sweep not started — Stripe or internal DB not configured",
+        );
+      }
+
+      // ── Periodic fiber: token-overage meter reporter (#3992) ─────────────
+      // Flushes each paid workspace's current-period token overage to Stripe
+      // Billing Meters (`meter_events`), idempotently (ledger-backed: same delta
+      // reported twice bills once). Like the teardown sweep it needs only
+      // `STRIPE_SECRET_KEY` (to call Stripe) + an internal DB (to hold the
+      // ledger + read usage) — NOT the webhook secret. The sweep query excludes
+      // BYOT and non-paid tiers (free/trial/locked); an unlimited-/zero-budget
+      // workspace is skipped by the per-workspace budget check.
+      // The `yield* Migration` barrier above already sequences this after
+      // `MigrationLive`, so the eager boot tick can't race migration 0154
+      // creating `overage_meter_reports`.
+      const overageReportEnabled = yield* Effect.try({
+        try: () => {
+          if (!process.env.STRIPE_SECRET_KEY) return false;
+          // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+          const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+            hasInternalDB: () => boolean;
+          };
+          return hasInternalDB();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.debug({ err: errorMessage(err) }, "Overage reporter gate check failed — skipping");
+            return false;
+          }),
+        ),
+      );
+
+      if (overageReportEnabled) {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as stripe_teardown_sweep)
+        const { OVERAGE_REPORT_INTERVAL_MS } = require("@atlas/api/lib/billing/overage-meter") as {
+          OVERAGE_REPORT_INTERVAL_MS: number;
+        };
+        const overageReportTick = Effect.tryPromise({
+          try: async () => {
+            const { reportPeriodOverages } = await import(
+              "@atlas/api/lib/billing/overage-meter"
+            );
+            await reportPeriodOverages();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              log.warn(
+                { err: errorMessage(err) },
+                "Overage-meter reporting tick failed — will retry next interval",
+              );
+            }),
+          ),
+        );
+        // forkScoped, not fork — see SettingsLive for rationale.
+        yield* Effect.forkScoped(
+          withFiberDeathLog(
+            "overage_report",
+            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.overage_report, {}, overageReportTick).pipe(
+              Effect.repeat(Schedule.spaced(Duration.millis(OVERAGE_REPORT_INTERVAL_MS))),
+            ),
+          ),
+        );
+        log.info(
+          { intervalMs: OVERAGE_REPORT_INTERVAL_MS },
+          "Token-overage meter reporter started",
+        );
+      } else {
+        log.debug(
+          "Token-overage meter reporter not started — Stripe or internal DB not configured",
         );
       }
 

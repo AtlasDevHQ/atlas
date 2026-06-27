@@ -450,6 +450,7 @@ describe("makeSchedulerLive", () => {
         "billing_reconcile",
         "stripe_teardown_sweep",
         "unclaimed_grace_reap",
+        "overage_report",
       ],
     },
   ] as const;

@@ -423,6 +423,10 @@ describe("migrateAuthTables", () => {
             // #4019); neither FKs a Better Auth table, so it is NOT in
             // MANAGED_AUTH_MIGRATIONS and runs in every auth mode — must be listed.
             { name: "0153_region_db_subscription_scim_parity.sql" },
+            // 0154 creates overage_meter_reports (the Stripe overage-reporter
+            // ledger, #3992); no FK to a Better Auth table, so it is NOT in
+            // MANAGED_AUTH_MIGRATIONS and runs in every auth mode — must be listed.
+            { name: "0154_overage_meter_reports.sql" },
           ],
         };
       }

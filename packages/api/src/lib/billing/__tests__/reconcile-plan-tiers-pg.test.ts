@@ -14,11 +14,13 @@
  *     throws here against the real table. The `subscription` table has no
  *     creation timestamp; `periodStart` is the newest-subscription proxy.
  *
- * `organization` and `subscription` are owned by Better Auth in production, so
- * they are not in our migration set — the fixture creates the minimal columns
- * the sweep's query and heal-write read (mirrors chat-cap-pg's `organization`
- * fixture). `stripe_webhook_events` (0128) + `stripe_purged_subscriptions`
- * (0129) ARE regular migrations, so `runMigrations` creates them.
+ * `organization` is owned by Better Auth in production, so it is not in our
+ * migration set — the fixture creates the minimal columns the sweep's query and
+ * heal-write read (mirrors chat-cap-pg's `organization` fixture). `subscription`
+ * IS now created by `runMigrations` (migration 0152, #4019 region-DB parity), so
+ * this suite no longer hand-builds it: 0152's shape already has every column the
+ * sweep reads and, crucially, still no `createdAt`. `stripe_webhook_events`
+ * (0128) + `stripe_purged_subscriptions` (0129) are likewise regular migrations.
  *
  * Opt in locally with:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
@@ -69,19 +71,10 @@ describeIfPg("reconcilePlanTiers (real Postgres)", () => {
          plan_override_until timestamptz
        )`,
     );
-    // Minimal Better-Auth-stripe `subscription` — only the columns the sweep's
-    // LATERAL subquery reads. Crucially there is NO `createdAt` column (the bug):
-    // the real table's newest-period proxy is `periodStart`.
-    await pool.query(
-      `CREATE TABLE subscription (
-         id text PRIMARY KEY,
-         plan text,
-         "referenceId" text,
-         "stripeSubscriptionId" text,
-         status text,
-         "periodStart" timestamptz
-       )`,
-    );
+    // `subscription` is created by migration 0152 (#4019 region-DB parity)
+    // during `runMigrations` above — the full @better-auth/stripe shape, and
+    // (the property this suite guards) still NO `createdAt` column, so the
+    // sweep's newest-period proxy remains `periodStart`. No hand-built fixture.
 
     // Point the sweep's module pool (`internalQuery`/`updateWorkspacePlanTier`)
     // at this scratch-schema pool, and make `hasInternalDB()` true.

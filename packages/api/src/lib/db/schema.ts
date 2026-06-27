@@ -1342,6 +1342,47 @@ export const scimGroupMappings = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Billing: @better-auth/stripe `subscription` table
+// ---------------------------------------------------------------------------
+
+/**
+ * The @better-auth/stripe plugin's `subscription` table. Better Auth owns its
+ * creation on US (the stripe plugin is registered only when STRIPE_SECRET_KEY
+ * is set — US-only per the per-service env), so this is NOT a table Atlas
+ * historically created. Migration 0152 (#4019) adds a forward `CREATE TABLE IF
+ * NOT EXISTS subscription` so the passive EU/APAC region DBs — which never
+ * register the stripe plugin — reach full schema parity with US. (The purge's
+ * `subscription` deletes are to_regclass-probed, so an absent table was already
+ * tolerated; the unconditional `scim_group_mappings` delete is what actually
+ * aborted the EU/APAC purge — fixed by the same migration + a new probe.)
+ *
+ * This mirror exists so scripts/check-schema-drift.sh sees a pgTable for the
+ * table 0152 now creates. The column names stay camelCase to match what Better
+ * Auth generates (string→text, date→timestamptz, number→integer, boolean,
+ * id→text PK, `required: false`→nullable). Mirrors
+ * `migrations/0152_region_db_subscription_scim_parity.sql`.
+ */
+export const subscription = pgTable("subscription", {
+  id: text("id").primaryKey(),
+  plan: text("plan").notNull(),
+  referenceId: text("referenceId").notNull(),
+  stripeCustomerId: text("stripeCustomerId"),
+  stripeSubscriptionId: text("stripeSubscriptionId"),
+  status: text("status").notNull(),
+  periodStart: timestamp("periodStart", { withTimezone: true }),
+  periodEnd: timestamp("periodEnd", { withTimezone: true }),
+  trialStart: timestamp("trialStart", { withTimezone: true }),
+  trialEnd: timestamp("trialEnd", { withTimezone: true }),
+  cancelAtPeriodEnd: boolean("cancelAtPeriodEnd"),
+  cancelAt: timestamp("cancelAt", { withTimezone: true }),
+  canceledAt: timestamp("canceledAt", { withTimezone: true }),
+  endedAt: timestamp("endedAt", { withTimezone: true }),
+  seats: integer("seats"),
+  billingInterval: text("billingInterval"),
+  stripeScheduleId: text("stripeScheduleId"),
+});
+
+// ---------------------------------------------------------------------------
 // EE: SLA metrics
 // ---------------------------------------------------------------------------
 

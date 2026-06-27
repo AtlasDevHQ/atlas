@@ -357,6 +357,21 @@ describe("buildStripePluginOptions — org-scoped configuration (#3416)", () => 
     }
   });
 
+  // Pin the org-scoped billing contract: NO user-level customer on signup.
+  // Atlas bills `organization.stripeCustomerId` exclusively; a per-signup user
+  // customer is never used for billing and required a plugin-managed
+  // `user.stripeCustomerId` column that drifted across region DBs (US had it,
+  // EU/APAC didn't → silent orphaned-customer leak on every EU/APAC signup). A
+  // revert to `true` would reintroduce that, and only this assertion would catch
+  // it (every other test exercises the org path). See residency cleanup (#4011).
+  it("does NOT create a user-level Stripe customer on signup (org-scoped only)", () => {
+    const options = buildStripePluginOptions({
+      stripeClient: makeStripeClient(),
+      webhookSecret: "whsec_test",
+    });
+    expect(options.createCustomerOnSignUp).toBe(false);
+  });
+
   // #3703 — pin the hot-reload contract: `plans` must be the resolver FUNCTION,
   // not an eager array snapshot. A revert to `plans: getStripePlans()` would
   // restore the redeploy-required footgun, and only this assertion would catch

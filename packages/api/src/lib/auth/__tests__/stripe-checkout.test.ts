@@ -128,9 +128,10 @@ async function signUp(auth: ReturnType<typeof makeAuth>): Promise<string> {
     }),
   );
   expect(res.status).toBe(200);
-  // createCustomerOnSignUp fires a USER customers.create during sign-up;
-  // clear it so assertions below isolate the ORG customer-creation path.
-  customersCreate.mockClear();
+  // createCustomerOnSignUp is OFF (org-scoped billing) — signup must NOT mint a
+  // user-level Stripe customer. Assert that here, so the ORG customer-creation
+  // assertions below also start from a clean call count.
+  expect(customersCreate).not.toHaveBeenCalled();
   return res.headers.get("set-cookie")!.split(";")[0];
 }
 

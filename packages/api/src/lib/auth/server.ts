@@ -2045,7 +2045,17 @@ export function buildStripePluginOptions(deps: {
   return {
     stripeClient,
     stripeWebhookSecret: webhookSecret,
-    createCustomerOnSignUp: true,
+    // OFF deliberately: Atlas subscriptions are ORG-scoped (org mode below), so
+    // billing always uses `organization.stripeCustomerId` (created lazily at the
+    // first /subscription/upgrade). A user-level customer minted on every signup
+    // is never used for billing — it only created Stripe clutter and required a
+    // plugin-managed `user.stripeCustomerId` column that drifted across region DBs
+    // (US had it; EU/APAC didn't), so every EU/APAC signup silently leaked an
+    // orphaned customer (the plugin's create-hook swallows the failed write). No
+    // Atlas code reads `user.stripeCustomerId` — the CRM conversion stamp uses the
+    // org/subscription customer. See residency cleanup (#4011); the now-unwritten
+    // column is dropped in the release-N+1 migration (two-phase discipline).
+    createCustomerOnSignUp: false,
     // #3416 — Atlas subscriptions are ORG-scoped, not user-scoped. With
     // org mode on, the plugin maintains `organization.stripeCustomerId`
     // (created lazily at first /subscription/upgrade), blocks org deletion

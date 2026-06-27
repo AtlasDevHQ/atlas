@@ -2050,11 +2050,13 @@ export function buildStripePluginOptions(deps: {
     // first /subscription/upgrade). A user-level customer minted on every signup
     // is never used for billing — it only created Stripe clutter and required a
     // plugin-managed `user.stripeCustomerId` column that drifted across region DBs
-    // (US had it; EU/APAC didn't), so every EU/APAC signup silently leaked an
-    // orphaned customer (the plugin's create-hook swallows the failed write). No
-    // Atlas code reads `user.stripeCustomerId` — the CRM conversion stamp uses the
-    // org/subscription customer. See residency cleanup (#4011); the now-unwritten
-    // column is dropped in the release-N+1 migration (two-phase discipline).
+    // (US had it; EU/APAC didn't). On a column-less region the plugin's create-hook
+    // catches and error-logs its own failed write, so the first EU/APAC signup
+    // would leak an orphaned Stripe customer while still completing (latent — no
+    // EU/APAC signups have run post-residency-fix yet). No Atlas code reads
+    // `user.stripeCustomerId` (the CRM conversion stamp uses the org/subscription
+    // customer). Root cause #4012; the now-unwritten column is dropped in the
+    // release-N+1 migration #4013 (two-phase drop discipline).
     createCustomerOnSignUp: false,
     // #3416 — Atlas subscriptions are ORG-scoped, not user-scoped. With
     // org mode on, the plugin maintains `organization.stripeCustomerId`

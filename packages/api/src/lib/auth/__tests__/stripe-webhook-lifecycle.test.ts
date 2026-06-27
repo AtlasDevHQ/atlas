@@ -361,9 +361,9 @@ describe("buildStripePluginOptions — org-scoped configuration (#3416)", () => 
   // Atlas bills `organization.stripeCustomerId` exclusively; a per-signup user
   // customer is never used for billing and required a plugin-managed
   // `user.stripeCustomerId` column that drifted across region DBs (US had it,
-  // EU/APAC didn't → silent orphaned-customer leak on every EU/APAC signup). A
-  // revert to `true` would reintroduce that, and only this assertion would catch
-  // it (every other test exercises the org path). See residency cleanup (#4011).
+  // EU/APAC didn't → an orphaned-customer leak on EU/APAC signup). A revert to
+  // `true` would reintroduce that. This is the config-shape guard; the behavioral
+  // counterpart (signup mints no customer) is in stripe-checkout.test.ts. See #4012.
   it("does NOT create a user-level Stripe customer on signup (org-scoped only)", () => {
     const options = buildStripePluginOptions({
       stripeClient: makeStripeClient(),

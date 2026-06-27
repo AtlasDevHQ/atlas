@@ -25,16 +25,17 @@ The device flow stamps the session as `origin=cli`. The managed-auth role-resolu
 
 ### 3. OAuth client model — one shared public `client_id`
 
-`atlas login` ships **one** well-known public `client_id` for the Atlas CLI (the `gh`/`railway` model), not per-login Dynamic Client Registration. The consequence for revocation is explicit: the `oauth_client_workspace_grants` row is keyed `(clientId, orgId)` and is therefore **shared** across all CLI logins to a workspace — so it is **not** the per-user revocation lever (deleting it would revoke every user's CLI access at once).
+`atlas login` ships **one** well-known public `client_id` for the Atlas CLI (the `gh`/`railway` model), not per-login Dynamic Client Registration. The per-credential revocation lever is **not** the OAuth grants table — Better Auth's device flow mints a **session**, not an `oauthProvider` client grant, so `oauth_client_workspace_grants` (the hosted-MCP per-client consent table) is not in this path at all. The lever is the session row itself (see decision 4).
 
-### 4. Revocation — role/membership is immediate; per-credential revocation is TTL-bounded
+### 4. Revocation — role/membership is immediate; per-credential revocation is instant via session deletion
 
-The honest decomposition of "revocation-immediate":
+> **Correction (discovered during implementation).** An earlier draft of this decision assumed the `cli` token was an `oauthProvider` JWT bounded by the 1h access TTL. That is wrong: Better Auth's device flow returns a **Better Auth session** (`internalAdapter.createSession` → `access_token: session.token`), verified by `getSession`, **not** a JWT. The revised model below is *stronger* on the axis the grill cared about (revocation latency) and is the standard `gh`/`railway` long-lived-but-revocable shape the client model (decision 3) already chose.
 
-- **Role change / membership removal → genuinely immediate.** The live `member`-table lookup on each request reflects it on the next call. This is the real, shippable immediacy guarantee.
-- **Revoking one specific credential without touching membership → bounded by the access-token TTL.** `cli` tokens reuse the existing 1h `oauthProvider` access TTL (`ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS`, default 3600s); the refresh token (7d) is what `atlas login` persists and is revocable to stop renewal. The JWT stays signature-valid until expiry, so true *instant* per-credential revocation is **deferred to a token-denylist slice**; until it lands, the window is ≤1h.
+- **Role change / membership removal → genuinely immediate.** A bearer `getSession` is DB-fresh (the 30s cookie-cache applies only to cookie sessions, not the CLI's `Authorization: Bearer`), so the live `member`-table lookup reflects a role/membership change on the very next request. This is the real, shippable immediacy guarantee.
+- **Revoking one specific credential → instant, via deletion of its session row.** Each `atlas login` is one session row; deleting it (the `revokeUserSessionsDirect`-class lever) makes the next `getSession` with that bearer return null → 401, with **no TTL wait and no denylist**. The spine does not yet ship a *UI* to revoke an individual device session, but the capability exists in the session table — so per-credential revocation is a present property, not a deferred one.
+- **Lifetime if never revoked.** The credential lives for the session lifetime — the global 7-day `expiresIn` (refreshed on use, `updateAge` 1 day) — exactly like a `gh`/`railway` token: long-lived but instantly revocable and continuously re-authorized (role/membership live). Tightening *only* `cli` sessions to a shorter lifetime is not natively supported by the plugin (it calls the global `createSession`) and is a candidate future hardening, not a spine requirement.
 
-This is why the acceptance criterion is reworded to claim immediacy only for role/membership and an explicit ≤1h bound for token-level revocation — the spine must not over-claim.
+The acceptance criterion is therefore: role/membership changes take effect on the next request (immediate), and an individual credential is revocable immediately by deleting its session.
 
 ### 5. Gate-chain admission + origin ceiling — proven by tests, not by the read tracer
 
@@ -61,14 +62,14 @@ Better Auth's device plugin issues a plain session, so the spine stamps the two 
 
 ## Storage
 
-`~/.atlas/credentials` is a JSON file written `0600` holding the access token, refresh token, bound `workspace_id`, and expiry. The CLI refreshes silently via the refresh token; a `cli` access token never appears in agent/LLM context.
+`~/.atlas/credentials` is a JSON file written `0600` holding the session bearer token, the API base URL, and (when known) the bound `workspace_id`. There is no separate refresh token — the credential is the session token; Better Auth re-authorizes it on use (`updateAge`). The bearer never appears in agent/LLM context.
 
 ## Consequences
 
 - `origin=cli` is added to the agent-origin enum (ADR-0015); the two `origin IN (...)` CHECK constraints (`schema.ts`) gain `'cli'` with the migration mirrored into `schema.ts` in the same PR (Drizzle discipline). Widening a CHECK with a new allowed value is expand-only, so it is single-release-safe.
-- A **token-denylist slice** is now a tracked follow-up — it is the only thing standing between "role/membership-immediate" and "per-credential-instant" revocation.
+- Per-credential revocation is already a present property (delete the session row); a **device-session management UI** (list / revoke individual `atlas login` sessions, like the existing trusted-devices page) is a natural follow-up but not a spine requirement.
 - A **multi-workspace selection slice** (in-flow workspace picker) is the named handoff from decision 6.
 
 ## Status
 
-accepted — tracer slice (#4043). Subsequent ADR-0025 surface (denylist, workspace picker, additional `atlas` commands) builds on this spine.
+accepted — tracer slice (#4043). Subsequent ADR-0025 surface (device-session management UI, workspace picker, additional `atlas` commands) builds on this spine.

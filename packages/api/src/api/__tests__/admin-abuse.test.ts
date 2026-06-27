@@ -17,6 +17,7 @@ import {
   mock,
   type Mock,
 } from "bun:test";
+import { Effect } from "effect";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 import type { AbuseDetail } from "@useatlas/types";
 import { asPercentage, asRatio } from "@useatlas/types";
@@ -38,7 +39,16 @@ const mocks = createApiTestMocks({
   },
 });
 
-// --- Abuse mock overrides (test-specific) ---
+// --- Abuse engine mock fns (test-specific) ---
+//
+// Post-#4000 the route resolves the graduated-response engine through the
+// `AbuseResponse` Context.Tag (not direct module imports). These mock fns are
+// wrapped as Effects and bound to the Tag via a mocked `@atlas/ee/layers`
+// aggregator below (mirrors `platform-sla-audit.test.ts`). The route's
+// `available` branch is exercised by `availableForTests` — flip it to assert
+// the 404 `not_available` envelope.
+
+let availableForTests = true;
 
 const mockListFlagged: Mock<() => unknown[]> = mock(() => []);
 // F-33: `reinstateWorkspace` returns the previous level on success so the
@@ -64,15 +74,58 @@ const mockGetAbuseConfig: Mock<() => unknown> = mock(() => ({
 // prior instance must go through `createAbuseInstance`.
 const mockGetAbuseDetail: Mock<(wsId: string) => Promise<AbuseDetail | null>> = mock(async () => null);
 
+// Force enterprise on so `ConditionalEELayer` lazy-imports the mocked
+// `@atlas/ee/layers` aggregator (the route resolves abuse via
+// `yield* AbuseResponse`). `??=` keeps the assignment hoisted; see the
+// equivalent note in platform-sla-audit.test.ts.
+process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
+
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        // Typed against the real shape (no outer `as never`) so a renamed or
+        // dropped `AbuseResponseShape` method breaks this mock at compile time.
+        // The per-call casts are narrow — they only satisfy the Effect `R`
+        // channel where a mock returns a structurally-equal but nominally-
+        // distinct fixture; the data shapes stay honest via the typed `Mock<>`
+        // declarations above.
+        const shape: import("@atlas/api/lib/effect/services").AbuseResponseShape = {
+          get available() {
+            return availableForTests;
+          },
+          listFlaggedWorkspaces: () => Effect.sync(() => mockListFlagged() as never),
+          getAbuseDetail: (wsId: string) => Effect.promise(() => mockGetAbuseDetail(wsId)),
+          getAbuseEvents: (wsId: string, limit?: number) =>
+            Effect.promise(() => mockGetAbuseEvents(wsId, limit)) as never,
+          reinstateWorkspace: (wsId: string, actorId: string) =>
+            Effect.sync(() => mockReinstateWorkspace(wsId, actorId)),
+          getAbuseConfig: () => Effect.sync(() => mockGetAbuseConfig() as never),
+        };
+        return Layer.succeed(services.AbuseResponse, shape);
+      }),
+    ),
+  };
+});
+
+// The shim is still imported transitively by sibling routes (admin-orgs,
+// platform-admin) mounted on the same app. Keep the module mock so those
+// imports resolve to inert stubs — mock-all-exports per the test discipline.
 mock.module("@atlas/api/lib/security/abuse", () => ({
-  listFlaggedWorkspaces: mockListFlagged,
-  reinstateWorkspace: mockReinstateWorkspace,
-  getAbuseEvents: mockGetAbuseEvents,
+  listFlaggedWorkspaces: mock(() => []),
+  reinstateWorkspace: mock(() => "warning" as const),
+  getAbuseEvents: mock(async () => ({ events: [], status: "ok" })),
   getAbuseConfig: mockGetAbuseConfig,
-  getAbuseDetail: mockGetAbuseDetail,
+  getAbuseDetail: mock(async () => null),
   checkAbuseStatus: mock(() => ({ level: "none" })),
   recordQueryEvent: mock(() => {}),
   restoreAbuseState: mock(async () => {}),
+  getAbuseRestoreStatus: mock(() => "ok" as const),
+  ABUSE_RESTORE_STATUSES: ["pending", "ok", "db_unavailable", "load_failed"] as const,
   _resetAbuseState: mock(() => {}),
   abuseCleanupTick: mock(() => {}),
   ABUSE_CLEANUP_INTERVAL_MS: 300_000,
@@ -126,6 +179,7 @@ function adminRequest(method: string, path: string, body?: unknown): Request {
 
 describe("Admin Abuse API", () => {
   beforeEach(() => {
+    availableForTests = true;
     mocks.mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true,
@@ -650,6 +704,33 @@ describe("Admin Abuse API", () => {
       );
       const res = await app.fetch(adminRequest("GET", "/api/v1/admin/abuse/config"));
       expect(res.status).toBe(403);
+    });
+  });
+
+  // --- not_available branch (#4000 — EE response engine not loaded) ---
+  //
+  // When the `AbuseResponse` Tag reports `available: false` (the Noop default
+  // in core, i.e. enterprise disabled), every handler must surface the 404
+  // `not_available` envelope rather than running against an inert engine.
+  // This is the seam that keeps the graduated-response surface enterprise-gated.
+
+  describe("AbuseResponse unavailable → 404 not_available", () => {
+    beforeEach(() => {
+      availableForTests = false;
+    });
+
+    it.each([
+      ["GET", "/api/v1/admin/abuse"],
+      ["GET", "/api/v1/admin/abuse/org-1/detail"],
+      ["POST", "/api/v1/admin/abuse/org-1/reinstate"],
+      ["GET", "/api/v1/admin/abuse/config"],
+    ])("%s %s → 404 not_available", async (method, path) => {
+      const res = await app.fetch(adminRequest(method, path));
+      expect(res.status).toBe(404);
+      const body = await res.json() as { error?: string; requestId?: string };
+      expect(body.error).toBe("not_available");
+      // 4xx responses carry requestId for log correlation.
+      expect(typeof body.requestId).toBe("string");
     });
   });
 });

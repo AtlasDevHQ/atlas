@@ -71,6 +71,7 @@ import { EnterpriseLayer, type EnterpriseSubsystem } from "./enterprise-layer";
 import {
   AuditPurgeScheduler,
   SaasCrm,
+  AbuseResponse,
   Migration,
   type MigrationShape,
   ConnectionRegistry,
@@ -1153,12 +1154,24 @@ export const ConnectionsHydrateLive: Layer.Layer<
 export const AuthBootstrapLive: Layer.Layer<
   never,
   never,
-  Migration | PluginRegistry
+  Migration | PluginRegistry | AbuseResponse
 > = Layer.effectDiscard(
   Effect.gen(function* () {
     // Ordering barriers — values unused; the dependency edges are the point.
     yield* Migration;
     yield* PluginRegistry;
+    // #4000 (WS5): `runPostMigrationBootstrap` calls `restoreAbuseState`,
+    // which delegates to the sync `AbuseResponsePolicy` holder. On an
+    // enterprise deploy that holder is only populated as a side effect of
+    // building `AbuseResponseLive` (`setAbuseResponsePolicy` in its
+    // `Layer.sync` factory). Without this barrier, `AuthBootstrapLive` and
+    // `AbuseResponse` are independent siblings in the top-level mergeAll with
+    // no build-order guarantee, so the restore could run against the inert
+    // no-op policy — silently dropping rehydration of suspended tenants
+    // across restarts. Yielding the Tag forces the EE layer (and its
+    // registration) to build first, restoring the pre-split invariant that
+    // `restoreAbuseState` always rehydrates when an internal DB is present.
+    yield* AbuseResponse;
 
     yield* Effect.tryPromise({
       try: async () => {
@@ -3394,9 +3407,11 @@ export function buildAppLayer(
 
   // AuthBootstrap (#3743) — post-schema bootstrap (plugin settings, abuse,
   // admin/seed) AFTER plugin wiring, preserving the pre-#3743 loadPluginSettings
-  // order. Depends on Migration + the wired PluginRegistry.
+  // order. Depends on Migration + the wired PluginRegistry, and — since #4000
+  // (WS5) — on `AbuseResponse` (via `EnterpriseLayer`) so the EE abuse engine's
+  // sync-policy registration runs before `restoreAbuseState`.
   const authBootstrapLayer = AuthBootstrapLive.pipe(
-    Layer.provide(Layer.merge(migrationLayer, pluginRegistryLayer)),
+    Layer.provide(Layer.mergeAll(migrationLayer, pluginRegistryLayer, EnterpriseLayer)),
   );
 
   // PoolWarmup (#3743) — replaces the imperative `connections.warmup()`. Runs

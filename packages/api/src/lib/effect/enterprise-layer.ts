@@ -24,6 +24,7 @@ import {
   type ComplianceReports,
   type ApprovalGate,
   type SlaMetrics,
+  type AbuseResponse,
   type BackupsManager,
   type AuditRetention,
   type AuditPurgeScheduler,
@@ -172,6 +173,7 @@ export type EnterpriseSubsystem =
   | ComplianceReports
   | ApprovalGate
   | SlaMetrics
+  | AbuseResponse
   | BackupsManager
   | AuditRetention
   | AuditPurgeScheduler

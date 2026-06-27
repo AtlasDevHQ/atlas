@@ -114,6 +114,7 @@ function makeDeps(overrides: Partial<WorkspaceOverageDeps> = {}): {
       queryCount: 0,
       tokenCount: 0,
       weightedTokenCount: 0,
+      costUsd: 0,
       activeUsers: 0,
       periodStart: PERIOD_START,
       periodEnd: "2026-07-01T00:00:00.000Z",
@@ -306,6 +307,7 @@ describe("reportWorkspaceOverage", () => {
         tokenCount: STARTER_BUDGET + 500,
         // weighted field absent (un-backfilled / future shape change)
         weightedTokenCount: undefined as unknown as number,
+        costUsd: 0,
         activeUsers: 0,
         periodStart: PERIOD_START,
         periodEnd: "2026-07-01T00:00:00.000Z",
@@ -579,6 +581,7 @@ function usageWith(weighted: number): import("@atlas/api/lib/metering").UsageCur
     queryCount: 0,
     tokenCount: weighted,
     weightedTokenCount: weighted,
+    costUsd: 0,
     activeUsers: 0,
     periodStart: PERIOD_START,
     periodEnd: "2026-07-01T00:00:00.000Z",

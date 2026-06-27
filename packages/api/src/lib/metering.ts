@@ -44,6 +44,15 @@ export interface UsageEvent {
    * `null`) for non-token events — the column is NULL for those.
    */
   weightedQuantity?: number | null;
+  /**
+   * Provider-cost USD for a `token` event's turn, from the Vercel AI Gateway
+   * (`providerMetadata.gateway.cost`, summed across the turn's steps), #4036.
+   * Persisted to `usage_events.gateway_cost_usd` as the at-cost dollar basis the
+   * Structure B credit + overage meter will draw against once #4038/#4039 land
+   * (captured-only today). Omit (or pass `null`) for non-token events and for
+   * non-gateway providers — the column is NULL there.
+   */
+  gatewayCostUsd?: number | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -93,14 +102,15 @@ export function logUsageEvent(event: UsageEvent): void {
   // after 5 consecutive failures. No try/catch needed here — hasInternalDB()
   // guards against the only synchronous throw path (DATABASE_URL unset).
   internalExecute(
-    `INSERT INTO usage_events (workspace_id, user_id, event_type, quantity, weighted_quantity, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+    `INSERT INTO usage_events (workspace_id, user_id, event_type, quantity, weighted_quantity, gateway_cost_usd, metadata)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       event.workspaceId ?? null,
       event.userId ?? null,
       event.eventType,
       event.quantity,
       event.weightedQuantity ?? null,
+      event.gatewayCostUsd ?? null,
       event.metadata ? JSON.stringify(event.metadata) : null,
     ],
   );
@@ -243,6 +253,17 @@ export interface UsageCurrentPeriod {
    * less than it should be for un-backfilled history.
    */
   weightedTokenCount: number;
+  /**
+   * At-cost provider spend in USD for the period (#4036): the sum of
+   * `gateway_cost_usd` over `token` events — the EXACT zero-markup dollars Atlas
+   * paid the Vercel AI Gateway. Captured now; the Structure B included credit
+   * ($20/seat) + overage meter will draw against this once the re-denomination
+   * lands (#4038/#4039) — until then `weightedTokenCount` above remains the
+   * active budget denominator and this is for display only. Rows with a NULL
+   * `gateway_cost_usd` (non-gateway providers, or token rows predating migration
+   * 0155) simply don't contribute.
+   */
+  costUsd: number;
   activeUsers: number;
   /** Inclusive ISO start of the metering window. */
   periodStart: string;
@@ -280,6 +301,7 @@ export async function getCurrentPeriodUsage(
       queryCount: 0,
       tokenCount: 0,
       weightedTokenCount: 0,
+      costUsd: 0,
       activeUsers: 0,
       periodStart: "",
       periodEnd: "",
@@ -293,12 +315,14 @@ export async function getCurrentPeriodUsage(
     query_count: number;
     token_count: number;
     weighted_token_count: number;
+    cost_usd: number;
     active_users: number;
   }>(
     `SELECT
        COALESCE(SUM(CASE WHEN event_type = 'query' THEN quantity ELSE 0 END), 0)::int AS query_count,
        COALESCE(SUM(CASE WHEN event_type = 'token' THEN quantity ELSE 0 END), 0)::int AS token_count,
        COALESCE(SUM(CASE WHEN event_type = 'token' THEN COALESCE(weighted_quantity, quantity) ELSE 0 END), 0)::int AS weighted_token_count,
+       COALESCE(SUM(CASE WHEN event_type = 'token' THEN gateway_cost_usd ELSE 0 END), 0)::float8 AS cost_usd,
        COALESCE(COUNT(DISTINCT CASE WHEN event_type = 'login' THEN user_id END), 0)::int AS active_users
      FROM usage_events
      WHERE workspace_id = $1
@@ -312,6 +336,9 @@ export async function getCurrentPeriodUsage(
     queryCount: row?.query_count ?? 0,
     tokenCount: row?.token_count ?? 0,
     weightedTokenCount: row?.weighted_token_count ?? 0,
+    // `::float8` so `pg` returns a JS number (not a numeric string). Dollar sums
+    // stay well within float8's ~15 significant digits, so no meaningful drift.
+    costUsd: row?.cost_usd ?? 0,
     activeUsers: row?.active_users ?? 0,
     periodStart: period.start.toISOString(),
     periodEnd: period.end.toISOString(),

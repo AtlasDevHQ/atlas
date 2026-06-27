@@ -56,6 +56,12 @@ mock.module("@atlas/api/lib/db/connection", () => createConnectionMock());
 const mockCurrentUsage = {
   queryCount: 42,
   tokenCount: 10000,
+  // Internal-only fields the rollup carries but the GET / wire contract must NOT
+  // expose: weightedTokenCount (#3989) and costUsd (#4036 — Atlas's per-period
+  // gateway COGS). Present here so a regression that spread `...usage` instead of
+  // picking explicit fields would leak them and trip the assertions below.
+  weightedTokenCount: 23000,
+  costUsd: 4.56,
   activeUsers: 3,
   periodStart: "2026-03-01T00:00:00.000Z",
   periodEnd: "2026-04-01T00:00:00.000Z",
@@ -314,6 +320,12 @@ describe("Admin Usage API", () => {
       expect(body.queryCount).toBe(42);
       expect(body.tokenCount).toBe(10000);
       expect(body.activeUsers).toBe(3);
+      // COGS non-leak (#4036): the at-cost costUsd (Atlas's per-period gateway
+      // margin) and the internal weightedTokenCount must NOT reach a workspace
+      // admin. The handler picks explicit fields rather than spreading the
+      // rollup; this pins that boundary so a revert to `...usage` fails here.
+      expect(body.costUsd).toBeUndefined();
+      expect(body.weightedTokenCount).toBeUndefined();
     });
 
     it("returns 404 when no internal DB", async () => {

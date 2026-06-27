@@ -184,7 +184,9 @@ describe("runMigrations", () => {
     //   GDPR purge completes in passive EU/APAC regions, #4019) = 154.
     //   Plus 0154 (overage_meter_reports ledger for the idempotent Stripe
     //   Billing Meters overage reporter, WS2, #3992) = 155.
-    expect(count).toBe(155);
+    //   Plus 0155 (usage_events/token_usage.gateway_cost_usd at-cost capture,
+    //   Structure B WS2, #4036) = 156.
+    expect(count).toBe(156);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -368,6 +370,7 @@ describe("runMigrations", () => {
         "0152_usage_events_weighted_quantity.sql",
         "0153_region_db_subscription_scim_parity.sql",
         "0154_overage_meter_reports.sql",
+        "0155_usage_gateway_cost_usd.sql",
       ],
     });
 

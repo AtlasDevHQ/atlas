@@ -63,6 +63,7 @@ import {
 import { loadGroupRoutingContext } from "./env-routing/lookup";
 import { logUsageEvent } from "./metering";
 import { toOutputEquivalentTokens } from "./billing/token-weighting";
+import { summarizeStepGatewayCostUsd } from "./billing/gateway-cost";
 import { buildRetrievalQuery, getRetrievalTurns } from "./learn/pattern-cache";
 import { resolveOrgKnowledgeSection } from "./learn/org-knowledge-section";
 import { dispatchMutableHook } from "./plugins/hooks";
@@ -1981,10 +1982,49 @@ export async function runAgent({
         // Persist token usage to internal DB (fire-and-forget).
         // Shares the internalExecute circuit breaker with audit writes.
         if (hasInternalDB() && totalUsage) {
+          // At-cost provider spend for the turn (#4036): the Vercel AI Gateway
+          // annotates each step's actual charged cost on
+          // `providerMetadata.gateway.cost`, and the AI-SDK top-level metadata is
+          // final-step-only, so sum across `steps`. `null` when no step carried a
+          // gateway cost (non-gateway / BYOK-direct provider) → write NULL,
+          // distinct from a recorded 0. Recorded on BOTH the token_usage row and
+          // the `token` usage event so the cost basis is queryable per-turn and
+          // summable per-period. Captured-only here; the Structure B credit +
+          // overage meter will draw against it once #4038/#4039 land.
+          //
+          // Computed in its own guard so a (total, never-throwing) helper change
+          // can't break stream finalization, matching the metering block's
+          // "never disrupt finalization" contract below.
+          let gatewayCostUsd: number | null = null;
+          try {
+            const costSummary = summarizeStepGatewayCostUsd(steps);
+            gatewayCostUsd = costSummary.totalUsd;
+            // A present-but-unparseable per-step cost is dropped from the total
+            // (we never guess a number), so surface it loudly: this is the
+            // gateway-contract-drift signal — the period cost is under-captured
+            // until it's investigated. Should be 0 in normal operation.
+            if (costSummary.skippedSteps > 0) {
+              log.warn(
+                {
+                  skippedSteps: costSummary.skippedSteps,
+                  recordedSteps: costSummary.recordedSteps,
+                  totalSteps: steps.length,
+                  model: resolvedModelId,
+                  orgId: orgId ?? null,
+                },
+                "Gateway cost capture dropped unparseable provider cost annotation(s) — period at-cost is under-captured; check the gateway cost contract (#4036)",
+              );
+            }
+          } catch (err) {
+            log.warn(
+              { err: err instanceof Error ? err.message : String(err) },
+              "Failed to compute gateway cost for the turn — recording NULL",
+            );
+          }
           try {
             internalExecute(
-              `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, model, provider, org_id, latency_ms)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+              `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, model, provider, org_id, latency_ms, gateway_cost_usd)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
               [
                 userId,
                 conversationId ?? null,
@@ -1999,6 +2039,7 @@ export async function runAgent({
                 // alongside the turn's usage so the demo tracking rollup reads
                 // tokens + cache + latency from one row.
                 Math.max(0, Date.now() - turnStartedAt),
+                gatewayCostUsd,
               ],
             );
           } catch (err) {
@@ -2034,6 +2075,10 @@ export async function runAgent({
                 eventType: "token",
                 quantity: totalTokens,
                 weightedQuantity: weightedTokens,
+                // At-cost dollars for the turn (#4036) — the future Structure B
+                // billing denominator (enforcement lands in #4038/#4039);
+                // captured now. NULL when the provider isn't the gateway.
+                gatewayCostUsd,
                 metadata: { input: inputTokens, output: outputTokens, weighted: weightedTokens },
               });
             }

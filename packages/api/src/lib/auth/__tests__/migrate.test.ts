@@ -427,6 +427,10 @@ describe("migrateAuthTables", () => {
             // ledger, #3992); no FK to a Better Auth table, so it is NOT in
             // MANAGED_AUTH_MIGRATIONS and runs in every auth mode — must be listed.
             { name: "0154_overage_meter_reports.sql" },
+            // 0155 adds usage_events/token_usage.gateway_cost_usd (at-cost
+            // capture, Structure B WS2, #4036); ALTERs Atlas-internal tables, no
+            // FK to a Better Auth table, so it runs in every auth mode — must be listed.
+            { name: "0155_usage_gateway_cost_usd.sql" },
           ],
         };
       }

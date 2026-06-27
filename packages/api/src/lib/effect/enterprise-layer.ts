@@ -36,6 +36,7 @@ import {
   type Domains,
   type ProactiveGate,
   type DeployModeResolver,
+  type MarketplaceVeneer,
   type SaasCrm,
 } from "./services";
 
@@ -185,6 +186,7 @@ export type EnterpriseSubsystem =
   | Domains
   | ProactiveGate
   | DeployModeResolver
+  | MarketplaceVeneer
   | SaasCrm;
 
 /**

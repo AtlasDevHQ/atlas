@@ -2847,6 +2847,63 @@ export const NoopDeployModeResolverLayer: Layer.Layer<DeployModeResolver> =
     resolve: () => "self-hosted",
   } satisfies DeployModeResolverShape);
 
+// ── MarketplaceVeneer (#4001 — WS5 plugin-marketplace veneer split) ──
+//
+// The plugin-marketplace **plan-gated veneer** — the deploy-mode-dependent
+// `saas_eligible` eligibility decision that hides catalog rows from the
+// workspace marketplace listing and refuses installing them — moved to
+// `@atlas/ee` (`ee/src/marketplace/veneer.ts`). The unified install pipeline
+// (ADR-0007: `WorkspaceInstaller`, `PillarCatalogQuery`, the platform catalog
+// CRUD routes, and the per-workspace install/uninstall/config handlers in
+// `api/routes/admin-marketplace.ts`) STAYS in core unchanged — only the
+// SaaS-eligibility gate routes through this Tag.
+//
+// `saas_eligible = false` marks a catalog row (e.g. DuckDB, which is
+// file-path based and not multi-tenant safe, #3301) that must never list or
+// install on a SaaS deploy. That gate is purely a multi-tenant/SaaS concern,
+// so it belongs in `/ee`: SaaS mode requires enterprise, so the Live layer is
+// the only place `deployMode === "saas"` is ever true. The no-op default
+// (self-hosted / non-EE) treats EVERY row as eligible — identical to today's
+// self-hosted behavior, where the filter was already inert because
+// `deployMode !== "saas"`. Per the `available`-flag convention above this Tag
+// omits `available`: no route branches on EE-loaded vs not — both listing and
+// install simply consult `isSaasIneligible`, which the Noop answers `false`.
+//
+// `CatalogEligibilityRow` is the minimal projection the gate reads — only the
+// `saas_eligible` column matters. Optional + `?? undefined`-tolerant because
+// the marketplace casts an unvalidated `SELECT *`; a stale pre-column row
+// (absent / null) defaults to eligible (`=== false` is the only ineligible
+// signal), matching the core comment on `CatalogRow.saas_eligible`.
+
+export interface CatalogEligibilityRow {
+  readonly saas_eligible?: boolean | null;
+}
+
+export interface MarketplaceVeneerShape {
+  /**
+   * Whether the SaaS plan-gated veneer makes this catalog row ineligible on
+   * the current deploy. `true` only when EE is loaded AND the deploy is SaaS
+   * AND the row is explicitly `saas_eligible = false`. The Noop default
+   * always returns `false` (self-hosted lists/installs everything), so the
+   * listing filter and the install gate are inert without EE — unchanged
+   * self-hosted behavior.
+   */
+  readonly isSaasIneligible: (row: CatalogEligibilityRow) => boolean;
+}
+export class MarketplaceVeneer extends Context.Tag("MarketplaceVeneer")<
+  MarketplaceVeneer,
+  MarketplaceVeneerShape
+>() {}
+// No-op default: no SaaS veneer. Every catalog row is eligible, so the
+// workspace marketplace lists and installs the full catalog — the exact
+// self-hosted behavior before the split, where `deployMode !== "saas"` made
+// the gate a no-op anyway. EE's `ee/src/marketplace/veneer.ts` overlays the
+// real `deployMode === "saas" && saas_eligible === false` gate.
+export const NoopMarketplaceVeneerLayer: Layer.Layer<MarketplaceVeneer> =
+  Layer.succeed(MarketplaceVeneer, {
+    isSaasIneligible: () => false,
+  } satisfies MarketplaceVeneerShape);
+
 // ── SaasCrm ──────────────────────────────────────────────────────────
 //
 // SaaS-only CRM dispatch (Twenty). Self-hosted gets the Noop layer.
@@ -3052,6 +3109,7 @@ export const NoopEnterpriseDefaultsLayer: Layer.Layer<
   | Domains
   | ProactiveGate
   | DeployModeResolver
+  | MarketplaceVeneer
   | SaasCrm
 > = Layer.mergeAll(
   NoopResidencyResolverLayer,
@@ -3072,6 +3130,7 @@ export const NoopEnterpriseDefaultsLayer: Layer.Layer<
   NoopDomainsLayer,
   NoopProactiveGateLayer,
   NoopDeployModeResolverLayer,
+  NoopMarketplaceVeneerLayer,
   NoopSaasCrmLayer,
 );
 

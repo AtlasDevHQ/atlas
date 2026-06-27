@@ -220,7 +220,6 @@ interface FakeRow extends Record<string, unknown> {
   userId: string;
   email: string;
   userName: string | null;
-  userStripeCustomerId: string | null;
   memberRole: string | null;
   orgId: string | null;
   orgName: string | null;
@@ -243,7 +242,6 @@ function row(over: Partial<FakeRow>): FakeRow {
     userId: "user_1",
     email: "matt+us@useatlas.dev",
     userName: "Matt US",
-    userStripeCustomerId: null,
     memberRole: "owner",
     orgId: "org_1",
     orgName: "Atlas us Verify",
@@ -271,19 +269,20 @@ describe("resolveVerifyTargets", () => {
       email: "ghost+us@useatlas.dev",
       userId: null,
       found: false,
-      userStripeCustomerId: null,
       orgs: [],
     });
   });
 
-  it("carries user.stripeCustomerId onto the target (the #4011 user-level customer)", async () => {
+  it("carries the org-level stripeCustomerId onto the org (no user-level customer, #4019)", async () => {
     const q = fakeQuery({
-      "matt+us@useatlas.dev": [row({ userStripeCustomerId: "cus_user", stripeCustomerId: null })],
+      "matt+us@useatlas.dev": [row({ stripeCustomerId: "cus_org" })],
     });
     const [t] = await resolveVerifyTargets(q, ["matt+us@useatlas.dev"]);
-    expect(t!.userStripeCustomerId).toBe("cus_user");
-    // The org column is null in the #4011 shape — the customer lives only on the user.
-    expect(t!.orgs[0]!.stripeCustomerId).toBeNull();
+    // Org-scoped billing only — the customer lives on the org row. The resolved
+    // target has no user-level customer field at all (the crashing
+    // `u."stripeCustomerId"` select is gone, #4019).
+    expect(t!.orgs[0]!.stripeCustomerId).toBe("cus_org");
+    expect(t).not.toHaveProperty("userStripeCustomerId");
   });
 
   it("treats a user with no membership (LEFT JOIN null org) as found with zero orgs", async () => {
@@ -335,14 +334,14 @@ describe("resolveVerifyTargets", () => {
 describe("countOwnedOrgs", () => {
   it("counts only owned orgs across targets, ignoring non-owner memberships", () => {
     const targets: VerifyTarget[] = [
-      { email: "a", userId: "u1", found: true, userStripeCustomerId: null, orgs: [
+      { email: "a", userId: "u1", found: true, orgs: [
         { orgId: "o1", orgName: null, orgSlug: null, region: "us", workspaceStatus: "active", stripeCustomerId: null, isOwner: true },
         { orgId: "o2", orgName: null, orgSlug: null, region: "us", workspaceStatus: "active", stripeCustomerId: null, isOwner: false },
       ] },
-      { email: "b", userId: "u2", found: true, userStripeCustomerId: null, orgs: [
+      { email: "b", userId: "u2", found: true, orgs: [
         { orgId: "o3", orgName: null, orgSlug: null, region: "eu", workspaceStatus: "active", stripeCustomerId: null, isOwner: true },
       ] },
-      { email: "c", userId: null, found: false, userStripeCustomerId: null, orgs: [] },
+      { email: "c", userId: null, found: false, orgs: [] },
     ];
     expect(countOwnedOrgs(targets)).toBe(2);
     expect(countOwnedOrgs(targets)).toBeLessThanOrEqual(MAX_TEARDOWN_TARGETS);
@@ -364,7 +363,6 @@ function target(over: Partial<VerifyTarget> & { orgs?: VerifyTarget["orgs"] }): 
     email: "matt+us@useatlas.dev",
     userId: "user_1",
     found: true,
-    userStripeCustomerId: null,
     orgs: [],
     ...over,
   };
@@ -392,16 +390,13 @@ describe("teardownTargets", () => {
       hardDelete: async () => { calls.push("hard"); return 0; },
     };
     const report = await teardownTargets(
-      [target({ userStripeCustomerId: "cus_user", orgs: [ownedOrg()] })],
+      [target({ orgs: [ownedOrg()] })],
       deps,
       true,
     );
     expect(calls).toEqual([]);
     expect(report.dryRun).toBe(true);
     expect(report.targets[0]!.orgs[0]!.status).toBe("would-tear-down");
-    // Preview must still report the user-level customer that the live run will
-    // delete — a dropped carry-through here would make the dry run lie (#4011).
-    expect(report.targets[0]!.userStripeCustomerId).toBe("cus_user");
     expect(report.totals).toMatchObject({ orgsWouldTearDown: 1, orgsTornDown: 0 });
   });
 
@@ -425,119 +420,26 @@ describe("teardownTargets", () => {
     expect(report.totals).toMatchObject({ orgsTornDown: 1, rowsPurged: 42, errors: 0 });
   });
 
-  it("unions the user-level customer into the purge call (#4011 — org column null)", async () => {
-    // The #4011 shape: customer parked on user.stripeCustomerId, org column null.
-    const purgeCalls: Array<[string, string | null, readonly string[]]> = [];
+  it("purges only the org-level customer — no user-level union (#4019)", async () => {
+    // Org-scoped billing (#4014) + the user.stripeCustomerId column being absent
+    // in EU/APAC (#4019) mean the only customer to purge is the org's. The purge
+    // is called with exactly (orgId, org.stripeCustomerId) and nothing else.
+    const purgeCalls: Array<[string, string | null]> = [];
     const deps: TeardownDeps = {
-      purgeStripe: async (orgId, stripeCustomerId, extraCustomerIds) => {
-        purgeCalls.push([orgId, stripeCustomerId, extraCustomerIds]);
-        return okStripe({ actions: ["deleted Stripe customer cus_user"] });
+      purgeStripe: async (orgId, stripeCustomerId) => {
+        purgeCalls.push([orgId, stripeCustomerId]);
+        return okStripe({ actions: ["deleted Stripe customer cus_org"] });
       },
       softDelete: async () => true,
       hardDelete: async () => 1,
     };
     const report = await teardownTargets(
-      [target({ userStripeCustomerId: "cus_user", orgs: [ownedOrg({ stripeCustomerId: null })] })],
+      [target({ orgs: [ownedOrg({ stripeCustomerId: "cus_org" })] })],
       deps,
       false,
     );
-    expect(purgeCalls).toEqual([["org_1", null, ["cus_user"]]]);
-    expect(report.targets[0]!.userStripeCustomerId).toBe("cus_user");
-    expect(report.targets[0]!.orgs[0]!.stripeActions).toContain("deleted Stripe customer cus_user");
-  });
-
-  it("passes an empty extra-ids array when the user has no user-level customer", async () => {
-    const purgeCalls: Array<readonly string[]> = [];
-    const deps: TeardownDeps = {
-      purgeStripe: async (_o, _c, extraCustomerIds) => { purgeCalls.push(extraCustomerIds); return okStripe(); },
-      softDelete: async () => true,
-      hardDelete: async () => 1,
-    };
-    await teardownTargets(
-      [target({ userStripeCustomerId: null, orgs: [ownedOrg({ stripeCustomerId: "cus_org" })] })],
-      deps,
-      false,
-    );
-    expect(purgeCalls).toEqual([[]]);
-  });
-
-  it("warns when an orphan user (no owned org) carries a user-level customer the purge can't reach", async () => {
-    const deps: TeardownDeps = {
-      purgeStripe: async () => okStripe(),
-      softDelete: async () => true,
-      hardDelete: async () => 0,
-    };
-    const report = await teardownTargets(
-      [target({ email: "orphan+us@useatlas.dev", userStripeCustomerId: "cus_orphan", orgs: [] })],
-      deps,
-      false,
-    );
-    expect(report.targets[0]!.warnings.some((w) => w.includes("cus_orphan"))).toBe(true);
-    expect(report.targets[0]!.warnings.some((w) => w.includes("manually"))).toBe(true);
-    // Counted so the handler exits non-zero — a surviving billable customer
-    // must not be reported as a clean teardown.
-    expect(report.totals.orphanedUserCustomers).toBe(1);
-  });
-
-  it("warns when a user owns NO workspace (only non-owner memberships) but carries a customer", async () => {
-    // The org-loop skips every non-owner membership, so the user-level customer
-    // is never unioned into a purge — it must still be surfaced loudly (#4011),
-    // not just in the zero-membership case.
-    const calls: string[] = [];
-    const deps: TeardownDeps = {
-      purgeStripe: async () => { calls.push("purge"); return okStripe(); },
-      softDelete: async () => true,
-      hardDelete: async () => 0,
-    };
-    const report = await teardownTargets(
-      [target({
-        userStripeCustomerId: "cus_nonowner",
-        orgs: [ownedOrg({ orgId: "org_shared", isOwner: false })],
-      })],
-      deps,
-      false,
-    );
-    expect(calls).toEqual([]); // no purge ran — every membership is non-owner
-    expect(report.targets[0]!.warnings.some((w) => w.includes("cus_nonowner"))).toBe(true);
-    expect(report.targets[0]!.warnings.some((w) => w.includes("manually"))).toBe(true);
-    expect(report.totals.orphanedUserCustomers).toBe(1);
-  });
-
-  it("does NOT warn (customer is reached) when the user owns at least one workspace", async () => {
-    const deps: TeardownDeps = {
-      purgeStripe: async () => okStripe({ actions: ["deleted Stripe customer cus_user"] }),
-      softDelete: async () => true,
-      hardDelete: async () => 1,
-    };
-    const report = await teardownTargets(
-      [target({ userStripeCustomerId: "cus_user", orgs: [ownedOrg()] })],
-      deps,
-      false,
-    );
-    // An owned org's purge unions the customer in, so no manual-cleanup warning fires.
-    expect(report.targets[0]!.warnings.some((w) => w.includes("manually"))).toBe(false);
-    expect(report.totals.orphanedUserCustomers).toBe(0);
-  });
-
-  it("unions the user customer into EVERY owned org's purge (multi-org fan-out)", async () => {
-    // A user owning 2 workspaces: the same user-level customer is passed to each
-    // owned org's purge. The first deletes it, the rest hit resource_missing (a
-    // no-op success) — proven safe, never orphaned, never double-counted.
-    const extraArgs: Array<readonly string[]> = [];
-    const deps: TeardownDeps = {
-      purgeStripe: async (_o, _c, extraCustomerIds) => { extraArgs.push(extraCustomerIds); return okStripe(); },
-      softDelete: async () => true,
-      hardDelete: async () => 1,
-    };
-    await teardownTargets(
-      [target({
-        userStripeCustomerId: "cus_user",
-        orgs: [ownedOrg({ orgId: "org_a" }), ownedOrg({ orgId: "org_b" })],
-      })],
-      deps,
-      false,
-    );
-    expect(extraArgs).toEqual([["cus_user"], ["cus_user"]]);
+    expect(purgeCalls).toEqual([["org_1", "cus_org"]]);
+    expect(report.targets[0]!.orgs[0]!.stripeActions).toContain("deleted Stripe customer cus_org");
   });
 
   it("skips a non-owner membership without calling any dep", async () => {

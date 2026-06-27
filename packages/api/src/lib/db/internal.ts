@@ -3165,7 +3165,29 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const workspaceBranding = await del(`DELETE FROM workspace_branding WHERE org_id = $1`);
     const onboardingEmails = await del(`DELETE FROM onboarding_emails WHERE org_id = $1`);
     const piiColumnClassifications = await del(`DELETE FROM pii_column_classifications WHERE org_id = $1`);
-    const scimGroupMappings = await del(`DELETE FROM scim_group_mappings WHERE org_id = $1`);
+    // scim_group_mappings ships in 0000_baseline.sql + migration 0152 (#4019),
+    // but the EU/APAC prod region DBs were observed missing it — and unlike the
+    // `subscription` deletes below, this DELETE had NO existence probe, so its
+    // `relation "scim_group_mappings" does not exist` aborted the ENTIRE purge
+    // transaction: a workspace could be soft-deleted but never GDPR-purged.
+    // Probe with to_regclass so a region with residual drift skips this one
+    // table instead of rolling the whole cascade back. The `subscription` probe
+    // below stays silent on a miss (a historically Better-Auth-only table whose
+    // probe predates 0152), but scim_group_mappings has always shipped in the
+    // baseline, so post-0152 an absent table here is pure drift — log it rather
+    // than skip silently.
+    let scimGroupMappings = 0;
+    const scimTableProbe = await client.query(
+      `SELECT to_regclass('public.scim_group_mappings') IS NOT NULL AS table_exists`,
+    );
+    if ((scimTableProbe.rows[0] as { table_exists?: boolean } | undefined)?.table_exists === true) {
+      scimGroupMappings = await del(`DELETE FROM scim_group_mappings WHERE org_id = $1`);
+    } else {
+      log.warn(
+        { orgId },
+        "scim_group_mappings absent during hardDeleteWorkspace — skipping its DELETE (region-DB drift; migration 0152 should have repaired this)",
+      );
+    }
     const sandboxCredentials = await del(`DELETE FROM sandbox_credentials WHERE org_id = $1`);
     const dashboards = await del(`DELETE FROM dashboards WHERE org_id = $1`);
     const oauthState = await del(`DELETE FROM oauth_state WHERE org_id = $1`);
@@ -3198,15 +3220,16 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const twentyIntegrations = await del(`DELETE FROM twenty_integrations WHERE workspace_id = $1`);
 
     // ── Phase 3b: Stripe billing linkage rows (#3425) ──
-    // The @better-auth/stripe plugin's `subscription` table only exists when
-    // the plugin has run its migrations (STRIPE_SECRET_KEY deployments) —
-    // probe with to_regclass so non-Stripe deployments don't abort the purge
-    // transaction. The REMOTE teardown (cancel subscription, delete the
-    // Stripe customer) runs in lib/billing/workspace-teardown.ts BEFORE this
-    // cascade; these deletes remove the local billable linkage for GDPR
-    // completeness. The stripe_webhook_events dedupe ledger rows are matched
-    // via the org's subscription ids, so they must go before the
-    // subscription rows.
+    // Better Auth creates the @better-auth/stripe `subscription` table only on
+    // Stripe deployments (STRIPE_SECRET_KEY), but migration 0152 (#4019) now also
+    // CREATEs it IF NOT EXISTS in every mode for region parity, so post-0152 it
+    // exists everywhere. Probe with to_regclass anyway so a DB that pre-dates
+    // 0152 (or carries residual drift) doesn't abort the purge transaction. The
+    // REMOTE teardown (cancel subscription, delete the Stripe customer) runs in
+    // lib/billing/workspace-teardown.ts BEFORE this cascade; these deletes remove
+    // the local billable linkage for GDPR completeness. The stripe_webhook_events
+    // dedupe ledger rows are matched via the org's subscription ids, so they must
+    // go before the subscription rows.
     let subscriptions = 0;
     let stripeWebhookEvents = 0;
     const subscriptionTableProbe = await client.query(

@@ -1267,6 +1267,55 @@ describe("hardDeleteWorkspace()", () => {
     expect(result.subscriptions).toBe(0);
     expect(result.stripeWebhookEvents).toBe(0);
   });
+
+  it("completes the GDPR purge when scim_group_mappings is absent (region-DB drift, #4019)", async () => {
+    // The EU/APAC prod region DBs were missing scim_group_mappings, so the
+    // (previously unconditional) DELETE threw `relation does not exist` and
+    // rolled the WHOLE purge back — a workspace stuck soft-deleted, never
+    // GDPR-purged. The to_regclass probe must let the cascade skip the absent
+    // table and complete. Migration 0152 repairs the drift; this proves the
+    // purge no longer aborts when `scim_group_mappings` specifically is absent
+    // (the #4019 region-DB drift).
+    const { pool: basePool } = createMockPool();
+    const queries: string[] = [];
+    const client = {
+      async query(sql: string) {
+        queries.push(sql);
+        const upper = sql.trim().toUpperCase();
+        if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
+          return { rows: [{ workspace_status: "deleted" }] };
+        }
+        // Only scim_group_mappings is absent; `subscription` still exists.
+        if (sql.includes("to_regclass")) {
+          return { rows: [{ table_exists: !sql.includes("scim_group_mappings") }] };
+        }
+        if (sql.includes("FROM member m")) return { rows: [] };
+        // A real Postgres throws here if the cascade ever issues the DELETE —
+        // the probe must keep it from being reached.
+        if (sql.includes("DELETE FROM scim_group_mappings")) {
+          throw new Error('relation "scim_group_mappings" does not exist');
+        }
+        if (upper.startsWith("DELETE")) return { rows: [{ ok: 1 }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    const pool = {
+      ...basePool,
+      async connect() {
+        return client;
+      },
+    };
+    _resetPool(pool);
+
+    // Resolves (no throw, no rollback) and skips the absent table.
+    const result = await hardDeleteWorkspace("org-1");
+
+    expect(result.scimGroupMappings).toBe(0);
+    expect(queries.some((q) => q.includes("DELETE FROM scim_group_mappings"))).toBe(false);
+    // The rest of the cascade still ran — proof the purge completed, not aborted.
+    expect(result.subscriptions).toBe(1);
+  });
 });
 
 describe("connection URL encryption", () => {

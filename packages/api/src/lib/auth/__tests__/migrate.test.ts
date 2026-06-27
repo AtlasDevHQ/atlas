@@ -419,6 +419,10 @@ describe("migrateAuthTables", () => {
             // output-equivalent token accounting, TokenWeighting WS2, #3989) —
             // runs in every auth mode, so it must be pre-applied here.
             { name: "0152_usage_events_weighted_quantity.sql" },
+            // 0153 creates subscription + scim_group_mappings (region-DB parity,
+            // #4019); neither FKs a Better Auth table, so it is NOT in
+            // MANAGED_AUTH_MIGRATIONS and runs in every auth mode — must be listed.
+            { name: "0153_region_db_subscription_scim_parity.sql" },
           ],
         };
       }

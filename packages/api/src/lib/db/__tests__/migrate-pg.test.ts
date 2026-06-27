@@ -101,6 +101,38 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(count).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
 
+  // #4019 — region-DB schema parity. The EU/APAC prod region DBs were missing
+  // `subscription` (the @better-auth/stripe plugin table, created by Better
+  // Auth's runMigrations only where the stripe plugin is registered — US-only
+  // per STRIPE_SECRET_KEY) and `scim_group_mappings`. This suite runs with
+  // `skip: MANAGED_AUTH_MIGRATIONS` (the non-managed path, where Better Auth has
+  // NOT pre-created `subscription`) — a strict superset of the passive EU/APAC
+  // region where it is likewise absent. So `subscription` exists here ONLY if
+  // 0152 created it: that assertion (+ its column check) is what locks the fix.
+  // `scim_group_mappings` also ships in 0000_baseline.sql, so its presence here
+  // is a parity sanity check rather than a unique 0152 lock — the real scim
+  // regression (an absent table must NOT abort the purge) lives in
+  // internal.test.ts's hardDeleteWorkspace probe test.
+  it("0152: subscription + scim_group_mappings exist after migrations (region parity, #4019)", async () => {
+    const { rows } = await pool.query<{ subscription: string | null; scim: string | null }>(
+      `SELECT to_regclass('subscription') AS subscription,
+              to_regclass('scim_group_mappings') AS scim`,
+    );
+    expect(rows[0]?.subscription).not.toBeNull();
+    expect(rows[0]?.scim).not.toBeNull();
+
+    // Parity, not just presence: the `subscription` columns hardDeleteWorkspace
+    // and the Stripe teardown read (`referenceId`, `stripeSubscriptionId`) must
+    // be there, or the purge would still throw a column error in EU/APAC.
+    const { rows: cols } = await pool.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'subscription'`,
+    );
+    const names = new Set(cols.map((c) => c.column_name));
+    expect(names.has("referenceId")).toBe(true);
+    expect(names.has("stripeSubscriptionId")).toBe(true);
+  }, PG_TEST_TIMEOUT_MS);
+
   // #2184 — audit_log.auth_mode CHECK constraint. Inserts that pass
   // the canonical AuthMode tuple succeed; an insert with an unknown
   // mode rejects with PostgreSQL error code 23514 (check_violation),

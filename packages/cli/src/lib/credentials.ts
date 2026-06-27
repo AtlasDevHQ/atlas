@@ -111,9 +111,13 @@ function readStore(configDir: string): CredentialStore {
 function coerceSessions(raw: Record<string, unknown>): Record<string, StoredSession> {
   const out: Record<string, StoredSession> = {};
   for (const [key, value] of Object.entries(raw)) {
-    if (!value || typeof value !== "object") continue;
-    const v = value as Record<string, unknown>;
-    if (typeof v.token !== "string" || v.token.length === 0) continue;
+    const v = value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+    if (!v || typeof v.token !== "string" || v.token.length === 0) {
+      // Parity with the wrong-shape-file warning: a single corrupted entry is
+      // dropped, but say so rather than silently presenting it as logged-out.
+      console.warn(`Atlas credentials entry for ${key} was malformed and ignored — re-run \`atlas login\`.`);
+      continue;
+    }
     out[key] = {
       token: v.token,
       workspaceId: typeof v.workspaceId === "string" ? v.workspaceId : null,

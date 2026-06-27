@@ -148,7 +148,15 @@ function makeRecordingPool(): InternalPool {
       if (/INSERT\s+INTO\s+user_trial_grants/i.test(sql)) {
         return rows([{ user_id: params?.[0] }]);
       }
-      if (/FROM\s+member/i.test(sql)) return rows([{ organizationId: "org_welcome" }]);
+      // "cli_multi" belongs to TWO orgs (the multi-workspace branch — no
+      // active org is auto-selected, ADR-0025 §6); everyone else is single-org.
+      if (/FROM\s+member/i.test(sql)) {
+        return rows(
+          params?.[0] === "cli_multi"
+            ? [{ organizationId: "org_a" }, { organizationId: "org_b" }]
+            : [{ organizationId: "org_welcome" }],
+        );
+      }
       return rows([]);
     },
   } as unknown as InternalPool;
@@ -475,5 +483,17 @@ describe("databaseHooks.session.create.before — ban guard wiring (#3159)", () 
     // the composed-patch refactor against silently dropping the org.
     expect(result?.data?.origin).toBeUndefined();
     expect(result?.data?.activeOrganizationId).toBe("org_welcome");
+  });
+
+  it("stamps origin='cli' for a MULTI-workspace login WITHOUT auto-selecting an org (ADR-0025 §6)", async () => {
+    const before = getSessionCreateBefore();
+    // The cli marker and the active-org auto-set are independent patch fields;
+    // a multi-org user must get origin='cli' but NO active org (the picker is
+    // the deferred handoff). Pins that a refactor can't couple origin-stamping
+    // to org-resolution — which would leave multi-org cli sessions unmarked and
+    // resolving the user-level role (a platform_admin escalation).
+    const result = await before({ userId: "cli_multi" }, { path: "/device/token" });
+    expect(result?.data?.origin).toBe("cli");
+    expect(result?.data?.activeOrganizationId).toBeUndefined();
   });
 });

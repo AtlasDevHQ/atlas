@@ -294,6 +294,11 @@ describe("config wiring snapshot — buildAuthOptions", () => {
     const options = buildAuthOptions(makeDeps());
     expect(options.emailVerification?.autoSignInAfterVerification).toBe(true);
     expect(options.emailVerification?.sendOnSignIn).toBe(true);
+    // #4010 — the signup auto-send must stay OFF so the client is the single
+    // source of the signup OTP (no double-send on fresh, no dead-end on
+    // existing-email's synthetic token:null). A refactor that drops this flag
+    // lets it default to `requireEmailVerification` (true) and reopens both.
+    expect(options.emailVerification?.sendOnSignUp).toBe(false);
   });
 
   it("wires `rewriteVerificationCallbackURL` into the password-reset dispatch path", async () => {

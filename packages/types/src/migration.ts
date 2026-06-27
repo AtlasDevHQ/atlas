@@ -1,4 +1,4 @@
-/** Migration bundle types — wire format for atlas export/import. */
+/** Migration bundle types — wire format for `atlas-operator export` / `atlas import`. */
 
 import type { MessageRole, Surface } from "./conversation";
 import type { LearnedPattern } from "./learned-pattern";

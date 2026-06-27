@@ -1,5 +1,5 @@
 /**
- * Tests for `atlas ops teardown-verify-accounts` (#3974). The command tears
+ * Tests for `atlas-operator ops teardown-verify-accounts` (#3974). The command tears
  * down throwaway `/verify-prod-signup` accounts from a region's internal DB, so
  * the surface that matters is:
  *   1. The execute double-gate (ATLAS_TEARDOWN_OK=1 + --confirm) — missing
@@ -31,8 +31,8 @@ import {
   type RowQuery,
   type TeardownDeps,
   type VerifyTarget,
-} from "../commands/ops-teardown-verify";
-import { handleOps } from "../commands/ops";
+} from "../commands/operator/ops-teardown-verify";
+import { handleOps } from "../commands/operator/ops";
 import type { StripeTeardownOutcome } from "@atlas/api/lib/billing/workspace-teardown";
 
 // --- checkTeardownGate (mirrors checkWipeGate's double-gate contract) ---

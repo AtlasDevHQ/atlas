@@ -1,5 +1,5 @@
 /**
- * Audit log analyzer for `atlas learn`.
+ * Audit log analyzer for `atlas-operator learn`.
  *
  * Reads successful SQL queries from the internal DB audit_log table,
  * parses each via node-sql-parser, and extracts structural patterns:

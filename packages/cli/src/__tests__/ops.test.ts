@@ -1,5 +1,5 @@
 /**
- * Tests for `atlas ops` — the wipe path is destructive and gated by both
+ * Tests for `atlas-operator ops` — the wipe path is destructive and gated by both
  * ATLAS_WIPE_OK=1 and --confirm, so the test surface focuses on:
  *   1. The double-confirm gate refuses to run when either gate is missing.
  *   2. The TRUNCATE SQL matches the pinned literal exactly — drift here
@@ -18,7 +18,7 @@ import {
   parseBatchSize,
   parseBackfillSource,
   resolveBackfillUrl,
-} from "../commands/ops";
+} from "../commands/operator/ops";
 import { DEFAULT_BATCH_SIZE } from "@atlas/api/lib/db/migrations/scripts/backfill-crm-leads";
 import type { TenantPgClient } from "../../lib/tenant-db";
 
@@ -197,7 +197,7 @@ describe("handleOps", () => {
       caught = err instanceof Error ? err : new Error(String(err));
     }
     expect(caught?.message).toBe("__process_exit__:1");
-    expect(errors.some((line) => line.includes("Usage: atlas ops"))).toBe(true);
+    expect(errors.some((line) => line.includes("Usage: atlas-operator ops"))).toBe(true);
   });
 
   it("exits 1 when `ops wipe` runs without ATLAS_WIPE_OK", async () => {
@@ -310,7 +310,7 @@ describe("parseBatchSize", () => {
   });
 
   it("throws when --batch-size is at end-of-args with no value", () => {
-    // Operator typo `bun run atlas -- ops backfill-crm-leads --batch-size`
+    // Operator typo `bun run atlas-operator -- ops backfill-crm-leads --batch-size`
     // should fail loud rather than silently use 500 — pinned per Codex
     // review on PR #2846.
     expect(() => parseBatchSize(["--batch-size"])).toThrow(/requires a value/);

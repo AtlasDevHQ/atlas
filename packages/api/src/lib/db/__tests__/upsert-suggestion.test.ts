@@ -12,7 +12,7 @@
  * user-facing visibility.
  *
  * ON CONFLICT preserves prior approval / status so a repeated
- * `atlas learn` run never overrides an admin's hide or approve decision
+ * `atlas-operator learn` run never overrides an admin's hide or approve decision
  * on an existing row — that would re-surface content the admin already
  * reviewed. The `--auto-approve` operator flag affects new rows only.
  */

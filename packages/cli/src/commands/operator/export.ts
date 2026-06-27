@@ -1,12 +1,12 @@
 /**
- * atlas export -- Export workspace data to a portable migration bundle (JSON).
+ * atlas-operator export -- Export workspace data to a portable migration bundle (JSON).
  *
- * Extracted from atlas.ts to reduce monolith size.
+ * Operator-only direct-DB tooling, dispatched from bin/atlas-operator.ts (ADR-0025 step 4, #4045).
  */
 
 import * as fs from "fs";
 import pc from "picocolors";
-import { getFlag } from "../../lib/cli-utils";
+import { getFlag } from "../../../lib/cli-utils";
 
 export async function handleExport(args: string[]): Promise<void> {
   const outputArg = getFlag(args, "--output") ?? getFlag(args, "-o");
@@ -14,7 +14,7 @@ export async function handleExport(args: string[]): Promise<void> {
 
   // Require DATABASE_URL
   if (!process.env.DATABASE_URL) {
-    console.error(pc.red("DATABASE_URL is required for atlas export."));
+    console.error(pc.red("DATABASE_URL is required for atlas-operator export."));
     console.error(
       "  The export reads conversations, settings, and learned patterns from the internal database.",
     );

@@ -22,9 +22,12 @@ export interface SubcommandHelp {
 // Help printer
 // ---------------------------------------------------------------------------
 
-export function printSubcommandHelp(help: SubcommandHelp): void {
+export function printSubcommandHelp(
+  help: SubcommandHelp,
+  binName = "atlas",
+): void {
   console.log(`${help.description}\n`);
-  console.log(`Usage: atlas ${help.usage}\n`);
+  console.log(`Usage: ${binName} ${help.usage}\n`);
   if (help.subcommands?.length) {
     console.log("Subcommands:");
     const maxLen = Math.max(
@@ -284,50 +287,6 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
     ],
     examples: ["atlas index", "atlas index --stats"],
   },
-  learn: {
-    description:
-      "Analyze audit log and propose semantic layer YAML improvements.",
-    usage: "learn [options]",
-    flags: [
-      {
-        flag: "--apply",
-        description:
-          "Write proposed changes to YAML files (default: dry-run)",
-      },
-      {
-        flag: "--suggestions",
-        description:
-          "Generate query suggestions from the audit log (stored in the query_suggestions table). Can be combined with --apply, --since, --limit, and --source",
-      },
-      {
-        flag: "--auto-approve",
-        description:
-          "With --suggestions: skip the /admin/starter-prompts moderation queue and write new rows as approved+published. Requires explicit operator intent — default is pending/draft",
-      },
-      {
-        flag: "--limit <n>",
-        description:
-          "Max audit log entries to analyze (default: 1000)",
-      },
-      {
-        flag: "--since <date>",
-        description:
-          "Only analyze queries after this date (ISO 8601)",
-      },
-      {
-        flag: "--source <name>",
-        description:
-          "Read from/write to semantic/{name}/ subdirectory",
-      },
-    ],
-    examples: [
-      "atlas learn",
-      "atlas learn --apply",
-      "atlas learn --since 2026-03-01 --limit 500",
-      "atlas learn --source warehouse",
-      "atlas learn --suggestions --auto-approve",
-    ],
-  },
   improve: {
     description:
       "Analyze the semantic layer and propose data-driven improvements using database profiling and audit log patterns.",
@@ -373,29 +332,6 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas improve --apply",
       "atlas improve --min-confidence 0.7 --entities orders,users",
       "atlas improve --since 2026-03-01 --source warehouse",
-    ],
-  },
-  export: {
-    description:
-      "Export workspace data to a portable migration bundle (JSON). Reads from the internal database.",
-    usage: "export [options]",
-    flags: [
-      {
-        flag: "--output <path>",
-        description:
-          "Output file path (default: ./atlas-export-{date}.json)",
-      },
-      { flag: "-o <path>", description: "Alias for --output" },
-      {
-        flag: "--org <orgId>",
-        description:
-          "Export data for a specific org (default: global/unscoped)",
-      },
-    ],
-    examples: [
-      "atlas export",
-      "atlas export --output backup.json",
-      "atlas export --org org_abc123",
     ],
   },
   "migrate-import": {
@@ -664,135 +600,6 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas completions fish > ~/.config/fish/completions/atlas.fish",
     ],
   },
-  proactive: {
-    description:
-      "Enable or disable proactive chat for a workspace. Operates against the tenant Postgres at ATLAS_TEAM_PG_URL (falls back to DATABASE_URL).",
-    usage: "proactive <enable|disable> --workspace <id|slug> [options]",
-    subcommands: [
-      {
-        name: "enable",
-        description:
-          "Turn proactive chat on for a workspace + opt one or more channels in (idempotent upsert).",
-      },
-      {
-        name: "disable",
-        description:
-          "Flip workspace_proactive_config.enabled to false (channel config rows preserved).",
-      },
-    ],
-    flags: [
-      {
-        flag: "--workspace <id|slug>",
-        description:
-          "Workspace slug (resolved via organization.slug) or literal `org_*` id",
-      },
-      {
-        flag: "--channels <id1,id2,...>",
-        description:
-          "Comma-separated Slack channel ids to opt in (required for `enable`)",
-      },
-    ],
-    examples: [
-      "atlas proactive enable --workspace atlas --channels C0AAA,C0BBB",
-      "atlas proactive disable --workspace atlas",
-    ],
-  },
-  seed: {
-    description:
-      "Seed durable workspace data — starter prompt collections and connection groups. Operates against the tenant Postgres at ATLAS_TEAM_PG_URL (falls back to DATABASE_URL).",
-    usage: "seed <prompts|workspace> [options]",
-    subcommands: [
-      {
-        name: "prompts",
-        description:
-          "Seed a prompt-library collection + items from a YAML file into prompt_collections / prompt_items.",
-      },
-      {
-        name: "workspace",
-        description:
-          "Provision a connection group with one or more member connections + per-group semantic entities.",
-      },
-    ],
-    flags: [
-      {
-        flag: "--workspace <id|slug>",
-        description: "Target workspace (required)",
-      },
-      {
-        flag: "--library <path>",
-        description:
-          "Path to library YAML (seed prompts) — defaults to ./prompts/library.yml",
-      },
-      {
-        flag: "--group <name>",
-        description: "Connection group name (seed workspace, required)",
-      },
-      {
-        flag: "--group-id <id>",
-        description: "Connection group id (seed workspace, defaults to `g_<group>`)",
-      },
-      {
-        flag: "--connections <id=urlEnv:type[:primary],...>",
-        description:
-          "Group members. Each entry: connection id, env var holding the URL, db type (postgres|mysql|…), and optional `:primary` marker. Exactly one entry must be primary.",
-      },
-      {
-        flag: "--semantic <path>",
-        description:
-          "Optional path to a semantic/ directory whose entities/, metrics/, glossary/ are inserted scoped to the new group.",
-      },
-    ],
-    examples: [
-      "atlas seed prompts --workspace atlas --library ./prompts/library.yml",
-      "atlas seed workspace --workspace atlas --group prod --connections us-prod=US_DB_URL:postgres:primary,eu-prod=EU_DB_URL:postgres",
-    ],
-  },
-  ops: {
-    description:
-      "Operator-only tools that touch tenant data. Destructive subcommands require an explicit double-confirm flag.",
-    usage: "ops <wipe|backfill-crm-leads|smoke-crm> [options]",
-    subcommands: [
-      {
-        name: "wipe",
-        description:
-          "TRUNCATE every public table in the tenant DB (excluding migration bookkeeping) with RESTART IDENTITY CASCADE. Requires ATLAS_WIPE_OK=1 + --confirm. No backup is taken — wrap with pg_dump yourself.",
-      },
-      {
-        name: "backfill-crm-leads",
-        description:
-          "Enqueue every existing demo_leads row into crm_outbox so the flusher dispatches them to Twenty as Persons. Re-runs are safe (dedupe by primary email). Flags: --dry-run, --batch-size N (default 500), --source demo, --database-url <url>.",
-      },
-      {
-        name: "smoke-crm",
-        description:
-          "End-to-end CRM lead-capture verification — inject fixture personas below Turnstile via the outbox, wait for the flusher to drain, then diff the resulting Twenty Persons/Notes against the fixture. Makes live Twenty calls: run ad-hoc by an operator and as the post-deploy staging-smoke gate, not per-PR CI. Flags: --personas <path> (required), --wipe-twenty (requires ATLAS_SMOKE_WIPE_OK=1), --twenty-base-url <url>, --twenty-api-key <key>, --timeout-seconds N (default 60), --database-url <url>.",
-      },
-    ],
-    flags: [
-      {
-        flag: "--confirm",
-        description:
-          "wipe: required to proceed past the double-confirm gate. Pair with ATLAS_WIPE_OK=1 in the env.",
-      },
-      {
-        flag: "--wipe-twenty",
-        description:
-          "smoke-crm: clear the Twenty workspace before the run. Destructive — double-gated by ATLAS_SMOKE_WIPE_OK=1.",
-      },
-      {
-        flag: "--database-url <url>",
-        description:
-          "Override the target Postgres URL (defaults to ATLAS_TEAM_PG_URL, then DATABASE_URL).",
-      },
-    ],
-    examples: [
-      "ATLAS_WIPE_OK=1 atlas ops wipe --confirm",
-      "ATLAS_WIPE_OK=1 atlas ops wipe --confirm --database-url $US_DB_URL",
-      "atlas ops backfill-crm-leads --dry-run",
-      "atlas ops smoke-crm --personas ./fixtures/personas.yml",
-      "ATLAS_SMOKE_WIPE_OK=1 atlas ops smoke-crm --personas ./fixtures/personas.yml --wipe-twenty",
-    ],
-  },
 };
 
 // ---------------------------------------------------------------------------
@@ -806,10 +613,8 @@ export function printOverviewHelp(): void {
       "Commands:\n" +
       "  init             Profile DB and generate semantic layer\n" +
       "  import           Import semantic YAML files from disk into DB\n" +
-      "  export           Export workspace data to a migration bundle\n" +
       "  migrate-import   Import a migration bundle into a hosted instance\n" +
       "  index            Rebuild or inspect the semantic index\n" +
-      "  learn            Analyze audit log and propose YAML improvements\n" +
       "  improve          Analyze semantic layer and propose data-driven improvements\n" +
       "  diff             Compare DB schema against existing semantic layer\n" +
       "  query            Ask a question via the Atlas API\n" +
@@ -822,9 +627,6 @@ export function printOverviewHelp(): void {
       "  plugin           Manage plugins (list, create, add)\n" +
       "  benchmark        Run BIRD benchmark for text-to-SQL accuracy\n" +
       "  mcp              Start MCP server (stdio or SSE transport)\n" +
-      "  proactive        Enable/disable proactive chat for a workspace (operator)\n" +
-      "  seed             Seed durable workspace data — prompts, connection groups (operator)\n" +
-      "  ops              Operator-only destructive tools (e.g. wipe)\n" +
       "  completions      Output shell completion script (bash, zsh, fish)\n\n" +
       "Run atlas <command> --help for detailed usage of any command.",
   );

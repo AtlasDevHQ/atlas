@@ -35,7 +35,7 @@ Introduce a single staging environment fronting production. The shape is deliber
 User-visible promotion model:
 
 - **`main` push** → staging deploys automatically (api + web + www, no docs)
-- **Eyeball staging** — via `atlas ops smoke-crm`, click-through, or the `/verify` skill
+- **Eyeball staging** — via `atlas-operator ops smoke-crm`, click-through, or the `/verify` skill
 - **Tag a release** — `git tag -a v0.x.y && git push origin v0.x.y` triggers production deploy across all three regions in parallel. Pushing the explicit tag ref (not `--tags`) prevents accidentally publishing stale local tags into the prod trigger.
 - **Hotfix** — push fix to `main`, tag immediately. Don't wait for staging soak. Both deploys fire on the same commit; if prod's health check fails, Railway auto-rolls-back the bad region while staging keeps the failed code for reproduction.
 
@@ -62,11 +62,11 @@ The maintainer's daily loop changes by exactly two steps: (1) wait ~5 min for st
 13. As the maintainer, I want staging emails to clamp to `staging-mail@useatlas.dev`, so that I can verify rendering without spamming real-looking fake addresses or hurting Resend sender reputation.
 14. As the maintainer, I want to log into staging with a deterministic admin credential, so that I can manually exercise admin surfaces without running through full signup each time.
 15. As the maintainer, I want a `/staging` visual marker on the web app, so that I never confuse a staging tab with a prod tab during dogfood.
-16. As the maintainer, I want `atlas ops smoke-crm` to be runnable against the staging URLs out of the box, so that the post-deploy gate is one command not five.
+16. As the maintainer, I want `atlas-operator ops smoke-crm` to be runnable against the staging URLs out of the box, so that the post-deploy gate is one command not five.
 17. As the maintainer, I want staging to be a 4th region keyed `staging` and excluded from the residency router, so that no prod traffic gets misrouted to staging and staging never claims to be a residency target.
 18. As the maintainer, I want OAuth callback URLs for Slack/Linear/GitHub/Google staging apps to point to `api.staging.useatlas.dev`, so that real OAuth flows can be exercised against staging end-to-end.
 19. As the maintainer, I want a Railway-level kill switch for the staging deploy trigger, so that if staging itself is broken I can disable it without blocking prod releases.
-20. As the maintainer, I want `bun run atlas -- ops wipe --confirm` to work against the staging DB, so that I can reset state when staging accumulates drift.
+20. As the maintainer, I want `bun run atlas-operator -- ops wipe --confirm` to work against the staging DB, so that I can reset state when staging accumulates drift.
 
 ### Future contributor — once external contributions open up
 
@@ -156,7 +156,7 @@ Per-env Railway env vars for every secret in `.env.example`. No inheritance betw
 
 - New `.github/workflows/staging-smoke.yml`. Triggers on Railway staging-deploy success webhook. Runs:
   - `curl -fsS https://api.staging.useatlas.dev/api/health | jq -e '.region == "staging"'` — verifies the deploy actually landed and the region discriminator is set. `/health` is public, no auth; the existing route already surfaces `region` from `getApiRegion()`, so no API code change is needed for this check.
-  - `bun run atlas -- ops smoke-crm --personas ./scripts/staging-smoke-personas.yml` with `TWENTY_API_KEY=$STAGING_TWENTY_API_KEY`, `TWENTY_BASE_URL=$STAGING_TWENTY_BASE_URL`, `DATABASE_URL=$STAGING_DATABASE_URL` env vars. The CLI talks directly to Twenty + Postgres — no `--base-url` against the staging API host. A small personas fixture lives in `scripts/staging-smoke-personas.yml` and is committed to the repo.
+  - `bun run atlas-operator -- ops smoke-crm --personas ./scripts/staging-smoke-personas.yml` with `TWENTY_API_KEY=$STAGING_TWENTY_API_KEY`, `TWENTY_BASE_URL=$STAGING_TWENTY_BASE_URL`, `DATABASE_URL=$STAGING_DATABASE_URL` env vars. The CLI talks directly to Twenty + Postgres — no `--base-url` against the staging API host. A small personas fixture lives in `scripts/staging-smoke-personas.yml` and is committed to the repo.
 - Posts pass/fail to maintainer's Slack via the existing chat plugin (re-uses the `#sandbox-atlas` channel pattern from the proactive dogfood loop).
 
 ### Observability
@@ -216,7 +216,7 @@ Prior art: the existing test file's pattern for asserting Tag behavior under var
 ### Out of test scope
 
 - Railway service creation, CNAME wiring, OAuth app registration at providers — operator runbook validation, not code tests. The runbook lives at `docs/development/staging-environment.md`; correctness is verified by running through it once and capturing any drift.
-- The `atlas ops wipe` subcommand against staging — already covered by existing CLI tests; staging is just another DB URL to it.
+- The `atlas-operator ops wipe` subcommand against staging — already covered by existing CLI tests; staging is just another DB URL to it.
 
 ## Out of Scope
 
@@ -232,7 +232,7 @@ Prior art: the existing test file's pattern for asserting Tag behavior under var
 - **Pre-release tags** (`v0.1.0-rc.1`, `v0.1.0-canary.1`) — deferred until first enterprise customer requests an RC channel. KISS for now.
 - **PR-preview environments** (one staging instance per open PR) — Railway is not designed for this; cost is prohibitive and Vercel-style preview envs would require a different platform.
 - **Path-based staging gates** (`apps/www/serve.ts` → staged, rest of www → direct) — rejected in Q2 in favor of per-service rule for mental simplicity. Reconsider if www staging soak becomes a real friction.
-- **Persistent staging across DB wipes** — staging DB is wipe-on-demand (via `atlas ops wipe`), not wipe-on-deploy. Persistence is the default.
+- **Persistent staging across DB wipes** — staging DB is wipe-on-demand (via `atlas-operator ops wipe`), not wipe-on-deploy. Persistence is the default.
 - **Auto-rollback to prior tag on failed prod health check** — Railway already handles per-service health-check rollback. App-level "tag back to v0.x-1" logic is not introduced.
 
 ## Further Notes

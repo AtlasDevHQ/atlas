@@ -1,6 +1,6 @@
 # How to verify CRM changes locally
 
-The `atlas ops smoke-crm` CLI mechanizes the manual A1–A4 / B7 / C9 / D12
+The `atlas-operator ops smoke-crm` CLI mechanizes the manual A1–A4 / B7 / C9 / D12
 verification flow used during the 1.6.0 milestone. It exists because the
 filter-syntax regression in PR #2865 silently corrupted every customer
 Person record in production for several days before manual smoke caught
@@ -42,7 +42,7 @@ Twenty workspace + secret-rotation strategy that isn't built yet).
 # scripts/test-fixtures/crm-personas.yml and covers 10 personas across
 # every lead variant (4× sales-form, 1 demo, 1 signup, 1 demo→signup
 # stickiness pair, 1 demo→demo idempotency pair).
-bun run atlas -- ops smoke-crm \
+bun run atlas-operator -- ops smoke-crm \
   --personas ./scripts/test-fixtures/crm-personas.yml \
   --twenty-api-key "$TWENTY_API_KEY"
 
@@ -50,14 +50,14 @@ bun run atlas -- ops smoke-crm \
 # `ops wipe` double-confirm gate: needs BOTH the flag AND
 # ATLAS_SMOKE_WIPE_OK=1 in the env.
 ATLAS_SMOKE_WIPE_OK=1 \
-  bun run atlas -- ops smoke-crm \
+  bun run atlas-operator -- ops smoke-crm \
     --personas ./scripts/test-fixtures/crm-personas.yml \
     --twenty-api-key "$TWENTY_API_KEY" \
     --wipe-twenty
 
 # Tune the drain timeout (default 60s). The Twenty hosted instance can
 # be slow under spike load — raise this if you see TIMEOUT exits.
-bun run atlas -- ops smoke-crm \
+bun run atlas-operator -- ops smoke-crm \
   --personas ./scripts/test-fixtures/crm-personas.yml \
   --timeout-seconds 120
 ```

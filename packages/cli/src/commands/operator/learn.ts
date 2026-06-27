@@ -1,7 +1,7 @@
 /**
- * atlas learn -- Analyze audit log and propose semantic layer YAML improvements.
+ * atlas-operator learn -- Analyze audit log and propose semantic layer YAML improvements.
  *
- * Extracted from atlas.ts to reduce monolith size.
+ * Operator-only direct-DB tooling, dispatched from bin/atlas-operator.ts (ADR-0025 step 4, #4045).
  */
 
 import * as fs from "fs";
@@ -12,7 +12,7 @@ import {
   requireFlagIdentifier,
   SEMANTIC_DIR,
   ENTITIES_DIR,
-} from "../../lib/cli-utils";
+} from "../../../lib/cli-utils";
 
 export async function handleLearn(args: string[]): Promise<void> {
   const applyMode = args.includes("--apply");
@@ -55,7 +55,7 @@ export async function handleLearn(args: string[]): Promise<void> {
 
   // Validate internal DB is configured
   if (!process.env.DATABASE_URL) {
-    console.error(pc.red("DATABASE_URL is required for atlas learn."));
+    console.error(pc.red("DATABASE_URL is required for atlas-operator learn."));
     console.error(
       "  The audit log is stored in the internal database.",
     );
@@ -98,16 +98,16 @@ export async function handleLearn(args: string[]): Promise<void> {
   );
   try {
     const { fetchAuditLog, analyzeQueries } = await import(
-      "../../lib/learn/analyze"
+      "../../../lib/learn/analyze"
     );
     const {
       loadEntities,
       loadGlossary,
       generateProposals,
       applyProposals,
-    } = await import("../../lib/learn/propose");
+    } = await import("../../../lib/learn/propose");
     const { formatDiff, formatSummary } = await import(
-      "../../lib/learn/diff"
+      "../../../lib/learn/diff"
     );
 
     // 1. Fetch audit log

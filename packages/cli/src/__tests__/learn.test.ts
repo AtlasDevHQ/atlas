@@ -1,10 +1,10 @@
 /**
- * Tests for the `atlas learn` command — specifically the argument-parsing
+ * Tests for the `atlas-operator learn` command — specifically the argument-parsing
  * guards that prevent user intent from being silently ignored.
  *
  * The `--auto-approve` flag only affects query-suggestion rows, so it
  * must be combined with `--suggestions`. Without this guard, an operator
- * could pass `atlas learn --auto-approve` expecting rows to be published,
+ * could pass `atlas-operator learn --auto-approve` expecting rows to be published,
  * and get the YAML improvement path instead — with zero rows written.
  */
 import { describe, it, expect, afterEach, beforeEach, mock } from "bun:test";
@@ -37,7 +37,7 @@ afterEach(() => {
   mock.restore();
 });
 
-const { handleLearn } = await import("../commands/learn");
+const { handleLearn } = await import("../commands/operator/learn");
 
 describe("handleLearn — --auto-approve guard", () => {
   it("exits 1 when --auto-approve is passed without --suggestions", async () => {

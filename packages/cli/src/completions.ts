@@ -77,17 +77,6 @@ export const COMMANDS: Record<string, CommandSpec> = {
       "--port": "Port for SSE transport",
     },
   },
-  learn: {
-    description: "Analyze audit log and propose YAML improvements",
-    flags: {
-      "--apply": "Write proposed changes to YAML files",
-      "--limit": "Max audit log entries to analyze",
-      "--since": "Only analyze queries after this date",
-      "--source": "Read from/write to semantic/{name}/ subdirectory",
-      "--suggestions": "Generate query suggestions from audit log",
-      "--auto-approve": "With --suggestions: skip admin moderation queue",
-    },
-  },
   improve: {
     description: "Analyze semantic layer and propose data-driven improvements",
     flags: {
@@ -152,14 +141,6 @@ export const COMMANDS: Record<string, CommandSpec> = {
       "--db": "Filter to a single database",
       "--csv": "CSV output",
       "--resume": "Resume from existing JSONL results file",
-    },
-  },
-  export: {
-    description: "Export workspace data to a migration bundle",
-    flags: {
-      "--output": "Output file path (default: ./atlas-export-{date}.json)",
-      "-o": "Alias for --output",
-      "--org": "Export data for a specific org",
     },
   },
   "migrate-import": {

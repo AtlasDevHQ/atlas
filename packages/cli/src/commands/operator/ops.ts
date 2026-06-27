@@ -1,5 +1,5 @@
 /**
- * atlas ops — operator-only tools that touch tenant data.
+ * atlas-operator ops — operator-only tools that touch tenant data.
  *
  * Subcommands:
  *   wipe                   TRUNCATE every public table in the tenant DB (excluding
@@ -38,8 +38,8 @@ import {
   BACKFILL_SOURCES,
   type BackfillSource,
 } from "@atlas/api/lib/db/migrations/scripts/backfill-crm-leads";
-import { getFlag } from "../../lib/cli-utils";
-import type { TenantPgClient } from "../../lib/tenant-db";
+import { getFlag } from "../../../lib/cli-utils";
+import type { TenantPgClient } from "../../../lib/tenant-db";
 
 /** Tables that must survive a wipe — migration bookkeeping. */
 export const WIPE_EXCLUDED_TABLES = [
@@ -282,7 +282,7 @@ export async function handleOps(args: string[]): Promise<void> {
   }
 
   console.error(
-    "Usage: atlas ops <wipe|backfill-crm-leads|smoke-crm|teardown-verify-accounts> [options]\n\n" +
+    "Usage: atlas-operator ops <wipe|backfill-crm-leads|smoke-crm|teardown-verify-accounts> [options]\n\n" +
       "Subcommands:\n" +
       "  wipe                 TRUNCATE every public table in the tenant DB. DESTRUCTIVE — requires ATLAS_WIPE_OK=1 + --confirm.\n" +
       "  backfill-crm-leads   Enqueue every demo_leads row into crm_outbox for dispatch to Twenty.\n" +

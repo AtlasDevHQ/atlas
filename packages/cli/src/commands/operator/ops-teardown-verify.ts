@@ -1,5 +1,5 @@
 /**
- * `atlas ops teardown-verify-accounts` — surgically tear down the throwaway
+ * `atlas-operator ops teardown-verify-accounts` — surgically tear down the throwaway
  * `/verify-prod-signup` test accounts (user + org + Stripe customer) left in a
  * region's internal DB after a 3-region residency verification (ADR-0024,
  * #3974). This is the operator-side cleanup half of the residency regression
@@ -51,7 +51,7 @@ import {
   purgeStripeBillingForWorkspace,
   type StripeTeardownOutcome,
 } from "@atlas/api/lib/billing/workspace-teardown";
-import { getFlag } from "../../lib/cli-utils";
+import { getFlag } from "../../../lib/cli-utils";
 
 /** Env var that, set to exactly "1", is one half of the execute double-gate. */
 export const TEARDOWN_OK_ENV = "ATLAS_TEARDOWN_OK";

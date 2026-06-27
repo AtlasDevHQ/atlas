@@ -189,10 +189,10 @@ The verify accounts are real prod identities (user + org + members; a Stripe cus
 
 ```bash
 # DRY RUN first (default — lists exactly what would go, deletes nothing):
-bun run atlas -- ops teardown-verify-accounts --region eu --email matt+eu@useatlas.dev
+bun run atlas-operator -- ops teardown-verify-accounts --region eu --email matt+eu@useatlas.dev
 # EXECUTE (double-gated, like ops wipe): cancels Stripe + soft-deletes + hard-deletes
 #   the org and its now-orphaned user, reusing the platform-admin purge SSOT:
-ATLAS_TEARDOWN_OK=1 bun run atlas -- ops teardown-verify-accounts \
+ATLAS_TEARDOWN_OK=1 bun run atlas-operator -- ops teardown-verify-accounts \
   --region eu --email matt+eu@useatlas.dev --confirm
 # Repeat per region (--region us/eu/apac selects ATLAS_REGION_<R>_DB_URL). The shared
 # matt+multi@ chooser account exists in two regions — tear it down in EACH.
@@ -202,10 +202,10 @@ ATLAS_TEARDOWN_OK=1 bun run atlas -- ops teardown-verify-accounts \
 - **One region DB per invocation.** `--region` resolves `ATLAS_REGION_<R>_DB_URL`; there is **no `DATABASE_URL` fallback** (the wrong-DB footgun).
 - **Mislocated-account residue check (ADR-0024 / #3967):** the pre-fix verify runs created EU/APAC accounts *in the US DB*. Prove they're gone — a DRY RUN of the US DB against the EU/APAC emails must resolve **zero** orgs:
   ```bash
-  bun run atlas -- ops teardown-verify-accounts --region us \
+  bun run atlas-operator -- ops teardown-verify-accounts --region us \
     --email matt+eu@useatlas.dev,matt+apac@useatlas.dev   # expect: 0 workspace(s)
   ```
-- **NEVER `bun run atlas -- ops wipe`** against a prod region DB — it TRUNCATEs every public table and would destroy real tenants.
+- **NEVER `bun run atlas-operator -- ops wipe`** against a prod region DB — it TRUNCATEs every public table and would destroy real tenants.
 
 ---
 
@@ -224,7 +224,7 @@ ATLAS_TEARDOWN_OK=1 bun run atlas -- ops teardown-verify-accounts \
 The only thing keeping this HITL is the **email OTP** — everything else is already scriptable (the Playwright drive + the three `fetch` assertions above). To run it in CI:
 
 1. **Programmatic OTP read.** Give the test inbox an API (a Resend *inbound* route → webhook/store, or an IMAP/mailbox API for `useatlas.dev`) so the runner can poll for the 8-char code instead of a human. This is the single blocker.
-2. **Dedicated test identities.** Pre-provisioned `ci+us@ / ci+eu@ / ci+apac@useatlas.dev` (business-domain) with automatic surgical teardown after each run via `atlas ops teardown-verify-accounts --region <R> --email <ci+R@…> --confirm` (`ATLAS_TEARDOWN_OK=1`).
+2. **Dedicated test identities.** Pre-provisioned `ci+us@ / ci+eu@ / ci+apac@useatlas.dev` (business-domain) with automatic surgical teardown after each run via `atlas-operator ops teardown-verify-accounts --region <R> --email <ci+R@…> --confirm` (`ATLAS_TEARDOWN_OK=1`).
 3. **Cadence, not per-PR.** Run post-`/release` (a `staging-smoke`-style job gated on the prod promote) or nightly — not on every PR. It exercises live prod signup + Resend + residency routing, which is a soak check, not a unit gate.
 4. **Assert, don't screenshot.** In CI the routing + residency primitives above (1–7) are the pass/fail signal; the cross-region edge matrix (4), `resolve-region` (5), and raw probe (7) are session-light and deterministic. Keep screenshots as artifacts for triage only.
 5. **No `executeSQL` LLM dependence in the gate.** Criterion 4 (demo answer) needs the agent; keep that as a separate `@llm`-tagged check so the routing assertions (1–3) stay deterministic and cheap.

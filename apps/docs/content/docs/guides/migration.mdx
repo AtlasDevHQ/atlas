@@ -33,18 +33,18 @@ data, so you can safely re-run after fixing errors or adding new data.
 
 ### Export from self-hosted
 
-Run `atlas export` against your self-hosted instance. This reads directly from
+Run `atlas-operator export` against your self-hosted instance. This reads directly from
 the internal database (no running API server required).
 
 ```bash
 # Basic export (global/unscoped data)
-atlas export
+atlas-operator export
 
 # Export a specific org's data
-atlas export --org org_abc123
+atlas-operator export --org org_abc123
 
 # Custom output path
-atlas export --output my-backup.json
+atlas-operator export --output my-backup.json
 ```
 
 The command produces a JSON bundle file (e.g. `atlas-export-2026-04-02.json`)
@@ -130,7 +130,7 @@ are present.
 
 ## CLI reference
 
-### `atlas export`
+### `atlas-operator export`
 
 Exports workspace data from the internal database to a portable JSON bundle.
 

@@ -5,7 +5,7 @@ import { PLAN_TIERS } from "@useatlas/types";
 // Mirrors the private `OVERAGE_STATUSES` tuple in ../billing — kept in sync
 // by the "canonical tuples match expected values" assertion below so a
 // reorder or addition fails loud.
-const OVERAGE_STATUSES = ["ok", "warning", "soft_limit", "hard_limit"] as const;
+const OVERAGE_STATUSES = ["ok", "warning", "soft_limit", "metered", "hard_limit"] as const;
 
 const validStatus = {
   workspaceId: "org_1",
@@ -150,7 +150,7 @@ describe("enum strict rejection", () => {
   });
 
   test("canonical tuples match expected values", () => {
-    expect(OVERAGE_STATUSES).toEqual(["ok", "warning", "soft_limit", "hard_limit"]);
+    expect(OVERAGE_STATUSES).toEqual(["ok", "warning", "soft_limit", "metered", "hard_limit"]);
   });
 });
 

@@ -265,6 +265,79 @@ describe("billing routes", () => {
       expect(body.plan.trialDays).toBeNull();
     });
 
+    it("surfaces metered overage + accrued cost when over budget (#3990)", async () => {
+      // Starter: 2M/seat. 3 seats → 6M budget. Spend 7M (≈117%) — over budget
+      // but, with the ceiling disabled in this test's settings mock, metered
+      // (served + billed), never hard-blocked. 1M overage at $1.00/M = $1.00.
+      mockInternalQuery.mockImplementation((...args: unknown[]) => {
+        const sql = args[0];
+        if (typeof sql === "string" && sql.includes("member")) {
+          return Promise.resolve([{ count: 3 }]);
+        }
+        return Promise.resolve([]);
+      });
+      const meteringMod = await import("@atlas/api/lib/metering");
+      (meteringMod.getCurrentPeriodUsage as ReturnType<typeof mock>).mockImplementationOnce(() =>
+        Promise.resolve({ ...mockUsage, tokenCount: 7_000_000, weightedTokenCount: 7_000_000 }),
+      );
+
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.usage.tokenOverageStatus).toBe("metered");
+      expect(body.usage.overageTokens).toBe(1_000_000);
+      expect(body.usage.overageCost).toBeCloseTo(1.0, 6);
+    });
+
+    it("never reports overage for a BYOT workspace, even over budget (#3990)", async () => {
+      // BYOT bypasses token enforcement entirely, so the page must never show
+      // metered status or accrued overage for a BYOT workspace — "BYOT never
+      // accrues overage". Paid tier + byot, usage way over the 6M budget.
+      mockGetWorkspaceDetails.mockImplementation(() =>
+        Promise.resolve({ ...mockWorkspace, plan_tier: "starter", byot: true }),
+      );
+      mockInternalQuery.mockImplementation((...args: unknown[]) => {
+        const sql = args[0];
+        if (typeof sql === "string" && sql.includes("member")) {
+          return Promise.resolve([{ count: 3 }]);
+        }
+        return Promise.resolve([]);
+      });
+      const meteringMod = await import("@atlas/api/lib/metering");
+      (meteringMod.getCurrentPeriodUsage as ReturnType<typeof mock>).mockImplementationOnce(() =>
+        Promise.resolve({ ...mockUsage, tokenCount: 50_000_000, weightedTokenCount: 50_000_000 }),
+      );
+
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.plan.byot).toBe(true);
+      expect(body.usage.tokenOverageStatus).toBe("ok");
+      expect(body.usage.overageTokens).toBe(0);
+      expect(body.usage.overageCost).toBe(0);
+    });
+
+    it("reports zero overage when under budget (#3990)", async () => {
+      mockInternalQuery.mockImplementation((...args: unknown[]) => {
+        const sql = args[0];
+        if (typeof sql === "string" && sql.includes("member")) {
+          return Promise.resolve([{ count: 3 }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      // Default mockUsage (25k tokens) is far under the 6M budget.
+      expect(body.usage.tokenOverageStatus).toBe("ok");
+      expect(body.usage.overageTokens).toBe(0);
+      expect(body.usage.overageCost).toBe(0);
+    });
+
     it("computes trialEndsAtEffective from trial_ends_at for trial workspaces (#3434)", async () => {
       const trialEnds = "2026-06-20T00:00:00.000Z";
       mockGetWorkspaceDetails.mockImplementation(() =>

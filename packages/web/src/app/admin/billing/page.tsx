@@ -117,12 +117,21 @@ function overageColor(status: BillingStatus["usage"]["tokenOverageStatus"]): str
   switch (status) {
     case "hard_limit":
       return "text-destructive";
+    // #3990 — `metered` (over budget, accruing billable overage) shares the
+    // amber "still served, not cut off" treatment with the approaching-budget
+    // states; only `hard_limit` (the abuse ceiling) goes destructive.
     case "warning":
     case "soft_limit":
+    case "metered":
       return "text-amber-600 dark:text-amber-400";
     default:
       return "text-muted-foreground";
   }
+}
+
+/** Format an accrued overage cost as a "$X.XX" string. */
+function formatOverageCost(cost: number): string {
+  return `$${cost.toFixed(2)}`;
 }
 
 // Values are Vercel AI Gateway model IDs (slash+dot) — SaaS resolves
@@ -829,6 +838,18 @@ function UsageShell({ data }: { data: BillingStatus }) {
             value={Math.min(usage.tokenUsagePercent, 100)}
             className="h-1.5"
           />
+          {/* #3990 — metered overage surface. When the workspace is over its
+              included budget (metered) or at the abuse ceiling (hard_limit),
+              show the accrued billable overage so "in overage, $X.XX so far"
+              is visible. `overageCost` is server-computed from the same
+              weighted usage enforcement meters; absent on older bundles ⇒ 0. */}
+          {(usage.tokenOverageStatus === "metered" ||
+            usage.tokenOverageStatus === "hard_limit") &&
+            (usage.overageCost ?? 0) > 0 && (
+              <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                In overage: {formatOverageCost(usage.overageCost ?? 0)} so far this period
+              </p>
+            )}
           {limits.tokenBudgetPerSeat !== null && (
             <p className="text-[11px] text-muted-foreground">
               {formatNumber(limits.tokenBudgetPerSeat)} tokens/seat ×{" "}

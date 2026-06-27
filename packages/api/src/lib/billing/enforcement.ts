@@ -1,5 +1,5 @@
 /**
- * Plan limit enforcement with graceful degradation.
+ * Plan limit enforcement with a metered soft-cap.
  *
  * Called before agent execution in chat and query routes.
  * Returns { allowed: true } (with optional warning) when the request
@@ -7,12 +7,18 @@
  *
  * Token budgets are per-seat: total budget = tokenBudgetPerSeat * seatCount.
  *
- * Degradation tiers:
+ * Metered soft-cap tiers (#3990 — replaces the old 110% hard block):
  * - **OK (0-79%):** No warning, request proceeds normally.
  * - **Warning (80-99%):** Request proceeds, warning metadata attached.
- * - **Soft limit (100-109%):** 10% grace buffer. Request proceeds with
- *   overage warning. Structured log emitted.
- * - **Hard limit (110%+):** Request blocked with 429, upgrade CTA.
+ * - **Metered (100% → AbuseCeiling):** Request proceeds and every token past
+ *   100% accrues billable overage at the plan's `overagePerMillionTokens`
+ *   rate. A warning carrying the accrued "in overage, $X.XX so far" surface is
+ *   attached. This is the heart of the metered soft-cap: a paying workspace is
+ *   metered, not cut off, for ordinary overage.
+ * - **Hard limit (≥ AbuseCeiling):** the ABUSE ceiling, not the budget limit.
+ *   A configurable, conservative multiple of the budget (default 500% via the
+ *   `ATLAS_ABUSE_CEILING` settings knob) that bounds runaway / abusive spend.
+ *   Requests are blocked with 429 here and ONLY here.
  *
  * Enforcement is skipped entirely when:
  * - No internal DB is configured (self-hosted without managed auth)
@@ -31,8 +37,9 @@ import {
   type WorkspaceRow,
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
+import { getSettingLive } from "@atlas/api/lib/settings";
 import { getSeatCount, SeatCountUnavailableError } from "./seat-count";
-import { computeTokenBudget, getPlanLimits, isUnlimited, TRIAL_DAYS } from "./plans";
+import { computeTokenBudget, getPlanDefinition, getPlanLimits, isUnlimited, TRIAL_DAYS } from "./plans";
 import type { OverageStatus, PlanLimitStatus } from "@useatlas/types";
 
 const log = createLogger("billing:enforcement");
@@ -44,8 +51,82 @@ const log = createLogger("billing:enforcement");
 /** Usage percent at which a warning is included in the response. */
 const WARNING_THRESHOLD = 80;
 
-/** Usage percent at which the hard block kicks in (grace buffer ends). */
-const HARD_LIMIT_THRESHOLD = 110;
+/** Usage percent at which billable overage begins to accrue (metered band). */
+const METERED_THRESHOLD = 100;
+
+/**
+ * Settings key for the abuse ceiling — the metered soft-cap cutoff, expressed
+ * as a percent of the plan budget. See the registry entry in `lib/settings.ts`.
+ */
+const ABUSE_CEILING_KEY = "ATLAS_ABUSE_CEILING";
+
+/**
+ * Conservative fallback abuse ceiling (percent of budget) when the setting is
+ * unreadable or malformed. Mirrors the registry default (500% = 5× budget):
+ * high enough that ordinary metered overage never trips it, low enough to cap
+ * runaway / abusive spend at a bounded multiple of the plan budget. Used only
+ * as the in-code belt — the registry default is the real source.
+ */
+const DEFAULT_ABUSE_CEILING_PERCENT = 500;
+
+/**
+ * Resolve the abuse ceiling (percent of plan budget) for a workspace.
+ *
+ * Read live (per request, hot-reloadable) from the workspace-scoped
+ * `ATLAS_ABUSE_CEILING` setting so an operator can lift it for a known heavy
+ * customer without a redeploy. Returns `null` when the ceiling is DISABLED
+ * (value 0 or empty) — pure metering with no cutoff — and the conservative
+ * {@link DEFAULT_ABUSE_CEILING_PERCENT} when the value is unreadable or
+ * non-numeric (fail-safe: a typo must not silently remove the abuse cap).
+ *
+ * The ceiling is clamped to be strictly above the metered threshold: a value
+ * at or below 100% would make EVERY overage an instant hard block, re-creating
+ * the very behaviour #3990 removes, so such a misconfiguration is floored at
+ * the default rather than honoured.
+ */
+export async function resolveAbuseCeilingPercent(orgId: string): Promise<number | null> {
+  let raw: string | undefined;
+  try {
+    raw = await getSettingLive(ABUSE_CEILING_KEY, orgId);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), orgId },
+      "Failed to read abuse-ceiling setting — falling back to conservative default",
+    );
+    return DEFAULT_ABUSE_CEILING_PERCENT;
+  }
+
+  const trimmed = raw?.trim() ?? "";
+  // Empty → explicit disable (no cutoff, pure metering).
+  if (trimmed === "") return null;
+
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    log.warn(
+      { orgId, value: raw },
+      "Abuse-ceiling setting is not a non-negative number — using conservative default",
+    );
+    return DEFAULT_ABUSE_CEILING_PERCENT;
+  }
+  // Numeric zero (any spelling: "0", "0.0", "00") → explicit disable. Owning
+  // every zero spelling in ONE post-parse branch keeps the security-relevant
+  // disable path single — a future "simplify" can't accidentally flip "0.0"
+  // from disabled to default.
+  if (parsed === 0) return null;
+
+  // A ceiling at or below the metered threshold would hard-block all overage,
+  // defeating the metered soft-cap. Floor it at the default rather than honour
+  // a self-defeating misconfiguration.
+  if (parsed <= METERED_THRESHOLD) {
+    log.warn(
+      { orgId, value: parsed, floor: DEFAULT_ABUSE_CEILING_PERCENT },
+      "Abuse-ceiling setting is at or below 100% (would block all overage) — flooring at default",
+    );
+    return DEFAULT_ABUSE_CEILING_PERCENT;
+  }
+
+  return parsed;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -277,6 +358,12 @@ export async function checkPlanLimits(
   const totalBudget = computeTokenBudget(tier, seatCount);
   if (!isUnlimited(totalBudget)) {
     try {
+      // Resolve the abuse ceiling (metered soft-cap cutoff) and the plan's
+      // overage rate up front so evaluateUsage can both decide the cutoff and
+      // surface the accrued overage cost. The ceiling is read live per request
+      // so an operator lift takes effect without a redeploy.
+      const ceilingPercent = await resolveAbuseCeilingPercent(orgId);
+      const overagePerMillion = getPlanDefinition(tier).overagePerMillionTokens;
       const usage = await getCurrentPeriodUsage(orgId);
       // Denominate the budget in output-equivalent tokens (#3989): a turn on a
       // pricier model consumes more of the budget per raw token, making the
@@ -287,7 +374,13 @@ export async function checkPlanLimits(
       // second belt: if a future shape change ever made the weighted field
       // arrive undefined, we denominate on raw rather than silently treating
       // usage as zero and never enforcing (a false-negative on the budget path).
-      return evaluateUsage(orgId, usage.weightedTokenCount ?? usage.tokenCount, totalBudget);
+      return evaluateUsage(
+        orgId,
+        usage.weightedTokenCount ?? usage.tokenCount,
+        totalBudget,
+        ceilingPercent,
+        overagePerMillion,
+      );
     } catch (err) {
       // DELIBERATE FAIL-OPEN (#3428): if we can't read usage, ALLOW the request
       // — metering is best-effort and we prioritise availability over revenue
@@ -324,19 +417,48 @@ export async function checkPlanLimits(
 }
 
 // ---------------------------------------------------------------------------
-// Usage evaluation (3-tier degradation)
+// Overage accounting (#3990)
+// ---------------------------------------------------------------------------
+
+/**
+ * Output-equivalent tokens consumed BEYOND the included budget. 0 when usage
+ * is at or under budget. Denominated in the SAME weighted tokens enforcement
+ * meters, so the dollar figure derived from it is the real billed amount.
+ */
+export function computeOverageTokens(currentUsage: number, limit: number): number {
+  if (limit <= 0) return 0;
+  return Math.max(0, currentUsage - limit);
+}
+
+/**
+ * Accrued billable overage cost in USD: `(overageTokens / 1e6) * rate`. 0 when
+ * not in overage or when the plan carries no overage rate. Never negative.
+ */
+export function computeOverageCost(
+  currentUsage: number,
+  limit: number,
+  overagePerMillionTokens: number,
+): number {
+  if (overagePerMillionTokens <= 0) return 0;
+  const overageTokens = computeOverageTokens(currentUsage, limit);
+  return (overageTokens / 1_000_000) * overagePerMillionTokens;
+}
+
+// ---------------------------------------------------------------------------
+// Usage evaluation (metered soft-cap: ok → warning → metered → ceiling cutoff)
 // ---------------------------------------------------------------------------
 
 function evaluateUsage(
   orgId: string,
   tokenCount: number,
   tokenBudget: number,
+  ceilingPercent: number | null,
+  overagePerMillionTokens: number,
 ): PlanCheckResult {
-  const metric = buildMetricStatus("tokens", tokenCount, tokenBudget);
+  const metric = buildMetricStatus("tokens", tokenCount, tokenBudget, ceilingPercent);
 
-  // Hard limit — block the request
+  // Hard limit — the abuse ceiling, not the budget. Block the request.
   if (metric.status === "hard_limit") {
-    const graceUsed = metric.usagePercent - 100;
     log.warn(
       {
         orgId,
@@ -344,19 +466,22 @@ function evaluateUsage(
         currentUsage: metric.currentUsage,
         limit: metric.limit,
         usagePercent: metric.usagePercent,
-        threshold: "hard_limit",
+        ceilingPercent,
+        threshold: "abuse_ceiling",
       },
-      "Workspace exceeded hard limit (%d%% of token budget) — blocking request",
+      "Workspace reached abuse ceiling (%d%% of token budget, ceiling %d%%) — blocking request",
       metric.usagePercent,
+      ceilingPercent ?? 0,
     );
     return {
       allowed: false,
       errorCode: "plan_limit_exceeded",
       errorMessage:
-        `You have exceeded your plan's token budget ` +
-        `(${metric.currentUsage.toLocaleString()} / ${metric.limit.toLocaleString()} tokens). ` +
-        `The 10% grace buffer has been used (${graceUsed.toFixed(0)}% over). ` +
-        `Upgrade your plan, add seats, or wait until the next billing period.`,
+        `You have reached your workspace's usage ceiling ` +
+        `(${metric.currentUsage.toLocaleString()} / ${metric.limit.toLocaleString()} tokens, ` +
+        `${metric.usagePercent}% of budget). ` +
+        `Requests are paused to prevent runaway spend. ` +
+        `Upgrade your plan, add seats, or contact support to raise the ceiling.`,
       httpStatus: 429,
       usage: {
         currentUsage: metric.currentUsage,
@@ -366,8 +491,34 @@ function evaluateUsage(
     };
   }
 
-  // Soft limit (100-109%) — allow with overage warning
-  if (metric.status === "soft_limit") {
+  // Metered (100% → ceiling) — allow, accruing billable overage.
+  if (metric.status === "metered") {
+    const overageCost = computeOverageCost(metric.currentUsage, metric.limit, overagePerMillionTokens);
+    const overageTokens = computeOverageTokens(metric.currentUsage, metric.limit);
+    // OPERATOR ALERT: a workspace metering past the would-be default ceiling
+    // WITH its abuse ceiling disabled (null) is accruing unbounded overage with
+    // no cutoff — exactly the runaway-loop / compromised-key case the ceiling
+    // exists to bound. Elevate to log.error (matching the #3428 fail-open alert
+    // pattern) so it's distinguishable from an ordinary 101% metered warning and
+    // an operator can scope the uncapped exposure. Capped-ceiling workspaces
+    // hard-block before reaching this depth, so this only fires for a
+    // deliberately-uncapped one.
+    if (ceilingPercent === null && metric.usagePercent >= DEFAULT_ABUSE_CEILING_PERCENT) {
+      log.error(
+        {
+          orgId,
+          metric: metric.metric,
+          currentUsage: metric.currentUsage,
+          limit: metric.limit,
+          usagePercent: metric.usagePercent,
+          overageTokens,
+          overageCost,
+          reason: "abuse_ceiling_disabled_extreme_overage",
+        },
+        "Workspace at %d%% of budget with abuse ceiling DISABLED — unbounded overage accruing, no cutoff (review ATLAS_ABUSE_CEILING)",
+        metric.usagePercent,
+      );
+    }
     log.warn(
       {
         orgId,
@@ -375,19 +526,27 @@ function evaluateUsage(
         currentUsage: metric.currentUsage,
         limit: metric.limit,
         usagePercent: metric.usagePercent,
-        threshold: "soft_limit",
+        overageTokens,
+        overageCost,
+        threshold: "metered",
       },
-      "Workspace in grace buffer (%d%% of token budget) — allowing with warning",
+      "Workspace in metered overage (%d%% of token budget, $%s so far) — allowing and billing overage",
       metric.usagePercent,
+      overageCost.toFixed(2),
     );
+    const costSuffix =
+      overagePerMillionTokens > 0
+        ? ` You are in overage: $${overageCost.toFixed(2)} so far this period.`
+        : "";
     return {
       allowed: true,
       warning: {
         code: "plan_limit_warning",
         message:
-          `You have exceeded your plan's token budget ` +
-          `(${metric.currentUsage.toLocaleString()} / ${metric.limit.toLocaleString()} tokens). ` +
-          `You are in a 10% grace period. Upgrade or add seats to avoid service interruption.`,
+          `You have exceeded your plan's included token budget ` +
+          `(${metric.currentUsage.toLocaleString()} / ${metric.limit.toLocaleString()} tokens).` +
+          costSuffix +
+          ` Upgrade or add seats to lower your per-token cost.`,
         metrics: [metric],
       },
     };
@@ -425,10 +584,22 @@ function evaluateUsage(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Build a per-metric usage status.
+ *
+ * `ceilingPercent` is the abuse-ceiling cutoff (percent of budget): usage at or
+ * above it classifies as `hard_limit` (429 cutoff), the 100%→ceiling band is
+ * `metered` (served + billed). When `null` (ceiling disabled) there is no
+ * cutoff — usage past 100% stays `metered` no matter how high. When omitted
+ * (billing-page / display callers that don't resolve the per-workspace
+ * setting) it defaults to the conservative {@link DEFAULT_ABUSE_CEILING_PERCENT}
+ * so a display surface and enforcement agree on the common case.
+ */
 export function buildMetricStatus(
   metric: "tokens",
   currentUsage: number,
   limit: number,
+  ceilingPercent: number | null = DEFAULT_ABUSE_CEILING_PERCENT,
 ): PlanLimitStatus {
   if (limit <= 0) {
     // Invalid limit (not the -1 unlimited sentinel, which is filtered upstream).
@@ -442,13 +613,27 @@ export function buildMetricStatus(
     currentUsage,
     limit,
     usagePercent,
-    status: classifyUsage(usagePercent),
+    status: classifyUsage(usagePercent, ceilingPercent),
   };
 }
 
-function classifyUsage(usagePercent: number): OverageStatus {
-  if (usagePercent >= HARD_LIMIT_THRESHOLD) return "hard_limit";
-  if (usagePercent >= 100) return "soft_limit";
+/**
+ * Classify usage into the metered soft-cap bands (#3990).
+ *
+ * - `>= ceilingPercent` → `hard_limit` (abuse ceiling cutoff). Skipped when
+ *   `ceilingPercent` is null (ceiling disabled — pure metering, no cutoff).
+ * - `>= 100%` → `metered` (over budget, served + billed).
+ * - `>= 80%` → `warning`.
+ * - otherwise `ok`.
+ *
+ * The ceiling is checked first so it always wins over `metered`. A non-positive
+ * ceiling is treated as disabled (defensive — `resolveAbuseCeilingPercent`
+ * already maps 0 → null, but guarding here means a ceiling of 0 can never
+ * classify EVERY usage, including 0%, as `hard_limit`).
+ */
+function classifyUsage(usagePercent: number, ceilingPercent: number | null): OverageStatus {
+  if (ceilingPercent !== null && ceilingPercent > 0 && usagePercent >= ceilingPercent) return "hard_limit";
+  if (usagePercent >= METERED_THRESHOLD) return "metered";
   if (usagePercent >= WARNING_THRESHOLD) return "warning";
   return "ok";
 }
@@ -456,8 +641,12 @@ function classifyUsage(usagePercent: number): OverageStatus {
 const SEVERITY_ORDER: Record<OverageStatus, number> = {
   ok: 0,
   warning: 1,
+  // `soft_limit` is retained in the wire union for back-compat; the current
+  // classifier never returns it, but ordering it between warning and metered
+  // keeps any legacy value sortable.
   soft_limit: 2,
-  hard_limit: 3,
+  metered: 3,
+  hard_limit: 4,
 };
 
 /** Exported for tests. */

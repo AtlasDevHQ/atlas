@@ -366,6 +366,56 @@ describe("purgeStripeBillingForWorkspace (GDPR purge path)", () => {
     ]);
   });
 
+  it("unions extraCustomerIds (e.g. a user-level customer) into the delete set", async () => {
+    // The org column is null (the #4011 shape: customer lives on user.stripeCustomerId,
+    // organization."stripeCustomerId" is null). The user-level id passed via
+    // extraCustomerIds must still be deleted so a verify teardown can't orphan it.
+    mockSubscriptionRows([]);
+
+    await purgeStripeBillingForWorkspace(ORG, null, ["cus_user"]);
+
+    expect(customersDel.mock.calls.map((c) => c[0])).toEqual(["cus_user"]);
+  });
+
+  it("de-dupes extraCustomerIds already present from the org column or subscriptions", async () => {
+    mockSubscriptionRows([subRow("sub_old", "canceled", "cus_acme")]);
+
+    // cus_acme appears on both the org column and extraCustomerIds — deleted once.
+    await purgeStripeBillingForWorkspace(ORG, "cus_acme", ["cus_acme", "cus_user"]);
+
+    expect(customersDel.mock.calls.map((c) => c[0]).toSorted()).toEqual([
+      "cus_acme",
+      "cus_user",
+    ]);
+  });
+
+  it("deletes BOTH a distinct org customer and a distinct user customer (true union)", async () => {
+    // Org acquired its own customer while the signup user-level one persisted —
+    // both distinct ids must be deleted, not just one.
+    mockSubscriptionRows([]);
+
+    await purgeStripeBillingForWorkspace(ORG, "cus_org", ["cus_user"]);
+
+    expect(customersDel.mock.calls.map((c) => c[0]).toSorted()).toEqual([
+      "cus_org",
+      "cus_user",
+    ]);
+  });
+
+  it("treats a resource_missing on an extraCustomerIds id as already-gone (multi-org re-pass is safe)", async () => {
+    // The multi-org fan-out re-passes the same user customer to each owned org's
+    // purge; the 2nd+ delete hits resource_missing and must be an action, not a warning.
+    mockSubscriptionRows([]);
+    customersDel.mockImplementation(async () => {
+      throw new FakeStripeError("No such customer", "resource_missing");
+    });
+
+    const outcome = await purgeStripeBillingForWorkspace(ORG, null, ["cus_user"]);
+
+    expect(outcome.warnings).toEqual([]);
+    expect(outcome.actions.some((a) => a.includes("already absent"))).toBe(true);
+  });
+
   it("makes no customer call when there is no Stripe customer linkage", async () => {
     mockSubscriptionRows([]);
 

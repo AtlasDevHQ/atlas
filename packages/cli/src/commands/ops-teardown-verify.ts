@@ -16,6 +16,12 @@
  * three SSOT functions the platform-admin purge uses:
  *   1. `purgeStripeBillingForWorkspace` — cancel subs + delete the Stripe
  *      customer (a torn-down account must leave no billable Stripe linkage).
+ *      The org's `organization."stripeCustomerId"` AND the user's
+ *      `user.stripeCustomerId` are both unioned into the delete set: the
+ *      @better-auth/stripe plugin's `createCustomerOnSignUp` parks a customer
+ *      on the USER row at signup, so a trial verify account's only `cus_…`
+ *      lives there while the org column is null — passing only the org id would
+ *      tear the workspace down but orphan that customer (#4011).
  *   2. `updateWorkspaceStatus(orgId, "deleted")` — the soft-delete precondition
  *      `hardDeleteWorkspace` enforces (it aborts unless the org is "deleted").
  *   3. `hardDeleteWorkspace` — the exhaustive GDPR-grade row purge, which also
@@ -217,6 +223,16 @@ export interface VerifyTarget {
   email: string;
   userId: string | null;
   found: boolean;
+  /**
+   * The customer id on the USER row (`user.stripeCustomerId`). The
+   * @better-auth/stripe plugin's `createCustomerOnSignUp` parks a customer here
+   * at signup before any org subscription exists, so for a trial verify account
+   * this is populated while every owned org's `stripeCustomerId` is null (#4011).
+   * Unioned into each *owned* org's Stripe purge; a user who owns no workspace
+   * (zero or only non-owner memberships) is surfaced as a manual-cleanup warning
+   * instead, since no purge can reach it.
+   */
+  userStripeCustomerId: string | null;
   orgs: VerifyOrg[];
 }
 
@@ -256,6 +272,7 @@ interface TargetRow extends Record<string, unknown> {
   userId: string;
   email: string;
   userName: string | null;
+  userStripeCustomerId: string | null;
   memberRole: string | null;
   orgId: string | null;
   orgName: string | null;
@@ -283,6 +300,7 @@ export async function resolveVerifyTargets(
          u.id                  AS "userId",
          u.email               AS "email",
          u.name                AS "userName",
+         u."stripeCustomerId"  AS "userStripeCustomerId",
          m.role                AS "memberRole",
          o.id                  AS "orgId",
          o.name                AS "orgName",
@@ -298,11 +316,12 @@ export async function resolveVerifyTargets(
     );
 
     if (rows.length === 0) {
-      targets.push({ email, userId: null, found: false, orgs: [] });
+      targets.push({ email, userId: null, found: false, userStripeCustomerId: null, orgs: [] });
       continue;
     }
 
     const userId = rows[0]!.userId;
+    const userStripeCustomerId = rows[0]!.userStripeCustomerId;
     const orgs: VerifyOrg[] = [];
     for (const r of rows) {
       if (!r.orgId) continue; // user with no membership (LEFT JOIN null row)
@@ -316,7 +335,7 @@ export async function resolveVerifyTargets(
         isOwner: r.memberRole === "owner",
       });
     }
-    targets.push({ email, userId, found: true, orgs });
+    targets.push({ email, userId, found: true, userStripeCustomerId, orgs });
   }
   return targets;
 }
@@ -338,6 +357,9 @@ export interface TargetTeardownResult {
   email: string;
   userId: string | null;
   found: boolean;
+  /** The user-row Stripe customer unioned into the org purges (#4011) — surfaced
+   *  so a dry-run preview shows it will be deleted, not just the org-level id. */
+  userStripeCustomerId: string | null;
   orgs: OrgTeardownResult[];
   warnings: string[];
 }
@@ -354,6 +376,12 @@ export interface TeardownReport {
      *  warning (e.g. a customer that couldn't be deleted) — a non-clean
      *  outcome the handler exits non-zero on, even though the row purge ran. */
     stripeWarnings: number;
+    /** Users carrying a `user.stripeCustomerId` who own no workspace, so no
+     *  purge could reach it (#4011) — a live billable customer the run can't
+     *  delete. Counted so the handler exits non-zero rather than reporting a
+     *  clean teardown while an orphan `cus_…` survives (a scripted/CI cleanup
+     *  must fail loudly). The customer id is in the per-target warning. */
+    orphanedUserCustomers: number;
   };
 }
 
@@ -361,7 +389,11 @@ export interface TeardownReport {
  *  `hardDelete` returns the total rows purged; the handler sums the SSOT's
  *  per-table `HardDeleteResult` so the orchestration stays shape-agnostic. */
 export interface TeardownDeps {
-  purgeStripe: (orgId: string, stripeCustomerId: string | null) => Promise<StripeTeardownOutcome>;
+  purgeStripe: (
+    orgId: string,
+    stripeCustomerId: string | null,
+    extraCustomerIds: readonly string[],
+  ) => Promise<StripeTeardownOutcome>;
   softDelete: (orgId: string) => Promise<boolean>;
   hardDelete: (orgId: string) => Promise<number>;
 }
@@ -375,6 +407,14 @@ export interface TeardownDeps {
  * `hardDelete` enforces), then hard-delete the rows. A single org's failure is
  * recorded and the run continues — one stuck account never strands the rest.
  * Non-owner memberships and orphan users become warnings, never deletions.
+ *
+ * The user's `user.stripeCustomerId` is unioned into each owned org's Stripe
+ * purge (#4011): the @better-auth/stripe plugin's `createCustomerOnSignUp`
+ * parks a customer on the user row at signup, so a trial verify account carries
+ * a live `cus_…` there while every org column is null — passing only the org id
+ * would tear the workspace down but orphan that customer. The purge de-dupes
+ * and treats `resource_missing` as success, so attaching it to each owned org
+ * (rather than guessing one) can't double-delete or strand it.
  */
 export async function teardownTargets(
   targets: VerifyTarget[],
@@ -388,6 +428,7 @@ export async function teardownTargets(
     rowsPurged: 0,
     errors: 0,
     stripeWarnings: 0,
+    orphanedUserCustomers: 0,
   };
 
   for (const target of targets) {
@@ -401,6 +442,22 @@ export async function teardownTargets(
         `User ${target.email} (${target.userId}) has no workspace membership — ` +
           "orphan user row left untouched; remove it manually if it is a verification artifact.",
       );
+    }
+
+    // The user-level customer is unioned into the purge of every OWNED org (see
+    // the loop below). When the user owns NO workspace — whether they have zero
+    // memberships or only non-owner ones — no purge reaches it, so a live `cus_…`
+    // would be silently left behind (the exact #4011 orphaning, via a different
+    // topology). Warn loudly in that case rather than reporting a clean teardown.
+    const ownsAnyWorkspace = target.orgs.some((o) => o.isOwner);
+    if (target.found && target.userStripeCustomerId && !ownsAnyWorkspace) {
+      targetWarnings.push(
+        `User ${target.email} carries a Stripe customer ${target.userStripeCustomerId} but owns no ` +
+          "workspace to purge — delete it manually in the Stripe dashboard so it isn't orphaned.",
+      );
+      // Counted into totals so the handler exits non-zero: a surviving billable
+      // customer is a non-clean outcome a scripted/CI cleanup must not pass over.
+      totals.orphanedUserCustomers += 1;
     }
 
     for (const org of target.orgs) {
@@ -436,7 +493,11 @@ export async function teardownTargets(
       }
 
       try {
-        const stripe = await deps.purgeStripe(org.orgId, org.stripeCustomerId);
+        const stripe = await deps.purgeStripe(
+          org.orgId,
+          org.stripeCustomerId,
+          target.userStripeCustomerId ? [target.userStripeCustomerId] : [],
+        );
         // softDelete returns false when no row matched (e.g. the org was
         // concurrently reactivated/removed between resolve and execute). Surface
         // that as the cause rather than letting hardDelete throw the downstream
@@ -483,6 +544,7 @@ export async function teardownTargets(
       email: target.email,
       userId: target.userId,
       found: target.found,
+      userStripeCustomerId: target.userStripeCustomerId,
       orgs: orgResults,
       warnings: targetWarnings,
     });
@@ -500,6 +562,17 @@ export function printTeardownReport(report: TeardownReport): void {
 
   for (const target of report.targets) {
     console.log(`\n• ${target.email}${target.userId ? ` (user ${target.userId})` : ""}`);
+    if (target.userStripeCustomerId) {
+      // The customer is unioned into a purge only when the user owns a workspace;
+      // an owner-less user gets the manual-cleanup warning below instead, so the
+      // parenthetical must reflect which case this is (a "skipped-not-owner" or
+      // empty org list means no purge reached it).
+      const reached = target.orgs.some((o) => o.status !== "skipped-not-owner");
+      const note = reached
+        ? "(unioned into owned-org purge)"
+        : "(NOT reached by any purge — see warning below)";
+      console.log(`  user stripe customer: ${target.userStripeCustomerId} ${note}`);
+    }
     for (const w of target.warnings) console.log(`  ⚠ ${w}`);
     for (const org of target.orgs) {
       const tag = {
@@ -523,6 +596,9 @@ export function printTeardownReport(report: TeardownReport): void {
       `${report.dryRun ? t.orgsWouldTearDown : t.orgsTornDown} workspace(s)` +
       (report.dryRun ? "" : `, ${t.rowsPurged} rows purged`) +
       (t.stripeWarnings > 0 ? `, ${t.stripeWarnings} workspace(s) with Stripe warnings` : "") +
+      (t.orphanedUserCustomers > 0
+        ? `, ${t.orphanedUserCustomers} orphaned user-level Stripe customer(s) needing manual deletion`
+        : "") +
       (t.errors > 0 ? `, ${t.errors} error(s)` : ""),
   );
 }
@@ -596,14 +672,21 @@ export async function handleTeardownVerifyAccounts(args: string[]): Promise<void
     }, dryRun);
 
     printTeardownReport(report);
-    // Exit non-zero on a row-purge error OR a left-behind Stripe linkage — a
-    // scripted cleanup must fail loudly rather than report a clean "success"
-    // while a billable Stripe customer survives. A failed customer-delete /
+    // Exit non-zero on a row-purge error, a left-behind Stripe linkage, OR an
+    // orphaned user-level customer that no purge could reach — a scripted
+    // cleanup must fail loudly rather than report a clean "success" while a
+    // billable Stripe customer survives. A failed customer-delete /
     // subscription-cancel is enqueued in `stripe_teardown_pending` for durable
-    // retry; some warnings (a subscription-read or outbox-write failure) are
-    // manual-follow-up only — either way the operator/CI should know it didn't
-    // fully complete.
-    if (report.totals.errors > 0 || report.totals.stripeWarnings > 0) process.exitCode = 1;
+    // retry; some warnings (a subscription-read or outbox-write failure, or an
+    // owner-less user-level customer) are manual-follow-up only — either way the
+    // operator/CI should know it didn't fully complete.
+    if (
+      report.totals.errors > 0 ||
+      report.totals.stripeWarnings > 0 ||
+      report.totals.orphanedUserCustomers > 0
+    ) {
+      process.exitCode = 1;
+    }
   } catch (err) {
     console.error(
       `[ops:teardown-verify-accounts] failed: ${err instanceof Error ? err.message : String(err)}`,

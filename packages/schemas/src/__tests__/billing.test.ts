@@ -169,6 +169,36 @@ describe("enum strict rejection", () => {
   test("canonical tuples match expected values", () => {
     expect(OVERAGE_STATUSES).toEqual(["ok", "warning", "soft_limit", "metered", "hard_limit"]);
   });
+
+  // #3993 — the spend policy drives the billing page's "past the credit" line.
+  test("parses each spend policy, null, and absence as usage.spendPolicy", () => {
+    for (const policy of ["continue", "cutoff"] as const) {
+      expect(
+        BillingStatusSchema.parse({
+          ...validStatus,
+          usage: { ...validStatus.usage, spendPolicy: policy },
+        }).usage.spendPolicy,
+      ).toBe(policy);
+    }
+    // Null (no enforced credit / resolution failed) and absence (older bundle)
+    // both parse — the page omits the line in either case.
+    expect(
+      BillingStatusSchema.parse({
+        ...validStatus,
+        usage: { ...validStatus.usage, spendPolicy: null },
+      }).usage.spendPolicy,
+    ).toBeNull();
+    expect(BillingStatusSchema.parse(validStatus).usage.spendPolicy).toBeUndefined();
+  });
+
+  test("an unknown spendPolicy fails parse", () => {
+    expect(
+      BillingStatusSchema.safeParse({
+        ...validStatus,
+        usage: { ...validStatus.usage, spendPolicy: "throttle" },
+      }).success,
+    ).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

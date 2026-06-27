@@ -32,7 +32,7 @@ import {
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, getStripePlans, computeTokenBudget, computeUsageDollarBudget, isUnlimited, type PaidPlanTier } from "@atlas/api/lib/billing/plans";
-import { buildMetricStatus, resolveUsageCeiling, computeOverageDollars } from "@atlas/api/lib/billing/enforcement";
+import { buildMetricStatus, resolveUsageCeiling, computeOverageDollars, type SpendPolicy } from "@atlas/api/lib/billing/enforcement";
 import { getSeatCount } from "@atlas/api/lib/billing/seat-count";
 import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-expiry";
 import { getSettingLive } from "@atlas/api/lib/settings";
@@ -398,19 +398,34 @@ billing.openapi(getBillingStatusRoute, async (c) => {
     // through verbatim — hence the explicit undefined-vs-null distinction rather
     // than a `?? default` coalesce. The gauge denominates against the at-cost
     // spend (`usage.costUsd`, #4036) — the same numerator enforcement reads.
-    const ceilingPercent = enforcesBudget
-      ? yield* Effect.promise(() =>
+    // Resolve the ceiling AND the spend policy from the same call — the page
+    // surfaces the policy (`continue` vs `cutoff`, #3993) so a customer knows
+    // what happens past their credit *before* they hit the 429, not just at it.
+    // `ceilingPercent`: number (a bounded multiple of the credit), null
+    // (operator-disabled ceiling), or undefined (resolution failed → let
+    // buildMetricStatus fall to its conservative default). `spendPolicy`: null
+    // when there's no enforced credit or resolution failed (page omits the line).
+    type CeilingResolution = {
+      spendPolicy: SpendPolicy | null;
+      ceilingPercent: number | null | undefined;
+    };
+    const ceiling: CeilingResolution = enforcesBudget
+      ? yield* Effect.promise<CeilingResolution>(() =>
           resolveUsageCeiling(orgId)
-            .then((r) => r.ceilingPercent)
+            .then((r) => ({ spendPolicy: r.spendPolicy, ceilingPercent: r.ceilingPercent }))
             .catch((err) => {
               log.warn(
                 { err: err instanceof Error ? err.message : String(err), orgId },
                 "Failed to resolve usage ceiling for billing page — using default classification",
               );
-              return undefined;
+              return { spendPolicy: null, ceilingPercent: undefined };
             }),
         )
-      : null;
+      : { spendPolicy: null, ceilingPercent: null };
+    const ceilingPercent = ceiling.ceilingPercent;
+    // Only meaningful when a dollar credit is enforced; null for BYOT / free /
+    // unlimited (no gauge) and on resolution failure ⇒ the page omits the line.
+    const spendPolicy = ceiling.spendPolicy;
     const usageOverage = enforcesBudget && usageDollarsLimit !== null
       ? buildMetricStatus("usd", usage.costUsd, usageDollarsLimit, ceilingPercent === undefined ? undefined : ceilingPercent)
       : { usagePercent: 0, status: "ok" as const };
@@ -461,6 +476,7 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         usageDollarsPercent: usageOverage.usagePercent,
         usageOverageStatus: usageOverage.status,
         overageCost,
+        spendPolicy,
         periodStart: usage.periodStart,
         periodEnd: usage.periodEnd,
         periodSource: usage.periodSource,

@@ -180,7 +180,9 @@ describe("runMigrations", () => {
     //   returning-user login front-door probe, ADR-0024 §3, #3973) = 152.
     //   Plus 0152 (usage_events.weighted_quantity output-equivalent token
     //   accounting, TokenWeighting WS2, #3989) = 153.
-    expect(count).toBe(153);
+    //   Plus 0153 (subscription + scim_group_mappings region-DB parity so the
+    //   GDPR purge completes in passive EU/APAC regions, #4019) = 154.
+    expect(count).toBe(154);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -362,6 +364,7 @@ describe("runMigrations", () => {
         "0150_token_usage_latency.sql",
         "0151_user_email_hash_index.sql",
         "0152_usage_events_weighted_quantity.sql",
+        "0153_region_db_subscription_scim_parity.sql",
       ],
     });
 

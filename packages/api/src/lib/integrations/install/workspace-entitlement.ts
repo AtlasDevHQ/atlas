@@ -35,9 +35,9 @@ export interface WorkspaceEntitlement {
    * internal DB) before reaching this resolver, so a `null` here on SaaS
    * collapses to `free` for the upgrade-prompt body.
    */
-  planTier: PlanTier | null;
+  readonly planTier: PlanTier | null;
   /** Operator-workspace bypass — admits any install / gated feature. */
-  isOperator: boolean;
+  readonly isOperator: boolean;
 }
 
 /**

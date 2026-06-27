@@ -366,6 +366,29 @@ describe("purgeStripeBillingForWorkspace (GDPR purge path)", () => {
     ]);
   });
 
+  it("unions extraCustomerIds (e.g. a user-level customer) into the delete set", async () => {
+    // The org column is null (the #4011 shape: customer lives on user.stripeCustomerId,
+    // organization."stripeCustomerId" is null). The user-level id passed via
+    // extraCustomerIds must still be deleted so a verify teardown can't orphan it.
+    mockSubscriptionRows([]);
+
+    await purgeStripeBillingForWorkspace(ORG, null, ["cus_user"]);
+
+    expect(customersDel.mock.calls.map((c) => c[0])).toEqual(["cus_user"]);
+  });
+
+  it("de-dupes extraCustomerIds already present from the org column or subscriptions", async () => {
+    mockSubscriptionRows([subRow("sub_old", "canceled", "cus_acme")]);
+
+    // cus_acme appears on both the org column and extraCustomerIds — deleted once.
+    await purgeStripeBillingForWorkspace(ORG, "cus_acme", ["cus_acme", "cus_user"]);
+
+    expect(customersDel.mock.calls.map((c) => c[0]).toSorted()).toEqual([
+      "cus_acme",
+      "cus_user",
+    ]);
+  });
+
   it("makes no customer call when there is no Stripe customer linkage", async () => {
     mockSubscriptionRows([]);
 

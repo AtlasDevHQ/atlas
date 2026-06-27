@@ -141,7 +141,7 @@ for (const [r, host] of Object.entries(EDGES)) {
 
 ## Teardown (do this — surgically, via the CLI)
 
-The verify accounts are real prod identities (user + org + members; a Stripe customer if billing ran). Tear them down with the dedicated operator tool — **never by hand-rolled SQL or `ops wipe`**:
+The verify accounts are real prod identities (user + org + members; a Stripe customer — note that a trial signup's customer lands on the **user** row, not the org, see #4011). Tear them down with the dedicated operator tool — **never by hand-rolled SQL or `ops wipe`**:
 
 ```bash
 # DRY RUN first (default — lists exactly what would go, deletes nothing):

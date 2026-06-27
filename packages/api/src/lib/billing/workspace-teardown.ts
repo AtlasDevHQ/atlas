@@ -452,11 +452,19 @@ export async function cancelStripeSubscriptionsForWorkspace(
  * organization row. Customer ids found on subscription rows are unioned in
  * defensively, so a drifted org column can't leave a customer behind.
  *
+ * `extraCustomerIds` lets a caller union in customer ids that live OUTSIDE the
+ * org row — notably `user.stripeCustomerId`, where the @better-auth/stripe
+ * plugin's `createCustomerOnSignUp` parks a customer at signup before any org
+ * subscription exists (#4011). Without this the org-only id would tear down the
+ * workspace but orphan a live `cus_…` on the user row. The set is de-duped and
+ * `resource_missing` counts as success, so passing an already-known id is safe.
+ *
  * Total — never throws; failures land in `warnings`.
  */
 export async function purgeStripeBillingForWorkspace(
   orgId: string,
   stripeCustomerId: string | null,
+  extraCustomerIds: readonly string[] = [],
 ): Promise<StripeTeardownOutcome> {
   if (!hasInternalDB()) return noopOutcome();
   const stripe = getStripeClient();
@@ -494,6 +502,11 @@ export async function purgeStripeBillingForWorkspace(
   if (stripeCustomerId) customerIds.add(stripeCustomerId);
   for (const row of rows) {
     if (row.stripeCustomerId) customerIds.add(row.stripeCustomerId);
+  }
+  // Customer ids carried outside the org row (e.g. user.stripeCustomerId from
+  // createCustomerOnSignUp) — the Set de-dupes any already collected above.
+  for (const id of extraCustomerIds) {
+    if (id) customerIds.add(id);
   }
 
   for (const customerId of customerIds) {

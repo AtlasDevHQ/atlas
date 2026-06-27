@@ -220,6 +220,7 @@ interface FakeRow extends Record<string, unknown> {
   userId: string;
   email: string;
   userName: string | null;
+  userStripeCustomerId: string | null;
   memberRole: string | null;
   orgId: string | null;
   orgName: string | null;
@@ -242,6 +243,7 @@ function row(over: Partial<FakeRow>): FakeRow {
     userId: "user_1",
     email: "matt+us@useatlas.dev",
     userName: "Matt US",
+    userStripeCustomerId: null,
     memberRole: "owner",
     orgId: "org_1",
     orgName: "Atlas us Verify",
@@ -265,7 +267,23 @@ describe("resolveVerifyTargets", () => {
   it("marks an email with no user row as not found", async () => {
     const q = fakeQuery({});
     const [t] = await resolveVerifyTargets(q, ["ghost+us@useatlas.dev"]);
-    expect(t).toEqual({ email: "ghost+us@useatlas.dev", userId: null, found: false, orgs: [] });
+    expect(t).toEqual({
+      email: "ghost+us@useatlas.dev",
+      userId: null,
+      found: false,
+      userStripeCustomerId: null,
+      orgs: [],
+    });
+  });
+
+  it("carries user.stripeCustomerId onto the target (the #4011 user-level customer)", async () => {
+    const q = fakeQuery({
+      "matt+us@useatlas.dev": [row({ userStripeCustomerId: "cus_user", stripeCustomerId: null })],
+    });
+    const [t] = await resolveVerifyTargets(q, ["matt+us@useatlas.dev"]);
+    expect(t!.userStripeCustomerId).toBe("cus_user");
+    // The org column is null in the #4011 shape — the customer lives only on the user.
+    expect(t!.orgs[0]!.stripeCustomerId).toBeNull();
   });
 
   it("treats a user with no membership (LEFT JOIN null org) as found with zero orgs", async () => {
@@ -317,14 +335,14 @@ describe("resolveVerifyTargets", () => {
 describe("countOwnedOrgs", () => {
   it("counts only owned orgs across targets, ignoring non-owner memberships", () => {
     const targets: VerifyTarget[] = [
-      { email: "a", userId: "u1", found: true, orgs: [
+      { email: "a", userId: "u1", found: true, userStripeCustomerId: null, orgs: [
         { orgId: "o1", orgName: null, orgSlug: null, region: "us", workspaceStatus: "active", stripeCustomerId: null, isOwner: true },
         { orgId: "o2", orgName: null, orgSlug: null, region: "us", workspaceStatus: "active", stripeCustomerId: null, isOwner: false },
       ] },
-      { email: "b", userId: "u2", found: true, orgs: [
+      { email: "b", userId: "u2", found: true, userStripeCustomerId: null, orgs: [
         { orgId: "o3", orgName: null, orgSlug: null, region: "eu", workspaceStatus: "active", stripeCustomerId: null, isOwner: true },
       ] },
-      { email: "c", userId: null, found: false, orgs: [] },
+      { email: "c", userId: null, found: false, userStripeCustomerId: null, orgs: [] },
     ];
     expect(countOwnedOrgs(targets)).toBe(2);
     expect(countOwnedOrgs(targets)).toBeLessThanOrEqual(MAX_TEARDOWN_TARGETS);
@@ -346,6 +364,7 @@ function target(over: Partial<VerifyTarget> & { orgs?: VerifyTarget["orgs"] }): 
     email: "matt+us@useatlas.dev",
     userId: "user_1",
     found: true,
+    userStripeCustomerId: null,
     orgs: [],
     ...over,
   };
@@ -397,6 +416,57 @@ describe("teardownTargets", () => {
     expect(org.rowsPurged).toBe(42);
     expect(org.stripeActions).toContain("deleted Stripe customer cus_1");
     expect(report.totals).toMatchObject({ orgsTornDown: 1, rowsPurged: 42, errors: 0 });
+  });
+
+  it("unions the user-level customer into the purge call (#4011 — org column null)", async () => {
+    // The #4011 shape: customer parked on user.stripeCustomerId, org column null.
+    const purgeCalls: Array<[string, string | null, readonly string[]]> = [];
+    const deps: TeardownDeps = {
+      purgeStripe: async (orgId, stripeCustomerId, extraCustomerIds) => {
+        purgeCalls.push([orgId, stripeCustomerId, extraCustomerIds]);
+        return okStripe({ actions: ["deleted Stripe customer cus_user"] });
+      },
+      softDelete: async () => true,
+      hardDelete: async () => 1,
+    };
+    const report = await teardownTargets(
+      [target({ userStripeCustomerId: "cus_user", orgs: [ownedOrg({ stripeCustomerId: null })] })],
+      deps,
+      false,
+    );
+    expect(purgeCalls).toEqual([["org_1", null, ["cus_user"]]]);
+    expect(report.targets[0]!.userStripeCustomerId).toBe("cus_user");
+    expect(report.targets[0]!.orgs[0]!.stripeActions).toContain("deleted Stripe customer cus_user");
+  });
+
+  it("passes an empty extra-ids array when the user has no user-level customer", async () => {
+    const purgeCalls: Array<readonly string[]> = [];
+    const deps: TeardownDeps = {
+      purgeStripe: async (_o, _c, extraCustomerIds) => { purgeCalls.push(extraCustomerIds); return okStripe(); },
+      softDelete: async () => true,
+      hardDelete: async () => 1,
+    };
+    await teardownTargets(
+      [target({ userStripeCustomerId: null, orgs: [ownedOrg({ stripeCustomerId: "cus_org" })] })],
+      deps,
+      false,
+    );
+    expect(purgeCalls).toEqual([[]]);
+  });
+
+  it("warns when an orphan user (no owned org) carries a user-level customer the purge can't reach", async () => {
+    const deps: TeardownDeps = {
+      purgeStripe: async () => okStripe(),
+      softDelete: async () => true,
+      hardDelete: async () => 0,
+    };
+    const report = await teardownTargets(
+      [target({ email: "orphan+us@useatlas.dev", userStripeCustomerId: "cus_orphan", orgs: [] })],
+      deps,
+      false,
+    );
+    expect(report.targets[0]!.warnings.some((w) => w.includes("cus_orphan"))).toBe(true);
+    expect(report.targets[0]!.warnings.some((w) => w.includes("manually"))).toBe(true);
   });
 
   it("skips a non-owner membership without calling any dep", async () => {

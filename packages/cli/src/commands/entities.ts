@@ -10,16 +10,9 @@
  * the clear selection handoff rather than leaking another workspace's entities.
  */
 
+import type { SemanticEntitySummary } from "@useatlas/types";
 import { resolveApiBaseUrl } from "../lib/api-base";
 import { readSession } from "../lib/credentials";
-
-interface EntitySummary {
-  table: string;
-  description: string;
-  columnCount: number;
-  joinCount: number;
-  type: string;
-}
 
 export async function handleEntities(args: string[]): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {
@@ -64,8 +57,10 @@ export async function handleEntities(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // intentionally ignored: a non-JSON / empty 2xx body degrades to "0 entities"
+  // below rather than crashing — res.ok was already checked above.
   const body = (await res.json().catch(() => null)) as
-    | { entities?: EntitySummary[]; warnings?: string[] }
+    | { entities?: SemanticEntitySummary[]; warnings?: string[] }
     | null;
   const entities = body?.entities ?? [];
 

@@ -40,6 +40,9 @@ function queuedFetch(specs: ResponseSpec[]): { fetchImpl: typeof fetch; calls: R
 
 const noSleep = async () => {};
 
+/** A fetch stub that always rejects (network down / DNS failure). */
+const rejectingFetch = (() => Promise.reject(new Error("ECONNREFUSED"))) as unknown as typeof fetch;
+
 describe("requestDeviceCode (#4043)", () => {
   it("returns the device + user code on success", async () => {
     const { fetchImpl, calls } = queuedFetch([
@@ -67,6 +70,15 @@ describe("requestDeviceCode (#4043)", () => {
     await expect(
       requestDeviceCode(BASE, { clientId: ATLAS_CLI_CLIENT_ID, fetchImpl }),
     ).rejects.toBeInstanceOf(DeviceFlowError);
+  });
+
+  it("throws network_error when the request cannot reach the API", async () => {
+    const err = await requestDeviceCode(BASE, {
+      clientId: ATLAS_CLI_CLIENT_ID,
+      fetchImpl: rejectingFetch,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(DeviceFlowError);
+    expect((err as DeviceFlowError).code).toBe("network_error");
   });
 });
 
@@ -136,6 +148,47 @@ describe("pollForToken (#4043)", () => {
     }).catch((e) => e);
     expect((err as DeviceFlowError).code).toBe("expired_token");
     expect((err as DeviceFlowError).message).toMatch(/atlas login/);
+  });
+
+  it("returns the bearer on the first poll when already approved", async () => {
+    const { fetchImpl, calls } = queuedFetch([
+      jsonResponse(200, { access_token: "sess_first", token_type: "Bearer" }),
+    ]);
+    const result = await pollForToken(BASE, {
+      clientId: ATLAS_CLI_CLIENT_ID,
+      deviceCode: "dev_123",
+      intervalSeconds: 1,
+      fetchImpl,
+      sleep: noSleep,
+    });
+    expect(result.token).toBe("sess_first");
+    expect(calls.length).toBe(1);
+  });
+
+  it("throws on a terminal default error (invalid_grant)", async () => {
+    const { fetchImpl } = queuedFetch([
+      jsonResponse(400, { error: "invalid_grant", error_description: "device code not found" }),
+    ]);
+    const err = await pollForToken(BASE, {
+      clientId: ATLAS_CLI_CLIENT_ID,
+      deviceCode: "dev_123",
+      intervalSeconds: 1,
+      fetchImpl,
+      sleep: noSleep,
+    }).catch((e) => e);
+    expect((err as DeviceFlowError).code).toBe("invalid_grant");
+    expect((err as DeviceFlowError).message).toContain("device code not found");
+  });
+
+  it("throws network_error when polling loses contact with the API", async () => {
+    const err = await pollForToken(BASE, {
+      clientId: ATLAS_CLI_CLIENT_ID,
+      deviceCode: "dev_123",
+      intervalSeconds: 1,
+      fetchImpl: rejectingFetch,
+      sleep: noSleep,
+    }).catch((e) => e);
+    expect((err as DeviceFlowError).code).toBe("network_error");
   });
 
   it("times out after maxAttempts of authorization_pending", async () => {

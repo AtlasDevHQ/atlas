@@ -2687,8 +2687,10 @@ export function buildPlugins() {
   // a Better Auth SESSION bearer it stores in ~/.atlas/credentials. The session
   // is stamped `origin='cli'` by the `session.create.before` hook so
   // managed-auth resolves it org-role-only (key-scoping — ADR-0025 §1/§2). The
-  // device-authorization metadata (`device_authorization_endpoint`) is then
-  // advertised automatically by the OAuth authorization-server metadata helper.
+  // plugin registers /device/code, /device/token, /device/approve, /device/deny
+  // and /device under the auth base; the CLI targets those paths directly (no
+  // `.well-known` device-metadata discovery — the OAuth authorization-server
+  // metadata helper does not emit `device_authorization_endpoint`).
   plugins.push(
     deviceAuthorization({
       // The web page where a signed-in human enters the user code and
@@ -2802,6 +2804,16 @@ export function buildPlugins() {
 }
 
 /**
+ * The session `origin` marker value for an `atlas login` (device-flow)
+ * credential (#4043 / ADR-0025). Load-bearing on a security path: the
+ * `session.create.before` hook WRITES it and `buildCustomSessionPayload`
+ * READS it to gate the org-role-only downgrade. Sharing one `as const` so a
+ * typo in either site can't silently drift them apart (which would leave a
+ * cli session resolving the user-level role — a `platform_admin` escalation).
+ */
+export const SESSION_ORIGIN_CLI = "cli" as const;
+
+/**
  * customSession callback — see the {@link buildPlugins} push site for
  * the architectural rationale (why `effectiveRole` and not `role`, why
  * the cookie-cache bypass is fine).
@@ -2837,7 +2849,7 @@ export async function buildCustomSessionPayload({
   // where `effectiveRole` is stamped onto getSession — so validateManaged and
   // the client both read the org-scoped role with no second seam.
   const sessionOrigin = typeof session.origin === "string" ? session.origin : undefined;
-  const userRoleForResolution = sessionOrigin === "cli" ? undefined : userRole;
+  const userRoleForResolution = sessionOrigin === SESSION_ORIGIN_CLI ? undefined : userRole;
   const effectiveRole = await resolveEffectiveRole(
     userRoleForResolution,
     user.id,
@@ -2855,8 +2867,12 @@ export async function buildCustomSessionPayload({
  * handler when a device is approved, so the `session.create.before` hook sees
  * this as `ctx.path` — the signal that the new session is an atlas-login (cli)
  * credential rather than a normal web login. (#4043 / ADR-0025.)
+ *
+ * Exported so `device-authorization-plugin.test.ts` can pin it against the
+ * better-auth plugin's actual token-endpoint path — a future rename then
+ * hard-fails a test instead of silently failing the cli detection open.
  */
-const DEVICE_TOKEN_ENDPOINT_PATH = "/device/token";
+export const DEVICE_TOKEN_ENDPOINT_PATH = "/device/token";
 
 /**
  * Decide whether a `session.create` hook is firing inside the device-flow
@@ -2866,9 +2882,13 @@ const DEVICE_TOKEN_ENDPOINT_PATH = "/device/token";
  * fallback for context shapes that omit `path`.
  *
  * Exported for the unit test that pins the detection contract. A false
- * negative here would leave a cli session unmarked and therefore resolving the
- * user-level role — so the device-flow integration test additionally asserts
- * the real flow stamps `origin='cli'`.
+ * negative here is the fail-OPEN direction — it leaves a cli session unmarked,
+ * so it resolves the user-level role (a `platform_admin` escalation). Two
+ * guardrails defend the unpinned better-auth contract: `databaseHooks-wiring`
+ * asserts the real `session.create.before` hook stamps `origin='cli'` for a
+ * `/device/token` ctx, and `device-authorization-plugin` asserts the plugin's
+ * token endpoint path still equals {@link DEVICE_TOKEN_ENDPOINT_PATH} (so a
+ * future rename hard-fails a test instead of silently failing open).
  *
  * @internal
  */
@@ -3375,7 +3395,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
                 if (orgs.length === 1) {
                   resolvedActiveOrgId = orgs[0].organizationId;
                   log.info(
-                    { userId: session.userId, orgId: resolvedActiveOrgId, origin: isCliSession ? "cli" : undefined },
+                    { userId: session.userId, orgId: resolvedActiveOrgId, origin: isCliSession ? SESSION_ORIGIN_CLI : undefined },
                     "Auto-set active organization for new session",
                   );
                 }
@@ -3388,7 +3408,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
             }
 
             const patch: Record<string, unknown> = {};
-            if (isCliSession) patch.origin = "cli";
+            if (isCliSession) patch.origin = SESSION_ORIGIN_CLI;
             if (resolvedActiveOrgId) patch.activeOrganizationId = resolvedActiveOrgId;
             if (Object.keys(patch).length === 0) return;
             return { data: { ...session, ...patch } };

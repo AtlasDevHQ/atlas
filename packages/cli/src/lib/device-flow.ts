@@ -74,6 +74,8 @@ export async function requestDeviceCode(
     );
   }
 
+  // intentionally ignored: a non-JSON / empty body falls through to the
+  // !res.ok / missing-field check below, which raises a DeviceFlowError.
   const body = asRecord(await res.json().catch(() => ({})));
   if (!res.ok || typeof body.device_code !== "string" || typeof body.user_code !== "string") {
     const detail =
@@ -143,6 +145,8 @@ export async function pollForToken(
       );
     }
 
+    // intentionally ignored: a non-JSON / empty body yields {} → no
+    // access_token and no known `error` → the unknown_error terminal branch.
     const body = asRecord(await res.json().catch(() => ({})));
 
     if (typeof body.access_token === "string") {

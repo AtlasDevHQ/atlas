@@ -20,7 +20,7 @@ import {
   pollForToken,
   requestDeviceCode,
 } from "../lib/device-flow";
-import { saveSession, clearSession } from "../lib/credentials";
+import { saveSession, clearSession, credentialsPath } from "../lib/credentials";
 
 /** Best-effort read of the bound workspace from a freshly-issued bearer. */
 async function fetchBoundWorkspace(baseUrl: string, token: string): Promise<string | null> {
@@ -28,7 +28,14 @@ async function fetchBoundWorkspace(baseUrl: string, token: string): Promise<stri
     const res = await fetch(`${baseUrl}/api/auth/get-session`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // Log so a server-side failure (e.g. 500) isn't presented downstream as a
+      // benign "multiple workspaces" state.
+      console.error(`  (could not read bound workspace: get-session returned HTTP ${res.status})`);
+      return null;
+    }
+    // intentionally ignored: an empty/non-JSON body yields no orgId → treated
+    // as "no bound workspace", same as the multi-workspace path.
     const body = (await res.json().catch(() => null)) as
       | { session?: { activeOrganizationId?: unknown } }
       | null;
@@ -91,11 +98,23 @@ export async function handleLogin(args: string[]): Promise<void> {
 
   const workspaceId = await fetchBoundWorkspace(baseUrl, token);
 
-  saveSession(baseUrl, {
-    token,
-    workspaceId,
-    createdAt: new Date().toISOString(),
-  });
+  try {
+    saveSession(baseUrl, {
+      token,
+      workspaceId,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    // The token exchange succeeded but persisting it failed (EACCES on
+    // ~/.atlas, ENOSPC, read-only home). Surface an actionable message rather
+    // than a raw stack trace from the top-level handler.
+    console.error(
+      `\nLogged in, but failed to store credentials at ${credentialsPath()}: ` +
+        `${err instanceof Error ? err.message : String(err)}. ` +
+        "Check permissions on ~/.atlas and run `atlas login` again.",
+    );
+    process.exit(1);
+  }
 
   console.log("\n✓ Logged in. Credentials stored in ~/.atlas/credentials.");
   if (workspaceId) {

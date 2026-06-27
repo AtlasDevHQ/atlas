@@ -59,11 +59,15 @@ import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
  * (ADR-0025): a portable, file-stored bearer that resolves ORG-role-only —
  * like `hosted` but for the CLI transport, withholding `platform_admin`
  * REGARDLESS of deploy mode (a copied-off credential file is never the
- * trusted local operator). This arm is the canonical declaration of that
- * trust boundary and the tested proof that an `origin=cli` bearer is admitted
- * to the dispatch gate chain org-scoped (ADR-0025 §5); the runtime REST path
- * (`/api/v1/semantic/entities` via getSession) enforces the same downgrade in
- * `buildCustomSessionPayload` keyed on `session.origin === "cli"`.
+ * trusted local operator).
+ *
+ * SCOPE NOTE: the `cli` arm is a forward-declaration — no runtime caller binds
+ * `transport: "cli"` yet (only `hosted.ts` calls this, with `"hosted"`). The
+ * device-flow credential is a getSession session bearer, so its runtime
+ * downgrade happens in `buildCustomSessionPayload` (REST path, keyed on
+ * `session.origin === "cli"`), NOT here. This arm reserves the same trust
+ * boundary for the day the cli bearer reaches MCP dispatch; `bind-actor.test`
+ * proves it resolves org-role-only (it does NOT exercise the gate chain).
  */
 export type McpTransportTrust = "stdio" | "hosted" | "cli";
 

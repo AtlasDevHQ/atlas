@@ -77,4 +77,20 @@ describe("CLI credential store (#4043 / ADR-0025)", () => {
     fs.writeFileSync(credentialsPath(dir), "{not json");
     expect(() => readSession(base, dir)).toThrow(/corrupt/i);
   });
+
+  it("drops a malformed entry (non-string token) rather than yielding `Bearer undefined`", () => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      credentialsPath(dir),
+      JSON.stringify({ version: 1, sessions: { [base]: { token: 123, workspaceId: "org_1" } } }),
+    );
+    // The entry is invalid (token not a string), so it is not returned.
+    expect(readSession(base, dir)).toBeNull();
+  });
+
+  it("treats a valid-JSON-but-wrong-shape file as logged-out (no `sessions` key)", () => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(credentialsPath(dir), JSON.stringify({ unexpected: true }));
+    expect(readSession(base, dir)).toBeNull();
+  });
 });

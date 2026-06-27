@@ -105,6 +105,7 @@ describe("resolveMcpActorRole — trust-boundary fork (#3603, ADR-0016)", () => 
     });
 
     // The invariant: cli forwards `undefined`, never the user-level role.
+    expect(resolveCalls).toHaveLength(1);
     expect(resolveCalls[0].userRole).toBeUndefined();
     expect(resolveCalls[0].userId).toBe("user-4");
     expect(resolveCalls[0].activeOrganizationId).toBe("org-4");

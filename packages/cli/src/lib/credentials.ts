@@ -81,18 +81,23 @@ function readStore(configDir: string): CredentialStore {
   }
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      "sessions" in parsed &&
-      typeof (parsed as CredentialStore).sessions === "object"
-    ) {
-      return { version: 1, sessions: (parsed as CredentialStore).sessions ?? {} };
+    const sessions =
+      parsed && typeof parsed === "object" ? (parsed as { sessions?: unknown }).sessions : undefined;
+    if (sessions && typeof sessions === "object") {
+      // Validate each entry: a syntactically-valid file whose entry has a
+      // non-string `token` (`{ "token": 123 }`) must NOT flow through typed as
+      // a StoredSession — that would send `Authorization: Bearer undefined`.
+      // Drop malformed entries rather than trust the shape.
+      return { version: 1, sessions: coerceSessions(sessions as Record<string, unknown>) };
     }
     // A structurally-unexpected file is treated as empty rather than crashing
     // every command — re-login overwrites it. We do NOT silently swallow a
     // genuine read error above (that re-throws); this branch is only for a
-    // syntactically-valid-but-wrong-shape file.
+    // syntactically-valid-but-wrong-shape file. Warn so a real corruption
+    // isn't invisibly clobbered by the next `saveSession`.
+    console.warn(
+      `Atlas credentials at ${path} had an unexpected shape — treating as logged-out; \`atlas login\` will overwrite it.`,
+    );
     return EMPTY_STORE;
   } catch (err) {
     throw new Error(
@@ -100,6 +105,22 @@ function readStore(configDir: string): CredentialStore {
       { cause: err },
     );
   }
+}
+
+/** Keep only entries that satisfy the {@link StoredSession} invariant. */
+function coerceSessions(raw: Record<string, unknown>): Record<string, StoredSession> {
+  const out: Record<string, StoredSession> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!value || typeof value !== "object") continue;
+    const v = value as Record<string, unknown>;
+    if (typeof v.token !== "string" || v.token.length === 0) continue;
+    out[key] = {
+      token: v.token,
+      workspaceId: typeof v.workspaceId === "string" ? v.workspaceId : null,
+      createdAt: typeof v.createdAt === "string" ? v.createdAt : "",
+    };
+  }
+  return out;
 }
 
 function writeStore(configDir: string, store: CredentialStore): void {

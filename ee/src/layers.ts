@@ -29,6 +29,7 @@ import type {
   SSOPolicy,
   SlaMetrics,
   AbuseResponse,
+  MarketplaceVeneer,
 } from "@atlas/api/lib/effect/services";
 import { ResidencyResolverLive } from "./platform/residency";
 import { ModelRouterLive } from "./platform/model-routing";
@@ -48,6 +49,7 @@ import { BrandingLive } from "./branding/white-label";
 import { DomainsLive } from "./platform/domains";
 import { ProactiveGateLive } from "./proactive-gate";
 import { DeployModeResolverLive } from "./deploy-mode";
+import { MarketplaceVeneerLive } from "./marketplace/veneer";
 import { SaasCrmLive } from "./saas-crm/index";
 
 /**
@@ -76,6 +78,7 @@ export const EELayer: Layer.Layer<
   | SSOPolicy
   | SlaMetrics
   | AbuseResponse
+  | MarketplaceVeneer
 > = Layer.mergeAll(
   ResidencyResolverLive,
   ModelRouterLive,
@@ -95,5 +98,6 @@ export const EELayer: Layer.Layer<
   DomainsLive,
   ProactiveGateLive,
   DeployModeResolverLive,
+  MarketplaceVeneerLive,
   SaasCrmLive,
 );

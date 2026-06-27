@@ -12,7 +12,7 @@
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { RequestContext } from "@atlas/api/lib/effect/services";
+import { RequestContext, MarketplaceVeneer } from "@atlas/api/lib/effect/services";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -30,7 +30,6 @@ import {
   deleteDedicatedCredentialStore,
   tearDownWorkspaceInstall,
 } from "@atlas/api/lib/plugins/teardown";
-import { getConfig } from "@atlas/api/lib/config";
 import type { CatalogInstallModel } from "@useatlas/types";
 import { MIN_PLAN_TIERS, type PlanTier } from "@useatlas/types";
 import {
@@ -817,6 +816,12 @@ workspaceMarketplace.openapi(listAvailableRoute, async (c) => {
     Effect.gen(function* () {
       yield* RequestContext;
       const { orgId } = c.var.orgContext;
+      // #4001 — the SaaS plan-gated veneer moved to @atlas/ee behind the
+      // MarketplaceVeneer Tag. `isSaasIneligible` is the EE-resolved
+      // `deployMode === "saas" && saas_eligible === false` gate; the Noop
+      // default (self-hosted / non-EE) answers `false` for every row, so the
+      // full catalog lists — unchanged self-hosted behavior.
+      const veneer = yield* MarketplaceVeneer;
 
       // Independent queries — run in parallel
       const [plan, catalog, installations] = yield* Effect.promise(() =>
@@ -831,14 +836,12 @@ workspaceMarketplace.openapi(listAvailableRoute, async (c) => {
       );
       const installedMap = new Map(installations.map((i) => [i.catalog_id, { id: i.id, config: i.config }]));
 
-      // #3301 — on SaaS deploys, hide catalog rows flagged `saas_eligible =
-      // false` (DuckDB is file-path based and not multi-tenant safe). Resolved
-      // (not raw-env) deploy mode so a config-file `deployMode: "saas"` that
-      // silently downgrades to self-hosted without @atlas/ee still lists
-      // everything (the env `ATLAS_DEPLOY_MODE=saas` path hard-fails boot
-      // instead). Self-hosted is unaffected — every datasource type stays
-      // visible. The install path enforces the same flag (see POST /install).
-      const isSaasDeploy = getConfig()?.deployMode === "saas";
+      // #3301 / #4001 — on SaaS deploys, hide catalog rows flagged
+      // `saas_eligible = false` (DuckDB is file-path based and not multi-tenant
+      // safe). The decision lives in @atlas/ee (resolved, not raw-env, deploy
+      // mode — see MarketplaceVeneerLive); self-hosted is unaffected — the Noop
+      // veneer reports every row eligible, so each datasource type stays
+      // visible. The install path enforces the same gate (see POST /install).
 
       // Filter by plan eligibility, masking any installedConfig field marked
       // `secret: true` in the catalog's config_schema. A workspace admin
@@ -850,7 +853,7 @@ workspaceMarketplace.openapi(listAvailableRoute, async (c) => {
       // every string value and we log so operators see the drift.
       const available = catalog
         .filter((entry) => isPlanEligible(plan, entry.min_plan))
-        .filter((entry) => !isSaasDeploy || entry.saas_eligible !== false)
+        .filter((entry) => !veneer.isSaasIneligible(entry))
         .map((entry) => {
           const inst = installedMap.get(entry.id);
           const schema = parseConfigSchema(entry.config_schema);
@@ -882,6 +885,9 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
       const { requestId } = yield* RequestContext;
       const { orgId } = c.var.orgContext;
       const body = c.req.valid("json");
+      // #4001 — SaaS-eligibility gate resolved through the EE veneer Tag (Noop
+      // on self-hosted answers `false`, so every row stays installable).
+      const veneer = yield* MarketplaceVeneer;
 
       // Fetch catalog entry. A lookup failure at this point means we cannot
       // know the slug, but we still want an audit row — a compromised admin
@@ -943,14 +949,15 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
         }, 400);
       }
 
-      // #3301 defense-in-depth — the /available listing hides
+      // #3301 / #4001 defense-in-depth — the /available listing hides
       // `saas_eligible = false` rows on SaaS, but the install path must also
       // refuse them server-side: a workspace admin who already knows the
       // catalog id could otherwise POST it directly and bypass the hidden
       // card. DuckDB is file-path based and not multi-tenant safe. Mirrors the
-      // keyset gate in `integrations/install/github-pat-form-handler.ts`.
-      // Resolved (not raw-env) deploy mode, same as the listing filter.
-      if (getConfig()?.deployMode === "saas" && catalogEntry.saas_eligible === false) {
+      // keyset gate in `lib/integrations/install/github-pat-form-handler.ts`.
+      // Same EE-resolved veneer decision as the listing filter (Noop → never
+      // gated).
+      if (veneer.isSaasIneligible(catalogEntry)) {
         logAdminAction({
           actionType: ADMIN_ACTIONS.plugin.install,
           targetType: "plugin",

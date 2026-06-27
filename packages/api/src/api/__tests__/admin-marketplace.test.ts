@@ -235,6 +235,22 @@ mock.module("@atlas/api/lib/effect/services", () => ({
   SSOPolicy: { _tag: "MockTag" },
   SCIMProvenance: { _tag: "MockTag" },
   RolesPolicy: { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield {}; } },
+  // #4001 — the SaaS plan-gated veneer (`saas_eligible` gate) resolves
+  // through the `MarketplaceVeneer` Tag. Mirror the EE Live impl
+  // (`ee/src/marketplace/veneer.ts`): gate only on a resolved SaaS deploy
+  // with an explicit `saas_eligible === false`. Reading `mockDeployMode`
+  // directly keeps every `mockDeployMode = "saas"` test driving the gate
+  // exactly as it did when the check was inline in the route — and the Noop
+  // self-hosted behavior (`mockDeployMode` unset/`"self-hosted"` → never
+  // ineligible) falls out of the same predicate.
+  MarketplaceVeneer: {
+    [Symbol.iterator]: function* (): Generator<unknown, unknown> {
+      return yield {
+        isSaasIneligible: (row: { saas_eligible?: boolean | null }) =>
+          mockDeployMode === "saas" && row.saas_eligible === false,
+      };
+    },
+  },
 }));
 
 // Replace enterprise-layer's composition with an inert layer so the
@@ -1137,6 +1153,45 @@ describe("Workspace Plugin Marketplace", () => {
         body: JSON.stringify({ catalogId: "cat-1" }),
       });
       expect(res.status).toBe(201);
+    });
+
+    // #4001 — the install gate must fail OPEN for a row whose `saas_eligible`
+    // flag is absent, even on SaaS: only an explicit `false` is ineligible
+    // (`=== false`). Mirrors the listing-path "absent → visible on SaaS" test
+    // and pins the security-relevant edge at the install route, not just the
+    // EE-veneer unit.
+    it("allows installing a row whose saas_eligible is absent even on a SaaS deploy (#4001)", async () => {
+      mockDeployMode = "saas";
+      // sampleCatalogRow has no `saas_eligible` key → eligible.
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [
+        { ...sampleCatalogRow, slug: "obsidian" },
+      ]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+      setQueryResult("INSERT INTO workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "Obsidian",
+        slug: "obsidian",
+        type: "context",
+      }]);
+
+      const res = await buildWorkspaceApp().request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(201);
+      // No SaaS-ineligibility refusal audit on the happy path.
+      const refusal = mockLogAdminAction.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.actionType === "plugin.install" && e.status === "failure");
+      expect(refusal).toBeUndefined();
     });
   });
 

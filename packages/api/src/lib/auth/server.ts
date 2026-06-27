@@ -13,7 +13,13 @@
 
 import { betterAuth, type Session, type User } from "better-auth";
 import { APIError } from "better-auth/api";
-import { bearer, organization, jwt, customSession } from "better-auth/plugins";
+import {
+  bearer,
+  organization,
+  jwt,
+  customSession,
+  deviceAuthorization,
+} from "better-auth/plugins";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { emailOTP } from "better-auth/plugins/email-otp";
 // @better-auth/* plugins must match the better-auth core version line.
@@ -2671,6 +2677,33 @@ export function buildPlugins() {
         }
         return {};
       },
+    }),
+  );
+
+  // #4043 / ADR-0025 — OAuth 2.0 device authorization grant (RFC 8628) that
+  // backs `atlas login`. The CLI requests a user code at /device/code, the
+  // human approves at the `/device` web page (verificationUri) in their
+  // existing managed-auth session, and the CLI polls /device/token to receive
+  // a Better Auth SESSION bearer it stores in ~/.atlas/credentials. The session
+  // is stamped `origin='cli'` by the `session.create.before` hook so
+  // managed-auth resolves it org-role-only (key-scoping — ADR-0025 §1/§2). The
+  // device-authorization metadata (`device_authorization_endpoint`) is then
+  // advertised automatically by the OAuth authorization-server metadata helper.
+  plugins.push(
+    deviceAuthorization({
+      // The web page where a signed-in human enters the user code and
+      // approves/denies. Lives in packages/web at src/app/device/page.tsx.
+      verificationUri: "/device",
+      // `schema: {}` works around a better-auth 1.6.20 × zod 4.4.3
+      // incompatibility: the plugin's options schema declares
+      // `schema: z.custom(() => true)` WITHOUT `.optional()`, and zod v4
+      // treats a missing `z.custom` field as `nonoptional` → the bare
+      // `deviceAuthorization({ verificationUri })` call throws
+      // "expected nonoptional, received undefined" at construction. Passing an
+      // empty schema override satisfies the parse; `mergeSchema(pluginSchema,
+      // {})` is a verified no-op (the `deviceCode` table + all fields survive).
+      // Remove once better-auth marks the option optional. (#4043)
+      schema: {},
     }),
   );
 

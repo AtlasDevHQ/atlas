@@ -2,9 +2,10 @@
 --
 -- Atlas resolves models through the Vercel AI Gateway, which returns the ACTUAL
 -- charged cost per generation as providerMetadata.gateway.cost (USD decimal,
--- zero-markup). The Structure B billing model (2026-06-27) draws the included
--- usage credit and the overage meter against the SUM of this real dollar cost,
--- so each agent turn records its gateway cost alongside its token usage.
+-- zero-markup). The Structure B billing model (2026-06-27) is designed to draw
+-- the included usage credit and the overage meter against the SUM of this real
+-- dollar cost (once #4038/#4039 land), so each agent turn records its gateway
+-- cost alongside its token usage now.
 --
 -- This column stores the turn's total gateway cost in USD (summed across the
 -- turn's steps[], since the AI-SDK top-level providerMetadata is final-step

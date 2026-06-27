@@ -193,7 +193,7 @@ describe("token_usage cache split write path (#3099)", () => {
   });
 
   it("records the per-turn gateway cost on both writes for a gateway-routed turn (#4036)", async () => {
-    // Drives the REAL field path: sumStepGatewayCostUsd reads
+    // Drives the REAL field path: the agent's summarizeStepGatewayCostUsd reads
     // step.providerMetadata.gateway.cost off the AI-SDK StepResult. A regression
     // that reads the wrong path (e.g. step.response.providerMetadata) would write
     // NULL forever and the non-gateway test below would still pass — this pins it.

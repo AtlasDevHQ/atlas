@@ -61,7 +61,10 @@ describeIfPg("getCurrentPeriodUsage costUsd aggregate (real Postgres)", () => {
     _resetPool(null, null);
     if (ORIGINAL_DATABASE_URL === undefined) delete process.env.DATABASE_URL;
     else process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
-    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`).catch(() => {});
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`metering-cost-pg: DROP SCHEMA cleanup failed: ${message}`);
+    });
     await pool.end();
   });
 

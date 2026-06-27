@@ -188,6 +188,23 @@ async function main() {
     return handleQuery(args);
   }
 
+  // #4043 / ADR-0025 — device-flow auth + the minimal workspace-scoped read.
+  // Handlers receive the full argv (command name at [0]); they only read flags.
+  if (command === "login") {
+    const { handleLogin } = await import("../src/commands/login");
+    return handleLogin(args);
+  }
+
+  if (command === "logout") {
+    const { handleLogout } = await import("../src/commands/login");
+    return handleLogout(args);
+  }
+
+  if (command === "entities") {
+    const { handleEntities } = await import("../src/commands/entities");
+    return handleEntities(args);
+  }
+
   if (command === "eval") {
     const { handleEval } = await import("./eval");
     return handleEval(args);

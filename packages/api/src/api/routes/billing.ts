@@ -423,6 +423,9 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         tier: workspace.plan_tier,
         displayName: plan.displayName,
         pricePerSeat: plan.pricePerSeat,
+        // Structure B at-cost included credit ($/seat/mo), #4034 — pooled
+        // per-seat. The billing page renders the included-usage line from this.
+        includedUsageDollarsPerSeat: plan.includedUsageDollarsPerSeat,
         defaultModel: plan.defaultModel,
         byot: workspace.byot,
         trialEndsAt: workspace.trial_ends_at,

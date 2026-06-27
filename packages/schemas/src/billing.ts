@@ -56,6 +56,14 @@ export interface BillingPlan {
   tier: PlanTier;
   displayName: string;
   pricePerSeat: number;
+  /**
+   * Included at-cost usage credit per seat per month, in USD (Structure B,
+   * #4034). Pooled per-seat — the workspace's included usage budget is
+   * `includedUsageDollarsPerSeat × seatCount`. The billing page renders the
+   * included-credit line from this. Optional for older-bundle tolerance; absent
+   * ⇒ the credit line is hidden.
+   */
+  includedUsageDollarsPerSeat?: number;
   defaultModel: string;
   byot: boolean;
   /** Raw `organization.trial_ends_at` — may be null even on a live trial (pre-backfill workspaces). */
@@ -221,6 +229,7 @@ export const BillingPlanSchema = z.object({
   tier: PlanTierEnum,
   displayName: z.string(),
   pricePerSeat: z.number(),
+  includedUsageDollarsPerSeat: z.number().optional(),
   defaultModel: z.string(),
   byot: z.boolean(),
   trialEndsAt: z.string().nullable(),

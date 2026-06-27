@@ -77153,6 +77153,9 @@
                         "pricePerSeat": {
                           "type": "number"
                         },
+                        "includedUsageDollarsPerSeat": {
+                          "type": "number"
+                        },
                         "defaultModel": {
                           "type": "string"
                         },

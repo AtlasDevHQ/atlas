@@ -88,10 +88,10 @@ describe("billing/plans", () => {
       expect(def.trialDays).toBe(14);
     });
 
-    it("plan definitions include pricing and model info", () => {
-      expect(getPlanDefinition("starter").pricePerSeat).toBe(29);
-      expect(getPlanDefinition("pro").pricePerSeat).toBe(59);
-      expect(getPlanDefinition("business").pricePerSeat).toBe(99);
+    it("plan definitions include pricing and model info (Structure B ladder, #4034)", () => {
+      expect(getPlanDefinition("starter").pricePerSeat).toBe(39);
+      expect(getPlanDefinition("pro").pricePerSeat).toBe(69);
+      expect(getPlanDefinition("business").pricePerSeat).toBe(149);
       expect(getPlanDefinition("starter").defaultModel).toBe("anthropic/claude-haiku-4.5");
       expect(getPlanDefinition("pro").defaultModel).toBe("anthropic/claude-sonnet-4.6");
       expect(getPlanDefinition("business").defaultModel).toBe("anthropic/claude-sonnet-4.6");
@@ -113,10 +113,36 @@ describe("billing/plans", () => {
       expect(business.features.sla).toBe("99.9%");
     });
 
-    it("overage rate is flat across all paid tiers", () => {
-      expect(getPlanDefinition("starter").overagePerMillionTokens).toBe(1.0);
-      expect(getPlanDefinition("pro").overagePerMillionTokens).toBe(1.0);
-      expect(getPlanDefinition("business").overagePerMillionTokens).toBe(1.0);
+    it("the synthetic per-token overage rate is zeroed on every tier (Structure B, #4034)", () => {
+      // Structure B bills AI usage at provider cost (zero markup) via the at-cost
+      // meter, not a per-token markup. The legacy synthetic rate is neutralized on
+      // every tier; the field is removed entirely when dollar-native enforcement
+      // lands (#4038).
+      for (const tier of ["free", "trial", "starter", "pro", "business", "locked"] as const) {
+        expect(getPlanDefinition(tier).overagePerMillionTokens).toBe(0);
+      }
+    });
+
+    it("every paid tier carries the flat $20/seat at-cost credit; free/locked carry none (#4034)", () => {
+      // Flat $20 on every paid tier (pooled per-seat via × seatCount); the trial
+      // mirrors Starter. Free (BYOK/self-hosted) and locked (churned) carry no
+      // included credit.
+      expect(getPlanDefinition("starter").includedUsageDollarsPerSeat).toBe(20);
+      expect(getPlanDefinition("pro").includedUsageDollarsPerSeat).toBe(20);
+      expect(getPlanDefinition("business").includedUsageDollarsPerSeat).toBe(20);
+      expect(getPlanDefinition("trial").includedUsageDollarsPerSeat).toBe(20);
+      expect(getPlanDefinition("free").includedUsageDollarsPerSeat).toBe(0);
+      expect(getPlanDefinition("locked").includedUsageDollarsPerSeat).toBe(0);
+    });
+
+    it("margin floor = seat price − included credit is positive on every paid tier (#4034)", () => {
+      // The gap between the seat fee and the included at-cost credit is the
+      // guaranteed per-seat margin floor (entry $39 − $20 = $19), independent of
+      // usage. Pins the "credit sized below the seat price" invariant.
+      for (const tier of ["starter", "pro", "business"] as const) {
+        const def = getPlanDefinition(tier);
+        expect(def.pricePerSeat - def.includedUsageDollarsPerSeat).toBeGreaterThan(0);
+      }
     });
   });
 

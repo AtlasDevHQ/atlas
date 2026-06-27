@@ -1,6 +1,6 @@
 /**
  * Tests for `generateSuggestions` — asserts that the autoApprove option
- * threads through to `upsertSuggestion`. Covers #1482: atlas learn lands
+ * threads through to `upsertSuggestion`. Covers #1482: atlas-operator learn lands
  * rows in the pending moderation queue by default; `--auto-approve`
  * bypasses the queue with explicit operator intent.
  */

@@ -157,23 +157,23 @@ bun run atlas -- diff    # Compare DB schema vs semantic layer
 
 > **Local dev runs either deploy mode; `self-hosted` is the trivial default.** `.env` ships `ATLAS_DEPLOY_MODE=self-hosted` + `ATLAS_DEPLOY_ENV=development`. With `development` set, even an unset/`auto` deploy mode now resolves to `self-hosted` (`resolveDeployMode`), so a missing value no longer face-plants the API onto the SaaS-only boot guards. To dev against the SaaS code path, set `ATLAS_DEPLOY_MODE=saas`: in `development` env the SaaS fail-closed boot guards (Turnstile #3795, rate-limit RPM #1983, billing, MCP spine, …) **relax to a no-op** (`relaxSaasGuardForDev` in `saas-guards.ts`) so it boots against your real local `.env` without the prod-only secrets — an **intentional local-dev footgun, gated solely on `development`; never set `ATLAS_DEPLOY_ENV=development` on a customer-facing deploy.** Don't set deploy vars on the `bun run dev` command line (the wrapper subshell drops them); they belong in `.env`. Full runbook + the `VERCEL_*`-breaks-sandbox-tests caveat: [docs/development/local-development.md](docs/development/local-development.md).
 
-### Operator subcommands (destructive)
+### Operator subcommands (destructive) — the `atlas-operator` binary
 
-The atlas-cli exposes a tenant-data operator surface (promoted from the gitignored `internal/` in #2635). All target the tenant DB at `ATLAS_TEAM_PG_URL` (falling back to `DATABASE_URL`).
+The tenant-data operator surface (promoted from the gitignored `internal/` in #2635) lives in its **own binary, `atlas-operator`** — split out of the published `atlas` CLI so the workspace-facing binary never ships tenant-destructive direct-DB tooling (ADR-0025 step 4, #4045). Run it with `bun run atlas-operator -- <command>` (root or `packages/cli` script). The published `atlas` CLI no longer dispatches these — it prints a redirect pointing here. All target the tenant DB at `ATLAS_TEAM_PG_URL` (falling back to `DATABASE_URL`).
 
 ```bash
-bun run atlas -- proactive enable --workspace <id|slug> --channels <c1,c2>
-bun run atlas -- proactive disable --workspace <id|slug>
-bun run atlas -- seed prompts --workspace <id|slug> --library ./prompts/library.yml
-bun run atlas -- seed workspace --workspace <id|slug> --group prod \
+bun run atlas-operator -- proactive enable --workspace <id|slug> --channels <c1,c2>
+bun run atlas-operator -- proactive disable --workspace <id|slug>
+bun run atlas-operator -- seed prompts --workspace <id|slug> --library ./prompts/library.yml
+bun run atlas-operator -- seed workspace --workspace <id|slug> --group prod \
   --connections us-prod=US_DB_URL:postgres:primary,eu-prod=EU_DB_URL:postgres
 # DESTRUCTIVE — TRUNCATE every public table (excluding migration bookkeeping):
-ATLAS_WIPE_OK=1 bun run atlas -- ops wipe --confirm [--database-url <url>]
+ATLAS_WIPE_OK=1 bun run atlas-operator -- ops wipe --confirm [--database-url <url>]
 # One-shot: enqueue every demo_leads row into crm_outbox for dispatch to Twenty:
-bun run atlas -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source demo]
+bun run atlas-operator -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source demo]
 # E2E check of the demo→Twenty lead pipeline (below Turnstile, via the outbox);
 # run ad-hoc by an operator AND as the post-deploy staging-smoke gate:
-bun run atlas -- ops smoke-crm --personas <path> [--wipe-twenty] [--twenty-base-url <url>] \
+bun run atlas-operator -- ops smoke-crm --personas <path> [--wipe-twenty] [--twenty-base-url <url>] \
   [--twenty-api-key <key>] [--timeout-seconds 60] [--database-url <url>]
 ```
 

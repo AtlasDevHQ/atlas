@@ -1,4 +1,4 @@
-# CRM smoke-test fixture — drives `atlas ops smoke-crm`.
+# CRM smoke-test fixture — drives `atlas-operator ops smoke-crm`.
 #
 # Each persona enqueues one `crm_outbox` row that the flusher dispatches to
 # Twenty. The smoke command asserts that after the flusher drains:

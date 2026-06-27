@@ -1989,7 +1989,7 @@ export async function upsertSuggestion(suggestion: {
   /**
    * When true, new rows land as `approval_status = 'approved'` and
    * `status = 'published'` — bypassing the admin moderation queue. Used
-   * only via `atlas learn --auto-approve`, which surfaces the explicit
+   * only via `atlas-operator learn --auto-approve`, which surfaces the explicit
    * operator intent. Existing rows are NOT retroactively approved on
    * ON CONFLICT: the ON CONFLICT clause below only refreshes metrics,
    * so an admin's prior hide or approve decision is preserved across

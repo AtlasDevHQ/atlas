@@ -722,7 +722,7 @@ The chain is: **Railway staging-deploy success → GitHub `repository_dispatch` 
      route is public — no auth, no API code change needed.
    - **CRM smoke:**
      ```bash
-     bun run atlas -- ops smoke-crm --personas ./scripts/staging-smoke-personas.yml
+     bun run atlas-operator -- ops smoke-crm --personas ./scripts/staging-smoke-personas.yml
      ```
      with `TWENTY_API_KEY=$STAGING_TWENTY_API_KEY`,
      `TWENTY_BASE_URL=$STAGING_TWENTY_BASE_URL`, and
@@ -746,13 +746,13 @@ The chain is: **Railway staging-deploy success → GitHub `repository_dispatch` 
 
 ---
 
-## 5. Resetting the staging DB — `atlas ops wipe`
+## 5. Resetting the staging DB — `atlas-operator ops wipe`
 
 When staging accumulates drift, reset its internal DB with the operator wipe
 subcommand. It is **destructive** and **takes no backup**.
 
 ```bash
-ATLAS_WIPE_OK=1 bun run atlas -- ops wipe --confirm --database-url "$STAGING_DATABASE_URL"
+ATLAS_WIPE_OK=1 bun run atlas-operator -- ops wipe --confirm --database-url "$STAGING_DATABASE_URL"
 ```
 
 - **Double gate.** The command refuses to run unless **both**

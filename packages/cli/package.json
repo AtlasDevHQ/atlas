@@ -5,6 +5,7 @@
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "atlas": "bun bin/atlas.ts",
+    "atlas-operator": "bun bin/atlas-operator.ts",
     "test": "bun run scripts/test-isolated.ts"
   },
   "dependencies": {

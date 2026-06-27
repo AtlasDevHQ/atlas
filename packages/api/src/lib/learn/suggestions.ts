@@ -94,7 +94,7 @@ export function _groupAuditRows(rows: AuditRow[]): Map<string, GroupedPattern> {
  * `false` (pending / draft) so CLI-populated rows land in the admin
  * moderation queue — matching the organic click-promoted path. Operators
  * who want to skip review in self-hosted deployments pass `true` via
- * `atlas learn --auto-approve`.
+ * `atlas-operator learn --auto-approve`.
  */
 export interface GenerateSuggestionsOptions {
   readonly autoApprove?: boolean;

@@ -1,5 +1,5 @@
 /**
- * Persona fixture parser for `atlas ops smoke-crm`.
+ * Persona fixture parser for `atlas-operator ops smoke-crm`.
  *
  * Reads a YAML document of personas and returns the discriminated union of
  * `LeadEvent` variants the saas-crm dispatcher consumes. Validation is

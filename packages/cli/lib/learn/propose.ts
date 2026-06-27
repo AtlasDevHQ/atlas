@@ -1,5 +1,5 @@
 /**
- * Proposal generator for `atlas learn`.
+ * Proposal generator for `atlas-operator learn`.
  *
  * Compares analysis results against existing semantic layer YAML files
  * and generates concrete proposals: new query patterns, join discoveries,

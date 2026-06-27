@@ -10,7 +10,7 @@ name: Staging Smoke
 #      would 401 here (Codex caught this on PR #2894). Note the path is
 #      /api/health, not /api/v1/health — the health router is mounted outside
 #      the /api/v1 prefix.
-#   2. The CRM lead-capture flusher path is alive — `atlas ops smoke-crm`
+#   2. The CRM lead-capture flusher path is alive — `atlas-operator ops smoke-crm`
 #      enqueues a tiny persona fixture into `crm_outbox`, waits for the
 #      flusher to drain, then asserts the resulting Twenty Persons match.
 #      The CLI talks to Postgres + Twenty DIRECTLY (not over HTTP), so it
@@ -111,7 +111,7 @@ jobs:
             ${{ runner.os }}-bun-
 
       - name: Install dependencies
-        # `atlas ops smoke-crm` runs straight off TS via bun and pulls in the
+        # `atlas-operator ops smoke-crm` runs straight off TS via bun and pulls in the
         # `@atlas/api` workspace + `pg` at runtime, so a full install is
         # required even though nothing is compiled.
         run: bun install --frozen-lockfile
@@ -145,7 +145,7 @@ jobs:
             echo "::error::Configure under Settings → Secrets and variables → Actions (see this workflow's header)."
             exit 1
           fi
-          bun run atlas -- ops smoke-crm --personas ./scripts/staging-smoke-personas.yml
+          bun run atlas-operator -- ops smoke-crm --personas ./scripts/staging-smoke-personas.yml
 
       - name: Post result to Slack #sandbox-atlas
         if: always()

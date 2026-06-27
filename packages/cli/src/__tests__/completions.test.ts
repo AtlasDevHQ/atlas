@@ -13,16 +13,24 @@ describe("completions", () => {
 
   describe("COMMANDS registry", () => {
     test("includes all CLI commands (bidirectional)", () => {
+      // Operator-only commands (learn, export, …) are NOT completed by the
+      // published `atlas` CLI — they live under `atlas-operator` (ADR-0025 step 4).
       const expected = [
         "init", "diff", "query", "doctor", "validate",
-        "mcp", "learn", "improve", "migrate", "plugin", "eval", "smoke",
-        "benchmark", "export", "migrate-import", "completions",
+        "mcp", "improve", "migrate", "plugin", "eval", "smoke",
+        "benchmark", "migrate-import", "completions",
       ];
       for (const cmd of expected) {
         expect(allCommands).toContain(cmd);
       }
       // Also catch unexpected additions to COMMANDS not reflected here
       expect(allCommands.length).toBe(expected.length);
+    });
+
+    test("does not complete operator-only commands (moved to atlas-operator)", () => {
+      for (const cmd of ["ops", "seed", "proactive", "export", "learn"]) {
+        expect(allCommands).not.toContain(cmd);
+      }
     });
 
     test("every command has a description", () => {

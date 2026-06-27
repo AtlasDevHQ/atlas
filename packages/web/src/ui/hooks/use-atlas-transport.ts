@@ -54,6 +54,31 @@ export function nextCapturedId(
   return null;
 }
 
+/**
+ * #4018 — decide which credential the chat transport attaches. The in-memory
+ * API key (sessionStorage `atlas-api-key`, written ONLY by the simple-key
+ * `ApiKeyBar`, which renders only in `simple-key` mode) is the credential in
+ * `simple-key` mode and must ride as an `Authorization: Bearer` there.
+ *
+ * In `managed` mode the durable credential is the host-only session COOKIE, sent
+ * via `credentials: "include"` exactly like the REST path (`useAdminFetch` sends
+ * NO Authorization header). A leftover/stale key must NOT be attached there: the
+ * server's bearer plugin validates the bearer FIRST, so a stale token 401s the
+ * request ("session expired") even though the cookie is valid — which is why the
+ * first chat send 401'd while cookie-only REST calls succeeded. `managed`/`byot`/
+ * `none`/unresolved (`null`) therefore stay cookie-only. Pure so the rule is
+ * unit-testable without rendering the hook.
+ */
+export function buildAuthHeaders(
+  authMode: AuthMode | null,
+  apiKey: string,
+): Record<string, string> {
+  if (authMode === "simple-key" && apiKey) {
+    return { Authorization: `Bearer ${apiKey}` };
+  }
+  return {};
+}
+
 /** The Atlas routing fields layered onto a normal `/chat` request body. */
 export interface ChatRoutingInputs {
   conversationId?: string | null;
@@ -281,11 +306,12 @@ export function useAtlasTransport(
   }, []);
 
   // --- Auth helpers ---
-  const getHeaders = useCallback(() => {
-    const headers: Record<string, string> = {};
-    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-    return headers;
-  }, [apiKey]);
+  // #4018 — credential decision lives in `buildAuthHeaders` (single-sourced with
+  // the transport memo): bearer only in simple-key mode, cookie-only otherwise.
+  const getHeaders = useCallback(
+    () => buildAuthHeaders(authMode, apiKey),
+    [authMode, apiKey],
+  );
 
   const getCredentials = useCallback(
     (): RequestCredentials => (isCrossOrigin ? "include" : "same-origin"),
@@ -385,12 +411,12 @@ export function useAtlasTransport(
   // conversationId is accessed via ref (not state) to avoid recreating the
   // transport mid-stream, which triggers an infinite re-render loop in useChat.
   // Callback refs (getConversationId, onNewConversationId) follow the same pattern.
-  // authMode: not read directly, but forces transport re-creation after auth resolves.
+  // authMode: read directly via `buildAuthHeaders` (and in deps) so the transport
+  // is rebuilt with the right credential once auth resolves (#4018).
   const transport = useMemo(() => {
-    const headers: Record<string, string> = {};
-    if (apiKey) {
-      headers["Authorization"] = `Bearer ${apiKey}`;
-    }
+    // #4018 — see `buildAuthHeaders`: managed mode rides the cookie (no bearer),
+    // so a stale `atlas-api-key` can't 401 the chat while REST stays authed.
+    const headers = buildAuthHeaders(authMode, apiKey);
     return new DefaultChatTransport({
       api: `${apiUrl}/api/v1/chat`,
       headers,

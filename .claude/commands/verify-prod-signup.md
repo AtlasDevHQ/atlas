@@ -124,6 +124,49 @@ for (const [r, host] of Object.entries(EDGES)) {
 
 ---
 
+## Post-signup session durability (the #4018 regression gate)
+
+The residency primitives prove the *region* is right. They do **not** prove the
+brand-new signup lands in a **working app**: #4018 was a separate session/auth
+defect where, straight after "Open Atlas", every authed call `401`'d and a reload
+bounced to `/login`, and even after a manual login the **first chat send** `401`'d
+"session expired". Run this **immediately after the signup completes (before any
+manual sign-out/login)**, from the authed app, against the workspace's **own**
+region edge. It asserts the app's own credential path — the **host-only session
+cookie**, with **no** `Authorization` header (exactly how the app's REST layer
+authenticates) — works for both the bootstrap GETs and a chat `POST`.
+
+```js
+// Home-region edge for the workspace under test (eu/apac use their own host).
+const API = { us: 'https://api.useatlas.dev', eu: 'https://api-eu.useatlas.dev', apac: 'https://api-apac.useatlas.dev' }[region];
+
+// 8a. BOOTSTRAP GETS — cookie-only (NO Authorization header), exactly like the
+//     app's REST path (useAdminFetch). Every one must 200 right after signup.
+for (const path of ['/api/v1/trial', '/api/v1/mode', '/api/v1/conversations',
+                    '/api/v1/tables', '/api/v1/me/preferences', '/api/v1/me/connection-groups']) {
+  const status = (await fetch(`${API}${path}`, { credentials: 'include' })).status;
+  // EVERY path → 200. Any 401 = the #4018 durable-session regression (the
+  // signup/OTP handoff isn't establishing the cookie the app reads).
+}
+
+// 8b. CHAT POST AUTHENTICATES VIA THE COOKIE. Send an empty body so the agent
+//     never runs — we're probing AUTH, not a turn. Crucially send NO bearer:
+//     the chat transport must ride the same cookie as REST (a stale in-memory
+//     `atlas-api-key` bearer used to override the cookie → 401 "session expired").
+const chatStatus = (await fetch(`${API}/api/v1/chat`, {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  credentials: 'include', body: '{}',
+})).status;
+// → 422 (body validation) or 2xx — auth PASSED. 401 = the #4018 chat-transport regression.
+```
+
+**Session-durability assertion (gates #4018):** straight after signup, every
+bootstrap GET in 8a `200`s and the chat `POST` in 8b is **not** `401` (a `422`
+validation is the pass — auth cleared, body didn't). A `401` from any 8a path, or
+a `401` from 8b, is the durable-session / chat-transport regression returning.
+
+---
+
 ## Per-region acceptance criteria
 
 - [ ] Signup completes end-to-end through the real OTP gate, no dead-end at any step
@@ -133,6 +176,7 @@ for (const [r, host] of Object.entries(EDGES)) {
 - [ ] **Returning-user login routes to the home region:** after sign-out, `resolve-region` for the workspace's email → `{ outcome: "single", region: <home> }`
 - [ ] **Raw probe is region-local:** the per-region `region-probe` reports `exists: true` only in the home region
 - [ ] **Multi-region chooser:** an email signed up in two regions → `resolve-region` → `{ outcome: "multiple", regions: [...] }`
+- [ ] **Post-signup session durable (#4018):** straight after "Open Atlas", the bootstrap GETs (primitive 8a) all `200` and the chat `POST` (8b) is not `401`; a reload stays authenticated (no bounce to `/login`)
 - [ ] Post-signup app loads and a **demo query returns an answer** in that region
 - [ ] Screenshot captured at each funnel step
 - [ ] Any defect filed as a follow-up issue (don't fix inline)
@@ -171,6 +215,7 @@ ATLAS_TEARDOWN_OK=1 bun run atlas -- ops teardown-verify-accounts \
 - **#3947** — demo first-answer dead-ends: `executeSQL` rejects whitelisted tables despite `/api/v1/tables` listing them (region-agnostic; **fails criterion 4**).
 - **#3948** — `staging` region leaks into the prod region picker.
 - **#3949** — demo-only signup gets a "connect your database" onboarding email (no demo-aware branch in the email sequence).
+- **#4018** — brand-new signup lands in a broken app: post-signup session not durable (every authed call `401`s, reload → `/login`) and the first chat send `401`s "session expired". **Regression gate is primitive 8** above — run it right after signup. Fixed by hydrating the session after OTP verify + a hard-nav "Open Atlas" (durable cookie) and making the chat transport cookie-only in managed mode (no stale bearer).
 
 ---
 

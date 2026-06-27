@@ -18,10 +18,11 @@ import { render, fireEvent, waitFor, cleanup, act, screen } from "@testing-libra
 
 // ── Mocks ───────────────────────────────────────────────────────────────
 
-const routerPushMock = mock((_path: string) => {});
-const routerMock = { push: routerPushMock, replace: () => {}, back: () => {} };
-mock.module("next/navigation", () => ({
-  useRouter: () => routerMock,
+// #4018 — "Open Atlas" hands off with a HARD nav (navigatePostAuth), mirroring
+// the login front-door, so the app re-bootstraps from the durable cookie.
+const navigatePostAuthMock = mock((_path: string) => {});
+mock.module("@/lib/auth/post-auth-nav", () => ({
+  navigatePostAuth: navigatePostAuthMock,
 }));
 
 const getSessionMock = mock(async () => ({ data: null }));
@@ -56,7 +57,7 @@ mock.module("@/ui/components/signup/signup-shell", () => ({
 import SuccessPage from "./page";
 
 beforeEach(() => {
-  routerPushMock.mockReset();
+  navigatePostAuthMock.mockReset();
   getSessionMock.mockReset();
   getSessionMock.mockImplementation(async () => ({ data: null }));
 });
@@ -76,7 +77,7 @@ describe("SuccessPage — starter prompts (#3935)", () => {
     }
   });
 
-  test("clicking a prompt navigates to the chat with the ?prompt= payload", async () => {
+  test("clicking a prompt hands off to the chat with the ?prompt= payload (hard nav)", async () => {
     render(<SuccessPage />);
 
     const target = PROMPTS[0];
@@ -84,12 +85,30 @@ describe("SuccessPage — starter prompts (#3935)", () => {
       fireEvent.click(screen.getByRole("button", { name: new RegExp(target, "i") }));
     });
 
-    // openAtlas hydrates the session first, then pushes the encoded prompt.
+    // openAtlas hydrates the session first, then hard-navs (#4018) the encoded prompt.
     await waitFor(() => {
-      expect(routerPushMock).toHaveBeenCalledWith(
+      expect(navigatePostAuthMock).toHaveBeenCalledWith(
         `/?prompt=${encodeURIComponent(target)}`,
       );
     });
     expect(getSessionMock).toHaveBeenCalled();
+  });
+
+  test("a getSession hiccup never strands the user — still hands off (#4018)", async () => {
+    // Best-effort hydration: if getSession throws, openAtlas must still navigate
+    // (the durable cookie re-bootstraps the app on the fresh load). A regression
+    // that moved the nav inside the try would dead-end the just-signed-up user.
+    getSessionMock.mockImplementation(async () => {
+      throw new Error("network");
+    });
+    render(<SuccessPage />);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Open Atlas/i }));
+    });
+
+    await waitFor(() => {
+      expect(navigatePostAuthMock).toHaveBeenCalledWith("/");
+    });
   });
 });

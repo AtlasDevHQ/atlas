@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import {
   resolveResumeRequest,
   buildChatRequestBody,
+  buildAuthHeaders,
   nextCapturedId,
   ATLAS_RESUME_MARKER,
 } from "@/ui/hooks/use-atlas-transport";
@@ -121,6 +122,33 @@ describe("buildChatRequestBody (#3749)", () => {
   test("#3895 — omits groupReach when the getter is absent (SDK/API callers inherit the row)", () => {
     const body = buildChatRequestBody(MSGS, { groupReach: undefined });
     expect("groupReach" in body).toBe(false);
+  });
+});
+
+describe("buildAuthHeaders (#4018)", () => {
+  test("attaches the bearer in simple-key mode (the API key IS the credential)", () => {
+    expect(buildAuthHeaders("simple-key", "sk-123")).toEqual({
+      Authorization: "Bearer sk-123",
+    });
+  });
+
+  test("managed mode is cookie-only — NEVER attaches a key, even a stale one", () => {
+    // The regression guard: a leftover `atlas-api-key` must not ride as a bearer
+    // in managed mode. The bearer plugin validates it first, so a stale token
+    // 401s the chat ("session expired") while cookie-only REST calls succeed.
+    expect(buildAuthHeaders("managed", "sk-stale")).toEqual({});
+  });
+
+  test("byot / none / unresolved (null) are also cookie-only (no first-party key bearer)", () => {
+    // The `atlas-api-key` is written ONLY by the simple-key ApiKeyBar, so it's
+    // never the credential in these modes — stay cookie-only to match REST.
+    expect(buildAuthHeaders("byot", "sk-x")).toEqual({});
+    expect(buildAuthHeaders("none", "sk-x")).toEqual({});
+    expect(buildAuthHeaders(null, "sk-x")).toEqual({});
+  });
+
+  test("no bearer when the key is empty, even in simple-key mode", () => {
+    expect(buildAuthHeaders("simple-key", "")).toEqual({});
   });
 });
 

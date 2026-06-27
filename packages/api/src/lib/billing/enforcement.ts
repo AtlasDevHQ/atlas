@@ -520,20 +520,6 @@ export async function checkPlanLimits(
 // ---------------------------------------------------------------------------
 
 /**
- * Output-equivalent tokens consumed BEYOND the included token budget. 0 when at
- * or under budget; never negative.
- *
- * NOTE (#4038): enforcement no longer calls this — dollar enforcement uses
- * {@link computeOverageDollars}. It survives because the token-based
- * `OverageMeter` (#3992, overage-meter.ts) still reports token deltas to its
- * Stripe price until the at-cost meter repoint lands (#4039).
- */
-export function computeOverageTokens(currentUsage: number, limit: number): number {
-  if (limit <= 0) return 0;
-  return Math.max(0, currentUsage - limit);
-}
-
-/**
  * At-cost overage in USD: dollars spent BEYOND the included credit (#4038).
  * Structure B bills usage at provider cost (zero markup), so the overage cost
  * IS the excess spend — the former `(overageTokens / 1e6) * rate`

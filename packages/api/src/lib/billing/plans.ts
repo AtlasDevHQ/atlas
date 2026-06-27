@@ -82,12 +82,11 @@ export interface PlanDefinition {
    * DEPRECATED (Structure B, #4034): the legacy synthetic $/1M-token overage
    * rate. Zeroed on every tier — Structure B bills usage at provider cost (zero
    * markup) via the at-cost meter, not a per-token markup. Dollar-native
-   * enforcement has now landed (#4038): `checkPlanLimits` denominates the
-   * included budget and overage in real dollars (`computeUsageDollarBudget` /
-   * `computeOverageDollars`) and no longer consults this rate. It survives only
-   * because the token-based OverageMeter (#3992) keeps reporting token deltas to
-   * its Stripe price until the at-cost meter repoint lands (#4039); removed with
-   * that repoint.
+   * enforcement (#4038) AND the at-cost meter repoint (#4039) have both landed:
+   * nothing now consults this rate — `checkPlanLimits` and the `OverageMeter`
+   * both denominate in real dollars/cents (`computeUsageDollarBudget` /
+   * `computeOverageDollars`). Fully vestigial; still emitted on the billing wire
+   * shape for back-compat, slated for removal in the drift/parity cleanup (#4040).
    */
   overagePerMillionTokens: number;
   limits: PlanLimits;
@@ -279,11 +278,12 @@ export function isUnlimited(value: number): boolean {
  * Compute the total token budget for a workspace based on its plan and seat count.
  * Returns -1 (unlimited) for free tier or when tokenBudgetPerSeat is unlimited.
  *
- * NOTE (#4038): token budgets are no longer the *enforcement* denominator —
- * dollar enforcement reads `computeUsageDollarBudget` below. `computeTokenBudget`
- * survives because the token-based `OverageMeter` (#3992) still reports token
- * deltas to its Stripe price until the at-cost meter repoint lands (#4039), and
- * the billing page still surfaces a token budget figure (`limits.totalTokenBudget`).
+ * NOTE (#4038/#4039): token budgets are no longer the *enforcement* denominator
+ * (dollar enforcement reads `computeUsageDollarBudget` below) NOR the overage
+ * basis (the at-cost `OverageMeter` repoint, #4039, denominates in dollars/cents
+ * via `computeUsageDollarBudget` + `computeOverageDollars`). `computeTokenBudget`
+ * survives only because the billing/usage pages still surface a token-budget
+ * figure (`limits.totalTokenBudget`) for display.
  */
 export function computeTokenBudget(tier: PlanTier, seatCount: number): number {
   const limits = getPlanLimits(tier);

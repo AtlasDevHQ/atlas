@@ -105,9 +105,10 @@ mock.module("@atlas/api/lib/billing/enforcement", () => ({
   severityOf: () => 0,
   // Imported by overage-meter.ts (loaded transitively via server.ts → the
   // ensureOverageSubscriptionItem seam). Omitting it surfaces as "Export named
-  // 'computeOverageTokens' not found" once that import forces enforcement to
-  // link against this partial mock (#3992). Real trivial impl — never called here.
-  computeOverageTokens: (usage: number, limit: number) => Math.max(0, usage - limit),
+  // 'computeOverageDollars' not found" once that import forces enforcement to
+  // link against this partial mock (#3992/#4039). Real trivial impl — never called here.
+  computeOverageDollars: (costUsd: number, creditUsd: number) =>
+    creditUsd <= 0 ? 0 : Math.max(0, costUsd - creditUsd),
 }));
 
 const mockLogWarn: Mock<(...args: unknown[]) => void> = mock(() => {});

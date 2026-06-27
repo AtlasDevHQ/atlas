@@ -431,6 +431,10 @@ describe("migrateAuthTables", () => {
             // capture, Structure B WS2, #4036); ALTERs Atlas-internal tables, no
             // FK to a Better Auth table, so it runs in every auth mode — must be listed.
             { name: "0155_usage_gateway_cost_usd.sql" },
+            // 0156 ALTERs overage_meter_reports (re-denominate the overage ledger
+            // to at-cost cents, Structure B WS2, #4039); Atlas-internal, no FK to
+            // a Better Auth table, so it runs in every auth mode — must be listed.
+            { name: "0156_overage_meter_reports_cost_cents.sql" },
           ],
         };
       }

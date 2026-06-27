@@ -8,8 +8,8 @@
  *   - The `recordOverageReport` upsert's `GREATEST(...)` MONOTONICITY — the
  *     property that makes a late/retried tick unable to regress the cumulative
  *     (and so unable to re-bill). The unit test only string-matches the SQL.
- *   - The `chk_overage_meter_reports_tokens_nonneg` CHECK actually rejecting a
- *     negative cumulative.
+ *   - The `chk_overage_meter_reports_cost_cents_nonneg` CHECK (migration 0156)
+ *     actually rejecting a negative cumulative.
  *   - The `reportPeriodOverages` scan SELECT, which reads `organization.byot`,
  *     `.plan_tier`, `."stripeCustomerId"` and joins `subscription` — exactly
  *     the `column "X" does not exist` class that broke the plan-tier reconcile
@@ -30,7 +30,7 @@ import {
   type InternalPool,
 } from "@atlas/api/lib/db/internal";
 import {
-  getReportedOverageTokens,
+  getReportedOverageCents,
   recordOverageReport,
   reportPeriodOverages,
   type OverageWorkspaceRow,
@@ -127,38 +127,38 @@ describeIfPg("OverageMeter ledger + sweep (real Postgres)", () => {
   }
 
   it(
-    "advances the cumulative monotonically — GREATEST keeps a late/retried lower tick from regressing it",
+    "advances the cumulative cents monotonically — GREATEST keeps a late/retried lower tick from regressing it",
     async () => {
       const base = {
         orgId: "org_mono",
         periodStartISO: PERIOD,
         stripeCustomerId: "cus_mono",
       };
-      await recordOverageReport({ ...base, reportedTokens: 500, eventIdentifier: "id_0" });
-      expect(await getReportedOverageTokens("org_mono", PERIOD)).toBe(500);
+      await recordOverageReport({ ...base, reportedCents: 500, eventIdentifier: "id_0" });
+      expect(await getReportedOverageCents("org_mono", PERIOD)).toBe(500);
 
       // A stale/retried tick carrying a LOWER cumulative must not regress it.
-      await recordOverageReport({ ...base, reportedTokens: 300, eventIdentifier: "id_stale" });
-      expect(await getReportedOverageTokens("org_mono", PERIOD)).toBe(500);
+      await recordOverageReport({ ...base, reportedCents: 300, eventIdentifier: "id_stale" });
+      expect(await getReportedOverageCents("org_mono", PERIOD)).toBe(500);
 
       // A genuine advance moves it forward.
-      await recordOverageReport({ ...base, reportedTokens: 700, eventIdentifier: "id_1" });
-      expect(await getReportedOverageTokens("org_mono", PERIOD)).toBe(700);
+      await recordOverageReport({ ...base, reportedCents: 700, eventIdentifier: "id_1" });
+      expect(await getReportedOverageCents("org_mono", PERIOD)).toBe(700);
     },
     PG_TEST_TIMEOUT_MS,
   );
 
   it(
-    "enforces the non-negative CHECK on reported_tokens",
+    "enforces the non-negative CHECK on reported_cost_cents",
     async () => {
       // Assert the SPECIFIC non-negative CHECK fired (not just any SQL error).
       await expect(
         pool.query(
-          `INSERT INTO overage_meter_reports (org_id, period_start, stripe_customer_id, reported_tokens)
+          `INSERT INTO overage_meter_reports (org_id, period_start, stripe_customer_id, reported_cost_cents)
            VALUES ('org_neg', $1, 'cus', -1)`,
           [PERIOD],
         ),
-      ).rejects.toThrow("chk_overage_meter_reports_tokens_nonneg");
+      ).rejects.toThrow("chk_overage_meter_reports_cost_cents_nonneg");
     },
     PG_TEST_TIMEOUT_MS,
   );

@@ -151,7 +151,6 @@ let checkPlanLimits: typeof import("@atlas/api/lib/billing/enforcement").checkPl
 let checkResourceLimit: typeof import("@atlas/api/lib/billing/enforcement").checkResourceLimit;
 let invalidatePlanCache: typeof import("@atlas/api/lib/billing/enforcement").invalidatePlanCache;
 let buildMetricStatus: typeof import("@atlas/api/lib/billing/enforcement").buildMetricStatus;
-let computeOverageTokens: typeof import("@atlas/api/lib/billing/enforcement").computeOverageTokens;
 let computeOverageDollars: typeof import("@atlas/api/lib/billing/enforcement").computeOverageDollars;
 let resolveAbuseCeilingPercent: typeof import("@atlas/api/lib/billing/enforcement").resolveAbuseCeilingPercent;
 let resolveSpendPolicy: typeof import("@atlas/api/lib/billing/enforcement").resolveSpendPolicy;
@@ -167,7 +166,6 @@ beforeAll(async () => {
     checkResourceLimit,
     invalidatePlanCache,
     buildMetricStatus,
-    computeOverageTokens,
     computeOverageDollars,
     resolveAbuseCeilingPercent,
     resolveSpendPolicy,
@@ -1012,24 +1010,6 @@ describe("computeOverageDollars (#4038)", () => {
 
   it("guards an invalid (<=0) credit — no overage from a misconfigured credit", () => {
     expect(computeOverageDollars(10, 0)).toBe(0);
-  });
-});
-
-// computeOverageTokens survives for the token OverageMeter (#3992/#4039) even
-// though enforcement no longer uses it — keep it under test.
-describe("computeOverageTokens (token OverageMeter, #3990)", () => {
-  it("reports zero overage at or under budget", () => {
-    expect(computeOverageTokens(1_000_000, 2_000_000)).toBe(0);
-    expect(computeOverageTokens(2_000_000, 2_000_000)).toBe(0);
-  });
-
-  it("reports the excess over budget as overage tokens", () => {
-    expect(computeOverageTokens(2_100_000, 2_000_000)).toBe(100_000);
-    expect(computeOverageTokens(3_000_000, 2_000_000)).toBe(1_000_000);
-  });
-
-  it("guards an invalid (<=0) limit", () => {
-    expect(computeOverageTokens(1_000_000, 0)).toBe(0);
   });
 });
 

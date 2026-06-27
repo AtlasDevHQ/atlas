@@ -21,9 +21,10 @@
 -- COALESCE(SUM(gateway_cost_usd), 0) so NULL rows simply don't contribute.
 --
 -- Mirrored in db/schema.ts (usageEvents.gatewayCostUsd, tokenUsage.gatewayCostUsd)
--- in the same PR per the schema-drift discipline. Pure-additive: nothing reads
--- this column for billing yet (the enforcement/meter re-denomination lands in
--- later Structure B slices, #4038/#4039).
+-- in the same PR per the schema-drift discipline. Pure-additive: the column is
+-- summed into the period usage rollup for display, but no meter/enforcement
+-- draws against it yet — the enforcement/meter re-denomination lands in later
+-- Structure B slices (#4038/#4039).
 --
 -- Idempotent: `ADD COLUMN IF NOT EXISTS` is a no-op on re-run.
 

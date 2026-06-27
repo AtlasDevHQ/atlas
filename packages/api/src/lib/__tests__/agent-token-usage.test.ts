@@ -114,6 +114,36 @@ function textOnlyModel(usage: LanguageModelV3Usage): InstanceType<typeof MockLan
   });
 }
 
+/**
+ * Single text-only step whose finish part carries a Vercel-AI-Gateway cost
+ * annotation (`providerMetadata.gateway.cost`) — the shape the at-cost capture
+ * (#4036) reads off `step.providerMetadata` to record `gateway_cost_usd`.
+ */
+function gatewayCostModel(
+  usage: LanguageModelV3Usage,
+  cost: string,
+): InstanceType<typeof MockLanguageModelV3> {
+  const chunks: LanguageModelV3StreamPart[] = [
+    { type: "text-delta", id: "text-0", delta: "Done." },
+    {
+      type: "finish",
+      usage,
+      finishReason: { unified: "stop", raw: "end_turn" },
+      providerMetadata: { gateway: { cost } },
+    },
+  ];
+  return new MockLanguageModelV3({
+    doStream: async () => ({ stream: convertArrayToReadableStream(chunks) }),
+  });
+}
+
+/** The `token` usage_events INSERT (event_type param === "token"). */
+function tokenUsageEvent() {
+  return internalCalls.find(
+    (c) => c.sql.includes("INSERT INTO usage_events") && (c.params as unknown[])?.[2] === "token",
+  );
+}
+
 /** Drain the data stream so the streamText onFinish callback runs. */
 async function drive(model: InstanceType<typeof MockLanguageModelV3>): Promise<void> {
   mockModel = model;
@@ -160,6 +190,23 @@ describe("token_usage cache split write path (#3099)", () => {
     // carry no providerMetadata.gateway.cost, so the at-cost capture records NULL
     // ("no gateway cost recorded"), distinct from a recorded 0.
     expect(params[10]).toBeNull();
+  });
+
+  it("records the per-turn gateway cost on both writes for a gateway-routed turn (#4036)", async () => {
+    // Drives the REAL field path: sumStepGatewayCostUsd reads
+    // step.providerMetadata.gateway.cost off the AI-SDK StepResult. A regression
+    // that reads the wrong path (e.g. step.response.providerMetadata) would write
+    // NULL forever and the non-gateway test below would still pass — this pins it.
+    await drive(gatewayCostModel(CACHE_USAGE, "0.0123"));
+
+    // token_usage row: gateway_cost_usd is the last positional param ($11).
+    const insertParams = tokenUsageInsert()!.params as unknown[];
+    expect(insertParams[10]).toBe(0.0123);
+
+    // …and the `token` usage event carries the same at-cost dollars ($6 of 7).
+    const event = tokenUsageEvent();
+    expect(event).toBeDefined();
+    expect((event!.params as unknown[])[5]).toBe(0.0123);
   });
 
   it("writes 0 for the cache split when the provider reports no cache usage", async () => {

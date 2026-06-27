@@ -417,10 +417,10 @@ export const tokenUsage = pgTable(
     latencyMs: integer("latency_ms"),
     // Provider-cost USD for the turn from the Vercel AI Gateway
     // (providerMetadata.gateway.cost, summed across steps), #4036 / migration
-    // 0155 (Structure B). Zero-markup actual cost — the basis the included usage
-    // credit + overage meter draw against. Nullable, no default: NULL for
-    // non-gateway / BYOK-direct providers and rows predating the migration,
-    // distinct from 0 ("cost was zero").
+    // 0155. Zero-markup actual cost — captured now; the basis the included usage
+    // credit + overage meter will draw against once #4038/#4039 land. Nullable,
+    // no default: NULL for non-gateway / BYOK-direct providers and rows predating
+    // the migration, distinct from 0 ("cost was zero").
     gatewayCostUsd: numeric("gateway_cost_usd", { precision: 12, scale: 6 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     // Org scoping
@@ -814,10 +814,11 @@ export const usageEvents = pgTable(
     weightedQuantity: integer("weighted_quantity"),
     // Provider-cost USD for a `token` event's turn from the Vercel AI Gateway
     // (providerMetadata.gateway.cost, summed across steps), #4036 / migration
-    // 0155 (Structure B). The billing/period aggregate sums this as the at-cost
-    // dollar spend the included credit + overage meter draw against. Nullable,
-    // no default: NULL for non-token events, non-gateway providers, and rows
-    // predating the migration; aggregation reads COALESCE(SUM(...), 0).
+    // 0155. The billing/period aggregate sums this into the at-cost dollar spend
+    // the included credit + overage meter WILL draw against once #4038/#4039
+    // land (captured-only today). Nullable, no default: NULL for non-token
+    // events, non-gateway providers, and rows predating the migration;
+    // aggregation reads COALESCE(SUM(...), 0).
     gatewayCostUsd: numeric("gateway_cost_usd", { precision: 12, scale: 6 }),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

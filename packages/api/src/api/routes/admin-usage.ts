@@ -193,7 +193,23 @@ adminUsage.openapi(getCurrentUsageRoute, async (c) => {
     const { orgId } = yield* AuthContext;
 
     const usage = yield* Effect.promise(() => getCurrentPeriodUsage(orgId!));
-    return c.json({ workspaceId: orgId!, ...usage }, 200);
+    // Pick the response fields explicitly rather than spreading `usage`: the
+    // metering rollup now also carries the at-cost `costUsd` (Atlas's per-period
+    // gateway COGS, #4036) which must NOT leak to a workspace admin, and
+    // `weightedTokenCount`, which isn't part of this wire contract either. The
+    // response matches CurrentPeriodUsageResponseSchema exactly.
+    return c.json(
+      {
+        workspaceId: orgId!,
+        queryCount: usage.queryCount,
+        tokenCount: usage.tokenCount,
+        activeUsers: usage.activeUsers,
+        periodStart: usage.periodStart,
+        periodEnd: usage.periodEnd,
+        periodSource: usage.periodSource,
+      },
+      200,
+    );
   }), { label: "fetch current usage" });
 });
 

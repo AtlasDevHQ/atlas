@@ -376,6 +376,12 @@ export interface TeardownReport {
      *  warning (e.g. a customer that couldn't be deleted) — a non-clean
      *  outcome the handler exits non-zero on, even though the row purge ran. */
     stripeWarnings: number;
+    /** Users carrying a `user.stripeCustomerId` who own no workspace, so no
+     *  purge could reach it (#4011) — a live billable customer the run can't
+     *  delete. Counted so the handler exits non-zero rather than reporting a
+     *  clean teardown while an orphan `cus_…` survives (a scripted/CI cleanup
+     *  must fail loudly). The customer id is in the per-target warning. */
+    orphanedUserCustomers: number;
   };
 }
 
@@ -422,6 +428,7 @@ export async function teardownTargets(
     rowsPurged: 0,
     errors: 0,
     stripeWarnings: 0,
+    orphanedUserCustomers: 0,
   };
 
   for (const target of targets) {
@@ -448,6 +455,9 @@ export async function teardownTargets(
         `User ${target.email} carries a Stripe customer ${target.userStripeCustomerId} but owns no ` +
           "workspace to purge — delete it manually in the Stripe dashboard so it isn't orphaned.",
       );
+      // Counted into totals so the handler exits non-zero: a surviving billable
+      // customer is a non-clean outcome a scripted/CI cleanup must not pass over.
+      totals.orphanedUserCustomers += 1;
     }
 
     for (const org of target.orgs) {
@@ -553,7 +563,15 @@ export function printTeardownReport(report: TeardownReport): void {
   for (const target of report.targets) {
     console.log(`\n• ${target.email}${target.userId ? ` (user ${target.userId})` : ""}`);
     if (target.userStripeCustomerId) {
-      console.log(`  user stripe customer: ${target.userStripeCustomerId} (unioned into owned-org purge)`);
+      // The customer is unioned into a purge only when the user owns a workspace;
+      // an owner-less user gets the manual-cleanup warning below instead, so the
+      // parenthetical must reflect which case this is (a "skipped-not-owner" or
+      // empty org list means no purge reached it).
+      const reached = target.orgs.some((o) => o.status !== "skipped-not-owner");
+      const note = reached
+        ? "(unioned into owned-org purge)"
+        : "(NOT reached by any purge — see warning below)";
+      console.log(`  user stripe customer: ${target.userStripeCustomerId} ${note}`);
     }
     for (const w of target.warnings) console.log(`  ⚠ ${w}`);
     for (const org of target.orgs) {
@@ -578,6 +596,9 @@ export function printTeardownReport(report: TeardownReport): void {
       `${report.dryRun ? t.orgsWouldTearDown : t.orgsTornDown} workspace(s)` +
       (report.dryRun ? "" : `, ${t.rowsPurged} rows purged`) +
       (t.stripeWarnings > 0 ? `, ${t.stripeWarnings} workspace(s) with Stripe warnings` : "") +
+      (t.orphanedUserCustomers > 0
+        ? `, ${t.orphanedUserCustomers} orphaned user-level Stripe customer(s) needing manual deletion`
+        : "") +
       (t.errors > 0 ? `, ${t.errors} error(s)` : ""),
   );
 }
@@ -651,14 +672,21 @@ export async function handleTeardownVerifyAccounts(args: string[]): Promise<void
     }, dryRun);
 
     printTeardownReport(report);
-    // Exit non-zero on a row-purge error OR a left-behind Stripe linkage — a
-    // scripted cleanup must fail loudly rather than report a clean "success"
-    // while a billable Stripe customer survives. A failed customer-delete /
+    // Exit non-zero on a row-purge error, a left-behind Stripe linkage, OR an
+    // orphaned user-level customer that no purge could reach — a scripted
+    // cleanup must fail loudly rather than report a clean "success" while a
+    // billable Stripe customer survives. A failed customer-delete /
     // subscription-cancel is enqueued in `stripe_teardown_pending` for durable
-    // retry; some warnings (a subscription-read or outbox-write failure) are
-    // manual-follow-up only — either way the operator/CI should know it didn't
-    // fully complete.
-    if (report.totals.errors > 0 || report.totals.stripeWarnings > 0) process.exitCode = 1;
+    // retry; some warnings (a subscription-read or outbox-write failure, or an
+    // owner-less user-level customer) are manual-follow-up only — either way the
+    // operator/CI should know it didn't fully complete.
+    if (
+      report.totals.errors > 0 ||
+      report.totals.stripeWarnings > 0 ||
+      report.totals.orphanedUserCustomers > 0
+    ) {
+      process.exitCode = 1;
+    }
   } catch (err) {
     console.error(
       `[ops:teardown-verify-accounts] failed: ${err instanceof Error ? err.message : String(err)}`,

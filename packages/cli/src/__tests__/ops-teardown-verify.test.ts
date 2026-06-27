@@ -391,10 +391,17 @@ describe("teardownTargets", () => {
       softDelete: async () => { calls.push("soft"); return true; },
       hardDelete: async () => { calls.push("hard"); return 0; },
     };
-    const report = await teardownTargets([target({ orgs: [ownedOrg()] })], deps, true);
+    const report = await teardownTargets(
+      [target({ userStripeCustomerId: "cus_user", orgs: [ownedOrg()] })],
+      deps,
+      true,
+    );
     expect(calls).toEqual([]);
     expect(report.dryRun).toBe(true);
     expect(report.targets[0]!.orgs[0]!.status).toBe("would-tear-down");
+    // Preview must still report the user-level customer that the live run will
+    // delete — a dropped carry-through here would make the dry run lie (#4011).
+    expect(report.targets[0]!.userStripeCustomerId).toBe("cus_user");
     expect(report.totals).toMatchObject({ orgsWouldTearDown: 1, orgsTornDown: 0 });
   });
 
@@ -467,6 +474,9 @@ describe("teardownTargets", () => {
     );
     expect(report.targets[0]!.warnings.some((w) => w.includes("cus_orphan"))).toBe(true);
     expect(report.targets[0]!.warnings.some((w) => w.includes("manually"))).toBe(true);
+    // Counted so the handler exits non-zero — a surviving billable customer
+    // must not be reported as a clean teardown.
+    expect(report.totals.orphanedUserCustomers).toBe(1);
   });
 
   it("warns when a user owns NO workspace (only non-owner memberships) but carries a customer", async () => {
@@ -490,6 +500,7 @@ describe("teardownTargets", () => {
     expect(calls).toEqual([]); // no purge ran — every membership is non-owner
     expect(report.targets[0]!.warnings.some((w) => w.includes("cus_nonowner"))).toBe(true);
     expect(report.targets[0]!.warnings.some((w) => w.includes("manually"))).toBe(true);
+    expect(report.totals.orphanedUserCustomers).toBe(1);
   });
 
   it("does NOT warn (customer is reached) when the user owns at least one workspace", async () => {
@@ -505,6 +516,7 @@ describe("teardownTargets", () => {
     );
     // An owned org's purge unions the customer in, so no manual-cleanup warning fires.
     expect(report.targets[0]!.warnings.some((w) => w.includes("manually"))).toBe(false);
+    expect(report.totals.orphanedUserCustomers).toBe(0);
   });
 
   it("unions the user customer into EVERY owned org's purge (multi-org fan-out)", async () => {

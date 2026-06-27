@@ -1,5 +1,5 @@
 /**
- * Tests for `atlas proactive` — replaces internal/enable-proactive-dogfood.ts
+ * Tests for `atlas-operator proactive` — replaces internal/enable-proactive-dogfood.ts
  * and internal/disable-proactive-dogfood.ts. Asserts the subcommand issues
  * the right SQL with the right args against a mocked pool, and that the
  * top-level handler's arg-parsing guards refuse invalid invocations.
@@ -11,7 +11,7 @@ import {
   resolveWorkspaceId,
   handleProactive,
   type ProactivePgClient,
-} from "../commands/proactive";
+} from "../commands/operator/proactive";
 
 // --- Mock pool factory ---
 
@@ -220,7 +220,7 @@ describe("handleProactive — arg-parsing guards", () => {
       caught = err instanceof Error ? err : new Error(String(err));
     }
     expect(caught?.message).toBe("__process_exit__:1");
-    expect(errors.some((line) => line.includes("Usage: atlas proactive"))).toBe(true);
+    expect(errors.some((line) => line.includes("Usage: atlas-operator proactive"))).toBe(true);
   });
 
   it("exits 1 when --workspace is omitted from `enable`", async () => {

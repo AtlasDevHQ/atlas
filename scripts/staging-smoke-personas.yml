@@ -1,4 +1,4 @@
-# Staging smoke fixture — drives `atlas ops smoke-crm` from
+# Staging smoke fixture — drives `atlas-operator ops smoke-crm` from
 # `.github/workflows/staging-smoke.yml` after every staging deploy.
 #
 # This is the MINIMAL counterpart to the full coverage matrix in

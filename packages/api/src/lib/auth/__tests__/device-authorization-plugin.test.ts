@@ -4,7 +4,7 @@ import { DEVICE_TOKEN_ENDPOINT_PATH } from "../server";
 
 /**
  * Contract-pinning tests for the better-auth deviceAuthorization plugin
- * (#4043 / ADR-0025). The origin=cli key-scoping hinges on the plugin's
+ * (#4043 / ADR-0026). The origin=cli key-scoping hinges on the plugin's
  * INTERNAL token-endpoint path matching the const the `session.create.before`
  * hook detects on. These tests turn a future better-auth bump that breaks that
  * assumption (a rename, or the zod-options regression) into a RED test rather

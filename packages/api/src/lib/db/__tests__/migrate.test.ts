@@ -186,11 +186,13 @@ describe("runMigrations", () => {
     //   Billing Meters overage reporter, WS2, #3992) = 155.
     //   Plus 0155 (usage_events/token_usage.gateway_cost_usd at-cost capture,
     //   Structure B WS2, #4036) = 156.
-    //   Plus 0156 (approval-surface origin enum gains 'cli' for the atlas-login
-    //   device flow, ADR-0025, #4043) = 157.
-    //   Plus 0157 (origin marker column on Better Auth's "session" table,
-    //   ADR-0025, #4043) = 158.
-    expect(count).toBe(158);
+    //   Plus 0156 (overage_meter_reports.reported_cost_cents — re-denominate the
+    //   overage ledger from tokens to at-cost cents, Structure B WS2, #4039) = 157.
+    //   Plus 0157 (approval-surface origin enum gains 'cli' for the atlas-login
+    //   device flow, ADR-0026, #4043) = 158.
+    //   Plus 0158 (origin marker column on Better Auth's "session" table,
+    //   ADR-0026, #4043) = 159.
+    expect(count).toBe(159);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -375,8 +377,9 @@ describe("runMigrations", () => {
         "0153_region_db_subscription_scim_parity.sql",
         "0154_overage_meter_reports.sql",
         "0155_usage_gateway_cost_usd.sql",
-        "0156_approval_surface_cli.sql",
-        "0157_session_origin_column.sql",
+        "0156_overage_meter_reports_cost_cents.sql",
+        "0157_approval_surface_cli.sql",
+        "0158_session_origin_column.sql",
       ],
     });
 

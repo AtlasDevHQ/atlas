@@ -1,5 +1,5 @@
--- Migration 0156: Add `cli` to the two approval-surface origin CHECK enums
--- (ADR-0025 / #4043).
+-- Migration 0157: Add `cli` to the two approval-surface origin CHECK enums
+-- (ADR-0026 / #4043).
 --
 -- The `atlas login` device-authorization flow admits a workspace-scoped CLI
 -- bearer audited as `origin=cli`. The agent-origin enum (ADR-0015) therefore
@@ -24,7 +24,7 @@ ALTER TABLE approval_rules
   CHECK (origin IN ('any', 'chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'discord', 'whatsapp', 'gchat', 'webhook', 'cli'));
 
 COMMENT ON COLUMN approval_rules.origin IS
-  'Agent origin this rule applies to (renamed from "surface" in ADR-0015 / #3491). ''any'' fires for every request (pre-2072 default); ''chat'' / ''mcp'' / ''scheduler'' / ''slack'' / ''teams'' / ''telegram'' / ''discord'' / ''whatsapp'' / ''gchat'' / ''webhook'' / ''cli'' scope to the named transport (''cli'' = the atlas-login device flow, ADR-0025). See packages/api/src/lib/approvals/evaluate.ts.';
+  'Agent origin this rule applies to (renamed from "surface" in ADR-0015 / #3491). ''any'' fires for every request (pre-2072 default); ''chat'' / ''mcp'' / ''scheduler'' / ''slack'' / ''teams'' / ''telegram'' / ''discord'' / ''whatsapp'' / ''gchat'' / ''webhook'' / ''cli'' scope to the named transport (''cli'' = the atlas-login device flow, ADR-0026). See packages/api/src/lib/approvals/evaluate.ts.';
 
 -- ── approval_queue.origin ────────────────────────────────────────────
 
@@ -34,4 +34,4 @@ ALTER TABLE approval_queue
   CHECK (origin IS NULL OR origin IN ('chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'discord', 'whatsapp', 'gchat', 'webhook', 'cli'));
 
 COMMENT ON COLUMN approval_queue.origin IS
-  'Agent origin of the request that produced this approval row (renamed from "surface" in ADR-0015 / #3491). NULL for legacy rows or callers that did not stamp an origin; ''cli'' = the atlas-login device flow (ADR-0025).';
+  'Agent origin of the request that produced this approval row (renamed from "surface" in ADR-0015 / #3491). NULL for legacy rows or callers that did not stamp an origin; ''cli'' = the atlas-login device flow (ADR-0026).';

@@ -13,7 +13,7 @@ import {
   pollOutboxUntilDrained,
   SMOKE_EXIT,
   type SmokeCrmDB,
-} from "../commands/ops-smoke-crm";
+} from "../commands/operator/ops-smoke-crm";
 import { createTwentyAdmin } from "../../lib/smoke-crm/twenty-admin";
 
 // ─────────────────────────────────────────────────────────────────────

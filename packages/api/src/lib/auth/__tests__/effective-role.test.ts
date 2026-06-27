@@ -167,7 +167,7 @@ describe("buildCustomSessionPayload()", () => {
     expect((out.user as Record<string, unknown>).effectiveRole).toBe("admin");
   });
 
-  // #4043 / ADR-0025 §2 — the key-scoping crux. A cli (atlas-login) session
+  // #4043 / ADR-0026 §2 — the key-scoping crux. A cli (atlas-login) session
   // resolves the ORG (member) role ONLY: a platform_admin user's cli token
   // must NOT carry cross-tenant god-mode.
   it("cli-origin session withholds the user-level role (platform_admin → org member role)", async () => {

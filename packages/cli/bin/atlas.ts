@@ -45,6 +45,7 @@ import {
   printOverviewHelp,
   wantsHelp,
 } from "../lib/help";
+import { OPERATOR_COMMANDS } from "../lib/operator-help";
 
 // ---------------------------------------------------------------------------
 // Re-exports for backward compatibility (tests import from "../atlas")
@@ -188,7 +189,7 @@ async function main() {
     return handleQuery(args);
   }
 
-  // #4043 / ADR-0025 — device-flow auth + the minimal workspace-scoped read.
+  // #4043 / ADR-0026 — device-flow auth + the minimal workspace-scoped read.
   // Handlers receive the full argv (command name at [0]); they only read flags.
   if (command === "login") {
     const { handleLogin } = await import("../src/commands/login");
@@ -249,11 +250,6 @@ async function main() {
   if (command === "index") {
     const { handleIndex } = await import("../src/commands/init");
     return handleIndex(args);
-  }
-
-  if (command === "learn") {
-    const { handleLearn } = await import("../src/commands/learn");
-    return handleLearn(args);
   }
 
   if (command === "improve") {
@@ -340,11 +336,6 @@ async function main() {
     return;
   }
 
-  if (command === "export") {
-    const { handleExport } = await import("../src/commands/export");
-    return handleExport(args);
-  }
-
   if (command === "import") {
     const { handleImport } = await import("../src/commands/import");
     return handleImport(args);
@@ -371,21 +362,17 @@ async function main() {
     return handlePlugin(args);
   }
 
-  if (command === "proactive") {
-    const { handleProactive } = await import(
-      "../src/commands/proactive"
+  // Operator-only commands (ops/seed/proactive/export/learn) moved to the
+  // separate `atlas-operator` binary so the published `atlas` CLI never ships
+  // tenant-destructive direct-DB tooling (ADR-0026 step 4, #4045). Redirect
+  // rather than a bare "Unknown command" so operator muscle memory lands somewhere useful.
+  if (OPERATOR_COMMANDS.has(command)) {
+    console.error(
+      `[atlas] "${command}" is an operator-only command and has moved to the operator CLI.\n` +
+        `Run it with:  bun run atlas-operator -- ${command} ${args.slice(1).join(" ")}`.trimEnd() +
+        `\n(Operator tooling touches tenant data directly and is not shipped to workspaces — ADR-0026.)`,
     );
-    return handleProactive(args);
-  }
-
-  if (command === "seed") {
-    const { handleSeed } = await import("../src/commands/seed");
-    return handleSeed(args);
-  }
-
-  if (command === "ops") {
-    const { handleOps } = await import("../src/commands/ops");
-    return handleOps(args);
+    process.exit(1);
   }
 
   if (command !== "init") {

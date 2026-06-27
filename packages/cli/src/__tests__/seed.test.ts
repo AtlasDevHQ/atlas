@@ -1,5 +1,5 @@
 /**
- * Tests for `atlas seed` — covers the prompts + workspace SQL functions
+ * Tests for `atlas-operator seed` — covers the prompts + workspace SQL functions
  * and the arg-parsing helpers (parseConnectionsArg, parsePromptLibrary).
  * Mocks the DB pool so the assertions can pin specific SQL/args without
  * standing up Postgres.
@@ -13,7 +13,7 @@ import {
   handleSeed,
   type ResolvedConnectionSpec,
   type SemanticEntityRow,
-} from "../commands/seed";
+} from "../commands/operator/seed";
 import type { TenantPgClient } from "../../lib/tenant-db";
 
 // --- Mock pool ---
@@ -403,7 +403,7 @@ describe("handleSeed", () => {
       caught = err instanceof Error ? err : new Error(String(err));
     }
     expect(caught?.message).toBe("__process_exit__:1");
-    expect(errors.some((line) => line.includes("Usage: atlas seed"))).toBe(true);
+    expect(errors.some((line) => line.includes("Usage: atlas-operator seed"))).toBe(true);
   });
 
   it("exits 1 when `seed workspace` is missing --connections", async () => {

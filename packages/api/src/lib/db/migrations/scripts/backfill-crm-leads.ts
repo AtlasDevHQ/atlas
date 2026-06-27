@@ -21,7 +21,7 @@
  * back-catalog bridge that has no latency requirement.
  *
  * Invocation:
- *   bun run atlas -- ops backfill-crm-leads [--dry-run] [--batch-size N] [--source demo]
+ *   bun run atlas-operator -- ops backfill-crm-leads [--dry-run] [--batch-size N] [--source demo]
  *
  * Or directly:
  *   DATABASE_URL=... bun run packages/api/src/lib/db/migrations/scripts/backfill-crm-leads.ts [--dry-run]

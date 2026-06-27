@@ -1,5 +1,5 @@
 /**
- * Atlas CLI credential store (#4043 / ADR-0025).
+ * Atlas CLI credential store (#4043 / ADR-0026).
  *
  * `atlas login` (the OAuth 2.0 device-authorization flow) persists its session
  * bearer here so subsequent `atlas` commands — and in-session agents — inherit
@@ -11,7 +11,7 @@
  *
  *   { "version": 1, "sessions": { "<baseUrl>": { token, workspaceId, createdAt } } }
  *
- * The stored token is a Better Auth SESSION bearer (ADR-0025): it carries no
+ * The stored token is a Better Auth SESSION bearer (ADR-0026): it carries no
  * separate refresh token and is sent as `Authorization: Bearer <token>`. It is
  * stamped `origin='cli'` server-side, so it resolves org-role-only for its
  * bound workspace. Deleting its server session (or this file) revokes it.

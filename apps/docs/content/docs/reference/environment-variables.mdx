@@ -1045,8 +1045,8 @@ Destructive operator-CLI subcommands gated by explicit env confirmation. None of
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_WIPE_OK` | — | Required gate (`=1`) for the destructive `atlas ops wipe` subcommand. `TRUNCATE`s every public table in the tenant DB; takes no backup. Pair with `--confirm` on the command line. Source: `packages/cli/src/commands/ops.ts` |
-| `ATLAS_TEAM_PG_URL` | — | Canonical tenant-DB connection string for the operator CLI. Resolved by `packages/cli/lib/tenant-db.ts` in this precedence: `ATLAS_TEAM_PG_URL` → `DATABASE_URL` → exit with error. Read by every CLI operator subcommand that touches the tenant DB — `atlas ops` (wipe, etc.), `atlas proactive enable/disable`, `atlas seed`, and the `--db` override flag — plus one-shot `bun run` backfill scripts under `packages/api/src/lib/db/migrations/scripts/`. **Set explicitly before any destructive subcommand**: falling back to `DATABASE_URL` can target the wrong database. Not read by the API process |
+| `ATLAS_WIPE_OK` | — | Required gate (`=1`) for the destructive `atlas-operator ops wipe` subcommand. `TRUNCATE`s every public table in the tenant DB; takes no backup. Pair with `--confirm` on the command line. Source: `packages/cli/src/commands/operator/ops.ts` |
+| `ATLAS_TEAM_PG_URL` | — | Canonical tenant-DB connection string for the operator CLI (`atlas-operator`). Resolved by `packages/cli/lib/tenant-db.ts` in this precedence: `ATLAS_TEAM_PG_URL` → `DATABASE_URL` → exit with error. Read by every operator subcommand that touches the tenant DB — `atlas-operator ops` (wipe, etc.), `atlas-operator proactive enable/disable`, `atlas-operator seed`, and the `--database-url` override flag — plus one-shot `bun run` backfill scripts under `packages/api/src/lib/db/migrations/scripts/`. **Set explicitly before any destructive subcommand**: falling back to `DATABASE_URL` can target the wrong database. Not read by the API process |
 
 ---
 

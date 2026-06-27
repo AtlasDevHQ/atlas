@@ -986,8 +986,8 @@ export const MANAGED_AUTH_MIGRATIONS = [
   "0151_user_email_hash_index.sql",
   // Adds the `origin` marker column to Better Auth's "session" table so the
   // atlas-login device flow can stamp `origin='cli'` for key-scoping
-  // (ADR-0025 / #4043).
-  "0157_session_origin_column.sql",
+  // (ADR-0026 / #4043).
+  "0158_session_origin_column.sql",
 ];
 
 /**
@@ -1993,7 +1993,7 @@ export async function upsertSuggestion(suggestion: {
   /**
    * When true, new rows land as `approval_status = 'approved'` and
    * `status = 'published'` — bypassing the admin moderation queue. Used
-   * only via `atlas learn --auto-approve`, which surfaces the explicit
+   * only via `atlas-operator learn --auto-approve`, which surfaces the explicit
    * operator intent. Existing rows are NOT retroactively approved on
    * ON CONFLICT: the ON CONFLICT clause below only refreshes metrics,
    * so an admin's prior hide or approve decision is preserved across

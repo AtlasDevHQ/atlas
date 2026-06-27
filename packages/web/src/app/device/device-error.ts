@@ -1,6 +1,6 @@
 /**
  * Pull a human-readable message from a Better Auth device-endpoint error
- * (#4043 / ADR-0025).
+ * (#4043 / ADR-0026).
  *
  * The device-flow error shape is `{ error, error_description, status,
  * statusText }` (RFC 8628), not the `{ message }` shape other Better Auth

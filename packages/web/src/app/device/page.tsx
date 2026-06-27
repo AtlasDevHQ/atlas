@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Device authorization approval screen (#4043 / ADR-0025).
+ * Device authorization approval screen (#4043 / ADR-0026).
  *
  * `atlas login` runs the OAuth 2.0 device flow (RFC 8628): the CLI prints a
  * user code + this page's URL. A signed-in human lands here (the plugin's

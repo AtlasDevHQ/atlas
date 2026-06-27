@@ -94,7 +94,7 @@ const _authClient = createAuthClient({
     emailOTPClient(),
     stripeClient({ subscription: true }),
     oauthProviderClient(),
-    // #4043 / ADR-0025 — device-authorization client mirror gives us
+    // #4043 / ADR-0026 — device-authorization client mirror gives us
     // `authClient.device.{approve,deny}` for the /device approval page that
     // backs `atlas login`.
     deviceAuthorizationClient(),
@@ -250,7 +250,7 @@ type OrgClient = Omit<typeof _authClient, "useSession"> & {
   };
 
   // deviceAuthorizationClient contributes `device.{approve,deny}` for the
-  // /device approval screen that backs `atlas login` (#4043 / ADR-0025).
+  // /device approval screen that backs `atlas login` (#4043 / ADR-0026).
   // Unlike oauth2/passkey/etc., this namespace survives the client-chain
   // inference, so it is NOT re-declared here — the device page reads the
   // inferred `{ error, error_description }` result via `deviceErrorMessage`.

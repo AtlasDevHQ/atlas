@@ -1,5 +1,5 @@
 /**
- * atlas proactive — enable or disable proactive chat for a workspace.
+ * atlas-operator proactive — enable or disable proactive chat for a workspace.
  *
  * Replaces internal/enable-proactive-dogfood.ts and internal/disable-proactive-dogfood.ts.
  * Operates against the tenant Postgres pointed at by ATLAS_TEAM_PG_URL (defaults to
@@ -8,19 +8,19 @@
  * literal org id starting with `org_`.
  *
  * Usage:
- *   bun run atlas -- proactive enable --workspace <id|slug> --channels <id1,id2,...>
- *   bun run atlas -- proactive disable --workspace <id|slug>
+ *   bun run atlas-operator -- proactive enable --workspace <id|slug> --channels <id1,id2,...>
+ *   bun run atlas-operator -- proactive disable --workspace <id|slug>
  *
  * Idempotent: re-running enable upserts workspace_proactive_config + every channel row;
  * re-running disable flips workspace_proactive_config.enabled=false (channel rows
  * preserved so a later enable doesn't lose channel configs).
  */
-import { getFlag } from "../../lib/cli-utils";
+import { getFlag } from "../../../lib/cli-utils";
 import {
   resolveTenantUrl,
   resolveWorkspaceId,
   type TenantPgClient,
-} from "../../lib/tenant-db";
+} from "../../../lib/tenant-db";
 
 export { resolveWorkspaceId };
 
@@ -89,7 +89,7 @@ export async function handleProactive(args: string[]): Promise<void> {
   const subcommand = args[1];
   if (subcommand !== "enable" && subcommand !== "disable") {
     console.error(
-      "Usage: atlas proactive <enable|disable> --workspace <id|slug> [--channels <ids>]\n\n" +
+      "Usage: atlas-operator proactive <enable|disable> --workspace <id|slug> [--channels <ids>]\n\n" +
         "Subcommands:\n" +
         "  enable   Turn on proactive chat for a workspace + opt one or more channels in.\n" +
         "  disable  Flip the workspace toggle off (channel rows preserved).\n",

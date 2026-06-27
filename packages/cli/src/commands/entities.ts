@@ -1,5 +1,5 @@
 /**
- * `atlas entities` (#4043 / ADR-0025) — the minimal command that proves the
+ * `atlas entities` (#4043 / ADR-0026) — the minimal command that proves the
  * `atlas login` credential resolves live to its bound workspace.
  *
  * Reads the stored session bearer and lists the semantic entities visible to

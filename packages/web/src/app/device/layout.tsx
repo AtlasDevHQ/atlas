@@ -4,7 +4,7 @@ export const metadata: Metadata = {
   title: "Authorize a device — Atlas",
   description: "Approve or deny a device (e.g. the Atlas CLI) requesting access to your workspace.",
   // The device-verification screen carries a one-shot user code and must never
-  // be indexed or cached. (#4043 / ADR-0025.)
+  // be indexed or cached. (#4043 / ADR-0026.)
   robots: { index: false, follow: false },
 };
 

@@ -1,5 +1,5 @@
 /**
- * `atlas ops smoke-crm` — automated CRM lead-capture verification.
+ * `atlas-operator ops smoke-crm` — automated CRM lead-capture verification.
  *
  * Mechanizes the 10-persona manual repro from PR #2865's comment thread:
  * inject leads BELOW the form/Turnstile layer via `enqueue`, wait for the
@@ -26,8 +26,8 @@
  */
 import { enqueue } from "@atlas/api/lib/lead-outbox/outbox";
 
-import { getFlag } from "../../lib/cli-utils";
-import { loadFixture, FixtureParseError } from "../../lib/smoke-crm/fixture";
+import { getFlag } from "../../../lib/cli-utils";
+import { loadFixture, FixtureParseError } from "../../../lib/smoke-crm/fixture";
 import {
   buildExpectedState,
   computeDiff,
@@ -36,8 +36,8 @@ import {
   type ObservedNote,
   type ObservedPerson,
   type ObservedState,
-} from "../../lib/smoke-crm/diff";
-import { createTwentyAdmin } from "../../lib/smoke-crm/twenty-admin";
+} from "../../../lib/smoke-crm/diff";
+import { createTwentyAdmin } from "../../../lib/smoke-crm/twenty-admin";
 import type { LeadEvent } from "@useatlas/twenty/lead-normalizer";
 
 const DEFAULT_TIMEOUT_SECONDS = 60;
@@ -258,7 +258,7 @@ export async function pollOutboxUntilDrained(
 /**
  * Top-level CLI entry point. Exit codes use `SMOKE_EXIT`. Catches every
  * known failure shape and prints an actionable message; an unhandled
- * defect bubbles out to bin/atlas.ts's top-level catch.
+ * defect bubbles out to bin/atlas-operator.ts's top-level catch.
  *
  * Uses `process.exitCode = X; return;` rather than `process.exit(X)` so
  * the `finally` block runs and the pg client is cleanly closed even on
@@ -340,7 +340,7 @@ export async function handleOpsSmokeCrm(args: string[]): Promise<void> {
 
   // Connect to the tenant DB for the enqueue + poll phases. The connect
   // itself can fail (DB down, wrong URL) — surface that as INFRA, not as
-  // an unhandled rejection at the top of bin/atlas.ts.
+  // an unhandled rejection at the top of bin/atlas-operator.ts.
   const { Client } = await import("pg");
   const client = new Client({ connectionString: parsed.databaseUrl });
   try {

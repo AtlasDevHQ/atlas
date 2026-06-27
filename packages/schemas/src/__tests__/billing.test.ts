@@ -21,6 +21,7 @@ const validStatus = {
   limits: {
     tokenBudgetPerSeat: 2_000_000,
     totalTokenBudget: 20_000_000,
+    totalUsageDollars: 80,
     maxSeats: 10,
     maxConnections: 1,
     maxChatIntegrations: 1,
@@ -29,8 +30,9 @@ const validStatus = {
     queryCount: 423,
     tokenCount: 1_240_000,
     seatCount: 4,
-    tokenUsagePercent: 15,
-    tokenOverageStatus: "ok" as const,
+    costUsd: 12,
+    usageDollarsPercent: 15,
+    usageOverageStatus: "ok" as const,
     periodStart: "2026-04-01T00:00:00.000Z",
     periodEnd: "2026-04-30T23:59:59.000Z",
   },
@@ -53,6 +55,7 @@ const selfHostedStatus = {
   limits: {
     tokenBudgetPerSeat: null,
     totalTokenBudget: null,
+    totalUsageDollars: null,
     maxSeats: null,
     maxConnections: null,
     maxChatIntegrations: null,
@@ -107,7 +110,7 @@ describe("happy-path parses", () => {
 
 // ---------------------------------------------------------------------------
 // Enum strict rejection — web previously relaxed plan.tier and
-// usage.tokenOverageStatus to z.string(). Pinning to z.enum(TUPLE) means a
+// usage.usageOverageStatus to z.string(). Pinning to z.enum(TUPLE) means a
 // new plan tier or overage state added to `@useatlas/types` fails parse
 // at useAdminFetch time and surfaces `schema_mismatch` instead of leaking
 // through as untyped text into the billing page tier badge.
@@ -126,10 +129,10 @@ describe("enum strict rejection", () => {
     expect(BillingStatusSchema.safeParse(drifted).success).toBe(false);
   });
 
-  test("unknown tokenOverageStatus fails parse", () => {
+  test("unknown usageOverageStatus fails parse", () => {
     const drifted = {
       ...validStatus,
-      usage: { ...validStatus.usage, tokenOverageStatus: "exceeded" },
+      usage: { ...validStatus.usage, usageOverageStatus: "exceeded" },
     };
     expect(BillingStatusSchema.safeParse(drifted).success).toBe(false);
   });
@@ -145,13 +148,13 @@ describe("enum strict rejection", () => {
     }
   });
 
-  test("all OVERAGE_STATUSES values parse as tokenOverageStatus", () => {
+  test("all OVERAGE_STATUSES values parse as usageOverageStatus", () => {
     for (const status of OVERAGE_STATUSES) {
       expect(
         BillingStatusSchema.parse({
           ...validStatus,
-          usage: { ...validStatus.usage, tokenOverageStatus: status },
-        }).usage.tokenOverageStatus,
+          usage: { ...validStatus.usage, usageOverageStatus: status },
+        }).usage.usageOverageStatus,
       ).toBe(status);
     }
   });
@@ -252,8 +255,8 @@ describe("chat-integration cap (#3438)", () => {
 });
 
 describe("structural rejection", () => {
-  test("BillingStatusSchema rejects missing usage.tokenOverageStatus", () => {
-    const { tokenOverageStatus: _t, ...partialUsage } = validStatus.usage;
+  test("BillingStatusSchema rejects missing usage.usageOverageStatus", () => {
+    const { usageOverageStatus: _t, ...partialUsage } = validStatus.usage;
     const drifted = { ...validStatus, usage: partialUsage };
     expect(BillingStatusSchema.safeParse(drifted).success).toBe(false);
   });

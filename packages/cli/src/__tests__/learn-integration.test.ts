@@ -28,7 +28,7 @@ import * as path from "path";
 import * as os from "os";
 
 // Hoisted bindings — populated in beforeAll once the OS state is set up.
-let handleLearn: (typeof import("../commands/learn"))["handleLearn"];
+let handleLearn: (typeof import("../commands/operator/learn"))["handleLearn"];
 let tmpRoot: string;
 let origCwd: string;
 let origDatabaseUrl: string | undefined;
@@ -112,7 +112,7 @@ dimensions:
   }));
 
   // Import AFTER chdir + env + mocks.
-  ({ handleLearn } = await import("../commands/learn"));
+  ({ handleLearn } = await import("../commands/operator/learn"));
 });
 
 // Silence console output during the suite so CI logs stay clean.

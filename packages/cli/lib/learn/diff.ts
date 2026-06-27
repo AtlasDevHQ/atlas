@@ -1,5 +1,5 @@
 /**
- * Git-style diff output for `atlas learn` proposals.
+ * Git-style diff output for `atlas-operator learn` proposals.
  *
  * Generates unified diff format showing before/after YAML changes
  * for each file affected by proposals.

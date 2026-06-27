@@ -569,8 +569,10 @@ The command reports how many entities were imported, how many were skipped (alre
 
 Analyze the audit log and propose semantic layer YAML improvements. This is Atlas's offline learning loop — it examines real query patterns and suggests additions to your entity files, joins, and glossary.
 
+> **Operator-only.** `learn` is direct-DB tooling and ships in the [`atlas-operator`](#operator-subcommands) binary, not the published `atlas` CLI.
+
 ```bash
-bun run atlas -- learn [options]
+bun run atlas-operator -- learn [options]
 ```
 
 | Flag | Description |
@@ -599,19 +601,19 @@ Pass `--auto-approve` to bypass the queue — new rows write `approval_status = 
 
 ```bash
 # Preview proposals (dry run, the default)
-atlas learn
+atlas-operator learn
 
 # Apply changes to YAML files
-atlas learn --apply
+atlas-operator learn --apply
 
 # Only analyze recent queries
-atlas learn --since 2026-03-01 --limit 500
+atlas-operator learn --since 2026-03-01 --limit 500
 
 # Generate query suggestions from audit log — new rows are pending review
-atlas learn --suggestions
+atlas-operator learn --suggestions
 
 # Skip the moderation queue — new rows are approved + published
-atlas learn --suggestions --auto-approve
+atlas-operator learn --suggestions --auto-approve
 ```
 
 ## improve
@@ -675,8 +677,10 @@ bun run atlas -- benchmark [options]
 
 Export workspace data to a portable migration bundle (JSON). Reads from the internal database. Used as the first step in a self-hosted → SaaS migration workflow. See [Migration guide](/guides/migration) for the full workflow.
 
+> **Operator-only.** `export` is direct-DB tooling and ships in the [`atlas-operator`](#operator-subcommands) binary, not the published `atlas` CLI.
+
 ```bash
-bun run atlas -- export [options]
+bun run atlas-operator -- export [options]
 ```
 
 | Flag | Description |
@@ -691,13 +695,13 @@ bun run atlas -- export [options]
 
 ```bash
 # Export all workspace data to a timestamped file
-bun run atlas -- export
+bun run atlas-operator -- export
 
 # Export to a specific file
-bun run atlas -- export --output backup.json
+bun run atlas-operator -- export --output backup.json
 
 # Export a specific organization's data
-bun run atlas -- export --org org_abc123
+bun run atlas-operator -- export --org org_abc123
 ```
 
 ## migrate-import
@@ -762,7 +766,7 @@ bun run atlas -- completions fish > ~/.config/fish/completions/atlas.fish
 
 ## Operator subcommands
 
-Operator-only tools for tenant-data ops, promoted from the gitignored `internal/` directory in [#2635](https://github.com/AtlasDevHQ/atlas/pull/2635) so they're type-checked, unit-tested, and discoverable. All subcommands target the tenant Postgres at `ATLAS_TEAM_PG_URL`, falling back to `DATABASE_URL` when unset. `--workspace` accepts either a literal `org_*` id or an `organization.slug`.
+Operator-only tools for tenant-data ops, promoted from the gitignored `internal/` directory in [#2635](https://github.com/AtlasDevHQ/atlas/pull/2635) so they're type-checked, unit-tested, and discoverable. They ship in a **separate `atlas-operator` binary** — split out of the published `atlas` CLI so the workspace-facing binary never carries tenant-destructive direct-DB tooling (ADR-0025 step 4, [#4045](https://github.com/AtlasDevHQ/atlas/issues/4045)). Run them with `bun run atlas-operator -- <command>`; the published `atlas` CLI prints a redirect if you try one there. This surface also includes the [`learn`](#learn) and [`export`](#export) commands above. The tenant-data subcommands (`proactive`, `seed`, `ops`) target the tenant Postgres at `ATLAS_TEAM_PG_URL`, falling back to `DATABASE_URL` when unset; `learn` and `export` instead read Atlas's **internal** database via `DATABASE_URL` (the two-database split). `--workspace` accepts either a literal `org_*` id or an `organization.slug`.
 
 The CLAUDE.md "Operator subcommands (destructive)" block is the source of truth for these — keep this page and CLAUDE.md aligned when adding subcommands.
 
@@ -771,7 +775,7 @@ The CLAUDE.md "Operator subcommands (destructive)" block is the source of truth 
 Turn proactive chat on for a workspace and opt one or more channels into the allowlist. Idempotent — re-running upserts `workspace_proactive_config` plus every channel row.
 
 ```bash
-bun run atlas -- proactive enable --workspace <id|slug> --channels <c1,c2,...>
+bun run atlas-operator -- proactive enable --workspace <id|slug> --channels <c1,c2,...>
 ```
 
 | Flag | Description |
@@ -784,7 +788,7 @@ bun run atlas -- proactive enable --workspace <id|slug> --channels <c1,c2,...>
 Flip the workspace toggle off. Channel rows are preserved so a later `enable` doesn't lose channel configs.
 
 ```bash
-bun run atlas -- proactive disable --workspace <id|slug>
+bun run atlas-operator -- proactive disable --workspace <id|slug>
 ```
 
 | Flag | Description |
@@ -796,7 +800,7 @@ bun run atlas -- proactive disable --workspace <id|slug>
 Seed a prompt-library collection + items from a YAML file. Replaces any prior collection with the same `(org_id, name)` and pins the org's demo industry so the starter-prompt resolver matches.
 
 ```bash
-bun run atlas -- seed prompts --workspace <id|slug> --library ./prompts/library.yml
+bun run atlas-operator -- seed prompts --workspace <id|slug> --library ./prompts/library.yml
 ```
 
 | Flag | Default | Description |
@@ -809,7 +813,7 @@ bun run atlas -- seed prompts --workspace <id|slug> --library ./prompts/library.
 Provision a connection group, member connections, and the accompanying semantic entities for that group. The `--connections` argument is a comma-separated list of `id=urlEnv:type[:primary]` entries — exactly one entry must carry `:primary`. Connection URLs are read from `process.env[urlEnv]` and encrypted at rest with the active `ATLAS_ENCRYPTION_KEYS` version.
 
 ```bash
-bun run atlas -- seed workspace \
+bun run atlas-operator -- seed workspace \
   --workspace <id|slug> \
   --group prod \
   --connections us-prod=US_DB_URL:postgres:primary,eu-prod=EU_DB_URL:postgres
@@ -830,7 +834,7 @@ bun run atlas -- seed workspace \
 </Callout>
 
 ```bash
-ATLAS_WIPE_OK=1 bun run atlas -- ops wipe --confirm [--database-url <url>]
+ATLAS_WIPE_OK=1 bun run atlas-operator -- ops wipe --confirm [--database-url <url>]
 ```
 
 | Flag | Description |
@@ -840,14 +844,14 @@ ATLAS_WIPE_OK=1 bun run atlas -- ops wipe --confirm [--database-url <url>]
 
 **Exit codes:** `0` = tables truncated; `1` = gate failed or wipe errored; `2` = zero tables matched the exclusion query (almost always a wrong-DB typo — nothing was truncated).
 
-The exclusion list (`__atlas_migrations`, `region_migrations`) lives next to the SQL in `packages/cli/src/commands/ops.ts:WIPE_EXCLUDED_TABLES`.
+The exclusion list (`__atlas_migrations`, `region_migrations`) lives next to the SQL in `packages/cli/src/commands/operator/ops.ts:WIPE_EXCLUDED_TABLES`.
 
 ### ops backfill-crm-leads
 
 One-shot migration backfill: enqueues every existing `demo_leads` row into `crm_outbox` so historical demo signups also dispatch to Twenty CRM. Idempotent — re-running is safe because `TwentyClient.upsertPerson` dedupes by primary email and the outbox uses a per-source idempotency key.
 
 ```bash
-bun run atlas -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source demo] [--database-url <url>]
+bun run atlas-operator -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source demo] [--database-url <url>]
 ```
 
 | Flag | Description |
@@ -864,7 +868,7 @@ Already-run on prod against `demo_leads`; safe to re-run if a new region comes o
 End-to-end verification of the demo → Twenty CRM lead-capture pipeline. It injects fixture personas **below** the form/Turnstile layer (straight into `crm_outbox` via `enqueue`), waits for the lead-outbox flusher to drain, then lists Twenty over REST and diffs the resulting Persons + Notes against what the fixture declared. Because it makes live Twenty network calls it is **not** part of per-PR CI, but it is not local-only either: an operator runs it ad-hoc, **and** it is the post-deploy **Staging Smoke** gate (`.github/workflows/staging-smoke.yml`), which fires after a staging deploy to prove the flusher path is alive against the staging DB + Twenty. Changing or removing this subcommand will break that gate.
 
 ```bash
-bun run atlas -- ops smoke-crm --personas <path> [--wipe-twenty] \
+bun run atlas-operator -- ops smoke-crm --personas <path> [--wipe-twenty] \
   [--twenty-base-url <url>] [--twenty-api-key <key>] [--timeout-seconds 60] [--database-url <url>]
 ```
 

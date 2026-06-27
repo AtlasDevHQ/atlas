@@ -11,7 +11,7 @@ import {
   normalizeBaseUrl,
 } from "../lib/credentials";
 
-describe("CLI credential store (#4043 / ADR-0025)", () => {
+describe("CLI credential store (#4043 / ADR-0026)", () => {
   let dir: string;
   const base = "http://localhost:3001";
   const session = { token: "sess_abc", workspaceId: "org_1", createdAt: "2026-06-27T00:00:00.000Z" };

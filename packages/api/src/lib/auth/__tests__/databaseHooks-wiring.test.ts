@@ -149,7 +149,7 @@ function makeRecordingPool(): InternalPool {
         return rows([{ user_id: params?.[0] }]);
       }
       // "cli_multi" belongs to TWO orgs (the multi-workspace branch — no
-      // active org is auto-selected, ADR-0025 §6); everyone else is single-org.
+      // active org is auto-selected, ADR-0026 §6); everyone else is single-org.
       if (/FROM\s+member/i.test(sql)) {
         return rows(
           params?.[0] === "cli_multi"
@@ -449,7 +449,7 @@ describe("databaseHooks.session.create.before — ban guard wiring (#3159)", () 
     ).toBe(true);
   });
 
-  // ── #4043 / ADR-0025 — origin=cli stamping wiring ──────────────────
+  // ── #4043 / ADR-0026 — origin=cli stamping wiring ──────────────────
   // The detector (isDeviceTokenSessionContext) and the downgrade
   // (buildCustomSessionPayload given origin:"cli") are unit-tested in
   // isolation; these drive the REAL composed hook to prove it CONNECTS them —
@@ -485,7 +485,7 @@ describe("databaseHooks.session.create.before — ban guard wiring (#3159)", () 
     expect(result?.data?.activeOrganizationId).toBe("org_welcome");
   });
 
-  it("stamps origin='cli' for a MULTI-workspace login WITHOUT auto-selecting an org (ADR-0025 §6)", async () => {
+  it("stamps origin='cli' for a MULTI-workspace login WITHOUT auto-selecting an org (ADR-0026 §6)", async () => {
     const before = getSessionCreateBefore();
     // The cli marker and the active-org auto-set are independent patch fields;
     // a multi-org user must get origin='cli' but NO active org (the picker is

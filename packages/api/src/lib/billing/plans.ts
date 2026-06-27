@@ -81,12 +81,12 @@ export interface PlanDefinition {
   /**
    * DEPRECATED (Structure B, #4034): the legacy synthetic $/1M-token overage
    * rate. Zeroed on every tier — Structure B bills usage at provider cost (zero
-   * markup) via the at-cost meter, not a per-token markup. Zeroing here only
-   * neutralizes the DISPLAY accrual (`computeOverageCost` → $0); the token-based
-   * OverageMeter (#3992) keeps reporting token deltas to its Stripe price until
-   * the at-cost meter repoint lands (#4039). Retained only so the field doesn't
-   * break the wire type mid-migration; removed when dollar-native enforcement
-   * lands (#4038).
+   * markup) via the at-cost meter, not a per-token markup. Dollar-native
+   * enforcement (#4038) AND the at-cost meter repoint (#4039) have both landed:
+   * nothing now consults this rate — `checkPlanLimits` and the `OverageMeter`
+   * both denominate in real dollars/cents (`computeUsageDollarBudget` /
+   * `computeOverageDollars`). Fully vestigial; still emitted on the billing wire
+   * shape for back-compat, slated for removal in the drift/parity cleanup (#4040).
    */
   overagePerMillionTokens: number;
   limits: PlanLimits;
@@ -277,11 +277,37 @@ export function isUnlimited(value: number): boolean {
 /**
  * Compute the total token budget for a workspace based on its plan and seat count.
  * Returns -1 (unlimited) for free tier or when tokenBudgetPerSeat is unlimited.
+ *
+ * NOTE (#4038/#4039): token budgets are no longer the *enforcement* denominator
+ * (dollar enforcement reads `computeUsageDollarBudget` below) NOR the overage
+ * basis (the at-cost `OverageMeter` repoint, #4039, denominates in dollars/cents
+ * via `computeUsageDollarBudget` + `computeOverageDollars`). `computeTokenBudget`
+ * survives only because the billing/usage pages still surface a token-budget
+ * figure (`limits.totalTokenBudget`) for display.
  */
 export function computeTokenBudget(tier: PlanTier, seatCount: number): number {
   const limits = getPlanLimits(tier);
   if (isUnlimited(limits.tokenBudgetPerSeat)) return UNLIMITED;
   return limits.tokenBudgetPerSeat * Math.max(1, seatCount);
+}
+
+/**
+ * Compute the total included at-cost usage credit (USD) for a workspace
+ * (Structure B, #4034 / #4038) — the dollar budget enforcement denominates
+ * against. Pooled per-seat: `includedUsageDollarsPerSeat × seatCount`, so a
+ * bigger team gets a bigger shared pool (there is no per-tier credit ladder).
+ *
+ * Unlike {@link computeTokenBudget} there is no "unlimited" credit sentinel —
+ * a dollar credit is always a finite amount. The credit is 0 for tiers with no
+ * included usage (`free`, `locked`); those tiers are short-circuited before any
+ * budget math in `checkPlanLimits`, and a 0 credit is treated as "nothing to
+ * enforce" (allow) rather than "block everything" by the caller's guard.
+ * `seatCount` is floored at 1 so a transient 0/negative count never collapses
+ * the pool below a single seat's credit.
+ */
+export function computeUsageDollarBudget(tier: PlanTier, seatCount: number): number {
+  const def = getPlanDefinition(tier);
+  return def.includedUsageDollarsPerSeat * Math.max(1, seatCount);
 }
 
 /**
@@ -293,7 +319,7 @@ export function computeTokenBudget(tier: PlanTier, seatCount: number): number {
  * with quantity = member count, and the plugin's member
  * add/remove/invite-accept hooks keep the Stripe quantity synced to
  * membership automatically. This matches Atlas's $/seat pricing and the
- * member-count basis enforcement uses for token budgets. The pairing is
+ * member-count basis enforcement uses for the usage credit (#4038). The pairing is
  * pinned by plans.test.ts — a drift would re-add a base line item on top
  * of the seat item (double billing).
  *

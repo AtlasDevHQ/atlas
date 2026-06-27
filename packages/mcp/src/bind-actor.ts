@@ -56,7 +56,7 @@ import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
  * standalone server: both run in the operator's own trusted process and bind
  * a single boot-time actor (`resolveMcpActor`). `hosted` is the SaaS
  * per-bearer OAuth edge. `cli` is the `atlas login` device-flow credential
- * (ADR-0025): a portable, file-stored bearer that resolves ORG-role-only —
+ * (ADR-0026): a portable, file-stored bearer that resolves ORG-role-only —
  * like `hosted` but for the CLI transport, withholding `platform_admin`
  * REGARDLESS of deploy mode (a copied-off credential file is never the
  * trusted local operator).
@@ -112,7 +112,7 @@ export function resolveMcpActorRole(
       // auto-applied over a customer's workspace (ADR-0016 §platform_admin).
       return resolveEffectiveRole(undefined, args.userId, args.activeOrganizationId);
     case "cli":
-      // `atlas login` device-flow bearer (ADR-0025): ORG role ONLY, exactly
+      // `atlas login` device-flow bearer (ADR-0026): ORG role ONLY, exactly
       // like `hosted`. A portable file-stored credential is an exfiltration
       // surface — `platform_admin` is withheld regardless of deploy mode, so
       // a stolen `~/.atlas/credentials` can never act past its org/member role

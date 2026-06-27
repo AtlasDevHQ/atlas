@@ -1,5 +1,5 @@
 /**
- * atlas seed — seed durable workspace data into the tenant Postgres.
+ * atlas-operator seed — seed durable workspace data into the tenant Postgres.
  *
  * Subcommands:
  *   prompts   Seed a prompt-library collection + items from a YAML file
@@ -14,12 +14,12 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import * as yaml from "js-yaml";
-import { getFlag } from "../../lib/cli-utils";
+import { getFlag } from "../../../lib/cli-utils";
 import {
   resolveTenantUrl,
   resolveWorkspaceId,
   type TenantPgClient,
-} from "../../lib/tenant-db";
+} from "../../../lib/tenant-db";
 
 // --- seed prompts ---
 
@@ -462,7 +462,7 @@ export async function handleSeed(args: string[]): Promise<void> {
   if (subcommand === "workspace") return handleSeedWorkspace(args);
 
   console.error(
-    "Usage: atlas seed <prompts|workspace> [options]\n\n" +
+    "Usage: atlas-operator seed <prompts|workspace> [options]\n\n" +
       "Subcommands:\n" +
       "  prompts    Seed a prompt-library collection + items from a YAML file.\n" +
       "  workspace  Provision a connection group + member connections + semantic entities.\n",

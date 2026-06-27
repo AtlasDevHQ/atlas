@@ -77232,6 +77232,12 @@
                             "null"
                           ]
                         },
+                        "totalUsageDollars": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
                         "maxSeats": {
                           "type": [
                             "number",
@@ -77254,6 +77260,7 @@
                       "required": [
                         "tokenBudgetPerSeat",
                         "totalTokenBudget",
+                        "totalUsageDollars",
                         "maxSeats",
                         "maxConnections",
                         "maxChatIntegrations"
@@ -77274,10 +77281,13 @@
                         "seatCount": {
                           "type": "number"
                         },
-                        "tokenUsagePercent": {
+                        "costUsd": {
                           "type": "number"
                         },
-                        "tokenOverageStatus": {
+                        "usageDollarsPercent": {
+                          "type": "number"
+                        },
+                        "usageOverageStatus": {
                           "type": "string",
                           "enum": [
                             "ok",
@@ -77286,9 +77296,6 @@
                             "metered",
                             "hard_limit"
                           ]
-                        },
-                        "overageTokens": {
-                          "type": "number"
                         },
                         "overageCost": {
                           "type": "number"
@@ -77311,8 +77318,9 @@
                         "queryCount",
                         "tokenCount",
                         "seatCount",
-                        "tokenUsagePercent",
-                        "tokenOverageStatus",
+                        "costUsd",
+                        "usageDollarsPercent",
+                        "usageOverageStatus",
                         "periodStart",
                         "periodEnd"
                       ]

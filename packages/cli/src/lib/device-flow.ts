@@ -1,6 +1,6 @@
 /**
  * OAuth 2.0 device-authorization grant client (RFC 8628) for `atlas login`
- * (#4043 / ADR-0025).
+ * (#4043 / ADR-0026).
  *
  * Talks to Better Auth's `deviceAuthorization` plugin endpoints under
  * `/api/auth/device/*`. Kept transport-thin and dependency-free: `fetch` and

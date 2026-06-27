@@ -1,5 +1,5 @@
 /**
- * `atlas login` / `atlas logout` (#4043 / ADR-0025).
+ * `atlas login` / `atlas logout` (#4043 / ADR-0026).
  *
  * `atlas login` runs the OAuth 2.0 device-authorization flow (RFC 8628): it
  * prints a user code + verification URL, the human approves in a browser while
@@ -9,7 +9,7 @@
  *
  * A single-workspace account auto-binds (the session's only org). A
  * multi-workspace account logs in with no bound workspace yet — the in-flow
- * workspace picker is the named ADR-0025 follow-up; `atlas login` says so
+ * workspace picker is the named ADR-0026 follow-up; `atlas login` says so
  * plainly rather than guessing a workspace.
  */
 
@@ -123,7 +123,7 @@ export async function handleLogin(args: string[]): Promise<void> {
   } else {
     console.log(
       "  Your account belongs to more than one workspace, so no single workspace\n" +
-        "  was auto-selected. In-flow workspace selection is coming soon (ADR-0025);\n" +
+        "  was auto-selected. In-flow workspace selection is coming soon (ADR-0026);\n" +
         "  until then a single-workspace account binds automatically.",
     );
   }

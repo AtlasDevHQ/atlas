@@ -2680,13 +2680,13 @@ export function buildPlugins() {
     }),
   );
 
-  // #4043 / ADR-0025 — OAuth 2.0 device authorization grant (RFC 8628) that
+  // #4043 / ADR-0026 — OAuth 2.0 device authorization grant (RFC 8628) that
   // backs `atlas login`. The CLI requests a user code at /device/code, the
   // human approves at the `/device` web page (verificationUri) in their
   // existing managed-auth session, and the CLI polls /device/token to receive
   // a Better Auth SESSION bearer it stores in ~/.atlas/credentials. The session
   // is stamped `origin='cli'` by the `session.create.before` hook so
-  // managed-auth resolves it org-role-only (key-scoping — ADR-0025 §1/§2). The
+  // managed-auth resolves it org-role-only (key-scoping — ADR-0026 §1/§2). The
   // plugin registers /device/code, /device/token, /device/approve, /device/deny
   // and /device under the auth base; the CLI targets those paths directly (no
   // `.well-known` device-metadata discovery — the OAuth authorization-server
@@ -2805,7 +2805,7 @@ export function buildPlugins() {
 
 /**
  * The session `origin` marker value for an `atlas login` (device-flow)
- * credential (#4043 / ADR-0025). Load-bearing on a security path: the
+ * credential (#4043 / ADR-0026). Load-bearing on a security path: the
  * `session.create.before` hook WRITES it and `buildCustomSessionPayload`
  * READS it to gate the org-role-only downgrade. Sharing one `as const` so a
  * typo in either site can't silently drift them apart (which would leave a
@@ -2839,7 +2839,7 @@ export async function buildCustomSessionPayload({
     typeof session.activeOrganizationId === "string"
       ? session.activeOrganizationId
       : undefined;
-  // #4043 / ADR-0025 §2 — the atlas-login device flow stamps `origin='cli'`
+  // #4043 / ADR-0026 §2 — the atlas-login device flow stamps `origin='cli'`
   // onto its session (the `session.create.before` hook). A cli credential is a
   // portable file-stored bearer, so its authority is the ORG (member) role for
   // the bound workspace ONLY: withhold the user-level role so a `platform_admin`
@@ -2866,7 +2866,7 @@ export async function buildCustomSessionPayload({
  * base. `internalAdapter.createSession` is invoked from inside this endpoint's
  * handler when a device is approved, so the `session.create.before` hook sees
  * this as `ctx.path` — the signal that the new session is an atlas-login (cli)
- * credential rather than a normal web login. (#4043 / ADR-0025.)
+ * credential rather than a normal web login. (#4043 / ADR-0026.)
  *
  * Exported so `device-authorization-plugin.test.ts` can pin it against the
  * better-auth plugin's actual token-endpoint path — a future rename then
@@ -3302,12 +3302,12 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
       expiresIn: 60 * 60 * 24 * 7,
       updateAge: 60 * 60 * 24,
       cookieCache: { enabled: true, maxAge: resolveSessionCookieCacheMaxAge(deps.env) },
-      // #4043 / ADR-0025 — `origin` marks which agent origin minted the
+      // #4043 / ADR-0026 — `origin` marks which agent origin minted the
       // session. NULL for normal web/login sessions; stamped `'cli'` by the
       // `session.create.before` hook for the atlas-login device flow so
       // managed-auth role resolution (`buildCustomSessionPayload`) treats it as
       // org-role-only. `input: false` — a client can never self-assign it on a
-      // signup/sign-in payload. Backed by migration 0157 (session.origin column,
+      // signup/sign-in payload. Backed by migration 0158 (session.origin column,
       // a MANAGED_AUTH_MIGRATION).
       additionalFields: {
         origin: { type: "string", required: false, input: false },
@@ -3371,7 +3371,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
             // failure fails open (the per-request check in managed.ts backstops).
             await enforceBanOnSessionCreate(session.userId);
 
-            // #4043 / ADR-0025 — mark device-flow (atlas-login) sessions
+            // #4043 / ADR-0026 — mark device-flow (atlas-login) sessions
             // `origin='cli'` so managed-auth role resolution downgrades them to
             // org-role-only. Detected from the endpoint the createSession fired
             // under (the device/token poll). Composed with the active-org
@@ -3384,7 +3384,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
             // hook so Better Auth writes the activeOrganizationId directly
             // into the session row (no post-hoc UPDATE needed). Multi-org cli
             // logins get NO active org here — the minimal atlas command surfaces
-            // the clear workspace-selection handoff (ADR-0025 §6).
+            // the clear workspace-selection handoff (ADR-0026 §6).
             let resolvedActiveOrgId: string | undefined;
             try {
               if (!session.activeOrganizationId && hasInternalDB()) {

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { deviceErrorMessage } from "./device-error";
 
-describe("deviceErrorMessage (#4043 / ADR-0025)", () => {
+describe("deviceErrorMessage (#4043 / ADR-0026)", () => {
   it("prefers error_description (the RFC 8628 human-facing field)", () => {
     expect(
       deviceErrorMessage({ error: "access_denied", error_description: "You denied the request." }),

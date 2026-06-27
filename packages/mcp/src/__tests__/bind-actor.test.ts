@@ -91,7 +91,7 @@ describe("resolveMcpActorRole — trust-boundary fork (#3603, ADR-0016)", () => 
     expect(resolveCalls[0].userRole).toBe("owner");
   });
 
-  // #4043 / ADR-0025 — the cli (atlas-login device-flow) arm resolves the ORG
+  // #4043 / ADR-0026 — the cli (atlas-login device-flow) arm resolves the ORG
   // role only, exactly like hosted: a portable file-stored bearer must never
   // carry cross-tenant `platform_admin`, regardless of deploy mode.
   it("cli arm withholds the user-level role (org role only — never platform_admin)", async () => {

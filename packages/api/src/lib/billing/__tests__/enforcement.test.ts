@@ -23,6 +23,11 @@ let mockUsage: {
   tokenCount: number;
   /** When set, the budget denominator (#3989); otherwise mirrors `tokenCount`. */
   weightedTokenCount?: number;
+  /**
+   * At-cost provider spend (USD) for the period (#4036) — the dollar
+   * enforcement denominator (#4038). Defaults to 0 when a test omits it.
+   */
+  costUsd?: number;
   activeUsers: number;
   periodStart: string;
   periodEnd: string;
@@ -33,14 +38,6 @@ let mockWorkspaceDetailsShouldThrow = false;
  *  per-replica staleness-contract test. */
 let mockWorkspaceReadCount = 0;
 let mockUsageShouldThrow = false;
-/**
- * When true, the metering mock returns `mockUsage` VERBATIM (no auto-mirrored
- * `weightedTokenCount`), so enforcement sees the field genuinely absent — used
- * to exercise the `?? tokenCount` defensive fallback (#3989). Default false:
- * the legacy threshold cases drive the budget via `tokenCount` and rely on the
- * mirror so they don't each have to set `weightedTokenCount`.
- */
-let mockOmitWeighted = false;
 /** Rows returned by the `internalQuery` mock (chat-integration count query). */
 let mockInternalQueryResult: unknown[] = [];
 /** When true, the `internalQuery` mock throws (count-query failure path). */
@@ -95,16 +92,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 mock.module("@atlas/api/lib/metering", () => ({
   getCurrentPeriodUsage: async () => {
     if (mockUsageShouldThrow) throw new Error("metering error");
-    // Budget enforcement denominates in output-equivalent tokens (#3989). The
-    // threshold cases below set the budget-driving figure via `tokenCount`; the
-    // weighted denominator mirrors it unless a case sets `weightedTokenCount`
-    // explicitly (the spread is last, so it wins), so existing threshold
-    // assertions stay meaningful while the weighting wire-through is exercised.
-    // `mockOmitWeighted` returns the shape verbatim to exercise the absent-field
-    // fallback path.
-    if (mockOmitWeighted) return mockUsage;
+    // Dollar enforcement (#4038) denominates on `costUsd`; the band cases below
+    // drive it directly. `weightedTokenCount` mirrors `tokenCount` (retained for
+    // the token OverageMeter), and `costUsd` defaults to 0 when a case omits it.
     return {
       weightedTokenCount: mockUsage.tokenCount,
+      costUsd: 0,
       ...mockUsage,
     };
   },
@@ -157,8 +150,9 @@ let checkResourceLimit: typeof import("@atlas/api/lib/billing/enforcement").chec
 let invalidatePlanCache: typeof import("@atlas/api/lib/billing/enforcement").invalidatePlanCache;
 let buildMetricStatus: typeof import("@atlas/api/lib/billing/enforcement").buildMetricStatus;
 let computeOverageTokens: typeof import("@atlas/api/lib/billing/enforcement").computeOverageTokens;
-let computeOverageCost: typeof import("@atlas/api/lib/billing/enforcement").computeOverageCost;
+let computeOverageDollars: typeof import("@atlas/api/lib/billing/enforcement").computeOverageDollars;
 let resolveAbuseCeilingPercent: typeof import("@atlas/api/lib/billing/enforcement").resolveAbuseCeilingPercent;
+let resolveSpendPolicy: typeof import("@atlas/api/lib/billing/enforcement").resolveSpendPolicy;
 let _resetSettingsCache: typeof import("@atlas/api/lib/settings")._resetSettingsCache;
 
 beforeAll(async () => {
@@ -171,8 +165,9 @@ beforeAll(async () => {
     invalidatePlanCache,
     buildMetricStatus,
     computeOverageTokens,
-    computeOverageCost,
+    computeOverageDollars,
     resolveAbuseCeilingPercent,
+    resolveSpendPolicy,
   } = await import("@atlas/api/lib/billing/enforcement"));
   ({ _resetSettingsCache } = await import("@atlas/api/lib/settings"));
 });
@@ -300,8 +295,7 @@ describe("billing/enforcement", () => {
     mockHasInternalDB = true;
     mockWorkspaceDetailsShouldThrow = false;
     mockUsageShouldThrow = false;
-    mockOmitWeighted = false;
-    mockUsage = { queryCount: 0, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
     mockWorkspace = null;
     mockWorkspaceReadCount = 0;
     errorLogs = [];
@@ -405,151 +399,191 @@ describe("billing/enforcement", () => {
     expect(denied.errorCode).toBe("trial_expired");
   });
 
-  // ── Starter tier — OK (below 80%) ─────────────────────────────────
-  // Starter: 2M tokens/seat. With 1 seat = 2M budget.
+  // ── Dollar credit — OK (below 80%) ────────────────────────────────
+  // All paid tiers carry a $20/seat at-cost usage credit (#4034). 1 seat = $20.
 
   it("allows at 79% with no warning (boundary: just below warning)", async () => {
     mockWorkspace = makeWorkspace();
-    // 79% of 2,000,000 = 1,580,000
-    mockUsage = { queryCount: 0, tokenCount: 1_580_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // 79% of $20 = $15.80
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 15.8, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
     expect(result.warning).toBeUndefined();
   });
 
-  it("allows starter tier below 80% with no warning", async () => {
+  it("allows well below 80% with no warning", async () => {
     mockWorkspace = makeWorkspace();
-    mockUsage = { queryCount: 500, tokenCount: 500_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 5, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
     expect(result.warning).toBeUndefined();
   });
 
-  // ── Starter tier — Warning (80-99%) ───────────────────────────────
+  // ── Dollar credit — Warning (80-99%) ──────────────────────────────
 
-  it("returns warning at 80% token usage", async () => {
+  it("returns warning at 80% of the credit", async () => {
     mockWorkspace = makeWorkspace();
-    // 80% of 2,000,000 = 1,600,000
-    mockUsage = { queryCount: 0, tokenCount: 1_600_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // 80% of $20 = $16
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 16, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
     expect(result.warning).toBeDefined();
     expect(result.warning!.code).toBe("plan_limit_warning");
     expect(result.warning!.message).toContain("approaching");
-    const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
-    expect(tokenMetric).toBeDefined();
-    expect(tokenMetric!.status).toBe("warning");
-    expect(tokenMetric!.usagePercent).toBe(80);
+    const metric = result.warning!.metrics.find((m) => m.metric === "usd");
+    expect(metric).toBeDefined();
+    expect(metric!.status).toBe("warning");
+    expect(metric!.usagePercent).toBe(80);
   });
 
-  it("returns warning at 95% token usage", async () => {
+  it("returns warning at 95% of the credit", async () => {
     mockWorkspace = makeWorkspace();
-    // 95% of 2,000,000 = 1,900,000
-    mockUsage = { queryCount: 0, tokenCount: 1_900_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // 95% of $20 = $19
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 19, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
     expect(result.warning).toBeDefined();
-    const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
-    expect(tokenMetric).toBeDefined();
-    expect(tokenMetric!.status).toBe("warning");
-    expect(tokenMetric!.usagePercent).toBe(95);
+    const metric = result.warning!.metrics.find((m) => m.metric === "usd");
+    expect(metric).toBeDefined();
+    expect(metric!.status).toBe("warning");
+    expect(metric!.usagePercent).toBe(95);
   });
 
-  // ── Starter tier — Metered overage (100% → AbuseCeiling) (#3990) ──
-  // The 110% hard block is gone: usage past 100% is METERED (served), not cut
-  // off, until the abuse ceiling (default 500%). Under Structure B (#4034) the
-  // synthetic per-token overage rate is zeroed on every paid tier, so the
-  // "$X.XX so far" cost suffix is NOT appended (it gates on rate > 0) — real
-  // at-cost overage is billed via the at-cost meter (#4038/#4039), not this
-  // display suffix. These tests still pin the metered-BAND classification.
+  // ── Dollar credit — Metered overage (100% → ceiling), continue policy ──
+  // Default spend policy is `continue`: at-cost usage past the $20 credit is
+  // METERED (served at provider cost), not cut off, until the abuse ceiling
+  // (default 500% = $100). Structure B bills the overage at provider cost, so
+  // the real "$X.XX so far" excess is now surfaced (no synthetic rate).
 
-  it("meters (does not block) at exactly 100% token usage", async () => {
+  it("meters (does not block) at exactly 100% of the credit", async () => {
     mockWorkspace = makeWorkspace();
-    mockUsage = { queryCount: 0, tokenCount: 2_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 20, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
     expect(result.warning).toBeDefined();
-    expect(result.warning!.message).toContain("exceeded");
-    const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
-    expect(tokenMetric!.status).toBe("metered");
-    expect(tokenMetric!.usagePercent).toBe(100);
-    // Structure B: no synthetic "$X.XX so far" cost suffix (rate is 0).
-    expect(result.warning!.message).not.toContain("$");
+    expect(result.warning!.message).toContain("included usage credit");
+    const metric = result.warning!.metrics.find((m) => m.metric === "usd");
+    expect(metric!.status).toBe("metered");
+    expect(metric!.usagePercent).toBe(100);
+    // Exactly at the credit → $0 overage → no "so far" suffix.
+    expect(result.warning!.message).not.toContain("so far");
   });
 
-  it("meters at 105% without a synthetic overage cost suffix (Structure B, #4034)", async () => {
+  it("meters at 105% and surfaces the real at-cost overage so far", async () => {
     mockWorkspace = makeWorkspace();
-    // 105% of 2,000,000 = 2,100,000 → 100,000 tokens of overage (metered band),
-    // but the zeroed rate means no "$X.XX so far" suffix.
-    mockUsage = { queryCount: 0, tokenCount: 2_100_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // 105% of $20 = $21 → $1.00 of at-cost overage (metered band).
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 21, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
-    expect(result.warning).toBeDefined();
-    const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
-    expect(tokenMetric!.status).toBe("metered");
-    expect(result.warning!.message).not.toContain("$");
+    const metric = result.warning!.metrics.find((m) => m.metric === "usd");
+    expect(metric!.status).toBe("metered");
+    expect(result.warning!.message).toContain("$1.00 so far");
   });
 
-  it("meters at 150% (well past the old 110% block) without cutting off", async () => {
+  it("meters at 150% without cutting off (continue policy)", async () => {
     mockWorkspace = makeWorkspace();
-    // 150% of 2,000,000 = 3,000,000 → 1,000,000 overage tokens (metered band).
-    mockUsage = { queryCount: 0, tokenCount: 3_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // 150% of $20 = $30 → $10.00 of at-cost overage (metered band).
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 30, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
-    const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
-    expect(tokenMetric!.status).toBe("metered");
-    expect(result.warning!.message).not.toContain("$");
+    const metric = result.warning!.metrics.find((m) => m.metric === "usd");
+    expect(metric!.status).toBe("metered");
+    expect(result.warning!.message).toContain("$10.00 so far");
   });
 
-  it("meters at 109% (the old grace-buffer top) instead of blocking", async () => {
+  // ── Dollar credit — Abuse ceiling cutoff (≥ ceiling), continue policy ──
+  // Under `continue` the hard 429 fires ONLY at the abuse ceiling (default
+  // 500% = $100), not at the credit.
+
+  it("does NOT block at 110% of the credit (continue)", async () => {
     mockWorkspace = makeWorkspace();
-    // 109% of 2,000,000 = 2,180,000.
-    mockUsage = { queryCount: 0, tokenCount: 2_180_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 22, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
-    const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
-    expect(tokenMetric!.status).toBe("metered");
+    const metric = result.warning!.metrics.find((m) => m.metric === "usd");
+    expect(metric!.status).toBe("metered");
   });
 
-  // ── Starter tier — Abuse ceiling cutoff (≥ AbuseCeiling) (#3990) ──
-  // The hard 429 fires ONLY at the abuse ceiling (default 500% of budget),
-  // not at the old 110%.
-
-  it("does NOT block at 110% (the old hard-limit threshold)", async () => {
+  it("blocks at the abuse ceiling (500% = $100) with 429", async () => {
     mockWorkspace = makeWorkspace();
-    mockUsage = { queryCount: 0, tokenCount: 2_200_000, activeUsers: 0, periodStart: "", periodEnd: "" };
-    const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
-    const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
-    expect(tokenMetric!.status).toBe("metered");
-  });
-
-  it("blocks at the abuse ceiling (500% = 10,000,000 tokens) with 429", async () => {
-    mockWorkspace = makeWorkspace();
-    // 500% of 2,000,000 = 10,000,000 → at the default ceiling → cutoff.
-    mockUsage = { queryCount: 0, tokenCount: 10_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // 500% of $20 = $100 → at the default ceiling → cutoff.
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 100, activeUsers: 0, periodStart: "", periodEnd: "" };
     const exceeded = expectLimitExceeded(await checkPlanLimits("org-1", SEATS));
     expect(exceeded.httpStatus).toBe(429);
     expect(exceeded.errorMessage).toContain("ceiling");
-    expect(exceeded.usage.currentUsage).toBe(10_000_000);
-    expect(exceeded.usage.limit).toBe(2_000_000);
-    expect(exceeded.usage.metric).toBe("tokens");
+    expect(exceeded.usage.currentUsage).toBe(100);
+    expect(exceeded.usage.limit).toBe(20);
+    expect(exceeded.usage.metric).toBe("usd");
   });
 
-  it("blocks above the abuse ceiling (600%) with 429", async () => {
+  it("blocks above the abuse ceiling (600% = $120) with 429", async () => {
     mockWorkspace = makeWorkspace();
-    // 600% of 2,000,000 = 12,000,000 → above ceiling → cutoff.
-    mockUsage = { queryCount: 0, tokenCount: 12_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 120, activeUsers: 0, periodStart: "", periodEnd: "" };
     const exceeded = expectLimitExceeded(await checkPlanLimits("org-1", SEATS));
     expect(exceeded.httpStatus).toBe(429);
   });
 
-  it("just under the abuse ceiling (499%) still meters, not blocks", async () => {
+  it("just under the abuse ceiling (499% = $99.80) still meters, not blocks", async () => {
     mockWorkspace = makeWorkspace();
-    // 499% of 2,000,000 = 9,980,000 → just under ceiling → metered.
-    mockUsage = { queryCount: 0, tokenCount: 9_980_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 99.8, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
-    const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
-    expect(tokenMetric!.status).toBe("metered");
+    const metric = result.warning!.metrics.find((m) => m.metric === "usd");
+    expect(metric!.status).toBe("metered");
   });
 
-  // ── Configurable ceiling end-to-end through checkPlanLimits (#3990) ──
-  // The above cases ride the registry default (500). These drive a NON-default
-  // ceiling and the disabled ceiling all the way through enforcement by setting
-  // ATLAS_ABUSE_CEILING in env (the settings module reads it through the mocked
-  // internalQuery → no override → env), with set/restore + cache reset so they
-  // stay self-contained.
+  // ── Spend policy: cutoff (#4038) ──────────────────────────────────
+  // `cutoff` clamps the effective ceiling to 100% of the credit, so any overage
+  // past the included credit instantly hard-blocks. Driven end-to-end via
+  // ATLAS_SPEND_POLICY in env (settings reads it through the mocked internalQuery
+  // → no override → env), with set/restore + cache reset so they stay isolated.
+  async function withSpendPolicyE2E<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+    const prev = process.env.ATLAS_SPEND_POLICY;
+    if (value === undefined) delete process.env.ATLAS_SPEND_POLICY;
+    else process.env.ATLAS_SPEND_POLICY = value;
+    _resetSettingsCache();
+    invalidatePlanCache();
+    try {
+      return await fn();
+    } finally {
+      if (prev === undefined) delete process.env.ATLAS_SPEND_POLICY;
+      else process.env.ATLAS_SPEND_POLICY = prev;
+      _resetSettingsCache();
+    }
+  }
+
+  it("cutoff hard-blocks at exactly 100% of the credit (429)", async () => {
+    mockWorkspace = makeWorkspace({ id: "org-cutoff" });
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 20, activeUsers: 0, periodStart: "", periodEnd: "" };
+    await withSpendPolicyE2E("cutoff", async () => {
+      const exceeded = expectLimitExceeded(await checkPlanLimits("org-cutoff", SEATS));
+      expect(exceeded.httpStatus).toBe(429);
+      expect(exceeded.errorMessage).toContain("spend policy");
+      expect(exceeded.usage.metric).toBe("usd");
+    });
+  });
+
+  it("cutoff still warns (does not block) at 99% of the credit", async () => {
+    mockWorkspace = makeWorkspace({ id: "org-cutoff-2" });
+    // 99% of $20 = $19.80 — under the credit, so warning (not yet cut off).
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 19.8, activeUsers: 0, periodStart: "", periodEnd: "" };
+    await withSpendPolicyE2E("cutoff", async () => {
+      const result = expectAllowed(await checkPlanLimits("org-cutoff-2", SEATS));
+      const metric = result.warning!.metrics.find((m) => m.metric === "usd");
+      expect(metric!.status).toBe("warning");
+    });
+  });
+
+  it("cutoff blocks the same overage that `continue` meters ($30 = 150%)", async () => {
+    mockWorkspace = makeWorkspace({ id: "org-cutoff-3" });
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 30, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // continue: metered (served)…
+    await withSpendPolicyE2E("continue", async () => {
+      const result = expectAllowed(await checkPlanLimits("org-cutoff-3", SEATS));
+      expect(result.warning!.metrics.find((m) => m.metric === "usd")!.status).toBe("metered");
+    });
+    // …cutoff: the SAME usage hard-blocks.
+    await withSpendPolicyE2E("cutoff", async () => {
+      const exceeded = expectLimitExceeded(await checkPlanLimits("org-cutoff-3", SEATS));
+      expect(exceeded.httpStatus).toBe(429);
+    });
+  });
+
+  // ── Configurable abuse ceiling end-to-end (continue policy) (#3990) ──
+  // The above ride the registry default (500). These drive a NON-default ceiling
+  // and the disabled ceiling all the way through enforcement by setting
+  // ATLAS_ABUSE_CEILING in env (the continue policy honours it).
   async function withCeilingEnvE2E<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
     const prev = process.env.ATLAS_ABUSE_CEILING;
     if (value === undefined) delete process.env.ATLAS_ABUSE_CEILING;
@@ -567,9 +601,9 @@ describe("billing/enforcement", () => {
 
   it("blocks at a custom (lower) ceiling set via ATLAS_ABUSE_CEILING", async () => {
     mockWorkspace = makeWorkspace({ id: "org-custom-ceiling" });
-    // Custom ceiling 200%. 200% of 2M = 4M → at the custom ceiling → cutoff,
-    // even though it's far under the default 500% (10M).
-    mockUsage = { queryCount: 0, tokenCount: 4_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // Custom ceiling 200% = $40 → at the custom ceiling → cutoff, even though
+    // it's far under the default 500% ($100).
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 40, activeUsers: 0, periodStart: "", periodEnd: "" };
     await withCeilingEnvE2E("200", async () => {
       const exceeded = expectLimitExceeded(await checkPlanLimits("org-custom-ceiling", SEATS));
       expect(exceeded.httpStatus).toBe(429);
@@ -578,171 +612,114 @@ describe("billing/enforcement", () => {
 
   it("meters just under a custom ceiling set via ATLAS_ABUSE_CEILING", async () => {
     mockWorkspace = makeWorkspace({ id: "org-custom-ceiling-2" });
-    // Custom ceiling 200%. 150% (3M) is under it → metered, not blocked.
-    mockUsage = { queryCount: 0, tokenCount: 3_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // Custom ceiling 200%. 150% ($30) is under it → metered, not blocked.
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 30, activeUsers: 0, periodStart: "", periodEnd: "" };
     await withCeilingEnvE2E("200", async () => {
       const result = expectAllowed(await checkPlanLimits("org-custom-ceiling-2", SEATS));
-      const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
-      expect(tokenMetric!.status).toBe("metered");
+      expect(result.warning!.metrics.find((m) => m.metric === "usd")!.status).toBe("metered");
     });
   });
 
   it("never blocks at extreme usage when the ceiling is disabled (0) — pure metering", async () => {
     mockWorkspace = makeWorkspace({ id: "org-disabled-ceiling" });
-    // 2000% of budget (40M) with the ceiling disabled → still metered, never a
-    // 429. Proves the disabled-ceiling pure-metering path end-to-end.
-    mockUsage = { queryCount: 0, tokenCount: 40_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // 2000% of credit ($400) with the ceiling disabled → still metered, never 429.
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 400, activeUsers: 0, periodStart: "", periodEnd: "" };
     await withCeilingEnvE2E("0", async () => {
       const result = expectAllowed(await checkPlanLimits("org-disabled-ceiling", SEATS));
-      const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
-      expect(tokenMetric!.status).toBe("metered");
+      expect(result.warning!.metrics.find((m) => m.metric === "usd")!.status).toBe("metered");
     });
   });
 
-  // ── Output-equivalent (model-weighted) denomination (#3989) ───────
-  // The budget is denominated in OUTPUT-EQUIVALENT tokens, not raw. These
-  // cases pin that the decision keys off `weightedTokenCount`, NOT
-  // `tokenCount` — so reverting enforcement.ts back to `usage.tokenCount`
-  // would flip every assertion here. Starter budget = 2M (1 seat).
+  // ── Denominates on costUsd, NOT tokens (#4038) ────────────────────
+  // The decision keys off `usage.costUsd`, not token counts — reverting
+  // enforcement.ts to a token denominator would flip both of these.
 
-  it("blocks when WEIGHTED usage reaches the abuse ceiling even though RAW usage is under budget", async () => {
-    mockWorkspace = makeWorkspace(); // starter: 2M/seat, ceiling 500% = 10M
-    // Raw usage 1.5M (75%, well under budget) but a pricier model weighted it
-    // up to 10M (500%, at the abuse ceiling). Enforcement must block on the
-    // weighted figure — if it read raw, this would be allowed with no warning.
-    mockUsage = {
-      queryCount: 0,
-      tokenCount: 1_500_000,
-      weightedTokenCount: 10_000_000,
-      activeUsers: 0,
-      periodStart: "",
-      periodEnd: "",
-    };
+  it("blocks on costUsd reaching the ceiling even though token usage is trivial", async () => {
+    mockWorkspace = makeWorkspace();
+    // Tiny token count but $100 of at-cost spend (500% of credit) → hard block.
+    mockUsage = { queryCount: 0, tokenCount: 1_000, costUsd: 100, activeUsers: 0, periodStart: "", periodEnd: "" };
     const exceeded = expectLimitExceeded(await checkPlanLimits("org-1", SEATS));
     expect(exceeded.httpStatus).toBe(429);
-    // The reported usage is the WEIGHTED count, not the raw 1.5M.
-    expect(exceeded.usage.currentUsage).toBe(10_000_000);
-    expect(exceeded.usage.limit).toBe(2_000_000);
+    expect(exceeded.usage.currentUsage).toBe(100);
+    expect(exceeded.usage.limit).toBe(20);
   });
 
-  it("meters on WEIGHTED usage in the 100%→ceiling band even though RAW usage is under budget", async () => {
-    mockWorkspace = makeWorkspace(); // starter: 2M/seat
-    // Raw 1.5M (75%) but weighted up to 2.3M (115%) — over budget but well
-    // under the 500% ceiling, so metered (served + billed), not blocked.
-    mockUsage = {
-      queryCount: 0,
-      tokenCount: 1_500_000,
-      weightedTokenCount: 2_300_000,
-      activeUsers: 0,
-      periodStart: "",
-      periodEnd: "",
-    };
-    const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
-    const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
-    expect(tokenMetric!.status).toBe("metered");
-    expect(tokenMetric!.currentUsage).toBe(2_300_000);
-  });
-
-  it("allows when WEIGHTED usage is under budget even though RAW usage is over the old hard limit", async () => {
-    mockWorkspace = makeWorkspace(); // starter: 2M/seat
-    // Raw usage 2.4M (120%, would hard-block on raw under the OLD rule) but a
-    // cheap model (e.g. Haiku) weighted it down to 800k (40%). Enforcement must
-    // allow on the weighted figure with no warning — proving it does not read raw.
-    mockUsage = {
-      queryCount: 0,
-      tokenCount: 2_400_000,
-      weightedTokenCount: 800_000,
-      activeUsers: 0,
-      periodStart: "",
-      periodEnd: "",
-    };
+  it("allows when costUsd is under credit even though token usage is enormous", async () => {
+    mockWorkspace = makeWorkspace();
+    // 50M tokens but only $2 of at-cost spend (10% of credit) → allowed, no warning.
+    mockUsage = { queryCount: 0, tokenCount: 50_000_000, costUsd: 2, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
     expect(result.warning).toBeUndefined();
-  });
-
-  it("falls back to raw tokenCount when weightedTokenCount is absent (defensive)", async () => {
-    mockWorkspace = makeWorkspace();
-    // No `weightedTokenCount` on the usage shape (e.g. an older code path). The
-    // `?? tokenCount` fallback denominates on raw rather than treating usage as
-    // an unenforced zero. 10M raw = 500% = abuse ceiling → hard block.
-    mockOmitWeighted = true;
-    mockUsage = { queryCount: 0, tokenCount: 10_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
-    const exceeded = expectLimitExceeded(await checkPlanLimits("org-1", SEATS));
-    expect(exceeded.httpStatus).toBe(429);
-    expect(exceeded.usage.currentUsage).toBe(10_000_000);
   });
 
   // ── Per-seat scaling ──────────────────────────────────────────────
 
-  it("scales token budget with seat count", async () => {
-    mockWorkspace = makeWorkspace(); // starter: 2M/seat
-    // 3 seats = 6M budget. 5M usage = 83% → warning
-    mockUsage = { queryCount: 0, tokenCount: 5_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+  it("scales the dollar credit with seat count", async () => {
+    mockWorkspace = makeWorkspace();
+    // 3 seats = $60 credit. $50 spend = 83% → warning.
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 50, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", 3));
     expect(result.warning).toBeDefined();
     expect(result.warning!.metrics[0].usagePercent).toBe(83);
+    expect(result.warning!.metrics[0].limit).toBe(60);
   });
 
-  it("more seats increases total budget", async () => {
-    mockWorkspace = makeWorkspace(); // starter: 2M/seat
-    // 5 seats = 10M budget. 2M usage = 20% → OK
-    mockUsage = { queryCount: 0, tokenCount: 2_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+  it("more seats increases the total credit", async () => {
+    mockWorkspace = makeWorkspace();
+    // 5 seats = $100 credit. $20 spend = 20% → OK.
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 20, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", 5));
     expect(result.warning).toBeUndefined();
   });
 
-  // ── Pro tier ──────────────────────────────────────────────────────
+  // ── Per-tier: every paid tier shares the same $20/seat credit ──────
 
-  it("pro tier has 5M token budget per seat", async () => {
+  it("pro tier enforces the $20/seat credit", async () => {
     mockWorkspace = makeWorkspace({ plan_tier: "pro" });
-    // 1 seat = 5M budget. 4.5M usage = 90% → warning
-    mockUsage = { queryCount: 0, tokenCount: 4_500_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // 1 seat = $20 credit. $18 = 90% → warning.
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 18, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", 1));
     expect(result.warning).toBeDefined();
     expect(result.warning!.metrics[0].usagePercent).toBe(90);
   });
 
-  // ── Business tier ─────────────────────────────────────────────────
-
-  it("business tier has 15M token budget per seat", async () => {
+  it("business tier enforces the $20/seat credit", async () => {
     mockWorkspace = makeWorkspace({ plan_tier: "business" });
-    // 1 seat = 15M budget. 12M usage = 80% → warning
-    mockUsage = { queryCount: 0, tokenCount: 12_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // 1 seat = $20 credit. $16 = 80% → warning.
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 16, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", 1));
     expect(result.warning).toBeDefined();
     expect(result.warning!.metrics[0].usagePercent).toBe(80);
   });
 
-  // ── Trial tier — usage limits ────────────────────────────────────
+  // ── Trial tier — usage limits ─────────────────────────────────────
 
-  it("meters trial tier in the 100%→ceiling band (no overage cost — trial rate is $0)", async () => {
+  it("meters trial tier in the 100%→ceiling band (continue policy)", async () => {
     const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     mockWorkspace = makeWorkspace({ plan_tier: "trial", trial_ends_at: futureDate, createdAt: new Date().toISOString() });
-    // Trial = starter limits (2M/seat). 110% of 2M = 2.2M — over budget but well
-    // under the 500% ceiling → metered. Trial overagePerMillionTokens is 0, so
-    // no "$X.XX so far" cost line is appended.
-    mockUsage = { queryCount: 0, tokenCount: 2_200_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // Trial = $20 credit. 110% = $22 — over credit but well under the 500%
+    // ceiling → metered, with the real at-cost overage ($2.00) surfaced.
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 22, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
-    const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
-    expect(tokenMetric!.status).toBe("metered");
-    expect(result.warning!.message).not.toContain("$");
+    const metric = result.warning!.metrics.find((m) => m.metric === "usd");
+    expect(metric!.status).toBe("metered");
+    expect(result.warning!.message).toContain("$2.00 so far");
   });
 
-  it("blocks trial tier at the abuse ceiling (500% = 10M) with 429", async () => {
+  it("blocks trial tier at the abuse ceiling (500% = $100) with 429", async () => {
     const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     mockWorkspace = makeWorkspace({ plan_tier: "trial", trial_ends_at: futureDate, createdAt: new Date().toISOString() });
-    // 500% of 2M = 10M → abuse ceiling cutoff.
-    mockUsage = { queryCount: 0, tokenCount: 10_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 100, activeUsers: 0, periodStart: "", periodEnd: "" };
     const denied = expectDenied(await checkPlanLimits("org-1", SEATS));
     expect(denied.errorCode).toBe("plan_limit_exceeded");
     expect(denied.httpStatus).toBe(429);
   });
 
-  it("warns trial tier at 85% usage", async () => {
+  it("warns trial tier at 85% of the credit", async () => {
     const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     mockWorkspace = makeWorkspace({ plan_tier: "trial", trial_ends_at: futureDate, createdAt: new Date().toISOString() });
-    // 85% of 2M = 1.7M
-    mockUsage = { queryCount: 0, tokenCount: 1_700_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // 85% of $20 = $17
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 17, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
     expect(result.warning).toBeDefined();
     expect(result.warning!.code).toBe("plan_limit_warning");
@@ -797,8 +774,8 @@ describe("billing/enforcement", () => {
 
   it("uses cached workspace on second call", async () => {
     mockWorkspace = makeWorkspace(); // starter tier
-    // 85% of 2M = 1,700,000
-    mockUsage = { queryCount: 0, tokenCount: 1_700_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    // 85% of $20 credit = $17 → warning
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 17, activeUsers: 0, periodStart: "", periodEnd: "" };
 
     // First call — populates cache with "starter" tier, 85% usage → warning
     const r1 = expectAllowed(await checkPlanLimits("org-1", SEATS));
@@ -885,57 +862,88 @@ describe("billing/enforcement", () => {
 // (pure-metering) case are exercised without going through the settings read.
 // ===========================================================================
 
-describe("buildMetricStatus — metered soft-cap classification (#3990)", () => {
-  const LIMIT = 2_000_000; // starter, 1 seat
+describe("buildMetricStatus — dollar metered soft-cap classification (#4038)", () => {
+  const CREDIT = 20; // $20/seat, 1 seat
 
   it("classifies under 80% as ok", () => {
-    expect(buildMetricStatus("tokens", 1_000_000, LIMIT, 500).status).toBe("ok");
+    expect(buildMetricStatus("usd", 10, CREDIT, 500).status).toBe("ok");
   });
 
   it("classifies 80-99% as warning", () => {
-    expect(buildMetricStatus("tokens", 1_700_000, LIMIT, 500).status).toBe("warning");
-    expect(buildMetricStatus("tokens", 1_980_000, LIMIT, 500).status).toBe("warning");
+    expect(buildMetricStatus("usd", 16, CREDIT, 500).status).toBe("warning"); // 80%
+    expect(buildMetricStatus("usd", 19.8, CREDIT, 500).status).toBe("warning"); // 99%
   });
 
-  it("classifies exactly 100% as metered", () => {
-    expect(buildMetricStatus("tokens", 2_000_000, LIMIT, 500).status).toBe("metered");
+  it("classifies exactly 100% (the credit) as metered", () => {
+    expect(buildMetricStatus("usd", 20, CREDIT, 500).status).toBe("metered");
   });
 
   it("classifies the 100%→ceiling band as metered (110%, 150%, 499%)", () => {
-    expect(buildMetricStatus("tokens", 2_200_000, LIMIT, 500).status).toBe("metered"); // 110%
-    expect(buildMetricStatus("tokens", 3_000_000, LIMIT, 500).status).toBe("metered"); // 150%
-    expect(buildMetricStatus("tokens", 9_980_000, LIMIT, 500).status).toBe("metered"); // 499%
+    expect(buildMetricStatus("usd", 22, CREDIT, 500).status).toBe("metered"); // 110%
+    expect(buildMetricStatus("usd", 30, CREDIT, 500).status).toBe("metered"); // 150%
+    expect(buildMetricStatus("usd", 99.8, CREDIT, 500).status).toBe("metered"); // 499%
   });
 
   it("classifies at/above the ceiling as hard_limit", () => {
-    expect(buildMetricStatus("tokens", 10_000_000, LIMIT, 500).status).toBe("hard_limit"); // 500%
-    expect(buildMetricStatus("tokens", 12_000_000, LIMIT, 500).status).toBe("hard_limit"); // 600%
+    expect(buildMetricStatus("usd", 100, CREDIT, 500).status).toBe("hard_limit"); // 500%
+    expect(buildMetricStatus("usd", 120, CREDIT, 500).status).toBe("hard_limit"); // 600%
   });
 
   it("honours a custom (lower) ceiling", () => {
     // Ceiling 200%: 150% meters, 200% cuts off.
-    expect(buildMetricStatus("tokens", 3_000_000, LIMIT, 200).status).toBe("metered"); // 150%
-    expect(buildMetricStatus("tokens", 4_000_000, LIMIT, 200).status).toBe("hard_limit"); // 200%
+    expect(buildMetricStatus("usd", 30, CREDIT, 200).status).toBe("metered"); // 150%
+    expect(buildMetricStatus("usd", 40, CREDIT, 200).status).toBe("hard_limit"); // 200%
+  });
+
+  it("clamps to the credit (100%) under the cutoff policy's ceiling", () => {
+    // The `cutoff` spend policy passes METERED_THRESHOLD (100) as the ceiling:
+    // any overage past the credit is hard_limit, exactly the credit cuts off.
+    expect(buildMetricStatus("usd", 19.8, CREDIT, 100).status).toBe("warning"); // 99%
+    expect(buildMetricStatus("usd", 20, CREDIT, 100).status).toBe("hard_limit"); // 100%
+    expect(buildMetricStatus("usd", 21, CREDIT, 100).status).toBe("hard_limit"); // 105%
   });
 
   it("never hard-limits when the ceiling is disabled (null) — pure metering", () => {
-    // Even at 1000% of budget, a disabled ceiling keeps the status metered.
-    expect(buildMetricStatus("tokens", 20_000_000, LIMIT, null).status).toBe("metered");
+    // Even at 2000% of credit, a disabled ceiling keeps the status metered.
+    expect(buildMetricStatus("usd", 400, CREDIT, null).status).toBe("metered");
   });
 
   it("defaults to the conservative ceiling when none is passed", () => {
     // Default param = 500%. 499% meters, 500% cuts off.
-    expect(buildMetricStatus("tokens", 9_980_000, LIMIT).status).toBe("metered");
-    expect(buildMetricStatus("tokens", 10_000_000, LIMIT).status).toBe("hard_limit");
+    expect(buildMetricStatus("usd", 99.8, CREDIT).status).toBe("metered");
+    expect(buildMetricStatus("usd", 100, CREDIT).status).toBe("hard_limit");
   });
 
-  it("treats an invalid (<=0) limit as hard_limit regardless of ceiling", () => {
-    expect(buildMetricStatus("tokens", 100, 0, 500).status).toBe("hard_limit");
-    expect(buildMetricStatus("tokens", 100, 0, null).status).toBe("hard_limit");
+  it("treats an invalid (<=0) credit as hard_limit regardless of ceiling", () => {
+    expect(buildMetricStatus("usd", 1, 0, 500).status).toBe("hard_limit");
+    expect(buildMetricStatus("usd", 1, 0, null).status).toBe("hard_limit");
   });
 });
 
-describe("computeOverageTokens / computeOverageCost (#3990)", () => {
+describe("computeOverageDollars (#4038)", () => {
+  it("reports zero overage at or under the credit", () => {
+    expect(computeOverageDollars(10, 20)).toBe(0);
+    expect(computeOverageDollars(20, 20)).toBe(0);
+  });
+
+  it("reports the at-cost excess over the credit (identity, no rate)", () => {
+    expect(computeOverageDollars(21, 20)).toBeCloseTo(1, 6);
+    expect(computeOverageDollars(30, 20)).toBeCloseTo(10, 6);
+    expect(computeOverageDollars(20.25, 20)).toBeCloseTo(0.25, 6);
+  });
+
+  it("is zero (never negative) when under the credit", () => {
+    expect(computeOverageDollars(5, 20)).toBe(0);
+  });
+
+  it("guards an invalid (<=0) credit — no overage from a misconfigured credit", () => {
+    expect(computeOverageDollars(10, 0)).toBe(0);
+  });
+});
+
+// computeOverageTokens survives for the token OverageMeter (#3992/#4039) even
+// though enforcement no longer uses it — keep it under test.
+describe("computeOverageTokens (token OverageMeter, #3990)", () => {
   it("reports zero overage at or under budget", () => {
     expect(computeOverageTokens(1_000_000, 2_000_000)).toBe(0);
     expect(computeOverageTokens(2_000_000, 2_000_000)).toBe(0);
@@ -946,24 +954,8 @@ describe("computeOverageTokens / computeOverageCost (#3990)", () => {
     expect(computeOverageTokens(3_000_000, 2_000_000)).toBe(1_000_000);
   });
 
-  it("computes cost as (overageTokens / 1M) * rate", () => {
-    // 100k overage at $1.00/M = $0.10
-    expect(computeOverageCost(2_100_000, 2_000_000, 1.0)).toBeCloseTo(0.1, 6);
-    // 1M overage at $1.00/M = $1.00
-    expect(computeOverageCost(3_000_000, 2_000_000, 1.0)).toBeCloseTo(1.0, 6);
-  });
-
-  it("is zero when the plan has no overage rate (e.g. trial)", () => {
-    expect(computeOverageCost(3_000_000, 2_000_000, 0)).toBe(0);
-  });
-
-  it("is zero (never negative) when under budget", () => {
-    expect(computeOverageCost(1_000_000, 2_000_000, 1.0)).toBe(0);
-  });
-
-  it("guards an invalid (<=0) limit — no overage from a misconfigured budget", () => {
+  it("guards an invalid (<=0) limit", () => {
     expect(computeOverageTokens(1_000_000, 0)).toBe(0);
-    expect(computeOverageCost(1_000_000, 0, 1.0)).toBe(0);
   });
 });
 
@@ -1014,6 +1006,49 @@ describe("resolveAbuseCeilingPercent — settings parsing (#3990)", () => {
   it("falls back to the default for a non-numeric value", async () => {
     const ceiling = await withCeilingEnv("not-a-number", () => resolveAbuseCeilingPercent("org-ceiling-garbage"));
     expect(ceiling).toBe(500);
+  });
+});
+
+describe("resolveSpendPolicy — settings parsing (#4038)", () => {
+  // Resolves through the REAL settings module (internalQuery mocked to no rows,
+  // so reads fall to env → registry default "continue"). Self-contained env
+  // set/restore + live-cache reset, no top-level mutation.
+  async function withPolicyEnv<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+    const prev = process.env.ATLAS_SPEND_POLICY;
+    if (value === undefined) delete process.env.ATLAS_SPEND_POLICY;
+    else process.env.ATLAS_SPEND_POLICY = value;
+    _resetSettingsCache();
+    try {
+      return await fn();
+    } finally {
+      if (prev === undefined) delete process.env.ATLAS_SPEND_POLICY;
+      else process.env.ATLAS_SPEND_POLICY = prev;
+      _resetSettingsCache();
+    }
+  }
+
+  it("defaults to 'continue' when unset (default-ON spend posture)", async () => {
+    const policy = await withPolicyEnv(undefined, () => resolveSpendPolicy("org-policy-default"));
+    expect(policy).toBe("continue");
+  });
+
+  it("honours an explicit 'cutoff'", async () => {
+    const policy = await withPolicyEnv("cutoff", () => resolveSpendPolicy("org-policy-cutoff"));
+    expect(policy).toBe("cutoff");
+  });
+
+  it("honours an explicit 'continue'", async () => {
+    const policy = await withPolicyEnv("continue", () => resolveSpendPolicy("org-policy-continue"));
+    expect(policy).toBe("continue");
+  });
+
+  it("is case/whitespace tolerant", async () => {
+    expect(await withPolicyEnv("  CUTOFF  ", () => resolveSpendPolicy("org-policy-case"))).toBe("cutoff");
+  });
+
+  it("falls back to 'continue' for an unrecognised value (never silent cutoff)", async () => {
+    const policy = await withPolicyEnv("stop-everything", () => resolveSpendPolicy("org-policy-garbage"));
+    expect(policy).toBe("continue");
   });
 });
 

@@ -401,13 +401,13 @@ describe("POST /api/v1/query", () => {
       errorMessage: "You have exceeded your plan's token budget.",
       httpStatus: 429,
       retryable: false,
-      usage: { currentUsage: 2_300_000, limit: 2_000_000, metric: "tokens" },
+      usage: { currentUsage: 23, limit: 20, metric: "usd" },
     };
     const response = await app.fetch(makeQueryRequest());
     expect(response.status).toBe(429);
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.error).toBe("plan_limit_exceeded");
-    expect(body.usage).toEqual({ currentUsage: 2_300_000, limit: 2_000_000, metric: "tokens" });
+    expect(body.usage).toEqual({ currentUsage: 23, limit: 20, metric: "usd" });
   });
 
   it("attaches the 80–109% planWarning to a successful response without blocking", async () => {

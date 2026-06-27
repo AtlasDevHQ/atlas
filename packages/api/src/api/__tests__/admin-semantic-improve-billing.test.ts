@@ -179,10 +179,10 @@ describe("POST /api/v1/admin/semantic-improve/chat — billing gate (#3437)", ()
     billingGateVerdict = {
       allowed: false,
       errorCode: "plan_limit_exceeded",
-      errorMessage: "You have exceeded your plan's token budget.",
+      errorMessage: "You have used your full included usage credit.",
       httpStatus: 429,
       retryable: false,
-      usage: { currentUsage: 2_300_000, limit: 2_000_000, metric: "tokens" },
+      usage: { currentUsage: 23, limit: 20, metric: "usd" },
     };
 
     const host = makeRouterHost();
@@ -191,7 +191,7 @@ describe("POST /api/v1/admin/semantic-improve/chat — billing gate (#3437)", ()
     expect(res.status).toBe(429);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBe("plan_limit_exceeded");
-    expect(body.usage).toEqual({ currentUsage: 2_300_000, limit: 2_000_000, metric: "tokens" });
+    expect(body.usage).toEqual({ currentUsage: 23, limit: 20, metric: "usd" });
     expect(mockRunAgent).not.toHaveBeenCalled();
   });
 

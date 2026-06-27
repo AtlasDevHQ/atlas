@@ -113,7 +113,7 @@ function tierVariant(tier: string): "default" | "secondary" | "outline" | "destr
 // member added in @useatlas/schemas surfaces here as a missing case rather
 // than silently falling through to the muted default. The dead "exceeded"
 // arm — never a member of OverageStatus — was removed in #3438.
-function overageColor(status: BillingStatus["usage"]["tokenOverageStatus"]): string {
+function overageColor(status: BillingStatus["usage"]["usageOverageStatus"]): string {
   switch (status) {
     case "hard_limit":
       return "text-destructive";
@@ -129,9 +129,9 @@ function overageColor(status: BillingStatus["usage"]["tokenOverageStatus"]): str
   }
 }
 
-/** Format an accrued overage cost as a "$X.XX" string. */
-function formatOverageCost(cost: number): string {
-  return `$${cost.toFixed(2)}`;
+/** Format a USD amount as a "$X.XX" string (usage spend, credit, overage). */
+function formatDollars(amount: number): string {
+  return `$${amount.toFixed(2)}`;
 }
 
 // Values are Vercel AI Gateway model IDs (slash+dot) — SaaS resolves
@@ -800,13 +800,13 @@ function UsageShell({ data }: { data: BillingStatus }) {
   return (
     <Shell
       icon={Coins}
-      title="Token usage"
+      title="Usage"
       description={
         plan.byot
           ? "Unlimited — using your own LLM API key"
-          : limits.totalTokenBudget === null
+          : limits.totalUsageDollars === null
           ? "Unlimited"
-          : `${formatNumber(usage.tokenCount)} of ${formatNumber(limits.totalTokenBudget)} tokens used`
+          : `${formatDollars(usage.costUsd)} of ${formatDollars(limits.totalUsageDollars)} credit used`
       }
       status={plan.byot ? "connected" : "disconnected"}
     >
@@ -815,45 +815,51 @@ function UsageShell({ data }: { data: BillingStatus }) {
           <Zap className="size-3.5" />
           <span>{formatNumber(usage.tokenCount)} tokens consumed this period</span>
         </div>
-      ) : limits.totalTokenBudget === null ? (
+      ) : limits.totalUsageDollars === null ? (
         <div className="rounded-lg border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
           {formatNumber(usage.tokenCount)} tokens consumed · no cap
         </div>
       ) : (
         <div className="space-y-1.5">
+          {/* #4038 — usage credit denominated in at-cost dollars ($/seat × seats),
+              the SAME gauge enforcement uses, so the bar can never diverge from
+              the 429 the workspace actually hits. */}
           <div className="flex items-baseline justify-between text-xs">
-            <span className="text-muted-foreground">Token budget</span>
+            <span className="text-muted-foreground">Usage credit</span>
             <span
               className={cn(
                 "font-mono font-medium tabular-nums",
-                overageColor(usage.tokenOverageStatus),
+                overageColor(usage.usageOverageStatus),
               )}
             >
-              {formatNumber(usage.tokenCount)}
+              {formatDollars(usage.costUsd)}
               <span className="opacity-50">{" / "}</span>
-              {formatNumber(limits.totalTokenBudget)}
+              {formatDollars(limits.totalUsageDollars)}
             </span>
           </div>
           <Progress
-            value={Math.min(usage.tokenUsagePercent, 100)}
+            value={Math.min(usage.usageDollarsPercent, 100)}
             className="h-1.5"
           />
-          {/* #3990 — metered overage surface. When the workspace is over its
-              included budget (metered) or at the abuse ceiling (hard_limit),
-              show the accrued billable overage so "in overage, $X.XX so far"
-              is visible. `overageCost` is server-computed from the same
-              weighted usage enforcement meters; absent on older bundles ⇒ 0. */}
-          {(usage.tokenOverageStatus === "metered" ||
-            usage.tokenOverageStatus === "hard_limit") &&
+          {/* #4038 — at-cost overage surface. When the workspace is over its
+              included credit (metered) or at the spend cutoff (hard_limit), show
+              the accrued at-cost overage so "in overage, $X.XX so far" is
+              visible. `overageCost` is server-computed from the same costUsd
+              enforcement meters; absent on older bundles ⇒ 0. */}
+          {(usage.usageOverageStatus === "metered" ||
+            usage.usageOverageStatus === "hard_limit") &&
             (usage.overageCost ?? 0) > 0 && (
               <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
-                In overage: {formatOverageCost(usage.overageCost ?? 0)} so far this period
+                In overage: {formatDollars(usage.overageCost ?? 0)} so far this period
               </p>
             )}
-          {limits.tokenBudgetPerSeat !== null && (
+          {plan.includedUsageDollarsPerSeat != null && (
             <p className="text-[11px] text-muted-foreground">
-              {formatNumber(limits.tokenBudgetPerSeat)} tokens/seat ×{" "}
+              {formatDollars(plan.includedUsageDollarsPerSeat)}/seat ×{" "}
               {seats.count} {seats.count === 1 ? "seat" : "seats"}
+              <span className="opacity-60">
+                {" "}· {formatNumber(usage.tokenCount)} tokens consumed
+              </span>
             </p>
           )}
         </div>

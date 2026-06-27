@@ -5,17 +5,17 @@
 /**
  * Overage status levels for a workspace's usage against its plan limits.
  *
- * Metered soft-cap progression (#3990):
- * - `ok` (0–79%): within budget, no signal.
- * - `warning` (80–99%): approaching the included budget.
- * - `metered` (100% → `AbuseCeiling`): over the included budget but still
- *   served — every token past 100% accrues billable overage at the plan's
- *   `overagePerMillionTokens` rate. The billing page surfaces the accrued
- *   "in overage, $X.XX so far" figure. This REPLACES the old 110% hard block:
- *   a paying workspace is metered, not cut off, for ordinary overage.
- * - `hard_limit` (≥ `AbuseCeiling`): the abuse ceiling, NOT the budget limit.
- *   A configurable, conservative multiple of the budget that bounds runaway /
- *   abusive spend; the request is cut off with a 429 here and only here.
+ * Metered soft-cap progression, denominated in dollars (#3990, #4038):
+ * - `ok` (0–79%): within the included usage credit, no signal.
+ * - `warning` (80–99%): approaching the included credit.
+ * - `metered` (100% → ceiling): over the included credit but still served —
+ *   every dollar past the credit accrues at provider cost (zero markup). The
+ *   billing page surfaces the accrued "in overage, $X.XX so far" figure. A
+ *   paying workspace is metered, not cut off, for ordinary overage.
+ * - `hard_limit` (≥ ceiling): the cutoff. Under the `continue` spend policy the
+ *   ceiling is the abuse ceiling (a conservative multiple of the credit) that
+ *   bounds runaway spend; under `cutoff` it clamps to the credit (100%). The
+ *   request is cut off with a 429 here and only here.
  *
  * `soft_limit` is retained in the union for wire/back-compat (older API or web
  * bundles may still emit or parse it) but the current classifier never returns
@@ -29,19 +29,22 @@ export type OverageStatus =
   | "hard_limit";
 
 /**
- * Usage status for a single metered dimension (queries or tokens).
+ * Usage status for the metered usage dimension, denominated in dollars (#4038).
  *
- * Included in billing API responses and enforcement headers so clients
+ * Included in billing API responses and enforcement warnings so clients
  * can display usage bars, warnings, and upgrade CTAs.
  */
 export interface PlanLimitStatus {
-  /** Which metric this status applies to. */
-  metric: "tokens";
-  /** Current usage count for the billing period. */
+  /**
+   * Which metric this status applies to. `usd` — the at-cost usage spend
+   * measured against the included dollar credit (Structure B, #4038).
+   */
+  metric: "usd";
+  /** Current usage for the billing period, in USD (summed at-cost provider spend). */
   currentUsage: number;
-  /** Plan limit for the billing period. -1 = unlimited. */
+  /** Included usage credit for the billing period, in USD (`$/seat × seats`). */
   limit: number;
-  /** Usage as a percentage of the limit. 0 = no usage, 100 = at limit. No upper bound. */
+  /** Usage as a percentage of the credit. 0 = no usage, 100 = at the credit. No upper bound. */
   usagePercent: number;
   /** Overage status level. */
   status: OverageStatus;

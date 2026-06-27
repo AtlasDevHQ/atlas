@@ -191,6 +191,17 @@ function lastAuditCall(): AuditEntry {
 
 beforeEach(() => {
   mocks.hasInternalDB = true;
+  // The per-tier SSO entitlement gate (WS1 #3986) resolves the workspace's
+  // plan_tier before the audit-emitting handler runs. SSO gates to Business,
+  // so the test workspace must read back as `business` or every route 403s.
+  mocks.mockInternalQuery.mockReset();
+  mocks.mockInternalQuery.mockImplementation(async (sql: string) =>
+    /plan_tier[\s\S]*is_operator_workspace|is_operator_workspace[\s\S]*plan_tier/.test(
+      sql,
+    )
+      ? [{ plan_tier: "business", is_operator_workspace: false }]
+      : [],
+  );
   mockLogAdminAction.mockClear();
   mockVerifyDomain.mockClear();
   mockVerifyDomain.mockImplementation(() =>

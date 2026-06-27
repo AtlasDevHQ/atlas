@@ -14,6 +14,7 @@ import {
   SSOPolicy,
 } from "@atlas/api/lib/effect/services";
 import { SSOError, SSOEnforcementError } from "@atlas/api/lib/auth/auth-errors";
+import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import type {
   CreateSSOProviderRequest,
   UpdateSSOProviderRequest,
@@ -627,6 +628,7 @@ adminSso.use(requireOrgContext());
 adminSso.openapi(listProvidersRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "sso");
     const sso = yield* SSOPolicy;
 
     const providers = yield* sso.listSSOProviders(orgId!);
@@ -638,6 +640,7 @@ adminSso.openapi(listProvidersRoute, async (c) => {
 adminSso.openapi(getProviderRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "sso");
     const sso = yield* SSOPolicy;
     const { id: providerId } = c.req.valid("param");
 
@@ -657,6 +660,7 @@ adminSso.openapi(getProviderRoute, async (c) => {
 adminSso.openapi(createProviderRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "sso");
     const body = c.req.valid("json");
 
     // Structural check only — business validation is in createSSOProvider
@@ -683,6 +687,7 @@ adminSso.openapi(createProviderRoute, async (c) => {
 adminSso.openapi(updateProviderRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "sso");
     const { id: providerId } = c.req.valid("param");
 
     if (!isValidId(providerId)) {
@@ -710,6 +715,7 @@ adminSso.openapi(updateProviderRoute, async (c) => {
 adminSso.openapi(deleteProviderRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "sso");
     const { id: providerId } = c.req.valid("param");
 
     if (!isValidId(providerId)) {
@@ -736,6 +742,7 @@ adminSso.openapi(deleteProviderRoute, async (c) => {
 adminSso.openapi(testProviderRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "sso");
     const { id: providerId } = c.req.valid("param");
 
     if (!isValidId(providerId)) {
@@ -760,6 +767,7 @@ adminSso.openapi(testProviderRoute, async (c) => {
 adminSso.openapi(getEnforcementRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "sso");
 
     const result = yield* (yield* SSOPolicy).isSSOEnforced(orgId!);
     return c.json({ enforced: result?.enforced ?? false, orgId: orgId! }, 200);
@@ -770,6 +778,7 @@ adminSso.openapi(getEnforcementRoute, async (c) => {
 adminSso.openapi(setEnforcementRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "sso");
     const { enforced } = c.req.valid("json");
 
     const result = yield* (yield* SSOPolicy).setSSOEnforcement(orgId!, enforced);
@@ -794,6 +803,7 @@ adminSso.openapi(setEnforcementRoute, async (c) => {
 adminSso.openapi(verifyDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "sso");
     const { id: providerId } = c.req.valid("param");
 
     if (!isValidId(providerId)) {
@@ -827,6 +837,7 @@ adminSso.openapi(verifyDomainRoute, async (c) => {
 adminSso.openapi(domainCheckRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "sso");
     const { domain } = c.req.valid("query");
 
     if (!domain) {

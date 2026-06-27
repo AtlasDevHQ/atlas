@@ -61,12 +61,12 @@ import {
   isPlanEligible,
   parsePlanTier,
 } from "@atlas/api/lib/integrations/install/plan-rank";
+import { getWorkspaceEntitlement } from "@atlas/api/lib/integrations/install/workspace-entitlement";
 import { adminAuthPreamble } from "./admin-auth";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { PLAN_TIERS } from "@useatlas/types";
 import type {
-  PlanTier,
   PlanUpgradeRequiredBody,
   WorkspaceId,
 } from "@useatlas/types";
@@ -244,28 +244,6 @@ async function loadDiscordCatalogRow(): Promise<CatalogRow | null> {
   );
   if (rows.length === 0) return null;
   return rows[0];
-}
-
-async function getWorkspaceEntitlement(orgId: string): Promise<{
-  planTier: PlanTier | null;
-  isOperator: boolean;
-}> {
-  if (orgId === "self-hosted") return { planTier: null, isOperator: false };
-  const rows = await internalQuery<{
-    plan_tier: string | null;
-    is_operator_workspace: boolean | null;
-  }>(
-    `SELECT plan_tier, is_operator_workspace
-       FROM organization
-      WHERE id = $1
-      LIMIT 1`,
-    [orgId],
-  );
-  if (rows.length === 0) return { planTier: null, isOperator: false };
-  return {
-    planTier: parsePlanTier(rows[0]?.plan_tier),
-    isOperator: rows[0]?.is_operator_workspace === true,
-  };
 }
 
 function prefersHtml(req: Request): boolean {

@@ -452,9 +452,12 @@ describe("billing/enforcement", () => {
   });
 
   // ── Starter tier — Metered overage (100% → AbuseCeiling) (#3990) ──
-  // The 110% hard block is gone: usage past 100% is METERED (served, billed),
-  // not cut off, until the abuse ceiling (default 500%). Starter overage rate
-  // is $1.00 / 1M output-equivalent tokens.
+  // The 110% hard block is gone: usage past 100% is METERED (served), not cut
+  // off, until the abuse ceiling (default 500%). Under Structure B (#4034) the
+  // synthetic per-token overage rate is zeroed on every paid tier, so the
+  // "$X.XX so far" cost suffix is NOT appended (it gates on rate > 0) — real
+  // at-cost overage is billed via the at-cost meter (#4038/#4039), not this
+  // display suffix. These tests still pin the metered-BAND classification.
 
   it("meters (does not block) at exactly 100% token usage", async () => {
     mockWorkspace = makeWorkspace();
@@ -465,30 +468,30 @@ describe("billing/enforcement", () => {
     const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
     expect(tokenMetric!.status).toBe("metered");
     expect(tokenMetric!.usagePercent).toBe(100);
-    // Exactly at budget → zero overage tokens → $0.00 so far.
-    expect(result.warning!.message).toContain("$0.00 so far");
+    // Structure B: no synthetic "$X.XX so far" cost suffix (rate is 0).
+    expect(result.warning!.message).not.toContain("$");
   });
 
-  it("meters at 105% and surfaces the accrued overage cost", async () => {
+  it("meters at 105% without a synthetic overage cost suffix (Structure B, #4034)", async () => {
     mockWorkspace = makeWorkspace();
-    // 105% of 2,000,000 = 2,100,000 → 100,000 tokens of overage.
-    // 100,000 / 1,000,000 * $1.00 = $0.10.
+    // 105% of 2,000,000 = 2,100,000 → 100,000 tokens of overage (metered band),
+    // but the zeroed rate means no "$X.XX so far" suffix.
     mockUsage = { queryCount: 0, tokenCount: 2_100_000, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
     expect(result.warning).toBeDefined();
     const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
     expect(tokenMetric!.status).toBe("metered");
-    expect(result.warning!.message).toContain("$0.10 so far");
+    expect(result.warning!.message).not.toContain("$");
   });
 
   it("meters at 150% (well past the old 110% block) without cutting off", async () => {
     mockWorkspace = makeWorkspace();
-    // 150% of 2,000,000 = 3,000,000 → 1,000,000 overage → $1.00.
+    // 150% of 2,000,000 = 3,000,000 → 1,000,000 overage tokens (metered band).
     mockUsage = { queryCount: 0, tokenCount: 3_000_000, activeUsers: 0, periodStart: "", periodEnd: "" };
     const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
     const tokenMetric = result.warning!.metrics.find((m) => m.metric === "tokens");
     expect(tokenMetric!.status).toBe("metered");
-    expect(result.warning!.message).toContain("$1.00 so far");
+    expect(result.warning!.message).not.toContain("$");
   });
 
   it("meters at 109% (the old grace-buffer top) instead of blocking", async () => {

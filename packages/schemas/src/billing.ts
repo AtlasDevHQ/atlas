@@ -59,9 +59,9 @@ export interface BillingPlan {
   /**
    * Included at-cost usage credit per seat per month, in USD (Structure B,
    * #4034). Pooled per-seat — the workspace's included usage budget is
-   * `includedUsageDollarsPerSeat × seatCount`. The billing page renders the
-   * included-credit line from this. Optional for older-bundle tolerance; absent
-   * ⇒ the credit line is hidden.
+   * `includedUsageDollarsPerSeat × seatCount`. Surfaced for the billing page's
+   * future included-credit line (in-app $ display: #4038). Optional for
+   * older-bundle tolerance; absent ⇒ no credit line.
    */
   includedUsageDollarsPerSeat?: number;
   defaultModel: string;

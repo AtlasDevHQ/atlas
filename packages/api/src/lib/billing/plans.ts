@@ -81,10 +81,12 @@ export interface PlanDefinition {
   /**
    * DEPRECATED (Structure B, #4034): the legacy synthetic $/1M-token overage
    * rate. Zeroed on every tier — Structure B bills usage at provider cost (zero
-   * markup) via the at-cost meter, not a per-token markup. Retained only so the
-   * field doesn't break the wire type mid-migration; removed when the
-   * dollar-native enforcement lands (#4038). Token-weighting stays for
-   * display/budget-fallback only, never the billing path.
+   * markup) via the at-cost meter, not a per-token markup. Zeroing here only
+   * neutralizes the DISPLAY accrual (`computeOverageCost` → $0); the token-based
+   * OverageMeter (#3992) keeps reporting token deltas to its Stripe price until
+   * the at-cost meter repoint lands (#4039). Retained only so the field doesn't
+   * break the wire type mid-migration; removed when dollar-native enforcement
+   * lands (#4038).
    */
   overagePerMillionTokens: number;
   limits: PlanLimits;

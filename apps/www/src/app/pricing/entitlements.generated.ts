@@ -29,7 +29,7 @@ export const ENTITLEMENT_SECTION_ORDER: readonly EntitlementSection[] = [
 ];
 
 /** Stable wire id of a gated feature (matches the SSOT key). */
-export type FeatureId = "residency" | "backups" | "white_label" | "sso" | "scim" | "custom_roles" | "ip_allowlist" | "approvals" | "audit_retention" | "masking" | "proactive";
+export type FeatureId = "residency" | "backups" | "white_label" | "custom_domain" | "sso" | "scim" | "custom_roles" | "ip_allowlist" | "approvals" | "audit_retention" | "masking" | "proactive";
 
 /** One per-tier entitlement row mirrored from the SSOT. */
 export interface EntitlementRow {
@@ -67,6 +67,12 @@ export const ENTITLEMENT_ROWS: readonly EntitlementRow[] = [
     label: "White-label branding",
     section: "hosting",
     cells: { selfHosted: false, starter: false, pro: false, business: true },
+  },
+  {
+    feature: "custom_domain",
+    label: "Custom domain",
+    section: "hosting",
+    cells: { selfHosted: false, starter: false, pro: true, business: true },
   },
   {
     feature: "sso",

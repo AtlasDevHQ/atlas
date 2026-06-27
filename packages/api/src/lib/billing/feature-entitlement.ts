@@ -53,6 +53,7 @@ export type GatedFeature =
   | "residency"
   | "backups"
   | "white_label"
+  | "custom_domain"
   | "proactive";
 
 /**
@@ -79,6 +80,12 @@ export const FEATURE_ENTITLEMENTS: Readonly<Record<GatedFeature, MinPlanTier>> =
   residency: "business",
   backups: "business",
   white_label: "business",
+  // Pro+ override (not the Business default): the custom-domain route has always
+  // documented "Pro or Business plan … required to create a domain" (see
+  // admin-domains.ts), so the SSOT pins its minimum at `pro` to match the
+  // product's established intent. #3988 / #3984 acceptance criteria explicitly
+  // permit custom domain to sit at Pro+ where the SSOT says so.
+  custom_domain: "pro",
   proactive: "business",
 };
 

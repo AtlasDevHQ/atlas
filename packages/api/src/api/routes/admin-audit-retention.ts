@@ -20,6 +20,7 @@ import { AuthContext } from "@atlas/api/lib/effect/services";
 import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import { EnterpriseUnavailableError } from "@atlas/api/lib/effect/errors";
 import { logAdminActionAwait, ADMIN_ACTIONS, type AdminActionEntry } from "@atlas/api/lib/audit";
+import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
@@ -403,6 +404,7 @@ adminAuditRetention.use(requirePermission("admin:audit"));
 adminAuditRetention.openapi(getRetentionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "audit_retention");
 
     const retention = yield* yieldAuditRetentionFailClosed();
     const policy = yield* retention.getRetentionPolicy(orgId!);
@@ -415,6 +417,7 @@ adminAuditRetention.openapi(updateRetentionRoute, async (c) => {
   const ipAddress = clientIpFrom(c.req);
   return runEffect(c, Effect.gen(function* () {
     const { orgId, user } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "audit_retention");
 
     const body = c.req.valid("json");
 
@@ -492,6 +495,7 @@ adminAuditRetention.openapi(exportRoute, async (c) => {
   const ipAddress = clientIpFrom(c.req);
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "audit_retention");
 
     const body = c.req.valid("json");
 
@@ -567,6 +571,7 @@ adminAuditRetention.openapi(purgeRoute, async (c) => {
   const ipAddress = clientIpFrom(c.req);
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "audit_retention");
 
     const retention = yield* yieldAuditRetentionFailClosed();
     const { purgeExpiredEntries, getRetentionPolicy } = retention;
@@ -623,6 +628,7 @@ adminAuditRetention.openapi(hardDeleteRoute, async (c) => {
   const ipAddress = clientIpFrom(c.req);
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "audit_retention");
 
     const retention = yield* yieldAuditRetentionFailClosed();
 

@@ -43,7 +43,17 @@ let mockHasInternalDB = true;
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getInternalDB: () => ({ query: () => Promise.resolve({ rows: [] }), end: async () => {}, on: () => {} }),
-  internalQuery: () => Promise.resolve([]),
+  // The per-tier feature-entitlement guard (WS1 #3988) resolves the workspace's
+  // plan_tier before every branding route in SaaS deploy mode (which this
+  // monorepo's test env resolves to). White-label gates to Business, so the
+  // entitlement read must return `business` or every route 403s with
+  // `plan_upgrade_required`. All other queries keep returning [].
+  internalQuery: (sql: string) =>
+    /plan_tier[\s\S]*is_operator_workspace|is_operator_workspace[\s\S]*plan_tier/.test(
+      sql,
+    )
+      ? Promise.resolve([{ plan_tier: "business", is_operator_workspace: false }])
+      : Promise.resolve([]),
   internalExecute: () => {},
   setWorkspaceRegion: mock(async () => {}),
   insertSemanticAmendment: mock(async () => "mock-amendment-id"),

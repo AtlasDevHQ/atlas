@@ -16,6 +16,7 @@ import { RequestContext, AuthContext, ResidencyResolver } from "@atlas/api/lib/e
 import { hasInternalDB, queryEffect } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import {
   triggerMigrationExecution,
@@ -482,6 +483,7 @@ adminResidency.openapi(getStatusRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { orgId } = yield* AuthContext;
+      yield* requireFeatureEntitlement(orgId, "residency");
       const mod = yield* ResidencyResolver;
 
       if (!mod.available) {
@@ -560,6 +562,7 @@ adminResidency.openapi(assignRegionRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { orgId } = yield* AuthContext;
+      yield* requireFeatureEntitlement(orgId, "residency");
       const mod = yield* ResidencyResolver;
 
       if (!mod.available) {
@@ -620,6 +623,7 @@ adminResidency.openapi(getMigrationStatusRoute, async (c) => {
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
       const { orgId } = yield* AuthContext;
+      yield* requireFeatureEntitlement(orgId, "residency");
 
       if (!hasInternalDB()) {
         return c.json({ error: "not_available", message: "Migration tracking requires an internal database.", requestId }, 404);
@@ -655,6 +659,7 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
       const { orgId, user } = yield* AuthContext;
+      yield* requireFeatureEntitlement(orgId, "residency");
       const { targetRegion } = c.req.valid("json");
 
       if (!orgId) {
@@ -787,6 +792,7 @@ adminResidency.openapi(retryMigrationRoute, async (c) => {
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
       const { orgId } = yield* AuthContext;
+      yield* requireFeatureEntitlement(orgId, "residency");
       const { id } = c.req.valid("param");
 
       if (!hasInternalDB()) {
@@ -882,6 +888,7 @@ adminResidency.openapi(cancelMigrationRoute, async (c) => {
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
       const { orgId } = yield* AuthContext;
+      yield* requireFeatureEntitlement(orgId, "residency");
       const { id } = c.req.valid("param");
 
       if (!hasInternalDB()) {

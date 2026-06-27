@@ -23,6 +23,7 @@ import {
   MaskingPolicy,
 } from "@atlas/api/lib/effect/services";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { ComplianceError, ReportError } from "@atlas/api/lib/compliance/errors";
 import type { PIICategory, MaskingStrategy } from "@useatlas/types";
 import { PIIColumnClassificationSchema as PIIClassificationSchema } from "@useatlas/schemas";
@@ -126,6 +127,7 @@ adminCompliance.use(requireOrgContext());
 adminCompliance.openapi(listRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "masking");
     const masking = yield* MaskingPolicy;
     const { connectionGroupId } = c.req.valid("query");
 
@@ -142,6 +144,7 @@ adminCompliance.openapi(updateRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "masking");
     const masking = yield* MaskingPolicy;
 
     const updated = yield* masking.updatePIIClassification(orgId!, id, {
@@ -178,6 +181,7 @@ adminCompliance.openapi(deleteRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "masking");
     const masking = yield* MaskingPolicy;
 
     yield* masking.deletePIIClassification(orgId!, id);
@@ -304,6 +308,7 @@ const userActivityReportRoute = createRoute({
 adminCompliance.openapi(dataAccessReportRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "masking");
     const reports = yield* ComplianceReports;
     const query = c.req.valid("query");
 
@@ -339,6 +344,7 @@ adminCompliance.openapi(dataAccessReportRoute, async (c) => {
 adminCompliance.openapi(userActivityReportRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "masking");
     const reports = yield* ComplianceReports;
     const query = c.req.valid("query");
 

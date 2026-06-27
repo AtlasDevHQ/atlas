@@ -11,6 +11,7 @@ import type { Context } from "hono";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext, Branding } from "@atlas/api/lib/effect/services";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { BrandingError } from "@atlas/api/lib/branding/branding-errors";
 import { WorkspaceBrandingSchema as BrandingSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -214,6 +215,7 @@ adminBranding.use(requirePermission("admin:settings"));
 adminBranding.openapi(getBrandingRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "white_label");
     const branding = yield* Branding;
 
     const result = yield* branding.getWorkspaceBranding(orgId!);
@@ -228,6 +230,7 @@ adminBranding.openapi(setBrandingRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "white_label");
     const brandingSvc = yield* Branding;
 
     const branding = yield* brandingSvc.setWorkspaceBranding(orgId!, {
@@ -265,6 +268,7 @@ adminBranding.openapi(deleteBrandingRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "white_label");
     const brandingSvc = yield* Branding;
 
     const deleted = yield* brandingSvc.deleteWorkspaceBranding(orgId!);

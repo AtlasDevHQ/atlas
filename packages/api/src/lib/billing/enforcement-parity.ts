@@ -84,16 +84,20 @@ export type IssueRef = `#${number}`;
  * empty or prose value won't typecheck.
  */
 export const ENFORCEMENT_PENDING: Partial<Record<GatedFeature, IssueRef>> = {
-  // #3987 gated SCIM, custom roles, IP allowlist, and approval workflows — those
-  // four now have route-layer requireFeatureEntitlement gates and were removed
-  // from this allowlist when that slice landed (rule 2 forces the shrink).
-  // Remaining WS1 surfaces (audit-retention, masking, residency, backups,
-  // white-label, proactive) — gated in their own follow-up slices under #3984.
-  audit_retention: "#3984",
-  masking: "#3984",
-  residency: "#3984",
+  // #3987 gated SCIM, custom roles, IP allowlist, and approval workflows, and
+  // #3988 gated audit-retention, masking (incl. compliance reports), residency,
+  // white-label, and custom-domain at their tenant (`admin-*`) routes — all
+  // removed from this allowlist as their gates landed (rule 2 forces the shrink).
+  //
+  // `backups` stays pending: its only route surface is operator/platform-scoped
+  // (`platform-backups.ts`, `createPlatformRouter`, no workspace `orgId`), so a
+  // per-tenant `requireFeatureEntitlement(orgId, "backups")` gate is structurally
+  // inapplicable there. It is gated by the enterprise-license Tag
+  // (`backups.available`) today; a tenant-facing backups surface is needed before
+  // the per-tier ladder can apply, tracked under #3984.
   backups: "#3984",
-  white_label: "#3984",
+  // `proactive` is gated in its own follow-up slice under #3984 (it also needs
+  // the WS5 relocation into `/ee`).
   proactive: "#3984",
 };
 

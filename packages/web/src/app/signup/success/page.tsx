@@ -1,7 +1,7 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
+import { navigatePostAuth } from "@/lib/auth/post-auth-nav";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -47,7 +47,6 @@ const NEXT_STEPS: NextStepDef[] = [
 ];
 
 export default function SuccessPage() {
-  const router = useRouter();
   // Starter prompts derive from the connected workspace's semantic layer via
   // the same adaptive resolver the in-chat empty state uses (#3935 §F4), with
   // a shared static fallback for a cold-start / not-yet-ready semantic layer.
@@ -56,6 +55,13 @@ export default function SuccessPage() {
   // #2487: hydrate the Better Auth session store before navigating to a
   // guarded route. Without this, AuthGuard can read the pre-signup `null`
   // snapshot and bounce the user back to /login.
+  //
+  // #4018: hand off to the app with a HARD nav (`navigatePostAuth`), matching
+  // the login front-door — this is the canonical "auth state just changed →
+  // guarded route" boundary the helper exists for. A soft `router.push` keeps
+  // the funnel's SPA client (and its session snapshot) alive across the
+  // boundary; a full reload re-bootstraps the app cleanly from the durable
+  // cookie instead of a carried-over store.
   async function openAtlas(destination: string) {
     try {
       await authClient.getSession();
@@ -65,7 +71,7 @@ export default function SuccessPage() {
         err instanceof Error ? err.message : String(err),
       );
     }
-    router.push(destination);
+    navigatePostAuth(destination);
   }
 
   return (

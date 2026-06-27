@@ -15,9 +15,11 @@ interface VerifyEmailOTPFormProps {
   /** Address the OTP was dispatched to. Echoed in copy upstream of this form. */
   email: string;
   /**
-   * Called once the OTP has been verified successfully and Better Auth has
-   * marked the email verified + established a session. Callers typically
-   * `router.push` to the next step here.
+   * Called once the OTP has been verified successfully, Better Auth has marked
+   * the email verified + established a session, and this form has hydrated that
+   * session (see `verify` below, #4018). Callers hard-navigate into the guarded
+   * app here (`navigatePostAuth`) — a soft `router.push` would carry the funnel's
+   * stale session snapshot across the auth boundary and 401 / bounce to /login.
    */
   onVerified: () => void;
 }
@@ -54,6 +56,22 @@ export function VerifyEmailOTPForm({ email, onVerified }: VerifyEmailOTPFormProp
         setError(mapVerifyError(result.error));
         setCode("");
         return;
+      }
+      // #4018 / #2487 — hydrate the Better Auth session store from the durable
+      // cookie `verifyEmail` just established (`autoSignInAfterVerification`),
+      // mirroring the login front-door's post-signIn `getSession`. Without this
+      // the post-signup handoff carries no settled session into the app, so the
+      // cross-origin region API 401s every bootstrap call and a reload bounces
+      // the just-verified user to /login. Best-effort + read-only: a hydration
+      // hiccup must not trap the user on the code screen, so we still call
+      // `onVerified()` (the next nav re-reads the cookie on a fresh load).
+      try {
+        await authClient.getSession();
+      } catch (err) {
+        console.warn(
+          "[auth] getSession after OTP verify failed",
+          err instanceof Error ? err.message : String(err),
+        );
       }
       onVerified();
     } catch (err) {

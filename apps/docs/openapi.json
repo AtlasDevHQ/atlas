@@ -77364,9 +77364,6 @@
                     "currentModel": {
                       "type": "string"
                     },
-                    "overagePerMillionTokens": {
-                      "type": "number"
-                    },
                     "subscription": {
                       "type": [
                         "object",
@@ -77462,7 +77459,6 @@
                     "seats",
                     "connections",
                     "currentModel",
-                    "overagePerMillionTokens",
                     "subscription"
                   ]
                 }

@@ -239,9 +239,10 @@ describe("billing routes", () => {
       // against the shared resolver guards against the picker advertising one
       // model while another is billed.
       expect(body.currentModel).toBe(resolveModelId(undefined, undefined));
-      // Structure B (#4034): the synthetic per-token overage rate is zeroed —
-      // usage is billed at provider cost via the at-cost meter, not a markup.
-      expect(body.overagePerMillionTokens).toBe(0);
+      // Structure B (#4040): the legacy synthetic per-token overage rate was
+      // dropped from the wire — usage is billed at provider cost via the at-cost
+      // meter (surfaced by the dollar usage gauge), so the field never returns.
+      expect(body).not.toHaveProperty("overagePerMillionTokens");
       // Total token budget = tokenBudgetPerSeat * seatCount = 2M * 3 = 6M
       expect(body.limits.totalTokenBudget).toBe(6_000_000);
       // #3418 — the plan picker's source of truth. All three paid tiers are

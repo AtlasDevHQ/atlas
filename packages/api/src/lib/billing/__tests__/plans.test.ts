@@ -9,6 +9,7 @@ import {
   getPlanLimits,
   isUnlimited,
   computeTokenBudget,
+  computeUsageDollarBudget,
   getStripePlans,
   resolvePlanTierFromPriceId,
 } from "@atlas/api/lib/billing/plans";
@@ -113,16 +114,6 @@ describe("billing/plans", () => {
       expect(business.features.sla).toBe("99.9%");
     });
 
-    it("the synthetic per-token overage rate is zeroed on every tier (Structure B, #4034)", () => {
-      // Structure B bills AI usage at provider cost (zero markup) via the at-cost
-      // meter, not a per-token markup. The legacy synthetic rate is neutralized on
-      // every tier; the field is removed entirely when dollar-native enforcement
-      // lands (#4038).
-      for (const tier of ["free", "trial", "starter", "pro", "business", "locked"] as const) {
-        expect(getPlanDefinition(tier).overagePerMillionTokens).toBe(0);
-      }
-    });
-
     it("every paid tier carries the flat $20/seat at-cost credit; free/locked carry none (#4034)", () => {
       // Flat $20 on every paid tier (pooled per-seat via × seatCount); the trial
       // mirrors Starter. Free (BYOK/self-hosted) and locked (churned) carry no
@@ -185,6 +176,52 @@ describe("billing/plans", () => {
     it("uses minimum of 1 seat", () => {
       expect(computeTokenBudget("starter", 0)).toBe(2_000_000);
       expect(computeTokenBudget("starter", -1)).toBe(2_000_000);
+    });
+  });
+
+  // Structure B included-credit denomination parity (#4040). The drift these
+  // pin: the at-cost credit MUST stay denominated in dollars (a flat $20/seat
+  // pool), never re-conflated with the millions-scale token budget the old
+  // markup model used. A future edit that pasted a token-scale number into
+  // includedUsageDollarsPerSeat — or otherwise broke the `$20 × seats` pool
+  // relationship — fails here before it can reach enforcement (#4038).
+  describe("computeUsageDollarBudget (credit denomination, #4040)", () => {
+    it("pools the flat per-seat dollar credit by seat count", () => {
+      for (const tier of ["starter", "pro", "business", "trial"] as const) {
+        const perSeat = getPlanDefinition(tier).includedUsageDollarsPerSeat;
+        expect(perSeat).toBe(20);
+        expect(computeUsageDollarBudget(tier, 1)).toBe(perSeat);
+        expect(computeUsageDollarBudget(tier, 5)).toBe(perSeat * 5);
+        expect(computeUsageDollarBudget(tier, 25)).toBe(perSeat * 25);
+      }
+    });
+
+    it("floors seat count at 1 so a transient 0/negative count keeps one seat's credit", () => {
+      expect(computeUsageDollarBudget("starter", 0)).toBe(20);
+      expect(computeUsageDollarBudget("starter", -3)).toBe(20);
+    });
+
+    it("yields no credit for tiers without included usage (free/locked)", () => {
+      expect(computeUsageDollarBudget("free", 10)).toBe(0);
+      expect(computeUsageDollarBudget("locked", 10)).toBe(0);
+    });
+
+    it("keeps the credit dollar-denominated, never token-scale (mismatch guard)", () => {
+      // The tokens↔dollars slip this catches: a token-scale number (e.g. the old
+      // 2_000_000-token budget) pasted into includedUsageDollarsPerSeat. A real
+      // at-cost credit is a small, positive dollar figure well under $1000/seat,
+      // and lives on a categorically smaller scale than the per-seat token budget
+      // (the budget is >1000× the credit). Either bound trips on a token-scale
+      // value — independent of the exact $20 pinned above, so a future $-recalibration
+      // stays green while a denomination slip fails.
+      for (const tier of ["starter", "pro", "business", "trial"] as const) {
+        const def = getPlanDefinition(tier);
+        expect(def.includedUsageDollarsPerSeat).toBeGreaterThan(0);
+        expect(def.includedUsageDollarsPerSeat).toBeLessThan(1000);
+        expect(
+          def.limits.tokenBudgetPerSeat / def.includedUsageDollarsPerSeat,
+        ).toBeGreaterThan(1000);
+      }
     });
   });
 

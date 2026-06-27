@@ -145,7 +145,6 @@ describe("/admin/model-config — free-tier placeholder copy (#2468)", () => {
       seats: { count: 1, max: null },
       connections: { count: 0, max: null },
       currentModel: "user-configured",
-      overagePerMillionTokens: 0,
       subscription: null,
     };
     const { container } = render(createElement(ModelConfigPage), { wrapper });
@@ -179,7 +178,6 @@ describe("/admin/model-config — free-tier placeholder copy (#2468)", () => {
       seats: { count: 1, max: null },
       connections: { count: 0, max: null },
       currentModel: "anthropic/claude-haiku-4.5",
-      overagePerMillionTokens: 0,
       subscription: null,
     };
     const { container } = render(createElement(ModelConfigPage), { wrapper });

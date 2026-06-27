@@ -1,14 +1,19 @@
 /**
  * Plan definitions and limits for Atlas billing tiers.
  *
- * Per-seat pricing with model-aware token budgets.
+ * Structure B (#4034): a flat per-seat platform fee plus an included at-cost
+ * AI-usage credit ($20/seat/month, billed at provider cost with zero markup).
+ * Usage is enforced in dollars against that credit (`computeUsageDollarBudget`),
+ * not a per-token markup; per-seat token budgets survive only as a non-enforcing
+ * display figure (`computeTokenBudget`) and as plan `limits` carried through
+ * `getStripePlans` into the @better-auth/stripe plugin's subscription record.
  *
  * Self-hosted deployments default to "free" (unlimited, BYOK only).
  * SaaS workspaces start as "trial" (14-day trial of Starter).
  * Paid tiers: "starter", "pro", "business".
  *
  * BYOT (Bring Your Own Token) is orthogonal — a boolean flag on the org
- * that bypasses token enforcement (unlimited queries when set).
+ * that bypasses usage enforcement (unlimited queries when set).
  */
 
 import type { PlanTier } from "@atlas/api/lib/db/internal";
@@ -78,17 +83,6 @@ export interface PlanDefinition {
    * working number — hot-reloadable, recalibrate ~30d post-launch.
    */
   includedUsageDollarsPerSeat: number;
-  /**
-   * DEPRECATED (Structure B, #4034): the legacy synthetic $/1M-token overage
-   * rate. Zeroed on every tier — Structure B bills usage at provider cost (zero
-   * markup) via the at-cost meter, not a per-token markup. Dollar-native
-   * enforcement (#4038) AND the at-cost meter repoint (#4039) have both landed:
-   * nothing now consults this rate — `checkPlanLimits` and the `OverageMeter`
-   * both denominate in real dollars/cents (`computeUsageDollarBudget` /
-   * `computeOverageDollars`). Fully vestigial; still emitted on the billing wire
-   * shape for back-compat, slated for removal in the drift/parity cleanup (#4040).
-   */
-  overagePerMillionTokens: number;
   limits: PlanLimits;
   features: PlanFeatures;
   trialDays?: number;
@@ -146,7 +140,6 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     pricePerSeat: 0,
     defaultModel: "user-configured",
     includedUsageDollarsPerSeat: 0,
-    overagePerMillionTokens: 0,
     limits: {
       tokenBudgetPerSeat: UNLIMITED,
       maxSeats: UNLIMITED,
@@ -166,7 +159,6 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     // billing-page alias map for any legacy `ATLAS_MODEL` settings.
     defaultModel: "anthropic/claude-haiku-4.5",
     includedUsageDollarsPerSeat: 20,
-    overagePerMillionTokens: 0,
     trialDays: TRIAL_DAYS,
     limits: {
       tokenBudgetPerSeat: 2_000_000,
@@ -183,7 +175,6 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     pricePerSeat: 39,
     defaultModel: "anthropic/claude-haiku-4.5",
     includedUsageDollarsPerSeat: 20,
-    overagePerMillionTokens: 0,
     limits: {
       tokenBudgetPerSeat: 2_000_000,
       maxSeats: 10,
@@ -199,7 +190,6 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     pricePerSeat: 69,
     defaultModel: "anthropic/claude-sonnet-4.6",
     includedUsageDollarsPerSeat: 20,
-    overagePerMillionTokens: 0,
     limits: {
       tokenBudgetPerSeat: 5_000_000,
       maxSeats: 25,
@@ -225,7 +215,6 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     pricePerSeat: 0,
     defaultModel: "anthropic/claude-haiku-4.5",
     includedUsageDollarsPerSeat: 0,
-    overagePerMillionTokens: 0,
     limits: {
       tokenBudgetPerSeat: 0,
       maxSeats: 0,
@@ -241,7 +230,6 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     pricePerSeat: 149,
     defaultModel: "anthropic/claude-sonnet-4.6",
     includedUsageDollarsPerSeat: 20,
-    overagePerMillionTokens: 0,
     limits: {
       tokenBudgetPerSeat: 15_000_000,
       maxSeats: UNLIMITED,

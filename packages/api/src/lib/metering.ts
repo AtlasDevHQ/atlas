@@ -48,9 +48,10 @@ export interface UsageEvent {
    * Provider-cost USD for a `token` event's turn, from the Vercel AI Gateway
    * (`providerMetadata.gateway.cost`, summed across the turn's steps), #4036.
    * Persisted to `usage_events.gateway_cost_usd` as the at-cost dollar basis the
-   * Structure B credit + overage meter will draw against once #4038/#4039 land
-   * (captured-only today). Omit (or pass `null`) for non-token events and for
-   * non-gateway providers — the column is NULL there.
+   * Structure B credit + overage meter draw against: dollar enforcement (#4038)
+   * sums it into the period's `costUsd`, and the at-cost OverageMeter (#4039)
+   * bills the over-credit remainder in provider-cost cents. Omit (or pass `null`)
+   * for non-token events and for non-gateway providers — the column is NULL there.
    */
   gatewayCostUsd?: number | null;
   metadata?: Record<string, unknown>;

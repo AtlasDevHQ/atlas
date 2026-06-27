@@ -75,6 +75,7 @@ export const FEATURE_DISPLAY: Record<GatedFeature, FeatureDisplay> = {
   white_label: { label: "White-label branding", section: "hosting" },
   residency: { label: "Data residency", section: "hosting" },
   backups: { label: "Automated backups", section: "hosting" },
+  custom_domain: { label: "Custom domain", section: "hosting" },
   // security & compliance
   sso: { label: "SSO (SAML + OIDC)", section: "security & compliance" },
   scim: { label: "SCIM directory sync", section: "security & compliance" },

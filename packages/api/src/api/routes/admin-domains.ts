@@ -20,6 +20,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext, Domains, RequestContext } from "@atlas/api/lib/effect/services";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
@@ -273,6 +274,7 @@ adminDomains.use(requirePermission("admin:settings"));
 adminDomains.openapi(getDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
     const mod = yield* Domains;
 
@@ -293,6 +295,7 @@ adminDomains.openapi(getDomainRoute, async (c) => {
 adminDomains.openapi(addDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
     const mod = yield* Domains;
 
@@ -343,6 +346,7 @@ adminDomains.openapi(addDomainRoute, async (c) => {
 adminDomains.openapi(verifyDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
     const mod = yield* Domains;
 
@@ -376,6 +380,7 @@ adminDomains.openapi(verifyDomainRoute, async (c) => {
 adminDomains.openapi(verifyDnsTxtRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
     const mod = yield* Domains;
 
@@ -408,6 +413,7 @@ adminDomains.openapi(verifyDnsTxtRoute, async (c) => {
 adminDomains.openapi(domainCheckRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
     const mod = yield* Domains;
 
@@ -433,6 +439,7 @@ adminDomains.openapi(domainCheckRoute, async (c) => {
 adminDomains.openapi(removeDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    yield* requireFeatureEntitlement(orgId, "custom_domain");
     const { requestId } = yield* RequestContext;
     const mod = yield* Domains;
 

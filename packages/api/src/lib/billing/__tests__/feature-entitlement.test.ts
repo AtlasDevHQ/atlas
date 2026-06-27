@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { PlanTier } from "@useatlas/types";
+import type { MinPlanTier, PlanTier } from "@useatlas/types";
 import {
   FEATURE_ENTITLEMENTS,
   isFeatureEntitled,
@@ -37,14 +37,27 @@ const TIER_RANK: Record<PlanTier, number> = {
   business: 4,
 };
 
+// Features whose minimum tier intentionally overrides the Business default.
+// `custom_domain` sits at Pro+ (#3988): the custom-domain route has always
+// documented "Pro or Business plan … required to create a domain". Every other
+// gated feature must remain at the Business default.
+const TIER_OVERRIDES: Partial<Record<GatedFeature, MinPlanTier>> = {
+  custom_domain: "pro",
+};
+
 describe("FEATURE_ENTITLEMENTS map", () => {
-  it("defaults every gated feature to the Business tier (current pricing page)", () => {
-    // The PRD locks the default tier line at Business for all ten EE features
-    // plus proactive. A Pro+ override would be an intentional single-line
-    // change here; until then the map must be uniformly Business.
+  it("defaults every gated feature to Business except the recorded Pro+ overrides", () => {
+    // The PRD locks the default tier line at Business. A Pro+ override is an
+    // intentional single-line change in the SSOT; this pins the exact override
+    // set so a stray re-tier is caught.
     for (const feature of ALL_FEATURES) {
-      expect(FEATURE_ENTITLEMENTS[feature]).toBe("business");
+      const expected = TIER_OVERRIDES[feature] ?? "business";
+      expect(FEATURE_ENTITLEMENTS[feature]).toBe(expected);
     }
+  });
+
+  it("pins custom_domain to Pro (the one Pro+ override)", () => {
+    expect(FEATURE_ENTITLEMENTS.custom_domain).toBe("pro");
   });
 
   it("enumerates the full advertised gated-feature set (not an ad-hoc subset)", () => {
@@ -62,6 +75,7 @@ describe("FEATURE_ENTITLEMENTS map", () => {
       "residency",
       "backups",
       "white_label",
+      "custom_domain",
       "proactive",
     ];
     expect(ALL_FEATURES.toSorted()).toEqual(expected.toSorted());
@@ -87,9 +101,18 @@ describe("isFeatureEntitled — tier × feature matrix", () => {
 
   it("denies Starter and Pro every Business-gated feature", () => {
     for (const feature of ALL_FEATURES) {
+      if (FEATURE_ENTITLEMENTS[feature] !== "business") continue;
       expect(isFeatureEntitled("starter", feature)).toBe(false);
       expect(isFeatureEntitled("pro", feature)).toBe(false);
     }
+  });
+
+  it("treats custom_domain as Pro-gated: denied below Pro, allowed at Pro and Business", () => {
+    expect(isFeatureEntitled("free", "custom_domain")).toBe(false);
+    expect(isFeatureEntitled("trial", "custom_domain")).toBe(false);
+    expect(isFeatureEntitled("starter", "custom_domain")).toBe(false);
+    expect(isFeatureEntitled("pro", "custom_domain")).toBe(true);
+    expect(isFeatureEntitled("business", "custom_domain")).toBe(true);
   });
 
   it("fails closed for the `locked` churn tier on every feature", () => {

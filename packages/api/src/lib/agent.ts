@@ -63,6 +63,7 @@ import {
 import { loadGroupRoutingContext } from "./env-routing/lookup";
 import { logUsageEvent } from "./metering";
 import { toOutputEquivalentTokens } from "./billing/token-weighting";
+import { sumStepGatewayCostUsd } from "./billing/gateway-cost";
 import { buildRetrievalQuery, getRetrievalTurns } from "./learn/pattern-cache";
 import { resolveOrgKnowledgeSection } from "./learn/org-knowledge-section";
 import { dispatchMutableHook } from "./plugins/hooks";
@@ -1981,10 +1982,19 @@ export async function runAgent({
         // Persist token usage to internal DB (fire-and-forget).
         // Shares the internalExecute circuit breaker with audit writes.
         if (hasInternalDB() && totalUsage) {
+          // At-cost provider spend for the turn (#4036, Structure B): the Vercel
+          // AI Gateway annotates each step's actual charged cost on
+          // `providerMetadata.gateway.cost`, and the AI-SDK top-level metadata is
+          // final-step-only, so sum across `steps`. `null` when no step carried a
+          // gateway cost (non-gateway / BYOK-direct provider) → write NULL,
+          // distinct from a recorded 0. Recorded on BOTH the token_usage row and
+          // the `token` usage event so the cost basis is queryable per-turn and
+          // summable per-period.
+          const gatewayCostUsd = sumStepGatewayCostUsd(steps);
           try {
             internalExecute(
-              `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, model, provider, org_id, latency_ms)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+              `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, model, provider, org_id, latency_ms, gateway_cost_usd)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
               [
                 userId,
                 conversationId ?? null,
@@ -1999,6 +2009,7 @@ export async function runAgent({
                 // alongside the turn's usage so the demo tracking rollup reads
                 // tokens + cache + latency from one row.
                 Math.max(0, Date.now() - turnStartedAt),
+                gatewayCostUsd,
               ],
             );
           } catch (err) {
@@ -2034,6 +2045,9 @@ export async function runAgent({
                 eventType: "token",
                 quantity: totalTokens,
                 weightedQuantity: weightedTokens,
+                // At-cost dollars for the turn (#4036) — the Structure B billing
+                // denominator. NULL when the provider isn't the gateway.
+                gatewayCostUsd,
                 metadata: { input: inputTokens, output: outputTokens, weighted: weightedTokens },
               });
             }

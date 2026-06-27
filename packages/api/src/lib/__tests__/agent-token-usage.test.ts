@@ -142,11 +142,12 @@ describe("token_usage cache split write path (#3099)", () => {
 
     // Columns: user_id, conversation_id, prompt_tokens, completion_tokens,
     //          cache_read_tokens, cache_write_tokens, model, provider, org_id,
-    //          latency_ms
+    //          latency_ms, gateway_cost_usd
     expect(insert!.sql).toContain("cache_read_tokens, cache_write_tokens");
     expect(insert!.sql).toContain("latency_ms");
+    expect(insert!.sql).toContain("gateway_cost_usd");
     const params = insert!.params as unknown[];
-    expect(params).toHaveLength(10);
+    expect(params).toHaveLength(11);
     expect(params[4]).toBe(7); // cache_read_tokens  ← inputTokenDetails.cacheReadTokens
     expect(params[5]).toBe(3); // cache_write_tokens ← inputTokenDetails.cacheWriteTokens
     // latency_ms (#3931) — agent-turn wall-clock, non-negative integer ms.
@@ -155,6 +156,10 @@ describe("token_usage cache split write path (#3099)", () => {
     // upper bound on a near-instant mock turn.
     expect(Number.isInteger(params[9])).toBe(true);
     expect(params[9] as number).toBeGreaterThanOrEqual(0);
+    // gateway_cost_usd (#4036) — NULL for this non-gateway mock turn: the steps
+    // carry no providerMetadata.gateway.cost, so the at-cost capture records NULL
+    // ("no gateway cost recorded"), distinct from a recorded 0.
+    expect(params[10]).toBeNull();
   });
 
   it("writes 0 for the cache split when the provider reports no cache usage", async () => {

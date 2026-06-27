@@ -130,6 +130,7 @@ describe("metering", () => {
         "query",
         1,
         null, // weighted_quantity — omitted for a non-token event
+        null, // gateway_cost_usd — omitted for a non-token event (#4036)
         JSON.stringify({ model: "gpt-4" }),
       ]);
     });
@@ -143,7 +144,7 @@ describe("metering", () => {
       });
 
       expect(queryCalls).toHaveLength(1);
-      expect(queryCalls[0].params).toEqual([null, null, "token", 500, null, null]);
+      expect(queryCalls[0].params).toEqual([null, null, "token", 500, null, null, null]);
     });
 
     it("persists the weighted (output-equivalent) quantity for a token event (#3989)", () => {
@@ -164,6 +165,31 @@ describe("metering", () => {
         "token",
         1500,
         4200,
+        null, // gateway_cost_usd — not supplied here
+        JSON.stringify({ input: 500, output: 1000, weighted: 4200 }),
+      ]);
+    });
+
+    it("persists the at-cost gateway dollars for a token event (#4036)", () => {
+      logUsageEvent({
+        workspaceId: "org-1",
+        userId: "user-1",
+        eventType: "token",
+        quantity: 1500,
+        weightedQuantity: 4200,
+        gatewayCostUsd: 0.2345,
+        metadata: { input: 500, output: 1000, weighted: 4200 },
+      });
+
+      expect(queryCalls).toHaveLength(1);
+      expect(queryCalls[0].sql).toContain("gateway_cost_usd");
+      expect(queryCalls[0].params).toEqual([
+        "org-1",
+        "user-1",
+        "token",
+        1500,
+        4200,
+        0.2345,
         JSON.stringify({ input: 500, output: 1000, weighted: 4200 }),
       ]);
     });
@@ -240,7 +266,7 @@ describe("metering", () => {
     it("returns current period aggregates (UTC-month fallback, no subscription)", async () => {
       queryResults = [
         [], // no active subscription row → UTC month
-        [{ query_count: 42, token_count: 10000, weighted_token_count: 23000, active_users: 3 }],
+        [{ query_count: 42, token_count: 10000, weighted_token_count: 23000, cost_usd: 1.23, active_users: 3 }],
       ];
 
       const result = await getCurrentPeriodUsage("org-1");
@@ -249,6 +275,8 @@ describe("metering", () => {
       expect(result.tokenCount).toBe(10000);
       // Output-equivalent (model-weighted) token spend — the budget denominator (#3989).
       expect(result.weightedTokenCount).toBe(23000);
+      // At-cost provider dollars for the period — the Structure B denominator (#4036).
+      expect(result.costUsd).toBe(1.23);
       expect(result.activeUsers).toBe(3);
       expect(result.periodStart).toBeTruthy();
       expect(result.periodEnd).toBeTruthy();
@@ -258,6 +286,8 @@ describe("metering", () => {
       // so token rows predating migration 0152 still contribute.
       const usageCall = queryCalls.find((c) => c.sql.includes("usage_events"));
       expect(usageCall?.sql).toContain("COALESCE(weighted_quantity, quantity)");
+      // …and sums the at-cost gateway dollars for the period (#4036).
+      expect(usageCall?.sql).toContain("gateway_cost_usd");
     });
 
     it("anchors on the Stripe period when an active subscription exists", async () => {

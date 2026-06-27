@@ -114,9 +114,10 @@ export interface BillingUsage {
   tokenCount: number;
   /**
    * Output-equivalent (model-weighted) token spend for the period (#3989).
-   * Retained for display + the token-based OverageMeter (#3992); since #4038
-   * enforcement denominates in dollars (`costUsd`), not tokens. Optional for
-   * older-bundle tolerance; falls back to `tokenCount` when absent.
+   * Retained for display only: since #4038 enforcement denominates in dollars
+   * (`costUsd`), not tokens, and the at-cost OverageMeter repoint (#4039) bills
+   * overage in provider-cost cents, so no billing path reads this figure.
+   * Optional for older-bundle tolerance; falls back to `tokenCount` when absent.
    */
   weightedTokenCount?: number;
   seatCount: number;
@@ -215,7 +216,6 @@ export interface BillingStatus {
   seats: BillingSeatCount;
   connections: BillingConnectionCount;
   currentModel: string;
-  overagePerMillionTokens: number;
   subscription: BillingSubscription | null;
   /**
    * Optional so a web bundle pinned to an older published schema keeps
@@ -335,7 +335,6 @@ export const BillingStatusSchema = z.object({
   seats: BillingSeatCountSchema,
   connections: BillingConnectionCountSchema,
   currentModel: z.string(),
-  overagePerMillionTokens: z.number(),
   subscription: BillingSubscriptionSchema.nullable(),
   availablePlans: z.array(BillingAvailablePlanSchema).optional(),
 }) satisfies z.ZodType<BillingStatus>;

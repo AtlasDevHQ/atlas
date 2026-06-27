@@ -39,7 +39,6 @@ const validStatus = {
   seats: { count: 4, max: 10 },
   connections: { count: 1, max: 1 },
   currentModel: "claude-haiku-4-5",
-  overagePerMillionTokens: 1.0,
   subscription: {
     stripeSubscriptionId: "sub_123",
     plan: "starter_monthly",
@@ -266,8 +265,10 @@ describe("structural rejection", () => {
     expect(BillingStatusSchema.safeParse(missing).success).toBe(false);
   });
 
-  test("BillingStatusSchema requires seats / connections / currentModel / overagePerMillionTokens", () => {
-    const { seats: _s, ...missing } = validStatus;
-    expect(BillingStatusSchema.safeParse(missing).success).toBe(false);
+  test("BillingStatusSchema requires seats / connections / currentModel", () => {
+    for (const key of ["seats", "connections", "currentModel"] as const) {
+      const { [key]: _omit, ...missing } = validStatus;
+      expect(BillingStatusSchema.safeParse(missing).success).toBe(false);
+    }
   });
 });

@@ -474,7 +474,6 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         max: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
       },
       currentModel,
-      overagePerMillionTokens: plan.overagePerMillionTokens,
       subscription: subscription ? {
         stripeSubscriptionId: subscription.stripeSubscriptionId,
         plan: subscription.plan,

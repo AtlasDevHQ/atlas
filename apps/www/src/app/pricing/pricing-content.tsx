@@ -3,6 +3,14 @@
 import { useState } from "react";
 import { ArrowIcon, CheckIcon } from "../../components/shared";
 import { TalkToSalesDialog } from "../../components/talk-to-sales-dialog";
+import {
+  ENTITLEMENT_ROWS,
+  ENTITLEMENT_SECTION_ORDER,
+  type EntitlementRow,
+  type EntitlementSection,
+  type FeatureId,
+  type PricingColumn,
+} from "./entitlements.generated";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,7 +31,10 @@ interface Tier {
   features: string[];
 }
 
-type TierKey = "selfHosted" | "starter" | "pro" | "business";
+// The comparison columns are exactly the generated artifact's columns —
+// alias `PricingColumn` rather than re-spell the union, so the page's column
+// set is compile-time-tied to the SSOT-derived artifact and can't drift.
+type TierKey = PricingColumn;
 type CellValue = boolean | string;
 
 interface ComparisonRow {
@@ -136,52 +147,99 @@ const TIERS: Tier[] = [
   },
 ];
 
-const COMPARISON_SECTIONS: ComparisonSection[] = [
+// The `core` and `support` rows are quantitative limits and free-text copy,
+// not gated per-tier feature entitlements — they stay hand-maintained here.
+const CORE_SECTION: ComparisonSection = {
+  label: "core",
+  rows: [
+    { feature: "Text-to-SQL agent", selfHosted: true, starter: true, pro: true, business: true },
+    { feature: "Semantic layer", selfHosted: true, starter: true, pro: true, business: true },
+    { feature: "All databases & plugins", selfHosted: true, starter: true, pro: true, business: true },
+    { feature: "Notebooks & dashboards", selfHosted: true, starter: true, pro: true, business: true },
+    { feature: "Admin console & API", selfHosted: true, starter: true, pro: true, business: true },
+    { feature: "MCP server", selfHosted: true, starter: true, pro: true, business: true },
+    { feature: "AI queries/seat/mo", selfHosted: "Unlimited (BYOK)", starter: "~100", pro: "~250", business: "~750" },
+    { feature: "BYOK (unlimited queries)", selfHosted: "Default", starter: true, pro: true, business: true },
+    { feature: "Default model", selfHosted: "Your choice", starter: "Haiku 4.5", pro: "Sonnet 4.6", business: "Sonnet 4.6" },
+    { feature: "Seats", selfHosted: "Unlimited", starter: "Up to 10", pro: "Up to 25", business: "Unlimited" },
+    { feature: "Database connections", selfHosted: "Unlimited", starter: "1", pro: "3", business: "Unlimited" },
+    { feature: "Chat integrations", selfHosted: "Config-based", starter: "1 platform", pro: "3 platforms", business: "All 6" },
+    { feature: "When you hit the budget", selfHosted: "No limit (BYOK)", starter: "Warn → 10% grace → pause", pro: "Warn → 10% grace → pause", business: "Warn → 10% grace → pause" },
+  ],
+};
+
+const SUPPORT_SECTION: ComparisonSection = {
+  label: "support",
+  rows: [
+    { feature: "Support channel", selfHosted: "Community", starter: "Email", pro: "Priority email", business: "Priority + Slack" },
+  ],
+};
+
+// Hand-maintained rows prepended to a SSOT-derived section, ahead of the
+// mirrored entitlement rows. "Custom domain" is a Pro+ marketing affordance,
+// not one of the gated FeatureEntitlement capabilities, so it lives here at the
+// top of the hosting section rather than in the SSOT. Keyed by section so a new
+// section automatically renders (with no prefix) without touching this map.
+const SECTION_PREFIX_ROWS: Partial<Record<EntitlementSection, ComparisonRow[]>> =
   {
-    label: "core",
-    rows: [
-      { feature: "Text-to-SQL agent", selfHosted: true, starter: true, pro: true, business: true },
-      { feature: "Semantic layer", selfHosted: true, starter: true, pro: true, business: true },
-      { feature: "All databases & plugins", selfHosted: true, starter: true, pro: true, business: true },
-      { feature: "Notebooks & dashboards", selfHosted: true, starter: true, pro: true, business: true },
-      { feature: "Admin console & API", selfHosted: true, starter: true, pro: true, business: true },
-      { feature: "MCP server", selfHosted: true, starter: true, pro: true, business: true },
-      { feature: "AI queries/seat/mo", selfHosted: "Unlimited (BYOK)", starter: "~100", pro: "~250", business: "~750" },
-      { feature: "BYOK (unlimited queries)", selfHosted: "Default", starter: true, pro: true, business: true },
-      { feature: "Default model", selfHosted: "Your choice", starter: "Haiku 4.5", pro: "Sonnet 4.6", business: "Sonnet 4.6" },
-      { feature: "Seats", selfHosted: "Unlimited", starter: "Up to 10", pro: "Up to 25", business: "Unlimited" },
-      { feature: "Database connections", selfHosted: "Unlimited", starter: "1", pro: "3", business: "Unlimited" },
-      { feature: "Chat integrations", selfHosted: "Config-based", starter: "1 platform", pro: "3 platforms", business: "All 6" },
-      { feature: "When you hit the budget", selfHosted: "No limit (BYOK)", starter: "Warn → 10% grace → pause", pro: "Warn → 10% grace → pause", business: "Warn → 10% grace → pause" },
-    ],
-  },
-  {
-    label: "hosting",
-    rows: [
+    hosting: [
       { feature: "Custom domain", selfHosted: false, starter: false, pro: true, business: true },
-      { feature: "White-label branding", selfHosted: false, starter: false, pro: false, business: true },
-      { feature: "Data residency", selfHosted: false, starter: false, pro: false, business: "3 regions" },
-      { feature: "Automated backups", selfHosted: false, starter: false, pro: false, business: true },
     ],
-  },
-  {
-    label: "security & compliance",
-    rows: [
-      { feature: "SSO (SAML + OIDC)", selfHosted: false, starter: false, pro: false, business: true },
-      { feature: "SCIM directory sync", selfHosted: false, starter: false, pro: false, business: true },
-      { feature: "Custom roles & permissions", selfHosted: false, starter: false, pro: false, business: true },
-      { feature: "IP allowlisting", selfHosted: false, starter: false, pro: false, business: true },
-      { feature: "Approval workflows", selfHosted: false, starter: false, pro: false, business: true },
-      { feature: "Audit log retention policies", selfHosted: false, starter: false, pro: false, business: true },
-      { feature: "PII detection & masking", selfHosted: false, starter: false, pro: false, business: true },
-    ],
-  },
-  {
-    label: "support",
-    rows: [
-      { feature: "Support channel", selfHosted: "Community", starter: "Email", pro: "Priority email", business: "Priority + Slack" },
-    ],
-  },
+  };
+
+// Per-feature display overrides: a feature whose entitlement is a boolean in
+// the SSOT but reads better as free text in one column (e.g. residency's
+// "3 regions" for Business). Keyed by the artifact's `FeatureId` union — a
+// misspelled key is a compile error, not a silent no-op — and the override
+// applies only where the entitlement is already true, so it never widens what
+// a tier unlocks beyond what the SSOT grants.
+const CELL_LABEL_OVERRIDES: Partial<
+  Record<FeatureId, Partial<Record<PricingColumn, string>>>
+> = {
+  residency: { business: "3 regions" },
+};
+
+/**
+ * Build a comparison section from the SSOT-mirrored entitlement rows for a
+ * given section, applying any free-text cell overrides. This is the WS4 link:
+ * the per-tier ✓/– cells the page renders are derived from
+ * `ENTITLEMENT_ROWS`, the drift-checked mirror of `FEATURE_ENTITLEMENTS`, so
+ * they can't diverge from what the API actually enforces.
+ */
+function entitlementSection(label: EntitlementSection): ComparisonSection {
+  const prefixRows = SECTION_PREFIX_ROWS[label] ?? [];
+  const rows: ComparisonRow[] = ENTITLEMENT_ROWS.filter(
+    (row) => row.section === label,
+  ).map(toComparisonRow);
+  return { label, rows: [...prefixRows, ...rows] };
+}
+
+function toComparisonRow(row: EntitlementRow): ComparisonRow {
+  const overrides = CELL_LABEL_OVERRIDES[row.feature];
+  const cellFor = (key: PricingColumn): CellValue => {
+    const granted = row.cells[key];
+    const override = overrides?.[key];
+    // An override only ever decorates a granted cell — never flips a denied
+    // one on — so the page can't claim a tier the SSOT doesn't grant.
+    return granted && override !== undefined ? override : granted;
+  };
+  return {
+    feature: row.label,
+    selfHosted: cellFor("selfHosted"),
+    starter: cellFor("starter"),
+    pro: cellFor("pro"),
+    business: cellFor("business"),
+  };
+}
+
+// Iterate every SSOT section (in render order) rather than hand-listing them,
+// so a section added to the SSOT can't be silently dropped from the page — it
+// renders automatically. core/support are hand-maintained non-entitlement
+// sections and bracket the SSOT-derived ones.
+const COMPARISON_SECTIONS: ComparisonSection[] = [
+  CORE_SECTION,
+  ...ENTITLEMENT_SECTION_ORDER.map(entitlementSection),
+  SUPPORT_SECTION,
 ];
 
 const FAQS: FAQ[] = [

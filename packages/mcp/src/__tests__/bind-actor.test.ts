@@ -90,4 +90,26 @@ describe("resolveMcpActorRole — trust-boundary fork (#3603, ADR-0016)", () => 
     });
     expect(resolveCalls[0].userRole).toBe("owner");
   });
+
+  // #4043 / ADR-0026 — the cli (atlas-login device-flow) arm resolves the ORG
+  // role only, exactly like hosted: a portable file-stored bearer must never
+  // carry cross-tenant `platform_admin`, regardless of deploy mode.
+  it("cli arm withholds the user-level role (org role only — never platform_admin)", async () => {
+    const role = await resolveMcpActorRole({
+      transport: "cli",
+      userId: "user-4",
+      activeOrganizationId: "org-4",
+      // Even if a caller wrongly passed a platform_admin userRole, the cli arm
+      // must NOT forward it.
+      userRole: "platform_admin",
+    });
+
+    // The invariant: cli forwards `undefined`, never the user-level role.
+    expect(resolveCalls).toHaveLength(1);
+    expect(resolveCalls[0].userRole).toBeUndefined();
+    expect(resolveCalls[0].userId).toBe("user-4");
+    expect(resolveCalls[0].activeOrganizationId).toBe("org-4");
+    // Mock returns the userRole it was given (undefined for the cli arm).
+    expect(role).toBeUndefined();
+  });
 });

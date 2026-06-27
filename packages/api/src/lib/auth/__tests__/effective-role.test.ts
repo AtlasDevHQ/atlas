@@ -13,7 +13,11 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 import { resolveEffectiveRole } from "../effective-role";
-import { buildCustomSessionPayload, canGenerateSCIMToken } from "../server";
+import {
+  buildCustomSessionPayload,
+  canGenerateSCIMToken,
+  isDeviceTokenSessionContext,
+} from "../server";
 
 describe("resolveEffectiveRole()", () => {
   // #2890 model: effectiveRole = user.role === "platform_admin"
@@ -161,6 +165,64 @@ describe("buildCustomSessionPayload()", () => {
       session: { id: "sess_1", userId: "usr_1", activeOrganizationId: "org_1" } as any,
     });
     expect((out.user as Record<string, unknown>).effectiveRole).toBe("admin");
+  });
+
+  // #4043 / ADR-0026 §2 — the key-scoping crux. A cli (atlas-login) session
+  // resolves the ORG (member) role ONLY: a platform_admin user's cli token
+  // must NOT carry cross-tenant god-mode.
+  it("cli-origin session withholds the user-level role (platform_admin → org member role)", async () => {
+    mockHasInternalDB = true;
+    // The member table says this user is a plain member of the bound org.
+    mockInternalQuery = () => Promise.resolve([{ role: "member" }]);
+    const out = await buildCustomSessionPayload({
+      // A genuine platform_admin user — over the web they keep platform_admin.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+      user: { id: "usr_pa", email: "staff@useatlas.dev", role: "platform_admin" } as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+      session: { id: "sess_cli", userId: "usr_pa", activeOrganizationId: "org_1", origin: "cli" } as any,
+    });
+    // The downgrade fired: org role, never platform_admin. user.role is intact.
+    expect((out.user as Record<string, unknown>).effectiveRole).toBe("member");
+    expect((out.user as Record<string, unknown>).role).toBe("platform_admin");
+  });
+
+  it("non-cli session keeps the user-level platform_admin role (control — downgrade is cli-specific)", async () => {
+    mockHasInternalDB = true;
+    mockInternalQuery = () => Promise.resolve([{ role: "member" }]);
+    const out = await buildCustomSessionPayload({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+      user: { id: "usr_pa", email: "staff@useatlas.dev", role: "platform_admin" } as any,
+      // No origin marker — a normal web session. platform_admin short-circuits.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture
+      session: { id: "sess_web", userId: "usr_pa", activeOrganizationId: "org_1" } as any,
+    });
+    expect((out.user as Record<string, unknown>).effectiveRole).toBe("platform_admin");
+  });
+});
+
+describe("isDeviceTokenSessionContext()", () => {
+  it("matches the device/token endpoint via ctx.path", () => {
+    expect(isDeviceTokenSessionContext({ path: "/device/token" })).toBe(true);
+  });
+
+  it("matches via request.url pathname when path is absent", () => {
+    expect(
+      isDeviceTokenSessionContext({ request: { url: "https://api.useatlas.dev/api/auth/device/token" } }),
+    ).toBe(true);
+  });
+
+  it("does not match a normal sign-in endpoint", () => {
+    expect(isDeviceTokenSessionContext({ path: "/sign-in/email" })).toBe(false);
+    expect(
+      isDeviceTokenSessionContext({ request: { url: "https://api.useatlas.dev/api/auth/sign-in/email" } }),
+    ).toBe(false);
+  });
+
+  it("returns false for nullish / shapeless context (safe default: not cli)", () => {
+    expect(isDeviceTokenSessionContext(null)).toBe(false);
+    expect(isDeviceTokenSessionContext(undefined)).toBe(false);
+    expect(isDeviceTokenSessionContext({})).toBe(false);
+    expect(isDeviceTokenSessionContext({ request: { url: "not-a-url" } })).toBe(false);
   });
 });
 

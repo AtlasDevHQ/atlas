@@ -148,7 +148,15 @@ function makeRecordingPool(): InternalPool {
       if (/INSERT\s+INTO\s+user_trial_grants/i.test(sql)) {
         return rows([{ user_id: params?.[0] }]);
       }
-      if (/FROM\s+member/i.test(sql)) return rows([{ organizationId: "org_welcome" }]);
+      // "cli_multi" belongs to TWO orgs (the multi-workspace branch — no
+      // active org is auto-selected, ADR-0026 §6); everyone else is single-org.
+      if (/FROM\s+member/i.test(sql)) {
+        return rows(
+          params?.[0] === "cli_multi"
+            ? [{ organizationId: "org_a" }, { organizationId: "org_b" }]
+            : [{ organizationId: "org_welcome" }],
+        );
+      }
       return rows([]);
     },
   } as unknown as InternalPool;
@@ -392,10 +400,13 @@ describe("databaseHooks.session.create.before — ban guard wiring (#3159)", () 
       typeof hook,
       "session.create.before must be composed in buildAuthOptions",
     ).toBe("function");
-    return hook as (session: {
-      userId: string;
-      activeOrganizationId?: string | null;
-    }) => Promise<unknown>;
+    return hook as (
+      session: {
+        userId: string;
+        activeOrganizationId?: string | null;
+      },
+      ctx?: { path?: string; request?: { url?: string } },
+    ) => Promise<{ data?: { origin?: string; activeOrganizationId?: string } } | undefined>;
   }
 
   it("refuses session creation for a banned user and short-circuits the active-org lookup", async () => {
@@ -436,5 +447,53 @@ describe("databaseHooks.session.create.before — ban guard wiring (#3159)", () 
       queries.some((q) => /FROM\s+member/i.test(q.sql)),
       "a non-banned user must fall through to the active-org lookup",
     ).toBe(true);
+  });
+
+  // ── #4043 / ADR-0026 — origin=cli stamping wiring ──────────────────
+  // The detector (isDeviceTokenSessionContext) and the downgrade
+  // (buildCustomSessionPayload given origin:"cli") are unit-tested in
+  // isolation; these drive the REAL composed hook to prove it CONNECTS them —
+  // stamping origin='cli' when the session is created under /device/token. A
+  // refactor that drops the ctx arg or the patch.origin line would silently
+  // leave every cli session unmarked → resolving the user-level role → a
+  // platform_admin's portable bearer carrying cross-tenant authority.
+  it("stamps origin='cli' (and the auto-selected org) for a session created under /device/token", async () => {
+    const before = getSessionCreateBefore();
+    const result = await before({ userId: "cli_user" }, { path: "/device/token" });
+    // The single-org user gets BOTH the cli marker AND the auto-set active org
+    // in one patch (the composed-patch path).
+    expect(result?.data?.origin).toBe("cli");
+    expect(result?.data?.activeOrganizationId).toBe("org_welcome");
+  });
+
+  it("detects /device/token via the request.url fallback when ctx.path is absent", async () => {
+    const before = getSessionCreateBefore();
+    const result = await before(
+      { userId: "cli_user2" },
+      { request: { url: "https://api.useatlas.dev/api/auth/device/token" } },
+    );
+    expect(result?.data?.origin).toBe("cli");
+  });
+
+  it("does NOT stamp origin for a normal web login, but still auto-sets the active org", async () => {
+    const before = getSessionCreateBefore();
+    const result = await before({ userId: "web_user" }, { path: "/sign-in/email" });
+    // Control: no cli marker. The active-org auto-set return shape is asserted
+    // here (it was previously only proven to FIRE, not to be RETURNED) — guards
+    // the composed-patch refactor against silently dropping the org.
+    expect(result?.data?.origin).toBeUndefined();
+    expect(result?.data?.activeOrganizationId).toBe("org_welcome");
+  });
+
+  it("stamps origin='cli' for a MULTI-workspace login WITHOUT auto-selecting an org (ADR-0026 §6)", async () => {
+    const before = getSessionCreateBefore();
+    // The cli marker and the active-org auto-set are independent patch fields;
+    // a multi-org user must get origin='cli' but NO active org (the picker is
+    // the deferred handoff). Pins that a refactor can't couple origin-stamping
+    // to org-resolution — which would leave multi-org cli sessions unmarked and
+    // resolving the user-level role (a platform_admin escalation).
+    const result = await before({ userId: "cli_multi" }, { path: "/device/token" });
+    expect(result?.data?.origin).toBe("cli");
+    expect(result?.data?.activeOrganizationId).toBeUndefined();
   });
 });

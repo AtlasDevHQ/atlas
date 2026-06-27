@@ -189,6 +189,23 @@ async function main() {
     return handleQuery(args);
   }
 
+  // #4043 / ADR-0026 — device-flow auth + the minimal workspace-scoped read.
+  // Handlers receive the full argv (command name at [0]); they only read flags.
+  if (command === "login") {
+    const { handleLogin } = await import("../src/commands/login");
+    return handleLogin(args);
+  }
+
+  if (command === "logout") {
+    const { handleLogout } = await import("../src/commands/login");
+    return handleLogout(args);
+  }
+
+  if (command === "entities") {
+    const { handleEntities } = await import("../src/commands/entities");
+    return handleEntities(args);
+  }
+
   if (command === "eval") {
     const { handleEval } = await import("./eval");
     return handleEval(args);
@@ -347,13 +364,13 @@ async function main() {
 
   // Operator-only commands (ops/seed/proactive/export/learn) moved to the
   // separate `atlas-operator` binary so the published `atlas` CLI never ships
-  // tenant-destructive direct-DB tooling (ADR-0025 step 4, #4045). Redirect
+  // tenant-destructive direct-DB tooling (ADR-0026 step 4, #4045). Redirect
   // rather than a bare "Unknown command" so operator muscle memory lands somewhere useful.
   if (OPERATOR_COMMANDS.has(command)) {
     console.error(
       `[atlas] "${command}" is an operator-only command and has moved to the operator CLI.\n` +
         `Run it with:  bun run atlas-operator -- ${command} ${args.slice(1).join(" ")}`.trimEnd() +
-        `\n(Operator tooling touches tenant data directly and is not shipped to workspaces — ADR-0025.)`,
+        `\n(Operator tooling touches tenant data directly and is not shipped to workspaces — ADR-0026.)`,
     );
     process.exit(1);
   }

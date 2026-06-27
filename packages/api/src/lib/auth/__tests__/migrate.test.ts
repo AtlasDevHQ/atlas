@@ -435,6 +435,13 @@ describe("migrateAuthTables", () => {
             // to at-cost cents, Structure B WS2, #4039); Atlas-internal, no FK to
             // a Better Auth table, so it runs in every auth mode — must be listed.
             { name: "0156_overage_meter_reports_cost_cents.sql" },
+            // 0157 widens the approval-surface origin CHECK with 'cli' (ADR-0026,
+            // #4043); ALTERs Atlas-internal approval tables, no FK to a Better
+            // Auth table, so it runs in every auth mode — must be listed.
+            { name: "0157_approval_surface_cli.sql" },
+            // 0158 adds the `origin` column to Better Auth's "session" table
+            // (ADR-0026, #4043) — a MANAGED_AUTH_MIGRATION, skipped outside
+            // managed mode, so it is intentionally absent here.
           ],
         };
       }

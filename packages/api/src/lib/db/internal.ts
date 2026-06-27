@@ -984,6 +984,10 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // Auth's "user" table that backs the returning-user login front-door's
   // hashed-email existence probe (ADR-0024 §3, #3973).
   "0151_user_email_hash_index.sql",
+  // Adds the `origin` marker column to Better Auth's "session" table so the
+  // atlas-login device flow can stamp `origin='cli'` for key-scoping
+  // (ADR-0026 / #4043).
+  "0158_session_origin_column.sql",
 ];
 
 /**

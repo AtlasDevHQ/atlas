@@ -32,10 +32,15 @@ const signUpEmailMock = mock(async (_opts: { email: string; password: string; na
   error: null,
 }));
 const signInSocialMock = mock(async (_opts: { provider: string; callbackURL: string }) => ({}));
+type SendOtpResult = { data?: unknown; error?: { message?: string } | null };
+const sendVerificationOtpMock = mock(
+  async (_opts: { email: string; type: "email-verification" }): Promise<SendOtpResult> => ({ data: {}, error: null }),
+);
 mock.module("@/lib/auth/client", () => ({
   authClient: {
     signUp: { email: signUpEmailMock },
     signIn: { social: signInSocialMock },
+    emailOtp: { sendVerificationOtp: sendVerificationOtpMock },
   },
 }));
 
@@ -91,6 +96,8 @@ beforeEach(() => {
   signUpEmailMock.mockReset();
   signUpEmailMock.mockImplementation(async () => ({ data: { token: "tok" }, error: null }));
   signInSocialMock.mockReset();
+  sendVerificationOtpMock.mockReset();
+  sendVerificationOtpMock.mockImplementation(async () => ({ data: {}, error: null }));
   navigatePostAuthMock.mockReset();
   readDraftMock.mockReset();
   readDraftMock.mockImplementation(() => ({ email: "jane@example.com" }));
@@ -161,7 +168,13 @@ describe("AccountPage — create account on the regional client (#3972)", () => 
     expect(navigatePostAuthMock).toHaveBeenCalledWith("/signup/workspace");
   });
 
-  test("verification-required (no token) shows the OTP interstitial; verifying then navigates", async () => {
+  test("verification-required (no token) sends the OTP explicitly, then shows the interstitial; verifying navigates (#4010)", async () => {
+    // better-auth returns `token: null` for BOTH a fresh signup needing
+    // verification AND an already-registered email (enumeration protection's
+    // synthetic success). With `emailVerification.sendOnSignUp: false` on the
+    // server, the signup endpoint never auto-sends — so the client OWNS the
+    // send. Asserting the explicit `sendVerificationOtp` call makes the
+    // "we sent a code" copy truthful on every reachable path (no dead-end).
     signUpEmailMock.mockImplementation(async () => ({ data: { token: null }, error: null }));
     render(<AccountPage />);
     await screen.findByText("jane@example.com");
@@ -174,6 +187,11 @@ describe("AccountPage — create account on the regional client (#3972)", () => 
     await waitFor(() => {
       expect(screen.getByText(/enter your code/i)).toBeDefined();
     });
+    // The code screen is only truthful if a real OTP was dispatched.
+    expect(sendVerificationOtpMock).toHaveBeenCalledWith({
+      email: "jane@example.com",
+      type: "email-verification",
+    });
     // Not navigated yet — waiting on the code.
     expect(navigatePostAuthMock).not.toHaveBeenCalled();
 
@@ -181,6 +199,98 @@ describe("AccountPage — create account on the regional client (#3972)", () => 
       fireEvent.click(screen.getByRole("button", { name: /verify-code/i }));
     });
     expect(navigatePostAuthMock).toHaveBeenCalledWith("/signup/workspace");
+  });
+
+  test("an already-registered email still reaches a truthful code screen — the OTP is sent, no dead-end (#4010)", async () => {
+    // The prod symptom: signing up an existing email returned `token: null`
+    // (synthetic success) and the page rendered the code screen WITHOUT any
+    // send — a silent dead-end with lying copy. The duplicate case is
+    // byte-identical to a fresh signup at the client, so the explicit send
+    // must fire here too. (`sendVerificationOtp` is enumeration-safe and the
+    // user row exists post-signUp in both cases, so a real OTP is delivered.)
+    signUpEmailMock.mockImplementation(async () => ({ data: { token: null }, error: null }));
+    render(<AccountPage />);
+    await screen.findByText("jane@example.com");
+
+    fillPassword("hunter2hunter2");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    });
+
+    await waitFor(() => {
+      expect(sendVerificationOtpMock).toHaveBeenCalledTimes(1);
+    });
+    expect(sendVerificationOtpMock.mock.calls[0][0]).toEqual({
+      email: "jane@example.com",
+      type: "email-verification",
+    });
+    expect(screen.getByText(/enter your code/i)).toBeDefined();
+  });
+
+  test("a token present (verification off) navigates straight on without sending an OTP", async () => {
+    // Self-hosted dev path: requireEmailVerification=false → signUp returns a
+    // session token and we skip the code screen entirely. No client-driven
+    // send should fire on this branch.
+    signUpEmailMock.mockImplementation(async () => ({ data: { token: "tok" }, error: null }));
+    render(<AccountPage />);
+    await screen.findByText("jane@example.com");
+
+    fillPassword("hunter2hunter2");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    });
+
+    await waitFor(() => {
+      expect(navigatePostAuthMock).toHaveBeenCalledWith("/signup/workspace");
+    });
+    expect(sendVerificationOtpMock).not.toHaveBeenCalled();
+  });
+
+  test("a THROWN OTP-send failure still lands the user on the code screen so Resend is reachable (#4010)", async () => {
+    // The send is awaited, but a thrown rejection (network failure) is caught
+    // and swallowed for navigation purposes — never block the UI on a send
+    // error. The code screen's "Resend code" control is the recovery path.
+    signUpEmailMock.mockImplementation(async () => ({ data: { token: null }, error: null }));
+    sendVerificationOtpMock.mockImplementation(async () => {
+      throw new Error("transient send failure");
+    });
+    render(<AccountPage />);
+    await screen.findByText("jane@example.com");
+
+    fillPassword("hunter2hunter2");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/enter your code/i)).toBeDefined();
+    });
+    expect(sendVerificationOtpMock).toHaveBeenCalled();
+  });
+
+  test("a RETURNED-error OTP send (e.g. rate-limit 429) still lands the code screen — better-auth returns, not throws (#4010)", async () => {
+    // The higher-probability production failure: better-auth client methods
+    // surface failures as a returned `{ error }` envelope (the OTP endpoint's
+    // rate limit returns 429 this way) rather than throwing. The page must NOT
+    // silently drop it — it logs — and must still reach the code screen so
+    // Resend is reachable.
+    signUpEmailMock.mockImplementation(async () => ({ data: { token: null }, error: null }));
+    sendVerificationOtpMock.mockImplementation(async () => ({
+      data: null,
+      error: { message: "rate limited" },
+    }));
+    render(<AccountPage />);
+    await screen.findByText("jane@example.com");
+
+    fillPassword("hunter2hunter2");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/enter your code/i)).toBeDefined();
+    });
+    expect(sendVerificationOtpMock).toHaveBeenCalled();
   });
 
   test("an invitee is routed to /accept-invitation after creating the account", async () => {

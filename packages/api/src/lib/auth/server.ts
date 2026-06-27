@@ -2399,16 +2399,23 @@ export function buildPlugins() {
   // installs the OTP sender as `emailVerification.sendVerificationEmail`,
   // which is why our config above intentionally does NOT wire a
   // sendVerificationEmail callback — adding one would win the options
-  // merge and reintroduce a magic-link path. `sendVerificationOnSignUp:
-  // true` triggers the OTP send automatically as part of the signup
-  // pipeline. `storeOTP: "hashed"` keeps the plaintext code out of the
-  // verification table — only the hash is persisted, the user-supplied
-  // code is hashed and compared at verify time.
+  // merge and reintroduce a magic-link path. `storeOTP: "hashed"` keeps
+  // the plaintext code out of the verification table — only the hash is
+  // persisted, the user-supplied code is hashed and compared at verify
+  // time.
+  //
+  // `sendVerificationOnSignUp: false` (#4010): the plugin's auto-send-on-
+  // signup hook only fires when `overrideDefaultEmailVerification` is
+  // FALSE (see the plugin's `after` matcher) — with the override on it's
+  // already dead — but pinning it `false` makes the intent explicit:
+  // the signup OTP is sent by the client, not by the signup pipeline.
+  // Paired with `emailVerification.sendOnSignUp: false` above, this closes
+  // the existing-email dead-end (synthetic `{ token: null }` with no send).
   plugins.push(
     emailOTP({
       otpLength: 8,
       expiresIn: 600,
-      sendVerificationOnSignUp: true,
+      sendVerificationOnSignUp: false,
       overrideDefaultEmailVerification: true,
       storeOTP: "hashed",
       sendVerificationOTP: async (data) => {
@@ -3104,6 +3111,21 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
       // tested helper for the rate-limit smoke tests; it has no live
       // call site now that OTP is the sole verification path.
       autoSignInAfterVerification: true,
+      // #4010 — the signup endpoint must NOT auto-send the verification OTP.
+      // better-auth's `requireEmailVerification: true` path returns a synthetic
+      // `{ token: null }` success for an already-registered email (enumeration
+      // protection) WITHOUT running its signup send block — so an implicit
+      // auto-send fires for fresh emails but silently skips duplicates, dead-
+      // ending the existing-email signup at the code screen with no OTP sent.
+      // We make the client own the send (via the enumeration-safe
+      // `/email-otp/send-verification-otp` resend endpoint, post-`signUp.email`)
+      // as the SINGLE source of the signup OTP — truthful "we sent a code" copy
+      // on every reachable path, no double-send on the fresh path. Without this
+      // `false`, the default is `requireEmailVerification` (true) and the fresh
+      // path would send twice. (This gates ONLY the signup auto-send; the
+      // `emailOTP` plugin's `init()` override still installs the OTP sender as
+      // `sendVerificationEmail` for `sendOnSignIn` re-issues below.)
+      sendOnSignUp: false,
       // Re-issue a verification code whenever an unverified user attempts
       // sign-in. The plugin's override turns this into an OTP send.
       sendOnSignIn: true,

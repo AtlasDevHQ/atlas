@@ -61,9 +61,9 @@ export default function AccountPage() {
   const [loading, setLoading] = useState(false);
   const [socialLoading, setSocialLoading] = useState<string | null>(null);
   const [socialProviders, setSocialProviders] = useState<string[]>([]);
-  // Mirrors the prior single-page flow: when email verification is required,
-  // signUp returns no session token and the OTP has already been sent — hold
-  // the email to render the code-entry interstitial instead of navigating.
+  // When email verification is required, signUp returns no session token; we
+  // then dispatch the OTP ourselves (#4010) and hold the email to render the
+  // code-entry interstitial instead of navigating.
   const [pendingEmail, setPendingEmail] = useState<string | null>(null);
 
   // Hydrate the email/invitation from the signup draft. A missing draft means
@@ -125,13 +125,48 @@ export default function AccountPage() {
         setError(res.error.message ?? "Sign up failed");
         return;
       }
-      // Verification required → no token, OTP already dispatched: switch to the
-      // code-entry view. Verification off (self-hosted dev) → token present,
-      // navigate straight on. (See the prior single-page flow's rationale.)
+      // Verification off (self-hosted dev) → token present, navigate straight
+      // on. Verification required → no token: own the OTP send explicitly so
+      // the "we sent a code" copy is always true (#4010).
+      //
+      // better-auth returns `token: null` for a fresh-but-unverified signup AND
+      // for an already-registered email — its enumeration-protection synthetic
+      // success (`requireEmailVerification: true`). The synthetic path skips
+      // better-auth's signup send block entirely, so relying on an implicit
+      // auto-send dead-ended an existing-email signup at the code screen with no
+      // OTP ever sent. We dispatch via the enumeration-safe resend endpoint,
+      // which the server now treats as the SOLE source of the signup OTP
+      // (`emailVerification.sendOnSignUp: false`) — so there's no double-send on
+      // the fresh path either. The user row exists post-`signUp.email` in both
+      // cases, so a real OTP is delivered every time.
       const token = (res.data as { token?: string | null } | undefined)?.token;
       if (token) {
         completeAndNavigate();
       } else {
+        try {
+          // Better-auth client methods surface failures TWO ways: a returned
+          // `{ error }` envelope (e.g. the OTP endpoint's rate-limit 429 — the
+          // most likely real failure) AND a thrown rejection (network). Handle
+          // both so a failed send is never silent for operators.
+          const sendRes = await authClient.emailOtp?.sendVerificationOtp?.({
+            email,
+            type: "email-verification",
+          });
+          if (sendRes?.error) {
+            console.warn(
+              "Verification OTP send returned an error:",
+              sendRes.error.message ?? "unknown",
+            );
+          }
+        } catch (err) {
+          console.warn(
+            "Verification OTP send failed:",
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+        // Reach the code screen regardless of send outcome — the screen's
+        // "Resend code" control is the recovery path, so a hiccup must not trap
+        // the user on the form.
         setPendingEmail(email);
       }
     } catch (err) {

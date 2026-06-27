@@ -55,9 +55,17 @@ import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
  * `stdio` covers both the stdio binary and the self-hosted `--transport sse`
  * standalone server: both run in the operator's own trusted process and bind
  * a single boot-time actor (`resolveMcpActor`). `hosted` is the SaaS
- * per-bearer OAuth edge.
+ * per-bearer OAuth edge. `cli` is the `atlas login` device-flow credential
+ * (ADR-0025): a portable, file-stored bearer that resolves ORG-role-only —
+ * like `hosted` but for the CLI transport, withholding `platform_admin`
+ * REGARDLESS of deploy mode (a copied-off credential file is never the
+ * trusted local operator). This arm is the canonical declaration of that
+ * trust boundary and the tested proof that an `origin=cli` bearer is admitted
+ * to the dispatch gate chain org-scoped (ADR-0025 §5); the runtime REST path
+ * (`/api/v1/semantic/entities` via getSession) enforces the same downgrade in
+ * `buildCustomSessionPayload` keyed on `session.origin === "cli"`.
  */
-export type McpTransportTrust = "stdio" | "hosted";
+export type McpTransportTrust = "stdio" | "hosted" | "cli";
 
 export interface ResolveMcpActorRoleArgs {
   /** The trust boundary this binding is happening under. */
@@ -98,6 +106,14 @@ export function resolveMcpActorRole(
       // Customer-facing OAuth: ORG role ONLY. Pass `undefined` for the
       // user-level role so a cross-tenant `platform_admin` is never
       // auto-applied over a customer's workspace (ADR-0016 §platform_admin).
+      return resolveEffectiveRole(undefined, args.userId, args.activeOrganizationId);
+    case "cli":
+      // `atlas login` device-flow bearer (ADR-0025): ORG role ONLY, exactly
+      // like `hosted`. A portable file-stored credential is an exfiltration
+      // surface — `platform_admin` is withheld regardless of deploy mode, so
+      // a stolen `~/.atlas/credentials` can never act past its org/member role
+      // for the bound workspace. Distinct case (not a fall-through) so the
+      // trust boundary is named, audited, and pinned independently of hosted.
       return resolveEffectiveRole(undefined, args.userId, args.activeOrganizationId);
     default: {
       // Exhaustiveness guard — a new transport must declare its trust boundary

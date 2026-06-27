@@ -38461,7 +38461,8 @@
                                   "discord",
                                   "whatsapp",
                                   "gchat",
-                                  "webhook"
+                                  "webhook",
+                                  "cli"
                                 ]
                               },
                               "createdAt": {
@@ -38527,7 +38528,8 @@
                                   "discord",
                                   "whatsapp",
                                   "gchat",
-                                  "webhook"
+                                  "webhook",
+                                  "cli"
                                 ]
                               },
                               "createdAt": {
@@ -38590,7 +38592,8 @@
                                   "discord",
                                   "whatsapp",
                                   "gchat",
-                                  "webhook"
+                                  "webhook",
+                                  "cli"
                                 ]
                               },
                               "createdAt": {
@@ -38653,7 +38656,8 @@
                                   "discord",
                                   "whatsapp",
                                   "gchat",
-                                  "webhook"
+                                  "webhook",
+                                  "cli"
                                 ]
                               },
                               "createdAt": {
@@ -38859,7 +38863,8 @@
                           "discord",
                           "whatsapp",
                           "gchat",
-                          "webhook"
+                          "webhook",
+                          "cli"
                         ],
                         "description": "Agent origin this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072 / ADR-0015.",
                         "example": "any"
@@ -38919,7 +38924,8 @@
                           "discord",
                           "whatsapp",
                           "gchat",
-                          "webhook"
+                          "webhook",
+                          "cli"
                         ],
                         "description": "Agent origin this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072 / ADR-0015.",
                         "example": "any"
@@ -38974,7 +38980,8 @@
                                 "discord",
                                 "whatsapp",
                                 "gchat",
-                                "webhook"
+                                "webhook",
+                                "cli"
                               ]
                             },
                             "createdAt": {
@@ -39040,7 +39047,8 @@
                                 "discord",
                                 "whatsapp",
                                 "gchat",
-                                "webhook"
+                                "webhook",
+                                "cli"
                               ]
                             },
                             "createdAt": {
@@ -39103,7 +39111,8 @@
                                 "discord",
                                 "whatsapp",
                                 "gchat",
-                                "webhook"
+                                "webhook",
+                                "cli"
                               ]
                             },
                             "createdAt": {
@@ -39166,7 +39175,8 @@
                                 "discord",
                                 "whatsapp",
                                 "gchat",
-                                "webhook"
+                                "webhook",
+                                "cli"
                               ]
                             },
                             "createdAt": {
@@ -39355,7 +39365,8 @@
                       "discord",
                       "whatsapp",
                       "gchat",
-                      "webhook"
+                      "webhook",
+                      "cli"
                     ],
                     "description": "Agent origin this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072 / ADR-0015.",
                     "example": "any"
@@ -39403,7 +39414,8 @@
                                 "discord",
                                 "whatsapp",
                                 "gchat",
-                                "webhook"
+                                "webhook",
+                                "cli"
                               ]
                             },
                             "createdAt": {
@@ -39469,7 +39481,8 @@
                                 "discord",
                                 "whatsapp",
                                 "gchat",
-                                "webhook"
+                                "webhook",
+                                "cli"
                               ]
                             },
                             "createdAt": {
@@ -39532,7 +39545,8 @@
                                 "discord",
                                 "whatsapp",
                                 "gchat",
-                                "webhook"
+                                "webhook",
+                                "cli"
                               ]
                             },
                             "createdAt": {
@@ -39595,7 +39609,8 @@
                                 "discord",
                                 "whatsapp",
                                 "gchat",
-                                "webhook"
+                                "webhook",
+                                "cli"
                               ]
                             },
                             "createdAt": {
@@ -39971,6 +39986,7 @@
                                   "whatsapp",
                                   "gchat",
                                   "webhook",
+                                  "cli",
                                   null
                                 ]
                               },
@@ -40088,6 +40104,7 @@
                                   "whatsapp",
                                   "gchat",
                                   "webhook",
+                                  "cli",
                                   null
                                 ]
                               },
@@ -40211,6 +40228,7 @@
                                   "whatsapp",
                                   "gchat",
                                   "webhook",
+                                  "cli",
                                   null
                                 ]
                               },
@@ -40334,6 +40352,7 @@
                                   "whatsapp",
                                   "gchat",
                                   "webhook",
+                                  "cli",
                                   null
                                 ]
                               },
@@ -40605,6 +40624,7 @@
                                 "whatsapp",
                                 "gchat",
                                 "webhook",
+                                "cli",
                                 null
                               ]
                             },
@@ -40722,6 +40742,7 @@
                                 "whatsapp",
                                 "gchat",
                                 "webhook",
+                                "cli",
                                 null
                               ]
                             },
@@ -40845,6 +40866,7 @@
                                 "whatsapp",
                                 "gchat",
                                 "webhook",
+                                "cli",
                                 null
                               ]
                             },
@@ -40968,6 +40990,7 @@
                                 "whatsapp",
                                 "gchat",
                                 "webhook",
+                                "cli",
                                 null
                               ]
                             },
@@ -41240,6 +41263,7 @@
                                 "whatsapp",
                                 "gchat",
                                 "webhook",
+                                "cli",
                                 null
                               ]
                             },
@@ -41357,6 +41381,7 @@
                                 "whatsapp",
                                 "gchat",
                                 "webhook",
+                                "cli",
                                 null
                               ]
                             },
@@ -41480,6 +41505,7 @@
                                 "whatsapp",
                                 "gchat",
                                 "webhook",
+                                "cli",
                                 null
                               ]
                             },
@@ -41603,6 +41629,7 @@
                                 "whatsapp",
                                 "gchat",
                                 "webhook",
+                                "cli",
                                 null
                               ]
                             },

@@ -1827,17 +1827,17 @@ export function makeSchedulerLive(
         );
       }
 
-      // ── Periodic fiber: token-overage meter reporter (#3992) ─────────────
-      // Flushes each paid workspace's current-period token overage to Stripe
-      // Billing Meters (`meter_events`), idempotently (ledger-backed: same delta
-      // reported twice bills once). Like the teardown sweep it needs only
-      // `STRIPE_SECRET_KEY` (to call Stripe) + an internal DB (to hold the
-      // ledger + read usage) — NOT the webhook secret. The sweep query excludes
-      // BYOT and non-paid tiers (free/trial/locked); an unlimited-/zero-budget
-      // workspace is skipped by the per-workspace budget check.
+      // ── Periodic fiber: at-cost overage meter reporter (#3992; #4039) ────
+      // Flushes each paid workspace's current-period at-cost usage overage (in
+      // cents) to Stripe Billing Meters (`meter_events`), idempotently
+      // (ledger-backed: same delta reported twice bills once). Like the teardown
+      // sweep it needs only `STRIPE_SECRET_KEY` (to call Stripe) + an internal DB
+      // (to hold the ledger + read usage) — NOT the webhook secret. The sweep
+      // query excludes BYOT and non-paid tiers (free/trial/locked); a zero-credit
+      // workspace is skipped by the per-workspace credit check.
       // The `yield* Migration` barrier above already sequences this after
-      // `MigrationLive`, so the eager boot tick can't race migration 0154
-      // creating `overage_meter_reports`.
+      // `MigrationLive`, so the eager boot tick can't race migration 0154/0156
+      // on `overage_meter_reports`.
       const overageReportEnabled = yield* Effect.try({
         try: () => {
           if (!process.env.STRIPE_SECRET_KEY) return false;
@@ -1891,11 +1891,11 @@ export function makeSchedulerLive(
         );
         log.info(
           { intervalMs: OVERAGE_REPORT_INTERVAL_MS },
-          "Token-overage meter reporter started",
+          "At-cost overage meter reporter started",
         );
       } else {
         log.debug(
-          "Token-overage meter reporter not started — Stripe or internal DB not configured",
+          "At-cost overage meter reporter not started — Stripe or internal DB not configured",
         );
       }
 

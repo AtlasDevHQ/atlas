@@ -50,12 +50,14 @@ export const ANNUAL_PRICE_ID_ENV_VARS = [
 export type MonthlyPriceIdEnvVar = (typeof MONTHLY_PRICE_ID_ENV_VARS)[number];
 
 /**
- * Per-tier metered-overage price-ID setting keys (#3992). One Stripe Price per
- * paid tier, each metered (`usage_type=metered`) and pointing at the single
- * shared `atlas_token_overage` Billing Meter (#3991). Required for a paid
- * tier's token overage to be billed: the `OverageMeter` reporter maps a
- * workspace's tier → overage price when adding the metered subscription item,
- * and reports the period's output-equivalent overage delta to the meter.
+ * Per-tier metered-overage price-ID setting keys (#3992; at-cost repoint #4039).
+ * One Stripe Price per paid tier, each metered (`usage_type=metered`) and
+ * pointing at the single shared at-cost overage Billing Meter
+ * (`atlas_usage_overage_cents`) at `unit_amount = 1` (1 cent / metered unit).
+ * Required for a paid tier's usage overage to be billed: the `OverageMeter`
+ * reporter maps a workspace's tier → overage price when adding the metered
+ * subscription item, and reports the period's at-cost overage delta in CENTS to
+ * the meter (billed 1:1 with provider cost).
  *
  * A missing one is an operator-actionable boot WARNING (not a crash), the same
  * posture as the monthly price IDs (#3703): the overage price IDs are likewise

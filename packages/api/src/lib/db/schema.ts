@@ -2551,16 +2551,23 @@ export const stripePurgedSubscriptions = pgTable(
 );
 
 /**
- * Overage-meter report ledger (#3992) — idempotency + reconciliation for the
- * `OverageMeter` reporter that flushes each billing period's token overage to
- * Stripe Billing Meters on a scheduler tick. One row per (org, billing period):
- * `reported_tokens` is the CUMULATIVE output-equivalent overage already reported
- * to Stripe for that period. Each tick reports only `currentOverage -
- * reported_tokens` (the delta) and advances `reported_tokens`, so the same delta
- * reported twice bills once (the second tick computes a zero delta). The CHECK
- * keeps the cumulative non-negative; the upsert uses GREATEST so a late/retried
- * tick can never regress it (which would re-report already-billed tokens).
- * Mirrors `migrations/0154_overage_meter_reports.sql`.
+ * Overage-meter report ledger (#3992; re-denominated to at-cost cents #4039) —
+ * idempotency + reconciliation for the `OverageMeter` reporter that flushes each
+ * billing period's usage overage to a Stripe Billing Meter on a scheduler tick.
+ * One row per (org, billing period): `reported_cost_cents` is the CUMULATIVE
+ * at-cost overage CENTS already reported to Stripe for that period. Each tick
+ * reports only `currentOverage − reported_cost_cents` (the delta) and advances
+ * `reported_cost_cents`, so the same delta reported twice bills once (the second
+ * tick computes a zero delta). The CHECK keeps the cumulative non-negative; the
+ * upsert uses GREATEST so a late/retried tick can never regress it (which would
+ * re-report already-billed overage).
+ *
+ * `reported_tokens` is the SUPERSEDED token-denominated cumulative (#3992). It
+ * is the EXPAND phase of a two-phase column swap: the reporter no longer
+ * reads/writes it (it moved to `reported_cost_cents` in #4039), but it stays
+ * mirrored here until the N+1 CONTRACT migration drops it, so the schema-drift
+ * check passes during the overlap window. Mirrors
+ * `migrations/0154_overage_meter_reports.sql` + `0156_overage_meter_reports_cost_cents.sql`.
  */
 export const overageMeterReports = pgTable(
   "overage_meter_reports",
@@ -2568,7 +2575,9 @@ export const overageMeterReports = pgTable(
     orgId: text("org_id").notNull(),
     periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
     stripeCustomerId: text("stripe_customer_id").notNull(),
+    // Superseded by reportedCents (#4039); kept until the N+1 contract drop.
     reportedTokens: bigint("reported_tokens", { mode: "number" }).notNull().default(0),
+    reportedCents: bigint("reported_cost_cents", { mode: "number" }).notNull().default(0),
     lastEventIdentifier: text("last_event_identifier"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -2576,6 +2585,7 @@ export const overageMeterReports = pgTable(
   (t) => [
     primaryKey({ columns: [t.orgId, t.periodStart] }),
     check("chk_overage_meter_reports_tokens_nonneg", sql`reported_tokens >= 0`),
+    check("chk_overage_meter_reports_cost_cents_nonneg", sql`reported_cost_cents >= 0`),
     index("idx_overage_meter_reports_updated").on(t.updatedAt),
   ],
 );

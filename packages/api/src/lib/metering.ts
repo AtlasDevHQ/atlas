@@ -256,12 +256,12 @@ export interface UsageCurrentPeriod {
   /**
    * At-cost provider spend in USD for the period (#4036): the sum of
    * `gateway_cost_usd` over `token` events — the EXACT zero-markup dollars Atlas
-   * paid the Vercel AI Gateway. Captured now; the Structure B included credit
-   * ($20/seat) + overage meter will draw against this once the re-denomination
-   * lands (#4038/#4039) — until then `weightedTokenCount` above remains the
-   * active budget denominator and this is for display only. Rows with a NULL
-   * `gateway_cost_usd` (non-gateway providers, or token rows predating migration
-   * 0155) simply don't contribute.
+   * paid the Vercel AI Gateway. This is the LIVE Structure B billing numerator:
+   * dollar enforcement (#4038) denominates the included credit ($20/seat) against
+   * it, and the at-cost overage meter (#4039) reports `costUsd − credit` in cents.
+   * `weightedTokenCount` above is no longer a billing denominator (display only).
+   * Rows with a NULL `gateway_cost_usd` (non-gateway providers, or token rows
+   * predating migration 0155) simply don't contribute.
    */
   costUsd: number;
   activeUsers: number;

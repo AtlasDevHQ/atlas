@@ -371,10 +371,10 @@ billing.openapi(getBillingStatusRoute, async (c) => {
     }
 
     // Per-seat token budget, retained for the wire's `limits.totalTokenBudget`
-    // (display only). The token-budget *concept* also survives server-side for
-    // the token OverageMeter (#3992/#4039), which computes it independently via
-    // computeTokenBudget — it does NOT read this HTTP field. Enforcement no
-    // longer uses it: the budget is now a dollar credit (#4038).
+    // (display only). Neither enforcement nor the OverageMeter reads it anymore:
+    // the enforced budget is a dollar credit (#4038) and overage is billed at
+    // cost in cents (#4039). This figure is surfaced purely so the billing/usage
+    // pages can still show a token-budget number.
     const totalTokenBudget = computeTokenBudget(workspace.plan_tier, seatCount);
     const tokenLimit = isUnlimited(totalTokenBudget) ? null : totalTokenBudget;
 

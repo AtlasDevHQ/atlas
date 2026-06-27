@@ -891,12 +891,14 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
-  // Stripe Billing — per-tier metered-overage price IDs (#3992). One metered
-  // (usage_type=metered) Stripe Price per paid tier, each pointing at the single
-  // shared `atlas_token_overage` Billing Meter (#3991). The `OverageMeter`
-  // reporter maps a workspace's tier → overage price (added as a SECOND
-  // subscription item) and reports the period's output-equivalent overage delta
-  // to the meter. Platform-scoped + hot-reloadable (same as the monthly IDs):
+  // Stripe Billing — per-tier metered-overage price IDs (#3992; at-cost repoint
+  // #4039). One metered (usage_type=metered) Stripe Price per paid tier, each
+  // pointing at the single shared at-cost overage Billing Meter
+  // (`atlas_usage_overage_cents`) at `unit_amount = 1` (1 cent / metered unit).
+  // The `OverageMeter` reporter maps a workspace's tier → overage price (added
+  // as a SECOND subscription item) and reports the period's at-cost overage
+  // delta in CENTS to the meter, so the bill equals provider cost 1:1.
+  // Platform-scoped + hot-reloadable (same as the monthly IDs):
   // `getOveragePriceIdForTier()` reads them per-operation via `getSettingAuto`,
   // so an operator can change the metered price from Admin → Settings without a
   // redeploy. `saasVisible: false` keeps them off the per-tenant settings page.
@@ -906,7 +908,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: "STRIPE_STARTER_OVERAGE_PRICE_ID",
     section: "Billing",
     label: "Starter Overage Price ID (metered)",
-    description: "Stripe Price ID for the Starter plan's metered token overage ($1 / 1M output-equivalent tokens). Added as a second subscription item; required for Starter overage to be billed.",
+    description: "Stripe Price ID for the Starter plan's at-cost metered usage overage (billed in cents, 1:1 with provider cost). Added as a second subscription item; required for Starter overage to be billed.",
     type: "string",
     envVar: "STRIPE_STARTER_OVERAGE_PRICE_ID",
     scope: "platform",
@@ -916,7 +918,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: "STRIPE_PRO_OVERAGE_PRICE_ID",
     section: "Billing",
     label: "Pro Overage Price ID (metered)",
-    description: "Stripe Price ID for the Pro plan's metered token overage ($1 / 1M output-equivalent tokens). Added as a second subscription item; required for Pro overage to be billed.",
+    description: "Stripe Price ID for the Pro plan's at-cost metered usage overage (billed in cents, 1:1 with provider cost). Added as a second subscription item; required for Pro overage to be billed.",
     type: "string",
     envVar: "STRIPE_PRO_OVERAGE_PRICE_ID",
     scope: "platform",
@@ -926,7 +928,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: "STRIPE_BUSINESS_OVERAGE_PRICE_ID",
     section: "Billing",
     label: "Business Overage Price ID (metered)",
-    description: "Stripe Price ID for the Business plan's metered token overage ($1 / 1M output-equivalent tokens). Added as a second subscription item; required for Business overage to be billed.",
+    description: "Stripe Price ID for the Business plan's at-cost metered usage overage (billed in cents, 1:1 with provider cost). Added as a second subscription item; required for Business overage to be billed.",
     type: "string",
     envVar: "STRIPE_BUSINESS_OVERAGE_PRICE_ID",
     scope: "platform",

@@ -228,7 +228,9 @@ export interface VerifyTarget {
    * @better-auth/stripe plugin's `createCustomerOnSignUp` parks a customer here
    * at signup before any org subscription exists, so for a trial verify account
    * this is populated while every owned org's `stripeCustomerId` is null (#4011).
-   * Unioned into each owned org's Stripe purge so a verify teardown can't orphan it.
+   * Unioned into each *owned* org's Stripe purge; a user who owns no workspace
+   * (zero or only non-owner memberships) is surfaced as a manual-cleanup warning
+   * instead, since no purge can reach it.
    */
   userStripeCustomerId: string | null;
   orgs: VerifyOrg[];
@@ -433,15 +435,19 @@ export async function teardownTargets(
         `User ${target.email} (${target.userId}) has no workspace membership — ` +
           "orphan user row left untouched; remove it manually if it is a verification artifact.",
       );
-      // An orphan user with NO owned org never reaches the org-loop purge below,
-      // so its user-level customer can't be unioned in anywhere — call it out
-      // explicitly rather than silently leaving a live `cus_…` behind (#4011).
-      if (target.userStripeCustomerId) {
-        targetWarnings.push(
-          `User ${target.email} carries a Stripe customer ${target.userStripeCustomerId} but owns no ` +
-            "workspace to purge — delete it manually in the Stripe dashboard so it isn't orphaned.",
-        );
-      }
+    }
+
+    // The user-level customer is unioned into the purge of every OWNED org (see
+    // the loop below). When the user owns NO workspace — whether they have zero
+    // memberships or only non-owner ones — no purge reaches it, so a live `cus_…`
+    // would be silently left behind (the exact #4011 orphaning, via a different
+    // topology). Warn loudly in that case rather than reporting a clean teardown.
+    const ownsAnyWorkspace = target.orgs.some((o) => o.isOwner);
+    if (target.found && target.userStripeCustomerId && !ownsAnyWorkspace) {
+      targetWarnings.push(
+        `User ${target.email} carries a Stripe customer ${target.userStripeCustomerId} but owns no ` +
+          "workspace to purge — delete it manually in the Stripe dashboard so it isn't orphaned.",
+      );
     }
 
     for (const org of target.orgs) {

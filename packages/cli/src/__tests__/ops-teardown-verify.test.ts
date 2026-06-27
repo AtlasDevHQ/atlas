@@ -469,6 +469,65 @@ describe("teardownTargets", () => {
     expect(report.targets[0]!.warnings.some((w) => w.includes("manually"))).toBe(true);
   });
 
+  it("warns when a user owns NO workspace (only non-owner memberships) but carries a customer", async () => {
+    // The org-loop skips every non-owner membership, so the user-level customer
+    // is never unioned into a purge — it must still be surfaced loudly (#4011),
+    // not just in the zero-membership case.
+    const calls: string[] = [];
+    const deps: TeardownDeps = {
+      purgeStripe: async () => { calls.push("purge"); return okStripe(); },
+      softDelete: async () => true,
+      hardDelete: async () => 0,
+    };
+    const report = await teardownTargets(
+      [target({
+        userStripeCustomerId: "cus_nonowner",
+        orgs: [ownedOrg({ orgId: "org_shared", isOwner: false })],
+      })],
+      deps,
+      false,
+    );
+    expect(calls).toEqual([]); // no purge ran — every membership is non-owner
+    expect(report.targets[0]!.warnings.some((w) => w.includes("cus_nonowner"))).toBe(true);
+    expect(report.targets[0]!.warnings.some((w) => w.includes("manually"))).toBe(true);
+  });
+
+  it("does NOT warn (customer is reached) when the user owns at least one workspace", async () => {
+    const deps: TeardownDeps = {
+      purgeStripe: async () => okStripe({ actions: ["deleted Stripe customer cus_user"] }),
+      softDelete: async () => true,
+      hardDelete: async () => 1,
+    };
+    const report = await teardownTargets(
+      [target({ userStripeCustomerId: "cus_user", orgs: [ownedOrg()] })],
+      deps,
+      false,
+    );
+    // An owned org's purge unions the customer in, so no manual-cleanup warning fires.
+    expect(report.targets[0]!.warnings.some((w) => w.includes("manually"))).toBe(false);
+  });
+
+  it("unions the user customer into EVERY owned org's purge (multi-org fan-out)", async () => {
+    // A user owning 2 workspaces: the same user-level customer is passed to each
+    // owned org's purge. The first deletes it, the rest hit resource_missing (a
+    // no-op success) — proven safe, never orphaned, never double-counted.
+    const extraArgs: Array<readonly string[]> = [];
+    const deps: TeardownDeps = {
+      purgeStripe: async (_o, _c, extraCustomerIds) => { extraArgs.push(extraCustomerIds); return okStripe(); },
+      softDelete: async () => true,
+      hardDelete: async () => 1,
+    };
+    await teardownTargets(
+      [target({
+        userStripeCustomerId: "cus_user",
+        orgs: [ownedOrg({ orgId: "org_a" }), ownedOrg({ orgId: "org_b" })],
+      })],
+      deps,
+      false,
+    );
+    expect(extraArgs).toEqual([["cus_user"], ["cus_user"]]);
+  });
+
   it("skips a non-owner membership without calling any dep", async () => {
     const calls: string[] = [];
     const deps: TeardownDeps = {

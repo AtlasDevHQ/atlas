@@ -1375,10 +1375,12 @@ export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidErro
 
     const {
       findMissingMonthlyPriceIds,
+      findMissingOveragePriceIds,
       detectStripeKeyMode,
       isPriceModeConsistent,
       MONTHLY_PRICE_ID_ENV_VARS,
       ANNUAL_PRICE_ID_ENV_VARS,
+      OVERAGE_PRICE_ID_ENV_VARS,
     } = yield* Effect.tryPromise({
       try: () => import("@atlas/api/lib/billing/config-validation"),
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
@@ -1443,14 +1445,37 @@ export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidErro
       );
     }
 
+    // ── Settings-presence WARN: metered-overage price IDs (#3992) ────────
+    // Same posture as the monthly IDs: a missing per-tier overage price means
+    // `ensureOverageSubscriptionItem` (the webhook seam) can't attach that
+    // tier's metered subscription item, so Stripe still records the reporter's
+    // meter events but has no metered price to invoice them against — usage is
+    // metered, not billed. The fix is a runtime Admin → Settings edit, so WARN
+    // (never crash boot).
+    const missingOveragePriceIds = findMissingOveragePriceIds((key) => getSettingAuto(key));
+    if (missingOveragePriceIds.length > 0) {
+      log.error(
+        {
+          missingOveragePriceIds,
+          event: "billing_config.overage_price_missing",
+        },
+        `Stripe billing is enabled but ${missingOveragePriceIds.length} metered-overage price ID(s) ` +
+          `are unset after settings resolution: [${missingOveragePriceIds.join(", ")}]. ` +
+          `ensureOverageSubscriptionItem won't attach the metered subscription item for the affected ` +
+          `tier(s), so their token overage is metered in Stripe but never invoiced. Set the price ` +
+          `ID(s) in Admin → Settings (Billing) — no redeploy needed. See ${BILLING_CONFIG_ISSUE_REF}.`,
+      );
+    }
+
     // ── Network check: price existence + livemode↔key-mode (loud WARN) ───
     // A transient Stripe error here must NOT crash boot, so everything below
     // resolves to a logged warning. We resolve every CONFIGURED price ID
-    // (monthly + annual) through settings and check each price's livemode
-    // against keyMode.
+    // (monthly + annual + overage) through settings and check each price's
+    // livemode against keyMode.
     const configuredPriceVars = [
       ...MONTHLY_PRICE_ID_ENV_VARS,
       ...ANNUAL_PRICE_ID_ENV_VARS,
+      ...OVERAGE_PRICE_ID_ENV_VARS,
     ]
       .map((envVar): { envVar: string; priceId: string | undefined } => ({
         envVar,

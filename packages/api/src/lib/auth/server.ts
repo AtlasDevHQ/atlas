@@ -73,6 +73,7 @@ import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/a
 import { userHasConsumedTrial, claimTrialGrant, extendTrialOnClaim } from "@atlas/api/lib/billing/trial-eligibility";
 import { getStripeClient } from "@atlas/api/lib/billing/stripe-client";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
+import { ensureOverageSubscriptionItem } from "@atlas/api/lib/billing/overage-meter";
 import {
   classifyStripeEvent,
   recordStripeEvent,
@@ -2266,8 +2267,18 @@ export function buildStripePluginOptions(deps: {
               case "invoice.paid":
                 await handleInvoicePaid(event.data.object as Stripe.Invoice);
                 break;
+              case "customer.subscription.created":
+                // #3992 — add the tier's metered-overage price as a second
+                // subscription item. Best-effort (ensureOverageSubscriptionItem
+                // swallows + logs Stripe errors), so it can't force a redelivery
+                // of the already-applied tier write above.
+                await ensureOverageSubscriptionItem(event.data.object as Stripe.Subscription, stripeClient);
+                break;
               case "customer.subscription.updated":
                 await handleSubscriptionStatusPolicy(event.data.object as Stripe.Subscription);
+                // #3992 — idempotent: a no-op once the metered item is present;
+                // covers the upgrade/downgrade paths that don't fire `created`.
+                await ensureOverageSubscriptionItem(event.data.object as Stripe.Subscription, stripeClient);
                 break;
               default:
                 break;

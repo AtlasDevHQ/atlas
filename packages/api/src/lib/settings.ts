@@ -868,6 +868,48 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
+  // Stripe Billing — per-tier metered-overage price IDs (#3992). One metered
+  // (usage_type=metered) Stripe Price per paid tier, each pointing at the single
+  // shared `atlas_token_overage` Billing Meter (#3991). The `OverageMeter`
+  // reporter maps a workspace's tier → overage price (added as a SECOND
+  // subscription item) and reports the period's output-equivalent overage delta
+  // to the meter. Platform-scoped + hot-reloadable (same as the monthly IDs):
+  // `getOveragePriceIdForTier()` reads them per-operation via `getSettingAuto`,
+  // so an operator can change the metered price from Admin → Settings without a
+  // redeploy. `saasVisible: false` keeps them off the per-tenant settings page.
+  // A missing one surfaces as an operator-actionable boot WARNING (not a crash;
+  // see `BillingConfigGuardLive`) — its tier's overage simply won't be billed.
+  {
+    key: "STRIPE_STARTER_OVERAGE_PRICE_ID",
+    section: "Billing",
+    label: "Starter Overage Price ID (metered)",
+    description: "Stripe Price ID for the Starter plan's metered token overage ($1 / 1M output-equivalent tokens). Added as a second subscription item; required for Starter overage to be billed.",
+    type: "string",
+    envVar: "STRIPE_STARTER_OVERAGE_PRICE_ID",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "STRIPE_PRO_OVERAGE_PRICE_ID",
+    section: "Billing",
+    label: "Pro Overage Price ID (metered)",
+    description: "Stripe Price ID for the Pro plan's metered token overage ($1 / 1M output-equivalent tokens). Added as a second subscription item; required for Pro overage to be billed.",
+    type: "string",
+    envVar: "STRIPE_PRO_OVERAGE_PRICE_ID",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "STRIPE_BUSINESS_OVERAGE_PRICE_ID",
+    section: "Billing",
+    label: "Business Overage Price ID (metered)",
+    description: "Stripe Price ID for the Business plan's metered token overage ($1 / 1M output-equivalent tokens). Added as a second subscription item; required for Business overage to be billed.",
+    type: "string",
+    envVar: "STRIPE_BUSINESS_OVERAGE_PRICE_ID",
+    scope: "platform",
+    saasVisible: false,
+  },
+
   // Dynamic Learning — retrieval-time tuning for learned query patterns.
   // Workspace-scoped + hot-reloaded (read per-request via getSettingAuto), so
   // a tenant can tune them from Admin → Settings with no redeploy. The env var

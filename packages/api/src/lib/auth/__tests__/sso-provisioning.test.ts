@@ -42,6 +42,11 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: mockInternalQuery,
   internalExecute: mock(() => {}),
+  // Required by metering.ts (loaded transitively via server.ts → enforcement /
+  // overage-meter). Mirrors buildInternalDbMockDefaults; omitting it surfaces as
+  // "Export named 'isInternalCircuitOpen' not found" once a new import path
+  // forces metering to link against this hand-rolled partial mock (#3992).
+  isInternalCircuitOpen: () => false,
   getInternalDB: () => ({ query: mockDbQuery }),
   closeInternalDB: async () => {},
   migrateInternalDB: async () => {},
@@ -98,6 +103,11 @@ mock.module("@atlas/api/lib/billing/enforcement", () => ({
   invalidatePlanCache: () => {},
   buildMetricStatus: () => ({ metric: "tokens", currentUsage: 0, limit: 2_000_000, usagePercent: 0, status: "ok" }),
   severityOf: () => 0,
+  // Imported by overage-meter.ts (loaded transitively via server.ts → the
+  // ensureOverageSubscriptionItem seam). Omitting it surfaces as "Export named
+  // 'computeOverageTokens' not found" once that import forces enforcement to
+  // link against this partial mock (#3992). Real trivial impl — never called here.
+  computeOverageTokens: (usage: number, limit: number) => Math.max(0, usage - limit),
 }));
 
 const mockLogWarn: Mock<(...args: unknown[]) => void> = mock(() => {});

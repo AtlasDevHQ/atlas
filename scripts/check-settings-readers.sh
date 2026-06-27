@@ -79,8 +79,16 @@ GENERIC_SETTINGS_ROUTES_FILE="packages/api/src/api/routes/admin.ts"
 # or remove the setting.
 # ---------------------------------------------------------------------------
 ALLOWLIST=(
-  # (empty — the four Semantic Expert keys were removed by #3392 when their
-  # readers moved to getSetting; new entries need a justification comment.)
+  # The three metered-overage price IDs (#3992) ARE read at runtime — by
+  # getOveragePriceIdForTier() in lib/billing/overage-meter.ts, which calls
+  # getSettingAuto(OVERAGE_PRICE_ID_ENV_VAR_BY_TIER[tier]), and by the boot
+  # guard findMissingOveragePriceIds() in saas-guards.ts. The lookup key is the
+  # tier→key map indexed by tier, not a static string literal, so the
+  # literal/const-indirected grep below can't see it. They are NOT runtime-inert
+  # (drift class 1) — allowlisted because the reader is a dynamic map lookup.
+  "STRIPE_STARTER_OVERAGE_PRICE_ID"
+  "STRIPE_PRO_OVERAGE_PRICE_ID"
+  "STRIPE_BUSINESS_OVERAGE_PRICE_ID"
 )
 
 if [ ! -f "$SETTINGS_FILE" ]; then

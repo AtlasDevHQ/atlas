@@ -11,8 +11,12 @@ import { describe, it, expect } from "bun:test";
 import {
   MONTHLY_PRICE_ID_ENV_VARS,
   ANNUAL_PRICE_ID_ENV_VARS,
+  OVERAGE_PRICE_ID_ENV_VARS,
+  OVERAGE_PRICE_ID_ENV_VAR_BY_TIER,
   findMissingMonthlyPriceIdEnvVars,
   findMissingMonthlyPriceIds,
+  findMissingOveragePriceIds,
+  findMissingOveragePriceIdEnvVars,
   detectStripeKeyMode,
   isPriceModeConsistent,
 } from "@atlas/api/lib/billing/config-validation";
@@ -117,6 +121,87 @@ describe("billing/config-validation", () => {
         STRIPE_BUSINESS_PRICE_ID: "price_c",
       };
       expect(findMissingMonthlyPriceIds((k) => store[k])).toEqual(["STRIPE_STARTER_PRICE_ID"]);
+    });
+  });
+
+  describe("OVERAGE_PRICE_ID_ENV_VARS (#3992)", () => {
+    it("enumerates the three paid-tier metered-overage price vars", () => {
+      expect([...OVERAGE_PRICE_ID_ENV_VARS]).toEqual([
+        "STRIPE_STARTER_OVERAGE_PRICE_ID",
+        "STRIPE_PRO_OVERAGE_PRICE_ID",
+        "STRIPE_BUSINESS_OVERAGE_PRICE_ID",
+      ]);
+    });
+
+    it("is disjoint from the monthly + annual seat-price vars", () => {
+      for (const overage of OVERAGE_PRICE_ID_ENV_VARS) {
+        expect(MONTHLY_PRICE_ID_ENV_VARS).not.toContain(overage);
+        expect(ANNUAL_PRICE_ID_ENV_VARS).not.toContain(overage);
+      }
+    });
+
+    it("maps each paid tier to its overage price var", () => {
+      expect(OVERAGE_PRICE_ID_ENV_VAR_BY_TIER).toEqual({
+        starter: "STRIPE_STARTER_OVERAGE_PRICE_ID",
+        pro: "STRIPE_PRO_OVERAGE_PRICE_ID",
+        business: "STRIPE_BUSINESS_OVERAGE_PRICE_ID",
+      });
+    });
+  });
+
+  describe("findMissingOveragePriceIds (settings-aware, #3992)", () => {
+    it("returns all three when the resolver finds nothing", () => {
+      expect(findMissingOveragePriceIds(() => undefined)).toEqual([
+        "STRIPE_STARTER_OVERAGE_PRICE_ID",
+        "STRIPE_PRO_OVERAGE_PRICE_ID",
+        "STRIPE_BUSINESS_OVERAGE_PRICE_ID",
+      ]);
+    });
+
+    it("returns empty when the resolver supplies all three", () => {
+      const store: Record<string, string> = {
+        STRIPE_STARTER_OVERAGE_PRICE_ID: "price_so",
+        STRIPE_PRO_OVERAGE_PRICE_ID: "price_po",
+        STRIPE_BUSINESS_OVERAGE_PRICE_ID: "price_bo",
+      };
+      expect(findMissingOveragePriceIds((k) => store[k])).toEqual([]);
+    });
+
+    it("flags only the tier the resolver leaves unset", () => {
+      const store: Record<string, string> = {
+        STRIPE_STARTER_OVERAGE_PRICE_ID: "price_so",
+        STRIPE_BUSINESS_OVERAGE_PRICE_ID: "price_bo",
+      };
+      expect(findMissingOveragePriceIds((k) => store[k])).toEqual(["STRIPE_PRO_OVERAGE_PRICE_ID"]);
+    });
+
+    it("treats an empty string from the resolver as missing", () => {
+      const store: Record<string, string> = {
+        STRIPE_STARTER_OVERAGE_PRICE_ID: "",
+        STRIPE_PRO_OVERAGE_PRICE_ID: "price_po",
+        STRIPE_BUSINESS_OVERAGE_PRICE_ID: "price_bo",
+      };
+      expect(findMissingOveragePriceIds((k) => store[k])).toEqual(["STRIPE_STARTER_OVERAGE_PRICE_ID"]);
+    });
+  });
+
+  describe("findMissingOveragePriceIdEnvVars (pure env, #3992)", () => {
+    it("returns all three when env is empty", () => {
+      expect(findMissingOveragePriceIdEnvVars({})).toEqual([
+        "STRIPE_STARTER_OVERAGE_PRICE_ID",
+        "STRIPE_PRO_OVERAGE_PRICE_ID",
+        "STRIPE_BUSINESS_OVERAGE_PRICE_ID",
+      ]);
+    });
+
+    it("returns empty when all three are set", () => {
+      expect(
+        findMissingOveragePriceIdEnvVars({
+          STRIPE_STARTER_OVERAGE_PRICE_ID: "price_so",
+          STRIPE_PRO_OVERAGE_PRICE_ID: "price_po",
+          STRIPE_BUSINESS_OVERAGE_PRICE_ID: "price_bo",
+        }),
+      ).toEqual([]);
     });
   });
 

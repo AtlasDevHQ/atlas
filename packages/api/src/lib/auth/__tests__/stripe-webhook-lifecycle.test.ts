@@ -195,10 +195,18 @@ function ledgerAwareQuery(
 
 const STARTER_PRICE = "price_starter_test";
 const PRO_PRICE = "price_pro_test";
+const STARTER_OVERAGE_PRICE = "price_starter_overage_test"; // #3992 metered item
 const EPOCH = Math.floor(Date.now() / 1000);
 
 const subscriptionsRetrieve: Mock<(id: string) => Promise<unknown>> = mock(() =>
   Promise.resolve(stripeSubscription()),
+);
+
+// #3992 — the metered-overage subscription-item create the onEvent seam calls
+// via ensureOverageSubscriptionItem. Recorded so the wiring test can assert it
+// fires on customer.subscription.{created,updated}.
+const subscriptionItemsCreate: Mock<(params: unknown) => Promise<unknown>> = mock(() =>
+  Promise.resolve({ id: "si_overage" }),
 );
 
 function makeStripeClient() {
@@ -209,6 +217,9 @@ function makeStripeClient() {
     subscriptions: {
       retrieve: subscriptionsRetrieve,
       list: mock(() => Promise.resolve({ data: [] })),
+    },
+    subscriptionItems: {
+      create: subscriptionItemsCreate,
     },
     customers: {
       retrieve: mock(() => Promise.resolve({ id: "cus_1", email: "buyer@example.com" })),
@@ -310,13 +321,18 @@ function checkoutCompletedEvent(id = "evt_checkout_1", created = EPOCH) {
   };
 }
 
-const ENV_KEYS = ["STRIPE_STARTER_PRICE_ID", "STRIPE_PRO_PRICE_ID"] as const;
+const ENV_KEYS = [
+  "STRIPE_STARTER_PRICE_ID",
+  "STRIPE_PRO_PRICE_ID",
+  "STRIPE_STARTER_OVERAGE_PRICE_ID",
+] as const;
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeAll(() => {
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
   process.env.STRIPE_STARTER_PRICE_ID = STARTER_PRICE;
   process.env.STRIPE_PRO_PRICE_ID = PRO_PRICE;
+  process.env.STRIPE_STARTER_OVERAGE_PRICE_ID = STARTER_OVERAGE_PRICE;
 });
 
 afterAll(() => {
@@ -338,6 +354,8 @@ beforeEach(() => {
   mockInternalQuery.mockImplementation(ledgerAwareQuery());
   subscriptionsRetrieve.mockClear();
   subscriptionsRetrieve.mockImplementation(() => Promise.resolve(stripeSubscription()));
+  subscriptionItemsCreate.mockClear();
+  subscriptionItemsCreate.mockImplementation(() => Promise.resolve({ id: "si_overage" }));
   lockTails.clear();
   lockCalls.length = 0;
 });
@@ -1436,5 +1454,46 @@ describe("subscription status policy (#3424)", () => {
 
     expect(res.status).toBe(200);
     expect(mockUpdateWorkspaceStatus).not.toHaveBeenCalled();
+  });
+});
+
+// ── customer.subscription.{created,updated} → metered overage item (#3992) ──
+//
+// End-to-end wiring guard for the AC "metered item added as a second
+// subscription item per tier": a real webhook drives the real onEvent seam,
+// which calls the real ensureOverageSubscriptionItem. With the seat + overage
+// price IDs set (beforeAll) and the subscription's first item priced at
+// STARTER_PRICE, the tier resolves to starter and the metered item is added.
+// If the 2-line wiring in onEvent's switch were dropped, overage would meter
+// but never invoice — these tests fail loudly instead.
+describe("metered-overage subscription item wiring (#3992)", () => {
+  function subscriptionEvent(type: string, id: string) {
+    return { id, type, created: EPOCH, data: { object: stripeSubscription() } };
+  }
+
+  it("adds the tier's metered-overage item on customer.subscription.created", async () => {
+    const auth = makeAuth(emptyDB());
+    const res = await postWebhook(
+      auth,
+      subscriptionEvent("customer.subscription.created", "evt_ovg_created"),
+    );
+    expect(res.status).toBe(200);
+    expect(subscriptionItemsCreate).toHaveBeenCalledWith({
+      subscription: "sub_stripe_1",
+      price: STARTER_OVERAGE_PRICE,
+    });
+  });
+
+  it("ensures the metered-overage item on customer.subscription.updated (upgrade/downgrade path)", async () => {
+    const auth = makeAuth(emptyDB());
+    const res = await postWebhook(
+      auth,
+      subscriptionEvent("customer.subscription.updated", "evt_ovg_updated"),
+    );
+    expect(res.status).toBe(200);
+    expect(subscriptionItemsCreate).toHaveBeenCalledWith({
+      subscription: "sub_stripe_1",
+      price: STARTER_OVERAGE_PRICE,
+    });
   });
 });

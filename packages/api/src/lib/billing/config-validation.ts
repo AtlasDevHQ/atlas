@@ -31,6 +31,8 @@
  * outage must not wedge boot). It is NOT here because it isn't pure.
  */
 
+import type { PaidPlanTier } from "./plans";
+
 /** Monthly price-ID env var for each paid tier — the SSOT `getStripePlans()` reads. */
 export const MONTHLY_PRICE_ID_ENV_VARS = [
   "STRIPE_STARTER_PRICE_ID",
@@ -46,6 +48,73 @@ export const ANNUAL_PRICE_ID_ENV_VARS = [
 ] as const;
 
 export type MonthlyPriceIdEnvVar = (typeof MONTHLY_PRICE_ID_ENV_VARS)[number];
+
+/**
+ * Per-tier metered-overage price-ID setting keys (#3992). One Stripe Price per
+ * paid tier, each metered (`usage_type=metered`) and pointing at the single
+ * shared `atlas_token_overage` Billing Meter (#3991). Required for a paid
+ * tier's token overage to be billed: the `OverageMeter` reporter maps a
+ * workspace's tier → overage price when adding the metered subscription item,
+ * and reports the period's output-equivalent overage delta to the meter.
+ *
+ * A missing one is an operator-actionable boot WARNING (not a crash), the same
+ * posture as the monthly price IDs (#3703): the overage price IDs are likewise
+ * runtime-editable platform settings, so a boot crash would prevent an operator
+ * from ever fixing pricing without a redeploy.
+ */
+export const OVERAGE_PRICE_ID_ENV_VARS = [
+  "STRIPE_STARTER_OVERAGE_PRICE_ID",
+  "STRIPE_PRO_OVERAGE_PRICE_ID",
+  "STRIPE_BUSINESS_OVERAGE_PRICE_ID",
+] as const;
+
+export type OveragePriceIdEnvVar = (typeof OVERAGE_PRICE_ID_ENV_VARS)[number];
+
+/**
+ * Paid tier → its metered-overage price-ID setting key. The SSOT both the
+ * `OverageMeter` reporter (mapping a workspace's tier → overage price when
+ * adding the metered subscription item) and boot validation read, so the
+ * mapping can never drift between "validated at boot" and "used at runtime". A
+ * compile error here if a new {@link PaidPlanTier} is added without a key.
+ */
+export const OVERAGE_PRICE_ID_ENV_VAR_BY_TIER = {
+  starter: "STRIPE_STARTER_OVERAGE_PRICE_ID",
+  pro: "STRIPE_PRO_OVERAGE_PRICE_ID",
+  business: "STRIPE_BUSINESS_OVERAGE_PRICE_ID",
+} as const satisfies Record<PaidPlanTier, OveragePriceIdEnvVar>;
+
+/**
+ * Return the subset of {@link OVERAGE_PRICE_ID_ENV_VARS} that resolve to a
+ * missing (undefined or empty-string) value through `resolve` (#3992).
+ *
+ * Settings-aware sibling of {@link findMissingOveragePriceIdEnvVars}: the
+ * overage price IDs are platform-scoped settings (registry-backed, env
+ * fallback), so the boot guard resolves them via `getSettingAuto` — an overage
+ * price set only in the Admin console must NOT register as missing. The lookup
+ * is injected so the function stays pure and unit-testable with a stub resolver.
+ */
+export function findMissingOveragePriceIds(
+  resolve: (settingKey: OveragePriceIdEnvVar) => string | undefined,
+): OveragePriceIdEnvVar[] {
+  return OVERAGE_PRICE_ID_ENV_VARS.filter((key) => {
+    const value = resolve(key);
+    return value === undefined || value === "";
+  });
+}
+
+/**
+ * Return the subset of {@link OVERAGE_PRICE_ID_ENV_VARS} that are unset or
+ * empty in `env`. Pure env sibling of {@link findMissingOveragePriceIds}; an
+ * empty string counts as missing (Stripe never issues an empty price ID).
+ */
+export function findMissingOveragePriceIdEnvVars(
+  env: Record<string, string | undefined> = process.env,
+): OveragePriceIdEnvVar[] {
+  return OVERAGE_PRICE_ID_ENV_VARS.filter((key) => {
+    const value = env[key];
+    return value === undefined || value === "";
+  });
+}
 
 /**
  * Return the subset of {@link MONTHLY_PRICE_ID_ENV_VARS} that resolve to a

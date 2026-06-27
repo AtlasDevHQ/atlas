@@ -19,6 +19,17 @@ Core AGPL never depends on `/ee`. Self-hosted gets the full product (agent, tool
 - The `ee-stub-build` job replaces `ee/` with a no-op stub and re-runs `bun run type` + `bun run build` to prove core compiles standalone.
 - Every enterprise subsystem (residency, model routing, masking, approval, SLA, backups, audit retention, IP allowlist, SSO, SCIM, roles, branding, domains, proactive, deploy mode) is reachable via a `Context.Tag` in `lib/effect/services.ts` — `yield* TheTag`, never `await import("@atlas/ee/...")`.
 
+## The MCP SaaS-coupled surface (`@atlas/mcp`)
+
+`@atlas/mcp` is AGPL-licensed but sits *above* core: it already statically depends on `@atlas/api`, so it isn't bound by the "exactly one file" rule that governs `packages/api/src`. It does, however, touch `@atlas/ee` — and that coupling is **formally SaaS-coupled and confined to two audited seam files**, not free to spread:
+
+- **`packages/mcp/src/onboarding.ts`** — the anonymous `start_trial` onboarding tool. It only exists on hosted Atlas (`deployMode === 'saas'`; off-SaaS the router 404s and the provisioner refuses), so it legitimately reaches the EE trial provisioner (`@atlas/ee/onboarding/provision-trial`). This seam is a **static** import (top-of-file), wholly gated by the SaaS-only deploy mode: there is no self-hosted analog to invert toward — provisioning a trial *is* a SaaS-billing operation. This is the deliberate SaaS-coupled carve-out, mirroring the way billing itself is a core carve-out: the capability only makes sense on the hosted product.
+- **`packages/mcp/src/actor.ts`** — the actor-binding approval probe. It uses a **deferred, fail-closed** `await import("@atlas/ee/governance/approval")` (the inverted pattern core uses): when EE isn't installed the lookup can't resolve, and the catch assumes rules exist and forces explicit binding rather than silently bypassing the gate.
+
+Both seams keep compiling standalone because `scripts/ee-stub/src/{onboarding/provision-trial,governance/approval}.ts` mirror their type surface for the `ee-stub-build` job.
+
+`scripts/check-ee-imports.sh` scans **both** `packages/api/src` and `packages/mcp/src`. For MCP the allowlist is those two files (`MCP_ALLOWED_FILES`); any *other* `@atlas/ee` importer in `packages/mcp/src` fails the guard, so the SaaS coupling can't widen unseen. A genuinely-new seam should be folded into one of the two audited files rather than spread to a new file; if a new file is truly warranted it is a deliberate boundary expansion — prefer a deferred (dynamic), fail-closed import (the `actor.ts` pattern, not a new static dependency like the grandfathered `onboarding.ts`), then add it to `MCP_ALLOWED_FILES` with a justification.
+
 ## Reading the enterprise flag
 
 Core code never imports `isEnterpriseEnabled` from `@atlas/ee` (closeout grep gate rejects it). Branch on capability instead: `yield* TheTag` and let the `NoopXxxLayer` default short-circuit when EE isn't installed — e.g. `ProactiveGate.requireEnabled` yields `EnterpriseError`; `RolesPolicy.checkPermission` falls back to legacy admin/member mapping.

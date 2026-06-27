@@ -56,6 +56,7 @@ import {
   isPlanEligible,
   parsePlanTier,
 } from "@atlas/api/lib/integrations/install/plan-rank";
+import { getWorkspaceEntitlement } from "@atlas/api/lib/integrations/install/workspace-entitlement";
 import { verifyOAuthStateToken } from "@atlas/api/lib/integrations/install/oauth-state-token";
 import { findDataCandidateBySlug } from "@atlas/api/lib/openapi/data-candidates";
 import {
@@ -599,43 +600,6 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
     config_schema: row.config_schema ?? null,
     implementation_status: row.implementation_status ?? null,
     saas_eligible: row.saas_eligible ?? null,
-  };
-}
-
-/**
- * Resolve `{ planTier, isOperator }` for a workspace from the
- * `organization` table. `planTier` is narrowed via {@link parsePlanTier}
- * at the SQL boundary so downstream gates see `PlanTier | null` rather
- * than a raw string — a legacy / unknown value maps to `null` and
- * callers treat `null` as "no plan / not an operator", which by
- * construction denies any `min_plan != 'free'` install attempt without
- * admitting the operator bypass.
- *
- * On a self-hosted no-auth deploy (sentinel `workspaceId =
- * "self-hosted"`), there's no organization row at all. The function
- * returns `{ planTier: null, isOperator: false }` and the same fail-
- * closed default applies — `null` collapses to `"free"` in the
- * response body only when the caller builds an upgrade prompt.
- */
-async function getWorkspaceEntitlement(orgId: string): Promise<{
-  planTier: PlanTier | null;
-  isOperator: boolean;
-}> {
-  if (orgId === "self-hosted") return { planTier: null, isOperator: false };
-  const rows = await internalQuery<{
-    plan_tier: string | null;
-    is_operator_workspace: boolean | null;
-  }>(
-    `SELECT plan_tier, is_operator_workspace
-       FROM organization
-      WHERE id = $1
-      LIMIT 1`,
-    [orgId],
-  );
-  if (rows.length === 0) return { planTier: null, isOperator: false };
-  return {
-    planTier: parsePlanTier(rows[0]?.plan_tier),
-    isOperator: rows[0]?.is_operator_workspace === true,
   };
 }
 

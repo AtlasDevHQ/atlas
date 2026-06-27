@@ -87,6 +87,7 @@ type HttpErrorCode =
   | "rate_limited"
   | "conversation_budget_exceeded"
   | "plan_limit_exceeded"
+  | "plan_upgrade_required"
   | "billing_check_failed"
   | "upstream_error"
   | "service_unavailable"
@@ -385,6 +386,23 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
         status: 503,
         code: "billing_check_failed",
         message: error.message,
+      };
+    // WS1 (#3984 / #3986) — a tier-gated feature whose minimum plan ranks above the
+    // workspace's current tier. 403 + `plan_upgrade_required` matches the
+    // integration install endpoints' upgrade envelope
+    // (`PlanUpgradeRequiredBody`) so the admin UI's upgrade toast renders
+    // identically. Body carries both plan fields. Distinct from the 503
+    // above (a lookup fault) and from `EnterpriseError`'s 403
+    // `enterprise_required` (the deployment-level license gate).
+    case "FeatureEntitlementError":
+      return {
+        status: 403,
+        code: "plan_upgrade_required",
+        message: error.message,
+        body: {
+          required_plan: error.requiredPlan,
+          current_plan: error.currentPlan,
+        },
       };
 
     // ── 502 Bad Gateway — upstream DB error ──────────────────────

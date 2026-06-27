@@ -181,6 +181,10 @@ mock.module("@atlas/ee/layers", () => {
 // overwrites. Files that need to restore env do so in their own
 // afterAll; the `??=` here is the module-load contract, not teardown.
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
+// The per-tier SSO entitlement gate (WS1 #3986) only fires in SaaS deploy mode.
+// Pin it so the gate-enforcement tests below are deterministic regardless of the
+// ambient ATLAS_DEPLOY_MODE / DATABASE_URL.
+process.env.ATLAS_DEPLOY_MODE ??= "saas";
 
 // --- Import app after mocks ---
 
@@ -231,7 +235,17 @@ describe("admin SSO — domain verification", () => {
   beforeEach(() => {
     mocks.hasInternalDB = true;
     mocks.mockInternalQuery.mockReset();
-    mocks.mockInternalQuery.mockResolvedValue([]);
+    // The per-tier feature-entitlement guard (WS1 #3986) resolves the
+    // workspace's plan_tier before every SSO route runs. SSO gates to Business,
+    // so the test workspace must read back as `business` or every route 403s
+    // with `plan_upgrade_required`. Other queries keep returning [].
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) =>
+      /plan_tier[\s\S]*is_operator_workspace|is_operator_workspace[\s\S]*plan_tier/.test(
+        sql,
+      )
+        ? [{ plan_tier: "business", is_operator_workspace: false }]
+        : [],
+    );
     mockVerifyDomain.mockReset();
     mockCheckDomainAvailability.mockReset();
     mockCreateSSOProvider.mockReset();
@@ -492,6 +506,15 @@ describe("Admin SSO Test Connection API", () => {
   beforeEach(() => {
     mockTestSSOProvider.mockReset();
     mocks.setOrgAdmin("org-1");
+    // Business-tier workspace so the per-tier SSO gate (WS1 #3986) admits.
+    mocks.mockInternalQuery.mockReset();
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) =>
+      /plan_tier[\s\S]*is_operator_workspace|is_operator_workspace[\s\S]*plan_tier/.test(
+        sql,
+      )
+        ? [{ plan_tier: "business", is_operator_workspace: false }]
+        : [],
+    );
   });
 
   describe("POST /api/v1/admin/sso/providers/:id/test", () => {
@@ -587,5 +610,101 @@ describe("Admin SSO Test Connection API", () => {
       );
       expect(res.status).toBe(403);
     });
+  });
+});
+
+// ── Per-tier feature-entitlement gating (WS1 #3986) ────────────────
+//
+// Proves the SSO surface is gated at the route/handler layer (not UI-only):
+// an enterprise-enabled deployment still denies a below-Business workspace,
+// and a Business workspace is admitted. The enterprise-license Tag is real
+// (EELayer mock provides SSOPolicy); only the per-tier ladder changes the
+// outcome here.
+describe("admin SSO — per-tier entitlement gate", () => {
+  beforeEach(() => {
+    mocks.setOrgAdmin("org-1");
+    mocks.hasInternalDB = true;
+    mocks.mockInternalQuery.mockReset();
+  });
+
+  /** Make the entitlement lookup read back a specific tier. */
+  function setWorkspaceTier(tier: string, isOperator = false): void {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) =>
+      /plan_tier[\s\S]*is_operator_workspace|is_operator_workspace[\s\S]*plan_tier/.test(
+        sql,
+      )
+        ? [{ plan_tier: tier, is_operator_workspace: isOperator }]
+        : [],
+    );
+  }
+
+  it("denies a Pro workspace with 403 plan_upgrade_required", async () => {
+    setWorkspaceTier("pro");
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/sso/providers"),
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as {
+      error: string;
+      required_plan: string;
+      current_plan: string;
+    };
+    expect(body.error).toBe("plan_upgrade_required");
+    expect(body.required_plan).toBe("business");
+    expect(body.current_plan).toBe("pro");
+  });
+
+  it("denies a Starter workspace creating a provider", async () => {
+    setWorkspaceTier("starter");
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/sso/providers", "POST", {
+        type: "oidc",
+        issuer: "https://idp.acme.com",
+        domain: "acme.com",
+        config: { clientId: "x", clientSecret: "y", discoveryUrl: "https://idp.acme.com/.well-known/openid-configuration" },
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "plan_upgrade_required",
+    );
+  });
+
+  it("allows a Business workspace (gate passes through to the SSO service)", async () => {
+    setWorkspaceTier("business");
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/sso/providers"),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("allows an operator workspace regardless of tier", async () => {
+    setWorkspaceTier("free", true);
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/sso/providers"),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("fails closed with 503 billing_check_failed when the tier lookup throws", async () => {
+    // A transient internal-DB fault must NOT silently widen access to a
+    // Business feature — the per-tier guard fails closed end-to-end.
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (
+        /plan_tier[\s\S]*is_operator_workspace|is_operator_workspace[\s\S]*plan_tier/.test(
+          sql,
+        )
+      ) {
+        throw new Error("db unavailable");
+      }
+      return [];
+    });
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/sso/providers"),
+    );
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "billing_check_failed",
+    );
   });
 });

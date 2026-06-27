@@ -17,6 +17,7 @@
  */
 
 import { Data } from "effect";
+import type { PlanTier } from "@useatlas/types";
 
 // Content-mode errors live in `lib/content-mode/port.ts` so that module
 // stays self-contained and pure. They are folded into the `AtlasError`
@@ -817,6 +818,39 @@ export class BillingCheckFailedError extends Data.TaggedError("BillingCheckFaile
   readonly workspaceId: string;
 }> {}
 
+/**
+ * A request hit a tier-gated feature its workspace's plan does not unlock
+ * (WS1 of #3984 / #3986). Thrown by `requireFeatureEntitlement` when the
+ * resolved tier ranks below the feature's minimum tier in the
+ * `FeatureEntitlement` SSOT.
+ *
+ * Maps to HTTP 403 `plan_upgrade_required` — the SAME envelope the
+ * integration install endpoints already emit
+ * ({@link import("@useatlas/types").PlanUpgradeRequiredBody}), so the admin
+ * UI's upgrade toast renders identically whether the gate fired on an
+ * integration install or a Business-only feature. `mapTaggedError` surfaces
+ * `requiredPlan` / `currentPlan` as the body's `required_plan` /
+ * `current_plan` fields.
+ *
+ * Distinct from {@link BillingCheckFailedError} (503 "try again", a transient
+ * lookup fault) and {@link EnterpriseError} (the deployment-level enterprise
+ * license gate, 403 `enterprise_required`). This is the per-tier ladder: the
+ * deployment is enterprise-enabled, but the workspace's plan tier is too low.
+ *
+ * `feature` is the {@link import("@atlas/api/lib/billing/feature-entitlement").GatedFeature}
+ * identifier — forensic/log context, not read by `mapTaggedError`.
+ */
+export class FeatureEntitlementError extends Data.TaggedError("FeatureEntitlementError")<{
+  readonly message: string;
+  readonly feature: string;
+  // Typed `PlanTier` (not `string`) so this producer of the
+  // `plan_upgrade_required` envelope agrees at compile time with the wire SSOT
+  // (`PlanUpgradeRequiredBody.required_plan` / `current_plan`, both `PlanTier`)
+  // and the install endpoints' OpenAPI schema (`z.enum(PLAN_TIERS)`).
+  readonly requiredPlan: PlanTier;
+  readonly currentPlan: PlanTier;
+}> {}
+
 // ── Backups (#2989 — verify/restore structural error mapping) ──────
 
 /**
@@ -958,6 +992,7 @@ export type AtlasError =
   | InvalidInstallIdError
   | ChatIntegrationLimitError
   | BillingCheckFailedError
+  | FeatureEntitlementError
   | BackupNotFoundError
   | BackupInvalidStateError
   | BackupRestoreTokenError
@@ -1037,6 +1072,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "InvalidInstallIdError",
   "ChatIntegrationLimitError",
   "BillingCheckFailedError",
+  "FeatureEntitlementError",
   "BackupNotFoundError",
   "BackupInvalidStateError",
   "BackupRestoreTokenError",

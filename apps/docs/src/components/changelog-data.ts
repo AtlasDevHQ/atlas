@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.32",
+    title: "Signup & Residency Hardening",
+    date: "2026-06-27",
+    summary:
+      "Follow-up fixes from end-to-end verification of the v0.0.31 regional residency work. Signing up with an email that already exists no longer dead-ends on the verification-code screen — a code is now always sent. And signup stops creating an unused, per-account Stripe customer that the organization-scoped billing model never used (and that didn't exist consistently across regions); billing continues to use the single organization-level customer created at checkout.",
+    highlights: [
+      "Existing-email signup now always sends the verification code, instead of silently showing the code screen with no email (#4010)",
+      "Signup no longer mints an unused user-level Stripe customer; org-scoped billing uses the organization customer created at first checkout (#4012)",
+      "Verify-account teardown now also removes the user-level Stripe customer it would previously have orphaned (#4011)",
+    ],
+  },
+  {
     version: "v0.0.31",
     title: "Regional Residency Routing",
     date: "2026-06-26",

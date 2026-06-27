@@ -5,7 +5,8 @@
  * AI-usage credit ($20/seat/month, billed at provider cost with zero markup).
  * Usage is enforced in dollars against that credit (`computeUsageDollarBudget`),
  * not a per-token markup; per-seat token budgets survive only as a non-enforcing
- * display / Stripe plan-metadata figure.
+ * display figure (`computeTokenBudget`) and as plan `limits` carried through
+ * `getStripePlans` into the @better-auth/stripe plugin's subscription record.
  *
  * Self-hosted deployments default to "free" (unlimited, BYOK only).
  * SaaS workspaces start as "trial" (14-day trial of Starter).

@@ -211,7 +211,7 @@ describe("billing/plans", () => {
       // 2_000_000-token budget) pasted into includedUsageDollarsPerSeat. A real
       // at-cost credit is a small, positive dollar figure well under $1000/seat,
       // and lives on a categorically smaller scale than the per-seat token budget
-      // (the budget is ≥1000× the credit). Either bound trips on a token-scale
+      // (the budget is >1000× the credit). Either bound trips on a token-scale
       // value — independent of the exact $20 pinned above, so a future $-recalibration
       // stays green while a denomination slip fails.
       for (const tier of ["starter", "pro", "business", "trial"] as const) {

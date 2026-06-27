@@ -473,7 +473,7 @@ export async function checkPlanLimits(
         log.error(
           { orgId, tier, tokenCount: usage.tokenCount, periodStart: usage.periodStart, reason: "cost_basis_missing" },
           "Dollar enforcement has no cost basis — tokens recorded but gateway_cost_usd summed to $0; " +
-            "usage gauge reads ~0%% and the workspace is effectively un-metered (non-gateway provider, or token rows predating #4036) (#4038)",
+            "usage gauge reads ~0% and the workspace is effectively un-metered (non-gateway provider, or token rows predating #4036) (#4038)",
         );
       }
       // Denominate against the summed at-cost provider spend (#4036) — the exact

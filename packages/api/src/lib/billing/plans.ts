@@ -319,7 +319,7 @@ export function computeUsageDollarBudget(tier: PlanTier, seatCount: number): num
  * with quantity = member count, and the plugin's member
  * add/remove/invite-accept hooks keep the Stripe quantity synced to
  * membership automatically. This matches Atlas's $/seat pricing and the
- * member-count basis enforcement uses for token budgets. The pairing is
+ * member-count basis enforcement uses for the usage credit (#4038). The pairing is
  * pinned by plans.test.ts — a drift would re-add a base line item on top
  * of the seat item (double billing).
  *

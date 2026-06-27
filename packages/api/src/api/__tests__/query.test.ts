@@ -398,7 +398,7 @@ describe("POST /api/v1/query", () => {
     billingGateVerdict = {
       allowed: false,
       errorCode: "plan_limit_exceeded",
-      errorMessage: "You have exceeded your plan's token budget.",
+      errorMessage: "You have reached your workspace's spend ceiling.",
       httpStatus: 429,
       retryable: false,
       usage: { currentUsage: 23, limit: 20, metric: "usd" },

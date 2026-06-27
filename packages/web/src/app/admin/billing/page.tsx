@@ -486,13 +486,14 @@ function PlanShell({ data }: { data: BillingStatus }) {
           <DetailRow label="Scheduled" value={cancelNotice} />
         )}
         {/*
-         * #3422 — `overagePerMillionTokens` is a display-only wire field that
-         * is NOT charged: enforcement is a hard cap with a 10% grace buffer,
-         * not metered pay-as-you-go billing. Rendering it as "$X/M tokens"
-         * implied an active per-token charge that does not exist, so the row
-         * is intentionally not surfaced. The field stays in the wire schema
-         * (removal has publish-sequencing implications); real metered billing
-         * is parked in #3515.
+         * #3422 / #4038 — `overagePerMillionTokens` is a legacy display-only
+         * wire field, now permanently 0. Structure B (#4038) DOES meter overage,
+         * but at provider cost (zero markup) against the dollar usage credit —
+         * surfaced by the usage card above ("in overage, $X.XX so far"), not by a
+         * synthetic per-token rate. Rendering this zeroed field as "$X/M tokens"
+         * would imply a per-token charge that no longer exists, so the row is
+         * intentionally not surfaced. The field stays in the wire schema until the
+         * at-cost meter repoint (#4039) lets it be dropped (publish-sequencing).
          */}
       </DetailList>
 

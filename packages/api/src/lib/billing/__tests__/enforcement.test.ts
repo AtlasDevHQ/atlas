@@ -1,8 +1,10 @@
 /**
  * Tests for plan limit enforcement with graceful degradation.
  *
- * Per-seat token budget model: total budget = tokenBudgetPerSeat * seatCount.
- * Starter: 2M tokens/seat, Pro: 5M tokens/seat, Business: 15M tokens/seat.
+ * Per-seat dollar usage credit model (Structure B, #4038): total credit =
+ * includedUsageDollarsPerSeat ($20) * seatCount, evaluated against the summed
+ * at-cost provider spend (`usage.costUsd`). Seat/connection/chat-integration
+ * resource caps and the token OverageMeter helpers are covered here too.
  */
 
 import {

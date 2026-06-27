@@ -61,7 +61,7 @@ mock.module("@atlas/api/lib/billing/enforcement", () => ({
   // Unused by the gate — stubbed for module-graph completeness.
   getCachedWorkspace: mock(async () => null),
   invalidatePlanCache: mock(() => {}),
-  buildMetricStatus: mock(() => ({ metric: "tokens", currentUsage: 0, limit: 1, usagePercent: 0, status: "ok" })),
+  buildMetricStatus: mock(() => ({ metric: "usd", currentUsage: 0, limit: 1, usagePercent: 0, status: "ok" })),
   severityOf: mock(() => 0),
   checkResourceLimit: mock(async () => ({ allowed: true })),
   CHAT_INTEGRATION_COUNT_SQL: "",
@@ -237,10 +237,10 @@ describe("checkAgentBillingGate", () => {
     expect(result.retryable).toBe(true);
   });
 
-  it("allows and passes the 80–109% warning band through without blocking", async () => {
+  it("allows and passes the approaching-credit warning band through without blocking", async () => {
     planVerdict = {
       allowed: true,
-      warning: { code: "plan_limit_warning", message: "You are approaching your plan's token budget", metrics: [] },
+      warning: { code: "plan_limit_warning", message: "You are approaching your included usage credit", metrics: [] },
     };
     const result = await checkAgentBillingGate("org-1");
     expect(result.allowed).toBe(true);

@@ -413,6 +413,12 @@ describe("migrateAuthTables", () => {
             // 0150 adds token_usage.latency_ms (Atlas-internal per-turn latency,
             // demo tracking, #3931) — runs in every auth mode.
             { name: "0150_token_usage_latency.sql" },
+            // 0151 is a managed-auth migration (user email-hash index) — skipped
+            // in this non-managed test mode, so it is intentionally absent here.
+            // 0152 adds usage_events.weighted_quantity (Atlas-internal
+            // output-equivalent token accounting, TokenWeighting WS2, #3989) —
+            // runs in every auth mode, so it must be pre-applied here.
+            { name: "0152_usage_events_weighted_quantity.sql" },
           ],
         };
       }

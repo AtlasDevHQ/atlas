@@ -129,6 +129,7 @@ describe("metering", () => {
         "user-1",
         "query",
         1,
+        null, // weighted_quantity — omitted for a non-token event
         JSON.stringify({ model: "gpt-4" }),
       ]);
     });
@@ -142,7 +143,29 @@ describe("metering", () => {
       });
 
       expect(queryCalls).toHaveLength(1);
-      expect(queryCalls[0].params).toEqual([null, null, "token", 500, null]);
+      expect(queryCalls[0].params).toEqual([null, null, "token", 500, null, null]);
+    });
+
+    it("persists the weighted (output-equivalent) quantity for a token event (#3989)", () => {
+      logUsageEvent({
+        workspaceId: "org-1",
+        userId: "user-1",
+        eventType: "token",
+        quantity: 1500,
+        weightedQuantity: 4200,
+        metadata: { input: 500, output: 1000, weighted: 4200 },
+      });
+
+      expect(queryCalls).toHaveLength(1);
+      expect(queryCalls[0].sql).toContain("weighted_quantity");
+      expect(queryCalls[0].params).toEqual([
+        "org-1",
+        "user-1",
+        "token",
+        1500,
+        4200,
+        JSON.stringify({ input: 500, output: 1000, weighted: 4200 }),
+      ]);
     });
 
     it("is a no-op when internal DB is not configured", () => {
@@ -217,17 +240,24 @@ describe("metering", () => {
     it("returns current period aggregates (UTC-month fallback, no subscription)", async () => {
       queryResults = [
         [], // no active subscription row → UTC month
-        [{ query_count: 42, token_count: 10000, active_users: 3 }],
+        [{ query_count: 42, token_count: 10000, weighted_token_count: 23000, active_users: 3 }],
       ];
 
       const result = await getCurrentPeriodUsage("org-1");
 
       expect(result.queryCount).toBe(42);
       expect(result.tokenCount).toBe(10000);
+      // Output-equivalent (model-weighted) token spend — the budget denominator (#3989).
+      expect(result.weightedTokenCount).toBe(23000);
       expect(result.activeUsers).toBe(3);
       expect(result.periodStart).toBeTruthy();
       expect(result.periodEnd).toBeTruthy();
       expect(result.periodSource).toBe("utc-month");
+
+      // The aggregate sums the weighted column with a COALESCE fallback to raw
+      // so token rows predating migration 0152 still contribute.
+      const usageCall = queryCalls.find((c) => c.sql.includes("usage_events"));
+      expect(usageCall?.sql).toContain("COALESCE(weighted_quantity, quantity)");
     });
 
     it("anchors on the Stripe period when an active subscription exists", async () => {
@@ -254,13 +284,14 @@ describe("metering", () => {
     it("returns zeros when no data", async () => {
       queryResults = [
         [], // no active subscription
-        [{ query_count: 0, token_count: 0, active_users: 0 }],
+        [{ query_count: 0, token_count: 0, weighted_token_count: 0, active_users: 0 }],
       ];
 
       const result = await getCurrentPeriodUsage("org-empty");
 
       expect(result.queryCount).toBe(0);
       expect(result.tokenCount).toBe(0);
+      expect(result.weightedTokenCount).toBe(0);
       expect(result.activeUsers).toBe(0);
     });
 
@@ -268,6 +299,7 @@ describe("metering", () => {
       mockHasInternalDB = false;
       const result = await getCurrentPeriodUsage("org-1");
       expect(result.queryCount).toBe(0);
+      expect(result.weightedTokenCount).toBe(0);
       expect(result.periodSource).toBe("utc-month");
       expect(queryCalls).toHaveLength(0);
     });

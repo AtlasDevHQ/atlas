@@ -18,13 +18,29 @@ import {
 
 let mockHasInternalDB = true;
 let mockWorkspace: Record<string, unknown> | null = null;
-let mockUsage = { queryCount: 0, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+let mockUsage: {
+  queryCount: number;
+  tokenCount: number;
+  /** When set, the budget denominator (#3989); otherwise mirrors `tokenCount`. */
+  weightedTokenCount?: number;
+  activeUsers: number;
+  periodStart: string;
+  periodEnd: string;
+} = { queryCount: 0, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
 let mockWorkspaceDetailsShouldThrow = false;
 /** Count of `getWorkspaceDetails` invocations — i.e. internal-DB plan reads
  *  that the per-replica planCache did NOT absorb. Used by the #3432
  *  per-replica staleness-contract test. */
 let mockWorkspaceReadCount = 0;
 let mockUsageShouldThrow = false;
+/**
+ * When true, the metering mock returns `mockUsage` VERBATIM (no auto-mirrored
+ * `weightedTokenCount`), so enforcement sees the field genuinely absent — used
+ * to exercise the `?? tokenCount` defensive fallback (#3989). Default false:
+ * the legacy threshold cases drive the budget via `tokenCount` and rely on the
+ * mirror so they don't each have to set `weightedTokenCount`.
+ */
+let mockOmitWeighted = false;
 /** Rows returned by the `internalQuery` mock (chat-integration count query). */
 let mockInternalQueryResult: unknown[] = [];
 /** When true, the `internalQuery` mock throws (count-query failure path). */
@@ -79,7 +95,18 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 mock.module("@atlas/api/lib/metering", () => ({
   getCurrentPeriodUsage: async () => {
     if (mockUsageShouldThrow) throw new Error("metering error");
-    return mockUsage;
+    // Budget enforcement denominates in output-equivalent tokens (#3989). The
+    // threshold cases below set the budget-driving figure via `tokenCount`; the
+    // weighted denominator mirrors it unless a case sets `weightedTokenCount`
+    // explicitly (the spread is last, so it wins), so existing threshold
+    // assertions stay meaningful while the weighting wire-through is exercised.
+    // `mockOmitWeighted` returns the shape verbatim to exercise the absent-field
+    // fallback path.
+    if (mockOmitWeighted) return mockUsage;
+    return {
+      weightedTokenCount: mockUsage.tokenCount,
+      ...mockUsage,
+    };
   },
   logUsageEvent: () => {},
   aggregateUsageSummary: async () => {},
@@ -263,6 +290,7 @@ describe("billing/enforcement", () => {
     mockHasInternalDB = true;
     mockWorkspaceDetailsShouldThrow = false;
     mockUsageShouldThrow = false;
+    mockOmitWeighted = false;
     mockUsage = { queryCount: 0, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
     mockWorkspace = null;
     mockWorkspaceReadCount = 0;
@@ -463,6 +491,61 @@ describe("billing/enforcement", () => {
     const exceeded = expectLimitExceeded(await checkPlanLimits("org-1", SEATS));
     expect(exceeded.httpStatus).toBe(429);
     expect(exceeded.usage.metric).toBe("tokens");
+  });
+
+  // ── Output-equivalent (model-weighted) denomination (#3989) ───────
+  // The budget is denominated in OUTPUT-EQUIVALENT tokens, not raw. These
+  // cases pin that the decision keys off `weightedTokenCount`, NOT
+  // `tokenCount` — so reverting enforcement.ts back to `usage.tokenCount`
+  // would flip every assertion here. Starter budget = 2M (1 seat).
+
+  it("blocks when WEIGHTED usage exceeds the hard limit even though RAW usage is under budget", async () => {
+    mockWorkspace = makeWorkspace(); // starter: 2M/seat, hard limit 110% = 2.2M
+    // Raw usage 1.5M (75%, well under budget) but a pricier model weighted it
+    // up to 2.3M (115%, over the hard limit). Enforcement must block on the
+    // weighted figure — if it read raw, this would be allowed with no warning.
+    mockUsage = {
+      queryCount: 0,
+      tokenCount: 1_500_000,
+      weightedTokenCount: 2_300_000,
+      activeUsers: 0,
+      periodStart: "",
+      periodEnd: "",
+    };
+    const exceeded = expectLimitExceeded(await checkPlanLimits("org-1", SEATS));
+    expect(exceeded.httpStatus).toBe(429);
+    // The reported usage is the WEIGHTED count, not the raw 1.5M.
+    expect(exceeded.usage.currentUsage).toBe(2_300_000);
+    expect(exceeded.usage.limit).toBe(2_000_000);
+  });
+
+  it("allows when WEIGHTED usage is under budget even though RAW usage is over the hard limit", async () => {
+    mockWorkspace = makeWorkspace(); // starter: 2M/seat
+    // Raw usage 2.4M (120%, would hard-block on raw) but a cheap model (e.g.
+    // Haiku) weighted it down to 800k (40%). Enforcement must allow on the
+    // weighted figure with no warning — proving it does not read raw.
+    mockUsage = {
+      queryCount: 0,
+      tokenCount: 2_400_000,
+      weightedTokenCount: 800_000,
+      activeUsers: 0,
+      periodStart: "",
+      periodEnd: "",
+    };
+    const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
+    expect(result.warning).toBeUndefined();
+  });
+
+  it("falls back to raw tokenCount when weightedTokenCount is absent (defensive)", async () => {
+    mockWorkspace = makeWorkspace();
+    // No `weightedTokenCount` on the usage shape (e.g. an older code path). The
+    // `?? tokenCount` fallback denominates on raw rather than treating usage as
+    // an unenforced zero. 2.2M raw = 110% → hard block.
+    mockOmitWeighted = true;
+    mockUsage = { queryCount: 0, tokenCount: 2_200_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+    const exceeded = expectLimitExceeded(await checkPlanLimits("org-1", SEATS));
+    expect(exceeded.httpStatus).toBe(429);
+    expect(exceeded.usage.currentUsage).toBe(2_200_000);
   });
 
   // ── Per-seat scaling ──────────────────────────────────────────────

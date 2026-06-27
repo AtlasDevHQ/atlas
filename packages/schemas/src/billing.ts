@@ -95,7 +95,16 @@ export interface BillingLimits {
 /** Current-period usage counters. */
 export interface BillingUsage {
   queryCount: number;
+  /** Raw token spend for the period (input + output tokens). */
   tokenCount: number;
+  /**
+   * Output-equivalent (model-weighted) token spend for the period (#3989) —
+   * the denominator `tokenUsagePercent` and the enforced budget are computed
+   * from. A turn on a pricier model contributes more here than to the raw
+   * `tokenCount`, making the "model-aware budget" literally true. Optional for
+   * older-bundle tolerance; falls back to `tokenCount` when absent.
+   */
+  weightedTokenCount?: number;
   seatCount: number;
   tokenUsagePercent: number;
   tokenOverageStatus: OverageStatus;
@@ -212,6 +221,7 @@ export const BillingLimitsSchema = z.object({
 export const BillingUsageSchema = z.object({
   queryCount: z.number(),
   tokenCount: z.number(),
+  weightedTokenCount: z.number().optional(),
   seatCount: z.number(),
   tokenUsagePercent: z.number(),
   tokenOverageStatus: OverageStatusEnum,

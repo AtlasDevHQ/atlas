@@ -278,7 +278,16 @@ export async function checkPlanLimits(
   if (!isUnlimited(totalBudget)) {
     try {
       const usage = await getCurrentPeriodUsage(orgId);
-      return evaluateUsage(orgId, usage.tokenCount, totalBudget);
+      // Denominate the budget in output-equivalent tokens (#3989): a turn on a
+      // pricier model consumes more of the budget per raw token, making the
+      // advertised "model-aware budget" literally true. `weightedTokenCount`
+      // already falls back to the raw count for token rows predating migration
+      // 0152 (COALESCE in the aggregate), so un-backfilled history is never
+      // over- or under-counted relative to raw. The `?? tokenCount` here is a
+      // second belt: if a future shape change ever made the weighted field
+      // arrive undefined, we denominate on raw rather than silently treating
+      // usage as zero and never enforcing (a false-negative on the budget path).
+      return evaluateUsage(orgId, usage.weightedTokenCount ?? usage.tokenCount, totalBudget);
     } catch (err) {
       // DELIBERATE FAIL-OPEN (#3428): if we can't read usage, ALLOW the request
       // — metering is best-effort and we prioritise availability over revenue

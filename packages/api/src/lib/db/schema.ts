@@ -798,6 +798,13 @@ export const usageEvents = pgTable(
     userId: text("user_id"),
     eventType: text("event_type").notNull(),
     quantity: integer("quantity").notNull().default(1),
+    // Output-equivalent (model-weighted) token count for `token` events (#3989,
+    // migration 0152). Raw tokens normalized by the per-model TokenWeighting
+    // table (reference model = 1.0). Nullable, no default: NULL means "not
+    // weighted" (non-token events, or token rows predating the migration) —
+    // distinct from 0 ("weighted to zero"). Budget/period summation reads
+    // COALESCE(weighted_quantity, quantity) so legacy token rows still count.
+    weightedQuantity: integer("weighted_quantity"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

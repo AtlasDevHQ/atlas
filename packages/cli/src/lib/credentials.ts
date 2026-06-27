@@ -76,6 +76,7 @@ function readStore(configDir: string): CredentialStore {
   } catch (err) {
     throw new Error(
       `Failed to read Atlas credentials at ${path}: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     );
   }
   try {
@@ -96,6 +97,7 @@ function readStore(configDir: string): CredentialStore {
   } catch (err) {
     throw new Error(
       `Atlas credentials at ${path} are corrupt (invalid JSON): ${err instanceof Error ? err.message : String(err)}. Re-run \`atlas login\` to overwrite.`,
+      { cause: err },
     );
   }
 }

@@ -9,6 +9,7 @@ bun run test           # FULL suite — @atlas/api + test:others (isolated per-f
 bun x syncpack lint    # Workspace dependency versions consistent
 SKIP_SYNCPACK=1 bash scripts/check-template-drift.sh  # Template drift
 bash scripts/check-security-headers-drift.sh  # Scaffold next.config.ts security-header parity
+bash scripts/check-pricing-parity.sh  # Pricing-page entitlement mirror ↔ FEATURE_ENTITLEMENTS SSOT parity (#3996)
 bash scripts/check-railway-watch.sh  # Railway watchPatterns cover Dockerfile COPY sources
 bash scripts/check-schema-drift.sh   # Drizzle schema.ts ↔ migrations parity
 bash scripts/check-openapi-drift.sh  # apps/docs/openapi.json + api-reference MDX ↔ live route schemas

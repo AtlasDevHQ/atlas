@@ -83,6 +83,12 @@ jobs:
       - name: Check security-headers drift
         run: bash scripts/check-security-headers-drift.sh
 
+      - name: Check pricing-page entitlement mirror ↔ FEATURE_ENTITLEMENTS drift (#3996)
+        run: bash scripts/check-pricing-parity.sh
+
+      - name: Adversarial fixtures for the pricing-parity gate (#3996)
+        run: bash scripts/__tests__/check-pricing-parity.test.sh
+
       - name: Check Drizzle schema ↔ migration drift
         run: bash scripts/check-schema-drift.sh
 

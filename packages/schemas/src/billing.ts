@@ -15,7 +15,7 @@
  *
  * Enum handling:
  * - `plan.tier` uses `PLAN_TIERS` from `@useatlas/types` (already published).
- * - `usage.tokenOverageStatus` uses a locally-defined `OVERAGE_STATUSES`
+ * - `usage.usageOverageStatus` uses a locally-defined `OVERAGE_STATUSES`
  *   tuple, guarded at compile time by `satisfies z.ZodType<OverageStatus>`
  *   against the union type in `@useatlas/types`. Keeping the tuple here
  *   avoids bumping the `@useatlas/types` npm version for one literal
@@ -89,6 +89,13 @@ export interface BillingPlan {
 export interface BillingLimits {
   tokenBudgetPerSeat: number | null;
   totalTokenBudget: number | null;
+  /**
+   * #4038 — the included at-cost usage credit (USD) enforcement denominates
+   * against: `includedUsageDollarsPerSeat × seats`. The dollar gauge's
+   * denominator. Null when no credit is enforced for this workspace (free /
+   * BYOT / unlimited) — the page then shows "unlimited" rather than a $ ratio.
+   */
+  totalUsageDollars: number | null;
   maxSeats: number | null;
   maxConnections: number | null;
   /**
@@ -106,31 +113,28 @@ export interface BillingUsage {
   /** Raw token spend for the period (input + output tokens). */
   tokenCount: number;
   /**
-   * Output-equivalent (model-weighted) token spend for the period (#3989) —
-   * the denominator `tokenUsagePercent` and the enforced budget are computed
-   * from. A turn on a pricier model contributes more here than to the raw
-   * `tokenCount`, making the "model-aware budget" literally true. Optional for
+   * Output-equivalent (model-weighted) token spend for the period (#3989).
+   * Retained for display + the token-based OverageMeter (#3992); since #4038
+   * enforcement denominates in dollars (`costUsd`), not tokens. Optional for
    * older-bundle tolerance; falls back to `tokenCount` when absent.
    */
   weightedTokenCount?: number;
   seatCount: number;
-  tokenUsagePercent: number;
-  tokenOverageStatus: OverageStatus;
   /**
-   * #3990 — output-equivalent tokens consumed BEYOND the included budget this
-   * period (max(0, weighted usage − budget)). 0 when at or under the included
-   * budget; positive once usage exceeds it (i.e. within the `metered` /
-   * `hard_limit` bands — note it is still 0 at exactly 100%, where the status
-   * is already `metered`). Denominated in the SAME output-equivalent tokens
-   * enforcement meters, so the accrued cost below is the real one. Optional for
-   * older-bundle tolerance; absent ⇒ render as 0.
+   * #4038 — at-cost provider spend (USD) this period, the SAME `costUsd`
+   * enforcement denominates against (summed `gateway_cost_usd`, #4036). The
+   * numerator of the dollar usage gauge. 0 for BYOT (own keys, no gateway cost).
    */
-  overageTokens?: number;
+  costUsd: number;
+  /** #4038 — usage as a percent of the included credit (`costUsd / totalUsageDollars × 100`). */
+  usageDollarsPercent: number;
+  /** #4038 — overage band classified on dollars; same SSOT as enforcement. */
+  usageOverageStatus: OverageStatus;
   /**
-   * #3990 — accrued billable overage cost in USD this period, i.e.
-   * `(overageTokens / 1_000_000) * overagePerMillionTokens`. Drives the
-   * billing page's "in overage, $X.XX so far" surface. 0 when not in overage
-   * or when the plan has no overage rate (`overagePerMillionTokens === 0`).
+   * #4038 — at-cost overage in USD this period: `max(0, costUsd − credit)`.
+   * Drives the billing page's "in overage, $X.XX so far" surface. 0 when at or
+   * under the included credit (or BYOT). Under Structure B this is the REAL
+   * billed amount (provider cost, zero markup), not a synthetic rate accrual.
    * Optional for older-bundle tolerance; absent ⇒ render as 0.
    */
   overageCost?: number;
@@ -240,6 +244,7 @@ export const BillingPlanSchema = z.object({
 export const BillingLimitsSchema = z.object({
   tokenBudgetPerSeat: z.number().nullable(),
   totalTokenBudget: z.number().nullable(),
+  totalUsageDollars: z.number().nullable(),
   maxSeats: z.number().nullable(),
   maxConnections: z.number().nullable(),
   maxChatIntegrations: z.number().nullable(),
@@ -250,9 +255,9 @@ export const BillingUsageSchema = z.object({
   tokenCount: z.number(),
   weightedTokenCount: z.number().optional(),
   seatCount: z.number(),
-  tokenUsagePercent: z.number(),
-  tokenOverageStatus: OverageStatusEnum,
-  overageTokens: z.number().optional(),
+  costUsd: z.number(),
+  usageDollarsPercent: z.number(),
+  usageOverageStatus: OverageStatusEnum,
   overageCost: z.number().optional(),
   periodStart: z.string(),
   periodEnd: z.string(),

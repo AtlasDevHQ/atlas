@@ -100,6 +100,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 const mockUsage = {
   queryCount: 500,
   tokenCount: 25_000,
+  weightedTokenCount: 25_000,
+  costUsd: 0,
   activeUsers: 3,
   periodStart: "2026-03-01T00:00:00.000Z",
   periodEnd: "2026-04-01T00:00:00.000Z",
@@ -269,13 +271,11 @@ describe("billing routes", () => {
       expect(body.plan.trialDays).toBeNull();
     });
 
-    it("surfaces the metered band over budget, with no synthetic overage cost (Structure B, #4034)", async () => {
-      // Starter: 2M/seat. 3 seats → 6M budget. Spend 7M (≈117%) — over budget
-      // but, with the ceiling disabled in this test's settings mock, metered
-      // (served), never hard-blocked. The metered BAND is still reported
-      // (overageTokens = 1M), but Structure B zeroes the synthetic $/Mtok rate,
-      // so the accrued overageCost is $0 — real at-cost overage is billed via the
-      // at-cost meter (#4038/#4039), not this display field.
+    it("surfaces the metered band over the dollar credit, with the real at-cost overage (#4038)", async () => {
+      // 3 seats → $60 credit. Spend $70 (≈117%) — over the credit but, with the
+      // ceiling disabled in this test's settings mock (continue policy), metered
+      // (served), never hard-blocked. Structure B bills the overage at provider
+      // cost, so the accrued overageCost is the REAL excess ($10), not $0.
       mockInternalQuery.mockImplementation((...args: unknown[]) => {
         const sql = args[0];
         if (typeof sql === "string" && sql.includes("member")) {
@@ -285,22 +285,23 @@ describe("billing routes", () => {
       });
       const meteringMod = await import("@atlas/api/lib/metering");
       (meteringMod.getCurrentPeriodUsage as ReturnType<typeof mock>).mockImplementationOnce(() =>
-        Promise.resolve({ ...mockUsage, tokenCount: 7_000_000, weightedTokenCount: 7_000_000 }),
+        Promise.resolve({ ...mockUsage, costUsd: 70 }),
       );
 
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
-      expect(body.usage.tokenOverageStatus).toBe("metered");
-      expect(body.usage.overageTokens).toBe(1_000_000);
-      expect(body.usage.overageCost).toBe(0);
+      expect(body.usage.usageOverageStatus).toBe("metered");
+      expect(body.usage.costUsd).toBe(70);
+      expect(body.usage.overageCost).toBe(10);
+      expect(body.limits.totalUsageDollars).toBe(60);
     });
 
-    it("never reports overage for a BYOT workspace, even over budget (#3990)", async () => {
-      // BYOT bypasses token enforcement entirely, so the page must never show
-      // metered status or accrued overage for a BYOT workspace — "BYOT never
-      // accrues overage". Paid tier + byot, usage way over the 6M budget.
+    it("never reports overage for a BYOT workspace, even over the credit (#3990)", async () => {
+      // BYOT bypasses enforcement entirely, so the page must never show metered
+      // status or accrued overage for a BYOT workspace — "BYOT never accrues
+      // overage". Paid tier + byot, at-cost spend way over the $60 credit.
       mockGetWorkspaceDetails.mockImplementation(() =>
         Promise.resolve({ ...mockWorkspace, plan_tier: "starter", byot: true }),
       );
@@ -313,7 +314,7 @@ describe("billing routes", () => {
       });
       const meteringMod = await import("@atlas/api/lib/metering");
       (meteringMod.getCurrentPeriodUsage as ReturnType<typeof mock>).mockImplementationOnce(() =>
-        Promise.resolve({ ...mockUsage, tokenCount: 50_000_000, weightedTokenCount: 50_000_000 }),
+        Promise.resolve({ ...mockUsage, costUsd: 500 }),
       );
 
       const res = await request("/api/v1/billing");
@@ -321,12 +322,13 @@ describe("billing routes", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.plan.byot).toBe(true);
-      expect(body.usage.tokenOverageStatus).toBe("ok");
-      expect(body.usage.overageTokens).toBe(0);
+      expect(body.usage.usageOverageStatus).toBe("ok");
       expect(body.usage.overageCost).toBe(0);
+      // BYOT bypasses enforcement → no dollar credit gauge.
+      expect(body.limits.totalUsageDollars).toBeNull();
     });
 
-    it("reports zero overage when under budget (#3990)", async () => {
+    it("reports zero overage when under the credit (#3990)", async () => {
       mockInternalQuery.mockImplementation((...args: unknown[]) => {
         const sql = args[0];
         if (typeof sql === "string" && sql.includes("member")) {
@@ -339,9 +341,9 @@ describe("billing routes", () => {
       expect(res.status).toBe(200);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
-      // Default mockUsage (25k tokens) is far under the 6M budget.
-      expect(body.usage.tokenOverageStatus).toBe("ok");
-      expect(body.usage.overageTokens).toBe(0);
+      // Default mockUsage (costUsd $0) is far under the $60 credit.
+      expect(body.usage.usageOverageStatus).toBe("ok");
+      expect(body.usage.costUsd).toBe(0);
       expect(body.usage.overageCost).toBe(0);
     });
 

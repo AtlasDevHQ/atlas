@@ -31,8 +31,8 @@ import {
   internalQuery,
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
-import { getPlanDefinition, getPlanLimits, getStripePlans, computeTokenBudget, isUnlimited, type PaidPlanTier } from "@atlas/api/lib/billing/plans";
-import { buildMetricStatus, resolveAbuseCeilingPercent, computeOverageTokens, computeOverageCost } from "@atlas/api/lib/billing/enforcement";
+import { getPlanDefinition, getPlanLimits, getStripePlans, computeTokenBudget, computeUsageDollarBudget, isUnlimited, type PaidPlanTier } from "@atlas/api/lib/billing/plans";
+import { buildMetricStatus, resolveUsageCeiling, computeOverageDollars } from "@atlas/api/lib/billing/enforcement";
 import { getSeatCount } from "@atlas/api/lib/billing/seat-count";
 import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-expiry";
 import { getSettingLive } from "@atlas/api/lib/settings";
@@ -370,51 +370,52 @@ billing.openapi(getBillingStatusRoute, async (c) => {
       currentModel = currentModelSetting || plan.defaultModel || "default";
     }
 
-    // Compute per-seat token budget (scales with actual seat count)
+    // Per-seat token budget, retained for the wire's `limits.totalTokenBudget`
+    // (display only). The token-budget *concept* also survives server-side for
+    // the token OverageMeter (#3992/#4039), which computes it independently via
+    // computeTokenBudget — it does NOT read this HTTP field. Enforcement no
+    // longer uses it: the budget is now a dollar credit (#4038).
     const totalTokenBudget = computeTokenBudget(workspace.plan_tier, seatCount);
     const tokenLimit = isUnlimited(totalTokenBudget) ? null : totalTokenBudget;
 
-    // Whether a real budget is enforced for this workspace. BYOT workspaces
-    // bypass token enforcement entirely (checkPlanLimits returns early before
-    // any usage evaluation), so they must NEVER show metered status or accrued
-    // overage on the page — "BYOT never accrues overage" (#3990). Treating BYOT
-    // like the unlimited case (null limit) keeps the page surface in lockstep
-    // with what enforcement actually charges: nothing.
-    const enforcesBudget = tokenLimit !== null && !workspace.byot;
+    // Dollar credit ($/seat × seats) — the enforced denominator (#4038). BYOT
+    // workspaces bypass enforcement entirely (checkPlanLimits returns early
+    // before any usage evaluation), so they must NEVER show metered status or
+    // accrued overage on the page — "BYOT never accrues overage" (#3990). A 0
+    // credit (free / locked) likewise has no dollar gauge. Treating those like
+    // the unlimited case (null limit) keeps the page in lockstep with what
+    // enforcement actually charges: nothing.
+    const totalCredit = computeUsageDollarBudget(workspace.plan_tier, seatCount);
+    const enforcesBudget = totalCredit > 0 && !workspace.byot;
+    const usageDollarsLimit = enforcesBudget ? totalCredit : null;
 
-    // The budget gauge denominates in output-equivalent (model-weighted)
-    // tokens (#3989) — the SAME denominator enforcement uses — so the page's
-    // usage percent can never diverge from the 429 the workspace actually hits.
-    // `?? tokenCount` mirrors the enforcement consumer: if the weighted field is
-    // ever absent, the gauge degrades to raw rather than showing a false 0%.
-    //
-    // Resolve the workspace's abuse ceiling so the page's `metered` vs
-    // `hard_limit` classification matches enforcement exactly (#3990), then
-    // surface the accrued overage so the UI can render "in overage, $X.XX so
-    // far". `overagePerMillionTokens` comes from the plan definition (0 ⇒ no
-    // billable overage ⇒ $0 cost even while metered).
-    const weightedUsage = usage.weightedTokenCount ?? usage.tokenCount;
+    // Resolve the workspace's spend policy + cutoff ceiling via the SAME SSOT
+    // enforcement uses (resolveUsageCeiling, #4038) so the page's `metered` vs
+    // `hard_limit` classification matches the 429 exactly. Forward `undefined`
+    // (resolution failed → route `.catch`) so buildMetricStatus falls to its
+    // conservative default-ceiling param, matching enforcement's own failure
+    // fallback (500); a resolved `null` (operator-disabled ceiling) is passed
+    // through verbatim — hence the explicit undefined-vs-null distinction rather
+    // than a `?? default` coalesce. The gauge denominates against the at-cost
+    // spend (`usage.costUsd`, #4036) — the same numerator enforcement reads.
     const ceilingPercent = enforcesBudget
-      ? yield* Effect.promise(() => resolveAbuseCeilingPercent(orgId).catch((err) => {
-          log.warn(
-            { err: err instanceof Error ? err.message : String(err), orgId },
-            "Failed to resolve abuse ceiling for billing page — using default classification",
-          );
-          return undefined;
-        }))
+      ? yield* Effect.promise(() =>
+          resolveUsageCeiling(orgId)
+            .then((r) => r.ceilingPercent)
+            .catch((err) => {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), orgId },
+                "Failed to resolve usage ceiling for billing page — using default classification",
+              );
+              return undefined;
+            }),
+        )
       : null;
-    // Forward `undefined` (resolution failed → route `.catch` returned it) so
-    // buildMetricStatus falls to its conservative default-ceiling param,
-    // matching enforcement's own failure fallback (500). A resolved `null`
-    // (operator-disabled ceiling) is passed through verbatim to disable the
-    // cutoff on the page too — hence the explicit undefined-vs-null distinction
-    // rather than a `?? default` coalesce.
-    const tokenOverage = enforcesBudget && tokenLimit !== null
-      ? buildMetricStatus("tokens", weightedUsage, tokenLimit, ceilingPercent === undefined ? undefined : ceilingPercent)
+    const usageOverage = enforcesBudget && usageDollarsLimit !== null
+      ? buildMetricStatus("usd", usage.costUsd, usageDollarsLimit, ceilingPercent === undefined ? undefined : ceilingPercent)
       : { usagePercent: 0, status: "ok" as const };
-    const overageTokens = enforcesBudget && tokenLimit !== null ? computeOverageTokens(weightedUsage, tokenLimit) : 0;
-    const overageCost = enforcesBudget && tokenLimit !== null
-      ? computeOverageCost(weightedUsage, tokenLimit, plan.overagePerMillionTokens)
+    const overageCost = enforcesBudget && usageDollarsLimit !== null
+      ? computeOverageDollars(usage.costUsd, usageDollarsLimit)
       : 0;
 
     return c.json({
@@ -444,6 +445,7 @@ billing.openapi(getBillingStatusRoute, async (c) => {
       limits: {
         tokenBudgetPerSeat: isUnlimited(limits.tokenBudgetPerSeat) ? null : limits.tokenBudgetPerSeat,
         totalTokenBudget: tokenLimit,
+        totalUsageDollars: usageDollarsLimit,
         maxSeats: isUnlimited(limits.maxSeats) ? null : limits.maxSeats,
         maxConnections: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
         maxChatIntegrations: isUnlimited(limits.maxChatIntegrations) ? null : limits.maxChatIntegrations,
@@ -453,9 +455,11 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         tokenCount: usage.tokenCount,
         weightedTokenCount: usage.weightedTokenCount,
         seatCount,
-        tokenUsagePercent: tokenOverage.usagePercent,
-        tokenOverageStatus: tokenOverage.status,
-        overageTokens,
+        // At-cost dollar usage (#4038) — the enforced gauge. BYOT/free/locked
+        // surface 0% / "ok" because enforcesBudget gates the classification.
+        costUsd: usage.costUsd,
+        usageDollarsPercent: usageOverage.usagePercent,
+        usageOverageStatus: usageOverage.status,
         overageCost,
         periodStart: usage.periodStart,
         periodEnd: usage.periodEnd,

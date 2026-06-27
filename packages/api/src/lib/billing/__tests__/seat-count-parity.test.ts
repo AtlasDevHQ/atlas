@@ -27,6 +27,8 @@ let mockSeatRows: unknown[] = [{ count: 10 }];
 let mockUsage = {
   queryCount: 0,
   tokenCount: 0,
+  /** At-cost dollar spend — the dollar enforcement denominator (#4038). */
+  costUsd: 0,
   activeUsers: 2,
   periodStart: "",
   periodEnd: "",
@@ -60,9 +62,9 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 mock.module("@atlas/api/lib/metering", () => ({
-  // Budget enforcement denominates in output-equivalent tokens (#3989); this
-  // parity test drives the budget via `tokenCount`, so mirror it onto
-  // `weightedTokenCount` (the denominator enforcement actually reads).
+  // Dollar enforcement denominates on `costUsd` (#4038); the page-budget figure
+  // derives from the seat count (`computeTokenBudget(tier, seatCount)`), not from
+  // usage. The `weightedTokenCount` mirror just keeps the returned shape realistic.
   getCurrentPeriodUsage: async () => ({
     weightedTokenCount: mockUsage.tokenCount,
     ...mockUsage,
@@ -88,12 +90,12 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 import { checkPlanLimits } from "@atlas/api/lib/billing/enforcement";
 import { getSeatCount, _resetSeatCountCache } from "@atlas/api/lib/billing/seat-count";
-import { computeTokenBudget, getPlanLimits } from "@atlas/api/lib/billing/plans";
+import { computeTokenBudget, computeUsageDollarBudget, getPlanLimits, getPlanDefinition } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 
 /**
- * The exact budget expression the billing and usage routes compute:
- * `computeTokenBudget(tier, getSeatCount(orgId))`.
+ * The exact token-budget expression the billing and usage routes compute for
+ * `limits.totalTokenBudget`: `computeTokenBudget(tier, getSeatCount(orgId))`.
  */
 async function pageBudget(orgId: string, tier: "starter" | "pro" | "business"): Promise<number> {
   const seatCount = await getSeatCount(orgId);
@@ -102,13 +104,17 @@ async function pageBudget(orgId: string, tier: "starter" | "pro" | "business"): 
 
 const SEATS = 10;
 const STARTER_PER_SEAT = getPlanLimits("starter").tokenBudgetPerSeat;
-const TEN_SEAT_BUDGET = STARTER_PER_SEAT * SEATS; // 20,000,000
-const ONE_SEAT_BUDGET = STARTER_PER_SEAT; // 2,000,000 — the old activeUsers=1 collapse
+const TEN_SEAT_BUDGET = STARTER_PER_SEAT * SEATS; // 20,000,000 tokens
 
-describe("token budget parity across surfaces (#3430)", () => {
+// Dollar enforcement credit (#4038): $20/seat × 10 seats = $200, vs the $20
+// the old activeUsers=1 collapse would have used.
+const TEN_SEAT_CREDIT = computeUsageDollarBudget("starter", SEATS); // $200
+const ONE_SEAT_CREDIT = getPlanDefinition("starter").includedUsageDollarsPerSeat; // $20
+
+describe("token + dollar budget parity across surfaces (#3430, #4038)", () => {
   beforeEach(() => {
     mockSeatRows = [{ count: SEATS }];
-    mockUsage = { queryCount: 0, tokenCount: 0, activeUsers: 2, periodStart: "", periodEnd: "" };
+    mockUsage = { queryCount: 0, tokenCount: 0, costUsd: 0, activeUsers: 2, periodStart: "", periodEnd: "" };
     mockWorkspace = {
       id: "org-1",
       plan_tier: "starter",
@@ -133,58 +139,58 @@ describe("token budget parity across surfaces (#3430)", () => {
     expect(usageBudget).not.toBe(STARTER_PER_SEAT * mockUsage.activeUsers);
   });
 
-  it("enforcement uses the same member-derived budget as the pages", async () => {
-    // 19M = 95% of the 10-seat budget (20M) → a warning, allowed. The point is
-    // that it's read against the 10-seat budget at all: 19M is 950% of the
-    // 1-seat budget (2M), which under the 500% abuse ceiling would be a hard
+  it("enforcement uses the same member-derived seat count as the pages (dollar credit)", async () => {
+    // $190 = 95% of the 10-seat credit ($200) → a warning, allowed. The point is
+    // that it's read against the 10-seat credit at all: $190 is 950% of the
+    // 1-seat credit ($20), which under the 500% abuse ceiling would be a hard
     // 429 if enforcement had collapsed to a smaller seat count.
-    mockUsage.tokenCount = 19_000_000;
+    mockUsage.costUsd = 190;
 
     const result = await checkPlanLimits("org-1"); // seatCount omitted → shared source
     expect(result.allowed).toBe(true);
 
-    // And the limit enforcement reports is exactly the page budget.
+    // The token-budget figure the pages emit derives from the SAME seat count.
     const pageLimit = await pageBudget("org-1", "starter");
     expect(pageLimit).toBe(TEN_SEAT_BUDGET);
   });
 
-  it("meters past the member-derived budget without collapsing to the 1-seat budget (#3990)", async () => {
-    // 30M usage = 150% of the 10-seat budget (20M) — over budget, so metered
-    // (served + billed), NOT blocked. Crucially it is also 1500% of the 1-seat
-    // budget (2M), which under the default 500% ceiling WOULD have been a hard
+  it("meters past the member-derived credit without collapsing to the 1-seat credit (#4038)", async () => {
+    // $300 = 150% of the 10-seat credit ($200) — over the credit, so metered
+    // (served at cost), NOT blocked. Crucially it is also 1500% of the 1-seat
+    // credit ($20), which under the default 500% ceiling WOULD have been a hard
     // cutoff if enforcement had collapsed to 1 seat. That it's merely metered
-    // proves the threshold keys off the 10-seat budget.
-    mockUsage.tokenCount = 30_000_000;
+    // proves the threshold keys off the 10-seat credit.
+    mockUsage.costUsd = 300;
 
     const result = await checkPlanLimits("org-1");
     expect(result.allowed).toBe(true);
     if (!result.allowed) {
       throw new Error(`expected metered allow, got ${JSON.stringify(result)}`);
     }
-    const tokenMetric = result.warning?.metrics.find((m) => m.metric === "tokens");
-    expect(tokenMetric?.status).toBe("metered");
-    // The reported limit is the full 10-seat budget, not the collapsed 1-seat one.
-    expect(tokenMetric?.limit).toBe(TEN_SEAT_BUDGET);
-    expect(tokenMetric?.limit).not.toBe(ONE_SEAT_BUDGET);
+    const metric = result.warning?.metrics.find((m) => m.metric === "usd");
+    expect(metric?.status).toBe("metered");
+    // The reported limit is the full 10-seat credit, not the collapsed 1-seat one.
+    expect(metric?.limit).toBe(TEN_SEAT_CREDIT);
+    expect(metric?.limit).not.toBe(ONE_SEAT_CREDIT);
   });
 
-  it("blocks at the member-derived abuse ceiling, not the 1-seat ceiling (#3990)", async () => {
-    // Abuse ceiling = 500% of budget. 10-seat budget 20M → ceiling 100M;
-    // 1-seat budget 2M → ceiling 10M. 110M usage clears the 10-seat ceiling and
-    // hard-blocks; the reported limit proves it's the 10-seat budget.
-    mockUsage.tokenCount = 110_000_000;
+  it("blocks at the member-derived abuse ceiling, not the 1-seat ceiling (#4038)", async () => {
+    // Abuse ceiling = 500% of credit. 10-seat credit $200 → ceiling $1000;
+    // 1-seat credit $20 → ceiling $100. $1100 clears the 10-seat ceiling and
+    // hard-blocks; the reported limit proves it's the 10-seat credit.
+    mockUsage.costUsd = 1100;
 
     const result = await checkPlanLimits("org-1");
     expect(result.allowed).toBe(false);
     if (!result.allowed && result.errorCode === "plan_limit_exceeded") {
-      expect(result.usage.limit).toBe(TEN_SEAT_BUDGET);
-      expect(result.usage.limit).not.toBe(ONE_SEAT_BUDGET);
+      expect(result.usage.limit).toBe(TEN_SEAT_CREDIT);
+      expect(result.usage.limit).not.toBe(ONE_SEAT_CREDIT);
     } else {
       throw new Error(`expected plan_limit_exceeded, got ${JSON.stringify(result)}`);
     }
   });
 
-  it("a seat-count blip serves the last-known budget, never collapsing to 1 seat", async () => {
+  it("a seat-count blip serves the last-known credit, never collapsing to 1 seat", async () => {
     // Warm the cache with the live count.
     expect(await pageBudget("org-1", "starter")).toBe(TEN_SEAT_BUDGET);
 
@@ -193,8 +199,8 @@ describe("token budget parity across surfaces (#3430)", () => {
     mockSeatRows = [];
     expect(await pageBudget("org-1", "starter")).toBe(TEN_SEAT_BUDGET);
 
-    // Enforcement, too, keeps the 10-seat threshold under the blip.
-    mockUsage.tokenCount = 19_000_000;
+    // Enforcement, too, keeps the 10-seat dollar credit threshold under the blip.
+    mockUsage.costUsd = 190;
     const result = await checkPlanLimits("org-1");
     expect(result.allowed).toBe(true);
   });

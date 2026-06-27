@@ -1,30 +1,38 @@
 /**
- * Plan limit enforcement with a metered soft-cap.
+ * Plan limit enforcement with a metered soft-cap, denominated in dollars
+ * (Structure B, #4038).
  *
  * Called before agent execution in chat and query routes.
  * Returns { allowed: true } (with optional warning) when the request
  * should proceed, or { allowed: false, ... } to block it.
  *
- * Token budgets are per-seat: total budget = tokenBudgetPerSeat * seatCount.
+ * The included budget is an at-cost usage CREDIT in real dollars, pooled
+ * per-seat: total credit = includedUsageDollarsPerSeat ($20) * seatCount. Usage
+ * is the summed at-cost provider spend (`usage.costUsd`, #4036), so the gauge is
+ * the exact zero-markup dollars Atlas paid — no token-equivalents enter the
+ * decision.
  *
- * Metered soft-cap tiers (#3990 — replaces the old 110% hard block):
+ * Metered soft-cap bands (percent of the dollar credit):
  * - **OK (0-79%):** No warning, request proceeds normally.
  * - **Warning (80-99%):** Request proceeds, warning metadata attached.
- * - **Metered (100% → AbuseCeiling):** Request proceeds and every token past
- *   100% accrues billable overage at the plan's `overagePerMillionTokens`
- *   rate. A warning carrying the accrued "in overage, $X.XX so far" surface is
- *   attached. This is the heart of the metered soft-cap: a paying workspace is
- *   metered, not cut off, for ordinary overage.
- * - **Hard limit (≥ AbuseCeiling):** the ABUSE ceiling, not the budget limit.
- *   A configurable, conservative multiple of the budget (default 500% via the
- *   `ATLAS_ABUSE_CEILING` settings knob) that bounds runaway / abusive spend.
+ * - **Metered (100% → ceiling):** Request proceeds and every dollar past the
+ *   credit accrues at provider cost. A warning carrying the accrued "in
+ *   overage, $X.XX so far" surface is attached. A paying workspace is metered,
+ *   not cut off, for ordinary overage.
+ * - **Hard limit (≥ ceiling):** the cutoff. Where it sits depends on the
+ *   workspace's spend policy (`ATLAS_SPEND_POLICY`, #4038):
+ *     - `continue` (default): the ceiling is the ABUSE ceiling — a conservative
+ *       multiple of the credit (default 500% = $100/seat via `ATLAS_ABUSE_CEILING`)
+ *       that bounds runaway / abusive spend.
+ *     - `cutoff`: the ceiling clamps to 100% of the credit, so any overage past
+ *       the included credit instantly hard-blocks.
  *   Requests are blocked with 429 here and ONLY here.
  *
  * Enforcement is skipped entirely when:
  * - No internal DB is configured (self-hosted without managed auth)
  * - No orgId is provided (user not in an org)
  * - The workspace is on the "free" tier
- * - The workspace has BYOT enabled (unlimited when bringing own keys)
+ * - The workspace has BYOT enabled (no metered usage accrues when bringing own keys)
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -39,7 +47,7 @@ import {
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getSettingLive } from "@atlas/api/lib/settings";
 import { getSeatCount, SeatCountUnavailableError } from "./seat-count";
-import { computeTokenBudget, getPlanDefinition, getPlanLimits, isUnlimited, TRIAL_DAYS } from "./plans";
+import { computeUsageDollarBudget, getPlanLimits, isUnlimited, TRIAL_DAYS } from "./plans";
 import type { OverageStatus, PlanLimitStatus } from "@useatlas/types";
 
 const log = createLogger("billing:enforcement");
@@ -51,26 +59,46 @@ const log = createLogger("billing:enforcement");
 /** Usage percent at which a warning is included in the response. */
 const WARNING_THRESHOLD = 80;
 
-/** Usage percent at which billable overage begins to accrue (metered band). */
+/**
+ * Usage percent at which billable overage begins to accrue (metered band).
+ * Also the effective ceiling under the `cutoff` spend policy: clamping the
+ * ceiling here makes any overage past the included credit hard-block at once.
+ */
 const METERED_THRESHOLD = 100;
 
 /**
- * Settings key for the abuse ceiling — the metered soft-cap cutoff, expressed
- * as a percent of the plan budget. See the registry entry in `lib/settings.ts`.
+ * Settings key for the abuse ceiling — the metered soft-cap cutoff under the
+ * `continue` spend policy, expressed as a percent of the dollar credit. See the
+ * registry entry in `lib/settings.ts`.
  */
 const ABUSE_CEILING_KEY = "ATLAS_ABUSE_CEILING";
 
 /**
- * Conservative fallback abuse ceiling (percent of budget) when the setting is
- * unreadable or malformed. Mirrors the registry default (500% = 5× budget):
- * high enough that ordinary metered overage never trips it, low enough to cap
- * runaway / abusive spend at a bounded multiple of the plan budget. Used only
- * as the in-code belt — the registry default is the real source.
+ * Settings key for the workspace spend policy (#4038): `continue` (default —
+ * keep serving at provider cost past the credit, bounded by the abuse ceiling)
+ * or `cutoff` (hard-block the moment the credit is spent). Bound to a const so
+ * `check-settings-readers` counts {@link resolveSpendPolicy} as the reader
+ * (the R2 const-indirected pattern).
+ */
+const SPEND_POLICY_KEY = "ATLAS_SPEND_POLICY";
+
+/** Workspace spend policy past the included credit. */
+export type SpendPolicy = "continue" | "cutoff";
+
+/** Default spend policy: keep serving at provider cost (Structure B, #4038). */
+const DEFAULT_SPEND_POLICY: SpendPolicy = "continue";
+
+/**
+ * Conservative fallback abuse ceiling (percent of credit) when the setting is
+ * unreadable or malformed. Mirrors the registry default (500% = 5× credit =
+ * $100/seat): high enough that ordinary metered overage never trips it, low
+ * enough to cap runaway / abusive spend at a bounded multiple of the credit.
+ * Used only as the in-code belt — the registry default is the real source.
  */
 const DEFAULT_ABUSE_CEILING_PERCENT = 500;
 
 /**
- * Resolve the abuse ceiling (percent of plan budget) for a workspace.
+ * Resolve the abuse ceiling (percent of the dollar credit) for a workspace.
  *
  * Read live (per request, hot-reloadable) from the workspace-scoped
  * `ATLAS_ABUSE_CEILING` setting so an operator can lift it for a known heavy
@@ -116,7 +144,9 @@ export async function resolveAbuseCeilingPercent(orgId: string): Promise<number 
 
   // A ceiling at or below the metered threshold would hard-block all overage,
   // defeating the metered soft-cap. Floor it at the default rather than honour
-  // a self-defeating misconfiguration.
+  // a self-defeating misconfiguration. (A workspace that genuinely wants to stop
+  // AT the credit sets the spend policy to `cutoff` — see {@link resolveSpendPolicy}
+  // — which clamps the ceiling to 100% deliberately, bypassing this floor.)
   if (parsed <= METERED_THRESHOLD) {
     log.warn(
       { orgId, value: parsed, floor: DEFAULT_ABUSE_CEILING_PERCENT },
@@ -126,6 +156,65 @@ export async function resolveAbuseCeilingPercent(orgId: string): Promise<number 
   }
 
   return parsed;
+}
+
+/**
+ * Resolve the spend policy for a workspace past its included credit (#4038).
+ *
+ * Read live (per request, hot-reloadable) from the workspace-scoped
+ * `ATLAS_SPEND_POLICY` setting so an admin owns their own spend posture without
+ * a redeploy. Returns {@link DEFAULT_SPEND_POLICY} (`continue`) when the value
+ * is unset, empty, unreadable, or not a recognised policy — the
+ * default-ON-but-bounded posture, so a typo never silently converts a paying
+ * workspace to a hard cutoff. `cutoff` is honoured only when set explicitly.
+ */
+export async function resolveSpendPolicy(orgId: string): Promise<SpendPolicy> {
+  let raw: string | undefined;
+  try {
+    raw = await getSettingLive(SPEND_POLICY_KEY, orgId);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), orgId },
+      "Failed to read spend-policy setting — falling back to default (continue)",
+    );
+    return DEFAULT_SPEND_POLICY;
+  }
+
+  const value = raw?.trim().toLowerCase() ?? "";
+  if (value === "cutoff") return "cutoff";
+  if (value === "continue") return "continue";
+  if (value !== "") {
+    log.warn(
+      { orgId, value: raw },
+      "Spend-policy setting is not a recognised policy — using default (continue)",
+    );
+  }
+  return DEFAULT_SPEND_POLICY;
+}
+
+/**
+ * Resolve a workspace's effective cutoff ceiling (percent of credit) together
+ * with its spend policy — the single source of truth the enforcement decision
+ * (`checkPlanLimits` → `evaluateUsage`) and the billing-page display both read,
+ * so the dollar gauge's `metered` vs `hard_limit` band can never disagree with
+ * the 429 the workspace actually hits (#4038).
+ *
+ *   - `cutoff`   → ceiling = {@link METERED_THRESHOLD} (100% of credit): any
+ *                  overage past the included credit hard-blocks. Set directly,
+ *                  NOT through {@link resolveAbuseCeilingPercent} (which floors
+ *                  <=100% to the default) — cutoff is the deliberate stop-at-credit.
+ *   - `continue` → ceiling = {@link resolveAbuseCeilingPercent} (a bounded
+ *                  multiple of the credit, or `null` when an operator disabled it).
+ *
+ * Both reads are live per request (hot-reloadable).
+ */
+export async function resolveUsageCeiling(
+  orgId: string,
+): Promise<{ spendPolicy: SpendPolicy; ceilingPercent: number | null }> {
+  const spendPolicy = await resolveSpendPolicy(orgId);
+  const ceilingPercent =
+    spendPolicy === "cutoff" ? METERED_THRESHOLD : await resolveAbuseCeilingPercent(orgId);
+  return { spendPolicy, ceilingPercent };
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +384,7 @@ export async function checkPlanLimits(
   if (tier === "locked") {
     // Defense-in-depth breadcrumb: every current caller logs the block at the
     // seam, but logging the decision here too means a future caller can't
-    // accidentally make a billing-block invisible (parity with the token
+    // accidentally make a billing-block invisible (parity with the spend
     // hard-limit log in evaluateUsage).
     log.warn({ orgId, tier, reason: "subscription_required" }, "Plan enforcement blocked request — workspace locked (subscription ended)");
     return {
@@ -307,7 +396,7 @@ export async function checkPlanLimits(
     };
   }
 
-  // BYOT workspaces skip token enforcement (unlimited when bringing own keys)
+  // BYOT workspaces skip usage enforcement (no metered usage accrues when bringing own keys)
   if (byot) {
     return { allowed: true };
   }
@@ -354,33 +443,43 @@ export async function checkPlanLimits(
     }
   }
 
-  // Token budget check — budget scales with seat count
-  const totalBudget = computeTokenBudget(tier, seatCount);
-  if (!isUnlimited(totalBudget)) {
+  // Dollar credit check — the included at-cost usage credit scales with seat
+  // count (Structure B, #4038). Reach-here tiers (trial / starter / pro /
+  // business) all carry a $20/seat credit; a 0 credit is defensive only
+  // (free / locked are short-circuited above) and means there is nothing to
+  // meter, so allow rather than block-everything.
+  const totalCredit = computeUsageDollarBudget(tier, seatCount);
+  if (totalCredit > 0) {
     try {
-      // Resolve the abuse ceiling (metered soft-cap cutoff) and the plan's
-      // overage rate up front so evaluateUsage can both decide the cutoff and
-      // surface the accrued overage cost. The ceiling is read live per request
-      // so an operator lift takes effect without a redeploy.
-      const ceilingPercent = await resolveAbuseCeilingPercent(orgId);
-      const overagePerMillion = getPlanDefinition(tier).overagePerMillionTokens;
+      // Resolve the spend policy + cutoff ceiling via the shared SSOT so the
+      // billing-page gauge and this 429 can never disagree. Read live per
+      // request (hot-reloadable) so a policy/ceiling change from Admin →
+      // Settings takes effect without a redeploy.
+      const { spendPolicy, ceilingPercent } = await resolveUsageCeiling(orgId);
       const usage = await getCurrentPeriodUsage(orgId);
-      // Denominate the budget in output-equivalent tokens (#3989): a turn on a
-      // pricier model consumes more of the budget per raw token, making the
-      // advertised "model-aware budget" literally true. `weightedTokenCount`
-      // already falls back to the raw count for token rows predating migration
-      // 0152 (COALESCE in the aggregate), so un-backfilled history is never
-      // over- or under-counted relative to raw. The `?? tokenCount` here is a
-      // second belt: if a future shape change ever made the weighted field
-      // arrive undefined, we denominate on raw rather than silently treating
-      // usage as zero and never enforcing (a false-negative on the budget path).
-      return evaluateUsage(
-        orgId,
-        usage.weightedTokenCount ?? usage.tokenCount,
-        totalBudget,
-        ceilingPercent,
-        overagePerMillion,
-      );
+      // COST-BASIS GAP ALERT (#4038): `costUsd` sums `gateway_cost_usd`, which is
+      // NULL for non-gateway providers and for token rows predating the at-cost
+      // capture (#4036, incl. the current period at cutover). When tokens were
+      // recorded but the cost basis summed to $0, the dollar gauge reads ~0% and
+      // the workspace runs effectively un-metered — a SILENT enforcement fade-out,
+      // the exact false-negative the old token belt (`weightedTokenCount ??
+      // tokenCount`) was written to prevent. The #3428 fail-open below only fires
+      // when the read THROWS; a successful read returning a legitimately-zero sum
+      // is invisible to it. So surface it as an operator-visible alert here —
+      // matching the #3428 bypass `log.error` so the same metering-impaired
+      // dashboards catch it. Still fail-open: we proceed and meter on the
+      // (under-counted) cost, never block on a $0 basis.
+      if (usage.tokenCount > 0 && usage.costUsd === 0) {
+        log.error(
+          { orgId, tier, tokenCount: usage.tokenCount, periodStart: usage.periodStart, reason: "cost_basis_missing" },
+          "Dollar enforcement has no cost basis — tokens recorded but gateway_cost_usd summed to $0; " +
+            "usage gauge reads ~0% and the workspace is effectively un-metered (non-gateway provider, or token rows predating #4036) (#4038)",
+        );
+      }
+      // Denominate against the summed at-cost provider spend (#4036) — the exact
+      // zero-markup dollars Atlas paid the gateway — so the enforced gauge is the
+      // real billed amount and no token-equivalent enters the decision.
+      return evaluateUsage(orgId, usage.costUsd, totalCredit, ceilingPercent, spendPolicy);
     } catch (err) {
       // DELIBERATE FAIL-OPEN (#3428): if we can't read usage, ALLOW the request
       // — metering is best-effort and we prioritise availability over revenue
@@ -390,7 +489,7 @@ export async function checkPlanLimits(
       // whereas a usage-read failure only means we can't decide *how much* has
       // been spent, so the safer-for-the-customer default is to let them through.
       //
-      // The cost is a token-budget bypass: a sustained outage means unmetered
+      // The cost is a usage-budget bypass: a sustained outage means unmetered
       // usage for the duration. The triage decision (2026-06-12) ACCEPTS that
       // exposure but requires it to be OPERATOR-VISIBLE — hence the structured
       // `log.error` alert below carries the orgId + the underlying reason so an
@@ -399,7 +498,7 @@ export async function checkPlanLimits(
       // this happening in practice.
       log.error(
         { err: err instanceof Error ? err.message : String(err), orgId, reason: "metering_read_failed" },
-        "Token-budget check BYPASSED — usage read failed; allowing request (metering unavailable, enforcement impaired) (#3428)",
+        "Usage-budget check BYPASSED — usage read failed; allowing request (metering unavailable, enforcement impaired) (#3428)",
       );
       return {
         allowed: true,
@@ -417,13 +516,17 @@ export async function checkPlanLimits(
 }
 
 // ---------------------------------------------------------------------------
-// Overage accounting (#3990)
+// Overage accounting (#3990, dollar-denominated #4038)
 // ---------------------------------------------------------------------------
 
 /**
- * Output-equivalent tokens consumed BEYOND the included budget. 0 when usage
- * is at or under budget. Denominated in the SAME weighted tokens enforcement
- * meters, so the dollar figure derived from it is the real billed amount.
+ * Output-equivalent tokens consumed BEYOND the included token budget. 0 when at
+ * or under budget; never negative.
+ *
+ * NOTE (#4038): enforcement no longer calls this — dollar enforcement uses
+ * {@link computeOverageDollars}. It survives because the token-based
+ * `OverageMeter` (#3992, overage-meter.ts) still reports token deltas to its
+ * Stripe price until the at-cost meter repoint lands (#4039).
  */
 export function computeOverageTokens(currentUsage: number, limit: number): number {
   if (limit <= 0) return 0;
@@ -431,17 +534,15 @@ export function computeOverageTokens(currentUsage: number, limit: number): numbe
 }
 
 /**
- * Accrued billable overage cost in USD: `(overageTokens / 1e6) * rate`. 0 when
- * not in overage or when the plan carries no overage rate. Never negative.
+ * At-cost overage in USD: dollars spent BEYOND the included credit (#4038).
+ * Structure B bills usage at provider cost (zero markup), so the overage cost
+ * IS the excess spend — the former `(overageTokens / 1e6) * rate`
+ * `computeOverageCost` collapses to this identity, with no per-token rate. 0
+ * when at or under the credit (or the credit is non-positive); never negative.
  */
-export function computeOverageCost(
-  currentUsage: number,
-  limit: number,
-  overagePerMillionTokens: number,
-): number {
-  if (overagePerMillionTokens <= 0) return 0;
-  const overageTokens = computeOverageTokens(currentUsage, limit);
-  return (overageTokens / 1_000_000) * overagePerMillionTokens;
+export function computeOverageDollars(costUsd: number, creditUsd: number): number {
+  if (creditUsd <= 0) return 0;
+  return Math.max(0, costUsd - creditUsd);
 }
 
 // ---------------------------------------------------------------------------
@@ -450,15 +551,17 @@ export function computeOverageCost(
 
 function evaluateUsage(
   orgId: string,
-  tokenCount: number,
-  tokenBudget: number,
+  costUsd: number,
+  creditUsd: number,
   ceilingPercent: number | null,
-  overagePerMillionTokens: number,
+  spendPolicy: SpendPolicy,
 ): PlanCheckResult {
-  const metric = buildMetricStatus("tokens", tokenCount, tokenBudget, ceilingPercent);
+  const metric = buildMetricStatus("usd", costUsd, creditUsd, ceilingPercent);
 
-  // Hard limit — the abuse ceiling, not the budget. Block the request.
+  // Hard limit — the cutoff. Block the request. Under `cutoff` the ceiling sits
+  // at the credit (100%); under `continue` it's the abuse ceiling.
   if (metric.status === "hard_limit") {
+    const isCutoff = spendPolicy === "cutoff";
     log.warn(
       {
         orgId,
@@ -467,21 +570,28 @@ function evaluateUsage(
         limit: metric.limit,
         usagePercent: metric.usagePercent,
         ceilingPercent,
-        threshold: "abuse_ceiling",
+        spendPolicy,
+        threshold: isCutoff ? "spend_cutoff" : "abuse_ceiling",
       },
-      "Workspace reached abuse ceiling (%d%% of token budget, ceiling %d%%) — blocking request",
+      "Workspace reached its spend cutoff (%d%% of $%s credit, policy %s) — blocking request",
       metric.usagePercent,
-      ceilingPercent ?? 0,
+      creditUsd.toFixed(2),
+      spendPolicy,
     );
+    const errorMessage = isCutoff
+      ? `You have used your full included usage credit ` +
+        `(${formatUsd(metric.currentUsage)} of ${formatUsd(metric.limit)}). ` +
+        `Your workspace spend policy is set to stop at the credit. ` +
+        `Switch the spend policy to "continue", upgrade, or add seats to keep going.`
+      : `You have reached your workspace's spend ceiling ` +
+        `(${formatUsd(metric.currentUsage)} of ${formatUsd(metric.limit)} credit, ` +
+        `${metric.usagePercent}% of credit). ` +
+        `Requests are paused to prevent runaway spend. ` +
+        `Upgrade your plan, add seats, or contact support to raise the ceiling.`;
     return {
       allowed: false,
       errorCode: "plan_limit_exceeded",
-      errorMessage:
-        `You have reached your workspace's usage ceiling ` +
-        `(${metric.currentUsage.toLocaleString()} / ${metric.limit.toLocaleString()} tokens, ` +
-        `${metric.usagePercent}% of budget). ` +
-        `Requests are paused to prevent runaway spend. ` +
-        `Upgrade your plan, add seats, or contact support to raise the ceiling.`,
+      errorMessage,
       httpStatus: 429,
       usage: {
         currentUsage: metric.currentUsage,
@@ -491,10 +601,9 @@ function evaluateUsage(
     };
   }
 
-  // Metered (100% → ceiling) — allow, accruing billable overage.
+  // Metered (100% → ceiling) — allow, accruing at-cost overage.
   if (metric.status === "metered") {
-    const overageCost = computeOverageCost(metric.currentUsage, metric.limit, overagePerMillionTokens);
-    const overageTokens = computeOverageTokens(metric.currentUsage, metric.limit);
+    const overageDollars = computeOverageDollars(metric.currentUsage, metric.limit);
     // OPERATOR ALERT: a workspace metering past the would-be default ceiling
     // WITH its abuse ceiling disabled (null) is accruing unbounded overage with
     // no cutoff — exactly the runaway-loop / compromised-key case the ceiling
@@ -502,7 +611,8 @@ function evaluateUsage(
     // pattern) so it's distinguishable from an ordinary 101% metered warning and
     // an operator can scope the uncapped exposure. Capped-ceiling workspaces
     // hard-block before reaching this depth, so this only fires for a
-    // deliberately-uncapped one.
+    // deliberately-uncapped one. (Only reachable under `continue` — `cutoff`
+    // clamps the ceiling to 100% and never leaves it disabled.)
     if (ceilingPercent === null && metric.usagePercent >= DEFAULT_ABUSE_CEILING_PERCENT) {
       log.error(
         {
@@ -511,11 +621,10 @@ function evaluateUsage(
           currentUsage: metric.currentUsage,
           limit: metric.limit,
           usagePercent: metric.usagePercent,
-          overageTokens,
-          overageCost,
+          overageDollars,
           reason: "abuse_ceiling_disabled_extreme_overage",
         },
-        "Workspace at %d%% of budget with abuse ceiling DISABLED — unbounded overage accruing, no cutoff (review ATLAS_ABUSE_CEILING)",
+        "Workspace at %d%% of credit with abuse ceiling DISABLED — unbounded overage accruing, no cutoff (review ATLAS_ABUSE_CEILING)",
         metric.usagePercent,
       );
     }
@@ -526,27 +635,25 @@ function evaluateUsage(
         currentUsage: metric.currentUsage,
         limit: metric.limit,
         usagePercent: metric.usagePercent,
-        overageTokens,
-        overageCost,
+        overageDollars,
         threshold: "metered",
       },
-      "Workspace in metered overage (%d%% of token budget, $%s so far) — allowing and billing overage",
+      "Workspace in metered overage (%d%% of $%s credit, $%s so far) — allowing and billing at cost",
       metric.usagePercent,
-      overageCost.toFixed(2),
+      metric.limit.toFixed(2),
+      overageDollars.toFixed(2),
     );
     const costSuffix =
-      overagePerMillionTokens > 0
-        ? ` You are in overage: $${overageCost.toFixed(2)} so far this period.`
-        : "";
+      overageDollars > 0 ? ` You are in overage: ${formatUsd(overageDollars)} so far this period.` : "";
     return {
       allowed: true,
       warning: {
         code: "plan_limit_warning",
         message:
-          `You have exceeded your plan's included token budget ` +
-          `(${metric.currentUsage.toLocaleString()} / ${metric.limit.toLocaleString()} tokens).` +
+          `You have used your full included usage credit ` +
+          `(${formatUsd(metric.currentUsage)} of ${formatUsd(metric.limit)}).` +
           costSuffix +
-          ` Upgrade or add seats to lower your per-token cost.`,
+          ` Usage now bills at provider cost; upgrade or add seats for a larger credit.`,
         metrics: [metric],
       },
     };
@@ -561,7 +668,7 @@ function evaluateUsage(
         usagePercent: metric.usagePercent,
         threshold: "warning",
       },
-      "Workspace approaching token budget (%d%%)",
+      "Workspace approaching usage credit (%d%%)",
       metric.usagePercent,
     );
     return {
@@ -569,8 +676,8 @@ function evaluateUsage(
       warning: {
         code: "plan_limit_warning",
         message:
-          `You are approaching your plan's token budget ` +
-          `(${metric.usagePercent}% used: ${metric.currentUsage.toLocaleString()} / ${metric.limit.toLocaleString()} tokens).`,
+          `You are approaching your included usage credit ` +
+          `(${metric.usagePercent}% used: ${formatUsd(metric.currentUsage)} of ${formatUsd(metric.limit)}).`,
         metrics: [metric],
       },
     };
@@ -580,30 +687,39 @@ function evaluateUsage(
   return { allowed: true };
 }
 
+/** Format a USD amount for user-facing copy, e.g. 12.5 → "$12.50". */
+function formatUsd(amount: number): string {
+  return `$${amount.toFixed(2)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Build a per-metric usage status.
+ * Build a per-metric usage status. The `usd` metric carries dollar amounts
+ * (`currentUsage` = at-cost spend, `limit` = the included credit, #4038).
  *
- * `ceilingPercent` is the abuse-ceiling cutoff (percent of budget): usage at or
- * above it classifies as `hard_limit` (429 cutoff), the 100%→ceiling band is
- * `metered` (served + billed). When `null` (ceiling disabled) there is no
- * cutoff — usage past 100% stays `metered` no matter how high. When omitted
- * (billing-page / display callers that don't resolve the per-workspace
- * setting) it defaults to the conservative {@link DEFAULT_ABUSE_CEILING_PERCENT}
- * so a display surface and enforcement agree on the common case.
+ * `ceilingPercent` is the cutoff (percent of credit): usage at or above it
+ * classifies as `hard_limit` (429 cutoff), the 100%→ceiling band is `metered`
+ * (served at provider cost). When `null` (ceiling disabled) there is no cutoff —
+ * usage past 100% stays `metered` no matter how high. When omitted (billing-page
+ * / display callers that don't resolve the per-workspace setting) it defaults to
+ * the conservative {@link DEFAULT_ABUSE_CEILING_PERCENT} so a display surface and
+ * enforcement agree on the common (continue-policy) case; a `cutoff`-policy caller
+ * passes {@link METERED_THRESHOLD} (100) explicitly.
  */
 export function buildMetricStatus(
-  metric: "tokens",
+  metric: "usd",
   currentUsage: number,
   limit: number,
   ceilingPercent: number | null = DEFAULT_ABUSE_CEILING_PERCENT,
 ): PlanLimitStatus {
   if (limit <= 0) {
-    // Invalid limit (not the -1 unlimited sentinel, which is filtered upstream).
-    // Fail safe: treat as hard limit so misconfigured plans don't silently allow everything.
+    // Non-positive credit — the dollar credit is always finite (no unlimited
+    // sentinel; free/locked $0 are short-circuited upstream), so this is the
+    // defensive 0-credit guard. Fail safe: treat as hard limit so a misconfigured
+    // credit doesn't silently allow everything.
     log.error({ metric, limit }, "Invalid plan limit value — treating as hard limit");
     return { metric, currentUsage, limit, usagePercent: 999, status: "hard_limit" };
   }
@@ -620,9 +736,10 @@ export function buildMetricStatus(
 /**
  * Classify usage into the metered soft-cap bands (#3990).
  *
- * - `>= ceilingPercent` → `hard_limit` (abuse ceiling cutoff). Skipped when
- *   `ceilingPercent` is null (ceiling disabled — pure metering, no cutoff).
- * - `>= 100%` → `metered` (over budget, served + billed).
+ * - `>= ceilingPercent` → `hard_limit` (the cutoff — the abuse ceiling under
+ *   `continue`, or 100% of credit under `cutoff`). Skipped when `ceilingPercent`
+ *   is null (ceiling disabled — pure metering, no cutoff).
+ * - `>= 100%` → `metered` (over the credit, served at provider cost).
  * - `>= 80%` → `warning`.
  * - otherwise `ok`.
  *

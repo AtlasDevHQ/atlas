@@ -61,7 +61,7 @@ mock.module("@atlas/api/lib/billing/enforcement", () => ({
   // Unused by the gate — stubbed for module-graph completeness.
   getCachedWorkspace: mock(async () => null),
   invalidatePlanCache: mock(() => {}),
-  buildMetricStatus: mock(() => ({ metric: "tokens", currentUsage: 0, limit: 1, usagePercent: 0, status: "ok" })),
+  buildMetricStatus: mock(() => ({ metric: "usd", currentUsage: 0, limit: 1, usagePercent: 0, status: "ok" })),
   severityOf: mock(() => 0),
   checkResourceLimit: mock(async () => ({ allowed: true })),
   CHAT_INTEGRATION_COUNT_SQL: "",
@@ -197,16 +197,16 @@ describe("checkAgentBillingGate", () => {
     planVerdict = {
       allowed: false,
       errorCode: "plan_limit_exceeded",
-      errorMessage: "You have exceeded your plan's token budget.",
+      errorMessage: "You have reached your workspace's spend ceiling.",
       httpStatus: 429,
-      usage: { currentUsage: 2_300_000, limit: 2_000_000, metric: "tokens" },
+      usage: { currentUsage: 100, limit: 20, metric: "usd" },
     };
     const result = await checkAgentBillingGate("org-1");
     expect(result.allowed).toBe(false);
     if (result.allowed) throw new Error("expected block");
     expect(result.errorCode).toBe("plan_limit_exceeded");
     expect(result.httpStatus).toBe(429);
-    expect(result.usage).toEqual({ currentUsage: 2_300_000, limit: 2_000_000, metric: "tokens" });
+    expect(result.usage).toEqual({ currentUsage: 100, limit: 20, metric: "usd" });
   });
 
   it("blocks a churned (locked) workspace with 403 subscription_required", async () => {
@@ -237,10 +237,10 @@ describe("checkAgentBillingGate", () => {
     expect(result.retryable).toBe(true);
   });
 
-  it("allows and passes the 80–109% warning band through without blocking", async () => {
+  it("allows and passes the approaching-credit warning band through without blocking", async () => {
     planVerdict = {
       allowed: true,
-      warning: { code: "plan_limit_warning", message: "You are approaching your plan's token budget", metrics: [] },
+      warning: { code: "plan_limit_warning", message: "You are approaching your included usage credit", metrics: [] },
     };
     const result = await checkAgentBillingGate("org-1");
     expect(result.allowed).toBe(true);

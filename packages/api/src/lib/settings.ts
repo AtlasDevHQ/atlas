@@ -770,24 +770,47 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
-  // Abuse ceiling (#3990) — the metered soft-cap cutoff. Usage past 100% of
-  // the included budget is METERED (served, accruing billable overage), NOT
-  // blocked; the hard 429 cutoff fires only at this ceiling, expressed as a
-  // percent of the plan budget. It bounds runaway / abusive spend, not normal
-  // paying overage. Workspace-scoped so an operator can lift it per tenant
-  // (e.g. a known heavy customer) from Admin → Settings without a redeploy;
-  // hot-reloadable (no requiresRestart — checkPlanLimits reads it live per
-  // request). Conservative default 500% = 5× the included budget: high enough
-  // that ordinary metered overage never trips it, low enough to cap a runaway
-  // loop or compromised key at a bounded multiple of the plan. 0 or empty
-  // disables the ceiling entirely (pure metering, no cutoff) — only set that
-  // for a trusted workspace.
+  // Spend policy (#4038, Structure B) — what happens once a workspace exhausts
+  // its included at-cost usage credit ($20/seat). DEFAULT "continue": keep
+  // serving at provider cost (zero markup), bounded by ATLAS_ABUSE_CEILING.
+  // "cutoff": hard-block the moment the credit is spent (the effective ceiling
+  // clamps to 100% of credit). Workspace-scoped so an admin owns their own
+  // spend posture from Admin → Settings without a redeploy; hot-reloadable
+  // (checkPlanLimits reads it live per request). Read at runtime via
+  // resolveSpendPolicy in lib/billing/enforcement.ts — keeps
+  // check-settings-readers green.
+  {
+    key: "ATLAS_SPEND_POLICY",
+    section: "Billing",
+    label: "Spend Policy (past included credit)",
+    description:
+      "What happens once a workspace spends its included usage credit ($20/seat). 'continue' (default) keeps serving at provider cost, bounded by the abuse ceiling. 'cutoff' hard-blocks at the credit (any overage returns a 429).",
+    type: "select",
+    options: ["continue", "cutoff"],
+    default: "continue",
+    envVar: "ATLAS_SPEND_POLICY",
+    scope: "workspace",
+  },
+
+  // Abuse ceiling (#3990, re-denominated #4038) — the metered soft-cap cutoff
+  // for the "continue" spend policy. Usage past 100% of the included at-cost
+  // credit is METERED (served at provider cost), NOT blocked; the hard 429
+  // cutoff fires only at this ceiling, expressed as a percent OF THE CREDIT.
+  // It bounds runaway / abusive spend, not normal paying overage. Workspace-
+  // scoped so an operator can lift it per tenant (e.g. a known heavy customer)
+  // from Admin → Settings without a redeploy; hot-reloadable (no requiresRestart
+  // — checkPlanLimits reads it live per request). Conservative default 500% =
+  // 5× the credit = $100/seat: high enough that ordinary metered overage never
+  // trips it, low enough to cap a runaway loop or compromised key at a bounded
+  // multiple of the credit. 0 or empty disables the ceiling entirely (pure
+  // metering, no cutoff) — only set that for a trusted workspace. Ignored when
+  // the spend policy is "cutoff" (which clamps the ceiling to 100% of credit).
   {
     key: "ATLAS_ABUSE_CEILING",
     section: "Billing",
-    label: "Abuse Ceiling (% of budget)",
+    label: "Abuse Ceiling (% of credit)",
     description:
-      "Hard cutoff for metered overage, as a percent of the plan's token budget (default 500 = 5× budget). Usage between 100% and this ceiling is served and billed as overage; at or above it, requests are blocked with a 429. 0 or empty disables the cutoff (pure metering).",
+      "Hard cutoff for metered at-cost overage under the 'continue' spend policy, as a percent of the workspace's included usage credit (default 500 = 5× credit = $100/seat). Usage between 100% and this ceiling is served at provider cost; at or above it, requests are blocked with a 429. 0 or empty disables the cutoff (pure metering).",
     type: "number",
     default: "500",
     envVar: "ATLAS_ABUSE_CEILING",

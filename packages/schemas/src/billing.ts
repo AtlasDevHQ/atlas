@@ -45,6 +45,18 @@ const OVERAGE_STATUSES = ["ok", "warning", "soft_limit", "metered", "hard_limit"
 const OverageStatusEnum = z.enum(OVERAGE_STATUSES) satisfies z.ZodType<OverageStatus>;
 const PlanTierEnum = z.enum(PLAN_TIERS);
 
+// Workspace spend posture past the included at-cost credit (#4038), the wire
+// mirror of the `SpendPolicy` union in `lib/billing/enforcement.ts`. The wire
+// layer must not import `@atlas/api`, so the two literals are hand-kept in sync
+// here (module-local tuple, not re-exported, to avoid widening the published
+// value surface). The `satisfies` below pins the enum to exactly these literals
+// locally; an enforcement-side change that adds a policy then surfaces at the
+// API route, where the resolved `SpendPolicy` is type-checked against this
+// schema in `c.json` (billing.ts) — so the by-convention mirror can't silently
+// drift.
+const SPEND_POLICIES = ["continue", "cutoff"] as const;
+const SpendPolicyEnum = z.enum(SPEND_POLICIES) satisfies z.ZodType<"continue" | "cutoff">;
+
 // ---------------------------------------------------------------------------
 // Interfaces — TS companions to the Zod schemas below. Declared here
 // because no other package needs the BillingStatus interface outside the
@@ -139,6 +151,16 @@ export interface BillingUsage {
    * Optional for older-bundle tolerance; absent ⇒ render as 0.
    */
   overageCost?: number;
+  /**
+   * #4038 / #3993 — the workspace's spend policy past the included credit:
+   * `continue` (default — keep serving at provider cost up to the spend cap) or
+   * `cutoff` (block new requests the moment the credit is spent). Lets the
+   * billing page tell a customer what happens past their credit *before* they
+   * hit it, not just at the 429. Null when no dollar credit is enforced
+   * (BYOT / free / locked / unlimited) or when resolution failed; optional for
+   * older-bundle tolerance (absent ⇒ omit the policy line).
+   */
+  spendPolicy?: "continue" | "cutoff" | null;
   periodStart: string;
   periodEnd: string;
   /**
@@ -259,6 +281,7 @@ export const BillingUsageSchema = z.object({
   usageDollarsPercent: z.number(),
   usageOverageStatus: OverageStatusEnum,
   overageCost: z.number().optional(),
+  spendPolicy: SpendPolicyEnum.nullable().optional(),
   periodStart: z.string(),
   periodEnd: z.string(),
   periodSource: z.enum(["stripe", "utc-month"]).optional(),

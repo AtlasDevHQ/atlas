@@ -88,7 +88,7 @@ const TIERS: Tier[] = [
     ctaHref: "https://app.useatlas.dev/signup?plan=starter",
     ctaSecondary: "no card · work email",
     features: [
-      "~100 AI queries/seat/mo included",
+      "$20/seat AI-usage credit, then at cost",
       "Up to 10 seats",
       "1 database connection",
       "Default model: Haiku 4.5",
@@ -109,7 +109,7 @@ const TIERS: Tier[] = [
     ctaSecondary: "no card · work email",
     highlighted: true,
     features: [
-      "~250 AI queries/seat/mo included",
+      "$20/seat AI-usage credit, then at cost",
       "Up to 25 seats",
       "3 database connections",
       "Default model: Sonnet 4.6",
@@ -130,7 +130,7 @@ const TIERS: Tier[] = [
     ctaHref: "https://app.useatlas.dev/signup?plan=business",
     ctaSecondary: "or talk to sales",
     features: [
-      "~750 AI queries/seat/mo included",
+      "$20/seat AI-usage credit, then at cost",
       "Unlimited seats & connections",
       "Default model: Sonnet 4.6",
       "BYOK for unlimited queries",
@@ -158,13 +158,14 @@ const CORE_SECTION: ComparisonSection = {
     { feature: "Notebooks & dashboards", selfHosted: true, starter: true, pro: true, business: true },
     { feature: "Admin console & API", selfHosted: true, starter: true, pro: true, business: true },
     { feature: "MCP server", selfHosted: true, starter: true, pro: true, business: true },
-    { feature: "AI queries/seat/mo", selfHosted: "Unlimited (BYOK)", starter: "~100", pro: "~250", business: "~750" },
+    { feature: "Included AI-usage credit", selfHosted: "Unlimited (BYOK)", starter: "$20/seat/mo", pro: "$20/seat/mo", business: "$20/seat/mo" },
+    { feature: "Usage billing", selfHosted: "BYOK (you pay your provider)", starter: "At cost, no markup", pro: "At cost, no markup", business: "At cost, no markup" },
     { feature: "BYOK (unlimited queries)", selfHosted: "Default", starter: true, pro: true, business: true },
     { feature: "Default model", selfHosted: "Your choice", starter: "Haiku 4.5", pro: "Sonnet 4.6", business: "Sonnet 4.6" },
     { feature: "Seats", selfHosted: "Unlimited", starter: "Up to 10", pro: "Up to 25", business: "Unlimited" },
     { feature: "Database connections", selfHosted: "Unlimited", starter: "1", pro: "3", business: "Unlimited" },
     { feature: "Chat integrations", selfHosted: "Config-based", starter: "1 platform", pro: "3 platforms", business: "All 6" },
-    { feature: "When you hit the budget", selfHosted: "No limit (BYOK)", starter: "Warn → 10% grace → pause", pro: "Warn → 10% grace → pause", business: "Warn → 10% grace → pause" },
+    { feature: "Past the included credit", selfHosted: "No limit (BYOK)", starter: "At cost, to spend cap", pro: "At cost, to spend cap", business: "At cost, to spend cap" },
   ],
 };
 
@@ -256,17 +257,17 @@ const FAQS: FAQ[] = [
   {
     question: "Can I switch models?",
     answer:
-      "Yes. Every plan lets you choose any supported model (Claude, GPT, etc.). Your per-seat budget is a flat token count — every token counts the same regardless of which model produced it, so a more capable model simply consumes the shared budget faster. Switch to BYOK to remove token limits entirely.",
+      "Yes. Every plan lets you choose any supported model (Claude, GPT, etc.). AI usage is billed at provider cost with no markup, so switching to a more capable model simply draws down your included usage credit faster — and costs more per query once you're past it. Switch to BYOK to bill your own provider directly instead.",
   },
   {
-    question: "What happens when I hit my token budget?",
+    question: "What happens when I use up my included usage?",
     answer:
-      "Each paid plan includes a per-seat monthly token budget that scales with your seat count. As you approach it you'll get a usage warning (from ~80%), and you keep working through a 10% grace buffer past 100%. At 110% new requests are paused until you upgrade, add seats, or your billing period resets. There is no metered per-token overage charge — it's a hard cap with a grace buffer, not pay-as-you-go. To remove token limits entirely, switch to BYOK at any time and use your own API key.",
+      "Every paid plan includes $20/seat per month of AI usage, billed at provider cost with zero markup and pooled across your seats. You'll get a warning as you approach it (from ~80%). Past the credit, you choose what happens: by default Atlas keeps serving at the same provider cost — your billing page shows \"in overage, $X.XX so far\" — bounded by a spend cap that backstops runaway usage; or set your workspace to cut off at the credit so nothing bills beyond it. There's no per-token markup and no flat lockout. Switch to BYOK at any time to bill your own provider directly.",
   },
   {
     question: "Is there a free option?",
     answer:
-      "Yes — self-hosted Atlas is free and always will be (AGPL-3.0). Deploy on your own infrastructure with unlimited everything. For Atlas Cloud, all paid plans include a 14-day free trial with no credit card required (work email required — see below). Every trial runs at Starter-tier usage limits (2M tokens/seat, up to 10 seats, 1 connection) for 14 days, regardless of the plan you start from.",
+      "Yes — self-hosted Atlas is free and always will be (AGPL-3.0). Deploy on your own infrastructure with unlimited everything. For Atlas Cloud, all paid plans include a 14-day free trial with no credit card required (work email required — see below). Every trial runs at Starter-tier limits ($20/seat of included AI usage, up to 10 seats, 1 connection) for 14 days, regardless of the plan you start from.",
   },
   {
     question: "What email can I sign up with?",

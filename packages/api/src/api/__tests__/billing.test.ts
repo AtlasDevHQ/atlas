@@ -122,10 +122,19 @@ mock.module("@atlas/api/lib/metering", () => ({
 // ATLAS_PROVIDER is a deploy-level choice resolved from env, so the mock
 // returns the saved model only for that key (mirrors the real store).
 let mockSettingLiveValue: string | undefined = undefined;
+// Live ATLAS_SPEND_POLICY value (#3993) — drives resolveSpendPolicy. Unset ⇒
+// default "continue"; a test sets "cutoff" to exercise the cutoff branch.
+let mockSpendPolicyValue: string | undefined = undefined;
 
 mock.module("@atlas/api/lib/settings", () => ({
   getSettingLive: mock((key: string) =>
-    Promise.resolve(key === "ATLAS_MODEL" ? mockSettingLiveValue : undefined),
+    Promise.resolve(
+      key === "ATLAS_MODEL"
+        ? mockSettingLiveValue
+        : key === "ATLAS_SPEND_POLICY"
+          ? mockSpendPolicyValue
+          : undefined,
+    ),
   ),
   getSetting: mock(() => undefined),
   getSettingAuto: mock(() => undefined),
@@ -183,6 +192,7 @@ describe("billing routes", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockSettingLiveValue = undefined;
+    mockSpendPolicyValue = undefined;
     mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true,
@@ -297,6 +307,38 @@ describe("billing routes", () => {
       expect(body.usage.costUsd).toBe(70);
       expect(body.usage.overageCost).toBe(10);
       expect(body.limits.totalUsageDollars).toBe(60);
+      // #3993 — the spend policy is surfaced for the "past the credit" line;
+      // the settings mock leaves ATLAS_SPEND_POLICY unset ⇒ default "continue".
+      expect(body.usage.spendPolicy).toBe("continue");
+    });
+
+    it("forwards the cutoff spend policy and hard-blocks over the credit (#3993)", async () => {
+      // Same 3 seats → $60 credit, $70 spend, but the workspace is on the
+      // `cutoff` policy: resolveUsageCeiling clamps the ceiling to 100% of the
+      // credit, so anything over the credit is hard_limit (not metered). Pins
+      // the route faithfully forwarding the resolved policy on the cutoff branch
+      // — the one branch the default-driven tests can't see.
+      mockSpendPolicyValue = "cutoff";
+      mockInternalQuery.mockImplementation((...args: unknown[]) => {
+        const sql = args[0];
+        if (typeof sql === "string" && sql.includes("member")) {
+          return Promise.resolve([{ count: 3 }]);
+        }
+        return Promise.resolve([]);
+      });
+      const meteringMod = await import("@atlas/api/lib/metering");
+      (meteringMod.getCurrentPeriodUsage as ReturnType<typeof mock>).mockImplementationOnce(() =>
+        Promise.resolve({ ...mockUsage, costUsd: 70 }),
+      );
+
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.usage.spendPolicy).toBe("cutoff");
+      expect(body.usage.usageOverageStatus).toBe("hard_limit");
+      expect(body.usage.overageCost).toBe(10);
+      expect(body.limits.totalUsageDollars).toBe(60);
     });
 
     it("never reports overage for a BYOT workspace, even over the credit (#3990)", async () => {
@@ -327,6 +369,8 @@ describe("billing routes", () => {
       expect(body.usage.overageCost).toBe(0);
       // BYOT bypasses enforcement → no dollar credit gauge.
       expect(body.limits.totalUsageDollars).toBeNull();
+      // #3993 — BYOT has no enforced credit, so no spend-policy line either.
+      expect(body.usage.spendPolicy).toBeNull();
     });
 
     it("reports zero overage when under the credit (#3990)", async () => {

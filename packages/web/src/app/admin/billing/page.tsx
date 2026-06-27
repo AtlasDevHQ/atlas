@@ -860,6 +860,25 @@ function UsageShell({ data }: { data: BillingStatus }) {
               </span>
             </p>
           )}
+          {/* #3993 — surface the spend policy past the included credit so the
+              customer knows what happens *before* they hit it: `continue`
+              (default) keeps serving at provider cost up to the spend cap;
+              `cutoff` blocks new requests at the credit. Null (resolution
+              failed / no enforced credit) ⇒ omit. The setting is workspace-
+              scoped and editable in Admin → Settings (Billing). */}
+          {usage.spendPolicy != null && (
+            <p className="text-[11px] text-muted-foreground">
+              {usage.spendPolicy === "cutoff"
+                ? "Past your included credit, new requests are paused — nothing bills beyond it (spend cutoff)."
+                : "Past your included credit, usage continues at provider cost (no markup), bounded by your spend cap."}{" "}
+              <a
+                href="/admin/settings#setting-ATLAS_SPEND_POLICY"
+                className="underline-offset-2 hover:underline"
+              >
+                Change
+              </a>
+            </p>
+          )}
         </div>
       )}
 

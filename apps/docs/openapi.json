@@ -77300,6 +77300,17 @@
                         "overageCost": {
                           "type": "number"
                         },
+                        "spendPolicy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "enum": [
+                            "continue",
+                            "cutoff",
+                            null
+                          ]
+                        },
                         "periodStart": {
                           "type": "string"
                         },

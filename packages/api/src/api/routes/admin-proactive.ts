@@ -35,6 +35,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
+import { requireFeatureEntitlementOrThrow } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
@@ -392,6 +393,9 @@ adminProactive.openapi(getWorkspaceRoute, async (c) =>
   runHandler(c, "get proactive workspace config", async () => {
     const { orgId, requestId } = c.get("orgContext");
     gateEnterprise();
+    // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
+    // where gateEnterprise() above is the gate. (#4064 / #3984)
+    await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     try {
       // Materialise-or-return: ON CONFLICT touches `updated_at` to its own
@@ -428,6 +432,9 @@ adminProactive.openapi(updateWorkspaceRoute, async (c) =>
     const { orgId, requestId } = c.get("orgContext");
     const authResult = c.get("authResult");
     gateEnterprise();
+    // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
+    // where gateEnterprise() above is the gate. (#4064 / #3984)
+    await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     const body = c.req.valid("json");
 
@@ -584,6 +591,9 @@ adminProactive.openapi(listChannelsRoute, async (c) =>
   runHandler(c, "list proactive channel overrides", async () => {
     const { orgId, requestId } = c.get("orgContext");
     gateEnterprise();
+    // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
+    // where gateEnterprise() above is the gate. (#4064 / #3984)
+    await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     try {
       const rows = await internalQuery<ChannelConfigRow>(
@@ -612,6 +622,9 @@ adminProactive.openapi(listAvailableChannelsRoute, async (c) =>
   runHandler(c, "list available chat channels", async () => {
     const { orgId, requestId } = c.get("orgContext");
     gateEnterprise();
+    // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
+    // where gateEnterprise() above is the gate. (#4064 / #3984)
+    await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     try {
       // Read-only platform lookup; no audit row (matches the other GETs).
@@ -658,6 +671,9 @@ adminProactive.openapi(upsertChannelRoute, async (c) =>
     const { orgId, requestId } = c.get("orgContext");
     const authResult = c.get("authResult");
     gateEnterprise();
+    // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
+    // where gateEnterprise() above is the gate. (#4064 / #3984)
+    await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     const body = c.req.valid("json");
 
@@ -730,6 +746,9 @@ adminProactive.openapi(deleteChannelRoute, async (c) =>
     const { orgId, requestId } = c.get("orgContext");
     const authResult = c.get("authResult");
     gateEnterprise();
+    // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
+    // where gateEnterprise() above is the gate. (#4064 / #3984)
+    await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     const { channelId } = c.req.valid("param");
 

@@ -139,3 +139,49 @@ export function requireFeatureEntitlement(
     }),
   );
 }
+
+/**
+ * Promise-shaped variant of {@link requireFeatureEntitlement} for the
+ * non-Effect `runHandler` route path (e.g. `admin-proactive.ts`), whose
+ * handlers can't `yield*` an Effect.
+ *
+ * Runs the same Effect guard and, on a typed failure, rethrows the **raw**
+ * tagged error ({@link FeatureEntitlementError} → 403 `plan_upgrade_required`,
+ * {@link BillingCheckFailedError} → 503) so the `runHandler` → `classifyError`
+ * bridge maps it to the identical HTTP response the Effect path produces. The
+ * SaaS short-circuit, operator bypass, and fail-closed-on-lookup-error decision
+ * therefore live in exactly one place — this is a thin adapter, not a second
+ * implementation, so the two paths can't drift.
+ *
+ * `Effect.match` is the load-bearing choice here: it converts the guard's typed
+ * *failure* into a success value carrying the **raw** tagged error, so the
+ * `await` resolves with that error and we rethrow it unwrapped — preserving the
+ * `_tag` the bridge keys on. (`Effect.runPromise` on the failed Effect directly
+ * would instead reject with a `FiberFailure` that *wraps and hides* the tag, and
+ * `classifyError` would 500 it.) Keeping the only `effect` named import to
+ * `{ Effect }` — unchanged from this module's prior shape — also avoids tripping
+ * the partial `mock.module("effect")` shims in sibling route tests, which a new
+ * `Exit`/`Cause` import would break (the "new export breaks every partial mock"
+ * gotcha).
+ *
+ * A defect or interrupt (no typed failure — e.g. a programmer error inside the
+ * guard) is deliberately NOT matched: it stays in the cause, `runPromise`
+ * rejects with a `FiberFailure`, and `runHandler` surfaces it as a logged 500.
+ * Fail-closed, never a silent pass.
+ */
+export async function requireFeatureEntitlementOrThrow(
+  orgId: string | undefined,
+  feature: GatedFeature,
+): Promise<void> {
+  const denial = await Effect.runPromise(
+    requireFeatureEntitlement(orgId, feature).pipe(
+      Effect.match({
+        // Typed failure → carry the raw tagged error out as a value.
+        onFailure: (error) => error,
+        // Entitled / short-circuited → nothing to throw.
+        onSuccess: () => null,
+      }),
+    ),
+  );
+  if (denial !== null) throw denial;
+}

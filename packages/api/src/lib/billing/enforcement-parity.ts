@@ -96,9 +96,11 @@ export const ENFORCEMENT_PENDING: Partial<Record<GatedFeature, IssueRef>> = {
   // (`backups.available`) today; a tenant-facing backups surface is needed before
   // the per-tier ladder can apply, tracked under #3984.
   backups: "#3984",
-  // `proactive` is gated in its own follow-up slice under #3984 (it also needs
-  // the WS5 relocation into `/ee`).
-  proactive: "#3984",
+  // `proactive` was wired per-tier in #4064 — `requireFeatureEntitlement(orgId,
+  // "proactive")` now gates the four Effect sub-routes and `admin-proactive.ts`
+  // (the latter via `requireFeatureEntitlementOrThrow`, its `runHandler` path's
+  // promise adapter), so it is no longer pending (rule 2 forces this removal).
+  // The WS5 relocation of `lib/proactive` → `/ee` is a separate follow-up.
 };
 
 /** A single enforcement-parity finding (one drift). */

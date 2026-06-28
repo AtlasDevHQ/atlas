@@ -49,7 +49,7 @@ export const COLUMN_TIERS = {
 export type PricingColumn = keyof typeof COLUMN_TIERS;
 
 /** Comparison-table section a gated feature renders under. */
-export type EntitlementSection = "hosting" | "security & compliance";
+export type EntitlementSection = "chat" | "hosting" | "security & compliance";
 
 interface FeatureDisplay {
   /** Row label shown verbatim in the comparison table. */
@@ -69,8 +69,9 @@ interface FeatureDisplay {
  * (Proactive monitoring) was gated by the SSOT but never listed on the page.
  * Surfacing it here is deliberate — WS4 of #3984 advertises proactive
  * monitoring — so the mirror adds a "Proactive monitoring" row the prior copy
- * did not have. Unlike the Business-only rows around it, proactive unlocks on
- * every paid plan (min `trial`, #3999); its cells render ✓ for starter/pro/
+ * did not have, in its own `chat` section (it's a chat capability, not security
+ * & compliance — #3984). Unlike the Business-only enterprise rows, proactive
+ * unlocks on every paid plan (min `trial`, #3999); its cells render ✓ for starter/pro/
  * business and ✗ for self-hosted (a hosted-SaaS-only feature), derived from the
  * SSOT like every other row.
  */
@@ -99,12 +100,13 @@ export const FEATURE_DISPLAY: Record<GatedFeature, FeatureDisplay> = {
   },
   proactive: {
     label: "Proactive monitoring",
-    section: "security & compliance",
+    section: "chat",
   },
 };
 
 /** Section render order in the artifact. */
 export const SECTION_ORDER: readonly EntitlementSection[] = [
+  "chat",
   "hosting",
   "security & compliance",
 ];

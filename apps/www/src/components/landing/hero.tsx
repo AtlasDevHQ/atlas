@@ -6,7 +6,7 @@ const HEADLINE_LINES = ["Ask your data anything.", "Trust the answer."] as const
 const ITALIC_LINE_INDEX = 1;
 
 const SUBHEAD =
-  "Atlas is an AI data analyst that turns plain-English questions into safe, validated SQL, grounded in a semantic layer you control.";
+  "Atlas is an AI data analyst you can run anywhere. It turns plain-English questions into trustworthy answers across your SQL warehouses and REST APIs, grounded in a semantic layer you control.";
 
 /**
  * The hero's payload: a plain-English question and the validated answer it

@@ -167,7 +167,7 @@ bun run atlas -- init
 ## SQL query surface
 
 Ask a tabular or aggregate question over a single index in chat and the agent
-answers through the standard `executeSQL` tool — the same 4-layer validation
+answers through the standard `executeSQL` tool — the same SQL validation
 pipeline as any SQL datasource. The connection POSTs your statement to the
 engine's SQL API, follows the response `cursor` across pages up to the row cap,
 and normalizes the result to Atlas's `{ columns, rows }`.
@@ -316,7 +316,7 @@ is queried over the SQL surface (per-workspace DSL routing is a later slice).
 ## Security
 
 - **Read-only.** Only `SELECT` reaches the cluster, through Atlas's standard
-  4-layer validation (regex DML/DDL guard → AST single-`SELECT` parse → index
+  SQL validation (regex DML/DDL guard → AST single-`SELECT` parse → index
   whitelist → auto-`LIMIT` + statement timeout) plus the `SHOW`/`DESCRIBE` guard.
 - **Secrets encrypted at rest.** `apiKey`, `password`, `awsSecretAccessKey`, and
   `awsSessionToken` are `secret: true` — encrypted via `encryptSecretFields` and

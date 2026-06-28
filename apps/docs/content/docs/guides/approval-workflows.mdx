@@ -27,7 +27,7 @@ When a user runs a query, the SQL validation pipeline checks the query against a
 ### Flow
 
 1. User submits a query via the chat agent
-2. SQL passes validation (4-layer pipeline)
+2. SQL passes pre-execution validation (the four `validateSQL` checks — empty check, regex guard, AST parse, table whitelist)
 3. Approval rules are checked against the validated query's tables and columns
 4. If a rule matches: query is queued and the agent tells the user approval is required
 5. An admin reviews the request in the admin console (or via API)

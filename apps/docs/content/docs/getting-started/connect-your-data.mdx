@@ -32,7 +32,7 @@ Pick your database below and follow the steps. Each section is self-contained. F
 <Step>
 ### Create a read-only PostgreSQL user
 
-Atlas enforces SELECT-only via a multi-layer SQL validation pipeline. For defense-in-depth, connect with a read-only user:
+Atlas enforces SELECT-only via a 7-layer SQL validation pipeline. For defense-in-depth, connect with a read-only user:
 
 ```sql
 CREATE USER atlas_reader WITH PASSWORD 'your-strong-password';

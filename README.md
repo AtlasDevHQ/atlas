@@ -161,11 +161,11 @@ docker compose up
 
 1. User (or agent) asks a natural language question — over MCP, the chat widget, the API, Slack, or Teams
 2. Agent explores the **YAML semantic layer** — entities, glossary, metrics, query patterns
-3. Agent writes SQL, validated through a multi-layer security pipeline (regex guard, AST parse, table whitelist, auto-LIMIT, statement timeout)
+3. Agent writes SQL, validated through a 7-layer security pipeline (empty check, regex guard, AST parse, table whitelist, RLS injection, auto-LIMIT, statement timeout)
 4. Results are returned with charts and an interpreted narrative
 
 ```
-Question → YAML semantic layer → SQL generation → Multi-layer validation → Query execution → Charts + narrative
+Question → YAML semantic layer → SQL generation → 7-layer validation → Query execution → Charts + narrative
 ```
 
 ### Generate the semantic layer

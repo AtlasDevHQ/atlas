@@ -272,17 +272,18 @@ export default function AnnouncingAtlas() {
             the Vercel AI Gateway. Bring your own keys or use Atlas Cloud&apos;s
             managed tokens
           </DefItem>
-          <DefItem term="20+ plugins">
-            Datasource adapters, sandbox backends, chat-platform channels, and
-            action triggers. Build your own with the Plugin SDK
+          <DefItem term="24 plugins">
+            Datasource adapters, sandbox backends, chat-platform channels,
+            action triggers, and context providers. Build your own with the
+            Plugin SDK
           </DefItem>
           <DefItem term="Embeddable everywhere">
             A script-tag widget, a React component, a TypeScript SDK, the
             headless API, and the MCP server
           </DefItem>
-          <DefItem term="Eight chat platforms">
-            Slack live today; Teams, Discord, Telegram, WhatsApp, Linear,
-            GitHub, and Google Chat wired
+          <DefItem term="Eight integrations">
+            Six chat platforms — Slack live today; Teams, Discord, Telegram,
+            WhatsApp, and Google Chat wired — plus Linear and GitHub, also wired
           </DefItem>
           <DefItem term="Enterprise controls">
             SSO (SAML/OIDC), SCIM provisioning, custom roles, IP allowlists,

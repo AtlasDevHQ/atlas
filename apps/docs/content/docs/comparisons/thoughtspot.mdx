@@ -18,11 +18,11 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **AI agent** | Multi-step agent with tool use (SQL, Python, explore), Effect.ts + @effect/ai | Spotter 3 (data scientist w/ Python + forecasting), SpotterModel (semantic modeling), SpotterViz (automated dashboards), SpotterCode (IDE code generation) |
 | **Embeddable** | Script tag, React component, SDK with streaming | ThoughtSpot Embedded (SDK) |
 | **Deployment** | Docker, Railway, Vercel, Atlas Cloud (3 regions: US, EU, APAC) | SaaS or on-premises appliance |
-| **Databases** | 7 via plugins (Postgres, MySQL, BigQuery, ClickHouse, DuckDB, Snowflake, Salesforce) | Cloud data warehouses (Snowflake, Databricks, BigQuery, Redshift, etc.) |
+| **Databases** | Postgres, MySQL + plugins for BigQuery, ClickHouse, DuckDB, Snowflake, Salesforce, Elasticsearch/OpenSearch | Cloud data warehouses (Snowflake, Databricks, BigQuery, Redshift, etc.) |
 | **SQL validation** | 7-layer pipeline | Semantic layer governs query generation |
 | **MCP server** | Yes (stdio + SSE) | Yes (ThoughtSpot MCP Server) |
-| **Plugin system** | Plugin SDK + 21+ plugins + marketplace | SpotApps marketplace + Spotter Connectors (Zendesk, Google Workspace, Slack) |
-| **Chat integrations** | 8 platforms (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp) | Slack connector |
+| **Plugin system** | Plugin SDK + 24 plugins + marketplace | SpotApps marketplace + Spotter Connectors (Zendesk, Google Workspace, Slack) |
+| **Chat integrations** | 8 integrations (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp) | Slack connector |
 | **Notebook** | Built-in (cells, fork/branch, export) | No (separate SpotterCode for IDE) |
 | **Enterprise features** | SSO/SCIM, custom roles, IP allowlists, approval workflows, PII masking, data residency, SLA monitoring | Full enterprise governance suite |
 | **Data residency** | 3-region deployment with misrouting detection | Region selection in SaaS |

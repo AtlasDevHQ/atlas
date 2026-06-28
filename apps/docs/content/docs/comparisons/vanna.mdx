@@ -16,8 +16,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **Approach** | Semantic layer (YAML) | RAG training (DDL + docs + SQL pairs) |
 | **Embeddable** | Script tag, React component, SDK with streaming | Web component (`<vanna-chat>`), Flask UI, Streamlit |
 | **Deployment** | Self-hosted (Docker, Railway, Vercel) or Atlas Cloud (3 regions) | Python script, notebook, or app.vanna.ai |
-| **Plugin system** | Plugin SDK + 21+ plugins + marketplace | Swappable LLM/vector store backends |
-| **Databases** | Postgres, MySQL + plugins for BigQuery, ClickHouse, DuckDB, Salesforce, Snowflake | Postgres, MySQL, BigQuery, Snowflake, DuckDB, SQLite, Oracle, SQL Server, ClickHouse, Redshift |
+| **Plugin system** | Plugin SDK + 24 plugins + marketplace | Swappable LLM/vector store backends |
+| **Databases** | Postgres, MySQL + plugins for BigQuery, ClickHouse, DuckDB, Salesforce, Snowflake, Elasticsearch/OpenSearch | Postgres, MySQL, BigQuery, Snowflake, DuckDB, SQLite, Oracle, SQL Server, ClickHouse, Redshift |
 | **Auth model** | Managed (Better Auth), BYOT, API key, SSO/SCIM | BYOT (`UserResolver` class) |
 | **Admin console** | Built-in (connections, users, plugins, semantic editor, analytics, billing) | No |
 | **MCP server** | Yes (stdio + SSE) | No |
@@ -41,7 +41,7 @@ Atlas also learns from usage, but through a different mechanism: `atlas learn` r
 
 ## Deployment Model
 
-**Atlas** deploys as a standalone API server with a built-in frontend, or as a hosted SaaS at [app.useatlas.dev](https://app.useatlas.dev). It's designed for production: managed auth (SSO/SCIM), rate limiting, audit logging, admin console with semantic editor, plugin marketplace, notebook interface, embeddable widget, and 8 chat platform integrations. Deploy on Docker, Railway, or Vercel, or skip infrastructure entirely with Atlas Cloud (3 regions: US, EU, APAC).
+**Atlas** deploys as a standalone API server with a built-in frontend, or as a hosted SaaS at [app.useatlas.dev](https://app.useatlas.dev). It's designed for production: managed auth (SSO/SCIM), rate limiting, audit logging, admin console with semantic editor, plugin marketplace, notebook interface, embeddable widget, and 8 integrations via Chat SDK (6 chat platforms plus GitHub and Linear). Deploy on Docker, Railway, or Vercel, or skip infrastructure entirely with Atlas Cloud (3 regions: US, EU, APAC).
 
 **Vanna** is a Python package you import and call. The simplest deployment is a Jupyter notebook or Python script. Vanna also provides a `<vanna-chat>` web component for embedding, a Flask-based UI, and Streamlit integration. The cloud-hosted version (app.vanna.ai) adds observability, access control, and audit logs.
 
@@ -59,7 +59,7 @@ Vanna v2.0 added parameterized queries and row-level security, but does not incl
 
 ## Ecosystem
 
-Atlas has a typed Plugin SDK with 21+ official plugins covering datasource adapters, sandbox backends, interaction channels (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp via Chat SDK, and MCP), and action triggers (email, JIRA, webhooks). Plugins are discoverable through a built-in marketplace (browse, install, configure per workspace). You can build custom plugins with `bun create atlas-plugin`.
+Atlas has a typed Plugin SDK with 24 official plugins covering datasource adapters, sandbox backends, interaction channels (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp via Chat SDK, and MCP), and action triggers (email, JIRA, webhooks). Plugins are discoverable through a built-in marketplace (browse, install, configure per workspace). You can build custom plugins with `bun create atlas-plugin`.
 
 Vanna has a modular architecture where you can swap the LLM backend (OpenAI, Mistral, Ollama, etc.) and vector store (ChromaDB, Pinecone, etc.). This is closer to a library with pluggable backends than a plugin ecosystem.
 

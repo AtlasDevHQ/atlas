@@ -18,7 +18,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **Embeddable** | Script tag, React component, SDK with streaming | GraphQL/REST/SQL APIs |
 | **Deployment** | Docker, Railway, Vercel, Atlas Cloud (3 regions) | Docker, Cube Cloud |
 | **Caching** | LRU query cache (org-scoped, configurable TTL) | Pre-aggregation engine (materialized rollups) |
-| **Plugin system** | Plugin SDK + 21+ official plugins + marketplace | Database drivers |
+| **Plugin system** | Plugin SDK + 24 official plugins + marketplace | Database drivers |
 | **SQL validation** | 7-layer pipeline | Semantic layer governs query generation |
 | **MCP server** | Yes (stdio + SSE) | Yes |
 | **Chat integrations** | Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp | None built-in |
@@ -49,7 +49,7 @@ Both tools use YAML-based semantic definitions, but the scope differs.
 
 Cube D3 (launched June 2025) adds agentic analytics to the Cube platform with two specialized agents: the **AI Data Analyst** for self-serve natural language querying with visualizations and interactive data apps, and the **AI Data Engineer** for automating semantic model development from cloud data sources. Queries go through the semantic layer runtime rather than hitting the data warehouse directly — a trusted proxy architecture. Cube was recognized in the 2026 Gartner Market Guide for Agentic Analytics.
 
-Atlas is agent-native from day one. The entire product is an agent loop: multi-step reasoning, tool use (SQL execution, Python analysis, semantic layer exploration), 7-layer SQL validation, and structured output. The agent doesn't just generate a query — it reads context, writes SQL, validates it, runs it, and explains the results. The backend uses Effect.ts with @effect/ai for typed, composable agent orchestration. Atlas also provides a notebook interface for multi-step exploratory analysis, a plugin marketplace with 21+ plugins, and 8 chat platform integrations via Chat SDK.
+Atlas is agent-native from day one. The entire product is an agent loop: multi-step reasoning, tool use (SQL execution, Python analysis, semantic layer exploration), 7-layer SQL validation, and structured output. The agent doesn't just generate a query — it reads context, writes SQL, validates it, runs it, and explains the results. The backend uses Effect.ts with @effect/ai for typed, composable agent orchestration. Atlas also provides a notebook interface for multi-step exploratory analysis, a plugin marketplace with 24 plugins, and 8 integrations via Chat SDK (6 chat platforms plus GitHub and Linear).
 
 ## When to Choose Cube
 

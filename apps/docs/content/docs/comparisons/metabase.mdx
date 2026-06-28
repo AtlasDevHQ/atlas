@@ -18,10 +18,10 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **Visual query builder** | No (natural language + notebook) | Yes |
 | **Dashboards** | No (notebook interface for exploratory analysis) | Yes (core feature) |
 | **Semantic layer** | YAML files + web editor + dynamic learning | Data model UI + Data Studio (analyst workbench for glossary, measures, segments) |
-| **Databases** | Postgres, MySQL + plugins for BigQuery, ClickHouse, DuckDB, Salesforce, Snowflake | 20+ databases |
-| **Plugin system** | Plugin SDK + 21+ plugins + marketplace | Database drivers + community |
+| **Databases** | Postgres, MySQL + plugins for BigQuery, ClickHouse, DuckDB, Salesforce, Snowflake, Elasticsearch/OpenSearch | 20+ databases |
+| **Plugin system** | Plugin SDK + 24 plugins + marketplace | Database drivers + community |
 | **Auth model** | Managed, BYOT, API key, SSO/SCIM | Managed, SSO, LDAP (Pro) |
-| **Chat integrations** | 8 platforms (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp) | Slack (paid) |
+| **Chat integrations** | 8 integrations (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp) | Slack (paid) |
 | **Scheduled reports** | Yes (built-in) | Yes (built-in) |
 | **Admin console** | Yes (connections, users, plugins, semantic editor, analytics, billing) | Yes (comprehensive) |
 | **MCP server** | Yes (stdio + SSE) | No |
@@ -33,7 +33,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 **Metabase** is a BI platform. It replaces Excel, Tableau, and Looker for teams that need dashboards, scheduled reports, and visual exploration. AI querying via Metabot is a growing feature — it handles natural language queries, SQL generation, SQL debugging, and smart content reuse — but it's currently a cloud-only add-on ($100/mo for 500 requests). Self-hosted Metabot is on the roadmap.
 
-**Atlas** is an AI agent you embed in other applications or use via [Atlas Cloud](https://app.useatlas.dev). It does one thing -- lets users query data in natural language -- and does it as a composable component, not a standalone product. Atlas includes a notebook interface for multi-step exploratory analysis, but it's not a dashboard builder. It also provides 8 chat platform integrations, a plugin marketplace, and enterprise features (SSO/SCIM, PII masking, data residency).
+**Atlas** is an AI agent you embed in other applications or use via [Atlas Cloud](https://app.useatlas.dev). It does one thing -- lets users query data in natural language -- and does it as a composable component, not a standalone product. Atlas includes a notebook interface for multi-step exploratory analysis, but it's not a dashboard builder. It also provides 8 integrations via Chat SDK (6 chat platforms plus GitHub and Linear), a plugin marketplace, and enterprise features (SSO/SCIM, PII masking, data residency).
 
 These aren't really competitors. If you need dashboards, use Metabase (or Looker, or Tableau). If you need to embed natural-language data querying inside your own product, use Atlas. If you need a multi-step AI agent that reasons through complex analytical questions, Atlas's agent loop (explore semantic layer → write SQL → validate → execute → explain results) is purpose-built for that — Metabot handles single-shot queries.
 

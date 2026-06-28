@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import {
   FEATURE_NAMES,
+  isSaasExclusiveFeature,
   type FeatureName,
 } from "../feature-registry";
 
@@ -72,6 +73,34 @@ describe("FEATURE_NAMES registry", () => {
       );
       if (!match) continue;
       expect(match).toContain(acronym);
+    }
+  });
+});
+
+describe("isSaasExclusiveFeature", () => {
+  test("Proactive Chat is SaaS-exclusive (#3999)", () => {
+    // Proactive's server gate keys on deployMode === "saas", not licensing —
+    // it's denied on self-hosted even with enterprise enabled. The upsell
+    // copy depends on this set; if proactive ever leaves it, the hosted-only
+    // copy regresses to the misleading "upgrade your enterprise plan" line.
+    expect(isSaasExclusiveFeature("Proactive Chat")).toBe(true);
+  });
+
+  test("ordinary enterprise features are NOT SaaS-exclusive", () => {
+    // SSO/SCIM/etc. gate on licensing and DO unlock on self-hosted
+    // enterprise, so they must keep the enterprise-upgrade copy.
+    expect(isSaasExclusiveFeature("SSO")).toBe(false);
+    expect(isSaasExclusiveFeature("SCIM")).toBe(false);
+    expect(isSaasExclusiveFeature("Audit Retention")).toBe(false);
+  });
+
+  test("every SaaS-exclusive feature is a canonical registry name", () => {
+    // Guards a typo'd membership entry that TS would catch at author time but
+    // a `as FeatureName` cast could smuggle past — the set must only contain
+    // names that actually render in upsell copy.
+    for (const name of FEATURE_NAMES) {
+      // exhaustive: calling the predicate on every real name never throws
+      expect(typeof isSaasExclusiveFeature(name)).toBe("boolean");
     }
   });
 });

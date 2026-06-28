@@ -1,8 +1,12 @@
 "use client";
 
-import { Ban, DatabaseZap, ShieldCheck, ShieldX } from "lucide-react";
+import { Ban, Cloud, DatabaseZap, ShieldCheck, ShieldX } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { FeatureName } from "@/ui/components/admin/feature-registry";
+import {
+  isSaasExclusiveFeature,
+  type FeatureName,
+} from "@/ui/components/admin/feature-registry";
+import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 
 /**
  * Dedicated upsell shown when an admin page returns an
@@ -11,6 +15,16 @@ import type { FeatureName } from "@/ui/components/admin/feature-registry";
  * Distinct from the generic `FeatureGate` 403 ("Access denied") so non-EE
  * admins see "this feature needs an enterprise plan" with a concrete next
  * step, rather than assuming their account lacks a role.
+ *
+ * Hosted-SaaS-only features (e.g. proactive monitoring, #3999) reuse the same
+ * `enterprise_required` envelope but are denied on every self-hosted
+ * deployment *including self-hosted enterprise* — no plan upgrade unlocks them
+ * locally. On self-hosted we therefore swap to hosted-only copy + an Atlas
+ * Cloud CTA instead of the "upgrade / contact sales" line, which would be
+ * misleading there. (On SaaS the denial is a real per-tier gate, so the
+ * upgrade copy stays.) Deploy mode here is a cosmetic-only branch, so
+ * rendering from `useDeployMode`'s hostname guess before the settings fetch
+ * resolves is acceptable per its contract.
  */
 export function EnterpriseUpsell({
   feature,
@@ -20,6 +34,41 @@ export function EnterpriseUpsell({
   /** Optional override for the description text (usually the server message). */
   message?: string;
 }) {
+  // Only SaaS-exclusive features need the authoritative deploy mode; for every
+  // other feature `hostedOnly` is false regardless, so skip the settings fetch
+  // (`enabled: false` → host guess, which we then ignore).
+  const isSaasExclusive = isSaasExclusiveFeature(feature);
+  const { deployMode } = useDeployMode({ enabled: isSaasExclusive });
+  const hostedOnly = isSaasExclusive && deployMode === "self-hosted";
+
+  if (hostedOnly) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="max-w-md text-center">
+          <Cloud className="mx-auto size-10 text-primary/70" aria-hidden="true" />
+          <p className="mt-3 text-sm font-medium">
+            {feature} is an Atlas Cloud feature
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {message ||
+              `${feature} is available only on Atlas Cloud (the hosted SaaS) and can't be enabled on a self-hosted deployment.`}
+          </p>
+          <div className="mt-4 flex justify-center">
+            <Button asChild size="sm" variant="outline">
+              <a
+                href="https://www.useatlas.dev"
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                Learn about Atlas Cloud
+              </a>
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full items-center justify-center">
       <div className="max-w-md text-center">

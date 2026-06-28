@@ -1,6 +1,21 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 import { render } from "@testing-library/react";
+
+// Toggleable deploy mode — the EnterpriseUpsell hosted-only branch reads it.
+// The factory returns a function that reads `mockDeployMode` at call time, so
+// flipping it between tests changes what `useDeployMode()` reports at render.
+let mockDeployMode: "saas" | "self-hosted" = "self-hosted";
+mock.module("@/ui/hooks/use-deploy-mode", () => ({
+  useDeployMode: () => ({
+    deployMode: mockDeployMode,
+    loading: false,
+    error: null,
+    resolved: true,
+  }),
+}));
+
 import {
+  EnterpriseUpsell,
   FeatureGate,
   MfaRequiredPlaceholder,
 } from "../components/admin/feature-disabled";
@@ -48,5 +63,61 @@ describe("MfaRequiredPlaceholder", () => {
     const { container } = render(<MfaRequiredPlaceholder feature="AI Provider" />);
     expect(container.textContent).not.toContain("admin role");
     expect(container.textContent).not.toContain("Access denied");
+  });
+});
+
+describe("EnterpriseUpsell", () => {
+  afterEach(() => {
+    mockDeployMode = "self-hosted";
+  });
+
+  test("ordinary EE feature shows enterprise-upgrade copy (self-hosted)", () => {
+    // SSO et al. unlock on self-hosted enterprise, so the upgrade/contact-sales
+    // line is correct — even on a self-hosted deployment.
+    mockDeployMode = "self-hosted";
+    const { container } = render(<EnterpriseUpsell feature="SSO" />);
+    expect(container.textContent).toContain("SSO requires an enterprise plan");
+    expect(container.textContent).toContain("contact sales");
+    expect(container.textContent).toContain("Learn about Atlas Enterprise");
+    expect(container.textContent).not.toContain("Atlas Cloud");
+  });
+
+  test("SaaS-exclusive feature shows hosted-only copy on self-hosted (#3999)", () => {
+    // Proactive is denied on self-hosted even with enterprise enabled, so the
+    // "upgrade your plan" copy is wrong — it must read hosted-SaaS-only with an
+    // Atlas Cloud CTA, never the enterprise-upgrade line.
+    mockDeployMode = "self-hosted";
+    const { container } = render(<EnterpriseUpsell feature="Proactive Chat" />);
+    expect(container.textContent).toContain("Proactive Chat is an Atlas Cloud feature");
+    expect(container.textContent).toContain("Atlas Cloud");
+    expect(container.textContent).toContain("Learn about Atlas Cloud");
+    expect(container.textContent).not.toContain("requires an enterprise plan");
+    expect(container.textContent).not.toContain("contact sales");
+  });
+
+  test("SaaS-exclusive feature keeps upgrade copy on SaaS (per-tier gate, not hosted-only)", () => {
+    // On the hosted SaaS the proactive denial is a real per-tier gate (a free/
+    // locked workspace), so the upgrade path applies — the hosted-only copy
+    // would be nonsensical when the user is already on Atlas Cloud.
+    mockDeployMode = "saas";
+    const { container } = render(<EnterpriseUpsell feature="Proactive Chat" />);
+    expect(container.textContent).toContain("Proactive Chat requires an enterprise plan");
+    expect(container.textContent).not.toContain("is an Atlas Cloud feature");
+  });
+
+  test("server message overrides the hosted-only description body", () => {
+    // AdminContentWrapper passes the server's EnterpriseError message through
+    // as `message`; the hosted-only branch must surface it (it carries the
+    // PROACTIVE_HOSTED_ONLY_MESSAGE wording) rather than the generic fallback.
+    mockDeployMode = "self-hosted";
+    const { container } = render(
+      <EnterpriseUpsell
+        feature="Proactive Chat"
+        message="Proactive monitoring is available only on Atlas Cloud (the hosted SaaS)."
+      />,
+    );
+    expect(container.textContent).toContain(
+      "Proactive monitoring is available only on Atlas Cloud (the hosted SaaS).",
+    );
   });
 });

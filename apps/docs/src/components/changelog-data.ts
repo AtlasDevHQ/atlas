@@ -20,6 +20,20 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.33",
+    title: "Billing & Feature-Ladder Truthfulness",
+    date: "2026-06-28",
+    summary:
+      "Every paid tier now delivers exactly what the pricing page advertises, enforced in code. A single source of truth maps each capability to the plan that unlocks it, so a Starter or Pro workspace can't reach a Business-only feature, and the pricing comparison is generated from what the product actually enforces. Pricing moves to the Structure B model — $39/$69/$149 per seat with a $20/seat at-cost usage credit — and usage past the credit is metered at provider cost (with a runaway-spend ceiling) instead of a hard 110% cutoff. Integration claims were corrected to match what's live, and premium-only code now lives under the commercial license.",
+    highlights: [
+      "Per-tier feature entitlements enforced at the API layer, not just hidden in the UI — the pricing comparison renders from the same source of truth (#3984)",
+      "Structure B pricing: $39/$69/$149 per seat + a $20/seat at-cost usage credit; overage metered at provider cost with a runaway-spend ceiling, replacing the 110% hard cap",
+      "Proactive monitoring included on every paid plan (hosted Atlas Cloud only)",
+      "Integration claims corrected to verified prod-live status — Google Chat marked coming soon (#3995)",
+      "Canonical plugin count locked at 24 behind a CI parity gate (#4066)",
+    ],
+  },
+  {
     version: "v0.0.32",
     title: "Signup & Residency Hardening",
     date: "2026-06-27",

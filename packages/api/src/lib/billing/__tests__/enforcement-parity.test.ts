@@ -159,10 +159,10 @@ describe("ENFORCEMENT_PENDING + live SSOT — the committed allowlist is honest"
     // coupling is deliberate: the unit test tracks the real wiring snapshot,
     // and the live-tree fixture (check-enforcement-parity.test.sh) covers the
     // actual route scan.
-    // sso (#3986); scim, custom_roles, ip_allowlist, approvals (#3987); and the
+    // sso (#3986); scim, custom_roles, ip_allowlist, approvals (#3987); the
     // #3988 tenant-route gates (audit_retention, masking, residency, white_label,
-    // custom_domain). Only backups + proactive (#3984) remain in
-    // ENFORCEMENT_PENDING and so are not listed here.
+    // custom_domain); and proactive (#4064). Only `backups` (#3984) remains in
+    // ENFORCEMENT_PENDING and so is not listed here.
     const enforcedToday = [
       "sso",
       "scim",
@@ -174,6 +174,7 @@ describe("ENFORCEMENT_PENDING + live SSOT — the committed allowlist is honest"
       "residency",
       "white_label",
       "custom_domain",
+      "proactive",
     ];
     const findings = checkEnforcementParity(enforcedToday);
     expect(findings).toEqual([]);

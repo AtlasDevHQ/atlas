@@ -24,6 +24,16 @@ const ORIGINAL_EE_FLAG = process.env.ATLAS_ENTERPRISE_ENABLED;
 // overwrites. Files that need to restore env do so in their own
 // afterAll; the `??=` here is the module-load contract, not teardown.
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
+// Pin self-hosted so the per-tier proactive entitlement gate (#4064) — which
+// `admin-proactive.ts` now applies via `requireFeatureEntitlementOrThrow` after
+// `gateEnterprise()` — is a no-op here: this file exercises workspace-config CRUD
+// and the deployment-level enterprise gate, not the SaaS per-tier ladder (that is
+// covered by `feature-entitlement-proactive.test.ts`). Without this, the env would
+// auto-resolve to `saas` (enterprise enabled + internal DB, absent an
+// `ATLAS_DEPLOY_ENV=development` short-circuit), and the guard's workspace-tier
+// lookup — unsatisfied by this file's hand-rolled internal mock — would 403 every
+// CRUD assertion. `??=` keeps the module-load contract hoistable.
+process.env.ATLAS_DEPLOY_MODE ??= "self-hosted";
 
 // --- Auth mock ---
 

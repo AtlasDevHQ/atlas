@@ -14,6 +14,7 @@
  */
 
 import { Effect } from "effect";
+import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
@@ -93,6 +94,9 @@ adminProactiveAnalytics.get("/", async (c) => {
 
       const { orgId } = yield* AuthContext;
       const { requestId } = yield* RequestContext;
+      // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
+      // where the enterprise-license Tag above is the gate. (#4064 / #3984)
+      yield* requireFeatureEntitlement(orgId, "proactive");
 
       if (!orgId) {
         return c.json(

@@ -34,6 +34,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   AuthContext,
@@ -248,6 +249,9 @@ adminProactivePublicDataset.openapi(listEntriesRoute, async (c) =>
 
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
+      // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
+      // where the enterprise-license Tag above is the gate. (#4064 / #3984)
+      yield* requireFeatureEntitlement(orgId, "proactive");
 
       if (!orgId) {
         return c.json(
@@ -278,6 +282,9 @@ adminProactivePublicDataset.openapi(upsertEntryRoute, async (c) =>
 
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
+      // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
+      // where the enterprise-license Tag above is the gate. (#4064 / #3984)
+      yield* requireFeatureEntitlement(orgId, "proactive");
 
       if (!orgId) {
         return c.json(
@@ -341,6 +348,9 @@ adminProactivePublicDataset.openapi(deleteEntryRoute, async (c) =>
 
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
+      // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
+      // where the enterprise-license Tag above is the gate. (#4064 / #3984)
+      yield* requireFeatureEntitlement(orgId, "proactive");
 
       if (!orgId) {
         return c.json(
@@ -398,6 +408,9 @@ adminProactivePublicDataset.openapi(refusedRollupRoute, async (c) =>
 
       const proactive = yield* ProactiveGate;
       yield* proactive.requireEnabled();
+      // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
+      // where the enterprise-license Tag above is the gate. (#4064 / #3984)
+      yield* requireFeatureEntitlement(orgId, "proactive");
 
       if (!orgId) {
         return c.json(

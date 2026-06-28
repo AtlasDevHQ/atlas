@@ -51,17 +51,24 @@
  *
  * ## Deferred (not regressions — tracked in ENFORCEMENT_PENDING)
  *
- *   - `proactive`: gated in its own slice under #3999 (proactive → premium +
- *     WS5 relocation into `/ee`), tracked in ENFORCEMENT_PENDING under the #3984
- *     umbrella. Its deny/allow coverage follows that slice; this net delivers
- *     the already-gated WS1 surfaces only.
  *   - `backups`: its only route surface is operator/platform-scoped
  *     (`platform-backups.ts`, no per-tenant `orgId`), so a per-tier
  *     `requireFeatureEntitlement` gate is structurally inapplicable today. Gated
  *     by the enterprise-license Tag (`backups.available`) instead.
+ *
+ * `proactive` was deferred here while #3999/#4064 was open; #4064 wired its
+ * per-tier gate, so it is now a probed feature below (no longer in
+ * ENFORCEMENT_PENDING). Its proactive routes gate on
+ * `ProactiveGate.requireEnabled()` (the deployment-level enterprise gate)
+ * *before* the per-tier check, and `@atlas/ee/layers` doesn't load in this
+ * harness — so the real ProactiveGate falls back to its fail-closed Noop and
+ * 403s `enterprise_required` before the ladder is reached. The mock below binds
+ * only ProactiveGate to an always-enabled gate (every other enterprise Tag
+ * keeps its Noop default, leaving the other probed features unchanged) so the
+ * per-tier denial is observable, mirroring `admin-proactive-analytics.test.ts`.
  */
 
-import { describe, it, expect, beforeEach, afterAll } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
 import type { PlanTier, PlanUpgradeRequiredBody } from "@useatlas/types";
 import {
   createApiTestMocks,
@@ -85,6 +92,24 @@ const mocks = createApiTestMocks();
 // runner is bounded (the first file to load wins).
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 process.env.ATLAS_DEPLOY_MODE ??= "saas";
+
+// Bind only ProactiveGate to an always-enabled gate so the proactive probe's
+// per-tier denial (which sits *after* `ProactiveGate.requireEnabled()`) is
+// observable; every other enterprise Tag falls through to its Noop default, so
+// the other probed features behave exactly as they did with no EE layer loaded.
+// `mock.module` factories must be sync (CLAUDE.md). See the file docstring.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const effectMod = require("effect") as typeof import("effect");
+mock.module("@atlas/ee/layers", () => {
+  const { Layer } = effectMod;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+  return {
+    EELayer: Layer.succeed(services.ProactiveGate, {
+      requireEnabled: () => effectMod.Effect.void,
+    }),
+  };
+});
 
 const { app } = await import("../index");
 
@@ -125,9 +150,14 @@ const LADDER_ROUTES: Readonly<Record<GatedFeature, RouteProbe | null>> = {
   white_label: { label: "white-label branding", path: "/api/v1/admin/branding" },
   residency: { label: "data residency", path: "/api/v1/admin/residency" },
   custom_domain: { label: "custom domain", path: "/api/v1/admin/domain" },
+  proactive: {
+    label: "proactive monitoring",
+    // Read-only analytics GET — triggers the per-tier gate (after the
+    // enterprise-gate, which the EELayer mock above forces open). #4064.
+    path: "/api/v1/admin/proactive/analytics",
+  },
   // ── Deferred — no per-tenant route gate yet (see ENFORCEMENT_PENDING) ──
   backups: null, // platform-scoped surface only (#3984)
-  proactive: null, // gated in #3999 (proactive → premium); pending under #3984
 };
 
 // ── Tier helpers (derived from the SSOT ordering) ───────────────────
@@ -299,9 +329,12 @@ describe("feature-ladder regression net — completeness", () => {
     }
   });
 
-  it("defers proactive coverage — follows #3999 (documented WS3 scope cut)", () => {
-    expect(LADDER_ROUTES.proactive).toBeNull();
-    expect(ENFORCEMENT_PENDING.proactive).toBeDefined();
+  it("gates proactive per-tier (#4064) — probed, not deferred, not pending", () => {
+    // #4064 wired `requireFeatureEntitlement(orgId, "proactive")`, so proactive
+    // is now a probed feature exercised by the matrix above and must NOT linger
+    // in ENFORCEMENT_PENDING (the stale-pending guard would otherwise fire).
+    expect(LADDER_ROUTES.proactive).not.toBeNull();
+    expect(ENFORCEMENT_PENDING.proactive).toBeUndefined();
   });
 
   it("keeps each probe's below/allow tiers consistent with the SSOT minimum", () => {

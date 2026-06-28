@@ -69,7 +69,7 @@ FLUSH PRIVILEGES;
 Atlas enforces SELECT-only queries at the application level, but a read-only user provides defense-in-depth.
 
 <Callout type="info">
-For BigQuery, ClickHouse, Snowflake, DuckDB, or Salesforce, see the database-specific setup in [Connect Your Data](/getting-started/connect-your-data). The database preparation steps (creating users, granting permissions) apply to all deployment modes. To connect a REST API instead — Stripe, GitHub, Notion, Twenty, or any OpenAPI 3.x service — see the [OpenAPI (Generic REST) datasource](/plugins/datasources/openapi-generic); add it from **Admin &gt; Connections** (a credential for pre-wired vendors, or a spec URL plus credential for any other API).
+For BigQuery, ClickHouse, Snowflake, DuckDB, or Salesforce, see the database-specific setup in [Connect Your Data](/getting-started/connect-your-data); for Elasticsearch / OpenSearch, see the [Elasticsearch datasource guide](/plugins/datasources/elasticsearch). The database preparation steps (creating users, granting permissions) apply to all deployment modes. To connect a REST API instead — Stripe, GitHub, Notion, Twenty, or any OpenAPI 3.x service — see the [OpenAPI (Generic REST) datasource](/plugins/datasources/openapi-generic); add it from **Admin &gt; Connections** (a credential for pre-wired vendors, or a spec URL plus credential for any other API).
 </Callout>
 </Step>
 
@@ -186,7 +186,7 @@ Atlas connects to your database over the network and runs read-only queries. Que
 Yes. Your semantic layer (entity definitions, metrics, glossary) can be exported as YAML files for a self-hosted deployment. See the [Migration](/guides/migration) guide for step-by-step instructions.
 </Accordion>
 <Accordion title="What databases are supported?">
-PostgreSQL, MySQL, BigQuery, ClickHouse, Snowflake, DuckDB (CSV/Parquet), and Salesforce. PostgreSQL and MySQL are built-in; others are available as plugins from the [Plugin Marketplace](/guides/plugin-marketplace).
+PostgreSQL, MySQL, BigQuery, ClickHouse, Snowflake, DuckDB (CSV/Parquet), Elasticsearch, and Salesforce. PostgreSQL and MySQL are built-in; others are available as plugins from the [Plugin Marketplace](/guides/plugin-marketplace).
 
 Atlas is not limited to SQL — you can also connect any **REST API with an OpenAPI 3.x spec** (Stripe, GitHub, Notion, Twenty, or your own service) via the built-in [OpenAPI (Generic REST) datasource](/plugins/datasources/openapi-generic). The agent queries it through the `executeRestOperation` tool under the same read-only-by-default safety model.
 </Accordion>

@@ -1,5 +1,5 @@
 /**
- * `atlas datasource list|get|test|archive|restore|delete` (#4044 / ADR-0026).
+ * `atlas datasource list|get|test|archive|restore|delete` (#4044 / ADR-0025 sub-decision 3).
  *
  * The workspace CLI surface for datasource lifecycle — a thin HTTP client over
  * the EXISTING admin-connection REST routes (`datasource-client.ts`), authorized

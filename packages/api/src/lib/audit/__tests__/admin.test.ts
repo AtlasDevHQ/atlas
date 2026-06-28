@@ -677,7 +677,7 @@ describe("logAdminAction() — trust-device identifier", () => {
 });
 
 /**
- * Agent origin on the admin audit row (#4044 / ADR-0026).
+ * Agent origin on the admin audit row (#4044 / ADR-0025 §5).
  *
  * `validateManaged` surfaces the session's `origin` marker onto
  * `user.claims.origin`; the audit records it as `metadata.origin` so a

@@ -22,7 +22,7 @@ const log = createLogger("admin-audit");
 
 /**
  * The acting credential's agent origin, surfaced by `validateManaged` onto
- * `user.claims.origin` from the session row (#4044 / ADR-0026). Returns it only
+ * `user.claims.origin` from the session row (#4044 / ADR-0025 §5). Returns it only
  * when it's a recognized origin (today: `'cli'` for `atlas login` credentials);
  * web/login sessions carry none. Validated against the canonical vocabulary so
  * an unexpected value never lands in the audit metadata.
@@ -192,7 +192,7 @@ function resolveEntry(entry: AdminActionEntry): ResolvedEntry {
     ? entry.trustDeviceIdentifier
     : (entry.trustDeviceIdentifier ?? ctx?.trustDeviceIdentifier);
 
-  // Agent origin (#4044 / ADR-0026): when the acting credential is a CLI
+  // Agent origin (#4044 / ADR-0025 §5): when the acting credential is a CLI
   // (`atlas login`) session, `validateManaged` surfaces the session's `origin`
   // marker onto `user.claims.origin`. Record it so a workspace's datasource
   // lifecycle ops run via the CLI are auditable as `origin=cli` and forensic

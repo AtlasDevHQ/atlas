@@ -511,7 +511,7 @@ describe("validateManaged()", () => {
   });
 
   // -------------------------------------------------------------------------
-  // session origin claim (#4044 / ADR-0026) — surfaces `session.origin` onto
+  // session origin claim (#4044 / ADR-0025 §5) — surfaces `session.origin` onto
   // claims so the admin audit can record `origin=cli` for CLI credentials.
   // -------------------------------------------------------------------------
 

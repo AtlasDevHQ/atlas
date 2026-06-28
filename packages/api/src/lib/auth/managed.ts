@@ -134,9 +134,9 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   if (activeOrganizationId) {
     claims.org_id = activeOrganizationId;
   }
-  // #4044 / ADR-0026 — surface the session's `origin` marker (set on the
-  // `session` row, only ever `'cli'` — stamped by the device-flow
-  // session.create hook in server.ts) so origin-aware consumers (the admin
+  // #4044 / ADR-0025 §5 — surface the session's `origin` marker (set on the
+  // `session` row by the ADR-0026 device-flow session.create hook in server.ts,
+  // only ever `'cli'`) so origin-aware consumers (the admin
   // audit trail) can record `origin=cli` without re-reading the session.
   // Lives on `session.session` (sessionData), not `session.user`. Set/cleared
   // here AFTER the `...sessionUser` spread (like `sub`/`passkeyCount`) so the

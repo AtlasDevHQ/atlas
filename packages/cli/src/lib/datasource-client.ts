@@ -1,5 +1,5 @@
 /**
- * `atlas datasource` HTTP client (#4044 / ADR-0026 sub-decision 3).
+ * `atlas datasource` HTTP client (#4044 / ADR-0025 sub-decision 3).
  *
  * A thin, transport-only client over the EXISTING admin-connection REST routes
  * — there is no duplicated business logic here, the server owns it. The MCP

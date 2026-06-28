@@ -104,10 +104,15 @@ const ROWS: ReadonlyArray<Row> = [
 //   - "24 plugins across 5 types" = directories under plugins/ whose
 //     definePlugin() declares a PluginType (the `obsidian` client app extends
 //     Obsidian's own Plugin class and declares none, so it's excluded). This
-//     is a hand-counted figure — recount it whenever plugins/ changes.
-//     Last recount (#4071): 25 dirs under plugins/, 24 declare a PluginType
-//     (only `obsidian` excluded). Per-type: 7 datasource, 6 sandbox,
-//     5 interaction, 5 action, 1 context = 24.
+//     is the CANONICAL plugin count + counting rule (#4066). It is no longer
+//     hand-maintained: scripts/check-plugin-count.sh derives it from plugins/
+//     and fails CI if this cell — or any other surface in that script's
+//     authoritative SURFACES list (README, the docs comparisons, llms.txt, the
+//     launch posts, the blog page, the brand-asset generator) — drifts from the
+//     derived total. The per-type breakdown below is point-in-time context, not
+//     an enforced figure: as of #4066, 25 dirs under plugins/, 24 declare a
+//     PluginType (only `obsidian` excluded) — 7 datasource, 6 sandbox,
+//     5 interaction, 5 action, 1 context = 24. Bump this cell when CI says so.
 //   - The REST/OpenAPI datasources named on the landing page (Stripe, Notion,
 //     GitHub, any OpenAPI spec) are OpenAPI presets in
 //     packages/api/src/lib/openapi/data-candidates.ts, NOT plugins/ entries —

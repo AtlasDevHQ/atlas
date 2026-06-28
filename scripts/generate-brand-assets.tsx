@@ -50,7 +50,7 @@ const assets: Asset[] = [
           <span>·</span>
           <span>7 databases</span>
           <span>·</span>
-          <span>20+ plugins</span>
+          <span>24 plugins</span>
           <span>·</span>
           <span>Open source</span>
         </div>

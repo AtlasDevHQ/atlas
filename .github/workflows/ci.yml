@@ -89,6 +89,12 @@ jobs:
       - name: Adversarial fixtures for the pricing-parity gate (#3996)
         run: bash scripts/__tests__/check-pricing-parity.test.sh
 
+      - name: Check canonical plugin count is consistent across surfaces (#4066)
+        run: bash scripts/check-plugin-count.sh
+
+      - name: Adversarial fixtures for the plugin-count gate (#4066)
+        run: bash scripts/__tests__/check-plugin-count.test.sh
+
       - name: Check entitlement SSOT ↔ route-layer enforcement drift (#3997)
         run: bash scripts/check-enforcement-parity.sh
 

@@ -83,3 +83,25 @@ export const FEATURE_NAMES = [
 ] as const;
 
 export type FeatureName = (typeof FEATURE_NAMES)[number];
+
+/**
+ * Features that are **hosted-SaaS-only** — available on Atlas Cloud but denied
+ * on *every* self-hosted deployment, including self-hosted enterprise. Unlike
+ * the ordinary enterprise features (SSO, SCIM, …), no plan upgrade unlocks
+ * these on a self-hosted box, so the generic "requires an enterprise plan /
+ * contact sales" upsell copy is wrong for them; `<EnterpriseUpsell>` renders
+ * hosted-only copy instead when the deployment is self-hosted.
+ *
+ * Membership mirrors the server-side `deployMode === "saas"` gate (e.g.
+ * `admin-proactive.ts:gateProactiveAvailable` / `ee/src/proactive-gate.ts`).
+ * Add a feature here when its server gate keys on deploy mode, not licensing.
+ * See #3999 (proactive monitoring is the first such feature).
+ */
+const SAAS_EXCLUSIVE_FEATURES: ReadonlySet<FeatureName> = new Set([
+  "Proactive Chat",
+]);
+
+/** True iff `feature` is denied on self-hosted regardless of plan/license. */
+export function isSaasExclusiveFeature(feature: FeatureName): boolean {
+  return SAAS_EXCLUSIVE_FEATURES.has(feature);
+}

@@ -175,7 +175,7 @@ export class PgStateAdapter implements StateAdapter {
     // (Atlas) stamps additional fields like `orgId`, `workspaceName`,
     // `installedAt`. The straightforward `SET value = EXCLUDED.value`
     // semantics drop those extension fields on every re-install, which
-    // silently broke `lib/proactive/workspace-id-resolver.ts` —
+    // silently broke `ee/src/proactive/workspace-id-resolver.ts` —
     // `installation.org_id` resolves null and the proactive listener
     // skips every event as "unknown tenant" (#2676).
     //

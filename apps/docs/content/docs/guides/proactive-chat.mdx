@@ -124,7 +124,7 @@ When a chat user reacts to an Atlas-suggested answer but is **not OAuth'd to a w
 | **Entity name** | Fully-qualified entity name (e.g. `marketing.users`) |
 | **Deny metrics** | Comma-separated list of columns / measures that block a public-asker query even when the entity itself is allowed (e.g. `email, phone_number` on a `users` entity) |
 
-Cross-entity joins are strict — if `revenue` joins to `customers` and `customers` is not in the allowlist, the query is refused. Enforcement lives in `lib/proactive/public-dataset.ts`.
+Cross-entity joins are strict — if `revenue` joins to `customers` and `customers` is not in the allowlist, the query is refused. Enforcement lives in `ee/src/proactive/public-dataset.ts`.
 
 ### Refused-topics rollup
 

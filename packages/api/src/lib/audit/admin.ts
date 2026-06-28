@@ -15,9 +15,25 @@
 
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalExecute, internalQuery } from "@atlas/api/lib/db/internal";
+import { isRequestOrigin, type ApprovalRequestOrigin } from "@atlas/api/lib/approvals/types";
 import type { AdminActionType, AdminTargetType } from "./actions";
 
 const log = createLogger("admin-audit");
+
+/**
+ * The acting credential's agent origin, surfaced by `validateManaged` onto
+ * `user.claims.origin` from the session row (#4044 / ADR-0025 §5). Returns it only
+ * when it's a recognized origin (today: `'cli'` for `atlas login` credentials);
+ * web/login sessions carry none. Validated against the canonical vocabulary so
+ * an unexpected value never lands in the audit metadata.
+ */
+function resolveOriginClaim(
+  claims: Readonly<Record<string, unknown>> | undefined,
+): ApprovalRequestOrigin | undefined {
+  const origin = claims?.origin;
+  if (typeof origin !== "string" || !isRequestOrigin(origin)) return undefined;
+  return origin;
+}
 
 const ADMIN_ACTION_LOG_INSERT_SQL = `INSERT INTO admin_action_log
   (actor_id, actor_email, scope, org_id, action_type, target_type, target_id, status, metadata, ip_address, request_id)
@@ -176,16 +192,29 @@ function resolveEntry(entry: AdminActionEntry): ResolvedEntry {
     ? entry.trustDeviceIdentifier
     : (entry.trustDeviceIdentifier ?? ctx?.trustDeviceIdentifier);
 
-  // Merge trustDeviceIdentifier into metadata under the same key so
-  // forensic queries can pivot via `metadata->>'trustDeviceIdentifier'`.
-  // Caller-supplied metadata wins on key collision — no surprise
-  // overwrites of an explicit metadata field with the auto-resolved
-  // identifier. `null` (not "{}") when there's nothing to record so the
-  // existing zero-metadata audit rows look identical to before.
+  // Agent origin (#4044 / ADR-0025 §5): when the acting credential is a CLI
+  // (`atlas login`) session, `validateManaged` surfaces the session's `origin`
+  // marker onto `user.claims.origin`. Record it so a workspace's datasource
+  // lifecycle ops run via the CLI are auditable as `origin=cli` and forensic
+  // queries can pivot via `metadata->>'origin'`. Sourced from the trusted
+  // session row (not a client header), so it can't be spoofed. systemActor
+  // writes have no HTTP credential and stay unstamped. Web/login sessions have
+  // no `origin`, so their rows are byte-identical to before.
+  const origin = useSystemActor ? undefined : resolveOriginClaim(ctx?.user?.claims);
+
+  // Merge auto-resolved fields into metadata under stable keys so forensic
+  // queries can pivot via `metadata->>'<key>'`. Caller-supplied metadata wins
+  // on key collision — no surprise overwrites of an explicit metadata field
+  // with an auto-resolved one. `null` (not "{}") when there's nothing to
+  // record so the existing zero-metadata audit rows look identical to before.
+  const autoFields: Record<string, unknown> = {};
+  if (trustDeviceIdentifier !== undefined) autoFields.trustDeviceIdentifier = trustDeviceIdentifier;
+  if (origin !== undefined) autoFields.origin = origin;
+  const hasAutoFields = Object.keys(autoFields).length > 0;
   const metadata: Record<string, unknown> | null =
-    trustDeviceIdentifier !== undefined
-      ? { trustDeviceIdentifier, ...(entry.metadata ?? {}) }
-      : (entry.metadata ?? null);
+    hasAutoFields || entry.metadata
+      ? { ...autoFields, ...(entry.metadata ?? {}) }
+      : null;
 
   const params: unknown[] = [
     actorId,

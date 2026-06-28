@@ -206,6 +206,13 @@ async function main() {
     return handleEntities(args);
   }
 
+  // #4044 / ADR-0025 sub-decision 3 — workspace datasource lifecycle over the
+  // existing admin-connection REST routes, authorized by the `atlas login` credential.
+  if (command === "datasource") {
+    const { handleDatasource } = await import("../src/commands/datasource");
+    return handleDatasource(args);
+  }
+
   if (command === "eval") {
     const { handleEval } = await import("./eval");
     return handleEval(args);

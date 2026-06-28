@@ -224,8 +224,10 @@ describe.each(PROBED)(
   ({ path, min }) => {
     const belowTiers = belowTiersFor(min);
     const allowTiers = atOrAboveTiersFor(min);
-    // The highest paying tier still below the minimum. Always present — every
-    // gated minimum is `pro`/`business`, asserted in the completeness suite.
+    // The highest recognized tier still below the minimum (e.g. `pro` for a
+    // Business-min feature; `free` for proactive's all-paid `trial` min, #3999).
+    // Always present — every gated minimum is at least `trial`, so `free`/`locked`
+    // sit below it; the completeness suite asserts a deny is always provable.
     const closestBelow = belowTiers[0];
 
     beforeEach(() => {

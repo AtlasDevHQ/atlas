@@ -18,7 +18,8 @@
  *     (`free < trial < starter < pro < business`, `locked` = no entitlement).
  *
  * The default tier line is **Business** for every feature; a feature that
- * should sit at Pro+ instead is a single-line override in the map below.
+ * should unlock earlier (Pro+, or all paid plans via `trial`) instead is a
+ * single-line override in the map below.
  *
  * The request-time guard (`requireFeatureEntitlement`) that resolves a
  * workspace's tier and returns the standard upgrade/403 lives in
@@ -59,8 +60,9 @@ export type GatedFeature =
 /**
  * Feature → minimum plan tier. The default line is **Business** for every
  * gated capability, matching the current /pricing page. Where a feature
- * should unlock earlier (Pro+), change its value here — that single edit moves
- * both enforcement and the SSOT-rendered page in lockstep.
+ * should unlock earlier — Pro+, or all paid plans via `trial` (e.g. proactive,
+ * #3999) — change its value here; that single edit moves both enforcement and
+ * the SSOT-rendered page in lockstep.
  *
  * Keyed by {@link GatedFeature} so adding a feature without assigning a tier
  * is a compile error — the ladder can't drift open. Values are typed
@@ -86,7 +88,18 @@ export const FEATURE_ENTITLEMENTS: Readonly<Record<GatedFeature, MinPlanTier>> =
   // product's established intent. #3988 / #3984 acceptance criteria explicitly
   // permit custom domain to sit at Pro+ where the SSOT says so.
   custom_domain: "pro",
-  proactive: "business",
+  // All-paid override (not the Business default): proactive is a hosted-SaaS
+  // feature available to every paying plan, not a Business-tier differentiator
+  // (#3999). Its minimum is `trial` — the lowest active SaaS tier (SaaS has no
+  // persistent `free` tier; `trial` is starter-equivalent), so every SaaS
+  // workspace with a resolved active tier gets it; only the churn tier
+  // (`locked`) — and any workspace with no resolved tier, which fails closed to
+  // `free` — is denied.
+  // SaaS-exclusivity — self-hosted, *including* self-hosted-enterprise, is
+  // denied — is enforced separately by the deployment-level gate (ProactiveGate
+  // / admin-proactive.ts `gateProactiveAvailable`, keyed on `deployMode ===
+  // "saas"`); the per-tier predicate here is a no-op off-SaaS.
+  proactive: "trial",
 };
 
 /**

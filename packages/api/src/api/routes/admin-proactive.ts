@@ -35,13 +35,13 @@ import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
-import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
+import { resolveDeployMode } from "@atlas/api/lib/effect/deploy-mode";
 import { requireFeatureEntitlementOrThrow } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
-import { ProactiveService } from "@atlas/api/lib/effect/services";
+import { ProactiveService, PROACTIVE_HOSTED_ONLY_MESSAGE } from "@atlas/api/lib/effect/services";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -373,18 +373,25 @@ adminProactive.use(requireOrgContext());
 adminProactive.use(requirePermission("admin:settings"));
 
 /**
- * Sync enterprise gate. Sibling admin-proactive route files use
+ * Sync availability gate. Sibling admin-proactive route files use
  * `runEffect` + `yield* ProactiveGate`; this file's `runHandler`-based
  * handlers can't yield the Tag (ConditionalEELayer is async via the
- * lazy EE-layer import), so the equivalent sync check is inlined.
- * Resulting `EnterpriseError` has the same `_tag` + payload as the Tag.
+ * lazy EE-layer import), so the equivalent sync check is inlined — it must
+ * stay in lockstep with `ProactiveGate` (ee/src/proactive-gate.ts). Both throw
+ * `EnterpriseError(PROACTIVE_HOSTED_ONLY_MESSAGE)` (shared constant so the copy
+ * can't drift); the resulting error carries the same `_tag` + payload as the Tag.
+ *
+ * Proactive is a hosted-SaaS-only feature (#3999): denied on every
+ * self-hosted deployment, *including self-hosted enterprise*. Keys on
+ * `resolveDeployMode() === "saas"`, not `isEnterpriseEnabled()`.
+ *
+ * Every route below pairs this with `requireFeatureEntitlementOrThrow(orgId,
+ * "proactive")` — the per-tier ladder (on SaaS, all paid plans, min `trial`;
+ * a no-op off-SaaS, where this gate is the sole arbiter). (#3999 / #4064 / #3984)
  */
-function gateEnterprise(): void {
-  if (!isEnterpriseEnabled()) {
-    throw new EnterpriseError(
-      "Enterprise features (proactive-chat) are not enabled. " +
-        "Set ATLAS_ENTERPRISE_ENABLED=true or configure enterprise.enabled in atlas.config.ts.",
-    );
+function gateProactiveAvailable(): void {
+  if (resolveDeployMode() !== "saas") {
+    throw new EnterpriseError(PROACTIVE_HOSTED_ONLY_MESSAGE);
   }
 }
 
@@ -392,9 +399,8 @@ function gateEnterprise(): void {
 adminProactive.openapi(getWorkspaceRoute, async (c) =>
   runHandler(c, "get proactive workspace config", async () => {
     const { orgId, requestId } = c.get("orgContext");
-    gateEnterprise();
-    // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
-    // where gateEnterprise() above is the gate. (#4064 / #3984)
+    gateProactiveAvailable();
+    // Per-tier ladder (no-op off-SaaS — see gateProactiveAvailable above).
     await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     try {
@@ -431,9 +437,8 @@ adminProactive.openapi(updateWorkspaceRoute, async (c) =>
   runHandler(c, "update proactive workspace config", async () => {
     const { orgId, requestId } = c.get("orgContext");
     const authResult = c.get("authResult");
-    gateEnterprise();
-    // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
-    // where gateEnterprise() above is the gate. (#4064 / #3984)
+    gateProactiveAvailable();
+    // Per-tier ladder (no-op off-SaaS — see gateProactiveAvailable above).
     await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     const body = c.req.valid("json");
@@ -603,9 +608,8 @@ adminProactive.openapi(updateWorkspaceRoute, async (c) =>
 adminProactive.openapi(listChannelsRoute, async (c) =>
   runHandler(c, "list proactive channel overrides", async () => {
     const { orgId, requestId } = c.get("orgContext");
-    gateEnterprise();
-    // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
-    // where gateEnterprise() above is the gate. (#4064 / #3984)
+    gateProactiveAvailable();
+    // Per-tier ladder (no-op off-SaaS — see gateProactiveAvailable above).
     await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     try {
@@ -634,9 +638,8 @@ adminProactive.openapi(listChannelsRoute, async (c) =>
 adminProactive.openapi(listAvailableChannelsRoute, async (c) =>
   runHandler(c, "list available chat channels", async () => {
     const { orgId, requestId } = c.get("orgContext");
-    gateEnterprise();
-    // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
-    // where gateEnterprise() above is the gate. (#4064 / #3984)
+    gateProactiveAvailable();
+    // Per-tier ladder (no-op off-SaaS — see gateProactiveAvailable above).
     await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     try {
@@ -691,9 +694,8 @@ adminProactive.openapi(upsertChannelRoute, async (c) =>
   runHandler(c, "upsert proactive channel override", async () => {
     const { orgId, requestId } = c.get("orgContext");
     const authResult = c.get("authResult");
-    gateEnterprise();
-    // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
-    // where gateEnterprise() above is the gate. (#4064 / #3984)
+    gateProactiveAvailable();
+    // Per-tier ladder (no-op off-SaaS — see gateProactiveAvailable above).
     await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     const body = c.req.valid("json");
@@ -766,9 +768,8 @@ adminProactive.openapi(deleteChannelRoute, async (c) =>
   runHandler(c, "delete proactive channel override", async () => {
     const { orgId, requestId } = c.get("orgContext");
     const authResult = c.get("authResult");
-    gateEnterprise();
-    // Per-tier ladder: on SaaS proactive is Business-only. No-op off-SaaS,
-    // where gateEnterprise() above is the gate. (#4064 / #3984)
+    gateProactiveAvailable();
+    // Per-tier ladder (no-op off-SaaS — see gateProactiveAvailable above).
     await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     const { channelId } = c.req.valid("param");

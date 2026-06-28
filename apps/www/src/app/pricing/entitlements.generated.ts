@@ -31,7 +31,7 @@ export const TIER_MONTHLY_PRICE: Readonly<Record<PricingColumn, number>> = {
 };
 
 /** Comparison-table section a gated feature renders under. */
-export type EntitlementSection = "hosting" | "security & compliance";
+export type EntitlementSection = "chat" | "hosting" | "security & compliance";
 
 /**
  * The entitlement sections in render order. Iterate this (rather than
@@ -40,11 +40,11 @@ export type EntitlementSection = "hosting" | "security & compliance";
  * gap, not a quiet omission.
  */
 export const ENTITLEMENT_SECTION_ORDER: readonly EntitlementSection[] = [
-  "hosting", "security & compliance",
+  "chat", "hosting", "security & compliance",
 ];
 
 /** Stable wire id of a gated feature (matches the SSOT key). */
-export type FeatureId = "residency" | "backups" | "white_label" | "custom_domain" | "sso" | "scim" | "custom_roles" | "ip_allowlist" | "approvals" | "audit_retention" | "masking" | "proactive";
+export type FeatureId = "proactive" | "residency" | "backups" | "white_label" | "custom_domain" | "sso" | "scim" | "custom_roles" | "ip_allowlist" | "approvals" | "audit_retention" | "masking";
 
 /** One per-tier entitlement row mirrored from the SSOT. */
 export interface EntitlementRow {
@@ -65,6 +65,12 @@ export interface EntitlementRow {
  * feature in code.
  */
 export const ENTITLEMENT_ROWS: readonly EntitlementRow[] = [
+  {
+    feature: "proactive",
+    label: "Proactive monitoring",
+    section: "chat",
+    cells: { selfHosted: false, starter: true, pro: true, business: true },
+  },
   {
     feature: "residency",
     label: "Data residency",
@@ -130,11 +136,5 @@ export const ENTITLEMENT_ROWS: readonly EntitlementRow[] = [
     label: "PII detection & masking",
     section: "security & compliance",
     cells: { selfHosted: false, starter: false, pro: false, business: true },
-  },
-  {
-    feature: "proactive",
-    label: "Proactive monitoring",
-    section: "security & compliance",
-    cells: { selfHosted: false, starter: true, pro: true, business: true },
   },
 ];

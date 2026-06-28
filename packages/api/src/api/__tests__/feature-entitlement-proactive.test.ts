@@ -1,45 +1,52 @@
 /**
- * Per-tier proactive entitlement gate (#4064 — AC1 of #3999).
+ * Per-tier proactive entitlement gate (#4064 → re-tiered in #3999).
  *
- * The `FeatureEntitlement` SSOT maps `proactive → "business"`, but until #4064
- * no route consulted it: on the hosted SaaS every tier could reach proactive
- * even though the pricing page sells it as Business-only. #4064 wired
- * `requireFeatureEntitlement(orgId, "proactive")` into the five proactive route
- * surfaces — the four Effect sub-routes (analytics / events / pause /
- * public-dataset) via `yield*`, and `admin-proactive.ts`'s `runHandler` path via
- * the promise adapter `requireFeatureEntitlementOrThrow`.
+ * Proactive is a **hosted-SaaS feature available to every paying plan**, not a
+ * Business-tier differentiator (#3999). Two gates apply, in order, on every
+ * proactive route:
  *
- * This file asserts the gate's external behaviour at the API boundary for every
- * one of those five surfaces:
+ *   1. the deployment-level availability gate (`ProactiveGate.requireEnabled` /
+ *      `admin-proactive.ts`'s sync `gateProactiveAvailable`), which admits only
+ *      `deployMode === "saas"` — proactive is denied on every self-hosted
+ *      deployment, including self-hosted enterprise; and
+ *   2. the per-tier ladder (`requireFeatureEntitlement(orgId, "proactive")`,
+ *      SSOT minimum `trial`), which on SaaS admits every active paid plan and
+ *      denies only the `free` floor and the churn (`locked`) tier.
  *
- *   - a Starter / Pro SaaS workspace is DENIED with the 403 `plan_upgrade_required`
- *     upgrade envelope (covering both gate paths — the Effect `yield*` and the
- *     `runHandler` promise adapter map to the identical response);
- *   - a Business workspace is ADMITTED past the ladder (never the upgrade 403);
+ * This file asserts gate (2)'s external behaviour at the API boundary for the
+ * five proactive route surfaces — the four Effect `yield*` sub-routes
+ * (analytics / events / pause / public-dataset) and `admin-proactive.ts`'s
+ * `runHandler` path via the promise adapter `requireFeatureEntitlementOrThrow`:
+ *
+ *   - a `free` (the floor below `trial`) SaaS workspace is DENIED with the 403
+ *     `plan_upgrade_required` upgrade envelope carrying `required_plan: "trial"`
+ *     (covering both gate paths — the Effect `yield*` and the `runHandler`
+ *     promise adapter map to the identical response);
+ *   - a churned (`locked`) workspace is DENIED;
+ *   - every active paid plan (`trial`/`starter`/`pro`/`business`) is ADMITTED
+ *     past the ladder (never the upgrade 403);
  *   - an operator workspace bypasses the ladder;
  *   - a transient tier-lookup fault fails CLOSED with 503 `billing_check_failed`
  *     — asserted on BOTH a `yield*` route and the `runHandler` adapter route so
  *     the promise adapter's fail-closed arm is proven, not assumed;
- *   - the deployment-level enterprise gate is UNCHANGED: with the EE proactive
- *     gate closed, even a Business workspace is denied `enterprise_required`, so
- *     the per-tier gate was added *alongside* the deployment gate, not in place
- *     of it (the free non-EE deployment exclusion is preserved). The literal
- *     self-hosted-disabled 403 is additionally covered by the existing
- *     `admin-proactive-analytics.test.ts` / `admin-proactive.test.ts`, which
- *     remain green (the per-tier guard is a no-op off-SaaS).
+ *   - the deployment-level availability gate is INDEPENDENT: with it closed,
+ *     even an entitled paid workspace is denied (`enterprise_required`), proving
+ *     the per-tier gate was added *alongside* the availability gate, not in
+ *     place of it. The literal self-hosted-denied 403 is additionally covered by
+ *     `admin-proactive-analytics.test.ts` / `admin-proactive.test.ts`.
  *
  * ## Why mock `@atlas/ee/layers`
  *
  * The proactive routes gate on `ProactiveGate.requireEnabled()` (the
- * deployment-level enterprise gate) BEFORE the per-tier check. `@atlas/ee/layers`
+ * deployment-level availability gate) BEFORE the per-tier check. `@atlas/ee/layers`
  * does not load in this harness, so the real `ProactiveGate` falls back to its
  * fail-closed Noop and 403s `enterprise_required` before the ladder is reached.
  * The mock below binds only `ProactiveGate` to a toggleable gate (open by
- * default; closed for the deployment-gate-intact assertion) so the per-tier
- * denial is observable. `admin-proactive.ts` uses the synchronous
- * `isEnterpriseEnabled()` check instead of the Tag, so its enterprise gate is
- * driven by `ATLAS_ENTERPRISE_ENABLED` (pinned true at module top), independent
- * of this mock. Mirrors `admin-proactive-analytics.test.ts`.
+ * default — standing in for SaaS deploy mode; closed for the availability-gate
+ * assertion) so the per-tier denial is observable. `admin-proactive.ts`'s sync
+ * `gateProactiveAvailable` reads `resolveDeployMode()` instead of the Tag, so its
+ * availability gate is driven by `ATLAS_DEPLOY_MODE` (pinned `saas` at module
+ * top), independent of this mock. Mirrors `admin-proactive-analytics.test.ts`.
  */
 
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
@@ -51,17 +58,18 @@ import {
 
 // Module-top env setup — must be set before the dynamic app import below. The
 // per-tier ladder only fires in SaaS deploy mode; pin it (and enterprise-enabled,
-// which `admin-proactive.ts`'s sync gate reads) so the gate tests are
+// which `resolveDeployMode` requires for `saas`) so the gate tests are
 // deterministic regardless of the ambient ATLAS_DEPLOY_MODE / DATABASE_URL.
 // `??=` keeps the assignment hoisted; cross-file leakage under bun's parallel
 // runner is bounded (the first file to load wins).
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 process.env.ATLAS_DEPLOY_MODE ??= "saas";
 
-// Toggleable enterprise gate for the proactive Effect routes' `ProactiveGate`
-// Tag. Open (true) for the per-tier deny/allow assertions; flipped closed by the
-// deployment-gate-intact test. Reset in `beforeEach`.
-let enterpriseGateOpen = true;
+// Toggleable availability gate for the proactive Effect routes' `ProactiveGate`
+// Tag. Open (true) for the per-tier deny/allow assertions — standing in for SaaS
+// deploy mode; flipped closed by the availability-gate-intact test. Reset in
+// `beforeEach`.
+let availabilityGateOpen = true;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const effectMod = require("effect") as typeof import("effect");
@@ -74,11 +82,11 @@ mock.module("@atlas/ee/layers", () => {
   return {
     EELayer: Layer.succeed(services.ProactiveGate, {
       requireEnabled: () =>
-        enterpriseGateOpen
+        availabilityGateOpen
           ? effectMod.Effect.void
           : effectMod.Effect.fail(
               new EnterpriseError(
-                "Enterprise features (proactive-chat) are not enabled.",
+                "Proactive monitoring is available only on Atlas Cloud (the hosted SaaS).",
               ),
             ),
     }),
@@ -148,17 +156,22 @@ const PROACTIVE_ROUTES: Array<{ label: string; path: string }> = [
   },
 ];
 
-describe("per-tier proactive entitlement gate (#4064)", () => {
+// Every active paid/trial plan must reach proactive (#3999). Trial is the SSOT
+// minimum (starter-equivalent, the lowest active SaaS tier). Mutable `string[]`
+// so `it.each` accepts it (its overload rejects a `readonly` tuple).
+const ADMITTED_TIERS: string[] = ["trial", "starter", "pro", "business"];
+
+describe("per-tier proactive entitlement gate (#4064 / #3999 — all paid plans)", () => {
   beforeEach(() => {
     mocks.setOrgAdmin("org-1");
     mocks.hasInternalDB = true;
     mocks.mockInternalQuery.mockReset();
-    enterpriseGateOpen = true;
+    availabilityGateOpen = true;
   });
 
   describe.each(PROACTIVE_ROUTES)("$label", ({ path }) => {
-    it("denies a Pro workspace with 403 plan_upgrade_required", async () => {
-      setWorkspaceTier("pro");
+    it("denies a free-tier workspace with 403 plan_upgrade_required (the floor below trial)", async () => {
+      setWorkspaceTier("free");
       const res = await app.fetch(adminGet(path));
       expect(res.status).toBe(403);
       const body = (await res.json()) as {
@@ -167,27 +180,30 @@ describe("per-tier proactive entitlement gate (#4064)", () => {
         current_plan: string;
       };
       expect(body.error).toBe("plan_upgrade_required");
-      expect(body.required_plan).toBe("business");
-      expect(body.current_plan).toBe("pro");
+      expect(body.required_plan).toBe("trial");
+      expect(body.current_plan).toBe("free");
     });
 
-    it("denies a Starter workspace with 403 plan_upgrade_required", async () => {
-      setWorkspaceTier("starter");
+    it("denies a churned (locked) workspace with 403 plan_upgrade_required", async () => {
+      setWorkspaceTier("locked");
       const res = await app.fetch(adminGet(path));
       expect(res.status).toBe(403);
       expect(await errorOf(res)).toBe("plan_upgrade_required");
     });
 
-    it("admits a Business workspace past the ladder", async () => {
-      setWorkspaceTier("business");
-      const res = await app.fetch(adminGet(path));
-      // The per-tier gate passed: not the upgrade 403, nor the fail-closed 503.
-      // Downstream the route may 200/500 against the mocked internal DB — that
-      // is not the ladder's concern and is deliberately not pinned.
-      const err = await errorOf(res);
-      expect(err).not.toBe("plan_upgrade_required");
-      expect(err).not.toBe("billing_check_failed");
-    });
+    it.each(ADMITTED_TIERS)(
+      "admits an active %s workspace past the ladder",
+      async (tier) => {
+        setWorkspaceTier(tier);
+        const res = await app.fetch(adminGet(path));
+        // The per-tier gate passed: not the upgrade 403, nor the fail-closed 503.
+        // Downstream the route may 200/500 against the mocked internal DB — that
+        // is not the ladder's concern and is deliberately not pinned.
+        const err = await errorOf(res);
+        expect(err).not.toBe("plan_upgrade_required");
+        expect(err).not.toBe("billing_check_failed");
+      },
+    );
 
     it("bypasses the ladder for an operator workspace", async () => {
       setWorkspaceTier("free", true);
@@ -226,15 +242,15 @@ describe("per-tier proactive entitlement gate (#4064)", () => {
       body: { channelId: "C-test" } as unknown,
     },
   ])("mutating route — $label", ({ method, path, body }) => {
-    it("denies a Pro workspace with 403 plan_upgrade_required before any side effect", async () => {
-      setWorkspaceTier("pro");
+    it("denies a free-tier workspace with 403 plan_upgrade_required before any side effect", async () => {
+      setWorkspaceTier("free");
       const res = await app.fetch(adminRequest(path, method, body));
       expect(res.status).toBe(403);
       expect(await errorOf(res)).toBe("plan_upgrade_required");
     });
 
-    it("admits a Business workspace past the ladder", async () => {
-      setWorkspaceTier("business");
+    it("admits an active paid (starter) workspace past the ladder", async () => {
+      setWorkspaceTier("starter");
       const res = await app.fetch(adminRequest(path, method, body));
       const err = await errorOf(res);
       expect(err).not.toBe("plan_upgrade_required");
@@ -245,7 +261,7 @@ describe("per-tier proactive entitlement gate (#4064)", () => {
   // Fail-closed is asserted on BOTH gate paths: the Effect `yield*` route and the
   // `runHandler` promise adapter (`requireFeatureEntitlementOrThrow`), so the
   // adapter's fail-closed arm is proven, not assumed — a transient internal-DB
-  // fault must never silently widen access to a Business feature.
+  // fault must never silently widen access to a paid feature.
   describe.each([
     { label: "Effect yield* route", path: "/api/v1/admin/proactive/analytics" },
     {
@@ -261,20 +277,21 @@ describe("per-tier proactive entitlement gate (#4064)", () => {
     });
   });
 
-  // The per-tier gate was added ALONGSIDE the deployment-level enterprise gate,
-  // not in place of it. With the EE proactive gate closed, even a Business-tier
-  // workspace is denied with the deployment gate's `enterprise_required` 403 —
-  // proving the free non-EE deployment exclusion is unchanged by #4064.
-  describe("deployment-level enterprise gate is unchanged", () => {
-    it("a Business workspace is still denied when the EE proactive gate is closed (Effect route)", async () => {
-      enterpriseGateOpen = false;
+  // The per-tier ladder was added ALONGSIDE the deployment-level availability
+  // gate, not in place of it. With the availability gate closed (standing in for
+  // a non-SaaS deployment), even an entitled paid workspace is denied with the
+  // availability gate's `enterprise_required` 403 — proving the self-hosted
+  // exclusion (#3999) is independent of the per-tier check.
+  describe("deployment-level availability gate is independent of the ladder", () => {
+    it("an entitled paid workspace is still denied when the availability gate is closed (Effect route)", async () => {
+      availabilityGateOpen = false;
       setWorkspaceTier("business");
       const res = await app.fetch(
         adminGet("/api/v1/admin/proactive/analytics"),
       );
       expect(res.status).toBe(403);
-      // The enterprise gate (`ProactiveGate.requireEnabled`) fires before the
-      // per-tier check, so the denial is the deployment gate's, not the ladder's.
+      // The availability gate (`ProactiveGate.requireEnabled`) fires before the
+      // per-tier check, so the denial is the availability gate's, not the ladder's.
       const err = await errorOf(res);
       expect(err).not.toBe("plan_upgrade_required");
     });

@@ -135,6 +135,6 @@ export const ENTITLEMENT_ROWS: readonly EntitlementRow[] = [
     feature: "proactive",
     label: "Proactive monitoring",
     section: "security & compliance",
-    cells: { selfHosted: false, starter: false, pro: false, business: true },
+    cells: { selfHosted: false, starter: true, pro: true, business: true },
   },
 ];

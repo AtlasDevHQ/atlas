@@ -5,13 +5,13 @@ description: The proactive chat tier — three-layer kill switch, classifier mod
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Proactive chat (milestone #43) lets Atlas **listen** in opt-in Slack channels, react to data-shaped questions with an emoji, and answer on tap. It is `/ee`-gated and currently **Slack-first only** — Teams, Discord, and Google Chat are wired but feature-flagged off until the bar in the [PRD](https://github.com/AtlasDevHQ/atlas/issues/2291) (≤5% misfire, ≥70% acceptance) is met on a chat platform.
+Proactive chat (milestone #43) lets Atlas **listen** in opt-in Slack channels, react to data-shaped questions with an emoji, and answer on tap. Its implementation lives in `/ee`, and it is currently **Slack-first only** — Teams, Discord, and Google Chat are wired but feature-flagged off until the bar in the [PRD](https://github.com/AtlasDevHQ/atlas/issues/2291) (≤5% misfire, ≥70% acceptance) is met on a chat platform.
 
-<Callout type="info" title="Paid tier">
-Proactive chat is part of Atlas Enterprise. The end-user disclosure surfaces in [`guides/slack.mdx`](/guides/slack); this guide is the admin/operator companion.
+<Callout type="info" title="Hosted-SaaS feature — every paid plan">
+Proactive chat is available on **Atlas Cloud** (the hosted SaaS) for **every paid plan**, not just Business (#3999). It is **not available on self-hosted** deployments, including self-hosted enterprise. The end-user disclosure surfaces in [`guides/slack.mdx`](/guides/slack); this guide is the admin/operator companion.
 </Callout>
 
-The whole surface lives at **Admin → Proactive Chat** (`/admin/proactive-chat`) as one consolidated page. The page is enterprise-gated — self-hosted free users see an upsell card instead of the form. Six sections, each backed by an admin API route under `/api/v1/admin/proactive/*`:
+The whole surface lives at **Admin → Proactive Chat** (`/admin/proactive-chat`) as one consolidated page. The page is **hosted-SaaS-only** — self-hosted users (free or enterprise) see an upsell card instead of the form; on Atlas Cloud every paid plan reaches it. Six sections, each backed by an admin API route under `/api/v1/admin/proactive/*`:
 
 1. [Activation toggle](#activation-toggle)
 2. [Behavior — sensitivity, classifier mode, announcement channel, monthly cap](#behavior)

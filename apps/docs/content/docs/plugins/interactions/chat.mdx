@@ -159,7 +159,7 @@ Per-Platform credentials come from environment variables — see [Environment Va
 | `reactions.enabled` | `boolean` | No | Enable emoji reactions on user messages. Default: `true`. |
 | `reactions.customEmoji` | `object` | No | Override default emoji for each lifecycle stage (`received`, `processing`, `complete`, `error`). |
 | `ephemeral` | `EphemeralConfig` | No | Post errors and debug info as ephemeral messages (visible only to the requesting user). See [Ephemeral Messages](#ephemeral-messages). |
-| `proactive` | `ProactiveConfig` | No | Reaction-first proactive chat (enterprise-gated; the host wires `isEnabled`/`classify`). When enabled, the bridge reacts to high-confidence data questions. See [Proactive Direct Messages](#proactive-direct-messages). |
+| `proactive` | `ProactiveConfig` | No | Reaction-first proactive chat (availability gated by the host — for Atlas, a hosted-SaaS feature available on every paid plan; the host wires `isEnabled`/`classify`). When enabled, the bridge reacts to high-confidence data questions. See [Proactive Direct Messages](#proactive-direct-messages). |
 
 <Callout type="info">
 At least one `catalog` row with `type: "chat"`, `enabled: true`, and a supported `install_model` must be present (and threaded through to `chatPlugin({ catalog })`) — otherwise no adapter activates and the plugin's health check reports unhealthy. Per-Platform credentials come from env vars (see [Environment Variables](#environment-variables)). For Slack OAuth specifically you need **all four**: `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, and `SLACK_ENCRYPTION_KEY` — the install will be skipped (and the chat plugin reported unhealthy) if any one is missing.

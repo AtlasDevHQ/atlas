@@ -68,8 +68,11 @@ interface FeatureDisplay {
  * before this mirror existed, with one intentional addition: `proactive`
  * (Proactive monitoring) was gated by the SSOT but never listed on the page.
  * Surfacing it here is deliberate — WS4 of #3984 advertises proactive
- * monitoring as the premium line the SSOT now gates per-tier — so the mirror
- * adds a "Proactive monitoring" row the prior copy did not have.
+ * monitoring — so the mirror adds a "Proactive monitoring" row the prior copy
+ * did not have. Unlike the Business-only rows around it, proactive unlocks on
+ * every paid plan (min `trial`, #3999); its cells render ✓ for starter/pro/
+ * business and ✗ for self-hosted (a hosted-SaaS-only feature), derived from the
+ * SSOT like every other row.
  */
 export const FEATURE_DISPLAY: Record<GatedFeature, FeatureDisplay> = {
   // hosting

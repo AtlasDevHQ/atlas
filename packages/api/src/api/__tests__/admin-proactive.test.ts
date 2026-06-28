@@ -13,6 +13,10 @@ import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 // Real ADMIN_ACTIONS so audit-row assertions pin to canonical strings.
 import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
 import type { AnnouncementOutcome } from "@atlas/api/lib/proactive/types";
+import {
+  isFeatureEntitlementQuery,
+  workspaceTierRows,
+} from "@atlas/api/testing/api-test-mocks";
 
 // --- Enterprise gate: flip the env var so the real `isEnterpriseEnabled`
 //     resolves true without reshaping the @atlas/ee/index surface. Tests
@@ -25,16 +29,17 @@ const ORIGINAL_EE_FLAG = process.env.ATLAS_ENTERPRISE_ENABLED;
 // overwrites. Files that need to restore env do so in their own
 // afterAll; the `??=` here is the module-load contract, not teardown.
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
-// Pin self-hosted so the per-tier proactive entitlement gate (#4064) — which
-// `admin-proactive.ts` now applies via `requireFeatureEntitlementOrThrow` after
-// `gateEnterprise()` — is a no-op here: this file exercises workspace-config CRUD
-// and the deployment-level enterprise gate, not the SaaS per-tier ladder (that is
-// covered by `feature-entitlement-proactive.test.ts`). Without this, the env would
-// auto-resolve to `saas` (enterprise enabled + internal DB, absent an
-// `ATLAS_DEPLOY_ENV=development` short-circuit), and the guard's workspace-tier
-// lookup — unsatisfied by this file's hand-rolled internal mock — would 403 every
-// CRUD assertion. `??=` keeps the module-load contract hoistable.
-process.env.ATLAS_DEPLOY_MODE ??= "self-hosted";
+// Pin SaaS deploy mode: proactive is now a hosted-SaaS-only feature (#3999), so
+// `gateProactiveAvailable()` admits a route only when `resolveDeployMode() ===
+// "saas"`. The happy-path CRUD assertions therefore need `saas` (the prior
+// `self-hosted` pin would now deny every route). The per-tier ladder (min
+// `trial`) that fires after the gate via `requireFeatureEntitlementOrThrow` is
+// satisfied by a paid-tier row returned from the internal mock's
+// entitlement-query special-case below — transparent to the route-query queue.
+// Deny paths flip enterprise off (so `resolveDeployMode` falls back to
+// self-hosted) or set self-hosted explicitly. `??=` keeps the module-load
+// contract hoistable.
+process.env.ATLAS_DEPLOY_MODE ??= "saas";
 
 // --- Auth mock ---
 
@@ -141,12 +146,26 @@ type InternalQueryCall = { sql: string; params: unknown[] };
 let lastQueries: InternalQueryCall[] = [];
 let mockInternalRows: unknown[][] = [];
 
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
-  async (sql: string, params?: unknown[]) => {
-    lastQueries.push({ sql, params: params ?? [] });
-    return mockInternalRows.shift() ?? [];
-  },
-);
+// Default internal-query behavior. Extracted so `resetMocks` can restore it
+// each test — `mockClear()` keeps the implementation, so a test that installs a
+// custom `mockImplementation` (the DB-throws path) would otherwise leak it.
+const defaultInternalQuery = async (
+  sql: string,
+  params?: unknown[],
+): Promise<unknown[]> => {
+  // Per-tier proactive gate (#3999, min `trial`): on SaaS every route calls
+  // `requireFeatureEntitlementOrThrow(orgId, "proactive")`, which issues a
+  // workspace-tier lookup. Answer it with a paid (`business`) tier so the
+  // ladder admits — transparently: it does NOT consume the `mockInternalRows`
+  // queue or appear in `lastQueries`, so each test's scripted route queries
+  // stay aligned. The deployment gate is exercised separately via deploy mode.
+  if (isFeatureEntitlementQuery(sql)) return workspaceTierRows("business");
+  lastQueries.push({ sql, params: params ?? [] });
+  return mockInternalRows.shift() ?? [];
+};
+
+const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> =
+  mock(defaultInternalQuery);
 
 let mockHasInternalDB = true;
 
@@ -293,12 +312,14 @@ function nowChannelRow(overrides: Partial<Record<string, unknown>>) {
 
 function resetMocks() {
   process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+  process.env.ATLAS_DEPLOY_MODE = "saas";
   mockHasInternalDB = true;
   mockDirectoryResult = { ok: false, reason: "no_chat_installation" };
   mockListWorkspaceChannels.mockClear();
   lastQueries = [];
   mockInternalRows = [];
   mockInternalQuery.mockClear();
+  mockInternalQuery.mockImplementation(defaultInternalQuery);
   mockLogAdminAction.mockClear();
   mockAnnounceActivation.mockClear();
   mockAnnounceCalls = [];
@@ -352,6 +373,17 @@ describe("GET /api/v1/admin/proactive/workspace", () => {
     expect(json.error).toBe("enterprise_required");
   });
 
+  it("returns 403 on a self-hosted deployment even with enterprise enabled (SaaS-exclusive, #3999)", async () => {
+    // Proactive is hosted-SaaS-only: self-hosted *enterprise* (EE on, deploy
+    // mode self-hosted) is now denied too, not just self-hosted free. The reset
+    // in beforeEach restores `saas`.
+    process.env.ATLAS_DEPLOY_MODE = "self-hosted";
+    const res = await request("GET", "/workspace");
+    expect(res.status).toBe(403);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toBe("enterprise_required");
+  });
+
   it("returns 401 when unauthenticated", async () => {
     mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
@@ -389,7 +421,11 @@ describe("GET /api/v1/admin/proactive/workspace", () => {
   });
 
   it("returns 500 with requestId when the DB throws", async () => {
-    mockInternalQuery.mockImplementationOnce(async () => {
+    // The route's own DB query throws; the per-tier entitlement lookup (which
+    // fires first on SaaS) must still succeed so this exercises the route's 500
+    // path, not the guard's fail-closed 503. `resetMocks` restores the default.
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (isFeatureEntitlementQuery(sql)) return workspaceTierRows("business");
       throw new Error("boom");
     });
     const res = await request("GET", "/workspace");

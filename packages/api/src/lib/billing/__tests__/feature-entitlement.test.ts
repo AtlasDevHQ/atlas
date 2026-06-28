@@ -39,17 +39,21 @@ const TIER_RANK: Record<PlanTier, number> = {
 
 // Features whose minimum tier intentionally overrides the Business default.
 // `custom_domain` sits at Pro+ (#3988): the custom-domain route has always
-// documented "Pro or Business plan … required to create a domain". Every other
-// gated feature must remain at the Business default.
+// documented "Pro or Business plan … required to create a domain". `proactive`
+// sits at `trial` (#3999): a hosted-SaaS feature available to all paid plans,
+// not a Business-tier differentiator. Every other gated feature must remain at
+// the Business default.
 const TIER_OVERRIDES: Partial<Record<GatedFeature, MinPlanTier>> = {
   custom_domain: "pro",
+  proactive: "trial",
 };
 
 describe("FEATURE_ENTITLEMENTS map", () => {
-  it("defaults every gated feature to Business except the recorded Pro+ overrides", () => {
-    // The PRD locks the default tier line at Business. A Pro+ override is an
-    // intentional single-line change in the SSOT; this pins the exact override
-    // set so a stray re-tier is caught.
+  it("defaults every gated feature to Business except the recorded overrides", () => {
+    // The PRD locks the default tier line at Business. An override (Pro+ for
+    // custom_domain, all-paid `trial` for proactive) is an intentional
+    // single-line change in the SSOT; this pins the exact override set so a
+    // stray re-tier is caught.
     for (const feature of ALL_FEATURES) {
       const expected = TIER_OVERRIDES[feature] ?? "business";
       expect(FEATURE_ENTITLEMENTS[feature]).toBe(expected);
@@ -113,6 +117,20 @@ describe("isFeatureEntitled — tier × feature matrix", () => {
     expect(isFeatureEntitled("starter", "custom_domain")).toBe(false);
     expect(isFeatureEntitled("pro", "custom_domain")).toBe(true);
     expect(isFeatureEntitled("business", "custom_domain")).toBe(true);
+  });
+
+  it("treats proactive as all-paid (trial-gated): denied for locked/free, allowed for every active SaaS plan", () => {
+    // #3999: proactive unlocks on every paying plan, not just Business. `trial`
+    // (starter-equivalent, the lowest active SaaS tier) and up are entitled;
+    // only the churn tier `locked` and the no-billing `free` floor are denied.
+    // SaaS-exclusivity (self-hosted denied) is a deploy-mode gate, not this
+    // predicate — see ProactiveGate / admin-proactive `gateProactiveAvailable`.
+    expect(isFeatureEntitled("locked", "proactive")).toBe(false);
+    expect(isFeatureEntitled("free", "proactive")).toBe(false);
+    expect(isFeatureEntitled("trial", "proactive")).toBe(true);
+    expect(isFeatureEntitled("starter", "proactive")).toBe(true);
+    expect(isFeatureEntitled("pro", "proactive")).toBe(true);
+    expect(isFeatureEntitled("business", "proactive")).toBe(true);
   });
 
   it("fails closed for the `locked` churn tier on every feature", () => {

@@ -18,7 +18,7 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "Atlas — Ask your data anything, trust the answer.",
   description:
-    "Atlas is an AI data analyst that turns plain-English questions into safe, validated SQL, grounded in a semantic layer you control. Run it in the cloud or self-host it — open source.",
+    "Atlas is the AI data analyst you can run anywhere. It answers plain-English questions across your SQL warehouses and REST APIs, grounded in a semantic layer you control. Run it in the cloud or self-host it — open source.",
   openGraph: {
     title: "Atlas — Ask your data anything, trust the answer.",
     description:
@@ -39,7 +39,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "Atlas — Ask your data anything, trust the answer.",
     description:
-      "Plain-English questions, safe validated SQL, grounded in a semantic layer you control. Cloud or self-hosted, open source.",
+      "Plain-English questions answered across your SQL warehouses and REST APIs, grounded in a semantic layer you control. Cloud or self-hosted, open source.",
     images: ["/og.png"],
   },
 };

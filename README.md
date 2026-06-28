@@ -1,7 +1,7 @@
 <h1 align="center">Atlas</h1>
 
 <p align="center">
-  Atlas is a YAML-defined semantic layer for analytics — authored by humans, consumed by AI agents.
+  Atlas is the AI data analyst you can run anywhere. It answers plain-English questions across your SQL warehouses and REST APIs, grounded in a YAML semantic layer that humans author and AI agents consume.
 </p>
 
 <p align="center">

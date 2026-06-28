@@ -1,6 +1,22 @@
 import { describe, expect, test, mock, spyOn } from "bun:test";
 import { render, fireEvent } from "@testing-library/react";
 import type { FetchError } from "@/ui/lib/fetch-error";
+
+// EnterpriseUpsell now reads useDeployMode (→ useAdminFetch → useAtlasConfig) to
+// pick hosted-only vs upgrade copy for SaaS-exclusive features (#3999). These
+// tests render it in isolation (no <AtlasProvider>), so stub the hook to a
+// stable mode. The features used here are non-SaaS-exclusive (SSO/Custom
+// Domains), so the mode never flips the copy — the stub just severs the
+// provider/network dependency.
+mock.module("@/ui/hooks/use-deploy-mode", () => ({
+  useDeployMode: () => ({
+    deployMode: "self-hosted",
+    loading: false,
+    error: null,
+    resolved: true,
+  }),
+}));
+
 import { MutationErrorSurface } from "../mutation-error-surface";
 
 /**

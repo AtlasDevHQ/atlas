@@ -22,6 +22,8 @@ import type {
   MaskingPolicy,
   ModelRouter,
   ProactiveGate,
+  ProactiveService,
+  AnswerMeter,
   ResidencyResolver,
   RolesPolicy,
   SaasCrm,
@@ -48,6 +50,8 @@ import { RolesPolicyLive } from "./auth/roles";
 import { BrandingLive } from "./branding/white-label";
 import { DomainsLive } from "./platform/domains";
 import { ProactiveGateLive } from "./proactive-gate";
+import { ProactiveServiceLive } from "./proactive/service";
+import { AnswerMeterLive } from "./proactive/answer-meter";
 import { DeployModeResolverLive } from "./deploy-mode";
 import { MarketplaceVeneerLive } from "./marketplace/veneer";
 import { SaasCrmLive } from "./saas-crm/index";
@@ -71,6 +75,8 @@ export const EELayer: Layer.Layer<
   | MaskingPolicy
   | ModelRouter
   | ProactiveGate
+  | ProactiveService
+  | AnswerMeter
   | ResidencyResolver
   | RolesPolicy
   | SaasCrm
@@ -97,6 +103,8 @@ export const EELayer: Layer.Layer<
   BrandingLive,
   DomainsLive,
   ProactiveGateLive,
+  ProactiveServiceLive,
+  AnswerMeterLive,
   DeployModeResolverLive,
   MarketplaceVeneerLive,
   SaasCrmLive,

@@ -52,22 +52,28 @@ import { bigqueryPlugin } from "./plugins/bigquery/src/index";
 import { elasticsearchPlugin } from "./plugins/elasticsearch/src/index";
 import { getProactiveAiRuntime } from "./packages/api/src/lib/effect/ai";
 import { getEnterpriseRuntime } from "./packages/api/src/lib/effect/enterprise-layer";
-import { createSlackWorkspaceIdResolver } from "./packages/api/src/lib/proactive/workspace-id-resolver";
-import { createSlackProactiveUserResolver } from "./packages/api/src/lib/proactive/user-resolver";
-import { createProactiveEnabledGate } from "./packages/api/src/lib/proactive/enabled-gate";
+// Proactive-chat implementation relocated to `@atlas/ee/proactive/*` (#3999).
+// This SaaS deploy config boots from `/app/` (outside any node_modules walk),
+// so it loads the EE modules by relative path — `./ee/src/proactive/*`, the
+// same relative-import pattern the `@useatlas/chat` / `defineConfig` imports
+// above use — not the `@atlas/ee/...` package specifier (unresolvable from
+// `/app/`). The image bundles `ee/` at `/app/ee` (deploy/api/Dockerfile).
+import { createSlackWorkspaceIdResolver } from "./ee/src/proactive/workspace-id-resolver";
+import { createSlackProactiveUserResolver } from "./ee/src/proactive/user-resolver";
+import { createProactiveEnabledGate } from "./ee/src/proactive/enabled-gate";
 import {
   getChannelProactiveConfigs,
   getWorkspaceProactiveConfig,
-} from "./packages/api/src/lib/proactive/workspace-config-loader";
-import { createProactiveClassifier } from "./packages/api/src/lib/proactive/classifier-adapter";
-import { createProactiveAnswerAdapter } from "./packages/api/src/lib/proactive/answer-adapter";
-import { recordMeterEvent } from "./packages/api/src/lib/proactive/answer-meter";
+} from "./ee/src/proactive/workspace-config-loader";
+import { createProactiveClassifier } from "./ee/src/proactive/classifier-adapter";
+import { createProactiveAnswerAdapter } from "./ee/src/proactive/answer-adapter";
+import { recordMeterEvent } from "./ee/src/proactive/answer-meter";
 import {
   handlePluginPauseRequest,
   isPaused,
-} from "./packages/api/src/lib/proactive/pause-registry";
-import { getWorkspaceQuotaStatus } from "./packages/api/src/lib/proactive/quota";
-import { getAllowlist } from "./packages/api/src/lib/proactive/public-dataset";
+} from "./ee/src/proactive/pause-registry";
+import { getWorkspaceQuotaStatus } from "./ee/src/proactive/quota";
+import { getAllowlist } from "./ee/src/proactive/public-dataset";
 import { WorkspaceInstallGate } from "./packages/api/src/lib/integrations/install/workspace-install-gate";
 // Slice 3 of #2607 — host-side `executeQuery` that resolves Slack
 // `team_id` → `chat_cache:slack:installation` → `org_id` → `botActorUser`

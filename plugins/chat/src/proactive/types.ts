@@ -187,7 +187,7 @@ export interface ResolverEvent {
  * so the listener fails closed (skip) without crashing the SDK loop.
  *
  * Host wiring (Slack-first): see
- * `packages/api/src/lib/proactive/workspace-id-resolver.ts` for the
+ * `ee/src/proactive/workspace-id-resolver.ts` for the
  * canonical implementation that maps Slack `team_id` →
  * `slack_installations.org_id`.
  */
@@ -457,7 +457,7 @@ export type GetQuotaStatusFn = (input: {
  * so a registry hiccup doesn't accidentally widen the refusal surface.
  *
  * The plugin never queries Postgres itself; the host implementation
- * lives in `packages/api/src/lib/proactive/public-dataset.ts`.
+ * lives in `ee/src/proactive/public-dataset.ts`.
  */
 export type GetPublicDatasetFn = (input: {
   workspaceId: string;

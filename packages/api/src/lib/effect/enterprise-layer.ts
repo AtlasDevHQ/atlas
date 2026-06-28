@@ -35,6 +35,8 @@ import {
   type Branding,
   type Domains,
   type ProactiveGate,
+  type ProactiveService,
+  type AnswerMeter,
   type DeployModeResolver,
   type MarketplaceVeneer,
   type SaasCrm,
@@ -185,6 +187,8 @@ export type EnterpriseSubsystem =
   | Branding
   | Domains
   | ProactiveGate
+  | ProactiveService
+  | AnswerMeter
   | DeployModeResolver
   | MarketplaceVeneer
   | SaasCrm;

@@ -15,9 +15,10 @@
  *
  * Every route yields `ProactiveGate.requireEnabled()` so
  * non-enterprise tenants see 403 enterprise_required rather than a
- * surface to twiddle. The lib/proactive/public-dataset.ts helpers
- * stay enterprise-agnostic so tests can exercise the DB shape without
- * booting the gate.
+ * surface to twiddle. The public-dataset helpers (relocated to
+ * `@atlas/ee/proactive/public-dataset` in #3999, reached via the
+ * `ProactiveService` Tag) stay enterprise-agnostic so tests can
+ * exercise the DB shape without booting the gate.
  *
  * Surface:
  *
@@ -39,15 +40,10 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   AuthContext,
   ProactiveGate,
+  ProactiveService,
   RequestContext,
 } from "@atlas/api/lib/effect/services";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import {
-  addEntry,
-  getAllowlist,
-  removeEntry,
-  summarizePublicRefused,
-} from "@atlas/api/lib/proactive/public-dataset";
 import { AuthErrorSchema, ErrorSchema } from "./shared-schemas";
 import {
   createAdminRouter,
@@ -263,10 +259,8 @@ adminProactivePublicDataset.openapi(listEntriesRoute, async (c) =>
         return c.json({ entries: [] }, 200);
       }
 
-      const entries = yield* Effect.tryPromise({
-        try: () => getAllowlist(orgId),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      });
+      const proactiveSvc = yield* ProactiveService;
+      const entries = yield* proactiveSvc.getAllowlist(orgId);
       return c.json({ entries }, 200);
     }),
     { label: "list proactive public dataset" },
@@ -302,10 +296,8 @@ adminProactivePublicDataset.openapi(upsertEntryRoute, async (c) =>
       const body = c.req.valid("json");
       const denyMetrics = body.denyMetrics ?? [];
 
-      yield* Effect.tryPromise({
-        try: () => addEntry(orgId, body.entityName, denyMetrics),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      });
+      const proactiveSvc = yield* ProactiveService;
+      yield* proactiveSvc.addEntry(orgId, body.entityName, denyMetrics);
 
       log.info(
         {
@@ -368,10 +360,8 @@ adminProactivePublicDataset.openapi(deleteEntryRoute, async (c) =>
         );
       }
 
-      const result = yield* Effect.tryPromise({
-        try: () => removeEntry(orgId, entityName),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      });
+      const proactiveSvc = yield* ProactiveService;
+      const result = yield* proactiveSvc.removeEntry(orgId, entityName);
       if (!result.removed) {
         return c.json(
           { error: "not_found" as const, message: "Public dataset entry not found.", requestId },
@@ -420,10 +410,8 @@ adminProactivePublicDataset.openapi(refusedRollupRoute, async (c) =>
       }
 
       const sinceMs = parseSinceMs(c.req.query("since"));
-      const rollup = yield* Effect.tryPromise({
-        try: () => summarizePublicRefused(orgId, sinceMs),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      });
+      const proactiveSvc = yield* ProactiveService;
+      const rollup = yield* proactiveSvc.summarizePublicRefused(orgId, sinceMs);
       return c.json({ sinceMs, rollup }, 200);
     }),
     { label: "summarize proactive public refused" },

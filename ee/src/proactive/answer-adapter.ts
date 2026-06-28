@@ -145,8 +145,7 @@ export interface ProactiveAnswerAdapterOptions {
    * single-instance multi-tenant SaaS wiring.
    *
    * The default production wiring resolves the allowlist via
-   * `getAllowlist(workspaceId)` in
-   * `packages/api/src/lib/proactive/public-dataset.ts`.
+   * `getAllowlist(workspaceId)` in `./public-dataset.ts`.
    */
   getPublicDataset?: (
     asker: ProactiveAsker,

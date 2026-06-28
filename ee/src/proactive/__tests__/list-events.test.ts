@@ -29,8 +29,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   },
 }));
 
-const { listMeterEvents, summarizeReviewVerdicts, MAX_EVENT_PAGE_LIMIT } =
+const { listMeterEvents, summarizeReviewVerdicts } =
   await import("../answer-meter");
+// `MAX_EVENT_PAGE_LIMIT` is part of the CORE Tag/type surface (#3999).
+const { MAX_EVENT_PAGE_LIMIT } = await import(
+  "@atlas/api/lib/proactive/answer-meter"
+);
 
 beforeEach(() => {
   calls.length = 0;

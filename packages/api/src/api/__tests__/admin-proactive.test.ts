@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 
 // Real ADMIN_ACTIONS so audit-row assertions pin to canonical strings.
 import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
+import type { AnnouncementOutcome } from "@atlas/api/lib/proactive/types";
 
 // --- Enterprise gate: flip the env var so the real `isEnterpriseEnabled`
 //     resolves true without reshaping the @atlas/ee/index surface. Tests
@@ -73,7 +74,7 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
 //     the named exports statically and a partial mock surfaces as
 //     "Export named 'X' not found" at module load, taking down every
 //     admin route. ---
-import { Effect as F53Effect } from "effect";
+import { Effect as F53Effect, Layer as F53Layer } from "effect";
 mock.module("@atlas/ee/auth/roles", () => ({
   PERMISSIONS: [
     "query",
@@ -181,31 +182,17 @@ mock.module("@atlas/api/lib/logger", () => ({
 //     right args and (b) failures inside the announcement path don't
 //     fail the API call. ---
 
-let mockAnnounceOutcome: { posted: boolean; reason?: string; messageId?: string } = {
+let mockAnnounceOutcome: AnnouncementOutcome = {
   posted: true,
   messageId: "m-1",
 };
 let mockAnnounceCalls: Array<{ workspaceId: string; channelId: string }> = [];
 const mockAnnounceActivation: Mock<
-  (input: { workspaceId: string; channelId: string; announcer: unknown }) => Promise<unknown>
+  (input: { workspaceId: string; channelId: string }) => Promise<AnnouncementOutcome>
 > = mock(async (input) => {
   mockAnnounceCalls.push({ workspaceId: input.workspaceId, channelId: input.channelId });
   return mockAnnounceOutcome;
 });
-
-mock.module("@atlas/api/lib/proactive/announcement-coordinator", () => ({
-  announceActivation: mockAnnounceActivation,
-  buildAnnouncementMessage: () => "stub",
-  NULL_ANNOUNCER: { postChannelAnnouncement: async () => ({ ok: false, reason: "stub" }) },
-}));
-
-mock.module("@atlas/api/lib/proactive/announcer-registry", () => ({
-  registerChatAnnouncer: () => {},
-  clearChatAnnouncer: () => {},
-  getChatAnnouncer: () => ({
-    postChannelAnnouncement: async () => ({ ok: false, reason: "stub" }),
-  }),
-}));
 
 // --- Audit mock ---
 
@@ -225,29 +212,47 @@ mock.module("@atlas/api/lib/audit", () => ({
   causeToError: () => undefined,
 }));
 
-// --- Channel-directory mock (GET /channels/available). The route reads
+// --- Channel-directory result (GET /channels/available). The route reads
 //     the platform-neutral channel-directory port (#3463) — provider
 //     resolution, Slack mapping, and the TTL cache (#3461) have their
-//     own unit tests, so the route test scripts the port's result. All
-//     named exports stubbed (partial mock.module = module-load failure). ---
+//     own unit tests, so the route test scripts the port's result. ---
 
 type DirectoryChannel = { id: string; name: string; isPrivate: boolean; isMember: boolean };
-let mockDirectoryResult:
+type DirectoryResult =
   | { ok: true; channels: DirectoryChannel[] }
-  | { ok: false; reason: "no_chat_installation" | "missing_scope" | "platform_error"; detail?: string } = {
+  | { ok: false; reason: "no_chat_installation" | "missing_scope" | "platform_error"; detail?: string };
+let mockDirectoryResult: DirectoryResult = {
   ok: true,
   channels: [],
 };
-const mockListWorkspaceChannels: Mock<(workspaceId: string) => Promise<unknown>> = mock(
+const mockListWorkspaceChannels: Mock<(workspaceId: string) => Promise<DirectoryResult>> = mock(
   async () => mockDirectoryResult,
 );
 
-mock.module("@atlas/api/lib/proactive/channel-directory", () => ({
-  CHANNEL_DIRECTORY_CACHE_TTL_MS: 45_000,
-  registerChannelDirectoryProvider: mock(() => {}),
-  clearChannelDirectoryProvider: mock(() => {}),
-  clearChannelDirectoryCache: mock(() => {}),
-  listWorkspaceChannels: mockListWorkspaceChannels,
+// --- Proactive seams (#3999). The route reaches `announceActivation` /
+//     `listWorkspaceChannels` through the composite `ProactiveService`
+//     Tag via `runEnterprise`. We mock EELayer to bind a fake
+//     `ProactiveService` (the real EELayer's full Live DAG isn't wired in
+//     this minimal sub-router test); the deployment enterprise gate is the
+//     route's inline `gateEnterprise()` (env-driven), and the
+//     permission/IP-allowlist checks fall through to their core Noop
+//     layers (admin role → legacy allow). ---
+
+mock.module("@atlas/ee/layers", () => ({
+  EELayer: F53Layer.unwrapEffect(
+    F53Effect.sync(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+      return services.createProactiveServiceTestLayer({
+        announceActivation: ({ workspaceId, channelId }) =>
+          F53Effect.promise(() =>
+            mockAnnounceActivation({ workspaceId, channelId }),
+          ),
+        listWorkspaceChannels: (workspaceId: string) =>
+          F53Effect.promise(() => mockListWorkspaceChannels(workspaceId)),
+      });
+    }),
+  ),
 }));
 
 // --- Import sub-router directly ---
@@ -556,6 +561,9 @@ describe("PUT /api/v1/admin/proactive/workspace", () => {
         announcementChannelId: "C-ann",
       });
       expect(res.status).toBe(200);
+      // Pin that the announcer actually RAN and its throw was swallowed —
+      // not that the route 200'd via a never-invoked Noop path.
+      expect(mockAnnounceActivation).toHaveBeenCalledTimes(1);
     });
 
     it("still returns 200 when announceActivation reports posted: false", async () => {

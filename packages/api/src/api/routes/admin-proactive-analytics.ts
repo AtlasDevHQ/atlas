@@ -19,11 +19,11 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   AuthContext,
+  AnswerMeter,
   ProactiveGate,
+  ProactiveService,
   RequestContext,
 } from "@atlas/api/lib/effect/services";
-import { AnswerMeter, AnswerMeterLive } from "@atlas/api/lib/proactive/answer-meter";
-import { getWorkspaceQuotaStatus } from "@atlas/api/lib/proactive/quota";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 const log = createLogger("admin-proactive-analytics");
@@ -113,6 +113,7 @@ adminProactiveAnalytics.get("/", async (c) => {
       const sinceMs = parseSinceMs(sinceParam);
 
       const meter = yield* AnswerMeter;
+      const proactiveSvc = yield* ProactiveService;
       const summary = yield* Effect.tryPromise({
         try: () => meter.summary(orgId, sinceMs),
         catch: (err) =>
@@ -126,11 +127,7 @@ adminProactiveAnalytics.get("/", async (c) => {
       // `capReached: false` with null cap), so we don't need a separate
       // try/catch here. Read on every render: COUNT(*) over the current
       // month's classify rows is bounded by the 0078 index.
-      const quota = yield* Effect.tryPromise({
-        try: () => getWorkspaceQuotaStatus(orgId),
-        catch: (err) =>
-          err instanceof Error ? err : new Error(String(err)),
-      });
+      const quota = yield* proactiveSvc.getWorkspaceQuotaStatus(orgId);
 
       log.info(
         {
@@ -159,9 +156,10 @@ adminProactiveAnalytics.get("/", async (c) => {
         },
         200,
       );
-      // #3764 — accepted: per-route boundary provide of a small, finalizer-free
-      // Live layer; the route stays its own composition root.
-    }).pipe(Effect.provide(AnswerMeterLive)),
+      // `AnswerMeter` + `ProactiveService` resolve from the app-level
+      // EnterpriseLayer (EE `*Live` or the fail-closed Noop) — no
+      // per-route provide. Proactive chat is enterprise-gated above (#3999).
+    }),
     { label: "proactive analytics summary" },
   );
 });

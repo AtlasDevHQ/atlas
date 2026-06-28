@@ -43,6 +43,19 @@ import type {
   PluginStatus,
   PluginDescription,
 } from "@atlas/api/lib/plugins/registry";
+// Proactive-chat EE seams (#3999 / WS5 of #3984). The `AnswerMeter` Tag
+// lives next to its declarative surface in `lib/proactive/answer-meter`;
+// the composite `ProactiveService` Tag in `./proactive-service`. Both
+// Noop layers join `NoopEnterpriseDefaultsLayer` below so the app layer
+// binds them on every deploy (EE `*Live` overrides via `ee/src/layers.ts`).
+import {
+  AnswerMeter,
+  NoopAnswerMeterLayer,
+} from "@atlas/api/lib/proactive/answer-meter";
+import {
+  ProactiveService,
+  NoopProactiveServiceLayer,
+} from "@atlas/api/lib/effect/proactive-service";
 
 const log = createLogger("effect:connection");
 
@@ -3108,6 +3121,8 @@ export const NoopEnterpriseDefaultsLayer: Layer.Layer<
   | Branding
   | Domains
   | ProactiveGate
+  | ProactiveService
+  | AnswerMeter
   | DeployModeResolver
   | MarketplaceVeneer
   | SaasCrm
@@ -3129,6 +3144,8 @@ export const NoopEnterpriseDefaultsLayer: Layer.Layer<
   NoopBrandingLayer,
   NoopDomainsLayer,
   NoopProactiveGateLayer,
+  NoopProactiveServiceLayer,
+  NoopAnswerMeterLayer,
   NoopDeployModeResolverLayer,
   NoopMarketplaceVeneerLayer,
   NoopSaasCrmLayer,
@@ -3193,3 +3210,28 @@ export {
   type WorkspaceInstall,
   type WorkspacePlanContext,
 } from "./pillar-catalog-query";
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  Proactive-chat EE seams (#3999 — WS5 of #3984)
+// ══════════════════════════════════════════════════════════════════════
+//
+// `AnswerMeter` (per-event meter) + the composite `ProactiveService` Tag
+// gate the proactive-chat admin surface. The Tags, shapes, Noop layers,
+// and test-layer factories live in core (`lib/proactive/answer-meter` +
+// `./proactive-service`); the `*Live` impls live in `@atlas/ee/proactive`
+// and override the Noops via `ee/src/layers.ts`. Re-exported here so the
+// services barrel stays the single discovery seam for every backend Tag.
+
+export {
+  AnswerMeter,
+  NoopAnswerMeterLayer,
+  createAnswerMeterTestLayer,
+  type AnswerMeterShape,
+} from "@atlas/api/lib/proactive/answer-meter";
+
+export {
+  ProactiveService,
+  NoopProactiveServiceLayer,
+  createProactiveServiceTestLayer,
+  type ProactiveServiceShape,
+} from "./proactive-service";

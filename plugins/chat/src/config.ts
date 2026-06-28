@@ -655,7 +655,7 @@ export interface ProactiveConfig {
    * happens. Returning `null` is a silent skip.
    *
    * Host wiring (Slack-first): see
-   * `packages/api/src/lib/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver`.
+   * `ee/src/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver`.
    */
   resolveWorkspaceId: ResolveWorkspaceIdFn;
   /**
@@ -742,7 +742,7 @@ export interface ProactiveConfig {
    * Per-event meter callback. Receives one event per classify (always)
    * and one per react / offer / accept / feedback when those stages
    * fire. Host wires this to `recordMeterEvent` from
-   * `@atlas/api/lib/proactive/answer-meter` so rows land in
+   * `@atlas/ee/proactive/answer-meter` so rows land in
    * `proactive_meter_events`.
    */
   onMeterEvent?: ProactiveMeterEventFn;
@@ -755,7 +755,7 @@ export interface ProactiveConfig {
    * listener short-circuits and emits a `capReached` meter row instead
    * of running the LLM. Host wires this to
    * `getWorkspaceQuotaStatus` from
-   * `@atlas/api/lib/proactive/quota`.
+   * `@atlas/ee/proactive/quota`.
    */
   getQuotaStatus?: GetQuotaStatusFn;
 

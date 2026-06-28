@@ -31,53 +31,26 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import type {
+  ChannelDirectoryChannel,
+  ChannelDirectoryResult,
+  ChannelDirectoryProvider,
+} from "@atlas/api/lib/proactive/types";
+
+// The port + result types are CORE-resident
+// (`@atlas/api/lib/proactive/types`) so the Slack adapter
+// (`lib/slack/channel-directory-provider.ts`) and the admin route can
+// reference them without importing `@atlas/ee` (#3999). Re-exported here
+// so co-located tests + the EE service keep importing them from the
+// module that owns the runtime.
+export type {
+  ChannelDirectoryChannel,
+  ChannelDirectoryFailureReason,
+  ChannelDirectoryResult,
+  ChannelDirectoryProvider,
+} from "@atlas/api/lib/proactive/types";
 
 const log = createLogger("proactive-channel-directory");
-
-/**
- * One channel row, platform-neutral. Field semantics match the wire
- * schema on `GET /admin/proactive/channels/available`: `isMember` is
- * whether the bot can actually act in the channel (an override on a
- * non-member channel never fires, so pickers warn on it).
- */
-export interface ChannelDirectoryChannel {
-  id: string;
-  name: string;
-  isPrivate: boolean;
-  isMember: boolean;
-}
-
-/**
- * Platform-neutral failure classes, mirrored 1:1 onto the wire `reason`
- * enum (the route serialises these verbatim — keep them OAuth-generic):
- *
- * - `no_chat_installation` — the workspace has no chat-platform install
- *   (or its credential is unreadable); nothing to list.
- * - `missing_scope` — the platform credential lacks the read scope the
- *   listing needs even for its most-degraded retry (#3462/#3466). The
- *   fix is a re-consent on the platform's OAuth flow, so admin UIs
- *   surface a reconnect CTA for this reason specifically.
- * - `platform_error` — any other platform-side failure (rate limit,
- *   revoked token, network). Transient; UIs soft-degrade to manual
- *   channel-id entry.
- */
-export type ChannelDirectoryFailureReason =
-  | "no_chat_installation"
-  | "missing_scope"
-  | "platform_error";
-
-export type ChannelDirectoryResult =
-  | { ok: true; channels: ChannelDirectoryChannel[] }
-  | {
-      ok: false;
-      reason: ChannelDirectoryFailureReason;
-      /** Raw platform error for logs. Never serialised onto the wire. */
-      detail?: string;
-    };
-
-export interface ChannelDirectoryProvider {
-  listWorkspaceChannels(workspaceId: string): Promise<ChannelDirectoryResult>;
-}
 
 /**
  * Single provider slot for now: Slack is the only platform with a

@@ -76,12 +76,13 @@ function emptyFeedback() {
 }
 
 // ---------------------------------------------------------------------------
-// Mock the meter module
+// Proactive seams (post-#3999)
 //
-// CLAUDE.md feedback: `mock.module()` factories must be sync — async with
-// an inner `await import()` deadlocks the loader. We synchronously require
-// the real module, override the two exports we care about, and rebuild
-// `AnswerMeterLive` as a fake test layer.
+// The proactive implementation moved to `@atlas/ee/proactive`; the route
+// now reaches the meter summary via the `AnswerMeter` Tag and the monthly
+// quota via the composite `ProactiveService` Tag, both provided by the
+// EELayer (mocked below). No per-lib-module mock — we supply test layers
+// for the Tags. `mock.module()` factories must be sync (CLAUDE.md).
 // ---------------------------------------------------------------------------
 
 const mockSummary: Mock<
@@ -90,27 +91,6 @@ const mockSummary: Mock<
 const mockRecord: Mock<(event: ProactiveMeterEvent) => Promise<void>> = mock(
   async () => {},
 );
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const realAnswerMeter = require("@atlas/api/lib/proactive/answer-meter") as typeof import("@atlas/api/lib/proactive/answer-meter");
-
-mock.module("@atlas/api/lib/proactive/answer-meter", () => ({
-  ...realAnswerMeter,
-  recordMeterEvent: mockRecord,
-  summarizeMeterEvents: mockSummary,
-  AnswerMeterLive: realAnswerMeter.createAnswerMeterTestLayer({
-    record: mockRecord,
-    summary: mockSummary,
-  }),
-}));
-
-// ---------------------------------------------------------------------------
-// Mock the quota module (#2301)
-//
-// Same sync-factory pattern. Default `{ classifyCountThisMonth: 0,
-// monthlyClassifierCap: null, capReached: false }` so tests that don't
-// care about quota still see the rolling-window summary.
-// ---------------------------------------------------------------------------
 
 interface QuotaStatusShape {
   monthlyClassifierCap: number | null;
@@ -125,21 +105,14 @@ const baseQuota: QuotaStatusShape = {
 };
 
 const mockQuotaStatus: Mock<
-  (workspaceId: string, now?: Date) => Promise<QuotaStatusShape>
+  (workspaceId: string) => Promise<QuotaStatusShape>
 > = mock(async () => baseQuota);
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const realQuota = require("@atlas/api/lib/proactive/quota") as typeof import("@atlas/api/lib/proactive/quota");
-
-mock.module("@atlas/api/lib/proactive/quota", () => ({
-  ...realQuota,
-  getWorkspaceQuotaStatus: mockQuotaStatus,
-}));
-
 // ---------------------------------------------------------------------------
-// Enterprise gate — post-#2572 (slice 10/11) the route yields the
-// `ProactiveGate` Tag from EELayer. Default-on so the route reaches the
-// meter; flip `enterpriseEnabled` to drive the 403 path.
+// Enterprise gate + proactive Tags — the route yields `ProactiveGate`
+// (gate), `AnswerMeter` (summary), and `ProactiveService` (quota) from
+// EELayer. Default-on so the route reaches the meter; flip
+// `enterpriseEnabled` to drive the 403 path.
 // ---------------------------------------------------------------------------
 
 let enterpriseEnabled = true;
@@ -164,16 +137,25 @@ mock.module("@atlas/ee/layers", () => {
         const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { EnterpriseError } = require("@atlas/api/lib/effect/errors") as typeof import("@atlas/api/lib/effect/errors");
-        return Layer.succeed(services.ProactiveGate, {
+        const gate = Layer.succeed(services.ProactiveGate, {
           requireEnabled: () =>
             enterpriseEnabled
-              ? effectMod.Effect.void
-              : effectMod.Effect.fail(
+              ? E.void
+              : E.fail(
                   new EnterpriseError(
                     "Enterprise features (proactive-chat) are not enabled.",
                   ),
                 ),
         });
+        const meter = services.createAnswerMeterTestLayer({
+          record: mockRecord,
+          summary: mockSummary,
+        });
+        const proactive = services.createProactiveServiceTestLayer({
+          getWorkspaceQuotaStatus: (workspaceId: string) =>
+            E.promise(() => mockQuotaStatus(workspaceId)),
+        });
+        return Layer.mergeAll(gate, meter, proactive);
       }),
     ),
   };

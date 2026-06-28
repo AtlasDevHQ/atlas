@@ -9,7 +9,7 @@
  *                   | { kind: "unlinked" }
  *
  * The `workspaceId` is the per-event tenant resolved by
- * `lib/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver`
+ * `./workspace-id-resolver.ts:createSlackWorkspaceIdResolver`
  * (Slack `team_id` → `chat_cache:slack:installation` → `org_id`,
  * post-#2634). This module wires a resolver factory for the Slack
  * platform that:
@@ -49,12 +49,12 @@
  * mode that's actually "we don't know yet" (no link table) rather
  * than "the registry is broken" (errored).
  *
- * Layer hygiene: lives under `lib/proactive/`. Does NOT import from
- * `@atlas/ee` or from `api/routes/`. Only the SaaS deploy wires this
- * up; self-hosted deployments can either reuse this factory (the
- * unlinked-only path is correct everywhere) or omit `userResolver`
- * entirely (the listener defaults to `{ kind: "unlinked" }` when
- * undefined).
+ * Layer hygiene: relocated to `ee/src/proactive/` (#3999) — proactive is
+ * a paid EE surface. Does NOT import from `api/routes/`. Only the SaaS
+ * deploy wires this up; self-hosted deployments can either reuse this
+ * factory (the unlinked-only path is correct everywhere) or omit
+ * `userResolver` entirely (the listener defaults to
+ * `{ kind: "unlinked" }` when undefined).
  *
  * @module
  */

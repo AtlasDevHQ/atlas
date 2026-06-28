@@ -25,33 +25,26 @@
  *      summary stays content-blind; this rollup is intentionally
  *      content-aware (entity names are admin-visible already).
  *
- * The module never imports from `@atlas/ee` — the enterprise gate lives
- * in the route layer (`requireEnterpriseEffect("proactive-chat")`) so a
- * test layer can exercise the DB shape directly.
+ * Relocated to `@atlas/ee/proactive` (#3999); reached from the core
+ * admin route through the `ProactiveService` Tag. The module stays
+ * gate-agnostic — the enterprise boundary is enforced at the route
+ * layer (`ProactiveGate.requireEnabled()` + `requireFeatureEntitlement(…,
+ * "proactive")`) — so a test layer can exercise the DB shape directly.
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { PublicDatasetEntry, AllowDecision } from "@useatlas/types";
+import type { PublicRefusedRollupRow } from "@atlas/api/lib/proactive/types";
 
 const log = createLogger("proactive:public-dataset");
 
-// Re-export so existing consumers keep their import paths. Canonical
-// definitions live in `@useatlas/types/proactive`. `AllowDecision` is
-// now a tagged union — `{ allowed: false; kind: "entity-not-in-allowlist" }`
-// or `{ allowed: false; kind: "metric-denied"; metric }` — replacing
-// the pre-polish flat `{ allowed: false; deniedReason: string }` so
-// audit consumers can pluck `metric` directly instead of parsing
-// `metric-denied:${metric}` packed strings.
-export type { PublicDatasetEntry, AllowDecision };
-
-/** Discoverability rollup row returned by `summarizePublicRefused`. */
-export interface PublicRefusedRollupRow {
-  /** Entity name reported by the refusal event. */
-  entityName: string;
-  /** Count of refusal events in the lookback window. */
-  count: number;
-}
+// `PublicDatasetEntry` / `AllowDecision` are the canonical wire shapes;
+// the `PublicRefusedRollupRow` projection is CORE-resident
+// (`@atlas/api/lib/proactive/types`) so the public-dataset route + the
+// `ProactiveService` Tag can reference it without importing `@atlas/ee`
+// (#3999). Re-exported here so co-located tests keep their import path.
+export type { PublicDatasetEntry, AllowDecision, PublicRefusedRollupRow };
 
 // ---------------------------------------------------------------------------
 // Pure decision helper

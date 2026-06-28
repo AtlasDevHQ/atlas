@@ -208,18 +208,11 @@ describe("billing/period", () => {
       expect(period.start.toISOString()).toBe("2026-06-01T00:00:00.000Z");
     });
 
-    it("agrees with proactive's startOfMonthUTC on the month boundary", async () => {
-      // The proactive quota module re-exports startOfMonthUTC from this
-      // module, so the fallback start must equal the proactive cutoff.
-      const { startOfMonthUTC: proactiveStart } = await import(
-        "@atlas/api/lib/proactive/quota"
-      );
-      queryResults = [[]];
-      const now = new Date("2026-06-10T07:00:00.000Z");
-
-      const period = await resolveBillingPeriod("org-1", now);
-
-      expect(period.start.toISOString()).toBe(proactiveStart(now).toISOString());
-    });
+    // The proactive quota module's month-boundary agreement with billing
+    // (it re-exports `startOfMonthUTC` from this module) is now asserted on
+    // the EE side, next to the relocated quota impl
+    // (`ee/src/proactive/__tests__/quota.test.ts`, #3999) — keeping this
+    // core billing test free of an `@atlas/ee` import so the ee-stub build
+    // (which replaces `ee/` with a minimal stub) still type-checks.
   });
 });

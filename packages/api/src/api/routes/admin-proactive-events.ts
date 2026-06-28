@@ -31,24 +31,18 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   AuthContext,
+  AnswerMeter,
   ProactiveGate,
+  ProactiveService,
   RequestContext,
 } from "@atlas/api/lib/effect/services";
-import {
-  AnswerMeter,
-  AnswerMeterLive,
-  MAX_EVENT_PAGE_LIMIT,
-} from "@atlas/api/lib/proactive/answer-meter";
+import { MAX_EVENT_PAGE_LIMIT } from "@atlas/api/lib/proactive/answer-meter";
 import type {
   EventCursor,
   ProactiveEventType,
   ProactiveReviewVerdict,
 } from "@atlas/api/lib/proactive/answer-meter";
-import {
-  PROACTIVE_REVIEW_VERDICTS,
-  lookupClassifyChannel,
-  upsertClassificationReview,
-} from "@atlas/api/lib/proactive/classification-review";
+import { PROACTIVE_REVIEW_VERDICTS } from "@atlas/api/lib/proactive/types";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import {
   createAdminRouter,
@@ -251,9 +245,10 @@ adminProactiveEvents.get("/", async (c) =>
         },
         200,
       );
-      // #3764 — accepted: per-route boundary provide of a small, finalizer-free
-      // Live layer; the route stays its own composition root.
-    }).pipe(Effect.provide(AnswerMeterLive)),
+      // `AnswerMeter` resolves from the app-level EnterpriseLayer (EE
+      // `AnswerMeterLive` or the fail-closed Noop) — no per-route
+      // provide. Proactive chat is enterprise-gated above (#3999).
+    }),
     { label: "proactive events drill-down" },
   ),
 );
@@ -318,10 +313,11 @@ adminProactiveEvents.post("/:messageId/review", async (c) =>
       // this workspace before we let the admin label it. The lookup
       // also returns the channelId so we can stamp it onto the audit
       // row without a second read.
-      const channelId = yield* Effect.tryPromise({
-        try: () => lookupClassifyChannel(orgId, messageId),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      });
+      const proactiveSvc = yield* ProactiveService;
+      const channelId = yield* proactiveSvc.lookupClassifyChannel(
+        orgId,
+        messageId,
+      );
       if (channelId === null) {
         return c.json(
           {
@@ -333,16 +329,12 @@ adminProactiveEvents.post("/:messageId/review", async (c) =>
         );
       }
 
-      const result = yield* Effect.tryPromise({
-        try: () =>
-          upsertClassificationReview({
-            workspaceId: orgId,
-            messageId,
-            verdict: parsed.data.verdict,
-            reviewerUserId: user?.id ?? null,
-            note: parsed.data.note ?? null,
-          }),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      const result = yield* proactiveSvc.upsertClassificationReview({
+        workspaceId: orgId,
+        messageId,
+        verdict: parsed.data.verdict,
+        reviewerUserId: user?.id ?? null,
+        note: parsed.data.note ?? null,
       });
 
       logAdminAction({

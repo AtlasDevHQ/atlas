@@ -183,29 +183,72 @@ a `401` from 8b, is the durable-session / chat-transport regression returning.
 
 ---
 
-## Teardown (do this — surgically, via the CLI)
+## Teardown (do this — surgically, in-container via `railway ssh`)
 
-The verify accounts are real prod identities (user + org + members; a Stripe customer — note that a trial signup's customer lands on the **user** row, not the org, see #4011). Tear them down with the dedicated operator tool — **never by hand-rolled SQL or `ops wipe`**:
+The verify accounts are real prod identities (user + org + members). A *trial* signup that never reaches checkout mints **no Stripe customer** — org-scoped billing (#4014) stopped creating the user-level `createCustomerOnSignUp` customer, so `org.stripeCustomerId` is `none` and the Stripe teardown step is a no-op (only an account that actually checked out has a `cus_…` to purge). Tear accounts down with the **platform-admin purge SSOT** (`purgeStripeBillingForWorkspace` → `updateWorkspaceStatus("deleted")` → `hardDeleteWorkspace`), **never by hand-rolled `DELETE`s or `ops wipe`**.
+
+### ⚠️ The region DBs are internal-only — you cannot run `atlas-operator` locally
+
+The published `atlas-operator ops teardown-verify-accounts --region <R>` command resolves `ATLAS_REGION_<R>_DB_URL`, **but those URLs aren't reachable from a laptop**: the region internal Postgres (`us-int-postgres`/`eu-int-postgres`/`apac-int-postgres`) has no public TCP proxy (its `DATABASE_PUBLIC_URL` is an empty/broken shared-scope ref), and the API image doesn't bundle the `atlas-operator` binary or the `packages/cli` source. So the working path is to run the **same `packages/api` SSOT in-container** via `railway ssh`, where `DATABASE_URL` already points at that region's internal DB (and `STRIPE_SECRET_KEY` is present, US-only).
+
+**Step 1 — register an SSH key with Railway (one-time per session; `gen → add → remove`).** The CLI registers via your authenticated session (no browser). ⚠️ `keys add -k <path>` is broken ("Key not found" for any path) — use **bare `keys add` (auto-detect)**, which scans `~/.ssh` and registers the first key it finds. Bare `railway ssh` with no registered key returns `status:signup_required` with a browser URL — registering via `keys add` is what avoids that.
 
 ```bash
-# DRY RUN first (default — lists exactly what would go, deletes nothing):
-bun run atlas-operator -- ops teardown-verify-accounts --region eu --email matt+eu@useatlas.dev
-# EXECUTE (double-gated, like ops wipe): cancels Stripe + soft-deletes + hard-deletes
-#   the org and its now-orphaned user, reusing the platform-admin purge SSOT:
-ATLAS_TEARDOWN_OK=1 bun run atlas-operator -- ops teardown-verify-accounts \
-  --region eu --email matt+eu@useatlas.dev --confirm
-# Repeat per region (--region us/eu/apac selects ATLAS_REGION_<R>_DB_URL). The shared
-# matt+multi@ chooser account exists in two regions — tear it down in EACH.
+railway ssh keys add -n atlas-teardown            # auto-detects ~/.ssh/id_ed25519*, registers via CLI
+railway ssh keys list                             # confirm; note the Source: path it picked
+# smoke test — confirm you land in the right region container:
+railway ssh --service api -i ~/.ssh/<picked-key> \
+  "node -e 'console.log(new URL(process.env.DATABASE_URL).host, !!process.env.STRIPE_SECRET_KEY)'"
 ```
 
-- **DRY RUN by default; EXECUTE needs `ATLAS_TEARDOWN_OK=1` + `--confirm`** (the same double-gate as `ops wipe`). Non-plus-addressed emails are refused unless `--force` — a guard against fat-fingering a real customer's address into a prod teardown.
-- **One region DB per invocation.** `--region` resolves `ATLAS_REGION_<R>_DB_URL`; there is **no `DATABASE_URL` fallback** (the wrong-DB footgun).
-- **Mislocated-account residue check (ADR-0024 / #3967):** the pre-fix verify runs created EU/APAC accounts *in the US DB*. Prove they're gone — a DRY RUN of the US DB against the EU/APAC emails must resolve **zero** orgs:
-  ```bash
-  bun run atlas-operator -- ops teardown-verify-accounts --region us \
-    --email matt+eu@useatlas.dev,matt+apac@useatlas.dev   # expect: 0 workspace(s)
-  ```
-- **NEVER `bun run atlas-operator -- ops wipe`** against a prod region DB — it TRUNCATEs every public table and would destroy real tenants.
+`--service api` is the **US** region container; the EU/APAC API services are separate Railway services (use `railway ssh --service <eu-api-service>` / `<apac-api-service>` — `railway ssh keys`/list is account-level so the key works for all).
+
+**Step 2 — run the teardown SSOT in-container.** Write a small script that imports the SSOT, base64 it over the ssh command, and run it from **`/app/packages/api`** (the `@atlas/api/*` self-reference only resolves inside the package dir — running from `/tmp` fails with `Cannot find module`). The script (`TD_EMAIL` selects the account; `EXEC=1` is the execute gate, dry-run otherwise):
+
+```ts
+// td.ts — DRY RUN unless EXEC=1. Reuses the platform-admin purge SSOT.
+import { internalQuery, updateWorkspaceStatus, hardDeleteWorkspace, closeInternalDB } from "@atlas/api/lib/db/internal";
+import { purgeStripeBillingForWorkspace } from "@atlas/api/lib/billing/workspace-teardown";
+const EMAIL = (process.env.TD_EMAIL || "").toLowerCase(), EXEC = process.env.EXEC === "1";
+const rows = await internalQuery(`SELECT u.id AS "userId", m.role AS "memberRole", o.id AS "orgId",
+  o.name AS "orgName", o.region, o.workspace_status AS "ws", o."stripeCustomerId" AS "sc"
+  FROM "user" u LEFT JOIN member m ON m."userId"=u.id LEFT JOIN organization o ON o.id=m."organizationId"
+  WHERE lower(u.email)=$1`, [EMAIL]);
+console.log("MODE", EXEC ? "EXECUTE" : "DRY RUN", "rows", rows.length);
+for (const o of rows.filter(r => r.orgId && r.memberRole === "owner")) {
+  console.log(`ORG ${o.orgId} "${o.orgName}" region=${o.region} status=${o.ws} stripe=${o.sc || "none"}`);
+  if (!EXEC) continue;
+  console.log("  stripe", JSON.stringify((await purgeStripeBillingForWorkspace(o.orgId, o.sc)).actions));
+  console.log("  soft", await updateWorkspaceStatus(o.orgId, "deleted"));
+  const p = await hardDeleteWorkspace(o.orgId);
+  console.log("  hardDelete rows", Object.values(p).reduce((s, n) => s + n, 0));
+}
+await closeInternalDB().catch(() => {});
+process.exit(0);
+```
+
+```bash
+KEY=~/.ssh/<picked-key>; B64=$(base64 -w0 td.ts)
+RUN='echo '"$B64"' | base64 -d > /app/packages/api/td.ts && cd /app/packages/api && %s bun run td.ts; rm -f /app/packages/api/td.ts'
+# DRY RUN (confirm exactly one owned org, correct region, expected stripe):
+railway ssh --service api -i "$KEY" "$(printf "$RUN" 'TD_EMAIL=matt+us@useatlas.dev')"
+# EXECUTE:
+railway ssh --service api -i "$KEY" "$(printf "$RUN" 'TD_EMAIL=matt+us@useatlas.dev EXEC=1')"
+```
+
+**Step 3 — verify gone, then remove the key.** Both probes are session-free:
+
+```bash
+H=$(printf '%s' matt+us@useatlas.dev | sha256sum | cut -d' ' -f1)
+curl -s https://api.useatlas.dev/api/v1/auth/region-probe -H 'content-type: application/json' -d "{\"emailHash\":\"$H\"}"   # → {"exists":false}
+curl -s https://app.useatlas.dev/api/login/resolve-region -H 'content-type: application/json' -d '{"email":"matt+us@useatlas.dev"}'  # → {"outcome":"none"}
+railway ssh keys remove atlas-teardown            # positional arg, NOT --name
+```
+
+- **Run the dry run first, always.** Confirm it resolves **exactly one owned org**, the **right region**, and the expected Stripe state before setting `EXEC=1`. The `matt+multi@` chooser account exists in **two** regions — tear it down in **each** (ssh into each region's API service).
+- **Mislocated-account residue check (ADR-0024 / #3967):** the pre-fix verify runs created EU/APAC accounts *in the US DB*. Prove they're gone — a DRY RUN against the **US** container for the EU/APAC emails (`TD_EMAIL=matt+eu@useatlas.dev`, etc.) must resolve **zero** owned orgs.
+- **NEVER run `ops wipe` (or a bare `TRUNCATE`) against a region DB** — it destroys every tenant. The SSOT above only touches the resolved org's rows.
+- The local `atlas-operator -- ops teardown-verify-accounts --region <R> --email <addr>` form is still the canonical tool **if** you have a reachable path to the region DB (e.g. a temporary `railway` TCP proxy on the int-postgres, removed after) — same double-gate (`ATLAS_TEARDOWN_OK=1` + `--confirm`), no `DATABASE_URL` fallback.
 
 ---
 
@@ -216,6 +259,7 @@ ATLAS_TEARDOWN_OK=1 bun run atlas-operator -- ops teardown-verify-accounts \
 - **#3948** — `staging` region leaks into the prod region picker.
 - **#3949** — demo-only signup gets a "connect your database" onboarding email (no demo-aware branch in the email sequence).
 - **#4018** — brand-new signup lands in a broken app: post-signup session not durable (every authed call `401`s, reload → `/login`) and the first chat send `401`s "session expired". **Regression gate is primitive 8** above — run it right after signup. Fixed by hydrating the session after OTP verify + a hard-nav "Open Atlas" (durable cookie) and making the chat transport cookie-only in managed mode (no stale bearer).
+- **#4086** — ⚠️ **OPEN (regression of #4018, caught on `v0.0.33`):** post-signup the funnel dead-ends at **Connect** — `POST /api/v1/onboarding/use-demo` and *every* `/api/v1/*` call `401` "Not signed in", while `/api/auth/*` (org-create) succeeds. Root cause: `email-otp/verify-email` returns `set-auth-token` (bearer) with **no `Set-Cookie`**, but the `/api/v1` REST layer is cookie-only — so no session cookie exists on the API host (a credentialed same-site fetch `401`s, violating ADR-0024 §5). Region-agnostic. Primitive 8 is its gate. Until fixed, the demo first-answer + the authed residency primitives (4, 6) can't run; the session-light primitives (1, 5, 7) still pass.
 
 ---
 

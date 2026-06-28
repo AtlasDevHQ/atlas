@@ -94,8 +94,23 @@ Crossing 100% of a $20/seat at-cost credit takes real token volume. Two levers t
       the Stripe meter value, and the cents↔$ reconciliation.
 - [ ] File any defect as a follow-up issue linked to #4003 / #3984 (bug + area: api/deploy).
 
+## Phase 6 — app-driven reporter soak (Stripe contract DONE; deployed-reporter run blocked on SSH key)
+
+**Done 2026-06-28 (Stripe contract, CLI):** the meter accepts Atlas's exact `meter_event`, dedups on `identifier` (dup rejected), aggregates to exactly the unique cents ($14.00 at 1¢/unit). Atlas sends exactly that shape (`overage-meter.ts:408`). See the #4003 comment.
+
+**Ready but blocked:** a faithful run of the *deployed* `reportWorkspaceOverage` against the real staging ledger + sandbox Stripe. Harness `internal/soak-overage-reporter.ts` (gitignored) injects synthetic usage ($50 vs $20 credit → 3000¢) via `deps`, keeps the real `getReportedOverageCents`/`recordOverageReport`, so it writes only ONE throwaway `overage_meter_reports` row (`org_id=soak-4003-*`). Expected: `r1="reported"`, `led1=3000`, `r2="skipped"` (delta 0 → ledger idempotency), `led2=3000`.
+
+Staging's internal DB is private-network-only → must run **inside** api-staging. `railway ssh` needs a registered key first (`railway ssh keys github` or `railway ssh keys add`). Then:
+```bash
+CUST=$(stripe customers create --project-name "atlas devhq sandbox" -d name=soak -d email=soak@example.com | jq -r .id)
+ORG="soak-4003-$(date +%s)"; PERIOD=$(date -u +%Y-%m-01T00:00:00.000Z)
+B64=$(base64 -w0 internal/soak-overage-reporter.ts)
+railway ssh -s api-staging -e staging -- "echo $B64 | base64 -d > /tmp/soak.ts && SOAK_CUST=$CUST SOAK_ORG=$ORG SOAK_PERIOD=$PERIOD bun /tmp/soak.ts"
+# verify $CUST meter summary == 3000; then delete the throwaway ledger row + the customer.
+```
+
 ## Then (separate, human-only)
 
 The **live-mode** Stripe meter/price repoint + the `/release` that cuts `v0.0.33` are
 explicitly **not** agent actions (never touch the live Stripe account from an agent). This soak
-de-risks that step; it does not perform it.
+de-risks that step; it does not perform it. Full live recipe: `v0033-stripe-live-repoint-checklist.md`.

@@ -1,12 +1,14 @@
 ---
 title: Billing & Plans
-description: Per-seat pricing tiers, token budgets, the warn → grace → pause hard cap, Stripe setup, and the billing dashboard.
+description: Per-seat pricing tiers, the included at-cost usage credit, dollar-based usage enforcement and spend policy, Stripe setup, and the billing dashboard.
 icon: CreditCard
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas uses per-seat billing. On [app.useatlas.dev](https://app.useatlas.dev), the first workspace you create starts with a 14-day trial (one trial per user), then requires a paid plan; additional workspaces you create start locked until they're subscribed. Self-hosted deployments are free with no enforcement. Billing includes automatic usage metering, per-seat token budgets, and a graceful warn → grace → pause hard cap (there is no metered pay-as-you-go overage charge).
+Atlas uses per-seat billing. On [app.useatlas.dev](https://app.useatlas.dev), the first workspace you create starts with a 14-day trial (one trial per user), then requires a paid plan; additional workspaces you create start locked until they're subscribed. Self-hosted deployments are free with no enforcement.
+
+Billing is a per-seat **platform fee** — the listed plan price ($39 / $69 / $149 per seat) — that **includes** an at-cost AI-usage credit of **$20/seat/month**, pooled across the workspace (it is part of the seat price, not an extra charge). AI usage is metered at **provider cost with no markup** and drawn against that credit. Once the credit is spent, the workspace's **spend policy** decides what happens — by default it keeps serving at provider cost (metered overage), bounded by a spend ceiling; or it can hard-stop at the credit.
 
 <Callout type="info" title="SaaS">
 On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View your usage, manage your plan, and update payment methods from **Admin > Billing** — no Stripe setup required on your end.
@@ -25,7 +27,7 @@ On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View 
 | | Starter | Pro | Business | Self-Hosted |
 |---|---|---|---|---|
 | **Price** | $39 / seat / mo | $69 / seat / mo | $149 / seat / mo | Free |
-| **AI queries / seat / mo** | ~100 | ~250 | ~750 | Unlimited |
+| **Included usage credit** | $20 / seat / mo | $20 / seat / mo | $20 / seat / mo | N/A |
 | **Max seats** | 10 | 25 | Unlimited | Unlimited |
 | **Datasource connections** | 1 | 3 | Unlimited | Unlimited |
 | **Extra connections** | Upgrade plan | Upgrade plan | Included | N/A |
@@ -37,23 +39,19 @@ On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View 
 
 Annual billing is available for Starter, Pro, and Business (pay for 10 months, get 12).
 
-- **Trial** — Auto-assigned to the first workspace a user creates on SaaS. One trial per user: further workspaces you create start **locked** (blocked until subscribed) rather than receiving a fresh trial. Same limits as Starter (10 seats, 1 connection, ~100 queries/seat). Expires after 14 days, then queries are blocked until the workspace upgrades. (For workspaces provisioned over MCP by `start_trial`, the 14-day clock starts when the account is **claimed** on the web — before that the workspace sits on a short 72-hour unclaimed-grace window. See [Self-Serve Signup](/guides/signup#claiming-a-self-serve-mcp-trial).)
+- **Trial** — Auto-assigned to the first workspace a user creates on SaaS. One trial per user: further workspaces you create start **locked** (blocked until subscribed) rather than receiving a fresh trial. Same limits as Starter (10 seats, 1 connection, $20/seat at-cost usage credit). Expires after 14 days, then queries are blocked until the workspace upgrades. (For workspaces provisioned over MCP by `start_trial`, the 14-day clock starts when the account is **claimed** on the web — before that the workspace sits on a short 72-hour unclaimed-grace window. See [Self-Serve Signup](/guides/signup#claiming-a-self-serve-mcp-trial).)
 - **Starter** — Entry paid tier. Per-seat billing via Stripe.
-- **Pro** — Higher query budgets, more connections, custom domain support.
+- **Pro** — More capable default model, more seats and connections, custom domain support. (The included usage credit is a flat $20/seat on every paid tier.)
 - **Business** — Unlimited seats and connections. Includes SSO, SCIM, data residency, and SLA.
 - **Self-Hosted** (free) — No billing enforcement. All features available, no Stripe needed. Uses your own API keys (BYOK).
 
-### Per-Seat Token Budgets
+### The Included Usage Credit
 
-Token budgets scale with your team size. Each seat adds its tier's token allocation to your workspace total. The actual query cost varies by model — a more capable model uses more tokens per query than a smaller one.
+Every paid tier includes a flat **$20/seat/month at-cost usage credit** that **pools across the workspace** — your total included usage is `$20 × seat count`, computed dynamically from your actual member count. AI usage is metered at **provider cost (zero markup)** and drawn against this pooled credit, and **the credit (in dollars) is what enforcement runs against** (see [Usage Enforcement](#usage-enforcement-the-dollar-budget--spend-policy) below).
 
-| Plan | Token budget per seat | 5 seats | 10 seats |
-|------|----------------------|---------|----------|
-| **Starter** | 2M tokens | 10M tokens | 20M tokens (max 10 seats) |
-| **Pro** | 5M tokens | 25M tokens | 50M tokens |
-| **Business** | 15M tokens | 75M tokens | 150M tokens |
+Each tier also carries a per-seat **token budget** (Starter 2M, Pro 5M, Business 15M tokens/seat), but this is a **legacy display-only** figure shown on the billing dashboard — it is **not** what enforcement or billing runs against, and a higher figure does **not** mean more included usage. The included usage credit is a flat **$20/seat on every paid tier**; the token numbers differ only because they were the old per-tier budgets and persist as a display value. Because the real cost of a query varies by model (a more capable model costs more per query), the credit is denominated in dollars, not tokens.
 
-The budget is computed dynamically from your actual member count — no manual configuration needed.
+The dollar credit is computed dynamically from your actual member count — no manual configuration needed.
 
 ---
 
@@ -83,10 +81,10 @@ curl -X POST https://your-atlas.example.com/api/v1/billing/byot \
 The admin billing dashboard is available at **Admin > Billing** (`/admin/billing`). It shows:
 
 - **Current plan** — tier name, per-seat price, and trial expiry date (if applicable)
-- **Query usage** — AI queries consumed vs. computed budget, with progress bar
+- **Usage** — at-cost AI spend (in dollars) vs. the included usage credit, with progress bar
 - **Seat usage** — actual member count vs. tier maximum
 - **Connection usage** — datasource connections vs. tier limit
-- **Budget status** — current enforcement tier (ok / warning / grace / paused)
+- **Usage status** — current enforcement band (ok / warning / metered overage / hard limit), plus any accrued at-cost overage for the period
 - **Default model** — current LLM model with override capability
 - **BYOT toggle** — enable/disable bring-your-own-token (admin/owner only)
 - **Stripe portal link** — self-service plan changes, payment methods, invoices
@@ -97,20 +95,27 @@ Usage data is also available programmatically via the admin API. See [Usage Mete
 
 ---
 
-## Token Budget & the Warn → Grace → Pause Hard Cap
+## Usage Enforcement: the Dollar Budget & Spend Policy
 
-Each paid plan includes a per-seat monthly **token budget** that scales with the workspace's seat count. Enforcement runs before every agent execution, checking usage against that computed budget and degrading through four tiers rather than cutting off abruptly:
+Each paid plan includes a per-seat **at-cost usage credit** ($20/seat/month) that pools across the workspace. Enforcement runs before every agent execution, comparing the period's **dollar** usage (metered at provider cost, no markup) against that credit and degrading through bands rather than cutting off abruptly:
 
-| Tier | Usage | Behavior |
+| Band | Usage | Behavior |
 |------|-------|----------|
 | **OK** | 0–79% | No warning. Request proceeds normally |
 | **Warning** | 80–99% | Request proceeds. Warning metadata attached to the response |
-| **Grace** | 100–109% | 10% grace buffer. Request still allowed, with a usage warning |
-| **Paused (hard cap)** | 110%+ | Request blocked with HTTP 429. Upgrade or add-seats CTA in error message |
+| **Metered overage** | 100% → ceiling | Request proceeds; every dollar past the credit accrues **at provider cost** (no markup). A warning carries the accrued "in overage, $X.XX so far" |
+| **Hard limit** | ≥ ceiling | Request blocked with HTTP 429. Where the ceiling sits depends on the spend policy below |
 
-This is a **hard cap with a grace buffer, not pay-as-you-go**. There is no metered per-token overage charge — Atlas does not bill for usage beyond the included budget. Once a workspace crosses 110%, new agent requests are paused until you upgrade your plan, add seats, or the billing period resets. Every token counts the same toward the budget regardless of which model produced it; there is no model-weighted or "output-equivalent" normalization.
+This is **at-cost metered overage, not a flat hard cap**: a paying workspace that runs past its included credit is metered at the exact provider cost (billed 1:1), not cut off — unless its spend policy says otherwise. Usage is denominated in **dollars** (the summed at-cost provider spend), not tokens; the per-seat token budget is a display-only figure and is not the enforcement denominator.
 
-To remove token limits entirely, enable [BYOT](#byot-bring-your-own-token) and use your own API keys.
+### Spend policy
+
+The **Spend Policy** setting (`ATLAS_SPEND_POLICY`, workspace-scoped, hot-reloadable from **Admin → Settings → Billing**) decides what happens once the credit is spent:
+
+- **`continue`** (default) — keep serving at provider cost past the credit. The hard-limit ceiling is the **abuse / spend ceiling** (`ATLAS_ABUSE_CEILING`, default **500%** of the credit = 5× ≈ $100/seat) — a runaway-spend backstop, not an everyday limit. Usage from 100% to the ceiling is metered at cost; at or above it, requests return 429. Set the ceiling to `0` (or empty) for pure metering with no cutoff.
+- **`cutoff`** — hard-block the moment the credit is spent: the ceiling clamps to 100% of the credit, so any overage immediately returns 429.
+
+Metered overage is billed at provider cost (1:1, in cents) via Stripe when overage Price IDs are configured — see [Stripe Setup](#stripe-setup-self-hosted). To remove usage limits entirely, enable [BYOT](#byot-bring-your-own-token) and use your own API keys.
 
 ### Enforcement Skipped
 
@@ -133,11 +138,11 @@ If workspace or plan data cannot be fetched, the request is **blocked** with HTT
 
 Enforcement applies on **every** path that runs the Atlas agent — not just web chat and the API:
 
-- **Web chat and `POST /api/v1/query`** — blocked requests return the HTTP error envelope above (403/429/503 with an upgrade or retry CTA). The 80–109% warning band is attached to successful responses as `planWarning`.
-- **Chat platforms** (Slack, Discord, Telegram, Teams, Google Chat, WhatsApp) — a blocked workspace receives an **in-thread reply** explaining why the request was refused (e.g. "Your free trial has expired. Upgrade to a paid plan to continue using Atlas."), the same way rate-limit refusals are delivered. Requests are never silently dropped. The 80–109% warning band does **not** post warnings into chat threads — it's visible on the billing dashboard and in successful web/API responses instead.
+- **Web chat and `POST /api/v1/query`** — blocked requests return the HTTP error envelope above (403/429/503 with an upgrade or retry CTA). Once usage reaches 80% (the warning band, and continuing through metered overage) the notice is attached to successful responses as `planWarning` — the overage band's notice carries the accrued at-cost amount.
+- **Chat platforms** (Slack, Discord, Telegram, Teams, Google Chat, WhatsApp) — a blocked workspace receives an **in-thread reply** explaining why the request was refused (e.g. "Your free trial has expired. Upgrade to a paid plan to continue using Atlas."), the same way rate-limit refusals are delivered. Requests are never silently dropped. The warning and metered-overage bands do **not** post warnings into chat threads — they're visible on the billing dashboard and in successful web/API responses instead.
 - **Scheduled tasks** — a blocked run is recorded as **failed in the task's run history** with the billing reason (e.g. `Blocked by billing enforcement [trial_expired]: …`), visible to the task owner. Runs resume automatically on the next schedule once the workspace is back in good standing — tasks are not auto-paused.
 - **MCP datasource-query tools** (`executeSQL`, `runMetric`) — MCP calls spend no Atlas LLM tokens (the client's own model pays), but they read connected datasources, so a blocked workspace receives a structured [`billing_blocked` MCP error envelope](/guides/mcp#error-contract) instead of query results. Abuse throttles map to the MCP `rate_limited` envelope with `retry_after`; a check that cannot complete fails closed as `internal_error` (retryable). Metadata-only tools (`explore`, `listEntities`, `describeEntity`, `searchGlossary`) are not blocked.
-- **Admin semantic-improve chat** — the expert agent runs on platform tokens and its usage is metered against the workspace budget, so `POST /api/v1/admin/semantic-improve/chat` runs the same gate and returns the HTTP error envelope on a block. Admin maintenance is intentionally **not** exempt: an admin of a blocked workspace resolves billing first.
+- **Admin semantic-improve chat** — the expert agent runs on platform tokens and its usage is metered against the workspace's usage credit, so `POST /api/v1/admin/semantic-improve/chat` runs the same gate and returns the HTTP error envelope on a block. Admin maintenance is intentionally **not** exempt: an admin of a blocked workspace resolves billing first.
 
 ---
 
@@ -230,7 +235,7 @@ Stripe **secrets**, so they stay in env:
 | `STRIPE_SECRET_KEY` | Stripe secret key (test or live). Enables billing routes when set |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret for verifying events |
 
-The six per-tier **Price IDs** are non-secret constants and live in the
+The six per-tier **seat Price IDs** are non-secret constants and live in the
 settings registry under **Admin → Settings → Billing** (platform admins only).
 They are runtime-editable and hot-reloadable — a pricing change takes effect
 without a redeploy ([#3703](https://github.com/AtlasDevHQ/atlas/issues/3703)).
@@ -249,6 +254,27 @@ override is present:
 A missing monthly Price ID silently omits that tier from checkout, so it is
 surfaced as an operator-actionable warning in the boot log (not a boot
 failure). Set the missing ID from **Admin → Settings → Billing**.
+
+### Metered-overage Price IDs (at-cost)
+
+For **at-cost metered overage** (the `continue` spend policy, usage past the
+included credit), Atlas bills the excess 1:1 with provider cost via a single
+shared Stripe **Billing Meter** (`atlas_usage_overage_cents`, priced at 1 cent
+per metered unit) plus a per-tier overage Price ID, added as a **second**
+subscription line item. These IDs are platform-scoped settings with env
+fallback — runtime-editable and hot-reloadable, exactly like the seat Price IDs
+above:
+
+| Setting / env fallback | Description |
+|----------|-------------|
+| `STRIPE_STARTER_OVERAGE_PRICE_ID` | At-cost overage Price ID for Starter (metered; billed in cents, 1:1 with provider cost) |
+| `STRIPE_PRO_OVERAGE_PRICE_ID` | At-cost overage Price ID for Pro |
+| `STRIPE_BUSINESS_OVERAGE_PRICE_ID` | At-cost overage Price ID for Business |
+
+Without an overage Price ID for a tier, usage past the credit is still metered
+and shown on the dashboard but **not billed** (a missing one surfaces as a boot
+warning, not a failure). SaaS pre-configures these; self-hosted operators who
+want to bill overage create the meter + prices in their own Stripe account.
 
 When `STRIPE_SECRET_KEY` is set:
 

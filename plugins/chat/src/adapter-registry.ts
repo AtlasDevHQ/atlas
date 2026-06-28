@@ -7,12 +7,12 @@
  * from `process.env`, and returns the set of adapter instances the chat
  * plugin should activate at boot.
  *
- * In milestone 1.5.2, only `install_model === "oauth"` adapters
- * instantiate. The non-Slack chat Platforms (Teams, Discord, gchat,
- * Telegram, WhatsApp) ship as catalog placeholders with
- * `install_model === "static-bot"` and `enabled === false` — visible to
- * ops, not customer-installable, and never instantiated here. Their
- * install handlers land in 1.5.3.
+ * Both install models instantiate here: `install_model === "oauth"`
+ * (Slack) and `install_model === "static-bot"` (Teams, Discord, gchat,
+ * Telegram, WhatsApp) — the Phase D static-bot family (#2994) all ship
+ * real builders + install handlers now. Each adapter builds only when its
+ * required env vars are present and the catalog row is `enabled`;
+ * otherwise it's skipped with a diagnostic (see `buildChatAdapterRegistry`).
  *
  * Pure-ish: takes the catalog entry list + an env reader as input,
  * returns the adapter set. Side effects are limited to (a) constructing
@@ -71,10 +71,11 @@ export interface ChatCatalogEntry {
 
 /**
  * Map of platform slug → instantiated adapter. Slug-keyed `Partial`
- * `Record` so future adapters (1.5.3 static-bot platforms) extend by
- * adding map entries — no shape change to the type, no consumer
- * rewrites. Today only `slack` is populated; the other keys are
- * structurally allowed but never set.
+ * `Record` so future platforms extend by adding map entries — no shape
+ * change to the type, no consumer rewrites. Every wired platform (slack +
+ * the static-bot family: telegram/discord/whatsapp/gchat/teams) populates
+ * its slug when enabled with creds present; the `Partial` keeps the type
+ * extensible for any future platform.
  */
 export type ChatAdapterSet = Partial<{
   readonly [K in ChatAdapterName]: ChatAdapterInstance<K>;
@@ -82,11 +83,11 @@ export type ChatAdapterSet = Partial<{
 
 /**
  * Per-slug adapter instance type. Slack has its concrete `SlackAdapter`
- * class from `@chat-adapter/slack`; Telegram (1.5.3 #2748 — first
- * static-bot Platform) narrows to the structural Chat SDK `Adapter` type
- * because `@chat-adapter/telegram` doesn't export a public class
- * symbol the way Slack does. The remaining slugs stay on the
- * `{ name }` placeholder until their adapter class lands.
+ * class from `@chat-adapter/slack`; the static-bot family (Telegram,
+ * Discord, WhatsApp, gchat, Teams) narrows to the structural Chat SDK
+ * `Adapter` type because those `@chat-adapter/*` packages don't export a
+ * public class symbol the way Slack does. The `{ name }` fallback is for
+ * any future slug whose adapter class hasn't landed yet.
  */
 type ChatAdapterInstance<K extends ChatAdapterName> = K extends "slack"
   ? SlackAdapter
@@ -140,7 +141,8 @@ interface ChatAdapterBuilder<Adapter> {
 // ---------------------------------------------------------------------------
 
 /**
- * Slack — the only OAuth chat Platform that instantiates in 1.5.2.
+ * Slack — the OAuth chat Platform (the rest of the family installs via
+ * static-bot).
  *
  * Required env vars (all four must be present):
  *   - SLACK_CLIENT_ID, SLACK_CLIENT_SECRET — App Registration OAuth credentials

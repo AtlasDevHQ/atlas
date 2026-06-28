@@ -17,9 +17,12 @@
  * Precedence (resolved in `decidePauseFromRows`):
  *   workspace-kill > admin-channel > user-optout > channel-24h
  *
- * Routes that mutate pauses must enforce `requireEnterpriseEffect`
- * outside this module — the registry stays gate-agnostic so tests +
- * the plugin host can both consume it without dragging in `@atlas/ee`.
+ * Relocated to `@atlas/ee/proactive` (#3999); the core pauses route
+ * reaches it through the `ProactiveService` Tag. Routes that mutate
+ * pauses enforce the enterprise gate (`ProactiveGate.requireEnabled()` +
+ * `requireFeatureEntitlement(…, "proactive")`) outside this module — the
+ * registry stays gate-agnostic, and its type/port contracts live in the
+ * core `lib/proactive/types.ts` so core never imports `@atlas/ee`.
  *
  * The pure `decidePauseFromRows` function is exported separately so
  * unit tests can exercise the precedence + expiry truth table without
@@ -28,7 +31,12 @@
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { PauseLayer, PauseDecision } from "@useatlas/types";
-import type { PauseRow, PauseWriteInput } from "@atlas/api/lib/proactive/types";
+import type {
+  PauseRow,
+  PauseWriteInput,
+  IsPausedInput,
+  ExpirePausesInput,
+} from "@atlas/api/lib/proactive/types";
 
 const log = createLogger("proactive:pause-registry");
 
@@ -197,24 +205,7 @@ async function fetchCandidateRows(input: {
  * operator-initiated via log streams. A real OTel/Sentry error
  * transport is filed as 1.5.x infrastructure follow-up.
  */
-export async function isPaused(input: {
-  workspaceId: string;
-  channelId: string;
-  userId?: string;
-  /** Override `Date.now()` for deterministic tests. */
-  now?: () => number;
-  /**
-   * Opt admin-inspection callers out of the fail-CLOSED posture. When
-   * `true`, a DB error rethrows so the surrounding route returns a
-   * 500 the admin can act on; when omitted (default), the function
-   * fails CLOSED and returns a synthetic workspace-kill decision so
-   * runtime callers (the chat listener) stay silent during outages.
-   *
-   * NEVER pass `true` from the runtime listener — that defeats the
-   * kill switch.
-   */
-  failOpenOnError?: boolean;
-}): Promise<PauseDecision> {
+export async function isPaused(input: IsPausedInput): Promise<PauseDecision> {
   const now = input.now ? input.now() : Date.now();
   try {
     const rows = await fetchCandidateRows({
@@ -279,12 +270,7 @@ export async function persistPause(input: PauseWriteInput): Promise<void> {
  * later can see "this row was lifted at T2" without joining a separate
  * audit table.
  */
-export async function expirePauses(input: {
-  workspaceId: string;
-  layer: PauseLayer;
-  channelId?: string | null;
-  userId?: string | null;
-}): Promise<void> {
+export async function expirePauses(input: ExpirePausesInput): Promise<void> {
   await internalQuery(
     `
     UPDATE proactive_pauses

@@ -11,12 +11,17 @@
  * `NoopProactiveServiceLayer` is the non-EE default.
  *
  * Each method uses `Effect.promise` so a rejected DB promise surfaces as
- * a defect → 500 in `runEffect`, preserving the pre-relocation route
- * behavior (the handlers previously wrapped these same calls in
- * `Effect.tryPromise` / `Effect.promise` and let a throw become a 500).
- * The internal fail-open / fail-closed postures of the underlying
- * functions (quota fails open; `isPaused` honours `failOpenOnError`) are
- * unchanged — this layer only adapts the call convention.
+ * a defect → 500 in `runEffect`. The HTTP outcome is preserved vs the
+ * pre-relocation routes: the four `runEffect` sites previously used
+ * `Effect.tryPromise` with a normalizing `catch` (a typed *failure* that
+ * `runEffect` also mapped to a generic 500), and the pauses route already
+ * used `Effect.promise`. So the error *channel* shifts from failure to
+ * defect for those four, but the client-visible result (500 +
+ * `requestId`) is identical. The internal fail-open / fail-closed
+ * postures of the underlying functions (quota fails open; `isPaused`
+ * honours `failOpenOnError`) are unchanged — this layer only adapts the
+ * call convention. (The declared `EnterpriseError` failure channel is
+ * inhabited only by the Noop layer; `*Live` rejections die as defects.)
  */
 
 import { Effect, Layer } from "effect";

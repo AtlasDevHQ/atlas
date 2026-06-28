@@ -50,9 +50,9 @@
  * `api/routes/` (CLAUDE.md layer rule).
  *
  * @see packages/api/src/api/routes/slack.ts (legacy path, retired by #2611)
- * @see packages/api/src/lib/proactive/answer-adapter.ts (sister adapter for proactive flow)
- * @see packages/api/src/lib/proactive/workspace-id-resolver.ts (the
- *   precedent for `rawMessage.team_id` → org_id resolution)
+ * @see ee/src/proactive/answer-adapter.ts (sister adapter for proactive flow; relocated #3999)
+ * @see ee/src/proactive/workspace-id-resolver.ts (the
+ *   precedent for `rawMessage.team_id` → org_id resolution; relocated #3999)
  */
 
 import type {
@@ -424,7 +424,7 @@ async function runSlackExecuteQuery(
 
   // 1. Resolve tenant from `rawMessage.team_id` (or `team.id` on
   //    interactive `block_actions` payloads — see `extractTeamId`).
-  //    Mirrors `lib/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver`.
+  //    Mirrors `ee/src/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver` (relocated #3999).
   const raw = (rawMessage ?? {}) as SlackRawEvent;
   const teamId = extractTeamId(raw);
   if (!teamId) {

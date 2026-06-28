@@ -561,6 +561,9 @@ describe("PUT /api/v1/admin/proactive/workspace", () => {
         announcementChannelId: "C-ann",
       });
       expect(res.status).toBe(200);
+      // Pin that the announcer actually RAN and its throw was swallowed —
+      // not that the route 200'd via a never-invoked Noop path.
+      expect(mockAnnounceActivation).toHaveBeenCalledTimes(1);
     });
 
     it("still returns 200 when announceActivation reports posted: false", async () => {

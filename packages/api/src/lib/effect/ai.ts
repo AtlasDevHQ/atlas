@@ -158,8 +158,8 @@ export const AtlasAiModelLive: Layer.Layer<AtlasAiModel, Error> = Layer.effect(
 /**
  * Lazily-built ManagedRuntime over {@link AtlasAiModelLive}.
  *
- * The proactive classifier + answer adapters (`lib/proactive/*-adapter.ts`)
- * need a `ManagedRuntime` providing `AtlasAiModel`. The server's app
+ * The proactive classifier + answer adapters (`ee/src/proactive/*-adapter.ts`,
+ * relocated #3999) need a `ManagedRuntime` providing `AtlasAiModel`. The server's app
  * runtime in `api/server.ts` isn't exported and the deploy config
  * (`deploy/api/atlas.config.ts` at `/app/`) sits outside the workspace
  * `node_modules` tree — so `effect` itself can't be imported directly

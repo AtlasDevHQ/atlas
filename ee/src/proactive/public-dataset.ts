@@ -25,9 +25,11 @@
  *      summary stays content-blind; this rollup is intentionally
  *      content-aware (entity names are admin-visible already).
  *
- * The module never imports from `@atlas/ee` — the enterprise gate lives
- * in the route layer (`requireEnterpriseEffect("proactive-chat")`) so a
- * test layer can exercise the DB shape directly.
+ * Relocated to `@atlas/ee/proactive` (#3999); reached from the core
+ * admin route through the `ProactiveService` Tag. The module stays
+ * gate-agnostic — the enterprise boundary is enforced at the route
+ * layer (`ProactiveGate.requireEnabled()` + `requireFeatureEntitlement(…,
+ * "proactive")`) — so a test layer can exercise the DB shape directly.
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";

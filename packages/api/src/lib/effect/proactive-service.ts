@@ -8,20 +8,22 @@
  * feature follows this), and reach the relocated logic through this one
  * composite Tag, mirroring `AbuseResponse` / `MarketplaceVeneer`.
  *
- * It is the largest EE Tag surface because the proactive routes consume
- * the most lib functions of any EE feature: quota, pause registry,
- * classifier-review CRUD, public-dataset CRUD, the activation
- * announcement, and the platform channel directory. (`AnswerMeter` stays
- * a sibling Tag — see `lib/proactive/answer-meter.ts` — because its
- * `createAnswerMeterTestLayer` seam is shared by core route tests +
- * `__test-utils__`.)
+ * It spans the most lib functions of the current EE features: quota,
+ * pause registry, classifier-review CRUD, public-dataset CRUD, the
+ * activation announcement, and the platform channel directory.
+ * (`AnswerMeter` stays a sibling Tag — see `lib/proactive/answer-meter.ts`
+ * — because its `createAnswerMeterTestLayer` seam is shared by core route
+ * tests + `__test-utils__`.)
  *
  * The `NoopProactiveServiceLayer` default fails every method with
  * `EnterpriseError` (→ 403 `enterprise_required`). In practice it is
- * never reached through a route: each handler gates on `ProactiveGate`
- * (deployment EE flag) and `requireFeatureEntitlement` (per-tier ladder,
- * #4064) first. The EE `ProactiveServiceLive` (`ee/src/proactive/service.ts`)
- * overrides this Tag when enterprise is enabled, via `ee/src/layers.ts`.
+ * never reached through a route: each handler runs an enterprise gate
+ * first — the four `runEffect` routes `yield* ProactiveGate` (deployment
+ * EE flag), and `admin-proactive.ts` calls its inline `gateEnterprise()`
+ * (value-level `isEnterpriseEnabled`) — then the per-tier
+ * `requireFeatureEntitlement(…, "proactive")` ladder (#4064). The EE
+ * `ProactiveServiceLive` (`ee/src/proactive/service.ts`) overrides this
+ * Tag when enterprise is enabled, via `ee/src/layers.ts`.
  *
  * The route-execution model differs across the surface:
  *   - the four `runEffect` routes `yield* ProactiveService`;
@@ -123,8 +125,9 @@ const notAvailable = (): Effect.Effect<never, EnterpriseError> =>
 /**
  * No-op default for non-EE deploys. Every method fails closed with
  * `EnterpriseError` (→ 403), matching the deployment gate. Never reached
- * through a route (the handlers 403 at `ProactiveGate` /
- * `requireFeatureEntitlement` first); present so the app layer can bind
+ * through a route (the handlers 403 at `ProactiveGate` —
+ * `admin-proactive.ts` at its inline `gateEnterprise()` —
+ * /`requireFeatureEntitlement` first); present so the app layer can bind
  * the Tag on a non-EE deploy. The EE `ProactiveServiceLive` overrides it.
  */
 export const NoopProactiveServiceLayer: Layer.Layer<ProactiveService> =

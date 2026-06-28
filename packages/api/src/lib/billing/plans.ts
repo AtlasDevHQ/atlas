@@ -61,7 +61,7 @@ export interface PlanLimits {
    * classify is one small haiku-class call (~$0.0005), so even the
    * Business cap bounds worst-case spend at low tens of dollars while
    * staying invisible to legitimate usage. Enforced in
-   * `lib/proactive/quota.ts:getEffectiveMonthlyClassifierCap`.
+   * `ee/src/proactive/quota.ts:getEffectiveMonthlyClassifierCap` (relocated #3999).
    */
   monthlyProactiveClassifierCap: number;
 }

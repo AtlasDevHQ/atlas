@@ -1,7 +1,7 @@
 /**
  * Process-local registry for the chat-surface resume-delivery port (#3750).
  *
- * Mirrors `lib/proactive/announcer-registry.ts`. When an approval-parked chat
+ * Mirrors `ee/src/proactive/announcer-registry.ts` (relocated #3999). When an approval-parked chat
  * turn is approved/denied, the surface-agnostic approval-review handler
  * (`api/routes/admin-approval.ts`) re-arms the run via `resolveApprovalPark`
  * and must then deliver the continued answer back to the originating chat

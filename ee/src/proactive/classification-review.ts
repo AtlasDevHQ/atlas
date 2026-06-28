@@ -12,8 +12,12 @@
  * meter file from sprawling and matches the `public-dataset.ts`
  * companion module pattern.
  *
- * The module never imports `@atlas/ee` — the enterprise gate is the
- * route layer's job. Tests can exercise the DB shape directly.
+ * Relocated to `@atlas/ee/proactive` (#3999); the core events route
+ * reaches it through the `ProactiveService` Tag. The module stays
+ * gate-agnostic — the enterprise gate is the route layer's job
+ * (`ProactiveGate` + `requireFeatureEntitlement`) — so tests can
+ * exercise the DB shape directly; its type contracts live in the core
+ * `lib/proactive/{types,answer-meter}` so core never imports `@atlas/ee`.
  *
  * PRIVACY: no message text ever lands here. The admin reviewer reads
  * the message on the chat platform (Slack permalink in the UI) and

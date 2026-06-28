@@ -15,9 +15,10 @@
  *
  * Every route yields `ProactiveGate.requireEnabled()` so
  * non-enterprise tenants see 403 enterprise_required rather than a
- * surface to twiddle. The lib/proactive/public-dataset.ts helpers
- * stay enterprise-agnostic so tests can exercise the DB shape without
- * booting the gate.
+ * surface to twiddle. The public-dataset helpers (relocated to
+ * `@atlas/ee/proactive/public-dataset` in #3999, reached via the
+ * `ProactiveService` Tag) stay enterprise-agnostic so tests can
+ * exercise the DB shape without booting the gate.
  *
  * Surface:
  *

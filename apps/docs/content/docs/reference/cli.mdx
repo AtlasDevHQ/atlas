@@ -887,6 +887,35 @@ A smoke run is **never read-only**: it enqueues the fixture personas and the flu
 
 **Exit codes:** `0` = clean (observed matches expected); `1` = argument/fixture parse error; `2` = outbox drain timed out; `3` = diff dirty (dispatcher misbehaved or Twenty unreachable); `4` = wipe phase failed; `5` = infrastructure failure (tenant DB unreachable, enqueue insert failed, or poll query errored).
 
+### ops teardown-verify-accounts
+
+<Callout type="warn" title="Destructive — targets a region's PROD identity DB">
+Surgically deletes the throwaway accounts left behind by a 3-region [`/verify-prod-signup`](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0024-regional-identity-isolation.md) run — the **user + organization + Stripe customer** for each named email — from **one** region's internal database. It reuses the same SSOT teardown functions as the platform-admin workspace purge (`purgeStripeBillingForWorkspace` → soft-delete → `hardDeleteWorkspace`), so the cascade can't drift behind new org-scoped tables. **DRY RUN by default**; executing requires **both** `ATLAS_TEARDOWN_OK=1` in the env **and** `--confirm` on the command line (the same double-gate as `ops wipe`).
+</Callout>
+
+```bash
+# Preview (dry run — lists what would be torn down, deletes nothing)
+bun run atlas-operator -- ops teardown-verify-accounts \
+  --region us --email matt+us@useatlas.dev
+
+# Execute (double-gated)
+ATLAS_TEARDOWN_OK=1 bun run atlas-operator -- ops teardown-verify-accounts \
+  --region eu --email matt+eu@useatlas.dev --confirm
+```
+
+| Flag | Description |
+|------|-------------|
+| `--email <addr[,addr]>` | Required, repeatable and/or comma-separated. The account(s) to tear down (lower-cased and de-duped). A teardown with no explicit target is always refused — this command never "deletes every test-looking account". |
+| `--region <us\|eu\|apac>` | Selects the region DB by resolving `ATLAS_REGION_<R>_DB_URL`. |
+| `--database-url <url>` | Explicit region DB URL (escape hatch). Takes precedence over `--region` if both are passed. **There is no `DATABASE_URL` fallback** — you must pick a region explicitly so the wrong DB can't be torn down by forgetting the flag. |
+| `--confirm` | Required to execute. Second half of the double-gate (`ATLAS_TEARDOWN_OK=1` is the first). |
+| `--dry-run` | Force preview even when the execute gate is satisfied. |
+| `--force` | Allow addresses that don't look like throwaway verify accounts. By default, execute refuses any non-plus-addressed email (verify accounts are plus-addressed, e.g. `matt+us@useatlas.dev`) — `--force` overrides that guard. |
+
+**Safety:** one region DB per invocation; DRY RUN unless both gates are present; execute refuses more than 12 owned workspaces (blast-radius cap — a verification run only creates one account per region). Non-owner memberships and orphan user rows are surfaced as warnings for manual follow-up, never silently deleted. The stamped `organization.region` label is reported as mislocation evidence but never gated on — the physical DB selected by `--region`/`--database-url` is the ground truth.
+
+**Exit codes:** `0` = clean; `1` = gate/argument error, a per-org teardown error, **or** a left-behind Stripe linkage (a failed customer-delete / subscription-cancel is enqueued for durable retry, but the run still exits non-zero so a scripted cleanup fails loudly rather than reporting a clean success).
+
 ---
 
 ## See Also

@@ -1,0 +1,87 @@
+---
+title: Multi-Region Login
+description: How returning users are routed back to their workspace's region on the hosted SaaS, where each region is an independent identity stack.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info" title="SaaS multi-region only">
+This flow exists only on the hosted Atlas SaaS when more than one data region is configured. Self-hosted and single-region deployments authenticate against one API base and never engage the region front-door — sign-in is the standard email/password (or SSO) flow described in [Authentication](/deployment/authentication).
+</Callout>
+
+Under [regional identity isolation (ADR-0024)](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0024-regional-identity-isolation.md), each region (US, EU, Asia Pacific) is a **fully independent stack** — its own internal database **and** its own [Better Auth](https://www.better-auth.com/) instance. An EU workspace's `user`, `organization`, `member`, and `session` rows live **only** in the EU database; the US API genuinely returns `401` for it. That isolation is the residency promise, but it creates a routing problem at login: a returning user types an email and password, and the browser must figure out **which region's API** to send them to *before* any session exists.
+
+This guide describes how that resolution works.
+
+## The returning-user front-door
+
+When a returning user opens `/login` on the multi-region SaaS and no region is yet known, Atlas shows an **email-first** step before the password field. Entering an email resolves which region owns the account, then reloads the login form pointed at that region's API.
+
+The resolution runs through a single region-agnostic edge endpoint on `app.useatlas.dev`:
+
+```
+POST /api/login/resolve-region
+Content-Type: application/json
+
+{ "email": "jane@acme.com" }
+```
+
+This endpoint lives on the web front-door, **not** on any regional API — no regional API is allowed to carry a dual global-identity role. It returns one of five outcomes:
+
+| Outcome | Meaning | What the UI does |
+|---------|---------|------------------|
+| `single` | The email exists in exactly one region | Apply that region and reload the login form against its API |
+| `multiple` | The email exists in more than one region | Show a region chooser (see [Same email = two accounts](#same-email--two-accounts)) |
+| `none` | No account found in any region | Offer signup |
+| `skip` | Region routing not configured (self-hosted / residency off) | Reveal the password field against the default API base |
+| `error` | The fan-out was inconclusive (a region or the region directory was unreachable) | Let the user retry — Atlas never silently mis-routes to the default region |
+
+### How the fan-out works
+
+The front-door resolves the region **without any global email→region store** — there is no central directory of who lives where. For each request it:
+
+1. **Fetches the region map** from `GET /api/v1/auth/region-map` — the list of selectable regions and their API bases. (`configured: false`, or no regions, means residency is not configured and yields `skip`.)
+2. **Checks the cookie fast-path** (below) — if an `atlas_region` cookie pins a region the map still knows, it routes there immediately and skips everything else. On this common path the email is **never hashed**.
+3. **Short-circuits a single region** — if only one region is configured, it routes there without probing (no ambiguity to resolve).
+4. **Hashes the email and fans out** — only when a real fan-out is needed. It computes `sha256(lower(email))` and forwards only the **hash** (the raw email never leaves the front-door) via a parallel `POST /api/v1/auth/region-probe` to every region with `{ "emailHash": "<64-hex sha256>" }`. Each region answers only `{ "exists": true | false }` about its **own** identity store.
+5. **Collects the hits.** One hit → `single`. More than one → `multiple`. Zero clean hits → `none`. If any region was unreachable, the result is `error` (retryable) rather than a false "no account".
+
+The match runs entirely inside Postgres against a `pgcrypto` functional index (`encode(digest(lower(email), 'sha256'), 'hex')`), so plaintext emails never leave the database.
+
+## The `atlas_region` cookie fast-path
+
+Once a user has selected a region (during signup or a prior login), Atlas persists `{ region, apiUrl }` in an `atlas_region` cookie (one-year lifetime). On the common same-browser return visit, this short-circuits the whole fan-out: the front-door reads the cookie's **region key**, re-resolves it to the **authoritative** `apiUrl` from the region map, and routes there without operating the existence oracle at all.
+
+<Callout type="warn" title="The cookie's apiUrl is never trusted">
+The `atlas_region` cookie is client-writable, so only its **region key** is honored. The actual API base is always re-derived from the server's region map — a tampered cookie can never repoint authenticated traffic at an attacker-controlled host. A stale cookie (a region that was removed) falls through to the cold fan-out. This same validation governs the pre-auth API base during signup; see [Self-Serve Signup](/guides/signup#region-selection).
+</Callout>
+
+The cookie is also what makes the rest of the session regional: the auth client reads it at load and binds its base URL to the region's API, so every credentialed call rides the host-only, same-site session cookie for that region (see [host-only session cookies](/deployment/authentication#cross-origin-deployment-self-hosted)).
+
+## Same email = two accounts
+
+Because identity is fully regional, **the same email address in two regions is two independent accounts** — separate `user.id`, separate credentials, separate workspaces — tied together only by the email string. This is a deliberate consequence of having no global membership store (ADR-0024 §6).
+
+When the front-door's probe fan-out finds the email in more than one region (`multiple`), the login page presents a **region chooser**. Picking a region routes the browser to that region's API and authenticates there. Each region is its own account, so:
+
+- Credentials, passkeys, and sessions do not carry across regions.
+- The in-session workspace switcher is **region-scoped** — it lists only the workspaces in the region you signed into.
+- Switching to a workspace in another region means signing in again against that region.
+
+A single sign-in that spans regions (an in-session step-up that mints a second regional session) is a possible future enhancement, not part of launch.
+
+## Security model
+
+The region probe is an **account-existence oracle** — exactly like any forgot-password flow, it can confirm whether a guessed address is registered. Atlas does not pretend otherwise; it bounds the exposure:
+
+- **Hash-only input.** `POST /api/v1/auth/region-probe` accepts *only* a 64-character lowercase hex sha256, never a raw email, so it can confirm a guessed address but can't be used to harvest a region's email list.
+- **Boolean-only output.** The probe returns just `{ exists }`.
+- **No global store.** The email→region mapping is computed transiently per request; each region only ever checks its own `user` table.
+- **Rate-limited at two layers.** The `app.useatlas.dev` front-door rate-limits per client IP (the primary per-user control), keying on the leftmost `X-Forwarded-For` hop set by the platform edge; every regional probe additionally rate-limits per IP as a backstop. For the regional probe's per-IP limit to key on the real client IP, set [`ATLAS_TRUST_PROXY=true`](/deployment/authentication#rate-limiting) on the regional APIs.
+
+## Related
+
+- [Self-Serve Signup](/guides/signup) — the new-user flow, where the region is chosen before account creation
+- [Authentication](/deployment/authentication) — auth modes, sessions, and host-only cookies
+- [Data Residency](/platform-ops/data-residency) — operator-side region configuration and migration
+- [ADR-0024: Regional identity isolation](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0024-regional-identity-isolation.md) — the architecture decision behind this flow

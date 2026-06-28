@@ -1045,10 +1045,9 @@ const getRegionsRoute = createRoute({
       description: "Available regions",
       content: { "application/json": { schema: OnboardingRegionsResponseSchema } },
     },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
-    },
+    // No 401: `/regions` is PUBLIC (pre-auth) under ADR-0024 §4 — the region
+    // picker renders before any Better Auth session exists, so an
+    // authentication-required response is unreachable here.
     404: {
       description: "Onboarding requires managed auth mode",
       content: { "application/json": { schema: ErrorSchema } },

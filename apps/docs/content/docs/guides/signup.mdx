@@ -21,17 +21,24 @@ On [app.useatlas.dev](https://app.useatlas.dev), signup is available immediately
 
 ## How It Works
 
-The signup wizard is a five-step flow at `/signup`:
+The signup wizard is a step-by-step flow that starts at `/signup`. The order is **email → region → create account → name workspace → connect database → done**:
 
 | Step | Route | What happens |
 |------|-------|-------------|
-| 1. **Create account** | `/signup` | Email/password or OAuth (Google, GitHub, Microsoft) |
-| 2. **Name workspace** | `/signup/workspace` | Workspace name + auto-generated slug (max 48 chars) |
-| 3. **Choose region** | `/signup/region` | Select where workspace data is stored (SaaS only) |
-| 4. **Connect database** | `/signup/connect` | Paste a PostgreSQL or MySQL URL, test it, save |
-| 5. **Done** | `/signup/success` | Confirmation with next steps |
+| 1. **Enter email** | `/signup` | Work email entry. This is an identifier, **not** an account write yet — collecting it first lets Atlas point the browser at the right regional API before anything is created (and detect an existing account to divert to login) |
+| 2. **Choose region** | `/signup/region` | Select where workspace data is stored (SaaS multi-region only — skipped otherwise). Selecting a region repoints the browser at that region's API base *before* the first identity write |
+| 3. **Create account** | `/signup/account` | Email/password or OAuth (Google, GitHub, Microsoft), then email verification via a one-time code |
+| 4. **Name workspace** | `/signup/workspace` | Workspace name + auto-generated slug (max 48 chars) |
+| 5. **Connect database** | `/signup/connect` | Paste a PostgreSQL or MySQL URL, test it, save |
+| 6. **Done** | `/signup/success` | Confirmation with next steps |
 
 Each step validates before allowing the user to proceed. The database URL is tested against the live server before being saved.
+
+<Callout type="info" title="Region comes before account creation">
+The region step appears only when data residency is configured (the hosted SaaS with more than one region). When it is **not** configured — self-hosted, or a single-region SaaS — the region step is skipped entirely and signup is a five-step flow (email → create account → name workspace → connect → done).
+
+The ordering is deliberate: under [regional identity isolation (ADR-0024)](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0024-regional-identity-isolation.md) each region is a fully independent stack with its own identity store, so the region must be chosen **before** the first account write — the workspace is created in the region of the API that serves it. See [Multi-Region Login](/guides/multi-region-login) for how returning users are routed back to their region.
+</Callout>
 
 ---
 
@@ -62,7 +69,7 @@ The freemium-domain denylist lives in code at `packages/api/src/lib/auth/busines
 Region selection appears only when data residency is configured on the platform. Self-hosted deployments and platforms without residency configured skip this step automatically.
 </Callout>
 
-In step 3, new users choose a data region for their workspace. This determines where all workspace data (conversations, audit logs, cached results) is physically stored.
+In the region step (step 2, right after email entry), new users choose a data region for their workspace. This determines where all workspace data (conversations, audit logs, cached results) is physically stored.
 
 ### Available Regions
 
@@ -84,11 +91,15 @@ The platform's default region is pre-selected. Users can choose a different regi
 
 ### How It Works
 
-1. The page loads available regions from `GET /api/v1/onboarding/regions`
-2. If residency is not configured (`configured: false`), the step is skipped and the user proceeds directly to database connection
+1. The page loads available regions from `GET /api/v1/onboarding/regions` — a **public, pre-auth** endpoint, because the picker renders before any account (and therefore any session) exists
+2. If residency is not configured (`configured: false`), the step is skipped and the user proceeds directly to account creation on the single API base
 3. The user selects a region and clicks **Continue**
-4. The selection is saved via `POST /api/v1/onboarding/assign-region`
-5. The user proceeds to the database connection step
+4. Selecting a region **repoints the browser's API base** at that region's `apiUrl` and persists the choice in an `atlas_region` cookie. There is no server round-trip — under [regional identity isolation (ADR-0024)](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0024-regional-identity-isolation.md) the region is chosen before the first identity write, so there is no session yet to assign. The page then performs a full reload so the auth client rebuilds against the regional API
+5. Account creation, email verification, workspace naming, and database connection then all run against that regional API. The workspace's region is stamped from the API process's own `ATLAS_API_REGION` when the workspace is created — **the region a workspace lives in is the region of the API that created it**, by construction, not a value posted from the browser
+
+<Callout type="info" title="What happened to POST /api/v1/onboarding/assign-region?">
+Earlier builds saved the region with a `POST /api/v1/onboarding/assign-region` call after account creation. That post-hoc assignment is gone: the region is now established **before** the account exists, by repointing the API base via the `atlas_region` cookie. The `assign-region` endpoint still exists but is reduced to an idempotent confirmation of the ambient region stamp — the signup wizard no longer calls it.
+</Callout>
 
 ---
 
@@ -122,7 +133,7 @@ See [Social Providers](/guides/social-providers) for detailed OAuth setup instru
 
 ## Database Connection
 
-In step 4, the user pastes a database URL (`postgresql://` or `mysql://`). The wizard:
+In the connect step (step 5 with the region step, step 4 without it), the user pastes a database URL (`postgresql://` or `mysql://`). The wizard:
 
 1. **Validates the URL scheme** — only PostgreSQL and MySQL are supported
 2. **Tests connectivity** — creates a temporary connection, runs a health check, reports latency
@@ -151,8 +162,8 @@ The onboarding API is mounted at `/api/v1/onboarding`. All endpoints require man
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/social-providers` | None | List enabled OAuth providers |
-| `GET` | `/regions` | Session | List available data regions (returns `configured`, `defaultRegion`, `availableRegions`) |
-| `POST` | `/assign-region` | Session | Assign workspace to a data region (body: `{ region }`) |
+| `GET` | `/regions` | None | List available data regions (returns `configured`, `defaultRegion`, `availableRegions`). Public/pre-auth so the picker renders before signup |
+| `POST` | `/assign-region` | Session | Idempotent confirmation of the workspace's ambient region stamp. Retained for back-compat — the signup wizard no longer calls it (region is set by the regional API at workspace creation) |
 | `POST` | `/test-connection` | Session | Test a database URL without saving |
 | `POST` | `/complete` | Session | Save connection and finalize workspace setup |
 
@@ -270,6 +281,7 @@ Signup creates your first workspace. If you later need another one — a separat
 ## See Also
 
 - [Authentication](/deployment/authentication) — Auth mode setup and configuration
+- [Multi-Region Login](/guides/multi-region-login) — How returning users are routed back to their workspace's region
 - [Social Providers](/guides/social-providers) — Detailed OAuth setup per provider
 - [Admin Console](/guides/admin-console) — Manage connections and users after signup
 - [Create a Workspace](/guides/create-organization) — Add another workspace post-signup

@@ -13,6 +13,7 @@
     "actions",
     "social-providers",
     "signup",
+    "multi-region-login",
     "create-organization",
     "semantic-layer-wizard",
     "semantic-editor",

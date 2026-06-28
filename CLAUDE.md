@@ -175,9 +175,13 @@ bun run atlas-operator -- ops backfill-crm-leads [--dry-run] [--batch-size 500] 
 # run ad-hoc by an operator AND as the post-deploy staging-smoke gate:
 bun run atlas-operator -- ops smoke-crm --personas <path> [--wipe-twenty] [--twenty-base-url <url>] \
   [--twenty-api-key <key>] [--timeout-seconds 60] [--database-url <url>]
+# Surgically tear down throwaway /verify-prod-signup accounts (user+org+Stripe customer)
+# from ONE region's internal DB. DRY RUN by default; EXECUTE = ATLAS_TEARDOWN_OK=1 + --confirm:
+ATLAS_TEARDOWN_OK=1 bun run atlas-operator -- ops teardown-verify-accounts \
+  --region <us|eu|apac> --email <addr[,addr]> --confirm [--dry-run] [--force]
 ```
 
-`ops wipe` is the only subcommand that wipes the tenant DB: requires **both** `ATLAS_WIPE_OK=1` **and** `--confirm` (intentional double-gate). No backup is taken — wrap with `pg_dump` yourself. Operates on one DB per invocation. `ops smoke-crm` is an end-to-end verification of the demo→Twenty lead-capture pipeline — run ad-hoc by an operator and as the post-deploy Staging Smoke gate (`.github/workflows/staging-smoke.yml`), though not per-PR CI; its optional `--wipe-twenty` phase clears the Twenty workspace and is double-gated by `ATLAS_SMOKE_WIPE_OK=1`. One-shot migration backfills live next to their migration in `db/migrations/scripts/`.
+`ops wipe` is the only subcommand that wipes the tenant DB: requires **both** `ATLAS_WIPE_OK=1` **and** `--confirm` (intentional double-gate). No backup is taken — wrap with `pg_dump` yourself. Operates on one DB per invocation. `ops smoke-crm` is an end-to-end verification of the demo→Twenty lead-capture pipeline — run ad-hoc by an operator and as the post-deploy Staging Smoke gate (`.github/workflows/staging-smoke.yml`), though not per-PR CI; its optional `--wipe-twenty` phase clears the Twenty workspace and is double-gated by `ATLAS_SMOKE_WIPE_OK=1`. `ops teardown-verify-accounts` is the only subcommand that targets a **region's internal DB** (resolved from `ATLAS_REGION_<R>_DB_URL` via `--region`, or an explicit `--database-url`) rather than the tenant DB — there is **no `DATABASE_URL` fallback** (so you can't tear down the wrong DB by forgetting the flag); DRY RUN by default, EXECUTE double-gated by `ATLAS_TEARDOWN_OK=1` + `--confirm`, with a 12-workspace blast-radius cap and a plus-addressing guard (`--force` to override). One-shot migration backfills live next to their migration in `db/migrations/scripts/`.
 
 ## Architecture
 

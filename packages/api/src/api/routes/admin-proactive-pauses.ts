@@ -27,15 +27,11 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   AuthContext,
   ProactiveGate,
+  ProactiveService,
   RequestContext,
 } from "@atlas/api/lib/effect/services";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import {
-  expirePauses,
-  isPaused,
-  persistPause,
-} from "@atlas/api/lib/proactive/pause-registry";
 import { AuthErrorSchema, ErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -186,13 +182,12 @@ adminProactivePauses.openapi(getPauseStatusRoute, async (c) =>
       // surfaces as a 500 instead of silently rendering "kill switch
       // active" to the UI. See `isPaused` doc for the runtime-vs-admin
       // posture split.
-      const decision = yield* Effect.promise(() =>
-        isPaused({
-          workspaceId: orgId,
-          channelId: WORKSPACE_PROBE_CHANNEL,
-          failOpenOnError: true,
-        }),
-      );
+      const proactiveSvc = yield* ProactiveService;
+      const decision = yield* proactiveSvc.isPaused({
+        workspaceId: orgId,
+        channelId: WORKSPACE_PROBE_CHANNEL,
+        failOpenOnError: true,
+      });
       const workspaceKillActive = decision.layer === "workspace-kill";
       return c.json(
         {
@@ -244,24 +239,21 @@ adminProactivePauses.openapi(enableKillSwitchRoute, async (c) =>
       // as "kill already on" — that would skip the INSERT, return ok,
       // and leave the admin thinking the kill switch is live when no
       // row exists.
-      const status = yield* Effect.promise(() =>
-        isPaused({
-          workspaceId: orgId,
-          channelId: WORKSPACE_PROBE_CHANNEL,
-          failOpenOnError: true,
-        }),
-      );
+      const proactiveSvc = yield* ProactiveService;
+      const status = yield* proactiveSvc.isPaused({
+        workspaceId: orgId,
+        channelId: WORKSPACE_PROBE_CHANNEL,
+        failOpenOnError: true,
+      });
       if (status.layer !== "workspace-kill") {
-        yield* Effect.promise(() =>
-          persistPause({
-            workspaceId: orgId,
-            channelId: null,
-            userId: null,
-            layer: "workspace-kill",
-            durationMs: null,
-            requestedAt: Date.now(),
-          }),
-        );
+        yield* proactiveSvc.persistPause({
+          workspaceId: orgId,
+          channelId: null,
+          userId: null,
+          layer: "workspace-kill",
+          durationMs: null,
+          requestedAt: Date.now(),
+        });
         log.info(
           { orgId, requestId, actorId: user?.id },
           "Proactive: workspace-wide kill switch ENABLED",
@@ -308,9 +300,11 @@ adminProactivePauses.openapi(liftKillSwitchRoute, async (c) =>
           200,
         );
       }
-      yield* Effect.promise(() =>
-        expirePauses({ workspaceId: orgId, layer: "workspace-kill" }),
-      );
+      const proactiveSvc = yield* ProactiveService;
+      yield* proactiveSvc.expirePauses({
+        workspaceId: orgId,
+        layer: "workspace-kill",
+      });
       log.info(
         { orgId, requestId, actorId: user?.id },
         "Proactive: workspace-wide kill switch LIFTED",

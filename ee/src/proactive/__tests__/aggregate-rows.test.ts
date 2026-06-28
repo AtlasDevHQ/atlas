@@ -9,7 +9,8 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { aggregateRows, type ProactiveMeterRow } from "../answer-meter";
+import { aggregateRows } from "../answer-meter";
+import type { ProactiveMeterRow } from "@atlas/api/lib/proactive/answer-meter";
 
 function row(overrides: Partial<ProactiveMeterRow> = {}): ProactiveMeterRow {
   return {

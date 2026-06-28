@@ -31,6 +31,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -38,10 +39,9 @@ import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import { requireFeatureEntitlementOrThrow } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
-import { announceActivation } from "@atlas/api/lib/proactive/announcement-coordinator";
-import { getChatAnnouncer } from "@atlas/api/lib/proactive/announcer-registry";
-import { listWorkspaceChannels } from "@atlas/api/lib/proactive/channel-directory";
+import { ProactiveService } from "@atlas/api/lib/effect/services";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -544,12 +544,25 @@ adminProactive.openapi(updateWorkspaceRoute, async (c) =>
         !wasEnabled &&
         updated.announcement_channel_id !== null
       ) {
+        // Capture the narrowed (non-null) channel id before the closure —
+        // TS drops property-access narrowing across the Effect.gen boundary.
+        const announcementChannelId = updated.announcement_channel_id;
         try {
-          const outcome = await announceActivation({
-            workspaceId: orgId,
-            channelId: updated.announcement_channel_id,
-            announcer: getChatAnnouncer(),
-          });
+          // Proactive logic lives in `@atlas/ee/proactive` and is reached
+          // through the `ProactiveService` Tag. This `runHandler` route
+          // can't `yield*` the Tag directly, so it bridges via
+          // `runEnterprise` (the established non-Effect → EE-Tag path used
+          // by admin-router / middleware / wizard). The EE impl resolves
+          // the registered `ChatAnnouncer` internally (#3999).
+          const outcome = await runEnterprise(
+            Effect.gen(function* () {
+              const proactiveSvc = yield* ProactiveService;
+              return yield* proactiveSvc.announceActivation({
+                workspaceId: orgId,
+                channelId: announcementChannelId,
+              });
+            }),
+          );
           if (outcome.posted) {
             log.info(
               { requestId, orgId, channelId: updated.announcement_channel_id },
@@ -630,8 +643,16 @@ adminProactive.openapi(listAvailableChannelsRoute, async (c) =>
       // Read-only platform lookup; no audit row (matches the other GETs).
       // The channel-directory port (#3463) resolves the workspace's chat
       // platform and short-TTL-caches successful listings (#3461), so
-      // concurrent admin page loads cost one platform call per TTL.
-      const result = await listWorkspaceChannels(orgId);
+      // concurrent admin page loads cost one platform call per TTL. The
+      // directory logic lives in `@atlas/ee/proactive`; this `runHandler`
+      // route reaches it through the `ProactiveService` Tag via
+      // `runEnterprise` (#3999).
+      const result = await runEnterprise(
+        Effect.gen(function* () {
+          const proactiveSvc = yield* ProactiveService;
+          return yield* proactiveSvc.listWorkspaceChannels(orgId);
+        }),
+      );
       if (!result.ok) {
         // Platform-side failure or no installation. Soft-degrade — the
         // picker falls back to manual entry. The raw platform error

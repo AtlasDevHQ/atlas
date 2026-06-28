@@ -21,7 +21,7 @@ import { listChannels } from "@atlas/api/lib/slack/api";
 import type {
   ChannelDirectoryProvider,
   ChannelDirectoryResult,
-} from "@atlas/api/lib/proactive/channel-directory";
+} from "@atlas/api/lib/proactive/types";
 
 export const slackChannelDirectoryProvider: ChannelDirectoryProvider = {
   async listWorkspaceChannels(workspaceId: string): Promise<ChannelDirectoryResult> {

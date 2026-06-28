@@ -28,25 +28,17 @@
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { PauseLayer, PauseDecision } from "@useatlas/types";
+import type { PauseRow, PauseWriteInput } from "@atlas/api/lib/proactive/types";
 
 const log = createLogger("proactive:pause-registry");
 
-// Re-export so existing consumers (`import { PauseLayer } from
-// "@atlas/api/lib/proactive/pause-registry"`) keep working. Canonical
-// definition lives in `@useatlas/types/proactive` — the post-1.5.0
-// polish unified the wire types so plugin + API can't drift.
+// `PauseLayer` / `PauseDecision` are the canonical wire shapes; the
+// `PauseRow` projection + `PauseWriteInput` write shape are CORE-resident
+// (`@atlas/api/lib/proactive/types`) so the pauses route + the
+// `ProactiveService` Tag can reference them without importing `@atlas/ee`
+// (#3999). Re-exported here so co-located tests keep their import path.
 export type { PauseLayer, PauseDecision };
-
-/** Row shape read from `proactive_pauses`. */
-export interface PauseRow {
-  id: string;
-  workspaceId: string;
-  channelId: string | null;
-  userId: string | null;
-  layer: PauseLayer;
-  /** Epoch ms when the row expires; `null` = indefinite. */
-  expiresAt: number | null;
-}
+export type { PauseRow, PauseWriteInput };
 
 // ---------------------------------------------------------------------------
 // Pure precedence resolver
@@ -254,19 +246,6 @@ export async function isPaused(input: {
 // ---------------------------------------------------------------------------
 // Writes
 // ---------------------------------------------------------------------------
-
-export interface PauseWriteInput {
-  workspaceId: string;
-  /** Required for channel-scoped layers; null for workspace/user. */
-  channelId: string | null;
-  /** Required for `user-optout`; null otherwise. */
-  userId: string | null;
-  layer: PauseLayer;
-  /** ms from `requestedAt`; null means indefinite. */
-  durationMs: number | null;
-  /** Epoch ms baseline for `expires_at`. */
-  requestedAt: number;
-}
 
 /**
  * Insert a pause row.

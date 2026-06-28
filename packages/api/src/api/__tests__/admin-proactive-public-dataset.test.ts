@@ -20,11 +20,16 @@ import {
 import type {
   PublicDatasetEntry,
   PublicRefusedRollupRow,
-} from "@atlas/api/lib/proactive/public-dataset";
+} from "@atlas/api/lib/proactive/types";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
 // ---------------------------------------------------------------------------
-// Public-dataset module mock
+// Public-dataset fns
+//
+// After #3999 the public-dataset implementation moved to
+// `@atlas/ee/proactive`; the route reaches it via the `ProactiveService`
+// Tag, so we supply these fakes through the mocked EELayer below (no
+// per-lib-module mock).
 // ---------------------------------------------------------------------------
 
 const mockGetAllowlist: Mock<(workspaceId: string) => Promise<PublicDatasetEntry[]>> = mock(
@@ -40,20 +45,10 @@ const mockSummarizeRefused: Mock<
   (workspaceId: string, sinceMs: number) => Promise<PublicRefusedRollupRow[]>
 > = mock(async () => []);
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const realPublicDataset = require("@atlas/api/lib/proactive/public-dataset") as typeof import("@atlas/api/lib/proactive/public-dataset");
-
-mock.module("@atlas/api/lib/proactive/public-dataset", () => ({
-  ...realPublicDataset,
-  getAllowlist: mockGetAllowlist,
-  addEntry: mockAddEntry,
-  removeEntry: mockRemoveEntry,
-  summarizePublicRefused: mockSummarizeRefused,
-}));
-
 // ---------------------------------------------------------------------------
-// Enterprise gate — post-#2572 (slice 10/11) the route yields the
-// `ProactiveGate` Tag from EELayer. Default-on; flip to drive the 403 path.
+// Enterprise gate + ProactiveService — the route yields `ProactiveGate`
+// (gate) + `ProactiveService` (CRUD) from EELayer. Default-on; flip
+// `enterpriseEnabled` to drive the 403 path.
 // ---------------------------------------------------------------------------
 
 let enterpriseEnabled = true;
@@ -78,16 +73,27 @@ mock.module("@atlas/ee/layers", () => {
         const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { EnterpriseError } = require("@atlas/api/lib/effect/errors") as typeof import("@atlas/api/lib/effect/errors");
-        return Layer.succeed(services.ProactiveGate, {
+        const gate = Layer.succeed(services.ProactiveGate, {
           requireEnabled: () =>
             enterpriseEnabled
-              ? effectMod.Effect.void
-              : effectMod.Effect.fail(
+              ? E.void
+              : E.fail(
                   new EnterpriseError(
                     "Enterprise features (proactive-chat) are not enabled.",
                   ),
                 ),
         });
+        const proactive = services.createProactiveServiceTestLayer({
+          getAllowlist: (workspaceId: string) =>
+            E.promise(() => mockGetAllowlist(workspaceId)),
+          addEntry: (workspaceId: string, entityName: string, denyMetrics: string[]) =>
+            E.promise(() => mockAddEntry(workspaceId, entityName, denyMetrics)),
+          removeEntry: (workspaceId: string, entityName: string) =>
+            E.promise(() => mockRemoveEntry(workspaceId, entityName)),
+          summarizePublicRefused: (workspaceId: string, sinceMs: number) =>
+            E.promise(() => mockSummarizeRefused(workspaceId, sinceMs)),
+        });
+        return Layer.mergeAll(gate, proactive);
       }),
     ),
   };

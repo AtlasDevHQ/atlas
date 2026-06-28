@@ -23,40 +23,22 @@
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { ProactiveReviewVerdict } from "@atlas/api/lib/proactive/answer-meter";
+import {
+  PROACTIVE_REVIEW_VERDICTS,
+  type UpsertReviewInput,
+  type UpsertReviewResult,
+} from "@atlas/api/lib/proactive/types";
 
 const log = createLogger("proactive:classification-review");
 
-// Re-export so existing consumers keep their import path. Canonical
-// definition lives in `answer-meter.ts` alongside the meter row + event
-// types — a single source of truth keeps the union from drifting
-// across two structurally-identical declarations.
-export type { ProactiveReviewVerdict };
-
-export const PROACTIVE_REVIEW_VERDICTS: readonly ProactiveReviewVerdict[] = [
-  "misfire",
-  "correct",
-  "unsure",
-];
-
-export interface UpsertReviewInput {
-  workspaceId: string;
-  messageId: string;
-  verdict: ProactiveReviewVerdict;
-  reviewerUserId: string | null;
-  note: string | null;
-}
-
-export interface UpsertReviewResult {
-  workspaceId: string;
-  messageId: string;
-  verdict: ProactiveReviewVerdict;
-  reviewerUserId: string | null;
-  note: string | null;
-  /** Previous verdict on this `(workspaceId, messageId)` — null on first write. */
-  previousVerdict: ProactiveReviewVerdict | null;
-  createdAt: string;
-  updatedAt: string;
-}
+// The verdict union, the verdict constant, and the upsert input/result
+// shapes are CORE-resident (`@atlas/api/lib/proactive/types`, with the
+// `ProactiveReviewVerdict` union next to the `AnswerMeter` Tag in
+// `answer-meter.ts`) so the events route + the `ProactiveService` Tag
+// can reference them without importing `@atlas/ee` (#3999). Re-exported
+// here so co-located tests keep importing them from this module.
+export type { ProactiveReviewVerdict, UpsertReviewInput, UpsertReviewResult };
+export { PROACTIVE_REVIEW_VERDICTS };
 
 interface ReviewDbRow {
   workspace_id: string;

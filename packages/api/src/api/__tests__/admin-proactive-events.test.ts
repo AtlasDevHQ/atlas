@@ -26,7 +26,7 @@ import type {
 import type {
   UpsertReviewInput,
   UpsertReviewResult,
-} from "@atlas/api/lib/proactive/classification-review";
+} from "@atlas/api/lib/proactive/types";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
 // ---------------------------------------------------------------------------
@@ -90,19 +90,9 @@ const mockReviewSummary: Mock<
   (workspaceId: string, sinceMs: number) => Promise<ProactiveReviewSummary>
 > = mock(async () => baseReviewSummary);
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const realAnswerMeter = require("@atlas/api/lib/proactive/answer-meter") as typeof import("@atlas/api/lib/proactive/answer-meter");
-mock.module("@atlas/api/lib/proactive/answer-meter", () => ({
-  ...realAnswerMeter,
-  listMeterEvents: mockListEvents,
-  summarizeReviewVerdicts: mockReviewSummary,
-  AnswerMeterLive: realAnswerMeter.createAnswerMeterTestLayer({
-    listEvents: mockListEvents,
-    reviewSummary: mockReviewSummary,
-  }),
-}));
-
 // classification-review — verdict upsert + classify-row existence guard.
+// After #3999 these reach the route through the `ProactiveService` Tag
+// (provided by the mocked EELayer below) rather than a per-module mock.
 const mockUpsertReview: Mock<
   (input: UpsertReviewInput) => Promise<UpsertReviewResult>
 > = mock(async (input) => ({
@@ -118,14 +108,6 @@ const mockUpsertReview: Mock<
 const mockLookupChannel: Mock<
   (workspaceId: string, messageId: string) => Promise<string | null>
 > = mock(async () => "C-alpha");
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const realReview = require("@atlas/api/lib/proactive/classification-review") as typeof import("@atlas/api/lib/proactive/classification-review");
-mock.module("@atlas/api/lib/proactive/classification-review", () => ({
-  ...realReview,
-  upsertClassificationReview: mockUpsertReview,
-  lookupClassifyChannel: mockLookupChannel,
-}));
 
 // Internal DB — `createApiTestMocks` owns the canonical
 // `@atlas/api/lib/db/internal` mock for this file (it re-installs the
@@ -181,16 +163,27 @@ mock.module("@atlas/ee/layers", () => {
         const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { EnterpriseError } = require("@atlas/api/lib/effect/errors") as typeof import("@atlas/api/lib/effect/errors");
-        return Layer.succeed(services.ProactiveGate, {
+        const gate = Layer.succeed(services.ProactiveGate, {
           requireEnabled: () =>
             enterpriseEnabled
-              ? effectMod.Effect.void
-              : effectMod.Effect.fail(
+              ? E.void
+              : E.fail(
                   new EnterpriseError(
                     "Enterprise features (proactive-chat) are not enabled.",
                   ),
                 ),
         });
+        const meter = services.createAnswerMeterTestLayer({
+          listEvents: mockListEvents,
+          reviewSummary: mockReviewSummary,
+        });
+        const proactive = services.createProactiveServiceTestLayer({
+          lookupClassifyChannel: (workspaceId: string, messageId: string) =>
+            E.promise(() => mockLookupChannel(workspaceId, messageId)),
+          upsertClassificationReview: (input) =>
+            E.promise(() => mockUpsertReview(input)),
+        });
+        return Layer.mergeAll(gate, meter, proactive);
       }),
     ),
   };

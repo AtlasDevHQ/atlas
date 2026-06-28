@@ -4,10 +4,7 @@
  * `migrate-pg.test.ts` once `TEST_DATABASE_URL` is set.
  */
 import { describe, expect, it } from "bun:test";
-import {
-  decidePauseFromRows,
-  type PauseRow,
-} from "@atlas/api/lib/proactive/pause-registry";
+import { decidePauseFromRows, type PauseRow } from "../pause-registry";
 
 const NOW = 1_000_000_000_000;
 const SOON = NOW + 60_000; // 1 min from "now"

@@ -36,47 +36,23 @@
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { AnnouncementOutcome } from "@useatlas/types";
+import type {
+  ChatAnnouncer,
+  AnnounceActivationInput,
+} from "@atlas/api/lib/proactive/types";
 
 const log = createLogger("proactive-announcement-coordinator");
 
-// Re-export so existing consumers keep their import paths. Canonical
-// shape lives in `@useatlas/types/proactive` — tagged union on
-// `reason` replaces the pre-polish `reason: string` so metrics
-// consumers can pivot on the rejection class without parsing the
-// message.
-export type { AnnouncementOutcome };
+// `AnnouncementOutcome` is the canonical wire shape; the `ChatAnnouncer`
+// port + `AnnounceActivationInput` write shape are CORE-resident
+// (`@atlas/api/lib/proactive/types`) so the `ProactiveService` Tag can
+// reference them without importing `@atlas/ee` (#3999). Re-exported here
+// so co-located tests + the announcer registry keep their import path.
+export type { AnnouncementOutcome, ChatAnnouncer, AnnounceActivationInput };
 
-// ---------------------------------------------------------------------------
-// Port / dependency shapes
-// ---------------------------------------------------------------------------
-
-/**
- * Minimal contract the coordinator needs from the chat plugin to post
- * one channel message. The real implementation in the chat plugin
- * fans this out to `adapter.postChannelMessage(channelId, ...)`; tests
- * can pass a noop stub.
- *
- * Returns `{ ok: true }` on success or `{ ok: false, reason }` so the
- * coordinator can decide whether to stamp the DB. We avoid raising —
- * announcer implementations are responsible for translating their
- * platform errors into a structured "no" because the coordinator must
- * never crash the admin-config save path.
- */
-export interface ChatAnnouncer {
-  postChannelAnnouncement(input: {
-    /** Atlas workspace id (== org id) — surfaces in audit / logs. */
-    workspaceId: string;
-    /** Platform channel id (Slack `C…`, Teams `19:…`, etc). */
-    channelId: string;
-    /** Markdown body. Pre-rendered by `buildAnnouncementMessage`. */
-    markdown: string;
-  }): Promise<{ ok: true; messageId?: string } | { ok: false; reason: string }>;
-}
-
-// `AnnouncementOutcome` is now imported + re-exported from
-// `@useatlas/types`. The local declaration was removed in the
-// post-1.5.0 polish; the tagged-union shape catches the rejection
-// class at the type level (was a bare `reason: string` before).
+// `AnnouncementOutcome` is the tagged union on `reason` (replacing the
+// pre-polish `reason: string`) so metrics consumers can pivot on the
+// rejection class without parsing the message.
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exported for unit tests
@@ -116,14 +92,6 @@ export function buildAnnouncementMessage(): string {
 // ---------------------------------------------------------------------------
 // Coordinator
 // ---------------------------------------------------------------------------
-
-export interface AnnounceActivationInput {
-  workspaceId: string;
-  /** Channel id from `workspace_proactive_config.announcement_channel_id`. */
-  channelId: string;
-  /** Host-provided port. Pass an in-memory stub from tests. */
-  announcer: ChatAnnouncer;
-}
 
 /**
  * Post the activation announcement if (and only if) it has never been

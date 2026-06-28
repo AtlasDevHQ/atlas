@@ -122,6 +122,19 @@ describe("startOfMonthUTC", () => {
     const out = quota.startOfMonthUTC(new Date(Date.UTC(2027, 0, 5, 6, 0)));
     expect(out.toISOString()).toBe("2027-01-01T00:00:00.000Z");
   });
+
+  it("re-exports the canonical billing-period boundary (anti-drift, #3431/#3999)", async () => {
+    // The proactive cap and the token meter must never disagree on where a
+    // month starts. `quota.ts` re-exports `startOfMonthUTC` from
+    // `billing/period`; assert the identity so a future fork of the helper
+    // can't silently drift the proactive cutoff from billing's. Moved here
+    // (next to the relocated quota impl) from `billing/period.test.ts` so
+    // the core billing test stays free of an `@atlas/ee` import (#3999).
+    const { startOfMonthUTC: billingStart } = await import(
+      "@atlas/api/lib/billing/period"
+    );
+    expect(quota.startOfMonthUTC).toBe(billingStart);
+  });
 });
 
 // ---------------------------------------------------------------------------

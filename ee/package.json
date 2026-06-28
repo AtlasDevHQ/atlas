@@ -10,10 +10,12 @@
   },
   "dependencies": {
     "@atlas/api": "workspace:*",
+    "@useatlas/chat": "workspace:*",
     "@useatlas/twenty": "workspace:*",
     "@useatlas/types": "workspace:*",
     "@useatlas/webhook-publisher": "workspace:*",
     "effect": "^3.14.8",
-    "ipaddr.js": "^2.3.0"
+    "ipaddr.js": "^2.3.0",
+    "node-sql-parser": "^5.4.0"
   }
 }

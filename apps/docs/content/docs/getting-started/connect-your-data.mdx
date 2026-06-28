@@ -1,6 +1,6 @@
 ---
 title: Connect Your Data
-description: Connect Atlas to PostgreSQL, MySQL, BigQuery, ClickHouse, Snowflake, DuckDB, Salesforce, or any REST/OpenAPI service (Stripe, GitHub, Notion, Twenty).
+description: Connect Atlas to PostgreSQL, MySQL, BigQuery, ClickHouse, Snowflake, DuckDB, Elasticsearch, Salesforce, or any REST/OpenAPI service (Stripe, GitHub, Notion, Twenty).
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -8,7 +8,7 @@ import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 import { Steps, Step } from "fumadocs-ui/components/steps";
 import { Accordions, Accordion } from "fumadocs-ui/components/accordion";
 
-Atlas is a semantic layer for any query layer — SQL warehouses **and** REST/OpenAPI services — answered through one model and one safety pipeline. Atlas has built-in support for **PostgreSQL** and **MySQL**. Additional SQL datasources — **BigQuery**, **ClickHouse**, **Snowflake**, **DuckDB** (CSV/Parquet), and **Salesforce** — are available as plugins.
+Atlas is a semantic layer for any query layer — SQL warehouses **and** REST/OpenAPI services — answered through one model and one safety pipeline. Atlas has built-in support for **PostgreSQL** and **MySQL**. Additional SQL datasources — **BigQuery**, **ClickHouse**, **Snowflake**, **DuckDB** (CSV/Parquet), **[Elasticsearch / OpenSearch](/plugins/datasources/elasticsearch)**, and **Salesforce** — are available as plugins.
 
 You can also connect any **REST API with an OpenAPI 3.x spec** — **Stripe**, **GitHub**, **Notion**, **Twenty**, or your own service. The agent reads the spec into an operation graph and calls operations through the `executeRestOperation` tool, under the same read-only-by-default safety model as SQL. See the [OpenAPI (Generic REST) datasource](/plugins/datasources/openapi-generic) guide, or jump to [REST & OpenAPI APIs](#rest--openapi-apis) below.
 
@@ -830,6 +830,7 @@ Non-SELECT SQL (INSERT, UPDATE, DELETE, DROP, etc.) is always rejected. There is
 | ClickHouse | SQL validation + `readonly: 1` per-query setting |
 | Snowflake | SQL validation (use a SELECT-only role for defense-in-depth) |
 | DuckDB | SQL validation + `READ_ONLY` open mode |
+| [Elasticsearch](/plugins/datasources/elasticsearch) | SQL validation + Query DSL default-deny validator |
 | Salesforce | SOQL is inherently read-only |
 
 ### Recommended production settings

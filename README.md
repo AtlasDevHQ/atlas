@@ -133,7 +133,7 @@ The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `A
 | **Agent-native** | MCP server first — Claude Desktop, Cursor, Continue with `bunx @useatlas/mcp init` | Bolted-on AI feature | Standalone chat UI |
 | **Embeddable** | Script tag, React component, headless API, MCP, Slack, Teams | Standalone app | Standalone app |
 | **Deploy anywhere** | Docker, Railway, Vercel, or your own infra | Vendor-hosted | Vendor-hosted |
-| **Plugin ecosystem** | 21 plugins across 5 types — extend anything | Closed | Limited |
+| **Plugin ecosystem** | 24 plugins across 5 types — extend anything | Closed | Limited |
 | **Open source** | AGPL-3.0 core, MIT client libs | Proprietary | Varies |
 | **Multi-database** | PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Elasticsearch, Salesforce | Usually one | Usually one |
 | **REST APIs as datasources** | Stripe, GitHub, Notion, any OpenAPI spec — read like a datasource, write-gated; generic OpenAPI installs auto-refresh | None | None |
@@ -191,7 +191,7 @@ atlas/
 │   ├── types/            # @useatlas/types — Shared wire-format types
 │   ├── schemas/          # @useatlas/schemas — Shared Zod schemas
 │   └── plugin-sdk/       # @useatlas/plugin-sdk — Plugin type definitions
-├── plugins/              # 21 plugins (datasource, context, interaction, action, sandbox)
+├── plugins/              # 24 plugins (datasource, context, interaction, action, sandbox)
 ├── ee/                   # @atlas/ee — Enterprise features (source-available, commercial license)
 ├── create-atlas/         # Scaffolding CLI (bun create atlas-agent)
 ├── apps/

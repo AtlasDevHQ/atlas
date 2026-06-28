@@ -94,19 +94,21 @@ Crossing 100% of a $20/seat at-cost credit takes real token volume. Two levers t
       the Stripe meter value, and the cents↔$ reconciliation.
 - [ ] File any defect as a follow-up issue linked to #4003 / #3984 (bug + area: api/deploy).
 
-## Phase 6 — app-driven reporter soak (Stripe contract DONE; deployed-reporter run blocked on SSH key)
+## Phase 6 — app-driven reporter soak ✅ DONE 2026-06-28 (both Stripe contract + deployed reporter)
 
-**Done 2026-06-28 (Stripe contract, CLI):** the meter accepts Atlas's exact `meter_event`, dedups on `identifier` (dup rejected), aggregates to exactly the unique cents ($14.00 at 1¢/unit). Atlas sends exactly that shape (`overage-meter.ts:408`). See the #4003 comment.
+**Stripe contract (CLI):** the meter accepts Atlas's exact `meter_event`, dedups on `identifier` (dup rejected), aggregates to exactly the unique cents ($14.00 at 1¢/unit). Atlas sends exactly that shape (`overage-meter.ts:408`).
 
-**Ready but blocked:** a faithful run of the *deployed* `reportWorkspaceOverage` against the real staging ledger + sandbox Stripe. Harness `internal/soak-overage-reporter.ts` (gitignored) injects synthetic usage ($50 vs $20 credit → 3000¢) via `deps`, keeps the real `getReportedOverageCents`/`recordOverageReport`, so it writes only ONE throwaway `overage_meter_reports` row (`org_id=soak-4003-*`). Expected: `r1="reported"`, `led1=3000`, `r2="skipped"` (delta 0 → ledger idempotency), `led2=3000`.
+**Deployed reporter (in-container, PASSED):** ran the real `reportWorkspaceOverage` in api-staging against the real `overage_meter_reports` ledger + sandbox Stripe → `{"r1":"reported","led1":3000,"r2":"skipped","led2":3000}` (AC1 accrual + AC2 ledger idempotency, real runtime). AC3 (abuse-ceiling 429) is the separate enforcement path — unit-tested, not soaked.
 
-Staging's internal DB is private-network-only → must run **inside** api-staging. `railway ssh` needs a registered key first (`railway ssh keys github` or `railway ssh keys add`). Then:
+Harness `internal/soak-overage-reporter.ts` (gitignored) injects synthetic usage ($50 vs $20 credit → 3000¢) via `deps`, keeps the real ledger fns; writes only ONE throwaway `overage_meter_reports` row. **Must run inside packages/api** in-container (self-reference resolves `@atlas/api/*`; `node_modules/@atlas` doesn't exist). The staging internal DB is private-network-only → in-container only. `railway ssh` needs a registered key (`railway ssh keys github`, or generate + `railway ssh keys add -k ~/.ssh/<key>.pub`; remove after). To re-run:
 ```bash
 CUST=$(stripe customers create --project-name "atlas devhq sandbox" -d name=soak -d email=soak@example.com | jq -r .id)
 ORG="soak-4003-$(date +%s)"; PERIOD=$(date -u +%Y-%m-01T00:00:00.000Z)
 B64=$(base64 -w0 internal/soak-overage-reporter.ts)
-railway ssh -s api-staging -e staging -- "echo $B64 | base64 -d > /tmp/soak.ts && SOAK_CUST=$CUST SOAK_ORG=$ORG SOAK_PERIOD=$PERIOD bun /tmp/soak.ts"
-# verify $CUST meter summary == 3000; then delete the throwaway ledger row + the customer.
+# NOTE: cd /app/packages/api (NOT /tmp) so bun resolves @atlas/api via package self-reference.
+railway ssh -i ~/.ssh/<key> -s api-staging -e staging -- "cd /app/packages/api && echo $B64 | base64 -d > soak-tmp.ts && SOAK_CUST=$CUST SOAK_ORG=$ORG SOAK_PERIOD=$PERIOD bun soak-tmp.ts; rm -f soak-tmp.ts"
+# expect {"r1":"reported","led1":3000,"r2":"skipped","led2":3000}. Cleanup: delete the
+# overage_meter_reports row (in-container bun, same cd) + `stripe delete /v1/customers/$CUST` + remove the SSH key.
 ```
 
 ## Then (separate, human-only)

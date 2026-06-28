@@ -41,7 +41,7 @@ import { internalQuery } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
-import { ProactiveService } from "@atlas/api/lib/effect/services";
+import { ProactiveService, PROACTIVE_HOSTED_ONLY_MESSAGE } from "@atlas/api/lib/effect/services";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -377,19 +377,21 @@ adminProactive.use(requirePermission("admin:settings"));
  * `runEffect` + `yield* ProactiveGate`; this file's `runHandler`-based
  * handlers can't yield the Tag (ConditionalEELayer is async via the
  * lazy EE-layer import), so the equivalent sync check is inlined — it must
- * stay in lockstep with `ProactiveGate` (ee/src/proactive-gate.ts).
+ * stay in lockstep with `ProactiveGate` (ee/src/proactive-gate.ts). Both throw
+ * `EnterpriseError(PROACTIVE_HOSTED_ONLY_MESSAGE)` (shared constant so the copy
+ * can't drift); the resulting error carries the same `_tag` + payload as the Tag.
  *
  * Proactive is a hosted-SaaS-only feature (#3999): denied on every
  * self-hosted deployment, *including self-hosted enterprise*. Keys on
- * `resolveDeployMode() === "saas"`, not `isEnterpriseEnabled()`. The resulting
- * `EnterpriseError` has the same `_tag` + payload as the Tag.
+ * `resolveDeployMode() === "saas"`, not `isEnterpriseEnabled()`.
+ *
+ * Every route below pairs this with `requireFeatureEntitlementOrThrow(orgId,
+ * "proactive")` — the per-tier ladder (on SaaS, all paid plans, min `trial`;
+ * a no-op off-SaaS, where this gate is the sole arbiter). (#3999 / #4064 / #3984)
  */
 function gateProactiveAvailable(): void {
   if (resolveDeployMode() !== "saas") {
-    throw new EnterpriseError(
-      "Proactive monitoring is available only on Atlas Cloud (the hosted SaaS). " +
-        "It is not available on self-hosted deployments.",
-    );
+    throw new EnterpriseError(PROACTIVE_HOSTED_ONLY_MESSAGE);
   }
 }
 
@@ -398,9 +400,7 @@ adminProactive.openapi(getWorkspaceRoute, async (c) =>
   runHandler(c, "get proactive workspace config", async () => {
     const { orgId, requestId } = c.get("orgContext");
     gateProactiveAvailable();
-    // Per-tier ladder: on SaaS proactive is available to all paid plans (min
-    // `trial`). No-op off-SaaS, where gateProactiveAvailable() above is the
-    // gate. (#3999 / #4064 / #3984)
+    // Per-tier ladder (no-op off-SaaS — see gateProactiveAvailable above).
     await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     try {
@@ -438,9 +438,7 @@ adminProactive.openapi(updateWorkspaceRoute, async (c) =>
     const { orgId, requestId } = c.get("orgContext");
     const authResult = c.get("authResult");
     gateProactiveAvailable();
-    // Per-tier ladder: on SaaS proactive is available to all paid plans (min
-    // `trial`). No-op off-SaaS, where gateProactiveAvailable() above is the
-    // gate. (#3999 / #4064 / #3984)
+    // Per-tier ladder (no-op off-SaaS — see gateProactiveAvailable above).
     await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     const body = c.req.valid("json");
@@ -611,9 +609,7 @@ adminProactive.openapi(listChannelsRoute, async (c) =>
   runHandler(c, "list proactive channel overrides", async () => {
     const { orgId, requestId } = c.get("orgContext");
     gateProactiveAvailable();
-    // Per-tier ladder: on SaaS proactive is available to all paid plans (min
-    // `trial`). No-op off-SaaS, where gateProactiveAvailable() above is the
-    // gate. (#3999 / #4064 / #3984)
+    // Per-tier ladder (no-op off-SaaS — see gateProactiveAvailable above).
     await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     try {
@@ -643,9 +639,7 @@ adminProactive.openapi(listAvailableChannelsRoute, async (c) =>
   runHandler(c, "list available chat channels", async () => {
     const { orgId, requestId } = c.get("orgContext");
     gateProactiveAvailable();
-    // Per-tier ladder: on SaaS proactive is available to all paid plans (min
-    // `trial`). No-op off-SaaS, where gateProactiveAvailable() above is the
-    // gate. (#3999 / #4064 / #3984)
+    // Per-tier ladder (no-op off-SaaS — see gateProactiveAvailable above).
     await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     try {
@@ -701,9 +695,7 @@ adminProactive.openapi(upsertChannelRoute, async (c) =>
     const { orgId, requestId } = c.get("orgContext");
     const authResult = c.get("authResult");
     gateProactiveAvailable();
-    // Per-tier ladder: on SaaS proactive is available to all paid plans (min
-    // `trial`). No-op off-SaaS, where gateProactiveAvailable() above is the
-    // gate. (#3999 / #4064 / #3984)
+    // Per-tier ladder (no-op off-SaaS — see gateProactiveAvailable above).
     await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     const body = c.req.valid("json");
@@ -777,9 +769,7 @@ adminProactive.openapi(deleteChannelRoute, async (c) =>
     const { orgId, requestId } = c.get("orgContext");
     const authResult = c.get("authResult");
     gateProactiveAvailable();
-    // Per-tier ladder: on SaaS proactive is available to all paid plans (min
-    // `trial`). No-op off-SaaS, where gateProactiveAvailable() above is the
-    // gate. (#3999 / #4064 / #3984)
+    // Per-tier ladder (no-op off-SaaS — see gateProactiveAvailable above).
     await requireFeatureEntitlementOrThrow(orgId, "proactive");
 
     const { channelId } = c.req.valid("param");

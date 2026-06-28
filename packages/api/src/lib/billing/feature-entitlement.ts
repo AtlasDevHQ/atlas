@@ -91,12 +91,14 @@ export const FEATURE_ENTITLEMENTS: Readonly<Record<GatedFeature, MinPlanTier>> =
   // All-paid override (not the Business default): proactive is a hosted-SaaS
   // feature available to every paying plan, not a Business-tier differentiator
   // (#3999). Its minimum is `trial` — the lowest active SaaS tier (SaaS has no
-  // persistent `free` tier; `trial` is starter-equivalent), so every active
-  // SaaS workspace gets it and only the churn tier (`locked`) is denied.
+  // persistent `free` tier; `trial` is starter-equivalent), so every SaaS
+  // workspace with a resolved active tier gets it; only the churn tier
+  // (`locked`) — and any workspace with no resolved tier, which fails closed to
+  // `free` — is denied.
   // SaaS-exclusivity — self-hosted, *including* self-hosted-enterprise, is
   // denied — is enforced separately by the deployment-level gate (ProactiveGate
-  // / admin-proactive.ts `gateProactive`, keyed on `deployMode === "saas"`); the
-  // per-tier predicate here is a no-op off-SaaS.
+  // / admin-proactive.ts `gateProactiveAvailable`, keyed on `deployMode ===
+  // "saas"`); the per-tier predicate here is a no-op off-SaaS.
   proactive: "trial",
 };
 

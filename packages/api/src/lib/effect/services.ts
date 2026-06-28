@@ -2811,14 +2811,27 @@ export const NoopDomainsLayer: Layer.Layer<Domains> = Layer.sync(
 type EnterpriseErrorForProactive =
   import("@atlas/api/lib/effect/errors").EnterpriseError;
 
+/**
+ * Denial message for the proactive availability gate. Shared verbatim by the
+ * live EE gate (`ee/src/proactive-gate.ts:makeProactiveGateLive`) and the
+ * inlined sync gate (`api/routes/admin-proactive.ts:gateProactiveAvailable`),
+ * which must stay in lockstep (#3999) — a single constant so the two copies
+ * can't drift on wording.
+ */
+export const PROACTIVE_HOSTED_ONLY_MESSAGE =
+  "Proactive monitoring is available only on Atlas Cloud (the hosted SaaS). " +
+  "It is not available on self-hosted deployments.";
+
 export interface ProactiveGateShape {
-  /** Effect-style guard. `Effect.void` when enterprise is enabled,
+  /** Effect-style guard. `Effect.void` when proactive is available (the
+   * hosted SaaS — `resolveDeployMode() === "saas"`),
    * `Effect.fail(EnterpriseError)` otherwise. The route layer's
    * `classifyError` maps that to a 403 `enterprise_required` envelope.
    *
-   * Re-reads the enterprise flag on every call (Effect wrapper closes
-   * over the EE-side `isEnterpriseEnabled()`) so a runtime flip
-   * propagates without restart. */
+   * Re-reads the deploy mode on every call so a runtime change to
+   * `ATLAS_DEPLOY_MODE` propagates without restart. Hosted-SaaS-only
+   * (#3999): denied on every self-hosted deployment, including
+   * self-hosted enterprise. */
   readonly requireEnabled: () => Effect.Effect<
     void,
     EnterpriseErrorForProactive

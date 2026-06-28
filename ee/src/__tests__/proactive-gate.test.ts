@@ -14,18 +14,23 @@
  */
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";
-import { Effect, Either } from "effect";
+import { Effect, Either, Exit } from "effect";
 
 // ── Mutable mock state ──────────────────────────────────────────────
 let enterpriseEnabledConfig: boolean | undefined = true;
 let _hasInternalDB = true;
+// When set, `getConfig` throws — simulating a deploy-mode-resolution fault so
+// the fail-closed test can prove a throw never admits.
+let configThrows = false;
 
 // ── Register all mocks before any dynamic import ────────────────────
 mock.module("@atlas/api/lib/config", () => ({
-  getConfig: () =>
-    enterpriseEnabledConfig === undefined
+  getConfig: () => {
+    if (configThrows) throw new Error("getConfig boom (deploy-mode fault)");
+    return enterpriseEnabledConfig === undefined
       ? null
-      : { enterprise: { enabled: enterpriseEnabledConfig } },
+      : { enterprise: { enabled: enterpriseEnabledConfig } };
+  },
 }));
 
 mock.module("@atlas/api/lib/db/internal", () => ({
@@ -62,6 +67,7 @@ describe("makeProactiveGateLive — hosted-SaaS-only availability gate (#3999)",
   beforeEach(() => {
     enterpriseEnabledConfig = true;
     _hasInternalDB = true;
+    configThrows = false;
     delete process.env.ATLAS_DEPLOY_MODE;
     delete process.env.ATLAS_ENTERPRISE_ENABLED;
     // `auto` short-circuits to self-hosted under development; clear it so the
@@ -95,5 +101,17 @@ describe("makeProactiveGateLive — hosted-SaaS-only availability gate (#3999)",
     enterpriseEnabledConfig = true;
     _hasInternalDB = false;
     expect(Either.isLeft(runGate())).toBe(true);
+  });
+
+  it("fails closed (never admits) when resolveDeployMode throws", () => {
+    // A fault in deploy-mode resolution must never admit: `getConfig` throwing
+    // propagates through `isEnterpriseEnabled` → `resolveDeployMode`. The gate
+    // reads inside `Effect.suspend`, so the throw surfaces as an effect failure
+    // (defect → 500), never `Effect.void`. `runSyncExit` captures it without
+    // the throw escaping construction.
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    configThrows = true;
+    const exit = Effect.runSyncExit(makeProactiveGateLive().requireEnabled());
+    expect(Exit.isFailure(exit)).toBe(true);
   });
 });

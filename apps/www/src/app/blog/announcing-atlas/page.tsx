@@ -282,8 +282,9 @@ export default function AnnouncingAtlas() {
             headless API, and the MCP server
           </DefItem>
           <DefItem term="Eight integrations">
-            Six chat platforms — Slack live today; Teams, Discord, Telegram,
-            WhatsApp, and Google Chat wired — plus Linear and GitHub, also wired
+            Six chat platforms — Slack, Teams, Discord, Telegram, and WhatsApp
+            live today; Google Chat coming soon — plus Linear and GitHub, also
+            live
           </DefItem>
           <DefItem term="Enterprise controls">
             SSO (SAML/OIDC), SCIM provisioning, custom roles, IP allowlists,

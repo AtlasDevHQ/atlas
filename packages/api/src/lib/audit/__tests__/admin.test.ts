@@ -675,3 +675,139 @@ describe("logAdminAction() — trust-device identifier", () => {
     expect(metadata.trustDeviceIdentifier).toBe("trust-device-explicit");
   });
 });
+
+/**
+ * Agent origin on the admin audit row (#4044 / ADR-0026).
+ *
+ * `validateManaged` surfaces the session's `origin` marker onto
+ * `user.claims.origin`; the audit records it as `metadata.origin` so a
+ * workspace's datasource lifecycle ops run via `atlas datasource` (the CLI) are
+ * auditable as `origin=cli`. Sourced from the trusted session row, validated
+ * against the canonical origin vocabulary.
+ */
+describe("logAdminAction() — agent origin (origin=cli)", () => {
+  const origDbUrl = process.env.DATABASE_URL;
+
+  beforeEach(() => {
+    queryCalls = [];
+    queryThrow = null;
+  });
+
+  afterEach(() => {
+    if (origDbUrl) process.env.DATABASE_URL = origDbUrl;
+    else delete process.env.DATABASE_URL;
+    _resetPool(null);
+  });
+
+  function enableInternalDB() {
+    process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+    _resetPool(mockPool);
+  }
+
+  const cliUser: AtlasUser = {
+    id: "admin-1",
+    label: "admin@example.com",
+    mode: "managed",
+    role: "admin",
+    activeOrganizationId: "org-123",
+    claims: { origin: "cli" },
+  };
+
+  it("records origin=cli in metadata for a CLI-credentialed admin action", () => {
+    enableInternalDB();
+
+    withRequestContext({ requestId: "req-1", user: cliUser }, () => {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.connection.delete,
+        targetType: "connection",
+        targetId: "prod-us",
+        metadata: { name: "prod-us" },
+      });
+    });
+
+    expect(queryCalls).toHaveLength(1);
+    const metadata = JSON.parse(queryCalls[0].params![8] as string);
+    expect(metadata).toEqual({ origin: "cli", name: "prod-us" });
+  });
+
+  it("stamps origin=cli even with no caller metadata", () => {
+    enableInternalDB();
+
+    withRequestContext({ requestId: "req-1", user: cliUser }, () => {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.mode.archive,
+        targetType: "mode",
+        targetId: "prod-us",
+      });
+    });
+
+    const metadata = JSON.parse(queryCalls[0].params![8] as string);
+    expect(metadata).toEqual({ origin: "cli" });
+  });
+
+  it("leaves metadata null for a web session (no origin claim)", () => {
+    enableInternalDB();
+    const webUser: AtlasUser = { ...cliUser, claims: {} };
+
+    withRequestContext({ requestId: "req-1", user: webUser }, () => {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.mode.archive,
+        targetType: "mode",
+        targetId: "prod-us",
+      });
+    });
+
+    expect(queryCalls[0].params![8]).toBeNull();
+  });
+
+  it("ignores an unrecognized origin claim rather than stamping it", () => {
+    enableInternalDB();
+    const bogus: AtlasUser = { ...cliUser, claims: { origin: "totally-made-up" } };
+
+    withRequestContext({ requestId: "req-1", user: bogus }, () => {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.mode.archive,
+        targetType: "mode",
+        targetId: "prod-us",
+      });
+    });
+
+    expect(queryCalls[0].params![8]).toBeNull();
+  });
+
+  it("merges origin alongside trustDeviceIdentifier", () => {
+    enableInternalDB();
+
+    withRequestContext(
+      { requestId: "req-1", user: cliUser, trustDeviceIdentifier: "td-1" },
+      () => {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.connection.delete,
+          targetType: "connection",
+          targetId: "prod-us",
+        });
+      },
+    );
+
+    const metadata = JSON.parse(queryCalls[0].params![8] as string);
+    expect(metadata).toEqual({ trustDeviceIdentifier: "td-1", origin: "cli" });
+  });
+
+  it("a systemActor write never inherits a context origin claim", () => {
+    enableInternalDB();
+
+    withRequestContext({ requestId: "req-1", user: cliUser }, () => {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.audit_log.purgeCycle,
+        targetType: "audit_log",
+        targetId: "scheduler",
+        systemActor: "system:audit-purge-scheduler",
+        metadata: { softDeleted: 0 },
+      });
+    });
+
+    const metadata = JSON.parse(queryCalls[0].params![8] as string);
+    expect(metadata).toEqual({ softDeleted: 0 });
+    expect(metadata.origin).toBeUndefined();
+  });
+});

@@ -429,6 +429,32 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas migrate rollback abc123",
     ],
   },
+  datasource: {
+    description:
+      "Manage the datasources of your logged-in workspace over the Atlas API. Each command maps to an existing admin-connection route, authorized by your `atlas login` credential. Every command requires the workspace admin role (the admin-connection routes are admin-gated end to end). Requires `atlas login` first.",
+    usage: "datasource <command> [id] [--json]",
+    subcommands: [
+      { name: "list", description: "List the workspace's datasources" },
+      { name: "get <id>", description: "Show one datasource's detail" },
+      { name: "test <id>", description: "Health-check a datasource connection" },
+      { name: "archive <id>", description: "Archive a datasource (reversible via restore)" },
+      { name: "restore <id>", description: "Restore an archived datasource (republishes it)" },
+      { name: "delete <id>", description: "Delete a datasource (soft — recoverable via restore)" },
+    ],
+    flags: [{ flag: "--json", description: "Machine-readable JSON output" }],
+    examples: [
+      "atlas datasource list",
+      "atlas datasource get prod-us",
+      "atlas datasource test prod-us",
+      "atlas datasource archive old-staging",
+      "atlas datasource restore old-staging",
+    ],
+    notes: [
+      "Every datasource command requires the workspace admin role (admin/owner);",
+      "a non-admin member is denied with an actionable message.",
+      "Set ATLAS_API_URL to target a non-local Atlas API.",
+    ],
+  },
   plugin: {
     description: "Manage Atlas plugins.",
     usage: "plugin <list|create|add>",
@@ -621,6 +647,7 @@ export function printOverviewHelp(): void {
       "  login            Authenticate the CLI via the device flow (stores a session bearer)\n" +
       "  logout           Remove the stored CLI credentials\n" +
       "  entities         List semantic entities visible to your logged-in workspace\n" +
+      "  datasource       Manage your workspace's datasources (list, get, test, archive, restore, delete)\n" +
       "  validate         Validate config, semantic layer, and connectivity\n" +
       "  doctor           Alias for validate\n" +
       "  eval             Run eval pipeline against demo schemas\n" +

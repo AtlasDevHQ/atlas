@@ -510,6 +510,57 @@ describe("validateManaged()", () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // session origin claim (#4044 / ADR-0026) — surfaces `session.origin` onto
+  // claims so the admin audit can record `origin=cli` for CLI credentials.
+  // -------------------------------------------------------------------------
+
+  describe("session origin claim", () => {
+    it("surfaces session.origin='cli' onto claims.origin", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_123", email: "alice@example.com", role: "admin" },
+        session: { id: "sess_cli", userId: "usr_123", activeOrganizationId: "org-1", origin: "cli" },
+      });
+
+      const result = await validateManaged(makeRequest());
+
+      expect(result.authenticated).toBe(true);
+      if (result.authenticated && result.user) {
+        expect(result.user.claims?.origin).toBe("cli");
+      }
+    });
+
+    it("leaves claims.origin undefined for a normal web/login session", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_123", email: "alice@example.com", role: "admin" },
+        session: { id: "sess_web", userId: "usr_123", activeOrganizationId: "org-1" },
+      });
+
+      const result = await validateManaged(makeRequest());
+
+      expect(result.authenticated).toBe(true);
+      if (result.authenticated && result.user) {
+        expect(result.user.claims?.origin).toBeUndefined();
+      }
+    });
+
+    it("a session-user `origin` field cannot shadow the authoritative session origin", async () => {
+      // A hostile / stale session-user payload claiming origin must NOT win:
+      // the session-row origin (here absent) governs, computed AFTER the spread.
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_123", email: "alice@example.com", role: "admin", origin: "cli" },
+        session: { id: "sess_web", userId: "usr_123", activeOrganizationId: "org-1" },
+      });
+
+      const result = await validateManaged(makeRequest());
+
+      expect(result.authenticated).toBe(true);
+      if (result.authenticated && result.user) {
+        expect(result.user.claims?.origin).toBeUndefined();
+      }
+    });
+  });
+
   // passkeyCount is read by `mfaRequired` to admit passkey-only admins.
   // The claim must always be present and authoritative — a missing field
   // silently locks out passkey users; a spread-overridable field lets a

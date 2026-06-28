@@ -88,7 +88,7 @@ For each scenario, the bottleneck order is:
 
 4. **OAuth verify (`verifyAccessToken`)** — local JWT signature check against a cached JWKS. Confirmed ~negligible — even at 1k frames/s, this is well under 1% of CPU. The audit attribution `azp` claim (issue [#2067](https://github.com/AtlasDevHQ/atlas/issues/2067), shipped in [#2101](https://github.com/AtlasDevHQ/atlas/pull/2101)) lives here; an extra `O(1)` map read.
 
-5. **SQL validation** — the four-layer guard in [`packages/api/src/lib/tools/sql.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/sql.ts) (`validateSQL`: regex mutation guard → AST parse → semantic-layer table whitelist → connection-id binding). Per-call cost is sub-millisecond on typical queries; even at 1k frames/s with 60% SQL share this is under 5% of CPU.
+5. **SQL validation** — the four-check `validateSQL` guard in [`packages/api/src/lib/tools/sql.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/sql.ts) (empty check → regex mutation guard → AST parse → connection-scoped table whitelist) — the pre-execution validation stage, canonical layers 0–3; the full runtime pipeline adds RLS injection, auto-LIMIT, and a statement timeout for 7 layers in total. Per-call cost is sub-millisecond on typical queries; even at 1k frames/s with 60% SQL share this is under 5% of CPU.
 
 6. **LLM provider latency (when in the loop)** — not exercised by these scripts. Hosted MCP is dispatch-only; the model lives in the calling agent (Claude Desktop, Cursor, etc.). Provider latency contributes to the **agent's** time-to-answer, not the hosted endpoint's tool-dispatch latency. Observe via OTel spans from [#2029](https://github.com/AtlasDevHQ/atlas/issues/2029).
 

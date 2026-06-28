@@ -104,7 +104,7 @@ const SECTIONS: LegalSectionData[] = [
     legal: [
       "Atlas warrants that the Service will materially perform as described in the documentation. Customer’s exclusive remedy and Atlas’s sole liability for breach of this warranty is, at Atlas’s option, to repair the Service or terminate the agreement and refund unused prepaid fees.",
       'EXCEPT AS EXPRESSLY STATED, THE SERVICE IS PROVIDED "AS IS" AND ATLAS DISCLAIMS ALL OTHER WARRANTIES, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.',
-      "AI-generated SQL is non-deterministic. Atlas’s 4-layer validation pipeline (empty check, regex guard, AST parse, table whitelist) reduces risk; it does not eliminate it. Customer remains responsible for reviewing query output and for the appropriateness of using AI-generated SQL in its environment.",
+      "AI-generated SQL is non-deterministic. Atlas’s 7-layer validation pipeline (empty check, regex guard, AST parse, table whitelist, RLS injection, auto-LIMIT, statement timeout) reduces risk; it does not eliminate it. Customer remains responsible for reviewing query output and for the appropriateness of using AI-generated SQL in its environment.",
     ],
     plain:
       "We warrant the product works as documented. Beyond that, AI-generated SQL is non-deterministic — our validators reduce risk, but you remain responsible for reviewing query output before acting on it.",

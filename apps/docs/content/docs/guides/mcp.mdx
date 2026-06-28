@@ -6,7 +6,7 @@ description: Connect Claude Desktop, Claude Code, Cursor, Continue, ChatGPT, or 
 import { Callout } from "fumadocs-ui/components/callout";
 import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
-Atlas exposes a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that lets any MCP-compatible agent — Claude Desktop, Claude Code, Cursor, Continue, ChatGPT, VS Code — query your data through Atlas's semantic layer and validated SQL pipeline. The agent reads your entity YAMLs, picks the right tables, writes a query, and Atlas runs it through the same 4-layer SQL validation, RLS, and audit pipeline as the chat UI.
+Atlas exposes a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that lets any MCP-compatible agent — Claude Desktop, Claude Code, Cursor, Continue, ChatGPT, VS Code — query your data through Atlas's semantic layer and validated SQL pipeline. The agent reads your entity YAMLs, picks the right tables, writes a query, and Atlas runs it through the same 7-layer SQL validation pipeline (which includes RLS injection) and audit logging as the chat UI.
 
 There are two ways to run the server. **Hosted** (`mcp.useatlas.dev`) speaks Streamable HTTP with OAuth 2.1 + Dynamic Client Registration + PKCE — the standard MCP authorization flow that Claude Desktop, ChatGPT, and Cursor implement out of the box. **Self-hosted** runs as a local stdio process pointed at your own datasource and inherits whatever shell/env you launch it under. Same agent, same tools, same semantic layer — different transport and identity model.
 
@@ -487,7 +487,7 @@ When a returned term has `status: "ambiguous"`, `searchGlossary` returns an `amb
 
 ### runMetric
 
-Execute a canonical metric defined under `semantic/metrics/`. Looks the metric up by `id`, runs its authoritative SQL through the **same** pipeline as `executeSQL` (4-layer validation, RLS injection, auto-LIMIT, statement timeout, audit logging), and returns the result.
+Execute a canonical metric defined under `semantic/metrics/`. Looks the metric up by `id`, runs its authoritative SQL through the **same** 7-layer pipeline as `executeSQL` (empty check, regex guard, AST parse, table whitelist, RLS injection, auto-LIMIT, statement timeout) plus audit logging, and returns the result.
 
 ```
 id: "orders_count"

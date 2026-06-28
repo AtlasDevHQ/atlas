@@ -52,8 +52,8 @@ Every query passes through 7 validation layers before it touches your database:
 
 What ships in 1.0:
 
-- 7 databases (Postgres, MySQL, BigQuery, ClickHouse, DuckDB, Snowflake, Salesforce)
-- 20+ plugins (Slack, Teams, Discord, MCP, webhooks)
+- 8 databases (Postgres, MySQL, BigQuery, ClickHouse, DuckDB, Snowflake, Salesforce, Elasticsearch/OpenSearch)
+- 24 plugins (Slack, Teams, Discord, MCP, webhooks)
 - Embeddable React widget + TypeScript SDK
 - Admin console, audit logs, SSO/SCIM
 - Effect.ts backend architecture

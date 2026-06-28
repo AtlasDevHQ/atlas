@@ -105,6 +105,9 @@ const ROWS: ReadonlyArray<Row> = [
 //     definePlugin() declares a PluginType (the `obsidian` client app extends
 //     Obsidian's own Plugin class and declares none, so it's excluded). This
 //     is a hand-counted figure — recount it whenever plugins/ changes.
+//     Last recount (#4071): 25 dirs under plugins/, 24 declare a PluginType
+//     (only `obsidian` excluded). Per-type: 7 datasource, 6 sandbox,
+//     5 interaction, 5 action, 1 context = 24.
 //   - The REST/OpenAPI datasources named on the landing page (Stripe, Notion,
 //     GitHub, any OpenAPI spec) are OpenAPI presets in
 //     packages/api/src/lib/openapi/data-candidates.ts, NOT plugins/ entries —

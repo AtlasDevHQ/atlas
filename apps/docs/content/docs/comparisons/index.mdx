@@ -18,7 +18,7 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 | **Deployment** | Self-hosted, Atlas Cloud (3 regions), embedded | Self-hosted, cloud SaaS, air-gapped enterprise | Self-hosted, cloud (SaaS) | Self-hosted, cloud |
 | **Embeddable widget** | Script tag, React component, SDK with streaming | API only (no widget) | Web component (`<vanna-chat>`) | Embedding SDK (paid), public links (free) |
 | **Semantic layer** | YAML files (code-first) + web editor + dynamic learning | UI-based modeling (MDL) | Training via DDL/docs/SQL pairs | Data model UI + Data Studio |
-| **Plugin ecosystem** | 21+ official plugins, Plugin SDK, marketplace | Limited | Python extensibility | Drivers + community plugins |
+| **Plugin ecosystem** | 24 official plugins, Plugin SDK, marketplace | Limited | Python extensibility | Drivers + community plugins |
 | **Databases** | | | | |
 | PostgreSQL | Built-in | Yes | Yes | Yes |
 | MySQL | Built-in | Yes | Yes | Yes |
@@ -27,6 +27,7 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 | DuckDB | Plugin | Yes | Yes | Community driver |
 | Snowflake | Plugin | Yes | Yes | Yes |
 | Salesforce | Plugin | No | No | No |
+| Elasticsearch / OpenSearch | Plugin | No | No | No |
 | Oracle | No | Yes | Yes | Yes |
 | SQL Server | No | Yes | Yes | Yes |
 | Redshift | No | Yes | Yes | Yes |
@@ -52,8 +53,8 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 - **Skip infrastructure** -- Sign up at [app.useatlas.dev](https://app.useatlas.dev), connect your database, and start querying. 3-region deployment (US, EU, APAC) with data residency.
 - **Control the AI's reasoning with code** -- The YAML semantic layer lives in your repo, versioned with git, reviewed in PRs. Or use the web editor with autocomplete and version history.
 - **An agent that learns** -- `atlas learn` proposes YAML improvements from your query history. The dynamic learning layer captures patterns at runtime with admin review.
-- **Support multiple datasources with plugins** -- Connect Postgres, MySQL, BigQuery, Snowflake, ClickHouse, DuckDB, and Salesforce. Browse and install plugins from the marketplace.
-- **Reach users where they are** -- 8 chat platform integrations (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp) via Chat SDK.
+- **Support multiple datasources with plugins** -- Connect Postgres, MySQL, BigQuery, Snowflake, ClickHouse, DuckDB, Salesforce, and Elasticsearch/OpenSearch. Browse and install plugins from the marketplace.
+- **Reach users where they are** -- 8 integrations via Chat SDK: 6 chat platforms (Slack, Teams, Discord, Telegram, Google Chat, WhatsApp) plus GitHub and Linear.
 - **Enterprise compliance** -- SSO/SCIM, custom roles, IP allowlists, approval workflows, PII masking, audit retention, data residency.
 - **Embed under MIT** -- The client libraries (`@useatlas/sdk`, `@useatlas/react`) are MIT. Embed them in commercial products with no copyleft concerns.
 

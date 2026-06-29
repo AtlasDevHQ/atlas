@@ -189,6 +189,13 @@ async function main() {
     return handleQuery(args);
   }
 
+  // #4047 / ADR-0027 — raw-SQL Shape B: run ONE validated SELECT over the
+  // workspace credential. The advanced surface; `query` is the NL happy path.
+  if (command === "sql") {
+    const { handleSql } = await import("../src/commands/sql");
+    return handleSql(args);
+  }
+
   // #4043 / ADR-0026 — device-flow auth + the minimal workspace-scoped read.
   // Handlers receive the full argv (command name at [0]); they only read flags.
   if (command === "login") {

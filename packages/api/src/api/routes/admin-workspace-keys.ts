@@ -41,7 +41,7 @@ import { AuthContext } from "@atlas/api/lib/effect/services";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { capRole, clampToOrgRole, getUserRole } from "@atlas/api/lib/auth/permissions";
-import { buildApiKeyMetadata } from "@atlas/api/lib/auth/api-key-metadata";
+import { buildApiKeyMetadata, boundClaimsToMinter } from "@atlas/api/lib/auth/api-key-metadata";
 import { ORG_ROLES } from "@atlas/api/lib/auth/types";
 import type { OrgRole } from "@atlas/api/lib/auth/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -150,8 +150,28 @@ adminWorkspaceKeys.openapi(mintRoute, async (c) => {
       const requestedRole = body.role ?? minterCeiling;
       const role: OrgRole = clampToOrgRole(capRole(requestedRole, minterCeiling));
 
+      // #4110 AC3 — bound the supplied RLS claims to the minter's OWN claim bag,
+      // the claims-axis mirror of the `capRole` ceiling above: a key must never
+      // carry RLS authority (or a forged identity claim) the minting admin
+      // doesn't already hold. Reserved identity/security keys are rejected
+      // outright; any other key must match the minter's own claim value exactly.
+      const claimCheck = boundClaimsToMinter(body.claims, user.claims);
+      if (!claimCheck.ok) {
+        return c.json(
+          {
+            error: "claim_not_allowed",
+            message:
+              claimCheck.reason === "reserved"
+                ? `The claim "${claimCheck.key}" is reserved by the auth layer and cannot be set on a workspace key.`
+                : `The claim "${claimCheck.key}" is not in your own access scope. A workspace key cannot carry RLS claims you do not hold.`,
+            requestId,
+          },
+          422,
+        );
+      }
+
       // The RLS claims to embed. Defaults to none (the workspace either has no
-      // RLS, or the caller supplies the specific claim values).
+      // RLS, or the caller supplies specific claim values within their own scope).
       const metadata = buildApiKeyMetadata({
         orgId,
         role,

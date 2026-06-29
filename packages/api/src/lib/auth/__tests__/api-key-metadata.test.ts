@@ -1,6 +1,8 @@
 import { describe, it, expect } from "bun:test";
 import {
   API_KEY_MARKER_CLAIM,
+  RESERVED_API_KEY_CLAIM_KEYS,
+  boundClaimsToMinter,
   buildApiKeyMetadata,
   parseApiKeyMetadata,
   type ApiKeyMetadata,
@@ -94,5 +96,58 @@ describe("parseApiKeyMetadata()", () => {
 
   it("exposes a stable reserved marker-claim key, distinct from origin", () => {
     expect(API_KEY_MARKER_CLAIM).toBe("api_key");
+  });
+});
+
+describe("boundClaimsToMinter() (#4110 AC3)", () => {
+  const minter = { tenant_id: "acme", region: ["us", "eu"], twoFactorEnabled: true };
+
+  it("is ok when no claims are requested", () => {
+    expect(boundClaimsToMinter(undefined, minter)).toEqual({ ok: true });
+    expect(boundClaimsToMinter({}, minter)).toEqual({ ok: true });
+  });
+
+  it("allows a scalar claim the minter holds with an equal value", () => {
+    expect(boundClaimsToMinter({ tenant_id: "acme" }, minter)).toEqual({ ok: true });
+  });
+
+  it("allows an array claim that matches the minter's value structurally", () => {
+    expect(boundClaimsToMinter({ region: ["us", "eu"] }, minter)).toEqual({ ok: true });
+  });
+
+  it("rejects a claim value the minter doesn't hold (no widening)", () => {
+    expect(boundClaimsToMinter({ tenant_id: "globex" }, minter)).toEqual({
+      ok: false,
+      key: "tenant_id",
+      reason: "not_in_minter_scope",
+    });
+  });
+
+  it("rejects a claim key absent from the minter's bag (no fabrication)", () => {
+    expect(boundClaimsToMinter({ department: "eng" }, minter)).toEqual({
+      ok: false,
+      key: "department",
+      reason: "not_in_minter_scope",
+    });
+  });
+
+  it("rejects narrowing a multi-value claim (must re-mint from a narrower session)", () => {
+    expect(boundClaimsToMinter({ region: ["us"] }, minter)).toMatchObject({
+      ok: false,
+      reason: "not_in_minter_scope",
+    });
+  });
+
+  it("rejects every reserved identity/security claim key", () => {
+    for (const key of RESERVED_API_KEY_CLAIM_KEYS) {
+      // Give the minter the key too, to prove the reserved check wins over scope.
+      const result = boundClaimsToMinter({ [key]: "x" }, { ...minter, [key]: "x" });
+      expect(result).toEqual({ ok: false, key, reason: "reserved" });
+    }
+  });
+
+  it("treats a missing minter bag as holding nothing", () => {
+    expect(boundClaimsToMinter({ tenant_id: "acme" }, null)).toMatchObject({ ok: false });
+    expect(boundClaimsToMinter(undefined, null)).toEqual({ ok: true });
   });
 });

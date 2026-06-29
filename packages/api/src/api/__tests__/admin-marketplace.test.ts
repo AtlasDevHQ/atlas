@@ -330,6 +330,7 @@ const passthrough = createMiddleware(async (_c, next) => { await next(); });
 
 mock.module("./routes/middleware", () => ({
   adminAuth: passthrough,
+  adminAuthAllowApiKey: passthrough,
   platformAdminAuth: passthrough,
   requestContext: passthrough,
   standardAuth: passthrough,

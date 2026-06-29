@@ -163,6 +163,7 @@ const passthrough = createMiddleware(async (_c, next) => {
 
 const middlewareMock = {
   adminAuth: passthrough,
+  adminAuthAllowApiKey: passthrough,
   platformAdminAuth: passthrough,
   requestContext: passthrough,
   standardAuth: passthrough,

@@ -363,3 +363,66 @@ describe("mfaRequired is wired into createAdminRouter / createPlatformRouter", (
     mockAuthResult = { authenticated: true, mode: "none", user: undefined };
   });
 });
+
+// ---------------------------------------------------------------------------
+// #4110 — workspace API key admin reach: denied by default, allowed only on
+// the explicitly key-allowed datasource CLI surface (allowApiKey: true).
+// ---------------------------------------------------------------------------
+
+describe("workspace API key admin reach (#4110)", () => {
+  const apiKeyActor = {
+    authenticated: true,
+    mode: "managed",
+    user: {
+      id: "key-owner-1",
+      mode: "managed",
+      label: "ci@test.com",
+      role: "admin",
+      activeOrganizationId: "org-1",
+      // The api-key marker + no MFA claim — would 403 on mfaRequired if it
+      // weren't first denied at adminAuth (default) / exempted (allowApiKey).
+      claims: { api_key: true },
+    },
+  };
+
+  const ok = createRoute({
+    method: "get",
+    path: "/protected",
+    responses: {
+      200: {
+        description: "OK",
+        content: { "application/json": { schema: z.object({ ok: z.boolean() }) } },
+      },
+    },
+  });
+
+  beforeEach(() => {
+    mockHasInternalDB = true;
+  });
+
+  it("createAdminRouter() DENIES an api-key actor with 403 api_key_not_permitted", async () => {
+    mockAuthResult = apiKeyActor;
+    const router = createAdminRouter();
+    router.openapi(ok, (c) => c.json({ ok: true }, 200));
+
+    const res = await router.request("/protected");
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("api_key_not_permitted");
+
+    mockAuthResult = { authenticated: true, mode: "none", user: undefined };
+  });
+
+  it("createAdminRouter({ allowApiKey: true }) ALLOWS an api-key actor through both the deny + MFA gate", async () => {
+    mockAuthResult = apiKeyActor;
+    const router = createAdminRouter({ allowApiKey: true });
+    router.openapi(ok, (c) => c.json({ ok: true }, 200));
+
+    const res = await router.request("/protected");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean };
+    expect(body.ok).toBe(true);
+
+    mockAuthResult = { authenticated: true, mode: "none", user: undefined };
+  });
+});

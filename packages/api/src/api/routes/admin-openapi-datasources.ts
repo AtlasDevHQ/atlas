@@ -286,7 +286,11 @@ const deleteRoute = createRoute({
 
 // ── Router ───────────────────────────────────────────────────────────────
 
-const adminOpenApiDatasources = createAdminRouter();
+// #4110 — `allowApiKey: true`: this is the datasource management CLI surface
+// (`atlas datasource list|get|test|create|archive|restore|delete`), admin-floor
+// but key-reachable by ADR-0027 gate-parity. Other admin routers use the
+// deny-by-default `createAdminRouter()`.
+const adminOpenApiDatasources = createAdminRouter({ allowApiKey: true });
 adminOpenApiDatasources.use(requireOrgContext());
 adminOpenApiDatasources.use(requirePermission("admin:connections"));
 

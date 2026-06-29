@@ -117,6 +117,82 @@ export function buildApiKeyMetadata(input: BuildApiKeyMetadataInput): StoredApiK
 }
 
 /**
+ * Claim keys that the auth layer stamps AUTHORITATIVELY (identity, transport,
+ * MFA-enrollment state) and that must therefore never be settable as a
+ * caller-supplied mint-time RLS claim. Mirrors the identity claims
+ * `resolveApiKeyAuth` overwrites after the metadata spread (`sub`, `org_id`,
+ * `origin`, the api-key marker) plus the factor signals the admin-MFA gate
+ * reads (`twoFactorEnabled`, `passkeyCount`) and the role/ban fields the session
+ * path owns. Rejecting these at mint keeps a key's claim bag strictly RLS data —
+ * a key can't smuggle in a forged identity or an MFA-enrolled appearance.
+ */
+export const RESERVED_API_KEY_CLAIM_KEYS: ReadonlySet<string> = new Set([
+  "sub",
+  "org_id",
+  "origin",
+  API_KEY_MARKER_CLAIM,
+  "passkeyCount",
+  "twoFactorEnabled",
+  "effectiveRole",
+  "role",
+  "banned",
+  "banExpires",
+]);
+
+/**
+ * Outcome of {@link boundClaimsToMinter}: `ok` when every supplied claim is
+ * within the minter's own scope, otherwise the first offending `key` and why.
+ */
+export type BoundClaimsResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly key: string; readonly reason: "reserved" | "not_in_minter_scope" };
+
+/** Structural equality over JSON-serializable claim values (scalars + arrays of
+ * scalars — `rls.ts` rejects object-typed claims, so JSON compares faithfully
+ * and the object key-order caveat never bites). */
+function claimValuesEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * #4110 — bound caller-supplied mint claims to the minter's own claim bag.
+ *
+ * A workspace key must never carry RLS authority the minting admin doesn't
+ * already hold — the claims-axis mirror of the {@link capRole} ceiling on the
+ * role axis (a key grants no reach the minter lacks, ADR-0027 §2). For every
+ * claim the caller supplies:
+ *   - a {@link RESERVED_API_KEY_CLAIM_KEYS reserved} identity/security key is
+ *     rejected outright (`reason: "reserved"`), and
+ *   - any other key must be present in the minter's own claims with an EQUAL
+ *     value (`reason: "not_in_minter_scope"` otherwise) — no fabrication, no
+ *     widening.
+ *
+ * Narrowing a multi-value claim (e.g. minting `tenant_id: "acme"` from a session
+ * carrying `["acme", "globex"]`) is intentionally NOT supported here: re-mint
+ * from a session that already resolves the narrower value. An empty / absent
+ * `requested` bag is always `ok` (a key with no extra RLS claims).
+ */
+export function boundClaimsToMinter(
+  requested: Record<string, unknown> | undefined,
+  minterClaims: Record<string, unknown> | null | undefined,
+): BoundClaimsResult {
+  if (!requested) return { ok: true };
+  const minter = minterClaims ?? {};
+  for (const key of Object.keys(requested)) {
+    if (RESERVED_API_KEY_CLAIM_KEYS.has(key)) {
+      return { ok: false, key, reason: "reserved" };
+    }
+    if (
+      !Object.prototype.hasOwnProperty.call(minter, key) ||
+      !claimValuesEqual(requested[key], minter[key])
+    ) {
+      return { ok: false, key, reason: "not_in_minter_scope" };
+    }
+  }
+  return { ok: true };
+}
+
+/**
  * Narrow an untrusted Better Auth metadata bag into a typed {@link ApiKeyMetadata}.
  *
  * Returns `null` (fail-closed) when the bag is not a workspace-scoped key:

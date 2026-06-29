@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.35",
+    title: "CLI: REST-backed Command Suite & API Keys",
+    date: "2026-06-29",
+    summary:
+      "The atlas CLI graduates into a first-class, scriptable client for automation and CI. A new workspace-scoped API key gives headless tools a credential that's safe to drop into a pipeline — it reaches the data plane (running queries, metrics, and the semantic layer) but is denied on console-admin actions like billing, settings, and key minting. On top of it, a suite of commands talks to Atlas over the same REST API the app uses: run ad-hoc SQL, run a saved metric, explore the semantic layer, switch between workspaces, and create or profile a datasource — with database secrets captured from stdin or an environment variable, never from the command line. Every command runs through the same SQL-validation pipeline and audit trail as the rest of Atlas.",
+    highlights: [
+      "Workspace-scoped API keys for unattended/CI use — data-plane only, denied on console-admin like billing and key minting (#4046)",
+      "atlas sql — run a read-only SQL query over REST, with --json / --csv output (#4047)",
+      "atlas metric run and atlas explore — run a saved metric or browse the semantic layer from the shell (#4048, #4049)",
+      "atlas switch / --workspace — select among multiple workspaces per command (#4050)",
+      "atlas datasource create and profile — add a datasource with stdin/env secret capture, then profile it (streaming, cancellable) into draft entities (#4051, #4052)",
+      "Sign-in hardening banked from the v0.0.34 verification pass — /dashboards and stale-region-cookie fixes (#4089, #4090) plus plus-addressed signup rejection (#4098)",
+    ],
+  },
+  {
     version: "v0.0.34",
     title: "Auth Session-Cookie Fix",
     date: "2026-06-28",

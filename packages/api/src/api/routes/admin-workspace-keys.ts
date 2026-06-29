@@ -40,7 +40,6 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
-import { getAuthInstance } from "@atlas/api/lib/auth/server";
 import { capRole, clampToOrgRole, getUserRole } from "@atlas/api/lib/auth/permissions";
 import { buildApiKeyMetadata } from "@atlas/api/lib/auth/api-key-metadata";
 import { ORG_ROLES } from "@atlas/api/lib/auth/types";
@@ -165,6 +164,16 @@ adminWorkspaceKeys.openapi(mintRoute, async (c) => {
       // to the AUTHENTICATED minter — the key's owning member, traceable in the
       // audit. The metadata field is a client-passable property (not server-only),
       // and `enableMetadata: true` is set on the plugin (server.ts).
+      //
+      // `getAuthInstance` is imported DYNAMICALLY (not a top-level import) on
+      // purpose: a static import would pull `auth/server.ts` (and its eager
+      // `db/internal` dependencies) into the admin route graph at module-eval
+      // time, which breaks tests that partial-mock `db/internal`. Mirrors the
+      // existing dynamic-import pattern in admin.ts. Inside the Effect generator
+      // the dynamic import is sequenced via `Effect.promise`, not `await`.
+      const { getAuthInstance } = yield* Effect.promise(
+        () => import("@atlas/api/lib/auth/server"),
+      );
       const auth = getAuthInstance();
       const createApiKey = (auth.api as { createApiKey?: unknown }).createApiKey as
         | ((opts: {

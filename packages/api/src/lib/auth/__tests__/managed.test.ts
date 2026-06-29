@@ -256,6 +256,27 @@ describe("validateManaged()", () => {
       expect(result.user.role).toBeUndefined();
     });
 
+    it("uses the stored metadata role on self-host (no internal DB, no live member table)", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_sh", email: "sh@acme.com" },
+        session: { id: "key_sh", userId: "usr_sh" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce({
+        valid: true,
+        key: {
+          userId: "usr_sh",
+          metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "admin" },
+        },
+      });
+      // No internal DB — there is no member table to re-resolve against, so the
+      // mint-time stored role is authoritative (the only signal available).
+      mockHasInternalDB = false;
+
+      const result = await validateManaged(apiKeyRequest());
+      if (!result.authenticated || !result.user) throw new Error("expected authed");
+      expect(result.user.role).toBe("admin");
+    });
+
     it("merges the member's RLS claim from metadata into the claims bag", async () => {
       mockGetSession.mockResolvedValueOnce({
         user: { id: "usr_3", email: "u3@acme.com" },

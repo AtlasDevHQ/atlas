@@ -47,6 +47,37 @@ Revocation is immediate and permanent. Any application using the revoked key wil
 
 ---
 
+## CLI: workspace keys vs. ambient login
+
+The `atlas` CLI has **two** ways to authenticate, and most users only need the first:
+
+- **Ambient session reuse (recommended, free, no provisioning).** Run `atlas login`
+  once — the OAuth device flow stores a session in `~/.atlas/credentials`, and every
+  subsequent `atlas` command (and any agent running in that logged-in session) inherits
+  the grant automatically. This is the `gh auth login` / `railway login` model. No
+  separate key is created or needed.
+
+- **Workspace API key (unattended CI only).** For a headless CI job where no human ever
+  logs in, mint a workspace-scoped key on the `/admin/api-keys` page and pass it via the
+  `ATLAS_API_KEY` environment variable (or `--api-key` on a command):
+
+  ```bash
+  ATLAS_API_KEY=atlas_wk_… atlas sql "SELECT count(*) FROM orders"
+  ```
+
+  The CLI sends a workspace key on the `x-api-key` header (the session bearer uses
+  `Authorization: Bearer`). The key resolves live to its **owning member's** workspace,
+  role, and RLS claim — it is delegated human access bound to one workspace, audited to
+  the person who minted it (`actor_kind = api_key`), and revocable from the same page
+  (revocation takes effect on the next request). Because the key is pinned to one
+  workspace, `--workspace` does not apply to it.
+
+<Callout>
+The legacy `ATLAS_API_KEY` **operator god-key** (a single env-configured key for
+self-hosted simple-key auth mode) is a separate mechanism and is unchanged. Workspace
+keys above are the per-member, managed-auth credential.
+</Callout>
+
 ## Using API Keys
 
 Pass the key in the `Authorization` header:
@@ -101,7 +132,7 @@ All endpoints require admin authentication.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/auth/api-key/list` | List all API keys |
-| `POST` | `/api/auth/api-key/create` | Create a new key (returns full key once) |
+| `POST` | `/api/v1/admin/workspace-keys` | Mint a workspace-scoped key (injects `{orgId, role, claims}` metadata so the key resolves to your workspace; returns the full key once) |
 | `POST` | `/api/auth/api-key/delete` | Revoke a key by ID |
 
 ---

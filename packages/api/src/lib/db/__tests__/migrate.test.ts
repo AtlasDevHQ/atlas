@@ -194,7 +194,9 @@ describe("runMigrations", () => {
     //   ADR-0026, #4043) = 159.
     //   Plus 0159 (drop @better-auth/stripe's user.stripeCustomerId column,
     //   phase-2 two-phase drop, #4013) = 160.
-    expect(count).toBe(160);
+    //   Plus 0160 (audit_log.actor_kind CHECK gains 'api_key' for the
+    //   workspace-scoped API key, ADR-0027 §6, #4046) = 161.
+    expect(count).toBe(161);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -383,6 +385,7 @@ describe("runMigrations", () => {
         "0157_approval_surface_cli.sql",
         "0158_session_origin_column.sql",
         "0159_drop_user_stripe_customer_id.sql",
+        "0160_audit_log_actor_kind_api_key.sql",
       ],
     });
 

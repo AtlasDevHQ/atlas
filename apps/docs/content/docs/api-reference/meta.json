@@ -90,6 +90,7 @@
     "prompts",
     "query",
     "rest-datasources",
+    "sql",
     "scheduled-tasks",
     "semantic",
     "sessions",

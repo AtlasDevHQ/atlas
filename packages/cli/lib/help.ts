@@ -220,6 +220,34 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       'atlas query "monthly revenue by product" --csv > report.csv',
     ],
   },
+  sql: {
+    description:
+      "Run a single validated SELECT against your logged-in workspace. The advanced surface — prefer `atlas query` for natural-language questions. Requires `atlas login` first.",
+    usage: 'sql "SELECT ..." [options]',
+    flags: [
+      {
+        flag: "--connection <id>",
+        description: "Run against a specific datasource (default: the workspace's default)",
+      },
+      {
+        flag: "--workspace <id>",
+        description: "Act on a specific workspace for this command only (does not change your default)",
+      },
+      {
+        flag: "--json",
+        description: "Machine-readable JSON output",
+      },
+      {
+        flag: "--csv",
+        description: "CSV output (headers + rows, pipe-friendly)",
+      },
+    ],
+    examples: [
+      'atlas sql "SELECT count(*) FROM orders"',
+      'atlas sql "SELECT id, name FROM customers LIMIT 10" --json',
+      'atlas sql "SELECT * FROM orders" --connection warehouse --csv > orders.csv',
+    ],
+  },
   doctor: {
     description:
       "Alias for 'atlas validate' — validate config, semantic layer, and connectivity.",
@@ -665,6 +693,7 @@ export function printOverviewHelp(): void {
       "  improve          Analyze semantic layer and propose data-driven improvements\n" +
       "  diff             Compare DB schema against existing semantic layer\n" +
       "  query            Ask a question via the Atlas API\n" +
+      "  sql              Run a single validated SELECT (advanced; prefer query for NL)\n" +
       "  login            Authenticate the CLI via the device flow (stores a session bearer)\n" +
       "  logout           Remove the stored CLI credentials\n" +
       "  entities         List semantic entities visible to your logged-in workspace\n" +

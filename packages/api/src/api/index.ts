@@ -25,6 +25,7 @@ import { health } from "./routes/health";
 import { auth } from "./routes/auth";
 import { regionRouting } from "./routes/region-routing";
 import { query } from "./routes/query";
+import { executeSql } from "./routes/execute-sql";
 import { staticPaths, staticTags, securitySchemes } from "./routes/openapi";
 import { conversations, publicConversations } from "./routes/conversations";
 import { dashboards, publicDashboards } from "./routes/dashboards";
@@ -190,6 +191,8 @@ app.route("/api/auth", auth);
 // probe) for the returning-user login fan-out router (ADR-0024 §3, #3973).
 app.route("/api/v1/auth", regionRouting);
 app.route("/api/v1/query", query);
+// Raw-SQL-over-REST (#4047 / ADR-0027) — the `atlas sql "SELECT ..."` surface.
+app.route("/api/v1/execute-sql", executeSql);
 // OpenAPI spec served below via merged auto + static endpoint
 app.route("/api/v1/conversations", conversations);
 app.route("/api/public/conversations", publicConversations);

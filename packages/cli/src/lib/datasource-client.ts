@@ -401,10 +401,10 @@ export interface ProfileResult {
   readonly persistedStatus?: string;
   readonly entitiesGenerated: number;
   readonly metricsGenerated: number;
-  readonly tables: string[];
+  readonly tables: readonly string[];
   readonly profilingErrors: number;
   readonly incomplete: boolean;
-  readonly incompleteTables?: string[];
+  readonly incompleteTables?: readonly string[];
   readonly elapsedMs: number;
 }
 
@@ -561,13 +561,12 @@ export async function profileDatasource(
       case "error": {
         // A failure after the stream opened — map to the same typed error the
         // pre-stream branch produces so the command's handler renders it uniformly.
+        // `reconnect_required` keeps its distinct `conflict` kind (the reconnect
+        // remedy differs); every other terminal error (`profiling_failed`,
+        // `internal_error`, anything future) is a `request_failed` the handler
+        // surfaces with the server's message verbatim.
         const message = serverMessage(event, 0);
-        const kind =
-          event.error === "reconnect_required"
-            ? "conflict"
-            : event.error === "internal_error"
-              ? "request_failed"
-              : "request_failed";
+        const kind = event.error === "reconnect_required" ? "conflict" : "request_failed";
         throw new DatasourceCliError(kind, message);
       }
       default:

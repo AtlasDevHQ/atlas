@@ -47,7 +47,12 @@
  *
  * Cancellation is cooperative: the request's abort signal (the CLI closing the
  * connection on Ctrl-C) is threaded into the progress bridge, whose
- * `onTableStart` throws once aborted — the same mechanism the MCP tool uses.
+ * `onTableStart` throws an `OperationCancelledError` once aborted — the same
+ * mechanism the MCP tool uses. The error's `name` is matched by name inside
+ * `SemanticGenerator` (it lives in `@atlas/api`, which can't import the MCP
+ * class) to route the cancel to a defect rather than a spurious
+ * `ProfilingFailedError`; the facade re-throws the original instance, which the
+ * stream loop recognizes and treats as a clean stop (no terminal event emitted).
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
@@ -68,13 +73,22 @@ const log = createLogger("datasources-routes");
 /**
  * Cooperative-cancellation signal raised from the progress bridge when the
  * client aborts the request mid-profile. The profiler has no native
- * `AbortSignal`, so cancellation rides on the progress callback throwing — the
- * SemanticGenerator preserves this error's identity through to a defect, and the
- * profiler facade re-throws it, so the route's stream loop sees it here. Mirrors
- * the MCP `OperationCancelledError` (packages/mcp/src/progress.ts).
+ * `AbortSignal`, so cancellation rides on the progress callback throwing.
+ *
+ * The `name` is EXACTLY `"OperationCancelledError"` because that is the string
+ * `SemanticGenerator` matches on (`semantic-generator.ts` — `err.name ===
+ * "OperationCancelledError"`) to route a cancellation to a DEFECT instead of
+ * wrapping it as a spurious `ProfilingFailedError`. `profileLiveDatasource` then
+ * re-throws the ORIGINAL error object (via `causeToError`), so the exact instance
+ * thrown here flows back and `instanceof` matches in the stream loop's catch.
+ * Get the name wrong and a Ctrl-C would silently surface as a `profiling_failed`
+ * terminal event instead of a clean cancel. Mirrors the MCP
+ * `OperationCancelledError` (packages/mcp/src/progress.ts), reproduced here
+ * because `@atlas/api` must not import `@atlas/mcp` (ADR-0013 / core→plugin
+ * decoupling).
  */
-class ProfileCancelledError extends Error {
-  override readonly name = "ProfileCancelledError";
+class OperationCancelledError extends Error {
+  override readonly name = "OperationCancelledError";
   constructor() {
     super("Profiling was cancelled by the client.");
   }
@@ -309,7 +323,7 @@ datasources.openapi(profileRoute, async (c) => {
       const progress: ProfileProgressCallbacks = {
         onStart: (total) => write({ type: "start", total }),
         onTableStart: () => {
-          if (requestSignal?.aborted) throw new ProfileCancelledError();
+          if (requestSignal?.aborted) throw new OperationCancelledError();
         },
         onTableDone: (name, index, total) =>
           write({ type: "table", name, index, total, status: "done" }),
@@ -345,11 +359,13 @@ datasources.openapi(profileRoute, async (c) => {
           // An OAuth token revoked mid-profile, after the connection resolved.
           // The stream is already open, so surface the reconnect prompt as a
           // terminal error event rather than a (now-impossible) HTTP status.
-          write({ type: "error", error: "reconnect_required", message: outcome.message });
+          // Carry the requestId so a bug report stays log-correlatable, parity
+          // with the unexpected-throw branch below.
+          write({ type: "error", error: "reconnect_required", message: outcome.message, requestId });
         } else if (outcome.kind === "error") {
           // Tagged ProfilingFailedError — an actionable validation outcome (no
           // tables, too many failures, persist failure), not a server defect.
-          write({ type: "error", error: "profiling_failed", message: outcome.message });
+          write({ type: "error", error: "profiling_failed", message: outcome.message, requestId });
         } else {
           const r = outcome.result;
           const tables = r.entities.map((e) => e.table);
@@ -375,9 +391,17 @@ datasources.openapi(profileRoute, async (c) => {
           });
         }
       } catch (err) {
-        if (err instanceof ProfileCancelledError) {
-          // Cooperative cancellation: the client aborted. Don't emit a result —
-          // just log and close. (The consumer is gone; a write would be a no-op.)
+        // Cooperative cancellation: the client aborted. `onTableStart` threw the
+        // OperationCancelledError instance above; SemanticGenerator routed it to a
+        // defect (by name) and `profileLiveDatasource` re-threw the SAME instance,
+        // so `instanceof` matches here. Also match by name as a belt-and-braces
+        // guard in case the identity is lost across a future facade change — a
+        // cancel must never be mislabeled as an internal error. Don't emit a
+        // result; the consumer is gone, so a write would be a no-op anyway.
+        if (
+          err instanceof OperationCancelledError ||
+          (err instanceof Error && err.name === "OperationCancelledError")
+        ) {
           log.info({ requestId, orgId, datasourceId: id }, "Profile cancelled by client");
         } else {
           // An unexpected throw from the profiler. The stream has already

@@ -44,6 +44,15 @@ const mockCheckRateLimit: Mock<(key: string) => { allowed: boolean; retryAfterMs
   () => ({ allowed: true }),
 );
 
+// Curated stub of the auth-middleware surface the `adminAuth` + `requestContext`
+// middlewares actually reach: `authenticateRequest` (admission), and
+// `checkRateLimit` / `getClientIP` (the rate-limit + IP gate). The remaining
+// exports (`isLowSaasChatRpm`, the `_set*Override` test hooks) are NOT on the
+// route's middleware path, so spreading the real module — which would drag in
+// its heavy auth graph and defeat this standalone-router isolation — buys
+// nothing. Bun's per-file `--isolate` keeps the partial mock from leaking.
+// Mirrors the curated convention in the sibling metrics.test.ts. If the route's
+// middleware grows to reach another export, this stub must grow to cover it.
 mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
@@ -106,6 +115,7 @@ const mockResolveLiveConnection: Mock<(orgId: string, id: string) => Promise<Res
 // streaming bridge is exercised.
 let capturedContext: { agentOrigin?: unknown; actorKind?: unknown } = {};
 let capturedOrgId: string | undefined;
+let capturedSchema: string | undefined;
 
 const mockProfileLiveDatasource: Mock<
   (opts: {
@@ -120,6 +130,7 @@ const mockProfileLiveDatasource: Mock<
   const ctx = getRequestContext();
   capturedContext = { agentOrigin: ctx?.agentOrigin, actorKind: ctx?.actor?.kind };
   capturedOrgId = opts.orgId;
+  capturedSchema = opts.schema;
   // Drive the progress bridge so the route emits start/table events.
   opts.progress?.onStart(2);
   opts.progress?.onTableStart("orders", 0, 2);
@@ -172,6 +183,7 @@ async function readNdjson(res: Response): Promise<Record<string, unknown>[]> {
 beforeEach(() => {
   capturedContext = {};
   capturedOrgId = undefined;
+  capturedSchema = undefined;
   fakeConnection.close.mockClear();
   mockAuthenticateRequest.mockReset();
   mockAuthenticateRequest.mockResolvedValue(adminAuth());
@@ -191,6 +203,7 @@ beforeEach(() => {
     const ctx = getRequestContext();
     capturedContext = { agentOrigin: ctx?.agentOrigin, actorKind: ctx?.actor?.kind };
     capturedOrgId = opts.orgId;
+    capturedSchema = opts.schema;
     opts.progress?.onStart(2);
     opts.progress?.onTableStart("orders", 0, 2);
     opts.progress?.onTableDone("orders", 0, 2);
@@ -424,21 +437,67 @@ describe("POST /datasources/{id}/profile — profiling failure (#4052)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Bound-workspace precondition + schema forwarding
+// ---------------------------------------------------------------------------
+
+describe("POST /datasources/{id}/profile — bound-workspace + schema (#4052)", () => {
+  it("400 bad_request when the credential carries no bound workspace", async () => {
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: {
+        id: "user-1",
+        mode: "managed",
+        label: "Alice",
+        role: "admin",
+        // No activeOrganizationId — a multi-workspace login pending the picker.
+        claims: { sub: "user-1", origin: "cli" },
+      },
+    } as unknown as AuthResult);
+    const res = await app.fetch(profileRequest("prod-us"));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("bad_request");
+    // Never reaches the gate or the connection resolver with an undefined org.
+    expect(mockCheckAgentBillingGate).not.toHaveBeenCalled();
+    expect(mockResolveLiveConnection).not.toHaveBeenCalled();
+  });
+
+  it("forwards a schema override from the body to the profiler", async () => {
+    const res = await app.fetch(
+      profileRequest("prod-us", { body: JSON.stringify({ schema: "analytics" }) }),
+    );
+    expect(res.status).toBe(200);
+    await readNdjson(res); // drain so the handler runs to completion
+    expect(capturedSchema).toBe("analytics");
+  });
+
+  it("omits schema (profiler default) when the body has none", async () => {
+    const res = await app.fetch(profileRequest("prod-us"));
+    await readNdjson(res);
+    expect(capturedSchema).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Cancellation
 // ---------------------------------------------------------------------------
 
 describe("POST /datasources/{id}/profile — cancellation (#4052)", () => {
-  it("propagates an aborted request signal to a cancellable progress bridge", async () => {
+  it("the progress bridge throws OperationCancelledError once the request is aborted", async () => {
     // The route wires the request's abort signal into the progress callbacks so
-    // onTableStart throws OperationCancelledError once aborted (cooperative).
+    // onTableStart throws once aborted (cooperative cancellation).
     let cancelled = false;
+    const controller = new AbortController();
     mockProfileLiveDatasource.mockImplementation(async (opts) => {
       // Simulate the abort happening before the first table.
       controller.abort();
       try {
         opts.progress?.onTableStart("orders", 0, 1);
-      } catch {
-        cancelled = true;
+      } catch (err) {
+        // The route names this error EXACTLY "OperationCancelledError" so
+        // SemanticGenerator recognizes it as a cancel (not a profiling failure).
+        cancelled = err instanceof Error && err.name === "OperationCancelledError";
       }
       return {
         kind: "ok" as const,
@@ -446,10 +505,26 @@ describe("POST /datasources/{id}/profile — cancellation (#4052)", () => {
         persisted: null,
       } as unknown as RunSemanticProfileOutcome;
     });
-    const controller = new AbortController();
     await Promise.resolve(
       app.fetch(profileRequest("prod-us", { signal: controller.signal })),
     ).catch(() => {});
     expect(cancelled).toBe(true);
+  });
+
+  it("a cancel that surfaces as a thrown OperationCancelledError closes the connection and emits no result/error event", async () => {
+    // Simulate the realistic path: the profiler facade re-throws the
+    // OperationCancelledError instance (after SemanticGenerator routes it to a
+    // defect). The route must treat it as a clean cancel — close the connection,
+    // emit NO terminal `result`/`error`/`internal_error` event.
+    mockProfileLiveDatasource.mockImplementation(async () => {
+      const err = new Error("Profiling was cancelled by the client.");
+      err.name = "OperationCancelledError";
+      throw err;
+    });
+    const res = await app.fetch(profileRequest("prod-us"));
+    const events = await readNdjson(res);
+    expect(events.find((e) => e.type === "result")).toBeUndefined();
+    expect(events.find((e) => e.type === "error")).toBeUndefined();
+    expect(fakeConnection.close).toHaveBeenCalled();
   });
 });

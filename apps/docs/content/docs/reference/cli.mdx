@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: Complete reference for the Atlas CLI — init, diff, migrate, import, export, migrate-import, index, learn, improve, query, doctor, validate, mcp, eval, canonical-eval, smoke, plugin, benchmark, completions, and operator subcommands (proactive / seed / ops).
+description: Complete reference for the Atlas CLI — init, diff, query, the workspace commands (login, switch, sql, metric run, explore, datasource), migrate, import, export, migrate-import, index, learn, improve, doctor, validate, mcp, eval, canonical-eval, smoke, plugin, benchmark, completions, and operator subcommands (proactive / seed / ops).
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -168,6 +168,268 @@ bun run atlas -- query "active users today" --quiet
 
 # Target a named datasource from atlas.config.ts
 bun run atlas -- query "warehouse inventory" --connection warehouse
+```
+
+## Workspace commands
+
+The commands in this group act on a **workspace** through a running Atlas API — local (`bun run dev:api`) or hosted ([app.useatlas.dev](https://app.useatlas.dev)) — rather than on local semantic-layer files. They are the REST-backed self-service surface that shipped with the workspace CLI suite: [`login`](#login) / [`logout`](#logout), [`switch`](#switch), [`sql`](#sql), [`metric run`](#metric-run), [`explore`](#explore), and [`datasource`](#datasource).
+
+**Authentication** rides on exactly one of two mutually exclusive credentials — never both:
+
+- **Ambient `atlas login` session (recommended).** Run [`atlas login`](#login) once; the OAuth device flow stores a session in `~/.atlas/credentials` and every later `atlas` command (and any agent running in that logged-in shell) reuses it automatically — the `gh auth login` / `railway login` model. No key to provision.
+- **Workspace API key (unattended CI).** Mint a workspace-scoped key on the `/admin/api-keys` page and pass it via the `ATLAS_API_KEY` environment variable or `--api-key <key>` (the flag overrides the env var). Honored by the four REST-backed commands — `sql`, `metric run`, `explore`, and `datasource`. A key is pinned to one workspace, so the `--workspace` override does not apply to it. Commands that need an interactive session (`switch`, `entities`) still require `atlas login`.
+
+Set `ATLAS_API_URL` (default `http://localhost:3001`) to target a non-local API. See [API Key Management](/guides/api-keys) for the full credential model — ambient login vs. workspace key, scope, and RLS-claim bounds — and [Environment Variables](/reference/environment-variables#workspace-cli-credentials) for `ATLAS_API_URL` / `ATLAS_API_KEY` / `ATLAS_DATASOURCE_SECRET`.
+
+## login
+
+Authenticate the CLI via the OAuth 2.0 device-authorization flow ([RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628)). Atlas prints a one-time code and a verification URL; you approve it in a browser while signed in to Atlas, and the CLI polls for a session bearer and stores it in `~/.atlas/credentials`. The bearer is stamped `origin=cli` server-side, so it resolves to your org role for its bound workspace.
+
+```bash
+bun run atlas -- login
+```
+
+No flags. A single-workspace account auto-binds to its only workspace. A multi-workspace account logs in with **no** workspace bound yet — run [`atlas switch`](#switch) to choose one, or pass `--workspace <id>` on the commands that accept it.
+
+**Environment:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_API_URL` | `http://localhost:3001` | API server URL. The credential store is keyed per normalized base URL, so you can stay logged in to several Atlas instances at once |
+
+## logout
+
+Remove the stored CLI credentials for the current `ATLAS_API_URL`.
+
+```bash
+bun run atlas -- logout
+```
+
+No flags. Prints a confirmation, or a notice if you were not logged in for that API URL.
+
+## switch
+
+Choose which workspace the CLI acts on — for accounts that belong to more than one — and persist it as the default in `~/.atlas/credentials`. Requires [`atlas login`](#login) first.
+
+```bash
+bun run atlas -- switch [<id|slug>]
+```
+
+With **no argument**, lists your workspaces and prompts you to pick one (requires an interactive terminal). With an `<id|slug>` argument, switches non-interactively by workspace id or slug. The choice is committed through Better Auth's membership-gated set-active, so switching to a workspace you no longer belong to is rejected server-side.
+
+| Flag | Description |
+|------|-------------|
+| `--help`, `-h` | Show usage |
+
+**Examples:**
+
+```bash
+# Interactive picker (persists the choice as the default)
+bun run atlas -- switch
+
+# Non-interactive, by id or slug
+bun run atlas -- switch org_abc123
+bun run atlas -- switch acme-analytics
+```
+
+<Callout title="switch vs. --workspace">
+`atlas switch` sets the **persistent** default workspace for all subsequent commands. The per-command `--workspace <id>` override — accepted by [`atlas sql`](#sql) — rebinds the session for that **single** command only (same membership gate) and does **not** change your saved default. `--workspace` applies to interactive `atlas login` sessions only; workspace API keys are pinned to one workspace.
+</Callout>
+
+## sql
+
+Run a single validated `SELECT` against your logged-in workspace. This is the **advanced** surface — prefer [`atlas query`](#query) for natural-language questions; `sql` is for callers who already have the exact query. It is a thin HTTP client over `POST /api/v1/execute-sql`; the server is the sole security boundary and runs the same 4-layer validation pipeline (regex → AST single-`SELECT` → table whitelist), RLS injection, auto-`LIMIT`, statement timeout, and read-only connection as the agent loop, audited `origin=cli`.
+
+```bash
+bun run atlas -- sql "SELECT ..." [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--connection <id>` | Run against a specific datasource (default: the workspace's default) |
+| `--workspace <id>` | Act on a specific workspace for this command only (does not change your saved default — use [`atlas switch`](#switch)). Interactive `atlas login` sessions only; rejected with a workspace API key |
+| `--api-key <key>` | Use a workspace API key instead of your `atlas login` session (unattended CI). Overrides `ATLAS_API_KEY` |
+| `--json` | Machine-readable JSON output. Mutually exclusive with `--csv` |
+| `--csv` | CSV output (headers + rows, pipe-friendly). Mutually exclusive with `--json` |
+
+DML/DDL, multi-statement (`;`-chained), non-whitelisted-table, and unparseable SQL are all rejected by the server. Human output is a table (`(no rows)` when empty); a row-limited result prints a truncation note.
+
+**Examples:**
+
+```bash
+# Quote the statement for your shell
+bun run atlas -- sql "SELECT count(*) FROM orders"
+
+# JSON for piping to jq
+bun run atlas -- sql "SELECT id, name FROM customers LIMIT 10" --json
+
+# CSV against a specific datasource, redirected to a file
+bun run atlas -- sql "SELECT * FROM orders" --connection warehouse --csv > orders.csv
+
+# Unattended CI with a workspace key
+ATLAS_API_KEY=<workspace-key> bun run atlas -- sql "SELECT count(*) FROM orders"
+```
+
+## metric run
+
+Execute a canonical metric by id against your logged-in workspace. The metric's SQL is used **exactly as defined** (authoritative), and group routing is honored — a grouped metric runs against its own group's datasource. Reaches the same gated core as the MCP `runMetric` tool, audited `origin=cli`. Any workspace member can run a metric (parity with the chat / MCP reach).
+
+```bash
+bun run atlas -- metric run <id> [options]
+```
+
+`run` is the only subcommand; `<id>` is the metric id from `semantic/metrics/*.yml`.
+
+| Flag | Description |
+|------|-------------|
+| `--connection <id>` | Run against a specific datasource in the metric's group |
+| `--api-key <key>` | Use a workspace API key instead of your `atlas login` session (unattended CI). Overrides `ATLAS_API_KEY` |
+| `--json` | Machine-readable JSON output |
+
+A scalar metric (single column, single row) prints its value inline; a breakdown / multi-row metric renders a table.
+
+**Examples:**
+
+```bash
+bun run atlas -- metric run total_gmv
+bun run atlas -- metric run prod_signups --connection us-prod
+bun run atlas -- metric run total_gmv --json
+```
+
+## explore
+
+Run a single read-only command against your logged-in workspace's semantic layer — a thin HTTP client over `POST /api/v1/explore`. The server sandboxes execution with read-only, path-traversal-protected access scoped to `semantic/`, so writes, shell escapes, and traversal are rejected server-side (the CLI does no validation of its own).
+
+```bash
+bun run atlas -- explore <command...> [options]
+```
+
+The command is every token after `explore` (minus this CLI's own flags), so both `explore ls entities/` and `explore "cat catalog.yml"` work, and a command's own `--`-style argument (e.g. `grep --include='*.yml'`) is preserved.
+
+| Flag | Description |
+|------|-------------|
+| `--api-key <key>` | Use a workspace API key instead of your `atlas login` session (unattended CI). Overrides `ATLAS_API_KEY` |
+| `--json` | Machine-readable JSON output (`{ "output": "..." }`) |
+
+Only read-only commands run (`ls` / `cat` / `grep` / `find` / `head` / `tail` / `wc` / `awk` / `sed` / pipes).
+
+**Examples:**
+
+```bash
+bun run atlas -- explore ls
+bun run atlas -- explore "cat catalog.yml"
+bun run atlas -- explore grep -r revenue entities/
+bun run atlas -- explore "find . -name '*.yml'" --json
+```
+
+## datasource
+
+Manage the datasources of your logged-in workspace over the Atlas API. Each subcommand maps to one existing admin-connection REST route, authorized by your `atlas login` credential; operations act on **only** the bound workspace's datasources.
+
+```bash
+bun run atlas -- datasource <command> [id] [options]
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| [`list`](#datasource-list) | List the workspace's datasources |
+| [`get <id>`](#datasource-get) | Show one datasource's detail |
+| [`test <id>`](#datasource-test) | Health-check a datasource connection |
+| [`create <id>`](#datasource-create) | Provision a new datasource (connection URL captured on stdin / env, never a flag) |
+| [`profile <id>`](#datasource-profile) | Profile a datasource and generate its semantic layer as drafts (long-running, cancellable) |
+| [`archive <id>`](#datasource-archive) | Archive a datasource (reversible via `restore`) |
+| [`restore <id>`](#datasource-restore) | Restore an archived datasource (republishes it) |
+| [`delete <id>`](#datasource-delete) | Delete a datasource (soft — recoverable via `restore`) |
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Machine-readable JSON output |
+| `--api-key <key>` | Use a workspace API key instead of your `atlas login` session (unattended CI). Overrides `ATLAS_API_KEY` |
+| `--description <s>` | (`create`) Human-readable description |
+| `--schema <s>` | (`create`) Schema to scope to (e.g. a Postgres schema) |
+| `--group <id>` | (`create`) Attach to an existing environment/group. Mutually exclusive with `--new-group` |
+| `--new-group <name>` | (`create`) Create a new inline environment/group. Mutually exclusive with `--group` |
+
+<Callout type="warn" title="Every datasource command requires the workspace admin role">
+The admin-connection routes are admin-gated end to end, so every `datasource` subcommand — including read-only `list` / `get` / `test` — requires the workspace `admin` or `owner` role. A non-admin member is denied with an actionable message. (A workspace API key reaches this surface by design, so CI can provision and profile connections — see [API Key Management](/guides/api-keys#scope-data-plane--the-datasource-cli-not-console-admin).)
+</Callout>
+
+### datasource list
+
+List the workspace's datasources as a table (`id` / `type` / `status` / `group` / `health`), or as JSON with `--json`.
+
+```bash
+bun run atlas -- datasource list
+bun run atlas -- datasource list --json
+```
+
+### datasource get
+
+Show one datasource's detail — type, status, schema, group, masked URL, description, and health.
+
+```bash
+bun run atlas -- datasource get <id>
+```
+
+### datasource test
+
+Health-check a datasource connection. Prints the status and (when available) latency. A non-`healthy` result exits non-zero so scripts can branch on it.
+
+```bash
+bun run atlas -- datasource test <id>
+```
+
+### datasource create
+
+Provision a new datasource. The id positional and the option flags carry only **non-secret** metadata; the connection URL — which embeds the datasource credential — is the secret and is **never** accepted as a flag.
+
+```bash
+# Interactive: prompts for the connection URL on stdin (hidden input)
+bun run atlas -- datasource create <id> [--description <s>] [--schema <s>] [--group <id> | --new-group <name>]
+
+# Headless: supply the URL via the env var (kept out of argv and shell history)
+ATLAS_DATASOURCE_SECRET="postgres://user:pass@host:5432/db" bun run atlas -- datasource create <id>
+```
+
+<Callout title="Secret capture — stdin / env var, never a flag">
+The connection URL is captured by exactly one of two paths, in priority order: (1) the `ATLAS_DATASOURCE_SECRET` environment variable (the headless-agent path — read at request time, never lands in argv), or (2) a masked stdin prompt (the interactive path — keystrokes don't echo and don't enter shell history). With **no TTY and no env var** (a CI runner), `create` fails closed and defers datasource creation to the dashboard or the [Atlas MCP](/guides/mcp); a set-but-empty `ATLAS_DATASOURCE_SECRET` is treated as a misconfiguration and fails loudly rather than silently prompting.
+</Callout>
+
+The new datasource lands as a **draft** — publish it in the Atlas console (or it stays developer-mode-only). The command suggests `atlas datasource test <id>` to verify connectivity.
+
+### datasource profile
+
+Profile a datasource and generate its semantic layer. **Long-running**: it streams per-table progress (a spinner in a TTY, plain stderr lines otherwise) and is **cancellable** with Ctrl-C, which aborts the request cleanly. In `--json` mode the live progress is skipped and only the terminal result object is emitted.
+
+```bash
+bun run atlas -- datasource profile <id>
+bun run atlas -- datasource profile <id> --json
+```
+
+Generated entities and metrics are persisted as **drafts** — they are **not** auto-published. They are queryable immediately in developer mode; publish them from the admin console to make them queryable from the published `/chat` surface. If some tables fail introspection, the result is reported as incomplete and names the absent tables.
+
+### datasource archive
+
+Archive a datasource. Reversible — restore it with [`datasource restore`](#datasource-restore).
+
+```bash
+bun run atlas -- datasource archive <id>
+```
+
+### datasource restore
+
+Restore an archived datasource. This **republishes** it (`status='published'`) — it is queryable again.
+
+```bash
+bun run atlas -- datasource restore <id>
+```
+
+### datasource delete
+
+Delete a datasource. This is a **soft** delete — recoverable with [`datasource restore`](#datasource-restore). (This CLI has no hard-delete; an irreversible delete is an MCP-only operation.)
+
+```bash
+bun run atlas -- datasource delete <id>
 ```
 
 ## doctor
@@ -920,6 +1182,7 @@ ATLAS_TEARDOWN_OK=1 bun run atlas-operator -- ops teardown-verify-accounts \
 
 ## See Also
 
+- [API Key Management](/guides/api-keys) — The credential model behind the [workspace commands](#workspace-commands): ambient `atlas login` reuse vs. a workspace API key for unattended CI
 - [Schema Evolution](/deployment/schema-evolution) — Detecting database drift with `atlas diff` and updating entity YAMLs
 - [MCP Server](/guides/mcp) — Using `atlas mcp` with Claude Desktop and Cursor
 - [Environment Variables](/reference/environment-variables) — Variables that affect CLI behavior (`ATLAS_DATASOURCE_URL`, `ATLAS_SCHEMA`, etc.)

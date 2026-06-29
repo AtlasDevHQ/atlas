@@ -363,6 +363,28 @@ describe("POST /datasources/{id}/profile — NDJSON streaming (#4052)", () => {
     expect(capturedContext.actorKind).toBe("human");
   });
 
+  it("stamps actor.kind=api_key for an unattended workspace API key (#4046 / ADR-0027 §6)", async () => {
+    // The api-key auth path marks the resolved user with claims.api_key=true and
+    // keeps origin=cli (the CLI transport). The profiler persists drafts under
+    // this bound context, so the trail must distinguish the unattended key from
+    // a human device-flow login rather than flatten both to `human`.
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: {
+        id: "user-1",
+        mode: "managed",
+        label: "Alice",
+        role: "admin",
+        activeOrganizationId: "org-1",
+        claims: { sub: "user-1", org_id: "org-1", origin: "cli", api_key: true },
+      },
+    } as unknown as AuthResult);
+    await app.fetch(profileRequest("prod-us"));
+    expect(capturedContext.agentOrigin).toBe("cli");
+    expect(capturedContext.actorKind).toBe("api_key");
+  });
+
   it("closes the live connection after profiling settles", async () => {
     await app.fetch(profileRequest("prod-us"));
     expect(fakeConnection.close).toHaveBeenCalled();

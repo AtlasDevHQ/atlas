@@ -39,6 +39,7 @@ import {
 } from "@atlas/api/lib/billing/agent-gate";
 import { resolveMetricRun } from "@atlas/api/lib/semantic/metric-run";
 import { isRequestOrigin } from "@atlas/api/lib/approvals/types";
+import { resolveActorKind } from "@atlas/api/lib/auth/api-key-metadata";
 import type { UserQueryOutcome } from "@atlas/api/lib/tools/sql";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema } from "./shared-schemas";
@@ -359,18 +360,43 @@ metrics.openapi(runMetricRoute, async (c) => {
       // Origin for approval-rule matching + audit: the credential's resolved
       // origin claim (`cli` for an `atlas login` device-flow bearer), falling
       // back to `cli` — this endpoint is the workspace CLI metric-run surface.
-      // `actor.kind = human`: the device-flow login is a person who approved in
-      // a browser (ADR-0027 §6). The unattended-key `api_key` actor_kind is
-      // #4046's responsibility, not this slice.
       const claimOrigin = user?.claims?.origin;
       const agentOrigin =
         typeof claimOrigin === "string" && isRequestOrigin(claimOrigin) ? claimOrigin : "cli";
 
-      // Bind the actor + origin into AsyncLocalStorage so runUserQueryPipeline's
-      // RLS claims, approval matching, and audit row all see the bound caller.
+      // `actor.kind` is the *who*, distinct from `origin` (the transport): a
+      // human who approved a device-flow `atlas login` → `human`; an UNATTENDED
+      // workspace API key (#4046 / ADR-0027 §6) → `api_key`. This metric run is
+      // written to `audit_log` by `runUserQueryPipeline`, so flattening it to
+      // `human` would make a leaked CI key indistinguishable from a compromised
+      // human session in the trail — shared with the sibling routes via
+      // `resolveActorKind`.
+      const actorKind = resolveActorKind(user?.claims);
+
+      // The outer `requestContext` middleware bound these (it ran first); we
+      // re-thread them through the inner bind because `withRequestContext` is
+      // `AsyncLocalStorage.run` — it REPLACES the context, it does not merge.
+      // Dropping `atlasMode` would silently downgrade a developer-mode caller to
+      // the published overlay inside `runUserQueryPipeline` (it reads
+      // `reqCtx.atlasMode ?? "published"` for connection mode-visibility AND the
+      // table whitelist scope), so a draft metric / freshly-profiled draft
+      // connection would resolve against the wrong overlay.
+      const atlasMode = c.get("atlasMode");
+      const trustDeviceIdentifier = c.get("trustDeviceIdentifier");
+
+      // Bind the actor + origin + mode into AsyncLocalStorage so
+      // runUserQueryPipeline's RLS claims, approval matching, audit row, and
+      // mode-scoped connection + whitelist resolution all see the bound caller.
       const outcome = yield* Effect.promise(() =>
         withRequestContext(
-          { requestId, user, agentOrigin, actor: { kind: "human" } },
+          {
+            requestId,
+            user,
+            atlasMode,
+            trustDeviceIdentifier,
+            agentOrigin,
+            actor: { kind: actorKind },
+          },
           async () => {
             const { runUserQueryPipeline } = await import("@atlas/api/lib/tools/sql");
             return runUserQueryPipeline({

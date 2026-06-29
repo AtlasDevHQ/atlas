@@ -47,6 +47,24 @@ import { parseRole } from "@atlas/api/lib/auth/permissions";
 export const API_KEY_MARKER_CLAIM = "api_key" as const;
 
 /**
+ * Resolve the audit `actor.kind` for a request from its resolved user's claims:
+ * `"api_key"` when the workspace-API-key auth path stamped
+ * {@link API_KEY_MARKER_CLAIM} (`managed.ts` → `claims.api_key = true`), else
+ * `"human"` (a device-flow `atlas login` bearer or any interactive session).
+ *
+ * This is the *who*, kept distinct from the `claims.origin` *transport* (see
+ * {@link API_KEY_MARKER_CLAIM}). Shared by every CLI-reachable REST route
+ * (execute-sql, metrics, explore, datasources) so an unattended CI key is
+ * stamped consistently across the whole surface it can reach — flattening it to
+ * `"human"` on any one route would be a lie in the audit trail (ADR-0027 §6).
+ */
+export function resolveActorKind(
+  claims: Record<string, unknown> | null | undefined,
+): "human" | "api_key" {
+  return claims?.[API_KEY_MARKER_CLAIM] === true ? "api_key" : "human";
+}
+
+/**
  * The canonical workspace-API-key metadata shape, as resolved back from an
  * untrusted Better Auth metadata bag. `role` is optional because a malformed /
  * absent role is tolerated (the live member role is authoritative at use time);

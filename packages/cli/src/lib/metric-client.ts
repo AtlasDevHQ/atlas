@@ -7,18 +7,20 @@
  * This maps one workspace CLI subcommand onto one route and surfaces the typed
  * outcome.
  *
- * Authorization rides entirely on the `atlas login` workspace credential: the
- * stored Better Auth session bearer (stamped `origin='cli'` server-side) is
- * sent as `Authorization: Bearer <token>`. The route resolves it live to
- * `{ orgId, role }`, runs billing gate-0, and executes the metric's
- * authoritative SQL against ONLY the bound workspace — the CLI never re-derives
- * any of that.
+ * Authorization rides on the workspace credential — a `atlas login` device-flow
+ * SESSION bearer (`Authorization: Bearer`) XOR a workspace-scoped API key for
+ * unattended CI (#4046, `x-api-key`); see {@link CliCredential}. Either way the
+ * route resolves it live to `{ orgId, role }`, runs billing gate-0, and executes
+ * the metric's authoritative SQL against ONLY the bound workspace — the CLI never
+ * re-derives any of that.
  *
  * `fetch` is injectable so the route mapping + status-code handling are
  * unit-testable without a live server (mirrors `datasource-client.ts`). No
  * function here calls `process.exit` or `console`; the command handler owns
  * presentation.
  */
+
+import { credentialHeaders, type CliCredential } from "./credential";
 
 type FetchImpl = typeof fetch;
 
@@ -61,8 +63,11 @@ export interface MetricRunResult {
 export interface MetricClientOptions {
   /** Normalized Atlas API base URL (no trailing slash). */
   readonly baseUrl: string;
-  /** The stored `atlas login` session bearer. */
-  readonly token: string;
+  /**
+   * The workspace credential — a session bearer XOR a workspace API key (never
+   * both). See {@link CliCredential}.
+   */
+  readonly credential: CliCredential;
   /** Injectable for tests; defaults to the global `fetch`. */
   readonly fetchImpl?: FetchImpl;
   /** Per-request timeout in ms (default 60s — a metric query can be slower than metadata). */
@@ -115,7 +120,7 @@ export async function runMetric(
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${opts.token}`,
+          ...credentialHeaders(opts.credential),
           "Content-Type": "application/json",
         },
         body: JSON.stringify(args.connectionId ? { connectionId: args.connectionId } : {}),

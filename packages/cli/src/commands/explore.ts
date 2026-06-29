@@ -16,11 +16,12 @@
  */
 
 import { resolveApiBaseUrl } from "../lib/api-base";
+import { credentialHeaders, resolveCredential } from "../lib/credential";
 import { readSession, type StoredSession } from "../lib/credentials";
 
 const USAGE = `Run a read-only command against your logged-in workspace's semantic layer.
 
-Usage: atlas explore <command...> [--json]
+Usage: atlas explore <command...> [--api-key <key>] [--json]
 
 Examples:
   atlas explore ls
@@ -29,12 +30,17 @@ Examples:
   atlas explore "find . -name '*.yml'" --json
 
 Options:
+  --api-key <key>     Use a workspace API key instead of your \`atlas login\` session
+                      (unattended CI). Overrides ATLAS_API_KEY.
   --json              Machine-readable JSON output ({ "output": "..." })
 
 Only read-only commands run (ls/cat/grep/find/head/tail/wc/awk/sed/pipes). The
 server sandboxes execution scoped to the semantic layer — writes, shell escapes,
 and path traversal are rejected.
-Requires \`atlas login\` first. Set ATLAS_API_URL to target a non-local API.`;
+
+Authentication: \`atlas login\` for interactive use (ambient session reuse — no
+key needed), OR a workspace API key via --api-key / ATLAS_API_KEY for unattended
+CI. Set ATLAS_API_URL to target a non-local API.`;
 
 /** stdout/stderr sink — injected so tests can capture output. */
 export interface ExploreIO {
@@ -51,6 +57,12 @@ const defaultIO: ExploreIO = {
 export interface ExploreRunDeps {
   readonly baseUrl: string;
   readonly session: StoredSession | null;
+  /**
+   * A workspace-scoped API key for unattended CI (#4046), resolved from the
+   * `--api-key` flag or the `ATLAS_API_KEY` env var. When present it takes
+   * precedence over the stored session — CI never goes through `atlas login`.
+   */
+  readonly apiKey?: string;
   readonly fetchImpl?: typeof fetch;
 }
 
@@ -61,6 +73,39 @@ interface ExploreResponse {
 
 /** CLI-owned flags stripped from the argv before the rest becomes the command. */
 const CLI_FLAGS = new Set(["--json", "--help", "-h"]);
+const API_KEY_FLAG = "--api-key";
+
+/**
+ * Split the argv into the explore command string and the optional `--api-key`
+ * value. The command is every token after the literal EXCEPT this CLI's own
+ * flags (`--json`/`--help`/`-h`) and the credential flag (`--api-key <key>` or
+ * `--api-key=<key>`) — so neither the key nor the flag itself leaks into the
+ * command the server runs, while a command's own `--`-style argument (e.g.
+ * `grep --include='*.yml'`) is preserved.
+ */
+function parseExploreArgs(args: string[]): { command: string; apiKey?: string } {
+  const tokens = args.slice(1);
+  const positional: string[] = [];
+  let apiKey: string | undefined;
+  for (let i = 0; i < tokens.length; i++) {
+    const a = tokens[i];
+    if (a === API_KEY_FLAG) {
+      const next = tokens[i + 1];
+      if (next !== undefined && !next.startsWith("--")) {
+        apiKey = next;
+        i++; // consume the value token
+      }
+      continue;
+    }
+    if (a.startsWith(`${API_KEY_FLAG}=`)) {
+      apiKey = a.slice(API_KEY_FLAG.length + 1);
+      continue;
+    }
+    if (CLI_FLAGS.has(a)) continue;
+    positional.push(a);
+  }
+  return { command: positional.join(" ").trim(), ...(apiKey ? { apiKey } : {}) };
+}
 
 /**
  * Run the explore command. Returns an exit code (0 success, 1 failure) without
@@ -84,19 +129,20 @@ export async function runExplore(
   }
 
   const json = args.includes("--json");
-  const command = args
-    .slice(1)
-    .filter((a) => !CLI_FLAGS.has(a))
-    .join(" ")
-    .trim();
+  const { command, apiKey: argApiKey } = parseExploreArgs(args);
 
   if (!command) {
     io.out(USAGE);
     return 1;
   }
 
-  if (!deps.session) {
-    io.err("Not logged in. Run `atlas login` first.");
+  // A workspace API key (#4046, unattended CI) takes precedence over a stored
+  // login; the flag wins over the env var (deps.apiKey). Keys are
+  // workspace-pinned, so no rebind is needed.
+  const apiKey = argApiKey ?? deps.apiKey;
+  const credential = resolveCredential(apiKey, deps.session);
+  if (!credential) {
+    io.err("Not logged in. Run `atlas login` first, or set ATLAS_API_KEY for unattended use.");
     return 1;
   }
 
@@ -108,7 +154,7 @@ export async function runExplore(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${deps.session.token}`,
+        ...credentialHeaders(credential),
       },
       body: JSON.stringify({ command }),
       signal: AbortSignal.timeout(30_000),
@@ -158,6 +204,10 @@ export async function runExplore(
 export async function handleExplore(args: string[]): Promise<void> {
   const baseUrl = resolveApiBaseUrl();
   const session = readSession(baseUrl);
-  const code = await runExplore(args, { baseUrl, session });
+  // ATLAS_API_KEY (#4046) is the unattended-CI credential — it is NOT persisted
+  // to ~/.atlas/credentials (a CI secret managed by the CI system, not an
+  // interactive login). `--api-key` (parsed in runExplore) overrides it.
+  const apiKey = process.env.ATLAS_API_KEY?.trim() || undefined;
+  const code = await runExplore(args, { baseUrl, session, ...(apiKey ? { apiKey } : {}) });
   if (code !== 0) process.exit(code);
 }

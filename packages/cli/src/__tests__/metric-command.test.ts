@@ -16,17 +16,27 @@ function capture(): { io: MetricIO; out: string[]; err: string[] } {
   return { io: { out: (l) => out.push(l), err: (l) => err.push(l) }, out, err };
 }
 
-/** Single-canned-response fetch capturing requests + their bodies. */
+/** Single-canned-response fetch capturing requests + their bodies + headers. */
 function stubFetch(
   status: number,
   body: unknown,
-): { fetchImpl: typeof fetch; calls: Array<{ method: string; url: string; body: string }> } {
-  const calls: Array<{ method: string; url: string; body: string }> = [];
+): {
+  fetchImpl: typeof fetch;
+  calls: Array<{ method: string; url: string; body: string; headers: Record<string, string> }>;
+} {
+  const calls: Array<{ method: string; url: string; body: string; headers: Record<string, string> }> = [];
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const headers: Record<string, string> = {};
+    if (init?.headers) {
+      new Headers(init.headers as Record<string, string>).forEach((v, k) => {
+        headers[k] = v;
+      });
+    }
     calls.push({
       method: init?.method ?? "GET",
       url: typeof url === "string" ? url : url.toString(),
       body: typeof init?.body === "string" ? init.body : "",
+      headers,
     });
     return new Response(JSON.stringify(body), {
       status,
@@ -150,6 +160,97 @@ describe("runMetricCommand — execution", () => {
     const joined = out.join("\n");
     expect(joined).toContain("region");
     expect(joined).toContain("us");
+  });
+});
+
+describe("runMetricCommand — workspace API key (#4112 unattended CI)", () => {
+  it("sends the key on x-api-key (not Authorization) when ATLAS_API_KEY is set, with no session", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_SCALAR);
+    const { io } = capture();
+    const code = await runMetricCommand(
+      ["metric", "run", "total_gmv"],
+      { baseUrl: BASE, session: null, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].headers["x-api-key"]).toBe("atlas_wk_abc");
+    expect(calls[0].headers["authorization"]).toBeUndefined();
+  });
+
+  it("the --api-key flag overrides ATLAS_API_KEY (deps.apiKey)", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_SCALAR);
+    const { io } = capture();
+    const code = await runMetricCommand(
+      ["metric", "run", "total_gmv", "--api-key", "flag_key"],
+      { baseUrl: BASE, session: null, apiKey: "env_key", fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].headers["x-api-key"]).toBe("flag_key");
+  });
+
+  it("does not mistake the --api-key value for the metric id positional", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_SCALAR);
+    const { io } = capture();
+    const code = await runMetricCommand(
+      ["metric", "run", "--api-key", "flag_key", "total_gmv"],
+      { baseUrl: BASE, session: null, fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].url).toBe(`${BASE}/api/v1/metrics/total_gmv/run`);
+  });
+
+  it("honors the inline --api-key=<key> form and does not silently fall back to the session", async () => {
+    // Regression: a space-only flag reader drops `--api-key=key` and would run as
+    // the ambient session — wrong identity, no error. The key must win here.
+    const { fetchImpl, calls } = stubFetch(200, OK_SCALAR);
+    const { io } = capture();
+    const code = await runMetricCommand(
+      ["metric", "run", "total_gmv", "--api-key=inline_key"],
+      { baseUrl: BASE, session: SESSION, fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].headers["x-api-key"]).toBe("inline_key");
+    expect(calls[0].headers["authorization"]).toBeUndefined();
+    expect(calls[0].url).toBe(`${BASE}/api/v1/metrics/total_gmv/run`);
+  });
+
+  it("the api-key path takes precedence over a stored session", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_SCALAR);
+    const { io } = capture();
+    await runMetricCommand(
+      ["metric", "run", "total_gmv"],
+      { baseUrl: BASE, session: SESSION, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    expect(calls[0].headers["x-api-key"]).toBe("atlas_wk_abc");
+    expect(calls[0].headers["authorization"]).toBeUndefined();
+  });
+
+  it("with neither a session nor an api-key, refuses with a login + ATLAS_API_KEY hint", async () => {
+    const { io, err } = capture();
+    const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(undefined, null), io);
+    expect(code).toBe(1);
+    const joined = err.join("\n");
+    expect(joined).toContain("atlas login");
+    expect(joined).toContain("ATLAS_API_KEY");
+  });
+
+  it("does not mistake the --connection value for the metric id positional", async () => {
+    // Pre-existing argv gap surfaced by adding a second value flag: the id finder
+    // must skip a value-taking flag's value, not return it as the id.
+    const { fetchImpl, calls } = stubFetch(200, { ...OK_SCALAR, id: "prod_signups" });
+    const { io } = capture();
+    const code = await runMetricCommand(
+      ["metric", "run", "--connection", "us-prod", "prod_signups"],
+      deps(fetchImpl),
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].url).toBe(`${BASE}/api/v1/metrics/prod_signups/run`);
+    expect(JSON.parse(calls[0].body)).toEqual({ connectionId: "us-prod" });
   });
 });
 

@@ -24,6 +24,8 @@
  * here calls `process.exit` or `console`; the command handler owns presentation.
  */
 
+import { credentialHeaders, type CliCredential } from "./credential";
+
 type FetchImpl = typeof fetch;
 
 /** The kinds of failure a raw-SQL call can surface, each with an actionable message. */
@@ -65,15 +67,10 @@ export interface SqlClientOptions {
   /** Normalized Atlas API base URL (no trailing slash). */
   readonly baseUrl: string;
   /**
-   * The stored `atlas login` session bearer (`Authorization: Bearer`). Mutually
-   * exclusive with {@link apiKey}; exactly one credential must be supplied.
+   * The workspace credential — a session bearer XOR a workspace API key (never
+   * both). See {@link CliCredential}.
    */
-  readonly token?: string;
-  /**
-   * A workspace-scoped API key for unattended CI (#4046), sent as `x-api-key`.
-   * Mutually exclusive with {@link token}.
-   */
-  readonly apiKey?: string;
+  readonly credential: CliCredential;
   /** Injectable for tests; defaults to the global `fetch`. */
   readonly fetchImpl?: FetchImpl;
   /** Per-request timeout in ms (default 60s — a SQL query can be slower than metadata). */
@@ -116,19 +113,12 @@ export async function runSql(opts: SqlClientOptions, args: RunSqlArgs): Promise<
   const fetchImpl = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? 60_000;
 
-  // Exactly one credential class. A workspace API key (#4046) goes on `x-api-key`
-  // (the apiKey() plugin header); a device-flow session goes on `Authorization:
-  // Bearer`. Never send both — the server resolves whichever it sees.
-  const authHeader: Record<string, string> = opts.apiKey
-    ? { "x-api-key": opts.apiKey }
-    : { Authorization: `Bearer ${opts.token ?? ""}` };
-
   let res: Response;
   try {
     res = await fetchImpl(`${opts.baseUrl}/api/v1/execute-sql`, {
       method: "POST",
       headers: {
-        ...authHeader,
+        ...credentialHeaders(opts.credential),
         "Content-Type": "application/json",
       },
       // ONLY sql (+ optional connectionId) — never an org/workspace field. The

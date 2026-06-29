@@ -27,6 +27,7 @@
 
 import { renderTable } from "../../lib/output";
 import { resolveApiBaseUrl } from "../lib/api-base";
+import { readApiKeyFlag, resolveCredential } from "../lib/credential";
 import { readSession, type StoredSession } from "../lib/credentials";
 import { createProgressTracker } from "../progress";
 import {
@@ -66,6 +67,8 @@ Commands:
 
 Options:
   --json              Machine-readable JSON output
+  --api-key <key>     Use a workspace API key instead of your \`atlas login\` session
+                      (unattended CI). Overrides ATLAS_API_KEY.
   --description <s>   (create) Human-readable description
   --schema <s>        (create) Schema to scope to (e.g. a Postgres schema)
   --group <id>        (create) Attach to an existing environment/group
@@ -80,7 +83,10 @@ Every datasource command requires the workspace admin role (admin/owner); a
 non-admin member is denied with an actionable message.
 \`profile\` is long-running: it streams per-table progress and is cancellable
 (Ctrl-C). Generated entities land as DRAFTS — publish them from the admin console.
-Requires \`atlas login\` first. Set ATLAS_API_URL to target a non-local API.`;
+
+Authentication: \`atlas login\` for interactive use (ambient session reuse — no
+key needed), OR a workspace API key via --api-key / ATLAS_API_KEY for unattended
+CI. Set ATLAS_API_URL to target a non-local API.`;
 
 /** The id-taking lifecycle subcommands (everything except `list` and `create`). */
 const ID_SUBCOMMANDS = ["get", "test", "profile", "archive", "restore", "delete"] as const;
@@ -109,6 +115,12 @@ const defaultIO: DatasourceIO = {
 export interface DatasourceRunDeps {
   readonly baseUrl: string;
   readonly session: StoredSession | null;
+  /**
+   * A workspace-scoped API key for unattended CI (#4046), resolved from the
+   * `--api-key` flag or the `ATLAS_API_KEY` env var. When present it takes
+   * precedence over the stored session — CI never goes through `atlas login`.
+   */
+  readonly apiKey?: string;
   readonly fetchImpl?: typeof fetch;
   /**
    * Secret-capture probes + prompt for `create` (injected so tests exercise the
@@ -118,9 +130,22 @@ export interface DatasourceRunDeps {
   readonly secretCapture?: SecretCaptureDeps;
 }
 
-/** First non-flag argument after the subcommand (the datasource id), if any. */
+/**
+ * First non-flag argument after the subcommand (the datasource id), if any.
+ * Skips the value consumed by `--api-key <key>` (the one value-taking flag the
+ * id-subcommands accept) so the key is never mistaken for the id.
+ */
 function positionalId(args: string[]): string | undefined {
-  return args.slice(2).find((a) => !a.startsWith("--"));
+  for (let i = 2; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--api-key") {
+      i++; // skip the key value
+      continue;
+    }
+    if (a.startsWith("--")) continue;
+    return a;
+  }
+  return undefined;
 }
 
 /** The `create` flags that consume the following argument as their value. */
@@ -134,7 +159,9 @@ const CREATE_VALUE_FLAGS = ["--description", "--schema", "--group", "--new-group
  * flags like `--json` consume nothing. Returns undefined when no id is present.
  */
 function createPositionalId(args: string[]): string | undefined {
-  const valueFlags = new Set<string>(CREATE_VALUE_FLAGS);
+  // `--api-key <key>` is a global credential flag (not create metadata), but it
+  // still consumes its following token — include it so the key isn't read as id.
+  const valueFlags = new Set<string>([...CREATE_VALUE_FLAGS, "--api-key"]);
   // Skip args[0] ("datasource") and args[1] ("create").
   for (let i = 2; i < args.length; i++) {
     const a = args[i];
@@ -260,14 +287,19 @@ export async function runDatasource(
     return 1;
   }
 
-  if (!deps.session) {
-    io.err("Not logged in. Run `atlas login` first.");
+  // A workspace API key (#4046, unattended CI) takes precedence over a stored
+  // login; the flag (either `--api-key key` or `--api-key=key`) wins over the env
+  // var (deps.apiKey). Keys are workspace-pinned, so no rebind is needed.
+  const apiKey = readApiKeyFlag(args) ?? deps.apiKey;
+  const credential = resolveCredential(apiKey, deps.session);
+  if (!credential) {
+    io.err("Not logged in. Run `atlas login` first, or set ATLAS_API_KEY for unattended use.");
     return 1;
   }
 
   const opts: DatasourceClientOptions = {
     baseUrl: deps.baseUrl,
-    token: deps.session.token,
+    credential,
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
   };
   const json = args.includes("--json");
@@ -291,10 +323,14 @@ export async function runDatasource(
 
   try {
     const datasources = await listDatasources(opts);
+    // An api-key path has no local session, so the bound workspace id isn't
+    // known client-side — the server resolves it from the key. Fall back to
+    // null (the empty-state line and JSON envelope both tolerate it).
+    const workspaceId = deps.session?.workspaceId ?? null;
     if (json) {
-      io.out(JSON.stringify({ workspaceId: deps.session.workspaceId, datasources }, null, 2));
+      io.out(JSON.stringify({ workspaceId, datasources }, null, 2));
     } else {
-      renderList(io, deps.session.workspaceId, datasources);
+      renderList(io, workspaceId, datasources);
     }
     return 0;
   } catch (err) {
@@ -553,6 +589,15 @@ function liveSecretCapture(): SecretCaptureDeps {
 export async function handleDatasource(args: string[]): Promise<void> {
   const baseUrl = resolveApiBaseUrl();
   const session = readSession(baseUrl);
-  const code = await runDatasource(args, { baseUrl, session, secretCapture: liveSecretCapture() });
+  // ATLAS_API_KEY (#4046) is the unattended-CI credential — it is NOT persisted
+  // to ~/.atlas/credentials (a CI secret managed by the CI system, not an
+  // interactive login). `--api-key` (parsed in runDatasource) overrides it.
+  const apiKey = process.env.ATLAS_API_KEY?.trim() || undefined;
+  const code = await runDatasource(args, {
+    baseUrl,
+    session,
+    ...(apiKey ? { apiKey } : {}),
+    secretCapture: liveSecretCapture(),
+  });
   if (code !== 0) process.exit(code);
 }

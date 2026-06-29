@@ -201,6 +201,22 @@ describe("runSqlCommand — workspace API key (#4046 unattended CI)", () => {
     expect(JSON.parse(calls[0].body)).toEqual({ sql: "SELECT 7" });
   });
 
+  it("honors the inline --api-key=<key> form and does not silently fall back to the session", async () => {
+    // Regression: a space-only flag reader drops `--api-key=key` and would run as
+    // the ambient session — wrong identity, no error. The key must win here.
+    const { fetchImpl, calls } = stubFetch(200, OK_ROWS);
+    const { io } = capture();
+    const code = await runSqlCommand(
+      ["sql", "SELECT 1", "--api-key=inline_key"],
+      { baseUrl: BASE, session: SESSION, fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].headers["x-api-key"]).toBe("inline_key");
+    expect(calls[0].headers["authorization"]).toBeUndefined();
+    expect(JSON.parse(calls[0].body)).toEqual({ sql: "SELECT 1" });
+  });
+
   it("the api-key path takes precedence over a stored session", async () => {
     const { fetchImpl, calls } = stubFetch(200, OK_ROWS);
     const { io } = capture();

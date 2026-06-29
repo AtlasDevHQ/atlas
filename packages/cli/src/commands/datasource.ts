@@ -31,39 +31,57 @@ import { readSession, type StoredSession } from "../lib/credentials";
 import {
   DatasourceCliError,
   archiveDatasource,
+  createDatasource,
   deleteDatasource,
   getDatasource,
   listDatasources,
   restoreDatasource,
   testDatasource,
+  type CreateDatasourceMetadata,
   type DatasourceClientOptions,
 } from "../lib/datasource-client";
+import {
+  captureDatasourceSecret,
+  DATASOURCE_SECRET_ENV,
+  type DeferredSecret,
+  type SecretCaptureDeps,
+} from "../lib/datasource-secret";
 
 const USAGE = `Manage the datasources of your logged-in workspace.
 
-Usage: atlas datasource <command> [id] [--json]
+Usage: atlas datasource <command> [id] [options]
 
 Commands:
   list                List the workspace's datasources
   get <id>            Show one datasource's detail
   test <id>           Health-check a datasource connection
+  create <id>         Provision a new datasource (secret captured on stdin)
   archive <id>        Archive a datasource (reversible via restore)
   restore <id>        Restore an archived datasource
   delete <id>         Delete a datasource (soft — recoverable via restore)
 
 Options:
   --json              Machine-readable JSON output
+  --description <s>   (create) Human-readable description
+  --schema <s>        (create) Schema to scope to (e.g. a Postgres schema)
+  --group <id>        (create) Attach to an existing environment/group
+  --new-group <name>  (create) Create a new inline environment/group
+
+Secret capture (create): the connection URL embeds the credential, so it is
+NEVER passed as a flag. It is read from the ${DATASOURCE_SECRET_ENV} env var
+(headless agents) or prompted on stdin (interactive). CI with no terminal and
+no env var defers datasource creation to the dashboard or MCP.
 
 Every datasource command requires the workspace admin role (admin/owner); a
 non-admin member is denied with an actionable message.
 Requires \`atlas login\` first. Set ATLAS_API_URL to target a non-local API.`;
 
-/** The id-taking subcommands (everything except `list`). */
+/** The id-taking lifecycle subcommands (everything except `list` and `create`). */
 const ID_SUBCOMMANDS = ["get", "test", "archive", "restore", "delete"] as const;
 type IdSubcommand = (typeof ID_SUBCOMMANDS)[number];
 
-/** Every datasource subcommand. */
-const DATASOURCE_SUBCOMMANDS = ["list", ...ID_SUBCOMMANDS] as const;
+/** Every datasource subcommand. `create` takes an id positional plus option flags. */
+const DATASOURCE_SUBCOMMANDS = ["list", "create", ...ID_SUBCOMMANDS] as const;
 type DatasourceSubcommand = (typeof DATASOURCE_SUBCOMMANDS)[number];
 
 function isDatasourceSubcommand(value: string): value is DatasourceSubcommand {
@@ -86,11 +104,62 @@ export interface DatasourceRunDeps {
   readonly baseUrl: string;
   readonly session: StoredSession | null;
   readonly fetchImpl?: typeof fetch;
+  /**
+   * Secret-capture probes + prompt for `create` (injected so tests exercise the
+   * env/stdin/defer branches without a real TTY). Defaults to the live
+   * `process`/`@clack` wiring in `handleDatasource` when omitted.
+   */
+  readonly secretCapture?: SecretCaptureDeps;
 }
 
 /** First non-flag argument after the subcommand (the datasource id), if any. */
 function positionalId(args: string[]): string | undefined {
   return args.slice(2).find((a) => !a.startsWith("--"));
+}
+
+/** The `create` flags that consume the following argument as their value. */
+const CREATE_VALUE_FLAGS = ["--description", "--schema", "--group", "--new-group"] as const;
+
+/**
+ * Extract the datasource id positional from a `create` invocation, skipping any
+ * value consumed by a `--flag value` option so a flag's value (e.g. the
+ * description) is never mistaken for the id. `--flag=value` forms consume no
+ * following token, so only the space-separated form needs the skip. Boolean
+ * flags like `--json` consume nothing. Returns undefined when no id is present.
+ */
+function createPositionalId(args: string[]): string | undefined {
+  const valueFlags = new Set<string>(CREATE_VALUE_FLAGS);
+  // Skip args[0] ("datasource") and args[1] ("create").
+  for (let i = 2; i < args.length; i++) {
+    const a = args[i];
+    if (valueFlags.has(a)) {
+      i++; // skip the value token this flag consumes
+      continue;
+    }
+    if (a.startsWith("--")) continue; // boolean flag or `--flag=value`
+    return a;
+  }
+  return undefined;
+}
+
+/**
+ * Read the value of a `--flag <value>` option from argv (supports both
+ * `--flag value` and `--flag=value`). Returns undefined when the flag is absent.
+ * Secrets are NEVER read this way — only non-sensitive create metadata.
+ */
+function flagValue(args: string[], flag: string): string | undefined {
+  const prefix = `${flag}=`;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === flag) {
+      const next = args[i + 1];
+      return next !== undefined && !next.startsWith("--") ? next : undefined;
+    }
+    if (a.startsWith(prefix)) {
+      return a.slice(prefix.length);
+    }
+  }
+  return undefined;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -176,7 +245,14 @@ export async function runDatasource(
   };
   const json = args.includes("--json");
 
-  // Subcommands other than `list` require a datasource id.
+  // `create` takes an id positional plus option flags, and captures the secret
+  // URL on stdin / from an env var (ADR-0025 §4) — handled before the generic
+  // id-subcommand path so its distinct argument shape and secret capture apply.
+  if (subcommand === "create") {
+    return runCreate(args, opts, json, deps, io);
+  }
+
+  // Lifecycle subcommands other than `list` require a datasource id.
   if (subcommand !== "list") {
     const id = positionalId(args);
     if (!id) {
@@ -263,6 +339,108 @@ async function runIdSubcommand(
   }
 }
 
+/**
+ * Actionable message for each reason the secret capture deferred (no secret
+ * obtained). Typed against `DeferredSecret["reason"]` (the SSOT in the secret
+ * module) with a `never` exhaustiveness backstop, so adding a new defer reason
+ * fails to compile here until its message is added.
+ */
+function deferredMessage(reason: DeferredSecret["reason"]): string {
+  switch (reason) {
+    case "no_tty_no_env":
+      return (
+        `No interactive terminal and ${DATASOURCE_SECRET_ENV} is not set, so the connection ` +
+        `URL can't be captured safely. For a headless agent, export the URL as ` +
+        `${DATASOURCE_SECRET_ENV} for this one command. CI without a terminal should provision ` +
+        `the datasource via the dashboard or the Atlas MCP and reference it instead.`
+      );
+    case "empty_env":
+      return `${DATASOURCE_SECRET_ENV} is set but empty. Set it to the full connection URL, or unset it to be prompted on stdin.`;
+    case "empty_stdin":
+      return "No connection URL was entered. Re-run and paste the full URL at the prompt.";
+    case "cancelled":
+      return "Cancelled — no datasource was created.";
+    default: {
+      const _exhaustive: never = reason;
+      return _exhaustive;
+    }
+  }
+}
+
+/**
+ * `atlas datasource create <id> [options]` — provision a datasource (#4051).
+ *
+ * The id positional + option flags carry only NON-secret metadata; the
+ * connection URL (the secret) is captured separately on stdin or from the
+ * env var and handed to the client as a distinct argument so it can never be
+ * logged alongside the metadata or leak through argv.
+ */
+async function runCreate(
+  args: string[],
+  opts: DatasourceClientOptions,
+  json: boolean,
+  deps: DatasourceRunDeps,
+  io: DatasourceIO,
+): Promise<number> {
+  const id = createPositionalId(args);
+  if (!id) {
+    io.err("Usage: atlas datasource create <id> [--description <s>] [--schema <s>] [--group <id> | --new-group <name>]");
+    return 1;
+  }
+
+  const description = flagValue(args, "--description");
+  const schema = flagValue(args, "--schema");
+  const connectionGroupId = flagValue(args, "--group");
+  const newGroupName = flagValue(args, "--new-group");
+
+  // Mutual exclusivity mirrors the server's 400; catching it client-side gives a
+  // crisper message and saves a round trip (the server still enforces it).
+  if (connectionGroupId !== undefined && newGroupName !== undefined) {
+    io.err("Pass either --group (attach existing) or --new-group (create inline), not both.");
+    return 1;
+  }
+
+  if (!deps.secretCapture) {
+    // Defensive: the shell (`handleDatasource`) always injects this. A missing
+    // capture dep is a programming error, surfaced rather than silently skipped.
+    io.err("Internal error: secret capture is not configured.");
+    return 1;
+  }
+
+  const captured = await captureDatasourceSecret(deps.secretCapture);
+  if (captured.kind === "deferred") {
+    io.err(deferredMessage(captured.reason));
+    // A user-driven cancel is a clean no-op (exit 0); every other defer reason is
+    // a failure to provision (exit 1) so scripts can branch on it.
+    return captured.reason === "cancelled" ? 0 : 1;
+  }
+
+  const metadata: CreateDatasourceMetadata = {
+    id,
+    ...(description !== undefined ? { description } : {}),
+    ...(schema !== undefined ? { schema } : {}),
+    ...(connectionGroupId !== undefined ? { connectionGroupId } : {}),
+    ...(newGroupName !== undefined ? { newGroupName } : {}),
+  };
+
+  try {
+    const result = await createDatasource(opts, metadata, captured.url);
+    if (json) {
+      io.out(JSON.stringify(result, null, 2));
+    } else {
+      const dbType = typeof result.dbType === "string" ? result.dbType : "";
+      const maskedUrl = typeof result.maskedUrl === "string" ? result.maskedUrl : "";
+      io.out(`Created datasource "${id}"${dbType ? ` (${dbType})` : ""} from ${captured.source}.`);
+      if (maskedUrl.length > 0) io.out(`  URL: ${maskedUrl}`);
+      io.out(`  It landed as a draft — publish it in the Atlas console (or it stays dev-only).`);
+      io.out(`  Health-check it with: atlas datasource test ${id}`);
+    }
+    return 0;
+  } catch (err) {
+    return handleError(err, io);
+  }
+}
+
 /** Map a typed client error (or anything else) to an error line + exit code. */
 function handleError(err: unknown, io: DatasourceIO): number {
   if (err instanceof DatasourceCliError) {
@@ -274,10 +452,31 @@ function handleError(err: unknown, io: DatasourceIO): number {
   return 1;
 }
 
+/**
+ * Build the live secret-capture wiring: env var, the real TTY probe, and a
+ * masked `@clack` prompt. Imported lazily so the common (non-`create`) commands
+ * don't pull the prompt library, and so tests inject their own deps instead.
+ */
+function liveSecretCapture(): SecretCaptureDeps {
+  return {
+    envValue: process.env[DATASOURCE_SECRET_ENV],
+    isTTY: Boolean(process.stdin.isTTY),
+    promptSecret: async () => {
+      const p = await import("@clack/prompts");
+      const value = await p.password({
+        message: "Connection URL (input hidden; not stored in shell history)",
+      });
+      // `p.isCancel` flags Ctrl-C / Esc — map it to the module's null cancel
+      // sentinel so the secret module stays prompt-library-agnostic.
+      return p.isCancel(value) ? null : value;
+    },
+  };
+}
+
 /** Thin shell main() invokes: resolve the credential + base URL, then dispatch. */
 export async function handleDatasource(args: string[]): Promise<void> {
   const baseUrl = resolveApiBaseUrl();
   const session = readSession(baseUrl);
-  const code = await runDatasource(args, { baseUrl, session });
+  const code = await runDatasource(args, { baseUrl, session, secretCapture: liveSecretCapture() });
   if (code !== 0) process.exit(code);
 }

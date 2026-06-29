@@ -138,12 +138,23 @@ export async function resolveRegion(deps: ResolveRegionDeps): Promise<RegionReso
     return { outcome: "skip" };
   }
 
-  // Fast path — a cookie-pinned region the map still knows: route there with
-  // its authoritative apiUrl and skip the probe fan-out (the oracle) entirely.
+  // Cookie hint — probe the hinted region before trusting the fast-path. If
+  // the email exists there, skip the full fan-out (common case: returning user
+  // on their own browser). If it doesn't, fall through so the cookie NEVER
+  // overrides the email-based lookup.
   if (cookieRegion) {
     const hit = map.regions.find((r) => r.id === cookieRegion);
-    if (hit) return { outcome: "single", region: hit.id, apiUrl: hit.apiUrl };
-    // A stale cookie (region removed) falls through to the cold fan-out.
+    if (hit) {
+      const emailHash = await hashEmail(email);
+      try {
+        const exists = await probe(hit.apiUrl, emailHash);
+        if (exists) return { outcome: "single", region: hit.id, apiUrl: hit.apiUrl };
+      } catch {
+        // Probe failed — fall through to the full fan-out (inconclusive).
+      }
+    }
+    // Cookie region doesn't contain the email, or probe failed.
+    // Fall through to cold fan-out.
   }
 
   // Single-region deployment: route to it without probing — there is no

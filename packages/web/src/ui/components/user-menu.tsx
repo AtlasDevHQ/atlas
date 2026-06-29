@@ -18,6 +18,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAtlasConfig } from "@/ui/context";
+import { clearRegionSignal } from "@/lib/api-url";
 import { setTheme, useThemeMode, type ThemeMode } from "@/ui/hooks/use-dark-mode";
 
 const THEME_OPTIONS = [
@@ -55,6 +56,7 @@ export function UserMenu() {
     setSigningOut(true);
     try {
       await authClient.signOut();
+      clearRegionSignal();
       window.location.assign("/login");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

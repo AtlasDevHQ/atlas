@@ -89,8 +89,8 @@ describe("resolveRegion", () => {
     expect(r).toEqual({ outcome: "skip" });
   });
 
-  it("cookie fast-path routes to the cookie region WITHOUT probing, using the map's authoritative apiUrl", async () => {
-    const { probe, calls } = probeHitting();
+  it("cookie fast-path probes the hinted region and routes when the email exists there", async () => {
+    const { probe, calls } = probeHitting("https://api-eu.useatlas.dev");
     const r = await resolveRegion({
       email: "a@b.co",
       cookieRegion: "eu",
@@ -98,7 +98,20 @@ describe("resolveRegion", () => {
       probe,
     });
     expect(r).toEqual({ outcome: "single", region: "eu", apiUrl: "https://api-eu.useatlas.dev" });
-    expect(calls).toHaveLength(0); // the oracle is short-circuited
+    expect(calls).toHaveLength(1); // only the cookie region was probed
+    expect(calls[0].apiUrl).toBe("https://api-eu.useatlas.dev");
+  });
+
+  it("cookie fast-path falls through to full fan-out when the email is NOT in the hinted region", async () => {
+    const { probe, calls } = probeHitting("https://api.useatlas.dev"); // exists in us, not eu
+    const r = await resolveRegion({
+      email: "a@b.co",
+      cookieRegion: "eu",
+      fetchRegionMap: mapOf(MAP),
+      probe,
+    });
+    expect(r).toEqual({ outcome: "single", region: "us", apiUrl: "https://api.useatlas.dev" });
+    expect(calls.length).toBeGreaterThan(1); // full fan-out ran
   });
 
   it("a stale cookie region (not in the map) falls through to the fan-out", async () => {

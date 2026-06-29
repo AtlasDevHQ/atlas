@@ -28,6 +28,7 @@ import {
 import { SidebarMenuButton, useSidebar } from "@/components/ui/sidebar";
 import { authClient } from "@/lib/auth/client";
 import { deriveInitials } from "@/ui/components/user-menu";
+import { clearRegionSignal } from "@/lib/api-url";
 import { setTheme, useThemeMode, type ThemeMode } from "@/ui/hooks/use-dark-mode";
 
 interface OrgOption {
@@ -93,6 +94,7 @@ export function SidebarUserMenu() {
     setSigningOut(true);
     try {
       await authClient.signOut();
+      clearRegionSignal();
       window.location.assign("/login");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

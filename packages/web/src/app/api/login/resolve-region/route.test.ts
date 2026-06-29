@@ -104,13 +104,26 @@ describe("POST /api/login/resolve-region", () => {
     expect((await res.json()).outcome).toBe("error");
   });
 
-  it("cookie fast-path skips the probe fan-out and routes from the authoritative map", async () => {
+  it("cookie fast-path probes the hinted region and routes when the email exists there", async () => {
+    probeExists = { "https://api-eu.useatlas.dev": true };
     const cookie = encodeURIComponent(JSON.stringify({ region: "eu", apiUrl: "https://evil.example" }));
     const res = await post("alice@corp.com", { ip: "203.0.113.23", cookie });
     expect(res.status).toBe(200);
     // Authoritative apiUrl from the map — NOT the tampered cookie apiUrl.
     expect(await res.json()).toEqual({ outcome: "single", region: "eu", apiUrl: "https://api-eu.useatlas.dev" });
-    expect(fetchCalls.some((u) => u.endsWith("/api/v1/auth/region-probe"))).toBe(false);
+    // Only the cookie's region was probed (not a full fan-out).
+    expect(fetchCalls.filter((u) => u.endsWith("/api/v1/auth/region-probe"))).toHaveLength(1);
+  });
+
+  it("cookie fast-path falls through to full fan-out when the email is NOT in the hinted region", async () => {
+    // Email exists in us, cookie says eu → must not trust the cookie.
+    probeExists = { "https://api.useatlas.dev": true };
+    const cookie = encodeURIComponent(JSON.stringify({ region: "eu", apiUrl: "https://api-eu.useatlas.dev" }));
+    const res = await post("bob@corp.com", { ip: "203.0.113.24", cookie });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ outcome: "single", region: "us", apiUrl: "https://api.useatlas.dev" });
+    // Full fan-out ran (probed both regions).
+    expect(fetchCalls.filter((u) => u.endsWith("/api/v1/auth/region-probe"))).toHaveLength(2);
   });
 
   it("returns error when the region map cannot be fetched", async () => {

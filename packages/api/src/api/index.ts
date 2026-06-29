@@ -18,6 +18,7 @@ import {
   context as otelContext,
 } from "@opentelemetry/api";
 import { createLogger } from "@atlas/api/lib/logger";
+import { legacyCookieCleanupMiddleware } from "@atlas/api/lib/auth/legacy-cookie-cleanup-middleware";
 import { validationHook } from "./routes/validation-hook";
 import { chat } from "./routes/chat";
 import { health } from "./routes/health";
@@ -167,6 +168,18 @@ app.use("/api/*", async (c, next) => {
     status: c.res.status,
   });
 });
+
+// #4086 — evict legacy parent-domain (cross-subdomain) auth cookies left over
+// from before ADR-0024 §5 switched managed-mode sessions to HOST-ONLY cookies.
+// A browser that logged in pre-switch still carries `Domain=<registrable>`
+// copies of the session cookie that SHADOW the new host-only one; Better Auth
+// reads the stale shadow first, so every authed call 401s once the ~30s
+// cookie-cache (`session_data`) lapses and the app bounces to /login. The
+// middleware is self-limiting — it emits deletions only when the request
+// actually carries the duplicate session-token cookie — and also restores the
+// ADR-0024 §5 residency invariant (the parent-domain cookie was reaching every
+// region edge). See lib/auth/legacy-cookie-cleanup{,-middleware}.ts.
+app.use("/api/*", legacyCookieCleanupMiddleware);
 
 app.route("/api/v1/chat", chat);
 app.route("/api/health", health);

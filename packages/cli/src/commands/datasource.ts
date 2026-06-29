@@ -367,6 +367,18 @@ async function runIdSubcommand(
             renderProfileResult(io, result);
           }
           return 0;
+        } catch (err) {
+          // Tear the spinner down before the error surfaces, so a cancelled
+          // (Ctrl-C) or failed profile doesn't leave it spinning. The error
+          // itself is rendered by the outer handler (handleError → io.err).
+          if (tracker) {
+            const reason =
+              err instanceof DatasourceCliError && err.kind === "network"
+                ? "Profiling cancelled."
+                : "Profiling failed.";
+            tracker.onAbort(reason);
+          }
+          throw err;
         } finally {
           process.removeListener("SIGINT", onSigint);
         }

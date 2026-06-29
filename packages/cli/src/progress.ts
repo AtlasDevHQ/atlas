@@ -19,6 +19,17 @@ export interface ProfileProgressCallbacks {
   onComplete(succeeded: number, elapsedMs: number): void;
 }
 
+/**
+ * A progress tracker that, in addition to the profiling callbacks, can be
+ * stopped early — so a long-running consumer (e.g. `atlas datasource profile`)
+ * can tear the spinner down cleanly when the run is cancelled (Ctrl-C) or fails
+ * mid-stream, instead of leaving it spinning forever. `onAbort` is a no-op when
+ * profiling never started (no spinner) or in a non-TTY environment.
+ */
+export interface AbortableProgressTracker extends ProfileProgressCallbacks {
+  onAbort(reason: string): void;
+}
+
 // ---------------------------------------------------------------------------
 // ETA helpers (exported for testing)
 // ---------------------------------------------------------------------------
@@ -45,7 +56,7 @@ export function estimateRemaining(elapsedMs: number, completed: number, total: n
 
 const ETA_INTERVAL = 5; // Show ETA every N tables
 
-export function createProgressTracker(): ProfileProgressCallbacks {
+export function createProgressTracker(): AbortableProgressTracker {
   const isTTY = process.stderr.isTTY ?? false;
   let startTime = 0;
   let errorCount = 0;
@@ -116,6 +127,23 @@ export function createProgressTracker(): ProfileProgressCallbacks {
       } else {
         process.stderr.write(`${summary}\n`);
       }
+    },
+
+    onAbort(reason: string) {
+      // Tear the spinner down on cancel/failure so it doesn't spin forever.
+      // `spinner.stop` with a non-zero code renders the message as an error line.
+      if (isTTY && spinner) {
+        try {
+          spinner.stop(pc.yellow(reason));
+        } catch {
+          // intentionally ignored: terminal IO can fail mid-teardown (e.g. the
+          // TTY closed on Ctrl-C); fall back to a plain stderr line.
+          process.stderr.write(`${reason}\n`);
+        }
+        spinner = undefined;
+      }
+      // Non-TTY: nothing to stop — the per-line stderr output already reflects
+      // progress, and the command surfaces the error/cancel message itself.
     },
   };
 }

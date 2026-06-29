@@ -192,4 +192,53 @@ describe("runMetricCommand — error mapping", () => {
     expect(code).toBe(1);
     expect(err.join("\n")).toContain("Approval needed");
   });
+
+  it("maps a 400 bad_request to the no-workspace guidance", async () => {
+    const { fetchImpl } = stubFetch(400, {
+      error: "bad_request",
+      message: "Your login is not bound to a workspace.",
+    });
+    const { io, err } = capture();
+    const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("not bound to a workspace");
+  });
+
+  it("surfaces a 400 invalid_request (e.g. wrong connection) with the server message + requestId", async () => {
+    const { fetchImpl } = stubFetch(400, {
+      error: "invalid_request",
+      message: 'connectionId "eu" targets a different datasource',
+      requestId: "req-9",
+    });
+    const { io, err } = capture();
+    const code = await runMetricCommand(
+      ["metric", "run", "prod_signups", "--connection", "eu"],
+      deps(fetchImpl),
+      io,
+    );
+    expect(code).toBe(1);
+    const joined = err.join("\n");
+    expect(joined).toContain("targets a different datasource");
+    expect(joined).toContain("(request req-9)");
+  });
+
+  it("maps a 503 to request_failed", async () => {
+    const { fetchImpl } = stubFetch(503, { error: "no_datasource", message: "Datasource unavailable." });
+    const { io, err } = capture();
+    const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("Datasource unavailable.");
+  });
+
+  it("surfaces a network/timeout failure with the base URL", async () => {
+    const fetchImpl = (async () => {
+      const e = new Error("aborted");
+      e.name = "TimeoutError";
+      throw e;
+    }) as unknown as typeof fetch;
+    const { io, err } = capture();
+    const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("Timed out");
+  });
 });

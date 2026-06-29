@@ -98,22 +98,28 @@ mock.module("@atlas/api/lib/semantic/metric-run", () => ({
 // --- Shared SQL pipeline --------------------------------------------------
 
 // Capture the request context the route binds via the REAL withRequestContext
-// (AsyncLocalStorage) by reading getRequestContext() inside the pipeline mock.
+// (AsyncLocalStorage) by reading getRequestContext() inside the pipeline mock,
+// plus the opts the route forwards (sql + connectionId).
+type PipelineOpts = { sql: string; explanation: string; connectionId?: string };
 let capturedContext: { agentOrigin?: unknown; actorKind?: unknown } = {};
-const mockRunUserQueryPipeline: Mock<() => Promise<UserQueryOutcome>> = mock(async () => {
-  const { getRequestContext } = await import("@atlas/api/lib/logger");
-  const ctx = getRequestContext();
-  capturedContext = { agentOrigin: ctx?.agentOrigin, actorKind: ctx?.actor?.kind };
-  return {
-    kind: "ok" as const,
-    columns: ["total_gmv"],
-    rows: [{ total_gmv: 42 }],
-    rowCount: 1,
-    executionMs: 3,
-    truncated: false,
-    maskingApplied: false,
-  };
-});
+let capturedOpts: PipelineOpts | undefined;
+const mockRunUserQueryPipeline: Mock<(opts: PipelineOpts) => Promise<UserQueryOutcome>> = mock(
+  async (opts: PipelineOpts) => {
+    const { getRequestContext } = await import("@atlas/api/lib/logger");
+    const ctx = getRequestContext();
+    capturedContext = { agentOrigin: ctx?.agentOrigin, actorKind: ctx?.actor?.kind };
+    capturedOpts = opts;
+    return {
+      kind: "ok" as const,
+      columns: ["total_gmv"],
+      rows: [{ total_gmv: 42 }],
+      rowCount: 1,
+      executionMs: 3,
+      truncated: false,
+      maskingApplied: false,
+    };
+  },
+);
 mock.module("@atlas/api/lib/tools/sql", () => ({
   runUserQueryPipeline: mockRunUserQueryPipeline,
 }));
@@ -157,13 +163,15 @@ beforeEach(() => {
     targetConnectionId: undefined,
   });
   mockRunUserQueryPipeline.mockReset();
-  // Default impl captures the bound request context (origin/actor) then returns
-  // a single-cell ok outcome. Tests needing a different outcome use
-  // mockResolvedValueOnce so this capturing default stays in place.
-  mockRunUserQueryPipeline.mockImplementation(async () => {
+  // Default impl captures the bound request context (origin/actor) + the
+  // forwarded opts, then returns a single-cell ok outcome. Tests needing a
+  // different outcome use mockResolvedValueOnce so this capturing default stays
+  // in place.
+  mockRunUserQueryPipeline.mockImplementation(async (opts: PipelineOpts) => {
     const { getRequestContext } = await import("@atlas/api/lib/logger");
     const ctx = getRequestContext();
     capturedContext = { agentOrigin: ctx?.agentOrigin, actorKind: ctx?.actor?.kind };
+    capturedOpts = opts;
     return {
       kind: "ok" as const,
       columns: ["total_gmv"],
@@ -188,6 +196,7 @@ beforeEach(() => {
   } as unknown as AuthResult);
   mockCheckRateLimit.mockReturnValue({ allowed: true });
   capturedContext = {};
+  capturedOpts = undefined;
 });
 
 describe("POST /api/v1/metrics/{id}/run", () => {
@@ -311,5 +320,77 @@ describe("POST /api/v1/metrics/{id}/run", () => {
   it("passes the resolved org through to the billing gate (credential-derived isolation)", async () => {
     await app.fetch(runMetricRequest("total_gmv"));
     expect(mockCheckAgentBillingGate).toHaveBeenCalledWith("org-1");
+  });
+
+  it("runs the metric's authoritative SQL exactly as defined (AC #2)", async () => {
+    await app.fetch(runMetricRequest("total_gmv"));
+    // The route must forward the metric's verbatim SQL to the pipeline, not a
+    // re-derived or rewritten query.
+    expect(capturedOpts?.sql).toBe("SELECT 42 AS total_gmv");
+  });
+
+  it("forwards the resolver's targetConnectionId to the pipeline (group routing, AC #2)", async () => {
+    mockResolveMetricRun.mockResolvedValueOnce({
+      kind: "ok",
+      metric: {
+        id: "prod_signups",
+        label: "Prod Signups",
+        description: null,
+        sql: "SELECT COUNT(*) AS signups FROM users",
+        type: null,
+        aggregation: null,
+        unit: null,
+        source: "prod",
+        binding: null,
+      },
+      targetConnectionId: "prod",
+    });
+    await app.fetch(runMetricRequest("prod_signups"));
+    expect(capturedOpts?.connectionId).toBe("prod");
+  });
+
+  it("rejects a credential with no bound workspace with a 400 bad_request", async () => {
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: {
+        id: "user-1",
+        mode: "managed",
+        label: "Alice",
+        role: "member",
+        // No activeOrganizationId — a multi-workspace login pending the picker.
+        claims: { sub: "user-1", origin: "cli" },
+      },
+    } as unknown as AuthResult);
+    const res = await app.fetch(runMetricRequest("total_gmv"));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("bad_request");
+    // Must NOT reach the billing gate or the pipeline with an undefined org.
+    expect(mockCheckAgentBillingGate).not.toHaveBeenCalled();
+    expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+  });
+
+  it("fails closed to 503 when the billing gate throws (never an opaque 500 / allow)", async () => {
+    mockCheckAgentBillingGate.mockRejectedValueOnce(new Error("DB down"));
+    const res = await app.fetch(runMetricRequest("total_gmv"));
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("billing_check_failed");
+    // The pipeline must NOT run when billing can't be verified.
+    expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+  });
+
+  it("maps a connection_unavailable outcome to 503 with the connection id", async () => {
+    mockRunUserQueryPipeline.mockResolvedValueOnce({
+      kind: "connection_unavailable",
+      message: "Datasource unreachable.",
+      connectionId: "prod",
+    });
+    const res = await app.fetch(runMetricRequest("total_gmv"));
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("connection_unavailable");
+    expect(body.connectionId).toBe("prod");
   });
 });

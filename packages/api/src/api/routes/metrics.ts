@@ -33,7 +33,10 @@ import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
-import { checkAgentBillingGate } from "@atlas/api/lib/billing/agent-gate";
+import {
+  checkAgentBillingGate,
+  type AgentBillingGateResult,
+} from "@atlas/api/lib/billing/agent-gate";
 import { resolveMetricRun } from "@atlas/api/lib/semantic/metric-run";
 import { isRequestOrigin } from "@atlas/api/lib/approvals/types";
 import type { UserQueryOutcome } from "@atlas/api/lib/tools/sql";
@@ -147,7 +150,9 @@ const runMetricRoute = createRoute({
 // Outcome → HTTP mapping
 // ---------------------------------------------------------------------------
 
-type MappedResponse = { body: Record<string, unknown>; status: number };
+/** The status codes `outcomeError` can produce — all declared in the route's responses map. */
+type MappedStatus = 400 | 401 | 403 | 409 | 429 | 500 | 503;
+type MappedResponse = { body: Record<string, unknown>; status: MappedStatus };
 
 /**
  * Map a {@link UserQueryOutcome} (non-`ok`) onto the Atlas error envelope.
@@ -245,11 +250,50 @@ metrics.openapi(runMetricRoute, async (c) => {
         connectionId?: string;
       };
 
+      // --- Bound-workspace precondition. The whole surface derives isolation
+      // from the credential's org (never the request), so a credential with no
+      // bound workspace (a multi-workspace `atlas login` pending the picker
+      // slice, ADR-0026) cannot resolve a datasource. Reject explicitly with an
+      // actionable message rather than letting an `undefined` org flow into the
+      // gate/pipeline and surface as a confusing downstream error. ---
+      if (!orgId) {
+        log.warn({ requestId, userId: user?.id }, "Metric run with no bound workspace");
+        return c.json(
+          {
+            error: "bad_request",
+            message:
+              "Your login is not bound to a workspace. Single-workspace accounts bind automatically; in-flow workspace selection for multi-workspace accounts is coming soon (ADR-0026).",
+            requestId,
+          },
+          400,
+        );
+      }
+
       // --- Billing gate-0 (solvency) — parity with MCP runMetric's
       // checksBilling. Reaches a datasource, so a suspended / trial-expired /
       // plan-exhausted workspace is blocked before the SQL runs. Solvency-only:
-      // Shape B runs no LLM, so nothing is token-metered. ---
-      const gate = yield* Effect.promise(() => checkAgentBillingGate(orgId));
+      // Shape B runs no LLM, so nothing is token-metered. An unexpected throw
+      // from the gate is mapped to a fail-closed 503 (never an allow), keeping
+      // the billing surface's "try again" signal instead of an opaque 500. ---
+      const gate = yield* Effect.tryPromise({
+        try: () => checkAgentBillingGate(orgId),
+        catch: (err) => new Error(err instanceof Error ? err.message : String(err)),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.error(
+            { requestId, orgId, err, category: "billing_check_error" },
+            "Billing gate threw — failing closed",
+          );
+          const failClosed: AgentBillingGateResult = {
+            allowed: false,
+            errorCode: "billing_check_failed",
+            errorMessage: "Unable to verify billing status. Please try again shortly.",
+            httpStatus: 503,
+            retryable: true,
+          };
+          return Effect.succeed(failClosed);
+        }),
+      );
       if (!gate.allowed) {
         log.warn(
           { requestId, orgId, errorCode: gate.errorCode, category: "billing_blocked" },
@@ -263,6 +307,8 @@ metrics.openapi(runMetricRoute, async (c) => {
             ...(gate.retryAfterSeconds !== undefined && { retryAfterSeconds: gate.retryAfterSeconds }),
             requestId,
           } as never,
+          // httpStatus is 403/404/429/503 — all declared in the responses map;
+          // cast to one declared literal to satisfy c.json's typed overload.
           (gate.httpStatus ?? 403) as 403,
         );
       }

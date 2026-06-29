@@ -647,6 +647,7 @@ export function printOverviewHelp(): void {
       "  login            Authenticate the CLI via the device flow (stores a session bearer)\n" +
       "  logout           Remove the stored CLI credentials\n" +
       "  entities         List semantic entities visible to your logged-in workspace\n" +
+      "  switch           Choose which workspace the CLI acts on (multi-workspace users)\n" +
       "  datasource       Manage your workspace's datasources (list, get, test, archive, restore, delete)\n" +
       "  validate         Validate config, semantic layer, and connectivity\n" +
       "  doctor           Alias for validate\n" +

@@ -161,6 +161,31 @@ export function saveSession(
 }
 
 /**
+ * Update the persisted default workspace for a base URL without touching the
+ * stored bearer (#4050). `atlas switch` calls this after a successful
+ * server-side `set-active`, so the local default and the session's active
+ * workspace stay in lockstep. Returns true when the stored session was
+ * updated, false when no session exists for the base URL (caller surfaces a
+ * "run `atlas login`" message rather than minting a tokenless entry).
+ */
+export function updateSessionWorkspace(
+  baseUrl: string,
+  workspaceId: string | null,
+  configDir: string = defaultConfigDir(),
+): boolean {
+  const store = readStore(configDir);
+  const key = normalizeBaseUrl(baseUrl);
+  const existing = store.sessions[key];
+  if (!existing) return false;
+  const next: CredentialStore = {
+    version: 1,
+    sessions: { ...store.sessions, [key]: { ...existing, workspaceId } },
+  };
+  writeStore(configDir, next);
+  return true;
+}
+
+/**
  * Remove the stored bearer for a base URL. Returns true when an entry was
  * removed. When the store becomes empty the file is deleted entirely.
  */

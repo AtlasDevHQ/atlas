@@ -7,12 +7,12 @@
  * This maps one workspace CLI subcommand onto one route and surfaces the typed
  * outcome.
  *
- * Authorization rides entirely on the `atlas login` workspace credential: the
- * stored Better Auth session bearer (stamped `origin='cli'` server-side) is
- * sent as `Authorization: Bearer <token>`. The route resolves it live to
- * `{ orgId, role }`, runs billing gate-0, and executes the metric's
- * authoritative SQL against ONLY the bound workspace — the CLI never re-derives
- * any of that.
+ * Authorization rides on the workspace credential — a `atlas login` device-flow
+ * SESSION bearer (`Authorization: Bearer`) XOR a workspace-scoped API key for
+ * unattended CI (#4046, `x-api-key`); see {@link CliCredential}. Either way the
+ * route resolves it live to `{ orgId, role }`, runs billing gate-0, and executes
+ * the metric's authoritative SQL against ONLY the bound workspace — the CLI never
+ * re-derives any of that.
  *
  * `fetch` is injectable so the route mapping + status-code handling are
  * unit-testable without a live server (mirrors `datasource-client.ts`). No
@@ -22,8 +22,8 @@
 
 import type { CliRestErrorCode, RunMetricRestResponse } from "@useatlas/types";
 import { RunMetricRestResponseSchema } from "@useatlas/schemas";
-
-type FetchImpl = typeof fetch;
+import { credentialHeaders, type CliCredential } from "./credential";
+import { asRecord, isAbortOrTimeout, serverMessage, unreachableMessage, type FetchImpl } from "./http";
 
 /**
  * The server `error`-field discriminators this client branches on, pinned to the
@@ -43,6 +43,8 @@ export type MetricErrorKind =
   | "not_found" // 404 — metric id not in this workspace
   | "approval_required" // 409 — the metric's SQL tripped an approval rule
   | "invalid_request" // 400 — unsupported filters / wrong connection
+  | "rate_limited" // 429 — per-identity bucket, workspace throttle, or concurrency cap
+  | "unavailable" // 503 — datasource/enterprise subsystem unavailable (or fail-closed billing)
   | "request_failed" // other non-2xx
   | "network"; // fetch threw / timed out
 
@@ -68,8 +70,11 @@ export type MetricRunResult = RunMetricRestResponse;
 export interface MetricClientOptions {
   /** Normalized Atlas API base URL (no trailing slash). */
   readonly baseUrl: string;
-  /** The stored `atlas login` session bearer. */
-  readonly token: string;
+  /**
+   * The workspace credential — a session bearer XOR a workspace API key (never
+   * both). See {@link CliCredential}.
+   */
+  readonly credential: CliCredential;
   /** Injectable for tests; defaults to the global `fetch`. */
   readonly fetchImpl?: FetchImpl;
   /** Per-request timeout in ms (default 60s — a metric query can be slower than metadata). */
@@ -80,27 +85,6 @@ export interface RunMetricArgs {
   readonly id: string;
   /** Optional explicit connection id; validated against the metric's group server-side. */
   readonly connectionId?: string;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-/**
- * Pull the server's actionable message off a JSON error body, falling back to
- * the HTTP status. Appends the server's `requestId` (Atlas error envelopes
- * carry one) so a bug report stays log-correlatable operator-side.
- */
-function serverMessage(body: Record<string, unknown>, status: number): string {
-  const base =
-    typeof body.message === "string" && body.message.length > 0
-      ? body.message
-      : typeof body.error === "string" && body.error.length > 0
-        ? body.error
-        : `HTTP ${status}`;
-  return typeof body.requestId === "string" && body.requestId.length > 0
-    ? `${base} (request ${body.requestId})`
-    : base;
 }
 
 /**
@@ -122,7 +106,7 @@ export async function runMetric(
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${opts.token}`,
+          ...credentialHeaders(opts.credential),
           "Content-Type": "application/json",
         },
         body: JSON.stringify(args.connectionId ? { connectionId: args.connectionId } : {}),
@@ -130,17 +114,13 @@ export async function runMetric(
       },
     );
   } catch (err) {
-    const name = err instanceof Error ? err.name : "";
-    if (name === "TimeoutError" || name === "AbortError") {
+    if (isAbortOrTimeout(err)) {
       throw new MetricCliError(
         "network",
         `Timed out after ${Math.round(timeoutMs / 1000)}s running metric "${args.id}".`,
       );
     }
-    throw new MetricCliError(
-      "network",
-      `Could not reach the Atlas API at ${opts.baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new MetricCliError("network", unreachableMessage(opts.baseUrl, err));
   }
 
   if (res.ok) {
@@ -181,6 +161,11 @@ export async function runMetric(
       );
     case 409:
       throw new MetricCliError("approval_required", serverMessage(body, res.status));
+    case 429:
+      // Per-identity rate-limit bucket, a workspace throttle, or the pipeline's
+      // concurrency cap — all 429. Surface the server's message (it names the
+      // remedy / retry hint) under a distinct kind, parity with `atlas sql`.
+      throw new MetricCliError("rate_limited", serverMessage(body, res.status));
     case 400:
       if (body.error === ERR.badRequest) {
         throw new MetricCliError(
@@ -189,6 +174,11 @@ export async function runMetric(
         );
       }
       throw new MetricCliError("invalid_request", serverMessage(body, res.status));
+    case 503:
+      // Datasource/enterprise subsystem unavailable, or a fail-closed billing
+      // check (#3433) — a transient "try again", not an upgrade prompt. Distinct
+      // kind, parity with `atlas sql`; the server message carries the detail.
+      throw new MetricCliError("unavailable", serverMessage(body, res.status));
     default:
       throw new MetricCliError("request_failed", serverMessage(body, res.status));
   }

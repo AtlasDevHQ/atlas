@@ -86,6 +86,12 @@ type GateResult =
 const mockCheckAgentBillingGate: Mock<(orgId: string | undefined) => Promise<GateResult>> = mock(
   () => Promise.resolve({ allowed: true }),
 );
+// Curated stub: the route reaches `agent-gate` ONLY for `checkAgentBillingGate`.
+// Spreading the real module would transitively load the internal-DB graph
+// (defeating this standalone-router isolation), so we stub just the reached
+// export — same convention as the sibling metrics.test.ts. `BillingBlockedError`
+// is not referenced by this route, so omitting it is safe; Bun's per-file
+// `--isolate` keeps the partial mock from leaking.
 mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockCheckAgentBillingGate,
 }));
@@ -319,6 +325,23 @@ describe("POST /datasources/{id}/profile — connection resolution (#4052)", () 
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBe("reconnect_required");
   });
+
+  it("503 resolve_unavailable when the resolver THROWS before the stream (correlated requestId, #4113)", async () => {
+    // A transient internal-DB fault from the dynamic import or resolveLiveConnection
+    // must fail closed to a 503 carrying THIS route's requestId — never escape to
+    // the global handler (fresh uncorrelated id) or start the stream. Distinct from
+    // the resolver's typed not_found/unsupported/reconnect outcomes above.
+    mockResolveLiveConnection.mockRejectedValue(new Error("internal DB down"));
+    const res = await app.fetch(profileRequest("prod-us"));
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("resolve_unavailable");
+    expect(body.retryable).toBe(true);
+    expect(typeof body.requestId).toBe("string");
+    // The stream never started: the profiler + connection-close are never reached.
+    expect(mockProfileLiveDatasource).not.toHaveBeenCalled();
+    expect(fakeConnection.close).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -383,6 +406,29 @@ describe("POST /datasources/{id}/profile — NDJSON streaming (#4052)", () => {
     await app.fetch(profileRequest("prod-us"));
     expect(capturedContext.agentOrigin).toBe("cli");
     expect(capturedContext.actorKind).toBe("api_key");
+  });
+
+  it("does NOT mislabel a non-cli session as cli (origin derived from claims, not hardcoded — #4113)", async () => {
+    // A real CLI credential always stamps origin=cli; a credential WITHOUT the
+    // claim (e.g. an admin web session reaching this route) must leave agentOrigin
+    // undefined, not be forced to "cli". Standardized to the undefined fallback
+    // across the four sibling CLI routes so origin-scoped approval matching can't
+    // see a fabricated origin.
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: {
+        id: "user-1",
+        mode: "managed",
+        label: "Alice",
+        role: "admin",
+        activeOrganizationId: "org-1",
+        claims: { sub: "user-1", org_id: "org-1" }, // no origin claim
+      },
+    } as unknown as AuthResult);
+    await app.fetch(profileRequest("prod-us"));
+    expect(capturedContext.agentOrigin).toBeUndefined();
+    expect(capturedContext.actorKind).toBe("human");
   });
 
   it("closes the live connection after profiling settles", async () => {

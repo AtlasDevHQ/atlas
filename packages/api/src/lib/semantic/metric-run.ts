@@ -71,11 +71,27 @@ export interface WrongConnection {
   readonly connectionId: string;
 }
 
+/**
+ * The routing lookup that validates an explicit member `connectionId` against
+ * the metric's group could not complete — the internal DB faulted. This is a
+ * retryable SERVER-side condition, not a user-input error: with the lookup
+ * down we can neither prove nor disprove membership, so we refuse to
+ * masquerade it as {@link WrongConnection} (a confident 400). The route maps
+ * it to a retryable 503 (CLAUDE.md "prefer errors over silent fallbacks").
+ */
+export interface RoutingUnavailable {
+  readonly kind: "routing_unavailable";
+  readonly metricId: string;
+  /** The explicit connection id whose group membership could not be verified. */
+  readonly connectionId: string;
+}
+
 export type MetricRunResolution =
   | ResolvedMetricRun
   | UnknownMetric
   | FiltersUnsupported
-  | WrongConnection;
+  | WrongConnection
+  | RoutingUnavailable;
 
 export interface ResolveMetricRunOpts {
   readonly id: string;
@@ -137,10 +153,18 @@ export async function resolveMetricRun(
     // connection's group and accept iff it matches the metric's group. A
     // default-source (ungrouped) metric has no members, so any explicit
     // non-default connectionId is rejected (#3281).
-    const isGroupMember =
-      metric.source !== DEFAULT_SEMANTIC_GROUP &&
-      (await loadGroupRoutingContext(opts.orgId, connectionId)).groupId ===
-        metric.source;
+    let isGroupMember = false;
+    if (metric.source !== DEFAULT_SEMANTIC_GROUP) {
+      const routing = await loadGroupRoutingContext(opts.orgId, connectionId);
+      if (routing.degraded) {
+        // Fault-induced fallback: `groupId: undefined` is the ABSENCE of an
+        // answer, not a "not a member" verdict, so we can't decide membership.
+        // Surface it as {@link RoutingUnavailable} (see there for why not a 400)
+        // rather than reading the fallback as a definitive mismatch (#4109).
+        return { kind: "routing_unavailable", metricId: metric.id, connectionId };
+      }
+      isGroupMember = routing.groupId === metric.source;
+    }
     if (!isGroupMember) {
       return {
         kind: "wrong_connection",

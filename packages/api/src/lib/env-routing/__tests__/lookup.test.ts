@@ -55,6 +55,8 @@ describe("loadGroupRoutingContext — 1×1 fallback paths", () => {
       members: ["conn-a"],
       primaryMember: "conn-a",
       currentMember: "conn-a",
+      // #4109 — a legitimate (non-fault) fallback is degraded: false.
+      degraded: false,
     });
     expect(mockQueryCalls).toHaveLength(0);
   });
@@ -66,6 +68,7 @@ describe("loadGroupRoutingContext — 1×1 fallback paths", () => {
       members: ["conn-a"],
       primaryMember: "conn-a",
       currentMember: "conn-a",
+      degraded: false,
     });
     expect(mockQueryCalls).toHaveLength(0);
   });
@@ -77,9 +80,13 @@ describe("loadGroupRoutingContext — 1×1 fallback paths", () => {
       members: ["conn-a"],
       primaryMember: "conn-a",
       currentMember: "conn-a",
+      degraded: false,
     });
     // The step-1 connection lookup ran but the step-2 queries didn't.
     expect(mockQueryCalls).toHaveLength(1);
+    // #4109 — a LEGITIMATE fallback (the install is simply ungrouped) is NOT
+    // flagged degraded; only a fault-induced fallback (the catch path) is.
+    expect(ctx.degraded).toBe(false);
   });
 
   it("connection not found (zero rows) → 1×1 fallback + suspect-grade warn", async () => {
@@ -89,15 +96,20 @@ describe("loadGroupRoutingContext — 1×1 fallback paths", () => {
       members: ["conn-archived"],
       primaryMember: "conn-archived",
       currentMember: "conn-archived",
+      degraded: false,
     });
     expect(mockQueryCalls).toHaveLength(1);
   });
 
-  it("internalQuery throws → 1×1 fallback (catch-and-warn)", async () => {
+  it("internalQuery throws → 1×1 fallback flagged degraded (#4109 catch-and-warn)", async () => {
     mockShouldThrow = new Error("internal DB unreachable");
     const ctx = await loadGroupRoutingContext("org-1", "conn-a");
     expect(ctx.members).toEqual(["conn-a"]);
     expect(ctx.primaryMember).toBe("conn-a");
+    // #4109 — only the fault-induced fallback is flagged degraded, so a
+    // membership-sensitive caller (metric-run's explicit-connection check) can
+    // tell a transient outage from a definitive "not a member" verdict.
+    expect(ctx.degraded).toBe(true);
   });
 });
 
@@ -123,6 +135,8 @@ describe("loadGroupRoutingContext — multi-member resolution (post-cutover)", (
     expect(ctx.members).toEqual(["apac", "eu", "us-int"]);
     expect(ctx.primaryMember).toBe("apac"); // first by install_id
     expect(ctx.currentMember).toBe("eu");
+    // #4109 — a successful (non-fault) resolution is never degraded.
+    expect(ctx.degraded).toBe(false);
   });
 
   it("2-member group → first member is primary, currentMember reflects caller", async () => {

@@ -16,13 +16,13 @@
  *   restore  → POST   /api/v1/admin/restore-connection      { connectionId }
  *   delete   → DELETE /api/v1/admin/connections/{id}
  *
- * Authorization rides entirely on the `atlas login` workspace credential: the
- * stored Better Auth session bearer (stamped `origin='cli'` server-side) is
- * sent as `Authorization: Bearer <token>`. The routes resolve it live to
- * `{ orgId, role }` through the same gate chain a web admin session clears, so
- * the call operates on ONLY the bound workspace's datasources and is denied
- * (403) when the credential's role isn't admin. The CLI never re-derives any of
- * that — it just surfaces the typed outcome.
+ * Authorization rides on the workspace credential — a `atlas login` device-flow
+ * SESSION bearer (`Authorization: Bearer`) XOR a workspace-scoped API key for
+ * unattended CI (#4046, `x-api-key`); see {@link CliCredential}. The routes
+ * resolve it live to `{ orgId, role }` through the same gate chain a web admin
+ * session clears, so the call operates on ONLY the bound workspace's datasources
+ * and is denied (403) when the credential's role isn't admin. The CLI never
+ * re-derives any of that — it just surfaces the typed outcome.
  *
  * `fetch` is injectable so the route mapping + status-code handling are
  * unit-testable without a live server (mirrors `device-flow.ts`). No function
@@ -41,8 +41,8 @@ import {
   ConnectionsResponseSchema,
   parseDatasourceProfileStreamEvent,
 } from "@useatlas/schemas";
-
-type FetchImpl = typeof fetch;
+import { credentialHeaders, type CliCredential } from "./credential";
+import { asRecord, isAbortOrTimeout, serverMessage, unreachableMessage, type FetchImpl } from "./http";
 
 /**
  * The server `error`-field discriminators this client branches on, pinned to the
@@ -90,8 +90,11 @@ export class DatasourceCliError extends Error {
 export interface DatasourceClientOptions {
   /** Normalized Atlas API base URL (no trailing slash). */
   readonly baseUrl: string;
-  /** The stored `atlas login` session bearer. */
-  readonly token: string;
+  /**
+   * The workspace credential — a session bearer XOR a workspace API key (never
+   * both). See {@link CliCredential}.
+   */
+  readonly credential: CliCredential;
   /** Injectable for tests; defaults to the global `fetch`. */
   readonly fetchImpl?: FetchImpl;
   /** Per-request timeout in ms (default 30s). */
@@ -104,28 +107,6 @@ interface RequestSpec {
   readonly body?: unknown;
   /** Human-readable operation label woven into error messages, e.g. "archive datasource". */
   readonly operation: string;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-/**
- * Pull the server's actionable message off a JSON error body, falling back to
- * the HTTP status. Appends the server's `requestId` (Atlas error envelopes carry
- * one — always on 5xx, and on the 4xx envelopes these admin routes return) so a
- * user's bug report stays log-correlatable operator-side.
- */
-function serverMessage(body: Record<string, unknown>, status: number): string {
-  const base =
-    typeof body.message === "string" && body.message.length > 0
-      ? body.message
-      : typeof body.error === "string" && body.error.length > 0
-        ? body.error
-        : `HTTP ${status}`;
-  return typeof body.requestId === "string" && body.requestId.length > 0
-    ? `${base} (request ${body.requestId})`
-    : base;
 }
 
 /**
@@ -148,24 +129,20 @@ async function request(
     res = await fetchImpl(`${opts.baseUrl}${spec.path}`, {
       method: spec.method,
       headers: {
-        Authorization: `Bearer ${opts.token}`,
+        ...credentialHeaders(opts.credential),
         ...(spec.body !== undefined ? { "Content-Type": "application/json" } : {}),
       },
       ...(spec.body !== undefined ? { body: JSON.stringify(spec.body) } : {}),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
-    const name = err instanceof Error ? err.name : "";
-    if (name === "TimeoutError" || name === "AbortError") {
+    if (isAbortOrTimeout(err)) {
       throw new DatasourceCliError(
         "network",
         `Timed out after ${Math.round(timeoutMs / 1000)}s trying to ${spec.operation}.`,
       );
     }
-    throw new DatasourceCliError(
-      "network",
-      `Could not reach the Atlas API at ${opts.baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new DatasourceCliError("network", unreachableMessage(opts.baseUrl, err));
   }
 
   if (res.ok) {
@@ -485,7 +462,7 @@ export async function profileDatasource(
     res = await fetchImpl(`${opts.baseUrl}/api/v1/datasources/${encodeURIComponent(args.id)}/profile`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${opts.token}`,
+        ...credentialHeaders(opts.credential),
         "Content-Type": "application/json",
       },
       body: JSON.stringify(args.schema ? { schema: args.schema } : {}),
@@ -494,14 +471,13 @@ export async function profileDatasource(
       ...(args.signal ? { signal: args.signal } : {}),
     });
   } catch (err) {
-    const name = err instanceof Error ? err.name : "";
-    if (name === "AbortError") {
+    // No request timeout here (profiling is legitimately long), so an abort is
+    // ALWAYS a caller cancellation (SIGINT), never a deadline — kept inline as a
+    // distinct "cancelled" message rather than the shared timeout path.
+    if (err instanceof Error && err.name === "AbortError") {
       throw new DatasourceCliError("network", `Profiling of "${args.id}" was cancelled.`);
     }
-    throw new DatasourceCliError(
-      "network",
-      `Could not reach the Atlas API at ${opts.baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new DatasourceCliError("network", unreachableMessage(opts.baseUrl, err));
   }
 
   // Pre-stream gate failure (auth/billing/role/not-found/unsupported/reconnect)

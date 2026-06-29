@@ -26,8 +26,8 @@
 
 import type { CliRestErrorCode, ExecuteSqlRestResponse } from "@useatlas/types";
 import { ExecuteSqlRestResponseSchema } from "@useatlas/schemas";
-
-type FetchImpl = typeof fetch;
+import { credentialHeaders, type CliCredential } from "./credential";
+import { asRecord, isAbortOrTimeout, serverMessage, unreachableMessage, type FetchImpl } from "./http";
 
 /**
  * The server `error`-field discriminators this client branches on, pinned to the
@@ -71,58 +71,25 @@ export class SqlCliError extends Error {
  */
 export type SqlRunResult = ExecuteSqlRestResponse;
 
-/** Fields common to both credential arms of {@link SqlClientOptions}. */
-interface SqlClientBaseOptions {
+export interface SqlClientOptions {
   /** Normalized Atlas API base URL (no trailing slash). */
   readonly baseUrl: string;
+  /**
+   * The workspace credential — a session bearer XOR a workspace API key (never
+   * both), modeled by {@link CliCredential} so it is structurally impossible to
+   * construct with neither (the empty-`Bearer` footgun) or both.
+   */
+  readonly credential: CliCredential;
   /** Injectable for tests; defaults to the global `fetch`. */
   readonly fetchImpl?: FetchImpl;
   /** Per-request timeout in ms (default 60s — a SQL query can be slower than metadata). */
   readonly timeoutMs?: number;
 }
 
-/**
- * Exactly ONE credential — the `atlas login` session bearer XOR a workspace API
- * key (#4046) — modeled as a discriminated union so it is structurally
- * impossible to construct with neither (the empty-`Bearer` footgun) or both.
- */
-export type SqlClientOptions =
-  | (SqlClientBaseOptions & {
-      /** The stored `atlas login` session bearer (`Authorization: Bearer`). */
-      readonly token: string;
-      readonly apiKey?: never;
-    })
-  | (SqlClientBaseOptions & {
-      /** A workspace-scoped API key for unattended CI (#4046), sent as `x-api-key`. */
-      readonly apiKey: string;
-      readonly token?: never;
-    });
-
 export interface RunSqlArgs {
   readonly sql: string;
   /** Optional explicit connection id; resolved against the bound workspace server-side. */
   readonly connectionId?: string;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-/**
- * Pull the server's actionable message off a JSON error body, falling back to
- * the HTTP status. Appends the server's `requestId` (Atlas error envelopes carry
- * one) so a bug report stays log-correlatable operator-side.
- */
-function serverMessage(body: Record<string, unknown>, status: number): string {
-  const base =
-    typeof body.message === "string" && body.message.length > 0
-      ? body.message
-      : typeof body.error === "string" && body.error.length > 0
-        ? body.error
-        : `HTTP ${status}`;
-  return typeof body.requestId === "string" && body.requestId.length > 0
-    ? `${base} (request ${body.requestId})`
-    : base;
 }
 
 /**
@@ -134,19 +101,12 @@ export async function runSql(opts: SqlClientOptions, args: RunSqlArgs): Promise<
   const fetchImpl = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? 60_000;
 
-  // Exactly one credential class. A workspace API key (#4046) goes on `x-api-key`
-  // (the apiKey() plugin header); a device-flow session goes on `Authorization:
-  // Bearer`. Never send both — the server resolves whichever it sees.
-  const authHeader: Record<string, string> = opts.apiKey
-    ? { "x-api-key": opts.apiKey }
-    : { Authorization: `Bearer ${opts.token ?? ""}` };
-
   let res: Response;
   try {
     res = await fetchImpl(`${opts.baseUrl}/api/v1/execute-sql`, {
       method: "POST",
       headers: {
-        ...authHeader,
+        ...credentialHeaders(opts.credential),
         "Content-Type": "application/json",
       },
       // ONLY sql (+ optional connectionId) — never an org/workspace field. The
@@ -157,17 +117,13 @@ export async function runSql(opts: SqlClientOptions, args: RunSqlArgs): Promise<
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
-    const name = err instanceof Error ? err.name : "";
-    if (name === "TimeoutError" || name === "AbortError") {
+    if (isAbortOrTimeout(err)) {
       throw new SqlCliError(
         "network",
         `Timed out after ${Math.round(timeoutMs / 1000)}s running the query.`,
       );
     }
-    throw new SqlCliError(
-      "network",
-      `Could not reach the Atlas API at ${opts.baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new SqlCliError("network", unreachableMessage(opts.baseUrl, err));
   }
 
   if (res.ok) {

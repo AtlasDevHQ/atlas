@@ -111,6 +111,75 @@ describe("runExplore — request shaping", () => {
   });
 });
 
+describe("runExplore — workspace API key (#4112 unattended CI)", () => {
+  it("sends the key on x-api-key (not Authorization) when ATLAS_API_KEY is set, with no session", async () => {
+    const { fetchImpl, calls } = stubFetch(200, { output: "ok" });
+    const { io } = capture();
+    const code = await runExplore(
+      ["explore", "ls"],
+      { baseUrl: BASE, session: null, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    const headers = new Headers(calls[0].init?.headers);
+    expect(headers.get("x-api-key")).toBe("atlas_wk_abc");
+    expect(headers.get("authorization")).toBeNull();
+  });
+
+  it("the --api-key flag overrides ATLAS_API_KEY and never leaks into the command", async () => {
+    const { fetchImpl, calls } = stubFetch(200, { output: "ok" });
+    const { io } = capture();
+    const code = await runExplore(
+      ["explore", "ls", "entities/", "--api-key", "flag_key"],
+      { baseUrl: BASE, session: null, apiKey: "env_key", fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    const headers = new Headers(calls[0].init?.headers);
+    expect(headers.get("x-api-key")).toBe("flag_key");
+    // Neither the flag nor its value pollutes the explore command the server runs.
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ command: "ls entities/" });
+  });
+
+  it("accepts the inline --api-key=<key> form and strips it from the command", async () => {
+    const { fetchImpl, calls } = stubFetch(200, { output: "ok" });
+    const { io } = capture();
+    const code = await runExplore(
+      ["explore", "cat catalog.yml", "--api-key=inline_key"],
+      { baseUrl: BASE, session: null, fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    const headers = new Headers(calls[0].init?.headers);
+    expect(headers.get("x-api-key")).toBe("inline_key");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ command: "cat catalog.yml" });
+  });
+
+  it("the api-key path takes precedence over a stored session", async () => {
+    const { fetchImpl, calls } = stubFetch(200, { output: "ok" });
+    const { io } = capture();
+    await runExplore(
+      ["explore", "ls"],
+      { baseUrl: BASE, session: SESSION, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    const headers = new Headers(calls[0].init?.headers);
+    expect(headers.get("x-api-key")).toBe("atlas_wk_abc");
+    expect(headers.get("authorization")).toBeNull();
+  });
+
+  it("with neither a session nor an api-key, refuses with a login + ATLAS_API_KEY hint", async () => {
+    const { fetchImpl, calls } = stubFetch(200, { output: "" });
+    const { io, err } = capture();
+    const code = await runExplore(["explore", "ls"], deps(fetchImpl, null), io);
+    expect(code).toBe(1);
+    const joined = err.join("\n");
+    expect(joined).toContain("atlas login");
+    expect(joined).toContain("ATLAS_API_KEY");
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe("runExplore — output", () => {
   it("prints the command output on success (exit 0)", async () => {
     const { fetchImpl } = stubFetch(200, { output: "file1.yml\nfile2.yml" });
@@ -169,19 +238,52 @@ describe("runExplore — HTTP error handling", () => {
     expect(err.join("\n").toLowerCase()).toContain("atlas login");
   });
 
-  it("403 reports the workspace is not accessible and exits 1", async () => {
-    const { fetchImpl } = stubFetch(403, { error: "forbidden" });
+  it("403 ip_not_allowed surfaces the server message + requestId, not a hardcoded role copy (#4113)", async () => {
+    // Explore is standardAuth with NO role gate — its only 403 is `ip_not_allowed`
+    // from the IP allowlist. The command must surface the server's actionable
+    // message + requestId, NOT the old hardcoded "current role" copy.
+    const { fetchImpl } = stubFetch(403, {
+      error: "ip_not_allowed",
+      message: "Your IP address is not in the workspace's allowlist.",
+      requestId: "req-ip-1",
+    });
     const { io, err } = capture();
     const code = await runExplore(["explore", "ls"], deps(fetchImpl), io);
     expect(code).toBe(1);
-    expect(err.join("\n").toLowerCase()).toContain("not accessible");
+    const joined = err.join("\n");
+    expect(joined).toContain("not in the workspace's allowlist");
+    expect(joined).toContain("(request req-ip-1)");
+    expect(joined.toLowerCase()).not.toContain("current role");
   });
 
-  it("non-ok HTTP status reports failure and exits 1", async () => {
-    const { fetchImpl } = stubFetch(500, { error: "internal_error" });
+  it("non-ok HTTP status surfaces the server message + requestId and exits 1", async () => {
+    const { fetchImpl } = stubFetch(500, {
+      error: "internal_error",
+      message: "An unexpected error occurred (ref: abc12345).",
+      requestId: "abc12345-0000",
+    });
     const { io, err } = capture();
     const code = await runExplore(["explore", "ls"], deps(fetchImpl), io);
     expect(code).toBe(1);
-    expect(err.join("\n")).toContain("500");
+    const joined = err.join("\n");
+    expect(joined).toContain("An unexpected error occurred");
+    expect(joined).toContain("(request abc12345-0000)");
+  });
+
+  it("non-ok HTTP status with a non-JSON body falls back to the HTTP-status message", async () => {
+    // A 5xx that isn't JSON degrades via asRecord(null) → {} to serverMessage's
+    // `HTTP <status>` fallback rather than crashing on parse.
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: typeof url === "string" ? url : url.toString(), init });
+      return new Response("<html>502 Bad Gateway</html>", {
+        status: 502,
+        headers: { "Content-Type": "text/html" },
+      });
+    }) as unknown as typeof fetch;
+    const { io, err } = capture();
+    const code = await runExplore(["explore", "ls"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("HTTP 502");
   });
 });

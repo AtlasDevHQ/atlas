@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 
 import { runMetricCommand, type MetricIO, type MetricRunDeps } from "../commands/metric";
+import { runMetric, MetricCliError } from "../lib/metric-client";
 import type { StoredSession } from "../lib/credentials";
 
 const BASE = "http://localhost:3001";
@@ -16,17 +17,27 @@ function capture(): { io: MetricIO; out: string[]; err: string[] } {
   return { io: { out: (l) => out.push(l), err: (l) => err.push(l) }, out, err };
 }
 
-/** Single-canned-response fetch capturing requests + their bodies. */
+/** Single-canned-response fetch capturing requests + their bodies + headers. */
 function stubFetch(
   status: number,
   body: unknown,
-): { fetchImpl: typeof fetch; calls: Array<{ method: string; url: string; body: string }> } {
-  const calls: Array<{ method: string; url: string; body: string }> = [];
+): {
+  fetchImpl: typeof fetch;
+  calls: Array<{ method: string; url: string; body: string; headers: Record<string, string> }>;
+} {
+  const calls: Array<{ method: string; url: string; body: string; headers: Record<string, string> }> = [];
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const headers: Record<string, string> = {};
+    if (init?.headers) {
+      new Headers(init.headers as Record<string, string>).forEach((v, k) => {
+        headers[k] = v;
+      });
+    }
     calls.push({
       method: init?.method ?? "GET",
       url: typeof url === "string" ? url : url.toString(),
       body: typeof init?.body === "string" ? init.body : "",
+      headers,
     });
     return new Response(JSON.stringify(body), {
       status,
@@ -153,6 +164,97 @@ describe("runMetricCommand — execution", () => {
   });
 });
 
+describe("runMetricCommand — workspace API key (#4112 unattended CI)", () => {
+  it("sends the key on x-api-key (not Authorization) when ATLAS_API_KEY is set, with no session", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_SCALAR);
+    const { io } = capture();
+    const code = await runMetricCommand(
+      ["metric", "run", "total_gmv"],
+      { baseUrl: BASE, session: null, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].headers["x-api-key"]).toBe("atlas_wk_abc");
+    expect(calls[0].headers["authorization"]).toBeUndefined();
+  });
+
+  it("the --api-key flag overrides ATLAS_API_KEY (deps.apiKey)", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_SCALAR);
+    const { io } = capture();
+    const code = await runMetricCommand(
+      ["metric", "run", "total_gmv", "--api-key", "flag_key"],
+      { baseUrl: BASE, session: null, apiKey: "env_key", fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].headers["x-api-key"]).toBe("flag_key");
+  });
+
+  it("does not mistake the --api-key value for the metric id positional", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_SCALAR);
+    const { io } = capture();
+    const code = await runMetricCommand(
+      ["metric", "run", "--api-key", "flag_key", "total_gmv"],
+      { baseUrl: BASE, session: null, fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].url).toBe(`${BASE}/api/v1/metrics/total_gmv/run`);
+  });
+
+  it("honors the inline --api-key=<key> form and does not silently fall back to the session", async () => {
+    // Regression: a space-only flag reader drops `--api-key=key` and would run as
+    // the ambient session — wrong identity, no error. The key must win here.
+    const { fetchImpl, calls } = stubFetch(200, OK_SCALAR);
+    const { io } = capture();
+    const code = await runMetricCommand(
+      ["metric", "run", "total_gmv", "--api-key=inline_key"],
+      { baseUrl: BASE, session: SESSION, fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].headers["x-api-key"]).toBe("inline_key");
+    expect(calls[0].headers["authorization"]).toBeUndefined();
+    expect(calls[0].url).toBe(`${BASE}/api/v1/metrics/total_gmv/run`);
+  });
+
+  it("the api-key path takes precedence over a stored session", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_SCALAR);
+    const { io } = capture();
+    await runMetricCommand(
+      ["metric", "run", "total_gmv"],
+      { baseUrl: BASE, session: SESSION, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    expect(calls[0].headers["x-api-key"]).toBe("atlas_wk_abc");
+    expect(calls[0].headers["authorization"]).toBeUndefined();
+  });
+
+  it("with neither a session nor an api-key, refuses with a login + ATLAS_API_KEY hint", async () => {
+    const { io, err } = capture();
+    const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(undefined, null), io);
+    expect(code).toBe(1);
+    const joined = err.join("\n");
+    expect(joined).toContain("atlas login");
+    expect(joined).toContain("ATLAS_API_KEY");
+  });
+
+  it("does not mistake the --connection value for the metric id positional", async () => {
+    // Pre-existing argv gap surfaced by adding a second value flag: the id finder
+    // must skip a value-taking flag's value, not return it as the id.
+    const { fetchImpl, calls } = stubFetch(200, { ...OK_SCALAR, id: "prod_signups" });
+    const { io } = capture();
+    const code = await runMetricCommand(
+      ["metric", "run", "--connection", "us-prod", "prod_signups"],
+      deps(fetchImpl),
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].url).toBe(`${BASE}/api/v1/metrics/prod_signups/run`);
+    expect(JSON.parse(calls[0].body)).toEqual({ connectionId: "us-prod" });
+  });
+});
+
 describe("runMetricCommand — error mapping", () => {
   it("maps 401 to a re-login hint", async () => {
     const { fetchImpl } = stubFetch(401, { error: "auth_error", message: "expired" });
@@ -222,12 +324,26 @@ describe("runMetricCommand — error mapping", () => {
     expect(joined).toContain("(request req-9)");
   });
 
-  it("maps a 503 to request_failed", async () => {
+  it("surfaces a 503 (datasource/subsystem unavailable) with the server message", async () => {
     const { fetchImpl } = stubFetch(503, { error: "no_datasource", message: "Datasource unavailable." });
     const { io, err } = capture();
     const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(fetchImpl), io);
     expect(code).toBe(1);
     expect(err.join("\n")).toContain("Datasource unavailable.");
+  });
+
+  it("surfaces a 429 (rate limited) with the server message + requestId", async () => {
+    const { fetchImpl } = stubFetch(429, {
+      error: "rate_limited",
+      message: "Too many requests. Please wait before trying again.",
+      requestId: "req-rl",
+    });
+    const { io, err } = capture();
+    const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    const joined = err.join("\n");
+    expect(joined).toContain("Too many requests");
+    expect(joined).toContain("(request req-rl)");
   });
 
   it("surfaces a network/timeout failure with the base URL", async () => {
@@ -250,5 +366,45 @@ describe("runMetricCommand — error mapping", () => {
     const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(fetchImpl), io);
     expect(code).toBe(1);
     expect(err.join("\n")).toContain("unexpected response shape");
+  });
+
+  it("surfaces a generic (non-abort) network failure via the shared unreachableMessage (#4113)", async () => {
+    // A non-Timeout/Abort throw takes the `unreachableMessage` branch of the
+    // consolidated http.ts helper — pins the generic-failure path the abort/
+    // timeout tests route around, with the base URL interpolated.
+    const fetchImpl = (async () => {
+      const e = new TypeError("fetch failed");
+      throw e;
+    }) as unknown as typeof fetch;
+    const { io, err } = capture();
+    const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain(`Could not reach the Atlas API at ${BASE}`);
+  });
+});
+
+// The command renders `err.message` for any MetricCliError, so the new typed
+// kinds (#4113 parity with sql-client) are only observable on the thrown error.
+// Pin them at the client layer so 429/503 stop collapsing into `request_failed`.
+describe("runMetric — typed error kinds (parity with sql-client #4113)", () => {
+  async function kindFor(status: number, body: unknown): Promise<string> {
+    const { fetchImpl } = stubFetch(status, body);
+    try {
+      await runMetric({ baseUrl: BASE, credential: { token: "t" }, fetchImpl }, { id: "total_gmv" });
+      throw new Error("expected runMetric to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MetricCliError);
+      return (err as MetricCliError).kind;
+    }
+  }
+
+  it("maps 429 → rate_limited", async () => {
+    expect(await kindFor(429, { error: "rate_limited", message: "Slow down." })).toBe("rate_limited");
+  });
+
+  it("maps 503 → unavailable", async () => {
+    expect(await kindFor(503, { error: "no_datasource", message: "Datasource unavailable." })).toBe(
+      "unavailable",
+    );
   });
 });

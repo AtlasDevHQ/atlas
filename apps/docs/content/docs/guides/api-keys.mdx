@@ -59,18 +59,27 @@ The `atlas` CLI has **two** ways to authenticate, and most users only need the f
 
 - **Workspace API key (unattended CI only).** For a headless CI job where no human ever
   logs in, mint a workspace-scoped key on the `/admin/api-keys` page and pass it via the
-  `ATLAS_API_KEY` environment variable (or `--api-key` on a command):
+  `ATLAS_API_KEY` environment variable (or `--api-key` on a command). Four
+  REST-backed workspace commands honor it as a workspace key — `atlas sql`,
+  `atlas metric run`, `atlas explore`, and `atlas datasource …` — so a CI job never
+  needs an interactive `atlas login` for them (other workspace commands, such as
+  `atlas entities`, still require the `atlas login` session):
 
   ```bash
-  ATLAS_API_KEY=atlas_wk_… atlas sql "SELECT count(*) FROM orders"
+  export ATLAS_API_KEY=atlas_wk_…
+  atlas sql "SELECT count(*) FROM orders"
+  atlas metric run weekly_active_users
+  atlas explore "cat catalog.yml"
+  atlas datasource list
   ```
 
   The CLI sends a workspace key on the `x-api-key` header (the session bearer uses
-  `Authorization: Bearer`). The key resolves live to its **owning member's** workspace,
-  role, and RLS claim — it is delegated human access bound to one workspace, audited to
-  the person who minted it (`actor_kind = api_key`), and revocable from the same page
-  (revocation takes effect on the next request). Because the key is pinned to one
-  workspace, `--workspace` does not apply to it.
+  `Authorization: Bearer`); a command uses exactly one of the two, never both. The key
+  resolves live to its **owning member's** workspace, role, and RLS claim — it is
+  delegated human access bound to one workspace, audited to the person who minted it
+  (`actor_kind = api_key`), and revocable from the same page (revocation takes effect on
+  the next request). Because the key is pinned to one workspace, `--workspace` does not
+  apply to it.
 
 <Callout>
 The legacy `ATLAS_API_KEY` **operator god-key** (a single env-configured key for

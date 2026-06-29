@@ -33,6 +33,20 @@ export interface GroupRoutingContext {
   readonly primaryMember: string;
   /** The connection id this lookup was anchored on (echoed for caller convenience). */
   readonly currentMember: string;
+  /**
+   * `true` only when the routing lookup itself FAILED (internal-DB fault) and
+   * this is a fault-induced 1×1 fallback — distinct from a LEGITIMATE fallback
+   * (no bound org, no internal DB, install ungrouped, or install not-found),
+   * every one of which is `false`. Most callers ignore it and treat the
+   * fallback as a 1×1 group (correct: degraded routing safely collapses to
+   * single-env). A caller that needs membership CERTAINTY — e.g. metric-run's
+   * explicit-connection check (#4109) — reads it to tell a transient outage
+   * from a definitive "groupId is undefined" verdict, so a server fault isn't
+   * mistaken for a user-input error. Required (not optional) so a future
+   * fallback path can't silently default to the trustworthy state — the exact
+   * failure mode #4109 fixes.
+   */
+  readonly degraded: boolean;
 }
 
 /**
@@ -48,6 +62,8 @@ export async function loadGroupRoutingContext(
     members: [currentConnectionId],
     primaryMember: currentConnectionId,
     currentMember: currentConnectionId,
+    // Legitimate (non-fault) fallback; the catch block flips this to true.
+    degraded: false,
   };
 
   if (!orgId || !hasInternalDB()) {
@@ -116,6 +132,7 @@ export async function loadGroupRoutingContext(
       members: members.length > 0 ? members : [currentConnectionId],
       primaryMember,
       currentMember: currentConnectionId,
+      degraded: false,
     };
   } catch (err) {
     // Routing-lookup failure must not hard-fail the whole tool call —
@@ -125,6 +142,9 @@ export async function loadGroupRoutingContext(
       { err: err instanceof Error ? err.message : String(err), orgId, currentConnectionId },
       "Failed to resolve group routing context — falling back to single-env execution",
     );
-    return fallback;
+    // Flag this fallback `degraded` (the early-return fallbacks above don't):
+    // membership-sensitive callers must not read this fault-induced
+    // `groupId: undefined` as a definitive answer (#4109).
+    return { ...fallback, degraded: true };
   }
 }

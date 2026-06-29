@@ -129,6 +129,7 @@ mock.module("@atlas/api/lib/env-routing/lookup", () => ({
     members: mockGroupMembers,
     primaryMember: mockPrimaryMember,
     currentMember,
+    degraded: false,
   }),
 }));
 

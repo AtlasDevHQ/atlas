@@ -29,6 +29,7 @@
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { HTTPException } from "hono/http-exception";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
@@ -240,6 +241,18 @@ export const metrics = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook })
 metrics.use(standardAuth);
 metrics.use(requestContext);
 
+// Normalize JSON parse errors from @hono/zod-openapi into the standard API
+// error format. Mirrors execute-sql.ts / explore.ts / datasources.ts.
+metrics.onError((err, c) => {
+  if (err instanceof HTTPException) {
+    if (err.res) return err.res;
+    if (err.status === 400) {
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
+  }
+  throw err;
+});
+
 metrics.openapi(runMetricRoute, async (c) => {
   return runEffect(
     c,
@@ -356,18 +369,51 @@ metrics.openapi(runMetricRoute, async (c) => {
           400,
         );
       }
+      if (resolution.kind === "routing_unavailable") {
+        // The internal-DB lookup that validates the explicit connection's group
+        // membership faulted. We can't prove or disprove membership, so this is
+        // a retryable server-side condition — NOT a confident wrong_connection
+        // 400 (#4109). Surface it as a 503 carrying the requestId so an operator
+        // sees the real fault, not a misleading user-input error.
+        log.warn(
+          {
+            requestId,
+            orgId,
+            metricId: resolution.metricId,
+            connectionId: resolution.connectionId,
+            category: "routing_unavailable",
+          },
+          "Metric-run group-membership lookup degraded (internal DB fault) — returning retryable 503",
+        );
+        return c.json(
+          {
+            error: "routing_unavailable",
+            message:
+              "Could not verify the connection's group membership right now (a transient internal error). Please retry shortly.",
+            retryable: true,
+            requestId,
+          } as never,
+          503,
+        );
+      }
 
       const { metric, targetConnectionId } = resolution;
       const explanation = metric.description
         ? `CLI metric run ${metric.id}: ${metric.description}`
         : `CLI metric run ${metric.id}`;
 
-      // Origin for approval-rule matching + audit: the credential's resolved
-      // origin claim (`cli` for an `atlas login` device-flow bearer), falling
-      // back to `cli` — this endpoint is the workspace CLI metric-run surface.
+      // Audit origin derives from the credential's claim, never hardcoded — a
+      // device-flow `atlas` bearer AND a workspace API key both carry
+      // `origin: "cli"`; a non-CLI session (e.g. a web session reaching this
+      // route) leaves it undefined so it is not mislabeled. A real CLI credential
+      // ALWAYS stamps the claim, so this fallback only ever fires for a non-CLI
+      // caller — defaulting to "cli" there would mislabel it in the
+      // origin-scoped approval/audit context. Standardized to the `undefined`
+      // fallback across the four sibling CLI routes (#4113); validated against
+      // the canonical vocabulary so an unexpected value can't land in the context.
       const claimOrigin = user?.claims?.origin;
       const agentOrigin =
-        typeof claimOrigin === "string" && isRequestOrigin(claimOrigin) ? claimOrigin : "cli";
+        typeof claimOrigin === "string" && isRequestOrigin(claimOrigin) ? claimOrigin : undefined;
 
       // `actor.kind` is the *who*, distinct from `origin` (the transport): a
       // human who approved a device-flow `atlas login` → `human`; an UNATTENDED
@@ -399,8 +445,8 @@ metrics.openapi(runMetricRoute, async (c) => {
             user,
             atlasMode,
             trustDeviceIdentifier,
-            agentOrigin,
             actor: { kind: actorKind },
+            ...(agentOrigin ? { agentOrigin } : {}),
           },
           async () => {
             const { runUserQueryPipeline } = await import("@atlas/api/lib/tools/sql");

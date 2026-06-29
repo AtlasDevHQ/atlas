@@ -108,7 +108,7 @@ curl -sS "$API/.well-known/oauth-protected-resource/mcp/$WS"
 
 From there, the **token mint needs an authenticated session** — discover the auth server (metadata lives under the `/api/auth` issuer path, not the root `/.well-known/...`), run **Dynamic Client Registration**, then the **authorization-code + PKCE** flow for a token carrying ≥ `mcp:read` (add `mcp:write` for a mutating tool) bound to the `…/mcp` audience.
 
-> The OAuth `authorize` step needs an authenticated session, which on staging is obtained headlessly via the **email-OTP claim** (Automation recipe below): once you hold a session cookie, `authorize` → `consent` yields the MCP bearer. (The session itself is enough to verify the *account is usable*; the full DCR+PKCE bearer mint is the additional step to exercise the MCP *tools*.)
+> ✅ **Proven end-to-end headless (2026-06-29).** The OAuth `authorize` step needs an authenticated session, obtained on staging via the **email-OTP claim** (Automation recipe step 5c). With the session cookie: DCR → PKCE `authorize` → `consent` (re-presenting the signed `oauth_query`) → token (with `resource=<api>/mcp`) yields an `mcp:read` bearer whose `aud` is `…/mcp`; the connect handshake then `200`s and `tools/call listEntities` returns a structured result. The exact calls + the two non-obvious gotchas (consent body must carry `oauth_query`; `resource` indicator required on authorize **and** token) are in the recipe.
 
 - The grace account is **claimed first** by signing in — the throwaway password from `provision-trial.ts:197` is never used; **email-OTP sign-in** claims it (flips `emailVerified`, extends the trial). On staging the OTP is read from the Resend sink (recipe below); on prod the human reads the OTP email.
 - Easiest driver: the **embedded onboarding hook** `useMcpConnect` (`examples/embedded-mcp-onboarding/`) pointed at the region `apiUrl` runs DCR + PKCE + token exchange and hands back the access token. Otherwise run the dance by hand against `/api/auth/oauth2/{register,authorize,token}`.
@@ -234,7 +234,7 @@ No browser, no human. The OTP claim is solved by reading the Resend sink via the
 4.  POST /api/auth/sign-in/email-otp  {email, otp}        → 200 + session cookie/token  (account now CLAIMED)
 5a. Use the session — REST: Bearer <token> → /api/v1/{trial,me/preferences,tables} all 200;
     /api/v1/execute-sql → 503 connection_unavailable (no datasource = auth PASSED).
-5b. Real `atlas login` device flow, headless:
+5b. Phase C — real `atlas login` device flow, headless:
       POST /api/auth/device/code           {client_id:"atlas-cli"}         → device_code, user_code
       GET  /api/auth/device?user_code=…    (cookie jar from step 4)        → 200   (claims the code)
       POST /api/auth/device/approve        {userCode}  + Origin header + cookie jar → {"success":true}
@@ -242,9 +242,17 @@ No browser, no human. The OTP claim is solved by reading the Resend sink via the
     Write ~/.atlas/credentials = {version:1,sessions:{"<api>":{token:<access_token>,workspaceId,createdAt}}}
       → `ATLAS_API_URL=<api> atlas entities`  → 200 (empty, no datasource)
       → `atlas sql "SELECT 1"`                → "Connection default not available in published mode" (auth PASSED)
+5c. Phase B — authenticated MCP (DCR + PKCE + consent + resource-bound bearer):
+      POST /api/auth/oauth2/register        {redirect_uris,token_endpoint_auth_method:"none",scope:"mcp:read"} → client_id (public, no secret)
+      GET  /api/auth/oauth2/authorize       ?response_type=code&client_id&redirect_uri&scope=mcp:read
+                                            &code_challenge(S256)&resource=<api>/mcp   (cookie jar) → 302 to /oauth2/consent?<SIGNED_Q>
+      POST /api/auth/oauth2/consent         {accept:true, oauth_query:"?<SIGNED_Q>"}  (cookie jar) → {redirect:true,url:"…callback?code=…"}
+      POST /api/auth/oauth2/token           grant_type=authorization_code, code, code_verifier, client_id, redirect_uri, resource=<api>/mcp → access_token (aud=<api>/mcp, scope=mcp:read)
+      → MCP handshake on /mcp/<WS>/sse with `Authorization: Bearer`  → initialize 200, tools/list (14 tools),
+        tools/call listEntities → {"count":0,"entities":[]}  (auth + dispatch PASSED; empty = no datasource)
 ```
 
-Gotchas baked in above: `device/approve` needs an **`Origin` header** (else `MISSING_OR_NULL_ORIGIN`) **and** the prior `GET /device?user_code` claim (else "device code has not been claimed by a verifying session"); poll the **newest** Resend id (selecting "any id ≠ pre" grabs a *stale* OTP). The remaining CI work:
+Gotchas baked in above: `device/approve` needs an **`Origin` header** (else `MISSING_OR_NULL_ORIGIN`) **and** the prior `GET /device?user_code` claim (else "device code has not been claimed by a verifying session"); the OAuth **consent** must re-present the **signed `oauth_query`** (the full query string from the authorize 302, with its `ba_*` + `sig` params) in the POST body — and read the code from the response's **`.url`** field; the **`resource=<api>/mcp`** indicator (RFC 8707) is **required on BOTH authorize and token** or the bearer's `aud` won't match the MCP verifier (`hosted.ts` `resourceAudience()`) and the connect handshake returns no session; poll the **newest** Resend id (selecting "any id ≠ pre" grabs a *stale* OTP). The remaining CI work:
 
 1. **Datasource fixture on staging** so data-path commands assert real answers instead of `503`/no-datasource (`atlas datasource create` against a throwaway Postgres, or a CI workspace exempt from #3921).
 2. **Dedicated identities + auto-teardown** — `ci-mcp@useatlas.dev` with the in-container purge SSOT (above) after each run.

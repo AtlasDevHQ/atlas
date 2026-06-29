@@ -492,10 +492,11 @@ let mockInternalQueryResult: unknown[] | Error = [];
 function invokeInternalQueryMock(sql?: string): Promise<unknown[]> {
   // The per-tier feature-entitlement guard (WS1 #3988) resolves the workspace's
   // plan_tier before every residency route in SaaS deploy mode (which this
-  // monorepo's test env resolves to). Residency gates to Business, so the
-  // entitlement read returns `business` independent of `mockInternalQueryResult`
-  // (which drives the residency migration-row queries / rejection paths) — so a
-  // test exercising a DB-rejection migration path still passes the gate first.
+  // monorepo's test env resolves to). Residency is now an all-paid feature
+  // (SSOT minimum `trial`); returning `business` here clears that floor
+  // independent of `mockInternalQueryResult` (which drives the residency
+  // migration-row queries / rejection paths) — so a test exercising a
+  // DB-rejection migration path still passes the gate first.
   if (
     sql &&
     /plan_tier[\s\S]*is_operator_workspace|is_operator_workspace[\s\S]*plan_tier/.test(

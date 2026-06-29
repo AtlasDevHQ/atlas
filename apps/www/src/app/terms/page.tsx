@@ -72,7 +72,7 @@ const SECTIONS: LegalSectionData[] = [
     legal: [
       "As between the parties, Customer owns Customer Data. Customer grants Atlas a limited license to process Customer Data solely to provide the Service.",
       "Atlas does not use Customer Data to train AI models. Atlas does not sell Customer Data. Atlas does not access Customer’s data warehouse contents except to execute queries that Customer’s authorized users explicitly issue. Query text is forwarded to the configured LLM provider (Anthropic, OpenAI, etc.) for processing under that provider’s terms.",
-      "Atlas implements technical and organizational measures consistent with industry standards: encryption in transit (TLS 1.2+) and at rest (AES-256), least-privilege access, logged admin operations, configurable PII detection on result sets, and Business-plan data residency. Further detail is in the Data Processing Addendum at useatlas.dev/dpa.",
+      "Atlas implements technical and organizational measures consistent with industry standards: encryption in transit (TLS 1.2+) and at rest (AES-256), least-privilege access, logged admin operations, configurable PII detection on result sets, and data residency on all paid plans. Further detail is in the Data Processing Addendum at useatlas.dev/dpa.",
     ],
     plain:
       "You retain ownership of your data. We do not train models on it, sell it, or access your warehouse beyond executing queries your users explicitly issue. Encrypted in transit and at rest.",

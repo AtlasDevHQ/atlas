@@ -167,7 +167,9 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxChatIntegrations: 1,
       monthlyProactiveClassifierCap: 5_000,
     },
-    features: { ...NO_FEATURES },
+    // Data residency is available at every active paid tier (entitlement floor
+    // is `trial`); see FEATURE_ENTITLEMENTS.residency.
+    features: { ...NO_FEATURES, dataResidency: true },
   },
   starter: {
     name: "starter",
@@ -182,7 +184,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxChatIntegrations: 1,
       monthlyProactiveClassifierCap: 5_000,
     },
-    features: { ...NO_FEATURES },
+    features: { ...NO_FEATURES, dataResidency: true },
   },
   pro: {
     name: "pro",
@@ -200,7 +202,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     features: {
       customDomain: true,
       sso: false,
-      dataResidency: false,
+      dataResidency: true,
       sla: null,
     },
   },

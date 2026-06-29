@@ -75,7 +75,7 @@ export const ENTITLEMENT_ROWS: readonly EntitlementRow[] = [
     feature: "residency",
     label: "Data residency",
     section: "hosting",
-    cells: { selfHosted: false, starter: false, pro: false, business: true },
+    cells: { selfHosted: false, starter: true, pro: true, business: true },
   },
   {
     feature: "backups",

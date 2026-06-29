@@ -9,7 +9,7 @@
  *   - PII masking + compliance reports (`masking`, Business)
  *   - white-label branding (`white_label`, Business)
  *   - custom domain (`custom_domain`, Pro+)
- *   - data residency (`residency`, Business)
+ *   - data residency (`residency`, all paid tiers — trial floor)
  *
  * These assert the gate's external behavior at the API boundary: a below-tier
  * workspace is denied with the `plan_upgrade_required` upgrade envelope BEFORE
@@ -122,12 +122,8 @@ const BUSINESS_FEATURES: Array<{
     path: "/api/v1/admin/branding",
     mutate: { method: "PUT", path: "/api/v1/admin/branding", body: { logoText: "Acme" } },
   },
-  {
-    feature: "residency",
-    label: "data residency",
-    path: "/api/v1/admin/residency",
-    mutate: { method: "PUT", path: "/api/v1/admin/residency", body: { region: "us-east" } },
-  },
+  // NOTE: `residency` moved OUT of this Business-gated set — its SSOT minimum is
+  // now `trial` (all paid tiers). It has its own all-paid block below.
 ];
 
 describe("per-tier feature-entitlement route gates (#3988)", () => {
@@ -240,6 +236,68 @@ describe("per-tier feature-entitlement route gates (#3988)", () => {
     });
 
     it("fails closed with 503 when the tier lookup throws", async () => {
+      failWorkspaceLookup();
+      const res = await app.fetch(adminRequest(path));
+      expect(res.status).toBe(503);
+      expect(await errorOf(res)).toBe("billing_check_failed");
+    });
+  });
+
+  // Data residency is the all-paid floor (residency = "trial"): region choice is
+  // universal at signup, and the residency management surface is included at
+  // every active paid tier. Denied only below trial (free / churned locked) —
+  // mirrors proactive (#3999). Proves the SSOT's trial minimum is enforced.
+  describe("data residency — all paid tiers", () => {
+    const path = "/api/v1/admin/residency";
+
+    it("denies a free-tier workspace with 403 plan_upgrade_required (the floor below trial)", async () => {
+      setWorkspaceTier("free");
+      const res = await app.fetch(adminRequest(path));
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as {
+        error: string;
+        required_plan: string;
+        current_plan: string;
+      };
+      expect(body.error).toBe("plan_upgrade_required");
+      expect(body.required_plan).toBe("trial");
+      expect(body.current_plan).toBe("free");
+    });
+
+    it("denies a churned (locked) workspace with 403 plan_upgrade_required", async () => {
+      setWorkspaceTier("locked");
+      const res = await app.fetch(adminRequest(path));
+      expect(res.status).toBe(403);
+      expect(await errorOf(res)).toBe("plan_upgrade_required");
+    });
+
+    it.each(["trial", "starter", "pro", "business"])(
+      "admits an active %s workspace past the ladder",
+      async (tier) => {
+        setWorkspaceTier(tier);
+        const res = await app.fetch(adminRequest(path));
+        const err = await errorOf(res);
+        expect(err).not.toBe("plan_upgrade_required");
+        expect(err).not.toBe("billing_check_failed");
+      },
+    );
+
+    it("denies a free workspace on the mutating PUT before any side effect", async () => {
+      setWorkspaceTier("free");
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/residency", "PUT", { region: "us-east" }),
+      );
+      expect(res.status).toBe(403);
+      expect(await errorOf(res)).toBe("plan_upgrade_required");
+    });
+
+    it("bypasses the ladder for an operator workspace", async () => {
+      setWorkspaceTier("free", true);
+      const res = await app.fetch(adminRequest(path));
+      expect(await errorOf(res)).not.toBe("plan_upgrade_required");
+    });
+
+    it("fails closed with 503 billing_check_failed when the tier lookup throws", async () => {
       failWorkspaceLookup();
       const res = await app.fetch(adminRequest(path));
       expect(res.status).toBe(503);

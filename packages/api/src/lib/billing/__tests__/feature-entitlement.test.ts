@@ -46,14 +46,17 @@ const TIER_RANK: Record<PlanTier, number> = {
 const TIER_OVERRIDES: Partial<Record<GatedFeature, MinPlanTier>> = {
   custom_domain: "pro",
   proactive: "trial",
+  // All-paid: region choice is universal at signup; residency management is
+  // included at every active paid tier (not a Business differentiator).
+  residency: "trial",
 };
 
 describe("FEATURE_ENTITLEMENTS map", () => {
   it("defaults every gated feature to Business except the recorded overrides", () => {
     // The PRD locks the default tier line at Business. An override (Pro+ for
-    // custom_domain, all-paid `trial` for proactive) is an intentional
-    // single-line change in the SSOT; this pins the exact override set so a
-    // stray re-tier is caught.
+    // custom_domain, all-paid `trial` for proactive + residency) is an
+    // intentional single-line change in the SSOT; this pins the exact override
+    // set so a stray re-tier is caught.
     for (const feature of ALL_FEATURES) {
       const expected = TIER_OVERRIDES[feature] ?? "business";
       expect(FEATURE_ENTITLEMENTS[feature]).toBe(expected);

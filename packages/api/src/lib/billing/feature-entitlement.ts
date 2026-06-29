@@ -79,7 +79,17 @@ export const FEATURE_ENTITLEMENTS: Readonly<Record<GatedFeature, MinPlanTier>> =
   approvals: "business",
   audit_retention: "business",
   masking: "business",
-  residency: "business",
+  // All-paid override (not the Business default): data residency is available
+  // to every paying plan, not a Business differentiator. Region *choice* is
+  // already universal — the signup picker (`GET /api/v1/onboarding/regions` →
+  // buildAvailableRegions) is gated only by a region's `selectable` config flag,
+  // never by tier — so every workspace picks its US/EU/APAC region at signup.
+  // Pinning the entitlement at `trial` (the lowest active SaaS tier) makes the
+  // residency *management* surface (view/reassign/migrate, /api/v1/admin/residency)
+  // match that: included at every active paid tier, denied only to `locked` and
+  // the no-tier fail-closed-to-`free` case. The pricing page renders this in
+  // lockstep via the generated artifact.
+  residency: "trial",
   backups: "business",
   white_label: "business",
   // Pro+ override (not the Business default): the custom-domain route has always

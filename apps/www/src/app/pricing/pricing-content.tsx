@@ -101,6 +101,7 @@ const TIERS: Tier[] = [
       "BYOK for unlimited queries",
       "Notebooks & dashboards",
       "1 chat integration",
+      "Data residency (3 regions)",
       "Email support",
     ],
   },
@@ -123,6 +124,7 @@ const TIERS: Tier[] = [
       "Notebooks & dashboards",
       "3 chat integrations",
       "Custom domain",
+      "Data residency (3 regions)",
       "Priority email support",
     ],
   },
@@ -195,15 +197,15 @@ const SECTION_PREFIX_ROWS: Partial<Record<EntitlementSection, ComparisonRow[]>> 
   };
 
 // Per-feature display overrides: a feature whose entitlement is a boolean in
-// the SSOT but reads better as free text in one column (e.g. residency's
-// "3 regions" for Business). Keyed by the artifact's `FeatureId` union — a
-// misspelled key is a compile error, not a silent no-op — and the override
-// applies only where the entitlement is already true, so it never widens what
-// a tier unlocks beyond what the SSOT grants.
+// the SSOT but reads better as free text (e.g. residency's "3 regions" on every
+// paid tier — region choice is universal at signup). Keyed by the artifact's
+// `FeatureId` union — a misspelled key is a compile error, not a silent no-op —
+// and the override applies only where the entitlement is already true, so it
+// never widens what a tier unlocks beyond what the SSOT grants.
 const CELL_LABEL_OVERRIDES: Partial<
   Record<FeatureId, Partial<Record<PricingColumn, string>>>
 > = {
-  residency: { business: "3 regions" },
+  residency: { starter: "3 regions", pro: "3 regions", business: "3 regions" },
 };
 
 /**

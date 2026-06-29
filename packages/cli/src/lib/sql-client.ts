@@ -10,9 +10,10 @@
  *
  * Authorization rides entirely on the `atlas login` workspace credential: the
  * stored Better Auth session bearer (stamped `origin='cli'` server-side) is sent
- * as `Authorization: Bearer <token>`. The route resolves it live to
- * `{ orgId, role }`, runs billing gate-0, and executes the SQL against ONLY the
- * bound workspace — the CLI never re-derives any of that, and crucially never
+ * as `Authorization: Bearer <token>`. The route resolves it live to its bound
+ * workspace org (member floor — no role gating on this route), runs billing
+ * gate-0, and executes the SQL against ONLY the bound workspace — the CLI never
+ * re-derives any of that, and crucially never
  * sends an org/workspace field (workspace isolation derives from the credential,
  * ADR-0027 §5).
  *
@@ -28,6 +29,7 @@ export type SqlErrorKind =
   | "unauthorized" // 401 — bearer missing/expired
   | "forbidden" // 403 — billing block or RLS-denied
   | "no_workspace" // 400 — credential has no bound workspace
+  | "workspace_not_found" // 404 — billing block: the workspace was deleted
   | "invalid_sql" // 400 — rejected by the validation pipeline (DML/whitelist/unparseable)
   | "approval_required" // 409 — the SQL tripped an approval rule
   | "rate_limited" // 429 — per-identity bucket or workspace throttle
@@ -162,6 +164,12 @@ export async function runSql(opts: SqlClientOptions, args: RunSqlArgs): Promise<
       // Billing block or RLS-denied — surface the server's message (it carries
       // the actionable remedy, e.g. trial-expired guidance or the RLS reason).
       throw new SqlCliError("forbidden", serverMessage(body, res.status));
+    case 404:
+      // The ONLY 404 this route emits is a billing-gate block for a deleted
+      // workspace (`workspace_deleted`). Distinct from a 403 billing/RLS block:
+      // the remedy is "this workspace no longer exists", not "fix billing".
+      // Surface the gate's verbatim message.
+      throw new SqlCliError("workspace_not_found", serverMessage(body, res.status));
     case 409:
       throw new SqlCliError("approval_required", serverMessage(body, res.status));
     case 429:

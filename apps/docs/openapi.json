@@ -2636,6 +2636,17 @@
               }
             }
           },
+          "404": {
+            "description": "Workspace not found (billing block — deleted workspace)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
           "409": {
             "description": "Approval required",
             "content": {

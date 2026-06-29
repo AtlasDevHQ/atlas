@@ -150,6 +150,61 @@ describe("runSqlCommand — request shape (ADR-0027 §5 isolation)", () => {
   });
 });
 
+describe("runSqlCommand — --workspace override (ADR-0027 §5 / #4050)", () => {
+  /** Route stub: set-active (membership gate) then execute-sql. */
+  function routerFetch(
+    setActiveStatus: number,
+  ): { fetchImpl: typeof fetch; calls: Array<{ url: string; body: string }> } {
+    const calls: Array<{ url: string; body: string }> = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.toString();
+      calls.push({ url: u, body: typeof init?.body === "string" ? init.body : "" });
+      if (u.endsWith("/api/auth/organization/set-active")) {
+        return new Response(
+          setActiveStatus === 200 ? JSON.stringify({ id: "org-2", name: "Two" }) : "{}",
+          { status: setActiveStatus, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify(OK_ROWS), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    return { fetchImpl, calls };
+  }
+
+  it("rebinds the workspace BEFORE the query and does not treat the override id as the SQL", async () => {
+    const { fetchImpl, calls } = routerFetch(200);
+    const { io } = capture();
+    const code = await runSqlCommand(
+      ["sql", "SELECT 1", "--workspace", "org-2"],
+      deps(fetchImpl),
+      io,
+    );
+    expect(code).toBe(0);
+    // set-active was called first, then execute-sql.
+    expect(calls[0].url).toContain("/organization/set-active");
+    expect(JSON.parse(calls[0].body)).toEqual({ organizationId: "org-2" });
+    expect(calls[1].url).toContain("/execute-sql");
+    // The override token (org-2) is NOT mistaken for the SQL positional.
+    expect(JSON.parse(calls[1].body)).toEqual({ sql: "SELECT 1" });
+  });
+
+  it("rejects a non-member --workspace BEFORE running any query (membership gate)", async () => {
+    const { fetchImpl, calls } = routerFetch(403);
+    const { io, err } = capture();
+    const code = await runSqlCommand(
+      ["sql", "SELECT 1", "--workspace", "org-nope"],
+      deps(fetchImpl),
+      io,
+    );
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("not a member");
+    // The query never ran — only the set-active call was made.
+    expect(calls.every((c) => !c.url.includes("/execute-sql"))).toBe(true);
+  });
+});
+
 describe("runSqlCommand — output", () => {
   it("renders a table by default", async () => {
     const { fetchImpl } = stubFetch(200, OK_ROWS);
@@ -250,6 +305,17 @@ describe("runSqlCommand — error mapping", () => {
     const code = await runSqlCommand(["sql", "SELECT * FROM orders"], deps(fetchImpl), io);
     expect(code).toBe(1);
     expect(err.join("\n")).toContain("Row-level security blocked");
+  });
+
+  it("maps a 404 (deleted workspace) to the verbatim server message", async () => {
+    const { fetchImpl } = stubFetch(404, {
+      error: "workspace_deleted",
+      message: "This workspace no longer exists.",
+    });
+    const { io, err } = capture();
+    const code = await runSqlCommand(["sql", "SELECT 1"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("no longer exists");
   });
 
   it("surfaces a 409 approval-required message", async () => {

@@ -131,6 +131,15 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
     pipelineCalls.push(opts);
     return pipelineImpl(opts);
   },
+  // Mock ALL named exports the module surfaces so a sibling test loading the
+  // real module after this one doesn't inherit a partial mock (CLAUDE.md
+  // mock-all-exports). The route only imports `runUserQueryPipeline`; the rest
+  // are inert stubs.
+  executeSQL: { description: "executeSQL", execute: async () => ({ success: true }) },
+  validateSQL: async () => ({ valid: true, classification: { tablesAccessed: [], columnsAccessed: [] } }),
+  parserDatabase: () => "PostgresQL",
+  extractClassification: () => ({ tablesAccessed: [], columnsAccessed: [] }),
+  buildSqlExecuteSpanAttrs: () => ({}),
 }));
 
 const { executeSql } = await import("../execute-sql");
@@ -191,6 +200,82 @@ describe("POST /api/v1/execute-sql — auth + member floor (ADR-0027 §2)", () =
     const res = await post({ sql: "SELECT 1" });
     expect(res.status).toBe(200);
     expect(pipelineCalls).toHaveLength(1);
+  });
+
+  it("no escalation: a member's reach ≡ an owner's reach — identical pipeline call, no role gate (ADR-0027 §2)", async () => {
+    // The whole point of the member floor: raw-SQL reach is identical regardless
+    // of role — the whitelist/RLS/approval boundary is the same, the LLM's
+    // self-restraint (the only thing raw SQL removes) was never a security
+    // control. So the SAME SQL from a member and an owner must produce the SAME
+    // forwarded pipeline call and the SAME 200 — no admin/owner privilege.
+    fakeAuth = userAuth({ role: "member" });
+    await post({ sql: "SELECT id FROM users" });
+    fakeAuth = userAuth({ role: "owner" });
+    await post({ sql: "SELECT id FROM users" });
+    expect(pipelineCalls).toHaveLength(2);
+    expect(pipelineCalls[0]).toEqual(pipelineCalls[1]);
+    // Neither was rejected for role.
+    expect(pipelineCalls[0]).toMatchObject({ sql: "SELECT id FROM users" });
+  });
+});
+
+describe("POST /api/v1/execute-sql — outcome → HTTP mapping is total", () => {
+  // Pin every non-`ok` UserQueryOutcome arm → {status, error} so a wrong status
+  // or wire code on any arm fails here rather than shipping silently.
+  const cases: Array<{ outcome: UserQueryOutcome; status: number; error: string }> = [
+    { outcome: { kind: "validation_failed", message: "x" }, status: 400, error: "invalid_sql" },
+    {
+      outcome: { kind: "plugin_rejected", message: "x" },
+      status: 400,
+      error: "plugin_rejected",
+    },
+    { outcome: { kind: "query_failed", message: "x" }, status: 400, error: "query_failed" },
+    { outcome: { kind: "rls_failed", message: "x" }, status: 403, error: "rls_blocked" },
+    {
+      outcome: { kind: "approval_identity_missing", message: "x" },
+      status: 401,
+      error: "auth_required",
+    },
+    {
+      outcome: { kind: "approval_unavailable", message: "x" },
+      status: 503,
+      error: "approval_unavailable",
+    },
+    { outcome: { kind: "rate_limited", message: "x" }, status: 429, error: "rate_limited" },
+    {
+      outcome: { kind: "concurrency_limited", message: "x" },
+      status: 429,
+      error: "concurrency_limited",
+    },
+    { outcome: { kind: "no_datasource", message: "x" }, status: 503, error: "no_datasource" },
+    { outcome: { kind: "pool_exhausted", message: "x" }, status: 503, error: "pool_exhausted" },
+    {
+      outcome: { kind: "enterprise_unavailable", message: "x" },
+      status: 503,
+      error: "enterprise_load_failed",
+    },
+  ];
+
+  for (const { outcome, status, error } of cases) {
+    it(`maps ${outcome.kind} → ${status} ${error}`, async () => {
+      fakeAuth = userAuth();
+      pipelineImpl = async () => outcome;
+      const res = await post({ sql: "SELECT 1" });
+      expect(res.status).toBe(status);
+      const body = (await res.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe(error);
+      // Every error envelope carries a requestId for log correlation.
+      expect(body.requestId).toBeDefined();
+    });
+  }
+
+  it("includes retryAfterMs on a rate_limited outcome when present", async () => {
+    fakeAuth = userAuth();
+    pipelineImpl = async () => ({ kind: "rate_limited", message: "slow", retryAfterMs: 5000 });
+    const res = await post({ sql: "SELECT 1" });
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { retryAfterMs?: number };
+    expect(body.retryAfterMs).toBe(5000);
   });
 });
 
@@ -320,6 +405,27 @@ describe("POST /api/v1/execute-sql — billing gate-0 (ADR-0027 §1)", () => {
     expect(res.status).toBe(503);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("billing_check_failed");
+    expect(pipelineCalls).toHaveLength(0);
+  });
+
+  it("emits the gate's real 404 status (deleted workspace), NOT coerced to 403", async () => {
+    // The gate's httpStatus is 403|404|429|503; a `workspace_deleted` block is a
+    // 404. The route must surface 404 (declared in the responses map) so the CLI
+    // client maps it to the distinct workspace_not_found remedy, not a generic
+    // 403/request_failed.
+    fakeAuth = userAuth();
+    gateImpl = async () => ({
+      allowed: false,
+      errorCode: "workspace_deleted",
+      errorMessage: "This workspace no longer exists.",
+      httpStatus: 404,
+      retryable: false,
+    });
+    const res = await post({ sql: "SELECT 1" });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("workspace_deleted");
+    expect(body.message).toContain("no longer exists");
     expect(pipelineCalls).toHaveLength(0);
   });
 });

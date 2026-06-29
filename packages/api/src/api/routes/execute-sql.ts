@@ -41,12 +41,13 @@
  *    pipeline; the body carries ONLY `{ sql, connectionId? }` — no org /
  *    workspace / connection-owner field. A `connectionId` from another workspace
  *    simply isn't found → `connection_unavailable` (ADR-0027 §5).
- *  - Audited `origin=cli` with a distinct `actor_kind` traceable to the owning
- *    member: the handler binds `agentOrigin` (derived from the credential's
- *    `origin` claim, NOT hardcoded) + `actor: { kind: "human" }` into the
- *    request context so the audit row written by the pipeline traces to the real
- *    member who minted the device-flow login (ADR-0027 §6). The unattended-key
- *    `api_key` actor_kind layers in with #4046.
+ *  - Audited with a credential-derived origin (`cli` for a device-flow `atlas`
+ *    bearer; left undefined for a non-CLI session, never mislabeled) + a distinct
+ *    `actor_kind` traceable to the owning member: the handler binds `agentOrigin`
+ *    (derived from the credential's `origin` claim, NOT hardcoded) +
+ *    `actor: { kind: "human" }` into the request context so the audit row written
+ *    by the pipeline traces to the real member who minted the device-flow login
+ *    (ADR-0027 §6). The unattended-key `api_key` actor_kind layers in with #4046.
  *  - Rate limit reuses the standard per-identity bucket (inherited from
  *    `standardAuth`); per-workspace pool + auto-LIMIT + statement timeout bound
  *    the blast radius (ADR-0027 §7).
@@ -139,6 +140,10 @@ const executeSqlRoute = createRoute({
     },
     403: {
       description: "Forbidden — billing block or RLS-denied",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Workspace not found (billing block — deleted workspace)",
       content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
     },
     409: {
@@ -346,8 +351,12 @@ executeSql.openapi(executeSqlRoute, async (c) => {
             ...(gate.retryAfterSeconds !== undefined && { retryAfterSeconds: gate.retryAfterSeconds }),
             requestId,
           } as never,
-          // httpStatus is 403/404/429/503 — all declared in the responses map;
-          // cast to one declared literal to satisfy c.json's typed overload.
+          // httpStatus is 403/404/429/503 — all declared in the responses map.
+          // 404 (deleted workspace, `workspace_deleted`) must NOT be coerced to
+          // 403: the CLI client maps 404 → an actionable "workspace no longer
+          // exists" message distinct from a billing/RLS 403. Cast to one declared
+          // literal only to satisfy c.json's typed overload; the runtime status is
+          // the gate's own.
           (gate.httpStatus ?? 403) as 403,
         );
       }

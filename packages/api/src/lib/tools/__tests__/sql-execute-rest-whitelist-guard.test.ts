@@ -160,6 +160,36 @@ describe("ADR-0027 §4 — executeSQL path is whitelist-validated (no bypass)", 
     expect(mockDBConnection.query).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects a DML statement through the REAL pipeline — never silently skipped (AC1)", async () => {
+    registeredValidator = undefined;
+    const outcome = await runUserQueryPipeline({
+      sql: "DELETE FROM orders",
+      explanation: "AC1 guard",
+    });
+    expect(outcome.kind).toBe("validation_failed");
+    expect(mockDBConnection.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects a multi-statement batch through the REAL pipeline (AC1)", async () => {
+    registeredValidator = undefined;
+    const outcome = await runUserQueryPipeline({
+      sql: "SELECT * FROM orders; SELECT * FROM orders",
+      explanation: "AC1 guard",
+    });
+    expect(outcome.kind).toBe("validation_failed");
+    expect(mockDBConnection.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects unparseable SQL through the REAL pipeline (AC1)", async () => {
+    registeredValidator = undefined;
+    const outcome = await runUserQueryPipeline({
+      sql: "SELECT FROM WHERE )(",
+      explanation: "AC1 guard",
+    });
+    expect(outcome.kind).toBe("validation_failed");
+    expect(mockDBConnection.query).not.toHaveBeenCalled();
+  });
+
   it("the custom-validator branch is the ONLY whitelist-skip path — and SQL datasources never register one", async () => {
     // A connection WITH a registered validator takes the custom-validator branch
     // (used by SOQL/ES plugins), which skips the table whitelist by design — its

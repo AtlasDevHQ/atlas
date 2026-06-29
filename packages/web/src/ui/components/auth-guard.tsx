@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
+import { signOutForgettingRegion } from "@/lib/auth/sign-out";
 import { AtlasProvider } from "@/ui/context";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { PUBLIC_ROUTE_PREFIXES } from "@/lib/public-routes";
@@ -107,7 +108,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
         //   (b) a true transport failure (API down / DNS / CORS preflight) — the
         //       platform `fetch()` rejects and the throw propagates (no
         //       `catchAllError`, no catch in the client proxy) → the `catch`.
-        const result = await authClient.signOut();
+        const result = await signOutForgettingRegion(() => authClient.signOut());
         if (result?.error) {
           console.warn(
             "[atlas] stale-session signOut returned an HTTP error; cookie not cleared, staying put to avoid a redirect loop (reload once the API is reachable):",

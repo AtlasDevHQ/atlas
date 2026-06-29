@@ -123,8 +123,8 @@ export async function handleLogin(args: string[]): Promise<void> {
   } else {
     console.log(
       "  Your account belongs to more than one workspace, so no single workspace\n" +
-        "  was auto-selected. In-flow workspace selection is coming soon (ADR-0026);\n" +
-        "  until then a single-workspace account binds automatically.",
+        "  was auto-selected. Run `atlas switch` to choose which one the CLI acts on,\n" +
+        "  or pass `--workspace <id>` per command.",
     );
   }
 }

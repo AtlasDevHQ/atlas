@@ -213,6 +213,14 @@ async function main() {
     return handleExplore(args);
   }
 
+  // #4050 / ADR-0025 sub-decision 2 — multi-workspace selection. `atlas switch`
+  // picks (and persists) the workspace the CLI acts on; the `--workspace <id>`
+  // per-command override is handled inside each command via resolveActiveWorkspace.
+  if (command === "switch") {
+    const { handleSwitch } = await import("../src/commands/switch");
+    return handleSwitch(args);
+  }
+
   // #4044 / ADR-0025 sub-decision 3 — workspace datasource lifecycle over the
   // existing admin-connection REST routes, authorized by the `atlas login` credential.
   if (command === "datasource") {

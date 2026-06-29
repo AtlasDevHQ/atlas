@@ -6,9 +6,10 @@
  * (`signUpEmail` → `databaseHooks.user.create.before`), enforcing the policy in
  * that one hook makes web and MCP identical by construction.
  *
- * Two hard denies, both surfaced through a single typed `business_email_required`
- * rejection so the web layer shows one actionable message and the MCP envelope
- * (#3649) maps one stable code:
+ * The business-email policy has two hard denies, both surfaced through a single
+ * typed `business_email_required` rejection so the web layer shows one actionable
+ * message and the MCP envelope (#3649) maps one stable code (the plus-addressing
+ * reject below is a separate policy with its own code):
  *
  *  1. **Disposable / throwaway mailboxes** — detected via `better-auth-harmony`'s
  *     `validateEmail` (the same `mailchecker` engine, 50k+ domains, that the
@@ -23,6 +24,17 @@
  * The `normalizedEmail` unique column (collapsing `+alias`/dot/case variants, the
  * teeth behind one-trial-per-user) is contributed by the `emailHarmony` plugin
  * itself; this module only owns the *deny* decision.
+ *
+ * A third, separately-typed deny lives here too: the **plus-addressing reject**
+ * (#4091, {@link assertNoPlusAddressing}) — an explicit-intent layer on top of
+ * the `normalizedEmail` normalization that blocks `user+tag@domain` signups for
+ * every domain except an exempt allowlist ({@link PLUS_ADDRESSING_EXEMPT_DOMAINS},
+ * fixed to `useatlas.dev`). It carries its OWN code/message
+ * ({@link PLUS_ADDRESSING_NOT_ALLOWED_CODE}) so a plus-addressed signup gets a
+ * clear "use your primary work email" rejection rather than the freemium/
+ * disposable "use your work email" message or a duplicate-key error. The exempt
+ * allowlist is fixed in code (no override path), consistent with the
+ * business-email policy being a code module rather than an operator knob.
  *
  * Template-synced to create-atlas, so this stays dependency-light: a plain
  * `APIError` (Better Auth's HTTP error type) is thrown, no Atlas-internal imports.
@@ -122,6 +134,47 @@ export const FREEMIUM_EMAIL_DOMAINS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Plus-addressing reject (#4091).
+ *
+ * Email plus-addressing (`user+tag@acme.com`) lets one real inbox mint an
+ * unbounded number of distinct-looking addresses — and because every signup
+ * provisions a fresh user + org, that's a trial-farming / per-org-limit-evasion
+ * vector. `emailHarmony`'s `normalizedEmail` UNIQUE column already collapses
+ * `+tag` variants of the SAME base inbox (so a second plus-variant collides),
+ * but that surfaces as a confusing "account already exists" duplicate error and
+ * still accepts+stores the first plus-addressed address. This is the explicit,
+ * intentional reject layered on top: a clear typed error stating intent, not a
+ * unique-constraint side effect.
+ *
+ * EXEMPTION: Atlas's own `/verify-prod-signup` 3-region E2E flow depends on
+ * plus-addressed `@useatlas.dev` throwaway accounts (`matt+us@useatlas.dev`) —
+ * that plus-tag is the signature the `ops teardown-verify-accounts` guard keys
+ * on (`isThrowawayVerifyEmail`). So `useatlas.dev` MUST stay allowed; everyone
+ * else gets blocked. A hardcoded policy constant (not a settings knob) because
+ * this is a security policy, not an operator tuning knob.
+ */
+export const PLUS_ADDRESSING_NOT_ALLOWED_CODE = "PLUS_ADDRESSING_NOT_ALLOWED" as const;
+
+/**
+ * User-facing rejection message for a plus-addressed signup. Actionable (tells
+ * the user what to do) and leaks no internal details (no mention of the
+ * anti-abuse rationale or the exempt domain). The web signup form renders this
+ * verbatim (`res.error.message`).
+ */
+export const PLUS_ADDRESSING_NOT_ALLOWED_MESSAGE =
+  "Plus-addressed emails aren't supported — use your primary work email.";
+
+/**
+ * Domains exempt from the plus-addressing reject — plus-addressing is allowed
+ * here. Lower-case registrable hosts, matched exactly (case-insensitively) via
+ * {@link extractEmailDomain}. Fixed to `["useatlas.dev"]` (no override path) for
+ * the verify-prod-signup carve-out documented above.
+ */
+export const PLUS_ADDRESSING_EXEMPT_DOMAINS: ReadonlySet<string> = new Set([
+  "useatlas.dev",
+]);
+
+/**
  * Extract the lower-cased domain (everything after the last `@`) from an email
  * address. Returns `undefined` for input with no `@` or an empty domain.
  */
@@ -130,6 +183,38 @@ export function extractEmailDomain(email: string): string | undefined {
   if (at < 0) return undefined;
   const domain = email.slice(at + 1).trim().toLowerCase();
   return domain.length > 0 ? domain : undefined;
+}
+
+/**
+ * Extract the local-part (everything before the last `@`) from an email address.
+ * Case is preserved (unlike {@link extractEmailDomain}) — the caller only needs
+ * to test for a literal `+`, which is case-irrelevant. Returns `undefined` for
+ * input with no `@` or an empty local-part.
+ */
+export function extractEmailLocalPart(email: string): string | undefined {
+  const at = email.lastIndexOf("@");
+  if (at <= 0) return undefined;
+  const local = email.slice(0, at);
+  return local.length > 0 ? local : undefined;
+}
+
+/**
+ * True when the email uses plus-addressing (its local-part contains a `+`) AND
+ * its domain is NOT on the {@link PLUS_ADDRESSING_EXEMPT_DOMAINS} allowlist.
+ * Empty/malformed input is reported as `false` (Better Auth owns the
+ * required-field / format case; an address with no resolvable local-part can't
+ * be plus-addressed). An address with a `+` but no resolvable domain (e.g.
+ * `a+b@`) fails closed to `true` — the exemption can't apply, and it's malformed
+ * anyway.
+ */
+export function hasDisallowedPlusAddressing(email: string): boolean {
+  const local = extractEmailLocalPart(email);
+  if (!local || !local.includes("+")) return false;
+  const domain = extractEmailDomain(email);
+  if (domain !== undefined && PLUS_ADDRESSING_EXEMPT_DOMAINS.has(domain)) {
+    return false;
+  }
+  return true;
 }
 
 /** True when the email's domain is on the freemium/consumer denylist. */
@@ -239,4 +324,55 @@ export function isBusinessEmailRejection(err: unknown): boolean {
   if (!(err instanceof APIError)) return false;
   const body = err.body as Partial<BusinessEmailErrorBody> | undefined;
   return body?.code === BUSINESS_EMAIL_REQUIRED_CODE;
+}
+
+/**
+ * Shape of the {@link APIError} body thrown on a plus-addressing rejection
+ * (#4091) — the typed contract shared by the producer
+ * ({@link assertNoPlusAddressing}), the recognizer
+ * ({@link isPlusAddressingRejection}), and the MCP `start_trial` envelope
+ * mapping. Distinct from {@link BusinessEmailErrorBody} so the two denies never
+ * cross-match and a plus-addressed signup surfaces its own actionable message
+ * rather than a generic duplicate/validation error.
+ */
+export interface PlusAddressingErrorBody {
+  code: typeof PLUS_ADDRESSING_NOT_ALLOWED_CODE;
+  message: typeof PLUS_ADDRESSING_NOT_ALLOWED_MESSAGE;
+}
+
+/**
+ * Throw a typed {@link APIError} when `email` uses disallowed plus-addressing.
+ * No-op for an exempt domain ({@link PLUS_ADDRESSING_EXEMPT_DOMAINS}), a
+ * non-plus address, and a null/empty email (Better Auth's own validation owns
+ * the "email required" case).
+ *
+ * Called from `databaseHooks.user.create.before` (SaaS deploy mode only)
+ * alongside {@link assertBusinessEmail} so it gates EVERY SaaS signup path (web,
+ * social, MCP `start_trial`) identically. The throw aborts user creation; Better
+ * Auth serializes the `APIError` to a 400 carrying
+ * {@link PLUS_ADDRESSING_NOT_ALLOWED_CODE} + {@link PLUS_ADDRESSING_NOT_ALLOWED_MESSAGE}.
+ *
+ * This is additive to (not a replacement for) the `emailHarmony`
+ * `normalizedEmail` normalization — see the file header.
+ */
+export function assertNoPlusAddressing(email: string | null | undefined): void {
+  if (!email) return;
+  if (!hasDisallowedPlusAddressing(email)) return;
+  const body: PlusAddressingErrorBody = {
+    code: PLUS_ADDRESSING_NOT_ALLOWED_CODE,
+    message: PLUS_ADDRESSING_NOT_ALLOWED_MESSAGE,
+  };
+  throw new APIError("BAD_REQUEST", body);
+}
+
+/**
+ * Recognize a plus-addressing rejection on a caught error. Used by the MCP
+ * `start_trial` provisioner to map the shared-signup-path failure to its typed
+ * `plus_addressing` envelope. Matches on the stable
+ * {@link PLUS_ADDRESSING_NOT_ALLOWED_CODE}, not a message string.
+ */
+export function isPlusAddressingRejection(err: unknown): boolean {
+  if (!(err instanceof APIError)) return false;
+  const body = err.body as Partial<PlusAddressingErrorBody> | undefined;
+  return body?.code === PLUS_ADDRESSING_NOT_ALLOWED_CODE;
 }

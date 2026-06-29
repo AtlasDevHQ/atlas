@@ -14,12 +14,19 @@ import {
   BUSINESS_EMAIL_REQUIRED_CODE,
   BUSINESS_EMAIL_REQUIRED_MESSAGE,
   FREEMIUM_EMAIL_DOMAINS,
+  PLUS_ADDRESSING_EXEMPT_DOMAINS,
+  PLUS_ADDRESSING_NOT_ALLOWED_CODE,
+  PLUS_ADDRESSING_NOT_ALLOWED_MESSAGE,
   assertBusinessEmail,
+  assertNoPlusAddressing,
   classifyBusinessEmail,
   extractEmailDomain,
+  extractEmailLocalPart,
+  hasDisallowedPlusAddressing,
   isBusinessEmailRejection,
   isDisposableEmail,
   isFreemiumEmailDomain,
+  isPlusAddressingRejection,
 } from "../business-email";
 
 describe("extractEmailDomain", () => {
@@ -130,6 +137,128 @@ describe("assertBusinessEmail", () => {
     expect(thrownBy(() => assertBusinessEmail(null))).toBeUndefined();
     expect(thrownBy(() => assertBusinessEmail(undefined))).toBeUndefined();
     expect(thrownBy(() => assertBusinessEmail(""))).toBeUndefined();
+  });
+});
+
+describe("extractEmailLocalPart", () => {
+  it("returns the local-part before the last @ (case preserved)", () => {
+    expect(extractEmailLocalPart("Alice@Acme.com")).toBe("Alice");
+    expect(extractEmailLocalPart("matt+us@useatlas.dev")).toBe("matt+us");
+    // The last @ is the delimiter, so an (illegal) embedded @ stays in the local.
+    expect(extractEmailLocalPart("weird+a@b@corp.example")).toBe("weird+a@b");
+  });
+
+  it("returns undefined for malformed / local-less input", () => {
+    expect(extractEmailLocalPart("no-at-sign")).toBeUndefined();
+    expect(extractEmailLocalPart("@domain.com")).toBeUndefined();
+  });
+});
+
+describe("hasDisallowedPlusAddressing", () => {
+  it("flags plus-addressed business and freemium domains", () => {
+    expect(hasDisallowedPlusAddressing("user+tag@acme.com")).toBe(true);
+    expect(hasDisallowedPlusAddressing("user+1@gmail.com")).toBe(true);
+  });
+
+  it("exempts plus-addressing on useatlas.dev (case-insensitive domain match)", () => {
+    expect(hasDisallowedPlusAddressing("matt+us@useatlas.dev")).toBe(false);
+    expect(hasDisallowedPlusAddressing("matt+eu@USEATLAS.DEV")).toBe(false);
+  });
+
+  it("allows non-plus addresses on any domain", () => {
+    expect(hasDisallowedPlusAddressing("user@acme.com")).toBe(false);
+    expect(hasDisallowedPlusAddressing("user@useatlas.dev")).toBe(false);
+  });
+
+  it("flags any position/count of + in the local-part (contains, not a single interior tag)", () => {
+    // The rule is "local-part contains a +", so a leading, trailing, or
+    // multiple-+ local all count — pins the `includes("+")` contract against a
+    // future refactor to a narrower anchored regex.
+    expect(hasDisallowedPlusAddressing("+tag@acme.com")).toBe(true);
+    expect(hasDisallowedPlusAddressing("user+@acme.com")).toBe(true);
+    expect(hasDisallowedPlusAddressing("a+b+c@acme.com")).toBe(true);
+    // …and the exemption still wins regardless of how many + the local has.
+    expect(hasDisallowedPlusAddressing("a+b+c@useatlas.dev")).toBe(false);
+  });
+
+  it("is safe (false) on empty / malformed input", () => {
+    expect(hasDisallowedPlusAddressing("")).toBe(false);
+    expect(hasDisallowedPlusAddressing("no-at-sign+tag")).toBe(false);
+  });
+
+  it("keeps the exempt list non-empty, lower-case, and including useatlas.dev", () => {
+    expect(PLUS_ADDRESSING_EXEMPT_DOMAINS.has("useatlas.dev")).toBe(true);
+    for (const d of PLUS_ADDRESSING_EXEMPT_DOMAINS) {
+      expect(d).toBe(d.toLowerCase());
+    }
+  });
+});
+
+describe("assertNoPlusAddressing", () => {
+  function thrownBy(fn: () => void): unknown {
+    try {
+      fn();
+    } catch (err) {
+      return err;
+    }
+    return undefined;
+  }
+
+  it("rejects a plus-addressed business email with a typed 400 APIError", () => {
+    const err = thrownBy(() => assertNoPlusAddressing("user+tag@acme.com"));
+    expect(err).toBeInstanceOf(APIError);
+    const apiErr = err as APIError;
+    expect(apiErr.statusCode).toBe(400);
+    expect(apiErr.body?.code).toBe(PLUS_ADDRESSING_NOT_ALLOWED_CODE);
+    expect(apiErr.body?.message).toBe(PLUS_ADDRESSING_NOT_ALLOWED_MESSAGE);
+  });
+
+  it("rejects a plus-addressed freemium email too (domain-agnostic for non-exempt)", () => {
+    const err = thrownBy(() => assertNoPlusAddressing("user+1@gmail.com"));
+    expect(err).toBeInstanceOf(APIError);
+    expect((err as APIError).body?.code).toBe(PLUS_ADDRESSING_NOT_ALLOWED_CODE);
+  });
+
+  it("allows plus-addressing on the exempt useatlas.dev domain", () => {
+    expect(thrownBy(() => assertNoPlusAddressing("matt+us@useatlas.dev"))).toBeUndefined();
+    expect(thrownBy(() => assertNoPlusAddressing("matt+eu@USEATLAS.DEV"))).toBeUndefined();
+  });
+
+  it("allows a non-plus business email", () => {
+    expect(thrownBy(() => assertNoPlusAddressing("founder@acme.com"))).toBeUndefined();
+  });
+
+  it("is a no-op for null/empty email (Better Auth owns the required-field case)", () => {
+    expect(thrownBy(() => assertNoPlusAddressing(null))).toBeUndefined();
+    expect(thrownBy(() => assertNoPlusAddressing(undefined))).toBeUndefined();
+    expect(thrownBy(() => assertNoPlusAddressing(""))).toBeUndefined();
+  });
+});
+
+describe("isPlusAddressingRejection", () => {
+  it("recognizes the thrown plus-addressing rejection by stable code", () => {
+    let caught: unknown;
+    try {
+      assertNoPlusAddressing("user+tag@acme.com");
+    } catch (err) {
+      caught = err;
+    }
+    expect(isPlusAddressingRejection(caught)).toBe(true);
+  });
+
+  it("does not match unrelated errors (including the business-email reject)", () => {
+    expect(isPlusAddressingRejection(new Error("boom"))).toBe(false);
+    expect(isPlusAddressingRejection(new APIError("BAD_REQUEST", { code: "OTHER" }))).toBe(false);
+    expect(isPlusAddressingRejection(undefined)).toBe(false);
+    // The two rejections carry distinct codes — neither recognizer cross-matches.
+    let businessErr: unknown;
+    try {
+      assertBusinessEmail("user@gmail.com");
+    } catch (err) {
+      businessErr = err;
+    }
+    expect(isPlusAddressingRejection(businessErr)).toBe(false);
+    expect(isBusinessEmailRejection(businessErr)).toBe(true);
   });
 });
 

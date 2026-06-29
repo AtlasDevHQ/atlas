@@ -3,8 +3,10 @@
  *
  * No network: `fetchRegionMap` + `probe` are injected. These pin the routing
  * verdicts AND the security invariants — only the HASH is fanned out (never the
- * raw email), the cookie fast-path skips the probe oracle, and an unreachable
- * region never produces a confident false "none".
+ * raw email), the email fan-out is the sole authority on region (a stale
+ * `atlas_region` cookie can neither misroute nor fabricate a region — #4090; it
+ * only breaks a multi-region tie), and an unreachable region never produces a
+ * confident false "none".
  */
 
 import { describe, it, expect } from "bun:test";
@@ -89,28 +91,78 @@ describe("resolveRegion", () => {
     expect(r).toEqual({ outcome: "skip" });
   });
 
-  it("cookie fast-path routes to the cookie region WITHOUT probing, using the map's authoritative apiUrl", async () => {
-    const { probe, calls } = probeHitting();
+  it("#4090: a stale cookie region NEVER overrides the email's true region", async () => {
+    // Cookie says "eu" (left over from a signed-out EU session), but the email
+    // only exists in "us". The fan-out is authoritative — route to us, and DON'T
+    // short-circuit on the cookie.
+    const { probe, calls } = probeHitting("https://api.useatlas.dev");
     const r = await resolveRegion({
-      email: "a@b.co",
+      email: "matt+us@useatlas.dev",
+      cookieRegion: "eu",
+      fetchRegionMap: mapOf(MAP),
+      probe,
+    });
+    expect(r).toEqual({ outcome: "single", region: "us", apiUrl: "https://api.useatlas.dev" });
+    expect(calls.length).toBeGreaterThan(0); // the oracle is consulted, not skipped
+  });
+
+  it("#4090: returns none for a non-existent email even when an atlas_region cookie is present", async () => {
+    // The cookie must not conjure a `single` for an email that exists nowhere.
+    const { probe } = probeHitting();
+    const r = await resolveRegion({
+      email: "ghost@nowhere.com",
+      cookieRegion: "eu",
+      fetchRegionMap: mapOf(MAP),
+      probe,
+    });
+    expect(r).toEqual({ outcome: "none" });
+  });
+
+  it("uses the cookie as a tiebreaker among multi-region hits (skips the chooser)", async () => {
+    // The email exists in both us and eu; a returning user whose cookie pins eu
+    // lands on eu directly (with the map's authoritative apiUrl) instead of the
+    // chooser.
+    const { probe } = probeHitting("https://api.useatlas.dev", "https://api-eu.useatlas.dev");
+    const r = await resolveRegion({
+      email: "alice@corp.com",
       cookieRegion: "eu",
       fetchRegionMap: mapOf(MAP),
       probe,
     });
     expect(r).toEqual({ outcome: "single", region: "eu", apiUrl: "https://api-eu.useatlas.dev" });
-    expect(calls).toHaveLength(0); // the oracle is short-circuited
   });
 
-  it("a stale cookie region (not in the map) falls through to the fan-out", async () => {
-    const { probe, calls } = probeHitting("https://api-eu.useatlas.dev");
+  it("ignores a cookie that names no confirmed hit — the chooser still appears", async () => {
+    // Multi-region hits us+eu, but the cookie pins apac (not a hit). The cookie
+    // can't fabricate a region, so the user still chooses — with BOTH real hits.
+    const { probe } = probeHitting("https://api.useatlas.dev", "https://api-eu.useatlas.dev");
     const r = await resolveRegion({
-      email: "a@b.co",
-      cookieRegion: "antarctica",
+      email: "alice@corp.com",
+      cookieRegion: "apac",
+      fetchRegionMap: mapOf(MAP),
+      probe,
+    });
+    expect(r.outcome).toBe("multiple");
+    if (r.outcome === "multiple") {
+      expect(r.regions.map((x) => x.region).sort()).toEqual(["eu", "us"]);
+    }
+  });
+
+  it("tiebreaks to the cookie region even when a THIRD region errored (still has ≥2 hits)", async () => {
+    // us + eu both confirm; apac throws. With 2 confirmed hits the verdict is
+    // `multiple`, so the cookie tiebreaker still applies — a probe failure
+    // elsewhere must not dead-end a returning multi-region user into `error`.
+    const probe = async (apiUrl: string) => {
+      if (apiUrl === "https://api-apac.useatlas.dev") throw new Error("network");
+      return apiUrl === "https://api.useatlas.dev" || apiUrl === "https://api-eu.useatlas.dev";
+    };
+    const r = await resolveRegion({
+      email: "alice@corp.com",
+      cookieRegion: "eu",
       fetchRegionMap: mapOf(MAP),
       probe,
     });
     expect(r).toEqual({ outcome: "single", region: "eu", apiUrl: "https://api-eu.useatlas.dev" });
-    expect(calls.length).toBeGreaterThan(0);
   });
 
   it("single-region deployment routes without probing", async () => {

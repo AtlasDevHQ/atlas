@@ -1,5 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { formatDuration, estimateRemaining } from "../progress";
+import { formatDuration, estimateRemaining, createProgressTracker } from "../progress";
+
+describe("createProgressTracker — onAbort (#4052)", () => {
+  test("onAbort is a safe no-op when profiling never started (non-TTY)", () => {
+    const tracker = createProgressTracker();
+    // In the non-TTY test env there is no spinner to stop; onAbort must not throw.
+    expect(() => tracker.onAbort("Profiling cancelled.")).not.toThrow();
+  });
+
+  test("onAbort after a start is still safe (non-TTY line output)", () => {
+    const tracker = createProgressTracker();
+    tracker.onStart(3);
+    tracker.onTableDone("orders", 0, 3);
+    expect(() => tracker.onAbort("Profiling failed.")).not.toThrow();
+  });
+});
 
 describe("formatDuration", () => {
   test("formats sub-minute durations as seconds", () => {

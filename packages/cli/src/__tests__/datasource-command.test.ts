@@ -431,6 +431,139 @@ describe("runDatasource — create secret capture (#4051)", () => {
   });
 });
 
+/** A fetch stub that returns an NDJSON stream body (200) from the given lines. */
+function stubNdjson(lines: Array<Record<string, unknown>>): {
+  fetchImpl: typeof fetch;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push(`${init?.method ?? "GET"} ${typeof url === "string" ? url : url.toString()}`);
+    const body = lines.map((l) => JSON.stringify(l)).join("\n") + "\n";
+    return new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "application/x-ndjson" },
+    });
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+describe("runDatasource — profile (#4052)", () => {
+  const okStream = [
+    { type: "start", total: 2 },
+    { type: "table", name: "orders", index: 0, total: 2, status: "done" },
+    { type: "table", name: "users", index: 1, total: 2, status: "done" },
+    {
+      type: "result",
+      id: "prod-us",
+      queryable: true,
+      persisted: true,
+      persistedStatus: "draft",
+      entitiesGenerated: 2,
+      metricsGenerated: 1,
+      tables: ["orders", "users"],
+      profilingErrors: 0,
+      incomplete: false,
+      elapsedMs: 1234,
+    },
+  ];
+
+  it("profiles and reports the generated draft layer", async () => {
+    const { fetchImpl, calls } = stubNdjson(okStream);
+    const { io, out } = capture();
+    const code = await runDatasource(["datasource", "profile", "prod-us"], deps(fetchImpl), io);
+    expect(code).toBe(0);
+    expect(calls[0]).toContain("POST http://localhost:3001/api/v1/datasources/prod-us/profile");
+    const text = out.join("\n");
+    expect(text).toContain("2 entities");
+    expect(text).toContain("draft");
+  });
+
+  it("profile without an id errors", async () => {
+    const { io, err } = capture();
+    const code = await runDatasource(["datasource", "profile"], deps(undefined), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("atlas datasource profile <id>");
+  });
+
+  it("profile --json emits the terminal result object", async () => {
+    const { fetchImpl } = stubNdjson(okStream);
+    const { io, out } = capture();
+    const code = await runDatasource(["datasource", "profile", "prod-us", "--json"], deps(fetchImpl), io);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out.join("\n"));
+    expect(parsed.entitiesGenerated).toBe(2);
+    expect(parsed.persistedStatus).toBe("draft");
+  });
+
+  it("surfaces an incomplete profile (some tables failed)", async () => {
+    const { fetchImpl } = stubNdjson([
+      { type: "start", total: 2 },
+      { type: "table", name: "orders", index: 0, total: 2, status: "done" },
+      { type: "table", name: "users", index: 1, total: 2, status: "error", error: "permission denied" },
+      {
+        type: "result",
+        id: "prod-us",
+        queryable: true,
+        persisted: true,
+        persistedStatus: "draft",
+        entitiesGenerated: 1,
+        metricsGenerated: 0,
+        tables: ["orders"],
+        profilingErrors: 1,
+        incomplete: true,
+        incompleteTables: ["users"],
+        elapsedMs: 500,
+      },
+    ]);
+    const { io, out } = capture();
+    const code = await runDatasource(["datasource", "profile", "prod-us"], deps(fetchImpl), io);
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain("incomplete");
+    expect(text).toContain("users");
+  });
+
+  it("a terminal error event becomes a non-zero exit with the server message", async () => {
+    const { fetchImpl } = stubNdjson([
+      { type: "start", total: 0 },
+      { type: "error", error: "profiling_failed", message: "The datasource has no profilable tables." },
+    ]);
+    const { io, err } = capture();
+    const code = await runDatasource(["datasource", "profile", "prod-us"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("no profilable tables");
+  });
+
+  it("a non-admin member is denied (403) with an actionable message before the stream", async () => {
+    const { fetchImpl } = stubFetch(403, { error: "forbidden_role", message: "Admin role required." });
+    const { io, err } = capture();
+    const code = await runDatasource(["datasource", "profile", "prod-us"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    const text = err.join("\n");
+    expect(text).toContain("admin role");
+  });
+
+  it("a 404 maps to an actionable not-found message", async () => {
+    const { fetchImpl } = stubFetch(404, { error: "not_found", message: "Datasource not found." });
+    const { io, err } = capture();
+    const code = await runDatasource(["datasource", "profile", "ghost"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("not found");
+  });
+
+  it("a 409 reconnect-required surfaces the reconnect guidance", async () => {
+    const { fetchImpl } = stubFetch(409, {
+      error: "reconnect_required",
+      message: "Reconnect Salesforce in Admin → Integrations, then retry.",
+    });
+    const { io, err } = capture();
+    const code = await runDatasource(["datasource", "profile", "sfdc"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("Reconnect");
+  });
+});
+
 describe("runDatasource — unexpected errors are surfaced, not swallowed (#4044)", () => {
   it("an unexpected (non-DatasourceCliError) throw becomes an `Unexpected error` line + exit 1", async () => {
     const { fetchImpl } = stubFetch(200, { connections: [{ id: "x" }] });

@@ -86,6 +86,10 @@
         "required": [
           "emailHash"
         ]
+      },
+      "DatasourceProfileStream": {
+        "type": "string",
+        "description": "A newline-delimited JSON (application/x-ndjson) stream. Each line is a JSON object with a `type` discriminator: `start` ({ total }), `table` ({ name, index, total, status: done|error, error? }), and a terminal `result` ({ id, queryable, persisted, persistedStatus?, entitiesGenerated, metricsGenerated, tables[], profilingErrors, incomplete, incompleteTables?, elapsedMs }) or `error` ({ error, message })."
       }
     },
     "parameters": {},
@@ -11371,6 +11375,216 @@
           }
         },
         "operationId": "postMetricsByIdRun"
+      }
+    },
+    "/api/v1/datasources/{id}/profile": {
+      "post": {
+        "tags": [
+          "Datasources"
+        ],
+        "summary": "Profile a datasource and generate its semantic layer (drafts)",
+        "description": "Introspects a registered datasource and generates its semantic layer as DRAFTS (content mode — not auto-published). Long-running: streams per-table progress as newline-delimited JSON (application/x-ndjson) so the run never hangs and stays cancellable. Requires the workspace admin role.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "example": "prod-us"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "schema": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "NDJSON stream of profiling progress and the terminal result",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasourceProfileStream"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request (no bound workspace, or unsupported datasource type)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required or billing block",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Datasource not found in this workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The datasource needs to be reconnected before it can be profiled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Billing subsystem unavailable (fail-closed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postDatasourcesByIdProfile"
       }
     },
     "/api/v1/tables": {
@@ -81693,6 +81907,9 @@
     },
     {
       "name": "Dashboards"
+    },
+    {
+      "name": "Datasources"
     },
     {
       "name": "Demo"

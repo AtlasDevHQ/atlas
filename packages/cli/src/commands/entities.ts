@@ -8,18 +8,25 @@
  * for ONLY the bound workspace; a second `atlas login` (different user/org)
  * sees only its own. A multi-workspace login with no bound workspace surfaces
  * the clear selection handoff rather than leaking another workspace's entities.
+ *
+ * `--workspace <id>` (#4050) overrides the acting workspace for this command
+ * only — it rebinds the session via the membership-gated set-active and is
+ * rejected when the user isn't a member, without changing the saved default.
  */
 
 import type { SemanticEntitySummary } from "@useatlas/types";
 import { resolveApiBaseUrl } from "../lib/api-base";
 import { readSession } from "../lib/credentials";
+import { resolveActiveWorkspace, formatWorkspaceError } from "../lib/workspaces";
 
 export async function handleEntities(args: string[]): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {
     console.log(
-      "Usage: atlas entities [--json]\n\n" +
+      "Usage: atlas entities [--json] [--workspace <id>]\n\n" +
         "List the semantic entities visible to your logged-in workspace.\n" +
-        "Requires `atlas login` first.\n",
+        "Requires `atlas login` first.\n\n" +
+        "  --workspace <id>   Act on a specific workspace for this command only\n" +
+        "                     (does not change your saved default; use `atlas switch`).\n",
     );
     return;
   }
@@ -28,6 +35,22 @@ export async function handleEntities(args: string[]): Promise<void> {
   const session = readSession(baseUrl);
   if (!session) {
     console.error("Not logged in. Run `atlas login` first.");
+    process.exit(1);
+  }
+
+  // A `--workspace <id>` override rebinds the session to that workspace for
+  // this command (membership-gated server-side); without it we use the stored
+  // default. The returned id is the workspace the read below resolves against.
+  let activeWorkspaceId: string | null;
+  try {
+    activeWorkspaceId = await resolveActiveWorkspace(
+      args,
+      baseUrl,
+      session.token,
+      session.workspaceId,
+    );
+  } catch (err) {
+    console.error(formatWorkspaceError(err));
     process.exit(1);
   }
 
@@ -65,12 +88,12 @@ export async function handleEntities(args: string[]): Promise<void> {
   const entities = body?.entities ?? [];
 
   if (args.includes("--json")) {
-    console.log(JSON.stringify({ workspaceId: session.workspaceId, entities }, null, 2));
+    console.log(JSON.stringify({ workspaceId: activeWorkspaceId, entities }, null, 2));
     return;
   }
 
-  if (session.workspaceId) {
-    console.log(`Workspace ${session.workspaceId} — ${entities.length} entit${entities.length === 1 ? "y" : "ies"}:\n`);
+  if (activeWorkspaceId) {
+    console.log(`Workspace ${activeWorkspaceId} — ${entities.length} entit${entities.length === 1 ? "y" : "ies"}:\n`);
   } else {
     console.log(`${entities.length} entit${entities.length === 1 ? "y" : "ies"} visible:\n`);
   }

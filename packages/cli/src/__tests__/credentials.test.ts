@@ -7,6 +7,7 @@ import {
   readSession,
   saveSession,
   clearSession,
+  updateSessionWorkspace,
   credentialsPath,
   normalizeBaseUrl,
 } from "../lib/credentials";
@@ -92,5 +93,35 @@ describe("CLI credential store (#4043 / ADR-0026)", () => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(credentialsPath(dir), JSON.stringify({ unexpected: true }));
     expect(readSession(base, dir)).toBeNull();
+  });
+
+  describe("updateSessionWorkspace (#4050)", () => {
+    it("rebinds the default workspace without touching the bearer", () => {
+      saveSession(base, session, dir);
+      expect(updateSessionWorkspace(base, "org_2", dir)).toBe(true);
+      const after = readSession(base, dir);
+      expect(after?.workspaceId).toBe("org_2");
+      expect(after?.token).toBe("sess_abc");
+      expect(after?.createdAt).toBe(session.createdAt);
+    });
+
+    it("can clear the default workspace (null)", () => {
+      saveSession(base, session, dir);
+      updateSessionWorkspace(base, null, dir);
+      expect(readSession(base, dir)?.workspaceId).toBeNull();
+    });
+
+    it("returns false when no session exists (never mints a tokenless entry)", () => {
+      expect(updateSessionWorkspace(base, "org_2", dir)).toBe(false);
+      expect(readSession(base, dir)).toBeNull();
+    });
+
+    it("only rebinds the targeted base URL", () => {
+      saveSession("https://api.useatlas.dev", { ...session, token: "prod_tok" }, dir);
+      saveSession("https://api-staging.useatlas.dev", { ...session, token: "stag_tok" }, dir);
+      updateSessionWorkspace("https://api.useatlas.dev", "org_prod_2", dir);
+      expect(readSession("https://api.useatlas.dev", dir)?.workspaceId).toBe("org_prod_2");
+      expect(readSession("https://api-staging.useatlas.dev", dir)?.workspaceId).toBe("org_1");
+    });
   });
 });

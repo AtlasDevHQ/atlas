@@ -6,7 +6,7 @@
  * the unknown-metric path, and the filters-unsupported guard.
  */
 
-import { describe, it, expect, beforeAll, afterAll, mock } from "bun:test";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -15,9 +15,13 @@ import * as path from "path";
 // Mock it so an explicit member-connection case resolves deterministically to a
 // group, and the default cases run with the internal DB "offline".
 let groupForConnection: Record<string, string | undefined> = {};
+// When set, internalQuery throws — simulating a transient internal-DB fault so
+// the resolver's degraded-routing path (#4109) can be exercised.
+let throwOnQuery: Error | null = null;
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   internalQuery: async (_sql: string, params: unknown[]) => {
+    if (throwOnQuery) throw throwOnQuery;
     // loadGroupRoutingContext step 1 query selects config->>'group_id' for the
     // install id at params[0].
     const connId = params?.[0] as string | undefined;
@@ -70,6 +74,11 @@ afterAll(() => {
 });
 
 describe("resolveMetricRun", () => {
+  beforeEach(() => {
+    groupForConnection = {};
+    throwOnQuery = null;
+  });
+
   it("resolves a default-group metric to default routing (undefined connection)", async () => {
     const res = await resolveMetricRun({ id: "total_gmv", semanticRoot: tmpRoot });
     expect(res.kind).toBe("ok");
@@ -138,7 +147,59 @@ describe("resolveMetricRun", () => {
     if (res.kind !== "ok") return;
     // Routes to the specific member, not the group id.
     expect(res.targetConnectionId).toBe("us-prod");
-    groupForConnection = {};
+  });
+
+  it("returns routing_unavailable (not wrong_connection) when the membership lookup faults (#4109)", async () => {
+    // The internal-DB lookup that validates an explicit member connection throws
+    // (transient fault). The resolver must NOT read the resulting `groupId:
+    // undefined` fallback as a definitive "not a member" and emit a confident
+    // wrong_connection (→ 400); it must surface the degradation so the route can
+    // map it to a retryable 503. `us-prod` ≠ the metric's group id "prod", so the
+    // membership lookup runs.
+    throwOnQuery = new Error("internal DB unreachable");
+    const res = await resolveMetricRun({
+      id: "prod_signups",
+      connectionId: "us-prod",
+      orgId: "org-1",
+      semanticRoot: tmpRoot,
+    });
+    expect(res.kind).toBe("routing_unavailable");
+    if (res.kind !== "routing_unavailable") return;
+    expect(res.metricId).toBe("prod_signups");
+    expect(res.connectionId).toBe("us-prod");
+  });
+
+  it("short-circuits an explicit group-id connection BEFORE the lookup, so a DB fault is irrelevant (#4109)", async () => {
+    // `connectionId === the metric's group token` ("prod") never needs the
+    // membership lookup. A transient internal-DB fault must NOT turn the common
+    // happy path (CLI passing the canonical group token) into a spurious 503 —
+    // pins that the short-circuit precedes the lookup.
+    throwOnQuery = new Error("internal DB unreachable");
+    const res = await resolveMetricRun({
+      id: "prod_signups",
+      connectionId: "prod",
+      orgId: "org-1",
+      semanticRoot: tmpRoot,
+    });
+    expect(res.kind).toBe("ok");
+    if (res.kind !== "ok") return;
+    expect(res.targetConnectionId).toBe("prod");
+  });
+
+  it("a default-group metric still rejects an explicit connection even under a DB fault (#4109)", async () => {
+    // An ungrouped (default-source) metric has no members, so the lookup is
+    // structurally skipped — the degraded arm can't leak into ungrouped metrics.
+    // A fault must therefore still yield wrong_connection, not routing_unavailable.
+    throwOnQuery = new Error("internal DB unreachable");
+    const res = await resolveMetricRun({
+      id: "total_gmv",
+      connectionId: "some-other",
+      orgId: "org-1",
+      semanticRoot: tmpRoot,
+    });
+    expect(res.kind).toBe("wrong_connection");
+    if (res.kind !== "wrong_connection") return;
+    expect(res.metricConnectionId).toBe("default");
   });
 
   it("rejects an explicit connection in a different group as wrong_connection", async () => {
@@ -153,7 +214,6 @@ describe("resolveMetricRun", () => {
     if (res.kind !== "wrong_connection") return;
     expect(res.group).toBe("prod");
     expect(res.metricConnectionId).toBe("prod");
-    groupForConnection = {};
   });
 
   it("rejects any explicit non-default connection for an ungrouped metric", async () => {

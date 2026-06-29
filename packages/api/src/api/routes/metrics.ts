@@ -351,6 +351,33 @@ metrics.openapi(runMetricRoute, async (c) => {
           400,
         );
       }
+      if (resolution.kind === "routing_unavailable") {
+        // The internal-DB lookup that validates the explicit connection's group
+        // membership faulted. We can't prove or disprove membership, so this is
+        // a retryable server-side condition — NOT a confident wrong_connection
+        // 400 (#4109). Surface it as a 503 carrying the requestId so an operator
+        // sees the real fault, not a misleading user-input error.
+        log.warn(
+          {
+            requestId,
+            orgId,
+            metricId: resolution.metricId,
+            connectionId: resolution.connectionId,
+            category: "routing_unavailable",
+          },
+          "Metric-run group-membership lookup degraded (internal DB fault) — returning retryable 503",
+        );
+        return c.json(
+          {
+            error: "routing_unavailable",
+            message:
+              "Could not verify the connection's group membership right now (a transient internal error). Please retry shortly.",
+            retryable: true,
+            requestId,
+          } as never,
+          503,
+        );
+      }
 
       const { metric, targetConnectionId } = resolution;
       const explanation = metric.description

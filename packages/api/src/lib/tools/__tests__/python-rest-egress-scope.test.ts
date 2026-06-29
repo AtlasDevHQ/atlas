@@ -43,8 +43,8 @@ mock.module("@atlas/api/lib/tracing", () => ({
 mock.module("@atlas/api/lib/env-routing/lookup", () => ({
   loadGroupRoutingContext: async (_orgId: string | undefined, currentMember: string) =>
     currentMember === "ungrouped-conn"
-      ? { members: ["ungrouped-conn"], primaryMember: "ungrouped-conn", currentMember }
-      : { groupId: "prod", members: [currentMember], primaryMember: currentMember, currentMember },
+      ? { members: ["ungrouped-conn"], primaryMember: "ungrouped-conn", currentMember, degraded: false }
+      : { groupId: "prod", members: [currentMember], primaryMember: currentMember, currentMember, degraded: false },
 }));
 
 // Capture how the egress path calls the primary resolver. Mock every export the

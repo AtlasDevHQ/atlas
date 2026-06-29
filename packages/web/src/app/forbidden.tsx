@@ -11,6 +11,7 @@ import {
 import { ShieldX } from "lucide-react";
 import Link from "next/link";
 import { authClient } from "@/lib/auth/client";
+import { signOutForgettingRegion } from "@/lib/auth/sign-out";
 
 export default function Forbidden() {
   return (
@@ -32,7 +33,7 @@ export default function Forbidden() {
           <Button
             variant="ghost"
             className="w-full"
-            onClick={() => authClient.signOut().then(() => window.location.assign("/login"))}
+            onClick={() => signOutForgettingRegion(() => authClient.signOut()).then(() => window.location.assign("/login"))}
           >
             Sign in as a different user
           </Button>

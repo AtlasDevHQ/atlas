@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Database, Mail, AlertTriangle, LogOut } from "lucide-react";
 import { authClient, type OrgInvitationDetail } from "@/lib/auth/client";
+import { signOutForgettingRegion } from "@/lib/auth/sign-out";
 import { navigatePostAuth } from "@/lib/auth/post-auth-nav";
 
 interface PageProps {
@@ -133,7 +134,7 @@ export default function AcceptInvitationPage({ params }: PageProps) {
 
   async function handleSignOut() {
     try {
-      await authClient.signOut();
+      await signOutForgettingRegion(() => authClient.signOut());
     } catch (err) {
       // intentionally ignored: best-effort sign-out — even if the request
       // fails, route to /login so the user can retry with the right account.

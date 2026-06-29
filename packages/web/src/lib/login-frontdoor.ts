@@ -12,9 +12,12 @@
  * Design invariants (the security contract the probe ADR calls for):
  *   - The raw email never leaves the front-door — only its hash is fanned out.
  *   - There is no global email→region store; the hash is transient per request.
- *   - The `atlas_region` cookie short-circuits the probe fan-out (the oracle):
- *     a known region is re-resolved to its AUTHORITATIVE apiUrl from the
- *     region-map, never from the client-writable cookie's own apiUrl.
+ *   - The hashed-email fan-out is the SOLE authority on which region(s) host an
+ *     account. The `atlas_region` cookie is only a tiebreaker among confirmed
+ *     hits — it never short-circuits the lookup, overrides it, or conjures a
+ *     region for an email that exists nowhere (#4090). When it does break a tie,
+ *     the region is re-resolved to its AUTHORITATIVE apiUrl from the region-map,
+ *     never from the client-writable cookie's own apiUrl.
  *
  * `resolveRegion` takes `fetchRegionMap` + `probe` as injected dependencies so
  * the routing logic is unit-testable without network; the edge route
@@ -104,7 +107,11 @@ export function parseRegionCookie(raw: string | null | undefined): string | null
 export interface ResolveRegionDeps {
   /** The typed email (raw; hashed internally, never forwarded raw). */
   email: string;
-  /** The region key from a valid `atlas_region` cookie, or null. */
+  /**
+   * The region key from a valid `atlas_region` cookie, or null. Used ONLY as a
+   * tiebreaker among confirmed multi-region hits — never to short-circuit or
+   * override the email fan-out (#4090).
+   */
   cookieRegion: string | null;
   /** Fetch the region-routing map (throws on network failure). */
   fetchRegionMap: () => Promise<RegionRoutingMap>;
@@ -115,11 +122,18 @@ export interface ResolveRegionDeps {
 /**
  * Resolve a typed email to a region without any global storage.
  *
- * Order: fetch the map → cookie fast-path (skip the oracle) → single-region
- * short-circuit → hashed-email fan-out. A region that errors during the
- * fan-out is never reported as a confident "none": if no region confirmed a
- * hit AND at least one probe failed, the result is `error` (retry) rather than
- * a false negative that would dead-end a real returning user.
+ * Order: fetch the map → single-region short-circuit → hashed-email fan-out →
+ * cookie tiebreaker. The email lookup is ALWAYS authoritative: the
+ * `atlas_region` cookie never short-circuits or overrides it, so a stale cookie
+ * can neither route a returning user to the wrong region nor conjure a `single`
+ * for an email that exists nowhere (#4090). The cookie only breaks a genuine
+ * tie — narrowing a multi-region `multiple` to the cookie's region when that
+ * region is itself one of the confirmed hits.
+ *
+ * A region that errors during the fan-out is never reported as a confident
+ * "none": if no region confirmed a hit AND at least one probe failed, the
+ * result is `error` (retry) rather than a false negative that would dead-end a
+ * real returning user.
  */
 export async function resolveRegion(deps: ResolveRegionDeps): Promise<RegionResolution> {
   const { email, cookieRegion, fetchRegionMap, probe } = deps;
@@ -136,14 +150,6 @@ export async function resolveRegion(deps: ResolveRegionDeps): Promise<RegionReso
 
   if (!map.configured || map.regions.length === 0) {
     return { outcome: "skip" };
-  }
-
-  // Fast path — a cookie-pinned region the map still knows: route there with
-  // its authoritative apiUrl and skip the probe fan-out (the oracle) entirely.
-  if (cookieRegion) {
-    const hit = map.regions.find((r) => r.id === cookieRegion);
-    if (hit) return { outcome: "single", region: hit.id, apiUrl: hit.apiUrl };
-    // A stale cookie (region removed) falls through to the cold fan-out.
   }
 
   // Single-region deployment: route to it without probing — there is no
@@ -174,12 +180,24 @@ export async function resolveRegion(deps: ResolveRegionDeps): Promise<RegionReso
     // No confirmed hit. If a region was unreachable we can't claim "no
     // account" — that would dead-end a returning user whose region just
     // happened to error. Only a clean all-regions-answered sweep yields "none".
+    // A stale `atlas_region` cookie is deliberately NOT consulted here: the
+    // email genuinely exists nowhere, so the verdict is `none`/`error` (#4090).
     return failures > 0
       ? { outcome: "error", message: "Could not reach every region. Please try again." }
       : { outcome: "none" };
   }
   if (hits.length === 1) {
     return { outcome: "single", region: hits[0].region, apiUrl: hits[0].apiUrl };
+  }
+
+  // Multiple regions host this email. Use the cookie as a tiebreaker ONLY when
+  // it names one of the confirmed hits — a returning multi-region user skips the
+  // chooser and lands on their last-used region with its authoritative apiUrl. A
+  // cookie that matches no hit is ignored (it can never fabricate or override a
+  // region), so the chooser still appears.
+  if (cookieRegion) {
+    const pinned = hits.find((h) => h.region === cookieRegion);
+    if (pinned) return { outcome: "single", region: pinned.region, apiUrl: pinned.apiUrl };
   }
   return { outcome: "multiple", regions: hits };
 }

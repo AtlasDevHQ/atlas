@@ -24,6 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useAtlasConfig } from "@/ui/context";
+import { signOutForgettingRegion } from "@/lib/auth/sign-out";
 import { useMfaGate } from "./mfa-gate-context";
 
 export function MfaEnrollmentDialog() {
@@ -42,8 +43,7 @@ export function MfaEnrollmentDialog() {
   }
 
   function handleSignOut() {
-    void authClient
-      .signOut()
+    void signOutForgettingRegion(() => authClient.signOut())
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         // Recovery is the same either way (navigate to /login), but log the

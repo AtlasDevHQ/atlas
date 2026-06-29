@@ -122,6 +122,11 @@ done
 echo ":: Syncing docker auth override"
 mkdir -p "$TEMPLATES/docker/src/lib/auth"
 cp "$WEB_SRC/lib/auth/client.ts" "$TEMPLATES/docker/src/lib/auth/"
+# Web-only auth helpers the UI imports (e.g. sign-out.ts → @/lib/auth/sign-out,
+# pulled in by user-menu/auth-guard). The auth/ subdir is curated rather than
+# copied wholesale (API source owns lib/auth/ here), so each web helper is an
+# explicit copy.
+cp "$WEB_SRC/lib/auth/sign-out.ts" "$TEMPLATES/docker/src/lib/auth/"
 
 # ── Step 3: Sync nextjs-standalone template ──────────────────────────
 # The nextjs-standalone template merges API source with Next.js-specific
@@ -148,6 +153,10 @@ find "$TEMPLATES/nextjs-standalone/src" -name 'test-setup.ts' -delete 2>/dev/nul
 cp "$NEXTJS_EXAMPLE/src/lib/api-url.ts"      "$TEMPLATES/nextjs-standalone/src/lib/"
 mkdir -p "$TEMPLATES/nextjs-standalone/src/lib/auth"
 cp "$NEXTJS_EXAMPLE/src/lib/auth/client.ts"   "$TEMPLATES/nextjs-standalone/src/lib/auth/"
+# Web-only auth helpers the UI imports (sign-out.ts → @/lib/auth/sign-out, pulled
+# in by user-menu/auth-guard). Step 3's `rm -rf src/lib` + `cp -r $API_SRC/lib`
+# lays down API auth source; this overlays the web-side helper it doesn't have.
+cp "$WEB_SRC/lib/auth/sign-out.ts"            "$TEMPLATES/nextjs-standalone/src/lib/auth/"
 
 # Copy ALL web lib files (utils, format, data-table, parsers, compose-refs, etc.)
 for f in "$WEB_SRC"/lib/*.ts; do

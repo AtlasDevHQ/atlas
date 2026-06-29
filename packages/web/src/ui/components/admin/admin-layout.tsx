@@ -19,6 +19,7 @@ import Link from "next/link";
 import { AdminSidebar } from "./admin-sidebar";
 import { AdminTopBar } from "./admin-top-bar";
 import { useAtlasConfig } from "@/ui/context";
+import { signOutForgettingRegion } from "@/lib/auth/sign-out";
 import { LoadingState } from "./loading-state";
 import { ChangePasswordDialog } from "./change-password-dialog";
 import { MfaGateProvider, useMfaGate } from "./mfa-gate-context";
@@ -144,7 +145,7 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
               variant="ghost"
               className="w-full"
               onClick={() => {
-                authClient.signOut()
+                signOutForgettingRegion(() => authClient.signOut())
                   .then(() => window.location.assign("/login"))
                   .catch((err: unknown) => {
                     const msg = err instanceof Error ? err.message : String(err);

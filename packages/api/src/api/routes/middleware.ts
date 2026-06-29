@@ -25,6 +25,7 @@ import {
   type RateLimitBucket,
 } from "@atlas/api/lib/auth/middleware";
 import { extractTrustDeviceIdentifier } from "@atlas/api/lib/auth/trust-device-cookie";
+import { resolveActorKind } from "@atlas/api/lib/auth/api-key-metadata";
 import {
   detectMisrouting,
   isStrictRoutingEnabled,
@@ -49,6 +50,46 @@ const EXPIRED_AUTH_ERRORS = new Set([
 
 function authErrorCode(error: string): "session_expired" | "auth_error" {
   return EXPIRED_AUTH_ERRORS.has(error) ? "session_expired" : "auth_error";
+}
+
+/**
+ * #4110 — workspace API keys are DATA-PLANE credentials. They authenticate the
+ * `standardAuth` surface (run SQL/metrics/explore, conversations, sessions,
+ * tables, …) and the datasource CLI surface (ADR-0027 gate-parity:
+ * `atlas datasource …`), but are denied on true console-admin: billing /
+ * `/byot`, the install wizard, connection settings, audit, etc. — surfaces that
+ * assume an interactive human (MFA, secret entry, provisioning).
+ *
+ * Deny by DEFAULT at the single admin chokepoint (`adminAuth` /
+ * `platformAdminAuth`) so the boundary is ONE deliberate decision rather than
+ * "did the route happen to use `createAdminRouter`". Before this,
+ * `createAdminRouter` routes blocked keys only incidentally — via `mfaRequired`
+ * (a key carries no MFA claim → 403 `mfa_enrollment_required`, a confusing code)
+ * — while bare `.use(adminAuth)` routes (`billing` incl. `/byot`, `wizard`,
+ * `datasources /{id}/profile`) let them straight through. This closes that split:
+ * a clear, uniform 403 everywhere EXCEPT the explicitly key-allowed datasource
+ * routers, which use `adminAuthAllowApiKey` to opt out.
+ *
+ * Returns a 403 descriptor when the actor is an api-key, else `null`.
+ */
+function denyApiKeyOnAdmin(
+  authResult: AuthResult & { authenticated: true },
+  requestId: string,
+): { body: Record<string, unknown>; status: 403 } | null {
+  if (resolveActorKind(authResult.user?.claims) !== "api_key") return null;
+  log.warn(
+    { requestId, userId: authResult.user?.id },
+    "Workspace API key blocked from an admin route — keys are data-plane credentials",
+  );
+  return {
+    body: {
+      error: "api_key_not_permitted",
+      message:
+        "Workspace API keys are scoped to data operations (SQL, metrics, explore) and cannot access admin endpoints. Use an interactive admin session.",
+      requestId,
+    },
+    status: 403,
+  };
 }
 
 /**
@@ -283,58 +324,92 @@ async function checkMigrationWriteLock(
 // adminAuth — authenticate + enforce admin role + rate limit + IP allowlist
 // ---------------------------------------------------------------------------
 
-export const adminAuth = createMiddleware<AuthEnv>(async (c, next) => {
-  const requestId = crypto.randomUUID();
-  c.set("requestId", requestId);
+/**
+ * Build an admin-auth middleware.
+ *
+ * `allowApiKey` (default `false`) controls the #4110 data-plane boundary: by
+ * default a workspace API key is DENIED on admin routes (see
+ * {@link denyApiKeyOnAdmin}). The datasource CLI surface (`datasources.ts`
+ * profile + `admin-openapi-datasources.ts` create/list/test/…) sets
+ * `allowApiKey: true` because ADR-0027's gate-parity contract deliberately makes
+ * those admin-floor routes reachable by `atlas datasource …` in unattended CI.
+ * No other admin router should set it.
+ */
+function makeAdminAuth(opts: { allowApiKey?: boolean } = {}) {
+  return createMiddleware<AuthEnv>(async (c, next) => {
+    const requestId = crypto.randomUUID();
+    c.set("requestId", requestId);
 
-  const auth = await authenticate(c.req.raw, requestId);
-  if (!auth.ok) {
-    return c.json(auth.body, auth.status as 401, auth.headers);
-  }
-  const { authResult } = auth;
+    const auth = await authenticate(c.req.raw, requestId);
+    if (!auth.ok) {
+      return c.json(auth.body, auth.status as 401, auth.headers);
+    }
+    const { authResult } = auth;
 
-  // Defense-in-depth (#3342 L-1): `mode: "none"` is the no-auth local-dev
-  // carve-out and must never reach an admin gate in SaaS. Mirrors the
-  // platformAdminAuth guard below — the weaker tier was the unguarded one.
-  if (authResult.mode === "none" && isSaasDeployMode()) {
-    log.error({ requestId }, "mode:\"none\" reached adminAuth under SaaS deploy — rejecting");
-    return c.json({ error: "auth_misconfigured", message: "Admin auth is not configured.", requestId }, 500);
-  }
+    // #4110 — workspace API keys are data-plane credentials. Deny them on admin
+    // routes at this single chokepoint (clear 403, before role/MFA logic) UNLESS
+    // this is the explicitly key-allowed datasource CLI surface.
+    if (!opts.allowApiKey) {
+      const apiKeyBlocked = denyApiKeyOnAdmin(authResult, requestId);
+      if (apiKeyBlocked) {
+        return c.json(apiKeyBlocked.body, apiKeyBlocked.status);
+      }
+    }
 
-  // Enforce admin role — auth mode "none" (local dev) is an implicit admin
-  if (
-    authResult.mode !== "none" &&
-    (!authResult.user ||
-      (authResult.user.role !== "admin" &&
-        authResult.user.role !== "owner" &&
-        authResult.user.role !== "platform_admin"))
-  ) {
-    log.warn({ requestId, userId: authResult.user?.id, role: authResult.user?.role }, "Non-admin access attempt");
-    return c.json({ error: "forbidden_role", message: "Admin role required.", requestId }, 403);
-  }
+    // Defense-in-depth (#3342 L-1): `mode: "none"` is the no-auth local-dev
+    // carve-out and must never reach an admin gate in SaaS. Mirrors the
+    // platformAdminAuth guard below — the weaker tier was the unguarded one.
+    if (authResult.mode === "none" && isSaasDeployMode()) {
+      log.error({ requestId }, "mode:\"none\" reached adminAuth under SaaS deploy — rejecting");
+      return c.json({ error: "auth_misconfigured", message: "Admin auth is not configured.", requestId }, 500);
+    }
 
-  // Admin namespace gets its own rate-limit bucket (#2485). Interactive
-  // forms (Add Connection, Test, Delete in quick succession) burst easily
-  // past a low base RPM; bucketing them separately keeps a dogfood session
-  // from depleting the cheap-read budget shared with chat.
-  const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId, "admin");
-  if (blocked) {
-    return c.json(blocked.body, blocked.status as 429, blocked.headers);
-  }
+    // Enforce admin role — auth mode "none" (local dev) is an implicit admin
+    if (
+      authResult.mode !== "none" &&
+      (!authResult.user ||
+        (authResult.user.role !== "admin" &&
+          authResult.user.role !== "owner" &&
+          authResult.user.role !== "platform_admin"))
+    ) {
+      log.warn({ requestId, userId: authResult.user?.id, role: authResult.user?.role }, "Non-admin access attempt");
+      return c.json({ error: "forbidden_role", message: "Admin role required.", requestId }, 403);
+    }
 
-  const misrouted = await checkMisrouting(c, authResult, requestId);
-  if (misrouted) {
-    return c.json(misrouted.body, misrouted.status as 421);
-  }
+    // Admin namespace gets its own rate-limit bucket (#2485). Interactive
+    // forms (Add Connection, Test, Delete in quick succession) burst easily
+    // past a low base RPM; bucketing them separately keeps a dogfood session
+    // from depleting the cheap-read budget shared with chat.
+    const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId, "admin");
+    if (blocked) {
+      return c.json(blocked.body, blocked.status as 429, blocked.headers);
+    }
 
-  // No migration write-lock for admin routes — admins need to manage
-  // the workspace during migration (retry, cancel, configure).
+    const misrouted = await checkMisrouting(c, authResult, requestId);
+    if (misrouted) {
+      return c.json(misrouted.body, misrouted.status as 421);
+    }
 
-  c.set("authResult", authResult);
-  resolveModeForRequest(c, authResult, requestId);
-  setTrustDeviceIdentifier(c);
-  await next();
-});
+    // No migration write-lock for admin routes — admins need to manage
+    // the workspace during migration (retry, cancel, configure).
+
+    c.set("authResult", authResult);
+    resolveModeForRequest(c, authResult, requestId);
+    setTrustDeviceIdentifier(c);
+    await next();
+  });
+}
+
+/** Standard admin gate — denies workspace API keys (#4110). */
+export const adminAuth = makeAdminAuth();
+
+/**
+ * Admin gate that ALLOWS workspace API keys (#4110). Reserved for the datasource
+ * CLI surface — ADR-0027 gate-parity makes `atlas datasource …` key-reachable.
+ * Pairs with `mfaRequired`'s api-key exemption so a key clears the factory
+ * router's MFA gate too.
+ */
+export const adminAuthAllowApiKey = makeAdminAuth({ allowApiKey: true });
 
 // ---------------------------------------------------------------------------
 // platformAdminAuth — authenticate + enforce platform_admin role + rate limit + IP allowlist
@@ -349,6 +424,15 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
     return c.json(auth.body, auth.status as 401, auth.headers);
   }
   const { authResult } = auth;
+
+  // #4110 — a workspace API key is org-scoped and clamped to org roles, so it
+  // can never carry `platform_admin`; deny it here anyway for a clear 403 and a
+  // uniform admin boundary (a key clamped below the role check would otherwise
+  // 403 with the less precise `forbidden_role`).
+  const apiKeyBlocked = denyApiKeyOnAdmin(authResult, requestId);
+  if (apiKeyBlocked) {
+    return c.json(apiKeyBlocked.body, apiKeyBlocked.status);
+  }
 
   // Defense-in-depth: `mode: "none"` is the no-auth local-dev carve-out and
   // must never reach a platform gate in SaaS. If deploy mode is saas and we

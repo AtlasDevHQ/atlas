@@ -209,6 +209,31 @@ describe("mfaRequired middleware", () => {
     expect(res.status).toBe(200);
   });
 
+  it("exempts a workspace API key actor even without MFA (#4110)", async () => {
+    // An api-key is the unattended-CI credential, not an interactive session
+    // that could enroll a TOTP/passkey — it is exempt from the MFA gate (its
+    // lifetime control is key expiry). Only ever reached on the key-allowed
+    // datasource routers; everywhere else adminAuth denied it first.
+    const app = new OpenAPIHono<AuthEnv>();
+    injectAuth(app, {
+      authenticated: true,
+      mode: "managed",
+      user: {
+        id: "key-owner-1",
+        mode: "managed",
+        label: "ci@atlas.dev",
+        role: "admin",
+        activeOrganizationId: "org-1",
+        claims: Object.freeze({ api_key: true, twoFactorEnabled: false, passkeyCount: 0 }),
+      },
+    });
+    app.use(mfaRequired);
+    app.openapi(okRoute, (c) => c.json({ ok: true }, 200));
+
+    const res = await app.request("/admin/anything");
+    expect(res.status).toBe(200);
+  });
+
   it("blocks when both factors are absent (twoFactorEnabled=false, passkeyCount=0)", async () => {
     // The both-zero case is the canonical reject — admin with no second
     // factor of any kind. Asserted explicitly so a regression where

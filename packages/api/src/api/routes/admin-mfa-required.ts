@@ -65,6 +65,7 @@ import { createMiddleware } from "hono/factory";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { AuthEnv } from "@atlas/api/api/routes/middleware";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
+import { resolveActorKind } from "@atlas/api/lib/auth/api-key-metadata";
 import { resolveDeployEnv } from "@atlas/api/lib/env-profile";
 
 const log = createLogger("middleware:mfa");
@@ -215,6 +216,18 @@ export const mfaRequired = createMiddleware<AuthEnv>(async (c, next) => {
   // The deploy-mode guard in `platformAdminAuth` already prevents
   // `mode:"none"` from being a SaaS escape hatch.
   if (authResult.mode !== "managed") {
+    await next();
+    return;
+  }
+
+  // #4110 — a workspace API key is the unattended-CI credential, not an
+  // interactive session that could enroll a TOTP/passkey, so it is exempt from
+  // the MFA gate (its lifetime control is key expiry, not a second factor). This
+  // exemption is safe even though a key IS "managed" mode: on every admin router
+  // that does NOT explicitly allow keys, `adminAuth` already returned 403 before
+  // this middleware ran, so an api-key actor only ever reaches here on the
+  // `adminAuthAllowApiKey` datasource surface — exactly where it should pass.
+  if (resolveActorKind(authResult.user?.claims) === "api_key") {
     await next();
     return;
   }

@@ -304,10 +304,22 @@ export async function resolveApiKeyAuth(
   // (`userId`), the scope from the verified key. If a request presented BOTH a
   // session cookie (user A) AND an `x-api-key` (user B's key) and the cookie won
   // `getSession`, we'd otherwise bind user A's identity to user B's key scope —
-  // breaking the "a leaked key traces to its owner" invariant. Assert the
-  // verified key's owner equals the resolved session user; fail closed on a
-  // mismatch rather than mis-attribute the actor.
-  if (keyOwner && keyOwner !== userId) {
+  // breaking the "a leaked key traces to its owner" invariant.
+  //
+  // #4110 AC4 — the binding is REQUIRED, not best-effort: a verified key whose
+  // owner can't be determined (`verifyApiKey` returned `valid:true` but neither
+  // `userId` nor `referenceId`) must fail closed, NOT fall through trusting the
+  // cookie/bearer `userId`. A real Better Auth key always carries an owner; a
+  // missing one signals a malformed/forged verify shape we won't bind to a
+  // person. Both the "no owner" and "owner mismatch" cases fail closed.
+  if (!keyOwner) {
+    log.error(
+      { userId },
+      "verifyApiKey reported valid but resolved no key owner — failing closed (cannot bind the actor to a person)",
+    );
+    return { authenticated: false, mode: "managed", status: 401, error: "API key could not be verified" };
+  }
+  if (keyOwner !== userId) {
     log.error(
       { userId, keyOwner },
       "API key owner does not match the resolved session user — failing closed (possible cookie+key credential mix)",

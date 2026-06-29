@@ -80,6 +80,7 @@ const passthrough = createMiddleware(async (_c, next) => {
 
 mock.module("./routes/middleware", () => ({
   adminAuth: passthrough,
+  adminAuthAllowApiKey: passthrough,
   platformAdminAuth: passthrough,
   requestContext: passthrough,
   standardAuth: passthrough,
@@ -87,6 +88,7 @@ mock.module("./routes/middleware", () => ({
 }));
 mock.module("../routes/middleware", () => ({
   adminAuth: passthrough,
+  adminAuthAllowApiKey: passthrough,
   platformAdminAuth: passthrough,
   requestContext: passthrough,
   standardAuth: passthrough,
@@ -94,6 +96,7 @@ mock.module("../routes/middleware", () => ({
 }));
 mock.module("@atlas/api/api/routes/middleware", () => ({
   adminAuth: passthrough,
+  adminAuthAllowApiKey: passthrough,
   platformAdminAuth: passthrough,
   requestContext: passthrough,
   standardAuth: passthrough,

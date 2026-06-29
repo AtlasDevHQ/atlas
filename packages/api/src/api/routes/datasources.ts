@@ -69,7 +69,7 @@ import type { ResolveLiveConnectionResult } from "@atlas/api/lib/datasources/mcp
 import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { adminAuthAllowApiKey, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("datasources-routes");
 
@@ -181,7 +181,12 @@ const profileRoute = createRoute({
 
 export const datasources = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
 
-datasources.use(adminAuth);
+// #4110 — workspace API keys are allowed here: this is the datasource CLI
+// surface (`atlas datasource profile`), admin-floor but key-reachable by
+// ADR-0027 gate-parity. The actor-kind stamping below distinguishes a key from
+// a human session in the audit. Other admin routers use the deny-by-default
+// `adminAuth`.
+datasources.use(adminAuthAllowApiKey);
 datasources.use(requestContext);
 
 // Normalize JSON parse errors into the standard API error format (mirrors explore.ts).

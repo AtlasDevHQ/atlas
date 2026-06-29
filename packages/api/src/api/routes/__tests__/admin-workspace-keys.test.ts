@@ -95,7 +95,27 @@ function authAs(role: "member" | "admin" | "owner", id = "minter-1"): void {
         label: `${role}@test.com`,
         role,
         activeOrganizationId: "org-alpha",
-        claims: { twoFactorEnabled: true },
+        // The minter's own claim bag. `tenant_id` is the RLS claim they hold —
+        // a key can embed it (within scope) but not any claim outside this bag.
+        claims: { twoFactorEnabled: true, tenant_id: "acme" },
+      },
+    }),
+  );
+}
+
+/** Authenticate as a workspace API key actor (the api_key marker claim). */
+function authAsApiKey(): void {
+  mocks.mockAuthenticateRequest.mockImplementation(() =>
+    Promise.resolve({
+      authenticated: true,
+      mode: "managed",
+      user: {
+        id: "key-owner-1",
+        mode: "managed",
+        label: "ci@test.com",
+        role: "admin",
+        activeOrganizationId: "org-alpha",
+        claims: { api_key: true, org_id: "org-alpha", sub: "key-owner-1", origin: "cli" },
       },
     }),
   );
@@ -139,9 +159,41 @@ describe("POST /api/v1/admin/workspace-keys", () => {
     expect(createApiKeyCalls.length).toBe(0);
   });
 
-  it("embeds the supplied RLS claims into the metadata", async () => {
+  it("embeds the supplied RLS claims into the metadata (within the minter's scope)", async () => {
+    // The minter holds `tenant_id: "acme"` (see authAs), so the key may carry it.
     await mint({ name: "ci-key", role: "member", claims: { tenant_id: "acme" } });
     expect(createApiKeyCalls[0].body.metadata.claims).toEqual({ tenant_id: "acme" });
+  });
+
+  it("rejects an RLS claim the minter does not hold (422) — no widening (#4110 AC3)", async () => {
+    // The minter holds tenant_id:"acme"; minting tenant_id:"globex" would grant
+    // RLS reach they don't have. Must be refused, and no key minted.
+    const res = await mint({ name: "ci-key", claims: { tenant_id: "globex" } });
+    expect(res.status).toBe(422);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toBe("claim_not_allowed");
+    expect(createApiKeyCalls.length).toBe(0);
+  });
+
+  it("rejects a claim key the minter does not hold at all (422) — no fabrication (#4110 AC3)", async () => {
+    const res = await mint({ name: "ci-key", claims: { region: "us" } });
+    expect(res.status).toBe(422);
+    expect(createApiKeyCalls.length).toBe(0);
+  });
+
+  it("rejects a reserved identity claim key (422) — can't forge identity/MFA (#4110 AC3)", async () => {
+    const res = await mint({ name: "ci-key", claims: { sub: "someone-else" } });
+    expect(res.status).toBe(422);
+    expect(createApiKeyCalls.length).toBe(0);
+  });
+
+  it("denies a workspace API key actor from the mint surface (403) — keys are data-plane (#4110 AC1/AC2)", async () => {
+    authAsApiKey();
+    const res = await mint({ name: "ci-key" });
+    expect(res.status).toBe(403);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toBe("api_key_not_permitted");
+    expect(createApiKeyCalls.length).toBe(0);
   });
 
   it("defaults the role to the minter's own when none is requested", async () => {

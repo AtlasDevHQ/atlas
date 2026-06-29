@@ -224,7 +224,7 @@ describe("validateManaged()", () => {
       });
       mockVerifyApiKey.mockResolvedValueOnce({
         valid: true,
-        key: { metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "member" } },
+        key: { userId: "usr_2", metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "member" } },
       });
       // Member was promoted to owner AFTER minting; the key must stay member.
       mockHasInternalDB = true;
@@ -244,7 +244,7 @@ describe("validateManaged()", () => {
         valid: true,
         // The key was minted when the owner was an admin; they've since been
         // removed from the workspace. The stored role must NOT be a floor.
-        key: { metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "admin" } },
+        key: { userId: "usr_removed", metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "admin" } },
       });
       mockHasInternalDB = true;
       mockInternalQuery = () => Promise.resolve([]); // no member row
@@ -285,6 +285,7 @@ describe("validateManaged()", () => {
       mockVerifyApiKey.mockResolvedValueOnce({
         valid: true,
         key: {
+          userId: "usr_3",
           metadata: {
             atlasWorkspaceKey: true,
             orgId: "org_acme",
@@ -309,6 +310,7 @@ describe("validateManaged()", () => {
       mockVerifyApiKey.mockResolvedValueOnce({
         valid: true,
         key: {
+          userId: "usr_4",
           metadata: {
             atlasWorkspaceKey: true,
             orgId: "org_real",
@@ -406,6 +408,25 @@ describe("validateManaged()", () => {
           userId: "usr_B",
           metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "admin" },
         },
+      });
+      mockHasInternalDB = true;
+      mockInternalQuery = () => Promise.resolve([{ role: "admin" }]);
+
+      const result = await validateManaged(apiKeyRequest());
+      expect(result).toMatchObject({ authenticated: false, status: 401 });
+    });
+
+    it("fails closed (401) when the key is valid but resolves no owner (#4110 AC4)", async () => {
+      // verifyApiKey reports valid:true but the key carries neither userId nor
+      // referenceId — we can't bind the actor to a person, so we must NOT fall
+      // through trusting the session userId. Fail closed instead.
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_noowner", email: "no@acme.com" },
+        session: { id: "key_noowner", userId: "usr_noowner" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce({
+        valid: true,
+        key: { metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "admin" } },
       });
       mockHasInternalDB = true;
       mockInternalQuery = () => Promise.resolve([{ role: "admin" }]);

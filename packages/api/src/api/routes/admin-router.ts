@@ -31,6 +31,7 @@ import { validationHook } from "./validation-hook";
 import { eeOnError } from "./ee-error-handler";
 import {
   adminAuth,
+  adminAuthAllowApiKey,
   platformAdminAuth,
   requestContext,
   type AuthEnv,
@@ -93,9 +94,13 @@ export type OrgContextEnv = AuthEnv & {
  * Wires up: validationHook, adminAuth, requestContext, eeOnError.
  * Add `router.use(requireOrgContext())` for org-scoped routes.
  */
-export function createAdminRouter() {
+export function createAdminRouter(opts: { allowApiKey?: boolean } = {}) {
   const router = new OpenAPIHono<OrgContextEnv>({ defaultHook: validationHook });
-  router.use(adminAuth);
+  // #4110 — `allowApiKey` opts this router OUT of the workspace-API-key deny.
+  // Reserved for the datasource CLI surface (ADR-0027 gate-parity); paired with
+  // `mfaRequired`'s api-key exemption so a key clears the MFA gate here too. No
+  // other admin router should pass it.
+  router.use(opts.allowApiKey ? adminAuthAllowApiKey : adminAuth);
   // F-MFA — block admin access until the user has enrolled a TOTP second
   // factor. Order matters: must run after adminAuth (which sets authResult)
   // and before any handler. The middleware lets enrollment + sign-out

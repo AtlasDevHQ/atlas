@@ -81,6 +81,37 @@ The `atlas` CLI has **two** ways to authenticate, and most users only need the f
   the next request). Because the key is pinned to one workspace, `--workspace` does not
   apply to it.
 
+### Scope: data plane + the datasource CLI, not console-admin
+
+A workspace API key is a **data-plane / CLI credential**. It authenticates:
+
+- the **query surface** — running SQL, metrics, and explore, plus conversations, sessions,
+  tables, and the semantic layer; and
+- the **datasource CLI surface** — `atlas datasource profile | create | list | get | test |
+  archive | restore | delete` (admin-floor, but reachable by an unattended key by design so
+  CI can provision and profile connections).
+
+It does **not** reach true console-admin: billing and BYOT-token entry, the install wizard,
+connection/workspace settings, audit, SSO/SCIM, and the like. Those assume an interactive
+human with a second factor enrolled; an unattended key pointed at one receives:
+
+```json
+{ "error": "api_key_not_permitted",
+  "message": "Workspace API keys are scoped to data operations (SQL, metrics, explore) and cannot access admin endpoints. Use an interactive admin session." }
+```
+
+Minting, listing, and revoking keys are themselves console-admin actions and require an
+interactive session — a key cannot mint another key.
+
+### RLS claims are bounded to the minter
+
+When the workspace uses [row-level security](/deployment/row-level-security), a key can
+carry RLS claim values so queries are filtered. Those claims are **bounded to the minting
+admin's own claims**: you can only embed a claim key/value you already hold (the
+claims-axis mirror of the role ceiling — a key never grants reach the minter lacks).
+Reserved identity claims (`sub`, `org_id`, `origin`, MFA-enrollment flags, …) can't be set
+at all. A claim outside your scope is rejected with `422 claim_not_allowed`.
+
 <Callout>
 The legacy `ATLAS_API_KEY` **operator god-key** (a single env-configured key for
 self-hosted simple-key auth mode) is a separate mechanism and is unchanged. Workspace

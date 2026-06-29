@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 
 import { runDatasource, type DatasourceIO, type DatasourceRunDeps } from "../commands/datasource";
 import type { StoredSession } from "../lib/credentials";
+import type { SecretCaptureDeps } from "../lib/datasource-secret";
 
 const BASE = "http://localhost:3001";
 const SESSION: StoredSession = { token: "sess_abc", workspaceId: "org-1", createdAt: "2026-06-27T00:00:00Z" };
@@ -186,6 +187,247 @@ describe("runDatasource — mutations (#4044)", () => {
     const text = err.join("\n");
     expect(text).toContain("admin role");
     expect(text).toContain("atlas login");
+  });
+});
+
+/** Secret-capture deps for create tests; `promptSecret` throws unless overridden. */
+function secretDeps(over: Partial<SecretCaptureDeps> = {}): SecretCaptureDeps {
+  return {
+    envValue: undefined,
+    isTTY: false,
+    promptSecret: async () => {
+      throw new Error("promptSecret should not have been called");
+    },
+    ...over,
+  };
+}
+
+/** A canned fetch that records the request body so create's payload can be asserted. */
+function stubFetchCapturing(
+  status: number,
+  body: unknown,
+): { fetchImpl: typeof fetch; bodies: string[] } {
+  const bodies: string[] = [];
+  const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+    if (typeof init?.body === "string") bodies.push(init.body);
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  return { fetchImpl, bodies };
+}
+
+describe("runDatasource — create secret capture (#4051)", () => {
+  it("captures the URL from the env var and POSTs it, never reading argv", async () => {
+    const { fetchImpl, bodies } = stubFetchCapturing(201, {
+      id: "prod-us",
+      dbType: "postgres",
+      maskedUrl: "postgres://***@host/db",
+    });
+    const { io, out } = capture();
+    const code = await runDatasource(
+      ["datasource", "create", "prod-us"],
+      { ...deps(fetchImpl), secretCapture: secretDeps({ envValue: "postgres://user:pw@host/db" }) },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(bodies[0]).url).toBe("postgres://user:pw@host/db");
+    const text = out.join("\n");
+    expect(text).toContain('Created datasource "prod-us"');
+    expect(text).toContain("draft");
+    // The masked url is shown; the plaintext secret never is.
+    expect(text).toContain("postgres://***@host/db");
+    expect(text).not.toContain("pw@host");
+  });
+
+  it("prompts on stdin when there is a TTY and no env var", async () => {
+    const { fetchImpl, bodies } = stubFetchCapturing(201, { id: "ds1", dbType: "mysql" });
+    const { io, out } = capture();
+    const code = await runDatasource(
+      ["datasource", "create", "ds1"],
+      {
+        ...deps(fetchImpl),
+        secretCapture: secretDeps({ isTTY: true, promptSecret: async () => "mysql://u:p@h/db" }),
+      },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(bodies[0]).url).toBe("mysql://u:p@h/db");
+    expect(out.join("\n")).toContain("from stdin");
+  });
+
+  it("forwards non-secret metadata flags into the request", async () => {
+    const { fetchImpl, bodies } = stubFetchCapturing(201, { id: "ds1" });
+    const { io } = capture();
+    await runDatasource(
+      ["datasource", "create", "ds1", "--description", "US prod", "--schema", "public", "--group", "prod"],
+      { ...deps(fetchImpl), secretCapture: secretDeps({ envValue: "postgres://u:p@h/db" }) },
+      io,
+    );
+    const payload = JSON.parse(bodies[0]);
+    expect(payload).toEqual({
+      id: "ds1",
+      url: "postgres://u:p@h/db",
+      description: "US prod",
+      schema: "public",
+      connectionGroupId: "prod",
+    });
+  });
+
+  it("CI with no TTY and no env var defers to the dashboard/MCP and exits 1", async () => {
+    // fetch must NOT be called — no secret was captured.
+    let fetched = false;
+    const fetchImpl = (async () => {
+      fetched = true;
+      return new Response("{}", { status: 201 });
+    }) as unknown as typeof fetch;
+    const { io, err } = capture();
+    const code = await runDatasource(
+      ["datasource", "create", "ds1"],
+      { ...deps(fetchImpl), secretCapture: secretDeps({ isTTY: false, envValue: undefined }) },
+      io,
+    );
+    expect(code).toBe(1);
+    expect(fetched).toBe(false);
+    const text = err.join("\n");
+    expect(text).toContain("dashboard or the Atlas MCP");
+    expect(text).toContain("ATLAS_DATASOURCE_SECRET");
+  });
+
+  it("a set-but-blank env var defers as a misconfiguration (exit 1, never POSTs)", async () => {
+    let fetched = false;
+    const fetchImpl = (async () => {
+      fetched = true;
+      return new Response("{}", { status: 201 });
+    }) as unknown as typeof fetch;
+    const { io, err } = capture();
+    const code = await runDatasource(
+      ["datasource", "create", "ds1"],
+      // isTTY:true would allow a prompt — assert the blank env var is a hard stop,
+      // not a silent fall-through (promptSecret throws if reached).
+      { ...deps(fetchImpl), secretCapture: secretDeps({ envValue: "   ", isTTY: true }) },
+      io,
+    );
+    expect(code).toBe(1);
+    expect(fetched).toBe(false);
+    expect(err.join("\n")).toContain("set but empty");
+  });
+
+  it("an empty stdin entry defers (exit 1) and tells the user to paste the URL", async () => {
+    let fetched = false;
+    const fetchImpl = (async () => {
+      fetched = true;
+      return new Response("{}", { status: 201 });
+    }) as unknown as typeof fetch;
+    const { io, err } = capture();
+    const code = await runDatasource(
+      ["datasource", "create", "ds1"],
+      { ...deps(fetchImpl), secretCapture: secretDeps({ isTTY: true, promptSecret: async () => "  " }) },
+      io,
+    );
+    expect(code).toBe(1);
+    expect(fetched).toBe(false);
+    expect(err.join("\n")).toContain("No connection URL was entered");
+  });
+
+  it("the request url is the captured secret, never a flag value (argv-boundary contract)", async () => {
+    // Metadata flags (incl. ones whose values look like URLs) must never become
+    // the connection url; the only url is the captured secret. Guards the
+    // createPositionalId / flagValue argv boundary the whole feature defends.
+    const { fetchImpl, bodies } = stubFetchCapturing(201, { id: "ds1" });
+    const { io } = capture();
+    await runDatasource(
+      ["datasource", "create", "ds1", "--description", "postgres://decoy:decoy@evil/db", "--schema", "public"],
+      { ...deps(fetchImpl), secretCapture: secretDeps({ envValue: "postgres://real:real@host/db" }) },
+      io,
+    );
+    const payload = JSON.parse(bodies[0]);
+    expect(payload.url).toBe("postgres://real:real@host/db");
+    expect(payload.id).toBe("ds1");
+    expect(payload.description).toBe("postgres://decoy:decoy@evil/db");
+  });
+
+  it("id positional after value-taking flags is parsed correctly (not the flag's value)", async () => {
+    const { fetchImpl, bodies } = stubFetchCapturing(201, { id: "prod-us" });
+    const { io } = capture();
+    const code = await runDatasource(
+      ["datasource", "create", "--description", "US prod", "prod-us"],
+      { ...deps(fetchImpl), secretCapture: secretDeps({ envValue: "postgres://u:p@h/db" }) },
+      io,
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(bodies[0]);
+    expect(payload.id).toBe("prod-us");
+    expect(payload.description).toBe("US prod");
+  });
+
+  it("a cancelled prompt is a clean no-op (exit 0, nothing created)", async () => {
+    let fetched = false;
+    const fetchImpl = (async () => {
+      fetched = true;
+      return new Response("{}", { status: 201 });
+    }) as unknown as typeof fetch;
+    const { io } = capture();
+    const code = await runDatasource(
+      ["datasource", "create", "ds1"],
+      { ...deps(fetchImpl), secretCapture: secretDeps({ isTTY: true, promptSecret: async () => null }) },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(fetched).toBe(false);
+  });
+
+  it("requires an id positional", async () => {
+    const { io, err } = capture();
+    const code = await runDatasource(
+      ["datasource", "create"],
+      { ...deps(undefined), secretCapture: secretDeps({ envValue: "postgres://u:p@h/db" }) },
+      io,
+    );
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("atlas datasource create <id>");
+  });
+
+  it("rejects --group and --new-group together before capturing any secret", async () => {
+    const { io, err } = capture();
+    const code = await runDatasource(
+      ["datasource", "create", "ds1", "--group", "a", "--new-group", "b"],
+      // promptSecret throws if reached — assert the conflict is caught first.
+      { ...deps(undefined), secretCapture: secretDeps({ isTTY: true }) },
+      io,
+    );
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("not both");
+  });
+
+  it("surfaces a server connection_failed as an actionable error", async () => {
+    const { fetchImpl } = stubFetchCapturing(400, {
+      error: "connection_failed",
+      message: "Connection test failed: timeout. Fix the URL and try again.",
+    });
+    const { io, err } = capture();
+    const code = await runDatasource(
+      ["datasource", "create", "ds1"],
+      { ...deps(fetchImpl), secretCapture: secretDeps({ envValue: "postgres://u:p@h/db" }) },
+      io,
+    );
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("Fix the URL");
+  });
+
+  it("--json emits the raw created detail", async () => {
+    const { fetchImpl } = stubFetchCapturing(201, { id: "ds1", dbType: "postgres", maskedUrl: "postgres://***@h/db" });
+    const { io, out } = capture();
+    const code = await runDatasource(
+      ["datasource", "create", "ds1", "--json"],
+      { ...deps(fetchImpl), secretCapture: secretDeps({ envValue: "postgres://u:p@h/db" }) },
+      io,
+    );
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out.join("\n"));
+    expect(parsed.id).toBe("ds1");
+    expect(parsed.maskedUrl).toBe("postgres://***@h/db");
   });
 });
 

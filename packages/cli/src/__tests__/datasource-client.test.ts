@@ -8,6 +8,7 @@ import {
   archiveDatasource,
   restoreDatasource,
   deleteDatasource,
+  createDatasource,
   type DatasourceClientOptions,
 } from "../lib/datasource-client";
 
@@ -115,6 +116,55 @@ describe("datasource-client route mapping (#4044)", () => {
     expect(calls[0].method).toBe("DELETE");
     expect(calls[0].url).toBe(`${BASE}/api/v1/admin/connections/prod-us`);
   });
+
+  it("create → POST /api/v1/admin/connections with the secret url in the body", async () => {
+    const { fetchImpl, calls } = stubFetch(201, {
+      id: "prod-us",
+      dbType: "postgres",
+      maskedUrl: "postgres://***@host/db",
+    });
+    const out = await createDatasource(
+      opts(fetchImpl),
+      { id: "prod-us", description: "US prod", schema: "public" },
+      "postgres://user:pw@host:5432/db",
+    );
+    expect(out.id).toBe("prod-us");
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].url).toBe(`${BASE}/api/v1/admin/connections`);
+    const body = JSON.parse(calls[0].body!);
+    expect(body).toEqual({
+      id: "prod-us",
+      url: "postgres://user:pw@host:5432/db",
+      description: "US prod",
+      schema: "public",
+    });
+  });
+
+  it("create omits absent optional metadata from the body", async () => {
+    const { fetchImpl, calls } = stubFetch(201, { id: "ds1" });
+    await createDatasource(opts(fetchImpl), { id: "ds1" }, "mysql://u:p@h/db");
+    expect(JSON.parse(calls[0].body!)).toEqual({ id: "ds1", url: "mysql://u:p@h/db" });
+  });
+
+  it("create forwards a group attachment", async () => {
+    const { fetchImpl, calls } = stubFetch(201, { id: "ds1" });
+    await createDatasource(opts(fetchImpl), { id: "ds1", connectionGroupId: "prod" }, "postgres://u:p@h/db");
+    expect(JSON.parse(calls[0].body!).connectionGroupId).toBe("prod");
+  });
+
+  it("create strips a plaintext url from the response (defense-in-depth, never echoes the secret)", async () => {
+    // Simulate a server regression that echoes the raw url; the client must not
+    // surface it (it would otherwise reach `--json` output / a redirected log).
+    const { fetchImpl } = stubFetch(201, {
+      id: "ds1",
+      dbType: "postgres",
+      maskedUrl: "postgres://***@h/db",
+      url: "postgres://user:pw@h/db",
+    });
+    const out = await createDatasource(opts(fetchImpl), { id: "ds1" }, "postgres://user:pw@h/db");
+    expect(out.url).toBeUndefined();
+    expect(out.maskedUrl).toBe("postgres://***@h/db");
+  });
 });
 
 describe("datasource-client error mapping (#4044)", () => {
@@ -204,5 +254,48 @@ describe("datasource-client error mapping (#4044)", () => {
     const err = await listDatasources({ baseUrl: BASE, token: TOKEN, fetchImpl }).catch((e) => e);
     expect((err as DatasourceCliError).kind).toBe("request_failed");
     expect((err as DatasourceCliError).message).toContain("HTTP 502");
+  });
+});
+
+describe("datasource-client create error mapping (#4051)", () => {
+  it("400 connection_failed → connection_failed surfacing the (scrubbed) test error", async () => {
+    const { fetchImpl } = stubFetch(400, {
+      error: "connection_failed",
+      message: "Connection test failed: timeout. Fix the URL and try again.",
+    });
+    const err = await createDatasource(opts(fetchImpl), { id: "ds1" }, "postgres://u:p@h/db").catch((e) => e);
+    expect((err as DatasourceCliError).kind).toBe("connection_failed");
+    expect((err as DatasourceCliError).message).toContain("Fix the URL");
+  });
+
+  it("409 → conflict when the id already exists", async () => {
+    const { fetchImpl } = stubFetch(409, { error: "conflict", message: 'Connection "ds1" already exists.' });
+    const err = await createDatasource(opts(fetchImpl), { id: "ds1" }, "postgres://u:p@h/db").catch((e) => e);
+    expect((err as DatasourceCliError).kind).toBe("conflict");
+  });
+
+  it("429 plan_limit_exceeded → plan_limit (distinct from a bare rate-limit 429)", async () => {
+    const { fetchImpl } = stubFetch(429, { error: "plan_limit_exceeded", message: "Datasource limit reached." });
+    const err = await createDatasource(opts(fetchImpl), { id: "ds1" }, "postgres://u:p@h/db").catch((e) => e);
+    expect((err as DatasourceCliError).kind).toBe("plan_limit");
+    expect((err as DatasourceCliError).message).toContain("limit");
+  });
+
+  it("a bare 429 (rate limit, no plan error) → request_failed", async () => {
+    const { fetchImpl } = stubFetch(429, { error: "rate_limited", message: "Too many requests." });
+    const err = await createDatasource(opts(fetchImpl), { id: "ds1" }, "postgres://u:p@h/db").catch((e) => e);
+    expect((err as DatasourceCliError).kind).toBe("request_failed");
+  });
+
+  it("503 → billing_unavailable (fail-closed, retry — not an upgrade prompt)", async () => {
+    const { fetchImpl } = stubFetch(503, { error: "billing_check_failed", message: "Try again shortly." });
+    const err = await createDatasource(opts(fetchImpl), { id: "ds1" }, "postgres://u:p@h/db").catch((e) => e);
+    expect((err as DatasourceCliError).kind).toBe("billing_unavailable");
+  });
+
+  it("404 not_available → not_available (no internal DB on this deployment)", async () => {
+    const { fetchImpl } = stubFetch(404, { error: "not_available", message: "Requires an internal database." });
+    const err = await createDatasource(opts(fetchImpl), { id: "ds1" }, "postgres://u:p@h/db").catch((e) => e);
+    expect((err as DatasourceCliError).kind).toBe("not_available");
   });
 });

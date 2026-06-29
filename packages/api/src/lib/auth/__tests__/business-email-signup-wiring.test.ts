@@ -32,7 +32,10 @@
 import { describe, it, expect, beforeEach, afterAll } from "bun:test";
 import { APIError } from "better-auth/api";
 import { buildPlugins, buildAuthOptions, parseAuthSecret } from "../server";
-import { BUSINESS_EMAIL_REQUIRED_CODE } from "../business-email";
+import {
+  BUSINESS_EMAIL_REQUIRED_CODE,
+  PLUS_ADDRESSING_NOT_ALLOWED_CODE,
+} from "../business-email";
 import { _setConfigForTest, type ResolvedConfig } from "@atlas/api/lib/config";
 
 function configWithDeployMode(deployMode: "saas" | "self-hosted"): ResolvedConfig {
@@ -159,6 +162,28 @@ describe("databaseHooks.user.create.before — business-email deny wiring (SaaS)
     // promote:false with no DB query, so a clean business email falls through.
     expect(await rejection("founder@acme.com")).toBeUndefined();
   });
+
+  it("rejects a plus-addressed business signup with the typed plus-addressing code (#4091)", async () => {
+    const err = await rejection("user+trial@acme.com");
+    expect(err, "plus-addressed business signup must be rejected by the composed hook").toBeInstanceOf(APIError);
+    expect((err as APIError).body?.code).toBe(PLUS_ADDRESSING_NOT_ALLOWED_CODE);
+  });
+
+  it("rejects a plus-addressed freemium signup with the business-email code (business-email gate runs first)", async () => {
+    // A freemium domain is denied by the business-email gate before the
+    // plus-addressing check runs — so the more fundamental "use your work email"
+    // reason wins. Confirms deterministic ordering, not a generic duplicate error.
+    const err = await rejection("user+1@gmail.com");
+    expect(err, "plus-addressed freemium signup must still be rejected").toBeInstanceOf(APIError);
+    expect((err as APIError).body?.code).toBe(BUSINESS_EMAIL_REQUIRED_CODE);
+  });
+
+  it("allows plus-addressing on the exempt useatlas.dev domain (verify-prod-signup throwaways)", async () => {
+    // Atlas's own /verify-prod-signup E2E flow signs up plus-addressed
+    // @useatlas.dev accounts (matt+us@useatlas.dev); the exemption keeps them
+    // signable, and the ops teardown-verify-accounts guard keys on that plus-tag.
+    expect(await rejection("matt+us@useatlas.dev")).toBeUndefined();
+  });
 });
 
 describe("databaseHooks.user.create.before — business-email policy is SaaS-only", () => {
@@ -184,5 +209,10 @@ describe("databaseHooks.user.create.before — business-email policy is SaaS-onl
   it("does NOT deny when deploy mode is unresolved (config null → not saas)", async () => {
     _setConfigForTest(null);
     expect(await rejection("operator@gmail.com")).toBeUndefined();
+  });
+
+  it("does NOT deny a plus-addressed signup in self-hosted mode (#4091 is SaaS-only)", async () => {
+    _setConfigForTest(configWithDeployMode("self-hosted"));
+    expect(await rejection("operator+tag@acme.com")).toBeUndefined();
   });
 });

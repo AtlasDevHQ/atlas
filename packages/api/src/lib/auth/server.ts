@@ -74,7 +74,10 @@ import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from
 import { blockNativeMemberRoleUpdate, blockNativeMemberRemoval } from "@atlas/api/lib/auth/org-member-guards";
 import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { enforceBanOnSessionCreate } from "@atlas/api/lib/auth/admin-user-ops";
-import { assertBusinessEmail } from "@atlas/api/lib/auth/business-email";
+import {
+  assertBusinessEmail,
+  assertNoPlusAddressing,
+} from "@atlas/api/lib/auth/business-email";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
 import { userHasConsumedTrial, claimTrialGrant, extendTrialOnClaim } from "@atlas/api/lib/billing/trial-eligibility";
 import { getStripeClient } from "@atlas/api/lib/billing/stripe-client";
@@ -3526,8 +3529,18 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
             // (this one plus emailHarmony's normalization hook); a throw from
             // any of them aborts creation, so ordering between them doesn't
             // matter here.
+            //
+            // Plus-addressing reject (#4091) runs in the SAME SaaS-only block,
+            // AFTER the business-email gate: a freemium/disposable plus-addressed
+            // address (`a+1@gmail.com`) gets the more fundamental "use your work
+            // email" rejection, while a plus-addressed BUSINESS address
+            // (`a+1@acme.com`) gets the distinct PLUS_ADDRESSING_NOT_ALLOWED code.
+            // `useatlas.dev` is exempt so the /verify-prod-signup throwaways
+            // (`matt+us@useatlas.dev`) still sign up. Both asserts are OUTSIDE
+            // the try/catch for the same propagate-the-APIError reason.
             if (getConfig()?.deployMode === "saas") {
               assertBusinessEmail(user.email);
+              assertNoPlusAddressing(user.email);
             }
 
             try {

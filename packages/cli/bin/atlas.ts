@@ -206,6 +206,13 @@ async function main() {
     return handleEntities(args);
   }
 
+  // #4049 / ADR-0025 missing endpoint #3 — read-only semantic-layer exploration
+  // over REST (`POST /api/v1/explore`), authorized by the `atlas login` credential.
+  if (command === "explore") {
+    const { handleExplore } = await import("../src/commands/explore");
+    return handleExplore(args);
+  }
+
   // #4050 / ADR-0025 sub-decision 2 — multi-workspace selection. `atlas switch`
   // picks (and persists) the workspace the CLI acts on; the `--workspace <id>`
   // per-command override is handled inside each command via resolveActiveWorkspace.

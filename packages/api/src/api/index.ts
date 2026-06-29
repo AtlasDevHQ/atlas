@@ -30,8 +30,10 @@ import { staticPaths, staticTags, securitySchemes } from "./routes/openapi";
 import { conversations, publicConversations } from "./routes/conversations";
 import { dashboards, publicDashboards } from "./routes/dashboards";
 import { semantic } from "./routes/semantic";
+import { metrics } from "./routes/metrics";
 import { tables } from "./routes/tables";
 import { validateSqlRoute } from "./routes/validate-sql";
+import { explore } from "./routes/explore";
 import { restOperations } from "./routes/rest-operations";
 import { prompts } from "./routes/prompts";
 import { widget } from "./routes/widget";
@@ -197,8 +199,13 @@ app.route("/api/public/conversations", publicConversations);
 app.route("/api/v1/dashboards", dashboards);
 app.route("/api/public/dashboards", publicDashboards);
 app.route("/api/v1/semantic", semantic);
+app.route("/api/v1/metrics", metrics);
 app.route("/api/v1/tables", tables);
 app.route("/api/v1/validate-sql", validateSqlRoute);
+// Read-only semantic-layer exploration over REST (#4049 / ADR-0027 sibling).
+// Metadata-only (no billing gate); member floor + credential-derived isolation
+// + origin=cli audit. Backs the `atlas explore` CLI command.
+app.route("/api/v1/explore", explore);
 app.route("/api/v1/rest-operations", restOperations);
 app.route("/api/v1/prompts", prompts);
 app.route("/widget", widget);

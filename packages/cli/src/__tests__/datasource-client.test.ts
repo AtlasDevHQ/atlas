@@ -9,7 +9,9 @@ import {
   restoreDatasource,
   deleteDatasource,
   createDatasource,
+  profileDatasource,
   type DatasourceClientOptions,
+  type ProfileTableEvent,
 } from "../lib/datasource-client";
 
 const BASE = "http://localhost:3001";
@@ -297,5 +299,165 @@ describe("datasource-client create error mapping (#4051)", () => {
     const { fetchImpl } = stubFetch(404, { error: "not_available", message: "Requires an internal database." });
     const err = await createDatasource(opts(fetchImpl), { id: "ds1" }, "postgres://u:p@h/db").catch((e) => e);
     expect((err as DatasourceCliError).kind).toBe("not_available");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// profile — NDJSON streaming consumer (#4052)
+// ---------------------------------------------------------------------------
+
+/** A fetch stub that returns an NDJSON 200 body, optionally split into chunks. */
+function stubNdjsonStream(chunks: string[]): { fetchImpl: typeof fetch; calls: CapturedCall[] } {
+  const calls: CapturedCall[] = [];
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({
+      url: typeof url === "string" ? url : url.toString(),
+      method: init?.method ?? "GET",
+      authorization:
+        init?.headers && typeof init.headers === "object"
+          ? ((init.headers as Record<string, string>).Authorization ?? null)
+          : null,
+      body: typeof init?.body === "string" ? init.body : undefined,
+    });
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "application/x-ndjson" },
+    });
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+describe("datasource-client profile streaming (#4052)", () => {
+  const resultLine = JSON.stringify({
+    type: "result",
+    id: "prod-us",
+    queryable: true,
+    persisted: true,
+    persistedStatus: "draft",
+    entitiesGenerated: 2,
+    metricsGenerated: 1,
+    tables: ["orders", "users"],
+    profilingErrors: 0,
+    incomplete: false,
+    elapsedMs: 1234,
+  });
+
+  it("POSTs to the profile route with the bearer and an empty body by default", async () => {
+    const { fetchImpl, calls } = stubNdjsonStream([
+      `${JSON.stringify({ type: "start", total: 0 })}\n${resultLine}\n`,
+    ]);
+    await profileDatasource(opts(fetchImpl), { id: "prod-us" });
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].url).toBe(`${BASE}/api/v1/datasources/prod-us/profile`);
+    expect(calls[0].authorization).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0].body).toBe("{}");
+  });
+
+  it("passes a schema override in the body when supplied", async () => {
+    const { fetchImpl, calls } = stubNdjsonStream([`${resultLine}\n`]);
+    await profileDatasource(opts(fetchImpl), { id: "prod-us", schema: "analytics" });
+    expect(calls[0].body).toBe(JSON.stringify({ schema: "analytics" }));
+  });
+
+  it("forwards start + table events to the reporter and returns the terminal result", async () => {
+    const { fetchImpl } = stubNdjsonStream([
+      `${JSON.stringify({ type: "start", total: 2 })}\n`,
+      `${JSON.stringify({ type: "table", name: "orders", index: 0, total: 2, status: "done" })}\n`,
+      `${JSON.stringify({ type: "table", name: "users", index: 1, total: 2, status: "error", error: "denied" })}\n`,
+      `${resultLine}\n`,
+    ]);
+    let started = -1;
+    const tables: ProfileTableEvent[] = [];
+    const result = await profileDatasource(opts(fetchImpl), {
+      id: "prod-us",
+      reporter: { onStart: (t) => (started = t), onTable: (e) => tables.push(e) },
+    });
+    expect(started).toBe(2);
+    expect(tables.map((t) => t.name)).toEqual(["orders", "users"]);
+    expect(tables[1].status).toBe("error");
+    expect(tables[1].error).toBe("denied");
+    expect(result.entitiesGenerated).toBe(2);
+    expect(result.persistedStatus).toBe("draft");
+  });
+
+  it("reassembles events split across chunk boundaries", async () => {
+    // The `start` event is split mid-JSON across two chunks; the consumer must
+    // buffer until the newline rather than mis-parsing a partial line.
+    const startLine = JSON.stringify({ type: "start", total: 1 });
+    const { fetchImpl } = stubNdjsonStream([
+      startLine.slice(0, 10),
+      `${startLine.slice(10)}\n${resultLine}\n`,
+    ]);
+    let started = -1;
+    const result = await profileDatasource(opts(fetchImpl), {
+      id: "prod-us",
+      reporter: { onStart: (t) => (started = t), onTable: () => {} },
+    });
+    expect(started).toBe(1);
+    expect(result.id).toBe("prod-us");
+  });
+
+  it("a terminal error event → request_failed with the server message", async () => {
+    const { fetchImpl } = stubNdjsonStream([
+      `${JSON.stringify({ type: "error", error: "profiling_failed", message: "No profilable tables." })}\n`,
+    ]);
+    const err = await profileDatasource(opts(fetchImpl), { id: "prod-us" }).catch((e) => e);
+    expect(err).toBeInstanceOf(DatasourceCliError);
+    expect((err as DatasourceCliError).message).toContain("No profilable tables");
+  });
+
+  it("a reconnect_required terminal error → conflict", async () => {
+    const { fetchImpl } = stubNdjsonStream([
+      `${JSON.stringify({ type: "error", error: "reconnect_required", message: "Reconnect it." })}\n`,
+    ]);
+    const err = await profileDatasource(opts(fetchImpl), { id: "sfdc" }).catch((e) => e);
+    expect((err as DatasourceCliError).kind).toBe("conflict");
+  });
+
+  it("a stream that ends without a result → request_failed (not a silent success)", async () => {
+    const { fetchImpl } = stubNdjsonStream([
+      `${JSON.stringify({ type: "start", total: 0 })}\n`,
+    ]);
+    const err = await profileDatasource(opts(fetchImpl), { id: "prod-us" }).catch((e) => e);
+    expect((err as DatasourceCliError).kind).toBe("request_failed");
+    expect((err as DatasourceCliError).message).toContain("without a result");
+  });
+
+  it("maps a pre-stream 403 role denial to an actionable admin-role message", async () => {
+    const { fetchImpl } = stubFetch(403, { error: "forbidden_role", message: "Admin role required." });
+    const err = await profileDatasource(opts(fetchImpl), { id: "prod-us" }).catch((e) => e);
+    expect((err as DatasourceCliError).kind).toBe("forbidden");
+    expect((err as DatasourceCliError).message).toContain("admin role");
+  });
+
+  it("maps a pre-stream 404 to not_found", async () => {
+    const { fetchImpl } = stubFetch(404, { error: "not_found", message: "nope" });
+    const err = await profileDatasource(opts(fetchImpl), { id: "ghost" }).catch((e) => e);
+    expect((err as DatasourceCliError).kind).toBe("not_found");
+  });
+
+  it("an aborted fetch (Ctrl-C) → network with cancelled copy", async () => {
+    // Mirror real fetch: an aborted request rejects with an AbortError.
+    const fetchImpl = (async () => {
+      const e = new Error("aborted");
+      e.name = "AbortError";
+      throw e;
+    }) as unknown as typeof fetch;
+    const controller = new AbortController();
+    controller.abort();
+    const err = await profileDatasource(opts(fetchImpl), {
+      id: "prod-us",
+      signal: controller.signal,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(DatasourceCliError);
+    expect((err as DatasourceCliError).kind).toBe("network");
+    expect((err as DatasourceCliError).message).toContain("cancelled");
   });
 });

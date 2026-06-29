@@ -28,6 +28,7 @@
 import { renderTable } from "../../lib/output";
 import { resolveApiBaseUrl } from "../lib/api-base";
 import { readSession, type StoredSession } from "../lib/credentials";
+import { createProgressTracker } from "../progress";
 import {
   DatasourceCliError,
   archiveDatasource,
@@ -35,10 +36,12 @@ import {
   deleteDatasource,
   getDatasource,
   listDatasources,
+  profileDatasource,
   restoreDatasource,
   testDatasource,
   type CreateDatasourceMetadata,
   type DatasourceClientOptions,
+  type ProfileResult,
 } from "../lib/datasource-client";
 import {
   captureDatasourceSecret,
@@ -56,6 +59,7 @@ Commands:
   get <id>            Show one datasource's detail
   test <id>           Health-check a datasource connection
   create <id>         Provision a new datasource (secret captured on stdin)
+  profile <id>        Profile a datasource & generate its semantic layer (drafts)
   archive <id>        Archive a datasource (reversible via restore)
   restore <id>        Restore an archived datasource
   delete <id>         Delete a datasource (soft — recoverable via restore)
@@ -74,10 +78,12 @@ no env var defers datasource creation to the dashboard or MCP.
 
 Every datasource command requires the workspace admin role (admin/owner); a
 non-admin member is denied with an actionable message.
+\`profile\` is long-running: it streams per-table progress and is cancellable
+(Ctrl-C). Generated entities land as DRAFTS — publish them from the admin console.
 Requires \`atlas login\` first. Set ATLAS_API_URL to target a non-local API.`;
 
 /** The id-taking lifecycle subcommands (everything except `list` and `create`). */
-const ID_SUBCOMMANDS = ["get", "test", "archive", "restore", "delete"] as const;
+const ID_SUBCOMMANDS = ["get", "test", "profile", "archive", "restore", "delete"] as const;
 type IdSubcommand = (typeof ID_SUBCOMMANDS)[number];
 
 /** Every datasource subcommand. `create` takes an id positional plus option flags. */
@@ -209,6 +215,27 @@ function renderDetail(io: DatasourceIO, id: string, detail: Record<string, unkno
   if (typeof health.status === "string") io.out(`  Health: ${health.status}`);
 }
 
+/** Print the generated-layer summary for a completed profile. */
+function renderProfileResult(io: DatasourceIO, result: ProfileResult): void {
+  const status = result.persisted ? result.persistedStatus ?? "draft" : "in-memory";
+  io.out(
+    `Profiled "${result.id}": generated ${result.entitiesGenerated} entities` +
+      ` and ${result.metricsGenerated} metrics as ${status}.`,
+  );
+  if (result.persisted) {
+    io.out("  Generated entities are saved as drafts — publish them from the admin console to make");
+    io.out("  them queryable from the published /chat surface (they are queryable now in developer mode).");
+  }
+  if (result.incomplete) {
+    const failed = result.incompleteTables ?? [];
+    io.out(
+      `  Warning: the profile is incomplete — ${result.profilingErrors} table${
+        result.profilingErrors === 1 ? "" : "s"
+      } failed introspection and ${failed.length === 1 ? "is" : "are"} absent: ${failed.join(", ")}`,
+    );
+  }
+}
+
 /**
  * Testable core: dispatch one `atlas datasource` invocation. Returns the process
  * exit code (0 success, 1 failure) without calling `process.exit`, so tests can
@@ -306,6 +333,43 @@ async function runIdSubcommand(
         }
         // Non-healthy is a non-zero exit so scripts can branch on it.
         return healthy ? 0 : 1;
+      }
+      case "profile": {
+        // Long-running + streamed. Drive the shared progress tracker (spinner in
+        // a TTY, plain stderr lines otherwise) from the server's NDJSON events,
+        // and wire SIGINT to an AbortController so Ctrl-C cancels the profile
+        // cleanly rather than leaving a dangling request. In --json mode we skip
+        // the live progress and just emit the terminal result object.
+        const tracker = json ? undefined : createProgressTracker();
+        const controller = new AbortController();
+        const onSigint = () => controller.abort();
+        process.once("SIGINT", onSigint);
+        try {
+          const result = await profileDatasource(opts, {
+            id,
+            signal: controller.signal,
+            ...(tracker
+              ? {
+                  reporter: {
+                    onStart: (total) => tracker.onStart(total),
+                    onTable: (e) =>
+                      e.status === "error"
+                        ? tracker.onTableError(e.name, e.error ?? "profiling error", e.index, e.total)
+                        : tracker.onTableDone(e.name, e.index, e.total),
+                  },
+                }
+              : {}),
+          });
+          if (tracker) tracker.onComplete(result.entitiesGenerated, result.elapsedMs);
+          if (json) {
+            io.out(JSON.stringify(result, null, 2));
+          } else {
+            renderProfileResult(io, result);
+          }
+          return 0;
+        } finally {
+          process.removeListener("SIGINT", onSigint);
+        }
       }
       case "archive": {
         const result = await archiveDatasource(opts, id);

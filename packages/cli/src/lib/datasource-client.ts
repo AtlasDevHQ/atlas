@@ -357,3 +357,259 @@ export async function deleteDatasource(
     }),
   );
 }
+
+// ---------------------------------------------------------------------------
+// profile — POST /api/v1/datasources/{id}/profile (#4052)
+//
+// The profile route is LONG-RUNNING and STREAMS newline-delimited JSON
+// (application/x-ndjson): a `start` event, one `table` event per profiled
+// table, then a terminal `result` or `error` event. Unlike the lifecycle
+// subcommands above (which buffer a single JSON body), this consumer reads the
+// stream line by line, forwards progress to an optional reporter so the CLI can
+// render it live, and resolves with the terminal result. Pre-stream gate
+// failures (auth/billing/role/not-found/reconnect) come back as ordinary HTTP
+// statuses BEFORE the stream — mapped to a typed {@link DatasourceCliError}
+// exactly like the lifecycle ops. A failure that surfaces AFTER the stream
+// opened rides as a terminal `error` event and is mapped to the same error type.
+//
+// Cancellation: the caller passes an `AbortSignal` (wired to SIGINT in the
+// command). Aborting closes the connection; the server observes the disconnect
+// and cooperatively unwinds the profile. The consumer treats an abort as a
+// clean stop, not a failure.
+// ---------------------------------------------------------------------------
+
+/** A per-table progress event surfaced to the reporter as the stream arrives. */
+export interface ProfileTableEvent {
+  readonly name: string;
+  readonly index: number;
+  readonly total: number;
+  readonly status: "done" | "error";
+  readonly error?: string;
+}
+
+/** Live progress sink — the command wires this to the shared progress tracker. */
+export interface ProfileReporter {
+  onStart(total: number): void;
+  onTable(event: ProfileTableEvent): void;
+}
+
+/** The terminal `result` event — the generated (draft) semantic layer summary. */
+export interface ProfileResult {
+  readonly id: string;
+  readonly queryable: boolean;
+  readonly persisted: boolean;
+  readonly persistedStatus?: string;
+  readonly entitiesGenerated: number;
+  readonly metricsGenerated: number;
+  readonly tables: string[];
+  readonly profilingErrors: number;
+  readonly incomplete: boolean;
+  readonly incompleteTables?: string[];
+  readonly elapsedMs: number;
+}
+
+export interface ProfileDatasourceArgs {
+  readonly id: string;
+  /** Optional profiling schema/database/dataset override; omit for the connection's default. */
+  readonly schema?: string;
+  /** Live progress sink; omit to consume the stream silently. */
+  readonly reporter?: ProfileReporter;
+  /** Cancellation signal — aborting (Ctrl-C) stops the profile cleanly. */
+  readonly signal?: AbortSignal;
+}
+
+function asProfileResult(e: Record<string, unknown>): ProfileResult {
+  return {
+    id: typeof e.id === "string" ? e.id : "",
+    queryable: Boolean(e.queryable),
+    persisted: Boolean(e.persisted),
+    ...(typeof e.persistedStatus === "string" ? { persistedStatus: e.persistedStatus } : {}),
+    entitiesGenerated: typeof e.entitiesGenerated === "number" ? e.entitiesGenerated : 0,
+    metricsGenerated: typeof e.metricsGenerated === "number" ? e.metricsGenerated : 0,
+    tables: Array.isArray(e.tables) ? (e.tables as string[]) : [],
+    profilingErrors: typeof e.profilingErrors === "number" ? e.profilingErrors : 0,
+    incomplete: Boolean(e.incomplete),
+    ...(Array.isArray(e.incompleteTables) ? { incompleteTables: e.incompleteTables as string[] } : {}),
+    elapsedMs: typeof e.elapsedMs === "number" ? e.elapsedMs : 0,
+  };
+}
+
+/**
+ * Profile a datasource over `POST /api/v1/datasources/{id}/profile`, consuming
+ * the NDJSON progress stream and resolving with the terminal {@link ProfileResult}.
+ * Pre-stream gate failures map to a typed {@link DatasourceCliError}; a terminal
+ * `error` event (a failure after the stream opened) maps to one too.
+ */
+export async function profileDatasource(
+  opts: DatasourceClientOptions,
+  args: ProfileDatasourceArgs,
+): Promise<ProfileResult> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+
+  let res: Response;
+  try {
+    res = await fetchImpl(`${opts.baseUrl}/api/v1/datasources/${encodeURIComponent(args.id)}/profile`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${opts.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(args.schema ? { schema: args.schema } : {}),
+      // No request timeout — profiling a large datasource is legitimately long.
+      // Cancellation rides on the caller's AbortSignal (SIGINT), not a deadline.
+      ...(args.signal ? { signal: args.signal } : {}),
+    });
+  } catch (err) {
+    const name = err instanceof Error ? err.name : "";
+    if (name === "AbortError") {
+      throw new DatasourceCliError("network", `Profiling of "${args.id}" was cancelled.`);
+    }
+    throw new DatasourceCliError(
+      "network",
+      `Could not reach the Atlas API at ${opts.baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // Pre-stream gate failure (auth/billing/role/not-found/unsupported/reconnect)
+  // — an ordinary JSON error body, mapped exactly like the lifecycle ops.
+  if (!res.ok) {
+    // intentionally ignored: a non-JSON error body falls back to the HTTP-status message.
+    const body = asRecord(await res.json().catch(() => ({})));
+    switch (res.status) {
+      case 401:
+        throw new DatasourceCliError(
+          "unauthorized",
+          "Your session is no longer valid. Run `atlas login` again.",
+        );
+      case 403:
+        if (body.error === "mfa_enrollment_required") {
+          throw new DatasourceCliError(
+            "mfa_required",
+            "Admin actions require two-factor authentication. Enroll an authenticator or passkey in the Atlas console, then retry.",
+          );
+        }
+        // A billing block also returns 403 (trial-expired etc.); surface the
+        // server's actionable message for those. A bare role denial gets the
+        // admin-role guidance the lifecycle ops use.
+        if (body.error === "forbidden_role") {
+          throw new DatasourceCliError(
+            "forbidden",
+            `Cannot profile datasource "${args.id}": the workspace admin role is required. Your login does not carry it — ask a workspace admin to run this, or sign in with an admin account (\`atlas login\`).`,
+          );
+        }
+        throw new DatasourceCliError("forbidden", serverMessage(body, res.status));
+      case 400:
+        if (body.error === "bad_request") {
+          throw new DatasourceCliError(
+            "no_workspace",
+            "Your login is not bound to a workspace. Single-workspace accounts bind automatically; in-flow workspace selection for multi-workspace accounts is coming soon (ADR-0026).",
+          );
+        }
+        throw new DatasourceCliError("request_failed", serverMessage(body, res.status));
+      case 404:
+        throw new DatasourceCliError(
+          "not_found",
+          `Datasource "${args.id}" not found in this workspace. Run \`atlas datasource list\` to see configured datasources.`,
+        );
+      case 409:
+        throw new DatasourceCliError("conflict", serverMessage(body, res.status));
+      default:
+        throw new DatasourceCliError("request_failed", serverMessage(body, res.status));
+    }
+  }
+
+  if (!res.body) {
+    throw new DatasourceCliError("request_failed", "The profile stream returned an empty body.");
+  }
+
+  // Consume the NDJSON stream line by line. `result` is the terminal success;
+  // an `error` event is the terminal failure. We tolerate a partial trailing
+  // line across chunk boundaries by buffering until a newline.
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: ProfileResult | undefined;
+
+  const handleLine = (line: string): void => {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) return;
+    let event: Record<string, unknown>;
+    try {
+      event = asRecord(JSON.parse(trimmed));
+    } catch {
+      // intentionally ignored: a malformed line in the progress stream is
+      // non-fatal — skip it rather than aborting a profile that may still
+      // deliver its terminal result.
+      return;
+    }
+    switch (event.type) {
+      case "start":
+        args.reporter?.onStart(typeof event.total === "number" ? event.total : 0);
+        return;
+      case "table":
+        args.reporter?.onTable({
+          name: typeof event.name === "string" ? event.name : "",
+          index: typeof event.index === "number" ? event.index : 0,
+          total: typeof event.total === "number" ? event.total : 0,
+          status: event.status === "error" ? "error" : "done",
+          ...(typeof event.error === "string" ? { error: event.error } : {}),
+        });
+        return;
+      case "result":
+        result = asProfileResult(event);
+        return;
+      case "error": {
+        // A failure after the stream opened — map to the same typed error the
+        // pre-stream branch produces so the command's handler renders it uniformly.
+        const message = serverMessage(event, 0);
+        const kind =
+          event.error === "reconnect_required"
+            ? "conflict"
+            : event.error === "internal_error"
+              ? "request_failed"
+              : "request_failed";
+        throw new DatasourceCliError(kind, message);
+      }
+      default:
+        // intentionally ignored: an unknown event type is forward-compatible —
+        // a future server may add events this client version doesn't render.
+        return;
+    }
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIdx: number;
+      while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, newlineIdx);
+        buffer = buffer.slice(newlineIdx + 1);
+        handleLine(line);
+      }
+    }
+    // Flush any trailing line without a final newline.
+    if (buffer.length > 0) handleLine(buffer);
+  } catch (err) {
+    if (err instanceof DatasourceCliError) throw err;
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new DatasourceCliError("network", `Profiling of "${args.id}" was cancelled.`);
+    }
+    throw new DatasourceCliError(
+      "network",
+      `The profile stream failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  } finally {
+    // Best-effort: release the reader so an aborted stream doesn't leak.
+    reader.releaseLock();
+  }
+
+  if (!result) {
+    throw new DatasourceCliError(
+      "request_failed",
+      `Profiling of "${args.id}" ended without a result. The server may have closed the stream early — check the server logs and retry.`,
+    );
+  }
+  return result;
+}

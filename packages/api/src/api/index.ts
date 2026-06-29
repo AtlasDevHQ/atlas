@@ -31,6 +31,7 @@ import { conversations, publicConversations } from "./routes/conversations";
 import { dashboards, publicDashboards } from "./routes/dashboards";
 import { semantic } from "./routes/semantic";
 import { metrics } from "./routes/metrics";
+import { datasources } from "./routes/datasources";
 import { tables } from "./routes/tables";
 import { validateSqlRoute } from "./routes/validate-sql";
 import { explore } from "./routes/explore";
@@ -200,6 +201,11 @@ app.route("/api/v1/dashboards", dashboards);
 app.route("/api/public/dashboards", publicDashboards);
 app.route("/api/v1/semantic", semantic);
 app.route("/api/v1/metrics", metrics);
+// Datasource profiling over REST (#4052 / ADR-0017 profiler seam, ADR-0025 §3).
+// Admin floor + billing gate-0 + credential-derived isolation + origin=cli audit.
+// Streams NDJSON progress; generated entities land as drafts. Backs the
+// `atlas datasource profile` CLI command.
+app.route("/api/v1/datasources", datasources);
 app.route("/api/v1/tables", tables);
 app.route("/api/v1/validate-sql", validateSqlRoute);
 // Read-only semantic-layer exploration over REST (#4049 / ADR-0027 sibling).

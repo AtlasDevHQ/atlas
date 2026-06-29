@@ -11559,7 +11559,7 @@
             }
           },
           "503": {
-            "description": "Billing subsystem unavailable (fail-closed)",
+            "description": "Billing or connection-resolution subsystem unavailable (fail-closed)",
             "content": {
               "application/json": {
                 "schema": {

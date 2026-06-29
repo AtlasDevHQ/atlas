@@ -64,6 +64,7 @@ import {
 } from "@atlas/api/lib/billing/agent-gate";
 import { isRequestOrigin } from "@atlas/api/lib/approvals/types";
 import { resolveActorKind } from "@atlas/api/lib/auth/api-key-metadata";
+import type { ResolveLiveConnectionResult } from "@atlas/api/lib/datasources/mcp-lifecycle";
 import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema } from "./shared-schemas";
@@ -167,7 +168,7 @@ const profileRoute = createRoute({
       content: { "application/json": { schema: ErrorSchema } },
     },
     503: {
-      description: "Billing subsystem unavailable (fail-closed)",
+      description: "Billing or connection-resolution subsystem unavailable (fail-closed)",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -266,11 +267,38 @@ datasources.openapi(profileRoute, async (c) => {
 
   // --- Resolve the live connection (the ONE resolver — #3667). This happens
   // BEFORE the stream commits, so its non-ok outcomes map to HTTP status codes;
-  // once the stream starts, every failure rides as a terminal NDJSON event. ---
-  const { resolveLiveConnection, profileLiveDatasource } = await import(
-    "@atlas/api/lib/datasources/mcp-lifecycle"
-  );
-  const resolved = await resolveLiveConnection(orgId, id);
+  // once the stream starts, every failure rides as a terminal NDJSON event. The
+  // dynamic `import()` + the resolve both reach the internal DB, so a transient
+  // fault here is wrapped to a 503 carrying THIS route's requestId — left
+  // unwrapped it would escape to the global handler, which mints a fresh,
+  // uncorrelated id (matches the fail-closed billing-gate pattern above). ---
+  let lifecycle: typeof import("@atlas/api/lib/datasources/mcp-lifecycle");
+  let resolved: ResolveLiveConnectionResult;
+  try {
+    lifecycle = await import("@atlas/api/lib/datasources/mcp-lifecycle");
+    resolved = await lifecycle.resolveLiveConnection(orgId, id);
+  } catch (err) {
+    log.error(
+      {
+        requestId,
+        orgId,
+        datasourceId: id,
+        err: err instanceof Error ? err : new Error(String(err)),
+        category: "connection_resolve_error",
+      },
+      "Datasource connection resolve threw before the stream — returning 503",
+    );
+    return c.json(
+      {
+        error: "resolve_unavailable",
+        message:
+          "Unable to resolve the datasource connection right now. Please try again shortly.",
+        retryable: true,
+        requestId,
+      },
+      503,
+    );
+  }
   if (resolved.kind === "not_found") {
     return c.json(
       {
@@ -291,11 +319,15 @@ datasources.openapi(profileRoute, async (c) => {
   const connection = resolved.connection;
 
   // Audit origin derives from the credential's claim, never hardcoded — a
-  // device-flow `atlas` bearer carries `origin: "cli"`. Falls back to `cli`:
-  // this IS the workspace CLI profiling surface.
+  // device-flow `atlas` bearer AND a workspace API key both carry
+  // `origin: "cli"`; a non-CLI session leaves it undefined so it is not
+  // mislabeled. A real CLI credential ALWAYS stamps the claim, so this fallback
+  // only ever fires for a non-CLI caller — defaulting to "cli" there would
+  // mislabel it in the origin-scoped approval/audit context. Standardized to the
+  // `undefined` fallback across the four sibling CLI routes (#4113).
   const claimOrigin = user?.claims?.origin;
   const agentOrigin =
-    typeof claimOrigin === "string" && isRequestOrigin(claimOrigin) ? claimOrigin : "cli";
+    typeof claimOrigin === "string" && isRequestOrigin(claimOrigin) ? claimOrigin : undefined;
 
   // `actor.kind` is the *who*, distinct from `origin` (the transport): `api_key`
   // for an UNATTENDED workspace key (#4046 / ADR-0027 §6), else `human`. The
@@ -348,10 +380,10 @@ datasources.openapi(profileRoute, async (c) => {
             atlasMode,
             trustDeviceIdentifier,
             actor: { kind: actorKind },
-            agentOrigin,
+            ...(agentOrigin ? { agentOrigin } : {}),
           },
           () =>
-            profileLiveDatasource({
+            lifecycle.profileLiveDatasource({
               connection,
               connectionId: id,
               // #3546 — persist the generated layer to the org store as DRAFTS

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 
 import { runMetricCommand, type MetricIO, type MetricRunDeps } from "../commands/metric";
+import { runMetric, MetricCliError } from "../lib/metric-client";
 import type { StoredSession } from "../lib/credentials";
 
 const BASE = "http://localhost:3001";
@@ -222,12 +223,26 @@ describe("runMetricCommand — error mapping", () => {
     expect(joined).toContain("(request req-9)");
   });
 
-  it("maps a 503 to request_failed", async () => {
+  it("surfaces a 503 (datasource/subsystem unavailable) with the server message", async () => {
     const { fetchImpl } = stubFetch(503, { error: "no_datasource", message: "Datasource unavailable." });
     const { io, err } = capture();
     const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(fetchImpl), io);
     expect(code).toBe(1);
     expect(err.join("\n")).toContain("Datasource unavailable.");
+  });
+
+  it("surfaces a 429 (rate limited) with the server message + requestId", async () => {
+    const { fetchImpl } = stubFetch(429, {
+      error: "rate_limited",
+      message: "Too many requests. Please wait before trying again.",
+      requestId: "req-rl",
+    });
+    const { io, err } = capture();
+    const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    const joined = err.join("\n");
+    expect(joined).toContain("Too many requests");
+    expect(joined).toContain("(request req-rl)");
   });
 
   it("surfaces a network/timeout failure with the base URL", async () => {
@@ -240,5 +255,45 @@ describe("runMetricCommand — error mapping", () => {
     const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(fetchImpl), io);
     expect(code).toBe(1);
     expect(err.join("\n")).toContain("Timed out");
+  });
+
+  it("surfaces a generic (non-abort) network failure via the shared unreachableMessage (#4113)", async () => {
+    // A non-Timeout/Abort throw takes the `unreachableMessage` branch of the
+    // consolidated http.ts helper — pins the generic-failure path the abort/
+    // timeout tests route around, with the base URL interpolated.
+    const fetchImpl = (async () => {
+      const e = new TypeError("fetch failed");
+      throw e;
+    }) as unknown as typeof fetch;
+    const { io, err } = capture();
+    const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain(`Could not reach the Atlas API at ${BASE}`);
+  });
+});
+
+// The command renders `err.message` for any MetricCliError, so the new typed
+// kinds (#4113 parity with sql-client) are only observable on the thrown error.
+// Pin them at the client layer so 429/503 stop collapsing into `request_failed`.
+describe("runMetric — typed error kinds (parity with sql-client #4113)", () => {
+  async function kindFor(status: number, body: unknown): Promise<string> {
+    const { fetchImpl } = stubFetch(status, body);
+    try {
+      await runMetric({ baseUrl: BASE, token: "t", fetchImpl }, { id: "total_gmv" });
+      throw new Error("expected runMetric to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MetricCliError);
+      return (err as MetricCliError).kind;
+    }
+  }
+
+  it("maps 429 → rate_limited", async () => {
+    expect(await kindFor(429, { error: "rate_limited", message: "Slow down." })).toBe("rate_limited");
+  });
+
+  it("maps 503 → unavailable", async () => {
+    expect(await kindFor(503, { error: "no_datasource", message: "Datasource unavailable." })).toBe(
+      "unavailable",
+    );
   });
 });

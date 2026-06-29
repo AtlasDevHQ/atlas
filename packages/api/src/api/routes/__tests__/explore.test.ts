@@ -46,6 +46,19 @@ mock.module("@atlas/api/lib/residency/readonly", () => ({
   isWorkspaceMigrating: async () => false,
 }));
 
+// The IP allowlist runs inside `standardAuth` via `runEnterprise(IpAllowlistPolicy…)`.
+// Curated stub: `runEnterprise` is the ONLY enterprise-layer export the route's
+// middleware path reaches, so we stub just it (the others — `EnterpriseLayer`,
+// `getEnterpriseRuntime` — aren't on this graph; provided as inert names to keep
+// the module's load-time shape complete). `ipAllowed` toggles the
+// `ip_not_allowed` 403 branch; default-allow keeps every other test green.
+let ipAllowed = true;
+mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+  runEnterprise: async () => ({ allowed: ipAllowed }),
+  EnterpriseLayer: undefined,
+  getEnterpriseRuntime: () => null,
+}));
+
 // Capture what the route binds into the request context so we can assert the
 // origin=cli + actor.kind audit triple (ADR-0027 sub-decision 6) actually flows.
 let capturedContexts: Array<Record<string, unknown>> = [];
@@ -118,6 +131,7 @@ beforeEach(() => {
   capturedContexts = [];
   exploreCalls = [];
   exploreImpl = async () => "(no output)";
+  ipAllowed = true;
 });
 
 describe("POST /api/v1/explore — auth", () => {
@@ -133,6 +147,21 @@ describe("POST /api/v1/explore — auth", () => {
     exploreImpl = async () => "catalog.yml\nentities";
     const res = await post({ command: "ls" });
     expect(res.status).toBe(200);
+  });
+
+  it("returns 403 ip_not_allowed (the route's only 403 — standardAuth IP allowlist) with a requestId", async () => {
+    // Explore has NO role gate; the sole 403 it can produce comes from the
+    // shared standardAuth IP allowlist. Pin that path here (the milestone-#77
+    // review flagged it as uncovered) — including the requestId for correlation.
+    fakeAuth = userAuth({ role: "member" });
+    ipAllowed = false;
+    const res = await post({ command: "ls" });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string; requestId?: string };
+    expect(body.error).toBe("ip_not_allowed");
+    expect(body.requestId).toBeDefined();
+    // The IP gate runs before the handler — the facade is never invoked.
+    expect(exploreCalls).toHaveLength(0);
   });
 });
 
@@ -182,10 +211,17 @@ describe("POST /api/v1/explore — facade reuse + output", () => {
 });
 
 describe("POST /api/v1/explore — request validation", () => {
-  it("returns 422 for an empty command", async () => {
+  it("returns 422 with the shared validation_error envelope for an empty command", async () => {
+    // Pins the parity the dropped inline hook was about (#4113): validation now
+    // falls through to the router's shared `validationHook`, which returns the
+    // same `{ error: "validation_error", message, details }` envelope as the
+    // sibling routes — not a bespoke per-route shape.
     fakeAuth = userAuth();
     const res = await post({ command: "   " });
     expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string; details?: unknown[] };
+    expect(body.error).toBe("validation_error");
+    expect(Array.isArray(body.details)).toBe(true);
     expect(exploreCalls).toHaveLength(0);
   });
 

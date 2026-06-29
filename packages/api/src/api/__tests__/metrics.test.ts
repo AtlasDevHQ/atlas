@@ -295,6 +295,22 @@ describe("POST /api/v1/metrics/{id}/run", () => {
     expect(body.error).toBe("invalid_request");
   });
 
+  it("normalizes a malformed JSON body to a 400 invalid_request via onError (#4113 parity)", async () => {
+    // The new metrics.onError mirrors the sibling routes: a body that fails to
+    // parse surfaces the Atlas envelope, not Hono's default. Build the request
+    // with a raw malformed string (runMetricRequest always JSON.stringifies).
+    const res = await app.fetch(
+      new Request("http://localhost/api/v1/metrics/total_gmv/run", {
+        method: "POST",
+        headers: { Authorization: "Bearer test", "Content-Type": "application/json" },
+        body: "{ not json",
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("invalid_request");
+  });
+
   it("rejects a connection outside the metric's group with 400", async () => {
     mockResolveMetricRun.mockResolvedValue({
       kind: "wrong_connection",
@@ -385,7 +401,12 @@ describe("POST /api/v1/metrics/{id}/run", () => {
     expect(capturedContext.atlasMode).toBe("developer");
   });
 
-  it("falls back to origin=cli when the credential carries no origin claim", async () => {
+  it("leaves agentOrigin undefined when the credential carries no origin claim (#4113 — not mislabeled cli)", async () => {
+    // A real CLI credential always stamps origin=cli; a credential WITHOUT the
+    // claim (e.g. a web session reaching this route) must leave agentOrigin
+    // undefined, not be forced to "cli". Standardized to the undefined fallback
+    // across the four sibling CLI routes so origin-scoped approval matching can't
+    // see a fabricated origin.
     mockAuthenticateRequest.mockResolvedValue({
       authenticated: true as const,
       mode: "managed" as const,
@@ -399,10 +420,10 @@ describe("POST /api/v1/metrics/{id}/run", () => {
       },
     } as unknown as AuthResult);
     await app.fetch(runMetricRequest("total_gmv"));
-    expect(capturedContext.agentOrigin).toBe("cli");
+    expect(capturedContext.agentOrigin).toBeUndefined();
   });
 
-  it("coerces a bogus origin claim to cli (never passes an unvetted origin through)", async () => {
+  it("never passes an unvetted origin through — a bogus claim drops to undefined, not cli (#4113)", async () => {
     mockAuthenticateRequest.mockResolvedValue({
       authenticated: true as const,
       mode: "managed" as const,
@@ -416,7 +437,7 @@ describe("POST /api/v1/metrics/{id}/run", () => {
       },
     } as unknown as AuthResult);
     await app.fetch(runMetricRequest("total_gmv"));
-    expect(capturedContext.agentOrigin).toBe("cli");
+    expect(capturedContext.agentOrigin).toBeUndefined();
   });
 
   it("uses default routing (no connectionId) for a default-group metric", async () => {

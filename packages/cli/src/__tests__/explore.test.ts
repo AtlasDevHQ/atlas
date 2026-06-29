@@ -169,19 +169,52 @@ describe("runExplore — HTTP error handling", () => {
     expect(err.join("\n").toLowerCase()).toContain("atlas login");
   });
 
-  it("403 reports the workspace is not accessible and exits 1", async () => {
-    const { fetchImpl } = stubFetch(403, { error: "forbidden" });
+  it("403 ip_not_allowed surfaces the server message + requestId, not a hardcoded role copy (#4113)", async () => {
+    // Explore is standardAuth with NO role gate — its only 403 is `ip_not_allowed`
+    // from the IP allowlist. The command must surface the server's actionable
+    // message + requestId, NOT the old hardcoded "current role" copy.
+    const { fetchImpl } = stubFetch(403, {
+      error: "ip_not_allowed",
+      message: "Your IP address is not in the workspace's allowlist.",
+      requestId: "req-ip-1",
+    });
     const { io, err } = capture();
     const code = await runExplore(["explore", "ls"], deps(fetchImpl), io);
     expect(code).toBe(1);
-    expect(err.join("\n").toLowerCase()).toContain("not accessible");
+    const joined = err.join("\n");
+    expect(joined).toContain("not in the workspace's allowlist");
+    expect(joined).toContain("(request req-ip-1)");
+    expect(joined.toLowerCase()).not.toContain("current role");
   });
 
-  it("non-ok HTTP status reports failure and exits 1", async () => {
-    const { fetchImpl } = stubFetch(500, { error: "internal_error" });
+  it("non-ok HTTP status surfaces the server message + requestId and exits 1", async () => {
+    const { fetchImpl } = stubFetch(500, {
+      error: "internal_error",
+      message: "An unexpected error occurred (ref: abc12345).",
+      requestId: "abc12345-0000",
+    });
     const { io, err } = capture();
     const code = await runExplore(["explore", "ls"], deps(fetchImpl), io);
     expect(code).toBe(1);
-    expect(err.join("\n")).toContain("500");
+    const joined = err.join("\n");
+    expect(joined).toContain("An unexpected error occurred");
+    expect(joined).toContain("(request abc12345-0000)");
+  });
+
+  it("non-ok HTTP status with a non-JSON body falls back to the HTTP-status message", async () => {
+    // A 5xx that isn't JSON degrades via asRecord(null) → {} to serverMessage's
+    // `HTTP <status>` fallback rather than crashing on parse.
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: typeof url === "string" ? url : url.toString(), init });
+      return new Response("<html>502 Bad Gateway</html>", {
+        status: 502,
+        headers: { "Content-Type": "text/html" },
+      });
+    }) as unknown as typeof fetch;
+    const { io, err } = capture();
+    const code = await runExplore(["explore", "ls"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("HTTP 502");
   });
 });

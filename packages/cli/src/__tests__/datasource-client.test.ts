@@ -306,6 +306,30 @@ describe("datasource-client create error mapping (#4051)", () => {
   });
 });
 
+describe("datasource-client response validation (#4111)", () => {
+  // The .safeParse() of a 2xx body must surface a shape mismatch as a typed
+  // `request_failed` error rather than returning a half-filled record.
+  it("get with a 200 body missing the required id → request_failed", async () => {
+    const { fetchImpl } = stubFetch(200, { dbType: "postgres" });
+    const err = await getDatasource(opts(fetchImpl), "x").catch((e) => e);
+    expect(err).toBeInstanceOf(DatasourceCliError);
+    expect((err as DatasourceCliError).kind).toBe("request_failed");
+    expect((err as DatasourceCliError).message).toContain("unexpected response shape");
+  });
+
+  it("create with a 201 body missing the required id → request_failed", async () => {
+    const { fetchImpl } = stubFetch(201, { dbType: "postgres", maskedUrl: "postgres://***@h/db" });
+    const err = await createDatasource(opts(fetchImpl), { id: "ds1" }, "postgres://u:p@h/db").catch((e) => e);
+    expect((err as DatasourceCliError).kind).toBe("request_failed");
+  });
+
+  it("list with a malformed entry (no id) → request_failed", async () => {
+    const { fetchImpl } = stubFetch(200, { connections: [{ dbType: "postgres" }] });
+    const err = await listDatasources(opts(fetchImpl)).catch((e) => e);
+    expect((err as DatasourceCliError).kind).toBe("request_failed");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // profile — NDJSON streaming consumer (#4052)
 // ---------------------------------------------------------------------------
@@ -423,6 +447,28 @@ describe("datasource-client profile streaming (#4052)", () => {
     ]);
     const err = await profileDatasource(opts(fetchImpl), { id: "sfdc" }).catch((e) => e);
     expect((err as DatasourceCliError).kind).toBe("conflict");
+  });
+
+  it("an UNREGISTERED terminal-error code still surfaces the server message (never silently dropped)", async () => {
+    // Version skew: a newer server emits a terminal error code this CLI's schema
+    // doesn't know. It must NOT be skipped and misreported as "ended without a
+    // result" — the server's actionable message is surfaced as request_failed (#4111).
+    const { fetchImpl } = stubNdjsonStream([
+      `${JSON.stringify({ type: "error", error: "quota_exceeded", message: "Profiling quota exhausted." })}\n`,
+    ]);
+    const err = await profileDatasource(opts(fetchImpl), { id: "prod-us" }).catch((e) => e);
+    expect(err).toBeInstanceOf(DatasourceCliError);
+    expect((err as DatasourceCliError).kind).toBe("request_failed");
+    expect((err as DatasourceCliError).message).toContain("Profiling quota exhausted");
+    expect((err as DatasourceCliError).message).not.toContain("without a result");
+  });
+
+  it("skips a non-object JSON line and still resolves the terminal result", async () => {
+    // A stray primitive/array line (a malformed server emit) is forward-compat
+    // skipped, not crashed on — the real result still resolves.
+    const { fetchImpl } = stubNdjsonStream([`42\n["x"]\n${resultLine}\n`]);
+    const result = await profileDatasource(opts(fetchImpl), { id: "prod-us" });
+    expect(result.id).toBe("prod-us");
   });
 
   it("a stream that ends without a result → request_failed (not a silent success)", async () => {

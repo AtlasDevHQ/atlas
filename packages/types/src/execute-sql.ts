@@ -95,7 +95,8 @@ export type ExecuteSqlResult = ExecuteSqlSuccessResult | ExecuteSqlFailureResult
  * tool-call shape (which carries `success`/`row_count`/`envContributions`).
  * Here the route has already mapped every non-`ok` outcome to an HTTP error
  * envelope, so this models only the 200 body: a flat `{columns, rows}` plus
- * pagination/timing metadata.
+ * row-count / truncation / timing metadata (no pagination — `truncated` is the
+ * auto-LIMIT cap signal, not a paging cursor).
  *
  * SSOT for the route's local hono-`z` `ExecuteSqlResponseSchema`
  * (`satisfies z.ZodType<ExecuteSqlRestResponse>`) and the CLI's

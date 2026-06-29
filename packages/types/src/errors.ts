@@ -77,8 +77,15 @@ export function isChatErrorCode(value: string): value is ChatErrorCode {
  * the CLI switches, with nothing shared — several emitted codes
  * (`connection_failed`, `mfa_enrollment_required`, `reconnect_required`) were
  * absent from any registry. Sharing the union lets the CLI's `ERR` maps pin to
- * it (`satisfies Record<…, CliRestErrorCode>`) so a server-side rename surfaces
- * at compile time instead of silently dead-branching a switch.
+ * it (`satisfies Record<…, CliRestErrorCode>`) so the CLI's branch literals and
+ * this shared vocabulary can't drift — renaming a code here breaks the `ERR`
+ * maps at compile time. Note this couples CLI↔registry only: the HTTP-envelope
+ * routes still emit bare literals (and deliberately emit codes outside this
+ * partial registry, e.g. `invalid_sql`/`rls_blocked`), so a server-side *emit*
+ * rename is not caught here. The datasource-profile NDJSON path is the one that
+ * gets full emit-side pinning — its `write()` is typed against the shared
+ * `DatasourceProfileStreamEvent`, so an unregistered terminal code fails to
+ * compile at the route.
  */
 export const CLI_REST_ERROR_CODES = [
   /** Credential resolved but no workspace bound (the multi-workspace picker is pending, ADR-0026). */

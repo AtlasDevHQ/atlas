@@ -449,4 +449,14 @@ describe("runSqlCommand — error mapping", () => {
     expect(code).toBe(1);
     expect(err.join("\n")).toContain("Timed out");
   });
+
+  it("a malformed 200 body (missing required fields) → an unexpected-shape error, not silent garbage", async () => {
+    // The .safeParse() of the 200 must surface a shape mismatch as a typed
+    // error rather than handing a half-filled result to the renderer (#4111).
+    const { fetchImpl } = stubFetch(200, { columns: ["id"] }); // missing rows/rowCount/...
+    const { io, err } = capture();
+    const code = await runSqlCommand(["sql", "SELECT 1"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("unexpected response shape");
+  });
 });

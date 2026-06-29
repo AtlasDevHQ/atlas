@@ -89,8 +89,12 @@ export const ConnectionsResponseSchema = z
  * {@link ConnectionInfoSchema} does: plugins register dbType values outside the
  * tuple — so `z.infer` here is structurally `ConnectionDetail` except `dbType`
  * widens to `string`; the CLI client narrows it to `ConnectionDetail` at its
- * return boundary. Left as the natural `ZodObject` (no `z.ZodType<…>` view) so
- * `.safeParse()` keeps its `unknown` input for validating the raw response.
+ * return boundary. That same `string` ⊄ `DBType | "unknown"` widening is why
+ * this schema carries NO `satisfies z.ZodType<ConnectionDetail>` guard (unlike
+ * its flat siblings) — it wouldn't compile; the correspondence is kept by the
+ * `connection.test.ts` parse tests + the CLI's typed return instead. Left as
+ * the natural `ZodObject` (no `z.ZodType<…>` view) so `.safeParse()` keeps its
+ * `unknown` input for validating the raw response.
  */
 export const ConnectionDetailSchema = z.object({
   id: z.string(),

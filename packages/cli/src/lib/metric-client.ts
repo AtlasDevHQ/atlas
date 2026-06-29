@@ -27,8 +27,9 @@ type FetchImpl = typeof fetch;
 
 /**
  * The server `error`-field discriminators this client branches on, pinned to the
- * shared registry (`satisfies Record<…, CliRestErrorCode>`) so a server-side
- * rename surfaces at compile time.
+ * shared `CliRestErrorCode` registry (`satisfies Record<…, CliRestErrorCode>`)
+ * so the CLI's branch literals can't drift from the shared vocabulary — renaming
+ * a registry code breaks this map at compile time.
  */
 const ERR = {
   badRequest: "bad_request",

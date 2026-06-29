@@ -76,4 +76,16 @@ describe("parseDatasourceProfileStreamEvent (the NDJSON event union, #4111)", ()
   test("rejects an unknown event type (caller skips it as forward-compat)", () => {
     expectRejects({ type: "heartbeat" });
   });
+
+  test("rejects a known event missing required fields", () => {
+    // A `table` event without index/total/status is not coerced — it's rejected.
+    expectRejects({ type: "table", name: "orders" });
+  });
+
+  test("rejects non-object JSON primitives (a stray stream line)", () => {
+    expectRejects(42);
+    expectRejects("oops");
+    expectRejects(null);
+    expectRejects([{ type: "start", total: 1 }]);
+  });
 });

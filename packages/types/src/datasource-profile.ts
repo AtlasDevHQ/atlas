@@ -21,8 +21,10 @@
  * - `reconnect_required` — an OAuth token was revoked mid-profile.
  * - `profiling_failed`   — an actionable validation outcome (no profilable
  *   tables, too many introspection failures, a persist failure).
- * - `internal_error`     — an unexpected throw from the profiler; carries a
- *   `requestId` for log correlation.
+ * - `internal_error`     — an unexpected throw from the profiler.
+ *
+ * Every terminal `error` event carries a `requestId` for log correlation
+ * (the route stamps it on all three).
  */
 export const DATASOURCE_PROFILE_ERROR_CODES = [
   "reconnect_required",
@@ -89,7 +91,7 @@ export interface DatasourceProfileErrorEvent {
   readonly type: "error";
   readonly error: DatasourceProfileErrorCode;
   readonly message: string;
-  /** Present on the codes that carry a log-correlation id (`internal_error`, `reconnect_required`). */
+  /** Log-correlation id — the route stamps it on every terminal error event. */
   readonly requestId?: string;
 }
 

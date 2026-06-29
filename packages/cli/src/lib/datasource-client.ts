@@ -46,9 +46,10 @@ type FetchImpl = typeof fetch;
 
 /**
  * The server `error`-field discriminators this client branches on, pinned to the
- * shared registry (`satisfies Record<…, CliRestErrorCode>`) so a server-side
- * rename of any code surfaces here at compile time rather than silently
- * dead-branching a switch (#4111).
+ * shared `CliRestErrorCode` registry (`satisfies Record<…, CliRestErrorCode>`)
+ * so the CLI's branch literals and the shared vocabulary can't drift — renaming
+ * a registry code breaks this map at compile time (#4111). (This couples the CLI
+ * to the registry, not the routes' bare-literal emit sites; see the registry doc.)
  */
 const ERR = {
   badRequest: "bad_request",
@@ -575,12 +576,21 @@ export async function profileDatasource(
       // deliver its terminal result.
       return;
     }
-    // Validate each line against the shared stream-event union (the SSOT). A
-    // line that doesn't match a known event — malformed, or a forward-compat
-    // event type a newer server added — returns `null` and is skipped, the same
-    // tolerance as before, now schema-driven instead of hand-rolled field reads.
+    // Validate each line against the shared stream-event union (the SSOT),
+    // schema-driven instead of hand-rolled field reads.
     const event = parseDatasourceProfileStreamEvent(raw);
-    if (!event) return;
+    if (!event) {
+      // A non-validating line is normally a forward-compat unknown event TYPE —
+      // skip it. But a `type: "error"` line that failed validation (an
+      // unregistered/renamed terminal code under CLI↔server version skew, or a
+      // missing field) must NOT be silently dropped: that would mask the
+      // server's actionable failure behind the generic "ended without a result"
+      // terminal below. Surface its message as a typed error instead.
+      if (raw !== null && typeof raw === "object" && (raw as { type?: unknown }).type === "error") {
+        throw new DatasourceCliError("request_failed", serverMessage(asRecord(raw), 0));
+      }
+      return;
+    }
     switch (event.type) {
       case "start":
         args.reporter?.onStart(event.total);

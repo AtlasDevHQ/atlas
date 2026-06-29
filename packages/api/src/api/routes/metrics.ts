@@ -41,6 +41,7 @@ import {
 import { resolveMetricRun } from "@atlas/api/lib/semantic/metric-run";
 import { isRequestOrigin } from "@atlas/api/lib/approvals/types";
 import { resolveActorKind } from "@atlas/api/lib/auth/api-key-metadata";
+import type { RunMetricRestResponse } from "@useatlas/types";
 import type { UserQueryOutcome } from "@atlas/api/lib/tools/sql";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema } from "./shared-schemas";
@@ -68,6 +69,10 @@ const RunMetricRequestSchema = z
   })
   .optional();
 
+// Local hono-`z` mirror of the shared `RunMetricRestResponse` wire type
+// (@useatlas/types is the SSOT; `satisfies` keeps the route's schema and the
+// CLI client's `.safeParse()` shape from drifting). The route keeps a LOCAL
+// schema because @useatlas/schemas carries no `.openapi()` metadata.
 const RunMetricResponseSchema = z.object({
   id: z.string(),
   label: z.string().nullable(),
@@ -83,7 +88,7 @@ const RunMetricResponseSchema = z.object({
   /** The authoritative SQL that was executed (used exactly as defined). */
   sql: z.string(),
   executedAt: z.string(),
-});
+}) satisfies z.ZodType<RunMetricRestResponse>;
 
 // ---------------------------------------------------------------------------
 // Route definition

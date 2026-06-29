@@ -71,6 +71,45 @@ export const ConnectionsResponseSchema = z
   .transform((r) => r.connections ?? []);
 
 // ---------------------------------------------------------------------------
+// ConnectionDetail — the single-connection detail response (#4044 / #4111)
+// ---------------------------------------------------------------------------
+
+/**
+ * Schema for one datasource's detail (`GET /api/v1/admin/connections/{id}` and
+ * the `POST .../connections` create response). The `atlas datasource get|create`
+ * CLI client `.safeParse()`s its response through this, which encodes the
+ * "no plaintext url in the response" invariant IN THE TYPE: there is no `url`
+ * field, so zod's default object-strip drops any `url` a server regression might
+ * echo — retiring the old defensive `delete result.url` (#4111).
+ *
+ * The create response is a SUBSET of the get response (it omits
+ * `health`/`schema`/`managed`), so those carry `.default(...)` mirroring the
+ * server's own `?? null` / `?? "unknown"` fallbacks — one schema parses both.
+ * `dbType` stays `z.string()` (not `z.enum(DB_TYPES)`) for the same reason
+ * {@link ConnectionInfoSchema} does: plugins register dbType values outside the
+ * tuple — so `z.infer` here is structurally `ConnectionDetail` except `dbType`
+ * widens to `string`; the CLI client narrows it to `ConnectionDetail` at its
+ * return boundary. That same `string` ⊄ `DBType | "unknown"` widening is why
+ * this schema carries NO `satisfies z.ZodType<ConnectionDetail>` guard (unlike
+ * its flat siblings) — it wouldn't compile; the correspondence is kept by the
+ * `connection.test.ts` parse tests + the CLI's typed return instead. Left as
+ * the natural `ZodObject` (no `z.ZodType<…>` view) so `.safeParse()` keeps its
+ * `unknown` input for validating the raw response.
+ */
+export const ConnectionDetailSchema = z.object({
+  id: z.string(),
+  dbType: z.string().default("unknown"),
+  description: z.string().nullable().default(null),
+  status: z.enum(CONNECTION_STATUSES).optional(),
+  health: ConnectionHealthSchema.nullable().default(null),
+  maskedUrl: z.string().nullable().default(null),
+  schema: z.string().nullable().default(null),
+  managed: z.boolean().default(false),
+  groupId: z.string().nullable().optional(),
+  groupName: z.string().nullable().optional(),
+});
+
+// ---------------------------------------------------------------------------
 // Connection-group Source-catalog descriptions (ADR-0022 §4, #3894)
 // ---------------------------------------------------------------------------
 

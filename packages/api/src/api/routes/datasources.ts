@@ -64,6 +64,7 @@ import {
 } from "@atlas/api/lib/billing/agent-gate";
 import { isRequestOrigin } from "@atlas/api/lib/approvals/types";
 import { resolveActorKind } from "@atlas/api/lib/auth/api-key-metadata";
+import type { DatasourceProfileStreamEvent } from "@useatlas/types";
 import type { ResolveLiveConnectionResult } from "@atlas/api/lib/datasources/mcp-lifecycle";
 import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
 import { validationHook } from "./validation-hook";
@@ -345,7 +346,11 @@ datasources.openapi(profileRoute, async (c) => {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
-      const write = (event: Record<string, unknown>) => {
+      // Typed against the shared `DatasourceProfileStreamEvent` union (the SSOT
+      // in @useatlas/types) so a malformed NDJSON event — wrong `type`, an
+      // unregistered terminal-error code — fails to compile. The CLI consumer
+      // `.safeParse()`s each line against the matching member.
+      const write = (event: DatasourceProfileStreamEvent) => {
         if (closed) return;
         try {
           controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));

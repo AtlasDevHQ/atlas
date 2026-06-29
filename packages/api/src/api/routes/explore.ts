@@ -39,6 +39,7 @@ import { z } from "zod";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { isRequestOrigin } from "@atlas/api/lib/approvals/types";
 import { resolveActorKind } from "@atlas/api/lib/auth/api-key-metadata";
+import type { ExploreRestResponse } from "@useatlas/types";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -60,6 +61,7 @@ export const ExploreRequestSchema = z.object({
     .max(MAX_COMMAND_LEN, `command must be at most ${MAX_COMMAND_LEN} characters`),
 });
 
+// Mirrors the shared `ExploreRestResponse` wire type (@useatlas/types SSOT).
 const ExploreResponseSchema = z.object({
   /**
    * The command's combined output. On a non-zero exit (e.g. a `grep` that
@@ -67,7 +69,7 @@ const ExploreResponseSchema = z.object({
    * exploration result, not an HTTP error.
    */
   output: z.string(),
-});
+}) satisfies z.ZodType<ExploreRestResponse>;
 
 const exploreRoute = createRoute({
   method: "post",

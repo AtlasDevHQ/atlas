@@ -25,6 +25,7 @@
  * server or `process.exit`. `handleDatasource` is the thin shell main() calls.
  */
 
+import type { ConnectionDetail } from "@useatlas/types";
 import { renderTable } from "../../lib/output";
 import { resolveApiBaseUrl } from "../lib/api-base";
 import { readApiKeyFlag, resolveCredential } from "../lib/credential";
@@ -223,10 +224,10 @@ function renderList(io: DatasourceIO, workspaceId: string | null, datasources: u
   io.out(renderTable(["id", "type", "status", "group", "health"], rows));
 }
 
-/** Print the readable subset of a datasource detail record. */
-function renderDetail(io: DatasourceIO, id: string, detail: Record<string, unknown>): void {
+/** Print the readable subset of a datasource detail. */
+function renderDetail(io: DatasourceIO, id: string, detail: ConnectionDetail): void {
   io.out(`Datasource: ${id}`);
-  const fields: Array<[string, string]> = [
+  const fields: Array<[string, keyof ConnectionDetail]> = [
     ["Type", "dbType"],
     ["Status", "status"],
     ["Schema", "schema"],
@@ -238,8 +239,9 @@ function renderDetail(io: DatasourceIO, id: string, detail: Record<string, unkno
     const v = detail[key];
     if (typeof v === "string" && v.length > 0) io.out(`  ${label}: ${v}`);
   }
-  const health = asRecord(detail.health);
-  if (typeof health.status === "string") io.out(`  Health: ${health.status}`);
+  if (detail.health && typeof detail.health.status === "string") {
+    io.out(`  Health: ${detail.health.status}`);
+  }
 }
 
 /** Print the generated-layer summary for a completed profile. */

@@ -86,3 +86,30 @@ export interface ExecuteSqlFailureResult {
  * messages.
  */
 export type ExecuteSqlResult = ExecuteSqlSuccessResult | ExecuteSqlFailureResult;
+
+/**
+ * Wire format for the raw-SQL REST endpoint's success body
+ * (`POST /api/v1/execute-sql`, #4047 / ADR-0027) — the `atlas sql "SELECT …"`
+ * CLI surface. This is the REST sibling of the agent loop's
+ * {@link ExecuteSqlResult}, named distinctly to avoid colliding with that
+ * tool-call shape (which carries `success`/`row_count`/`envContributions`).
+ * Here the route has already mapped every non-`ok` outcome to an HTTP error
+ * envelope, so this models only the 200 body: a flat `{columns, rows}` plus
+ * row-count / truncation / timing metadata (no pagination — `truncated` is the
+ * auto-LIMIT cap signal, not a paging cursor).
+ *
+ * SSOT for the route's local hono-`z` `ExecuteSqlResponseSchema`
+ * (`satisfies z.ZodType<ExecuteSqlRestResponse>`) and the CLI's
+ * `.safeParse()` (via `@useatlas/schemas` `ExecuteSqlRestResponseSchema`).
+ */
+export interface ExecuteSqlRestResponse {
+  readonly columns: string[];
+  readonly rows: Record<string, unknown>[];
+  readonly rowCount: number;
+  /** True when the result hit the auto-LIMIT row cap (more rows exist upstream). */
+  readonly truncated: boolean;
+  /** Wall-clock execution time in milliseconds. */
+  readonly executionMs: number;
+  /** ISO-8601 timestamp stamped when the route shaped the response. */
+  readonly executedAt: string;
+}

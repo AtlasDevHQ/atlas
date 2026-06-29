@@ -29,8 +29,37 @@
  * here calls `process.exit` or `console`; the command handler owns presentation.
  */
 
+import type {
+  CliRestErrorCode,
+  ConnectionDetail,
+  ConnectionInfo,
+  DatasourceProfileResult,
+  DatasourceProfileTableEvent,
+} from "@useatlas/types";
+import {
+  ConnectionDetailSchema,
+  ConnectionsResponseSchema,
+  parseDatasourceProfileStreamEvent,
+} from "@useatlas/schemas";
 import { credentialHeaders, type CliCredential } from "./credential";
 import { asRecord, isAbortOrTimeout, serverMessage, unreachableMessage, type FetchImpl } from "./http";
+
+/**
+ * The server `error`-field discriminators this client branches on, pinned to the
+ * shared `CliRestErrorCode` registry (`satisfies Record<…, CliRestErrorCode>`)
+ * so the CLI's branch literals and the shared vocabulary can't drift — renaming
+ * a registry code breaks this map at compile time (#4111). (This couples the CLI
+ * to the registry, not the routes' bare-literal emit sites; see the registry doc.)
+ */
+const ERR = {
+  badRequest: "bad_request",
+  forbiddenRole: "forbidden_role",
+  mfaEnrollmentRequired: "mfa_enrollment_required",
+  connectionFailed: "connection_failed",
+  notAvailable: "not_available",
+  planLimitExceeded: "plan_limit_exceeded",
+  reconnectRequired: "reconnect_required",
+} as const satisfies Record<string, CliRestErrorCode>;
 
 /** The kinds of failure a datasource call can surface, each with an actionable message. */
 export type DatasourceErrorKind =
@@ -133,7 +162,7 @@ async function request(
         "Your session is no longer valid. Run `atlas login` again.",
       );
     case 403: {
-      if (body.error === "mfa_enrollment_required") {
+      if (body.error === ERR.mfaEnrollmentRequired) {
         throw new DatasourceCliError(
           "mfa_required",
           "Admin actions require two-factor authentication. Enroll an authenticator or passkey in the Atlas console, then retry.",
@@ -147,7 +176,7 @@ async function request(
     case 400:
       // requireOrgContext returns 400 bad_request when the credential has no
       // bound workspace (a multi-workspace login pending the picker slice).
-      if (body.error === "bad_request") {
+      if (body.error === ERR.badRequest) {
         throw new DatasourceCliError(
           "no_workspace",
           "Your login is not bound to a workspace. Single-workspace accounts bind automatically; in-flow workspace selection for multi-workspace accounts is coming soon (ADR-0026).",
@@ -157,7 +186,7 @@ async function request(
       // `connection_failed` with the upstream driver error scrubbed of any DSN.
       // Surface it as a distinct kind so `create` exits with a fix-the-URL hint
       // rather than a generic request failure.
-      if (body.error === "connection_failed") {
+      if (body.error === ERR.connectionFailed) {
         throw new DatasourceCliError("connection_failed", serverMessage(body, res.status));
       }
       throw new DatasourceCliError("request_failed", serverMessage(body, res.status));
@@ -165,7 +194,7 @@ async function request(
       // The create route 404s with `not_available` when the deployment has no
       // internal DB (DATABASE_URL) — datasource provisioning isn't possible
       // there. Distinct from the id-not-found 404 the lifecycle ops surface.
-      if (body.error === "not_available") {
+      if (body.error === ERR.notAvailable) {
         throw new DatasourceCliError("not_available", serverMessage(body, res.status));
       }
       throw new DatasourceCliError("not_found", serverMessage(body, res.status));
@@ -175,7 +204,7 @@ async function request(
       // The plan-limit denial (`plan_limit_exceeded`) shares the 429 status with
       // rate limiting. Distinguish it so the message points at the plan cap, not
       // "slow down". A bare 429 (rate limit) falls through to request_failed.
-      if (body.error === "plan_limit_exceeded") {
+      if (body.error === ERR.planLimitExceeded) {
         throw new DatasourceCliError("plan_limit", serverMessage(body, res.status));
       }
       throw new DatasourceCliError("request_failed", serverMessage(body, res.status));
@@ -220,12 +249,19 @@ export interface CreateDatasourceMetadata {
  * rest via `encryptSecretFields`, lands the row as a draft, and audits the write
  * as `origin=cli` (resolved server-side from the credential, never a request
  * field). Returns the created datasource detail (with a masked url) on 201.
+ *
+ * Parsing the 201 through {@link ConnectionDetailSchema} (a `@useatlas/schemas`
+ * schema with NO `url` field) ENCODES the "no plaintext url in the response"
+ * invariant in the type: zod's default object-strip drops any `url` a server
+ * regression might echo, so the old defensive `delete result.url` is retired
+ * (#4111). The create response is a subset of the detail; the schema's
+ * `.default(...)`s fill the absent `health`/`schema`/`managed` fields.
  */
 export async function createDatasource(
   opts: DatasourceClientOptions,
   metadata: CreateDatasourceMetadata,
   url: string,
-): Promise<Record<string, unknown>> {
+): Promise<ConnectionDetail> {
   // The url goes ONLY into the request body (sent over the authenticated
   // transport), never into a flag, a log line, or a thrown error message.
   const requestBody: Record<string, unknown> = {
@@ -238,44 +274,66 @@ export async function createDatasource(
       : {}),
     ...(metadata.newGroupName !== undefined ? { newGroupName: metadata.newGroupName } : {}),
   };
-  const result = asRecord(
-    await request(opts, {
-      method: "POST",
-      path: "/api/v1/admin/connections",
-      body: requestBody,
-      operation: "create datasource",
-    }),
-  );
-  // Defense in depth: the route returns a masked-url detail and MUST NOT echo
-  // the plaintext `url`. Strip any `url` key here so a future server regression
-  // can't leak the secret through this command's `--json` (verbatim) output or a
-  // redirected log. The `maskedUrl` field the route does return is untouched.
-  if ("url" in result) {
-    delete result.url;
-  }
-  return result;
+  const raw = await request(opts, {
+    method: "POST",
+    path: "/api/v1/admin/connections",
+    body: requestBody,
+    operation: "create datasource",
+  });
+  return parseConnectionDetail(raw, "create datasource");
 }
 
 /** GET /api/v1/admin/connections — the bound workspace's datasources (credential-free metadata). */
-export async function listDatasources(opts: DatasourceClientOptions): Promise<unknown[]> {
-  const body = asRecord(
-    await request(opts, { method: "GET", path: "/api/v1/admin/connections", operation: "list datasources" }),
-  );
-  return Array.isArray(body.connections) ? body.connections : [];
+export async function listDatasources(opts: DatasourceClientOptions): Promise<ConnectionInfo[]> {
+  const raw = await request(opts, {
+    method: "GET",
+    path: "/api/v1/admin/connections",
+    operation: "list datasources",
+  });
+  // `ConnectionsResponseSchema` transforms `{ connections?: [...] }` → the array
+  // (tolerating an absent list), validating each entry as a `ConnectionInfo`.
+  const parsed = ConnectionsResponseSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new DatasourceCliError(
+      "request_failed",
+      "The Atlas API returned an unexpected response shape for the datasource list. Update the CLI, or check the server logs.",
+    );
+  }
+  return parsed.data;
 }
 
 /** GET /api/v1/admin/connections/{id} — one datasource's detail (masked URL + schema). */
 export async function getDatasource(
   opts: DatasourceClientOptions,
   id: string,
-): Promise<Record<string, unknown>> {
-  return asRecord(
-    await request(opts, {
-      method: "GET",
-      path: `/api/v1/admin/connections/${encodeURIComponent(id)}`,
-      operation: "get datasource",
-    }),
-  );
+): Promise<ConnectionDetail> {
+  const raw = await request(opts, {
+    method: "GET",
+    path: `/api/v1/admin/connections/${encodeURIComponent(id)}`,
+    operation: "get datasource",
+  });
+  return parseConnectionDetail(raw, "get datasource");
+}
+
+/**
+ * Validate a connection-detail response against the shared
+ * {@link ConnectionDetailSchema}, returning the typed {@link ConnectionDetail}.
+ * A shape mismatch is a server bug / version skew — surfaced as a typed error,
+ * never a half-filled record. The schema has no `url` field, so any plaintext
+ * `url` the server might echo is stripped at parse (the invariant is in the type).
+ */
+function parseConnectionDetail(raw: unknown, operation: string): ConnectionDetail {
+  const parsed = ConnectionDetailSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new DatasourceCliError(
+      "request_failed",
+      `The Atlas API returned an unexpected response shape for ${operation}. Update the CLI, or check the server logs.`,
+    );
+  }
+  // The schema keeps `dbType` permissive (`z.string()`, for plugin-registered
+  // types), so `z.infer` widens it to `string`; narrow to `ConnectionDetail`
+  // for the typed return (same operator-UX narrowing `ConnectionInfoSchema` does).
+  return parsed.data as ConnectionDetail;
 }
 
 /** POST /api/v1/admin/connections/{id}/test — health-check an existing datasource. */
@@ -356,14 +414,12 @@ export async function deleteDatasource(
 // clean stop, not a failure.
 // ---------------------------------------------------------------------------
 
-/** A per-table progress event surfaced to the reporter as the stream arrives. */
-export interface ProfileTableEvent {
-  readonly name: string;
-  readonly index: number;
-  readonly total: number;
-  readonly status: "done" | "error";
-  readonly error?: string;
-}
+/**
+ * A per-table progress event surfaced to the reporter as the stream arrives.
+ * Aliases the shared {@link DatasourceProfileTableEvent} (minus its `type`
+ * discriminator) so the reporter contract tracks the wire stream.
+ */
+export type ProfileTableEvent = Omit<DatasourceProfileTableEvent, "type">;
 
 /** Live progress sink — the command wires this to the shared progress tracker. */
 export interface ProfileReporter {
@@ -371,20 +427,13 @@ export interface ProfileReporter {
   onTable(event: ProfileTableEvent): void;
 }
 
-/** The terminal `result` event — the generated (draft) semantic layer summary. */
-export interface ProfileResult {
-  readonly id: string;
-  readonly queryable: boolean;
-  readonly persisted: boolean;
-  readonly persistedStatus?: string;
-  readonly entitiesGenerated: number;
-  readonly metricsGenerated: number;
-  readonly tables: readonly string[];
-  readonly profilingErrors: number;
-  readonly incomplete: boolean;
-  readonly incompleteTables?: readonly string[];
-  readonly elapsedMs: number;
-}
+/**
+ * The terminal `result` event — the generated (draft) semantic-layer summary.
+ * Aliases the shared {@link DatasourceProfileResult} wire type (SSOT in
+ * `@useatlas/types`); kept under the local name so command-layer imports stay
+ * stable.
+ */
+export type ProfileResult = DatasourceProfileResult;
 
 export interface ProfileDatasourceArgs {
   readonly id: string;
@@ -394,22 +443,6 @@ export interface ProfileDatasourceArgs {
   readonly reporter?: ProfileReporter;
   /** Cancellation signal — aborting (Ctrl-C) stops the profile cleanly. */
   readonly signal?: AbortSignal;
-}
-
-function asProfileResult(e: Record<string, unknown>): ProfileResult {
-  return {
-    id: typeof e.id === "string" ? e.id : "",
-    queryable: Boolean(e.queryable),
-    persisted: Boolean(e.persisted),
-    ...(typeof e.persistedStatus === "string" ? { persistedStatus: e.persistedStatus } : {}),
-    entitiesGenerated: typeof e.entitiesGenerated === "number" ? e.entitiesGenerated : 0,
-    metricsGenerated: typeof e.metricsGenerated === "number" ? e.metricsGenerated : 0,
-    tables: Array.isArray(e.tables) ? (e.tables as string[]) : [],
-    profilingErrors: typeof e.profilingErrors === "number" ? e.profilingErrors : 0,
-    incomplete: Boolean(e.incomplete),
-    ...(Array.isArray(e.incompleteTables) ? { incompleteTables: e.incompleteTables as string[] } : {}),
-    elapsedMs: typeof e.elapsedMs === "number" ? e.elapsedMs : 0,
-  };
 }
 
 /**
@@ -459,7 +492,7 @@ export async function profileDatasource(
           "Your session is no longer valid. Run `atlas login` again.",
         );
       case 403:
-        if (body.error === "mfa_enrollment_required") {
+        if (body.error === ERR.mfaEnrollmentRequired) {
           throw new DatasourceCliError(
             "mfa_required",
             "Admin actions require two-factor authentication. Enroll an authenticator or passkey in the Atlas console, then retry.",
@@ -468,7 +501,7 @@ export async function profileDatasource(
         // A billing block also returns 403 (trial-expired etc.); surface the
         // server's actionable message for those. A bare role denial gets the
         // admin-role guidance the lifecycle ops use.
-        if (body.error === "forbidden_role") {
+        if (body.error === ERR.forbiddenRole) {
           throw new DatasourceCliError(
             "forbidden",
             `Cannot profile datasource "${args.id}": the workspace admin role is required. Your login does not carry it — ask a workspace admin to run this, or sign in with an admin account (\`atlas login\`).`,
@@ -476,7 +509,7 @@ export async function profileDatasource(
         }
         throw new DatasourceCliError("forbidden", serverMessage(body, res.status));
       case 400:
-        if (body.error === "bad_request") {
+        if (body.error === ERR.badRequest) {
           throw new DatasourceCliError(
             "no_workspace",
             "Your login is not bound to a workspace. Single-workspace accounts bind automatically; in-flow workspace selection for multi-workspace accounts is coming soon (ADR-0026).",
@@ -510,46 +543,74 @@ export async function profileDatasource(
   const handleLine = (line: string): void => {
     const trimmed = line.trim();
     if (trimmed.length === 0) return;
-    let event: Record<string, unknown>;
+    let raw: unknown;
     try {
-      event = asRecord(JSON.parse(trimmed));
+      raw = JSON.parse(trimmed);
     } catch {
       // intentionally ignored: a malformed line in the progress stream is
       // non-fatal — skip it rather than aborting a profile that may still
       // deliver its terminal result.
       return;
     }
+    // Validate each line against the shared stream-event union (the SSOT),
+    // schema-driven instead of hand-rolled field reads.
+    const event = parseDatasourceProfileStreamEvent(raw);
+    if (!event) {
+      // A non-validating line is normally a forward-compat unknown event TYPE —
+      // skip it. But a `type: "error"` line that failed validation (an
+      // unregistered/renamed terminal code under CLI↔server version skew, or a
+      // missing field) must NOT be silently dropped: that would mask the
+      // server's actionable failure behind the generic "ended without a result"
+      // terminal below. Surface its message as a typed error instead.
+      if (raw !== null && typeof raw === "object" && (raw as { type?: unknown }).type === "error") {
+        throw new DatasourceCliError("request_failed", serverMessage(asRecord(raw), 0));
+      }
+      return;
+    }
     switch (event.type) {
       case "start":
-        args.reporter?.onStart(typeof event.total === "number" ? event.total : 0);
+        args.reporter?.onStart(event.total);
         return;
       case "table":
         args.reporter?.onTable({
-          name: typeof event.name === "string" ? event.name : "",
-          index: typeof event.index === "number" ? event.index : 0,
-          total: typeof event.total === "number" ? event.total : 0,
-          status: event.status === "error" ? "error" : "done",
-          ...(typeof event.error === "string" ? { error: event.error } : {}),
+          name: event.name,
+          index: event.index,
+          total: event.total,
+          status: event.status,
+          ...(event.error !== undefined ? { error: event.error } : {}),
         });
         return;
-      case "result":
-        result = asProfileResult(event);
+      case "result": {
+        // Strip the `type` discriminator — the public terminal result is the
+        // bare {@link ProfileResult} summary (so `--json` output stays clean).
+        const { type: _type, ...summary } = event;
+        result = summary;
         return;
+      }
       case "error": {
         // A failure after the stream opened — map to the same typed error the
-        // pre-stream branch produces so the command's handler renders it uniformly.
-        // `reconnect_required` keeps its distinct `conflict` kind (the reconnect
-        // remedy differs); every other terminal error (`profiling_failed`,
-        // `internal_error`, anything future) is a `request_failed` the handler
-        // surfaces with the server's message verbatim.
-        const message = serverMessage(event, 0);
-        const kind = event.error === "reconnect_required" ? "conflict" : "request_failed";
+        // pre-stream branch produces so the command's handler renders it
+        // uniformly. `reconnect_required` keeps its distinct `conflict` kind (the
+        // reconnect remedy differs); every other terminal error
+        // (`profiling_failed`, `internal_error`) is a `request_failed` surfaced
+        // with the server's message.
+        const message = serverMessage(
+          {
+            message: event.message,
+            error: event.error,
+            ...(event.requestId !== undefined ? { requestId: event.requestId } : {}),
+          },
+          0,
+        );
+        const kind = event.error === ERR.reconnectRequired ? "conflict" : "request_failed";
         throw new DatasourceCliError(kind, message);
       }
-      default:
-        // intentionally ignored: an unknown event type is forward-compatible —
-        // a future server may add events this client version doesn't render.
+      default: {
+        // Exhaustive — the union covers every member; a new one fails here.
+        const _exhaustive: never = event;
+        void _exhaustive;
         return;
+      }
     }
   };
 

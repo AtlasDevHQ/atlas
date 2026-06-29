@@ -143,7 +143,8 @@ describe("runDatasource — workspace API key (#4112 unattended CI)", () => {
   });
 
   it("list --json falls back to a null workspaceId on the api-key path (no local session)", async () => {
-    const { fetchImpl } = stubFetchHeaders(200, { connections: [{ id: "prod-us" }] });
+    // `id` + `dbType` are the `ConnectionInfoSchema`-required fields (#4111).
+    const { fetchImpl } = stubFetchHeaders(200, { connections: [{ id: "prod-us", dbType: "postgres" }] });
     const { io, out } = capture();
     const code = await runDatasource(
       ["datasource", "list", "--json"],
@@ -188,7 +189,15 @@ describe("runDatasource — list (#4044)", () => {
   it("renders a table of the workspace's datasources", async () => {
     const { fetchImpl } = stubFetch(200, {
       connections: [
-        { id: "prod-us", dbType: "postgres", status: "published", groupId: "prod", health: { status: "healthy" } },
+        {
+          id: "prod-us",
+          dbType: "postgres",
+          status: "published",
+          groupId: "prod",
+          // Full health object — `ConnectionInfoSchema` validates the nested
+          // `ConnectionHealth` (latencyMs + ISO checkedAt are required).
+          health: { status: "healthy", latencyMs: 5, checkedAt: "2026-06-29T00:00:00.000Z" },
+        },
       ],
     });
     const { io, out } = capture();
@@ -208,7 +217,8 @@ describe("runDatasource — list (#4044)", () => {
   });
 
   it("--json emits the workspace id + datasources", async () => {
-    const { fetchImpl } = stubFetch(200, { connections: [{ id: "prod-us" }] });
+    // `id` + `dbType` are the `ConnectionInfoSchema`-required fields.
+    const { fetchImpl } = stubFetch(200, { connections: [{ id: "prod-us", dbType: "postgres" }] });
     const { io, out } = capture();
     await runDatasource(["datasource", "list", "--json"], deps(fetchImpl), io);
     const parsed = JSON.parse(out.join("\n"));
@@ -249,13 +259,25 @@ describe("runDatasource — get/test (#4044)", () => {
     expect(out.join("\n")).toContain("degraded");
   });
 
-  it("get --json emits the raw detail, not the rendered block", async () => {
+  it("get --json emits the detail as schema-normalized JSON, not the rendered block", async () => {
     const { fetchImpl } = stubFetch(200, { id: "prod-us", dbType: "postgres" });
     const { io, out } = capture();
     const code = await runDatasource(["datasource", "get", "prod-us", "--json"], deps(fetchImpl), io);
     expect(code).toBe(0);
     const parsed = JSON.parse(out.join("\n"));
-    expect(parsed).toEqual({ id: "prod-us", dbType: "postgres" });
+    // The client parses through `ConnectionDetailSchema`, so `--json` emits a
+    // stable detail shape: the create/get-response subset is filled with the
+    // server's own `?? null` / `?? false` defaults (a real get response already
+    // carries these fields, so this only normalizes a minimal body).
+    expect(parsed).toEqual({
+      id: "prod-us",
+      dbType: "postgres",
+      description: null,
+      health: null,
+      maskedUrl: null,
+      schema: null,
+      managed: false,
+    });
   });
 
   it("test --json emits the raw result and still reflects health in the exit code", async () => {
@@ -680,7 +702,9 @@ describe("runDatasource — profile (#4052)", () => {
 
 describe("runDatasource — unexpected errors are surfaced, not swallowed (#4044)", () => {
   it("an unexpected (non-DatasourceCliError) throw becomes an `Unexpected error` line + exit 1", async () => {
-    const { fetchImpl } = stubFetch(200, { connections: [{ id: "x" }] });
+    // A schema-valid entry (id + dbType) so `listDatasources` succeeds and the
+    // render-time throw below is what surfaces (not a parse rejection).
+    const { fetchImpl } = stubFetch(200, { connections: [{ id: "x", dbType: "postgres" }] });
     const errs: string[] = [];
     let firstOut = true;
     const io: DatasourceIO = {

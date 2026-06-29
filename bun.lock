@@ -274,6 +274,7 @@
         "@clickhouse/client": "^1.22.0",
         "@duckdb/node-api": "^1.5.3-r.3",
         "@modelcontextprotocol/sdk": "^1.29.0",
+        "@useatlas/schemas": "workspace:*",
         "@useatlas/twenty": "workspace:*",
         "@useatlas/types": "workspace:*",
         "ai": "^6.0.208",
@@ -422,7 +423,7 @@
     },
     "packages/types": {
       "name": "@useatlas/types",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "devDependencies": {
         "typescript": "^6.0.3",
       },

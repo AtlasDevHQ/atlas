@@ -358,6 +358,16 @@ describe("runMetricCommand — error mapping", () => {
     expect(err.join("\n")).toContain("Timed out");
   });
 
+  it("a malformed 200 body (missing required fields) → an unexpected-shape error, not silent garbage", async () => {
+    // The .safeParse() of the 200 must surface a shape mismatch as a typed
+    // error rather than handing a half-filled result to the renderer (#4111).
+    const { fetchImpl } = stubFetch(200, { id: "total_gmv" }); // missing sql/columns/rows/...
+    const { io, err } = capture();
+    const code = await runMetricCommand(["metric", "run", "total_gmv"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("unexpected response shape");
+  });
+
   it("surfaces a generic (non-abort) network failure via the shared unreachableMessage (#4113)", async () => {
     // A non-Timeout/Abort throw takes the `unreachableMessage` branch of the
     // consolidated http.ts helper — pins the generic-failure path the abort/

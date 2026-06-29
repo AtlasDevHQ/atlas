@@ -65,6 +65,7 @@ import {
 } from "@atlas/api/lib/billing/agent-gate";
 import { isRequestOrigin } from "@atlas/api/lib/approvals/types";
 import { resolveActorKind } from "@atlas/api/lib/auth/api-key-metadata";
+import type { ExecuteSqlRestResponse } from "@useatlas/types";
 import type { UserQueryOutcome } from "@atlas/api/lib/tools/sql";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema } from "./shared-schemas";
@@ -99,6 +100,11 @@ export const ExecuteSqlRequestSchema = z.object({
   connectionId: z.string().min(1).max(256).optional(),
 });
 
+// Local hono-`z` mirror of the shared `ExecuteSqlRestResponse` wire type
+// (@useatlas/types is the SSOT). `satisfies z.ZodType<…>` keeps this schema
+// from drifting out of shape with the type the CLI client validates against;
+// the route keeps a LOCAL schema because @useatlas/schemas carries no
+// `.openapi()` metadata (the OpenAPI doc is generated here).
 const ExecuteSqlResponseSchema = z.object({
   columns: z.array(z.string()),
   rows: z.array(z.record(z.string(), z.unknown())),
@@ -107,7 +113,7 @@ const ExecuteSqlResponseSchema = z.object({
   truncated: z.boolean(),
   executionMs: z.number(),
   executedAt: z.string(),
-});
+}) satisfies z.ZodType<ExecuteSqlRestResponse>;
 
 // ---------------------------------------------------------------------------
 // Route definition

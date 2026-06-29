@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.34",
+    title: "Auth Session-Cookie Fix",
+    date: "2026-06-28",
+    summary:
+      "Fixes a sign-in issue where some browsers were bounced back to the login screen about 30 seconds after a successful login. The cause was a stale, domain-wide session cookie left over from an earlier configuration that quietly shadowed the new per-host cookie. Atlas now clears that leftover cookie automatically on the next request — clean browsers are unaffected, and it restores the regional session isolation introduced in v0.0.31. This release also completes the removal of an unused per-user Stripe field from the database; organization-level billing is unchanged.",
+    highlights: [
+      "Logins stay durable past the ~30s session-cache window — no more surprise bounce to /login from a stale parent-domain cookie (#4086)",
+      "The legacy domain-wide session cookie is evicted automatically and only when present; a no-op for browsers that never had it",
+      "Removed the unused per-user Stripe customer column from the database (organization-scoped billing unaffected) (#4013)",
+    ],
+  },
+  {
     version: "v0.0.33",
     title: "Billing & Feature-Ladder Truthfulness",
     date: "2026-06-28",

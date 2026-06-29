@@ -45,7 +45,10 @@ Arguments:
 Options:
   --connection <id>   Run against a specific datasource (default: the workspace's default)
   --workspace <id>    Act on a specific workspace for this command only
-                      (does not change your saved default; use \`atlas switch\`)
+                      (does not change your saved default; use \`atlas switch\`).
+                      Interactive logins only — API keys are workspace-pinned.
+  --api-key <key>     Use a workspace API key instead of your \`atlas login\` session
+                      (unattended CI). Overrides ATLAS_API_KEY.
   --json              Machine-readable JSON output
   --csv               CSV output (headers + rows, pipe-friendly)
 
@@ -55,7 +58,9 @@ read-only connection. DML/DDL, multi-statement, non-whitelisted-table, and
 unparseable SQL are rejected. This is the advanced surface — prefer
 \`atlas query "<question>"\` for natural-language questions.
 
-Requires \`atlas login\` first. Set ATLAS_API_URL to target a non-local API.`;
+Authentication: \`atlas login\` for interactive use (ambient session reuse — no
+key needed), OR a workspace API key via --api-key / ATLAS_API_KEY for unattended
+CI. Set ATLAS_API_URL to target a non-local API.`;
 
 /** stdout/stderr sink — injected so tests can capture output. */
 export interface SqlIO {
@@ -72,6 +77,12 @@ const defaultIO: SqlIO = {
 export interface SqlRunDeps {
   readonly baseUrl: string;
   readonly session: StoredSession | null;
+  /**
+   * A workspace-scoped API key for unattended CI (#4046), resolved from the
+   * `--api-key` flag or the `ATLAS_API_KEY` env var. When present it takes
+   * precedence over the stored session — CI never goes through `atlas login`.
+   */
+  readonly apiKey?: string;
   readonly fetchImpl?: typeof fetch;
 }
 
@@ -129,14 +140,15 @@ export async function runSqlCommand(
   const connectionId = getFlagValue(args, "--connection");
 
   // The SQL is the first positional after `sql` that isn't a flag and isn't the
-  // value consumed by a value-taking flag (`--connection <id>`, `--workspace <id>`).
-  // `--workspace` is parsed inside resolveActiveWorkspace (supports the inline
-  // `--workspace=<id>` form too), so only the space-separated value is skipped here.
+  // value consumed by a value-taking flag (`--connection <id>`, `--workspace <id>`,
+  // `--api-key <key>`). `--workspace` is parsed inside resolveActiveWorkspace
+  // (supports the inline `--workspace=<id>` form too), so only the space-separated
+  // value is skipped here.
   const rest = args.slice(1);
   const sql = rest.find((a, i) => {
     if (a.startsWith("--")) return false;
     const prev = rest[i - 1];
-    if (prev === "--connection" || prev === "--workspace") return false;
+    if (prev === "--connection" || prev === "--workspace" || prev === "--api-key") return false;
     return true;
   });
 
@@ -145,8 +157,37 @@ export async function runSqlCommand(
     return 1;
   }
 
+  // A workspace API key (#4046, unattended CI) takes precedence over a stored
+  // login. The flag wins over the env var so an interactive override is possible.
+  const apiKey = getFlagValue(args, "--api-key") ?? deps.apiKey;
+  // `--workspace` in EITHER form — space (`--workspace x`) or inline
+  // (`--workspace=x`). `resolveActiveWorkspace` accepts both, so the api-key
+  // guard below must reject both; a space-only check would let `--workspace=x`
+  // slip past and be silently ignored.
+  const hasWorkspaceFlag = args.some((a) => a === "--workspace" || a.startsWith("--workspace="));
+
+  if (apiKey) {
+    // The key is pinned to its workspace by its server-side metadata, so a
+    // `--workspace` override is meaningless (and a session rebind would need a
+    // session bearer the key doesn't carry). Reject it loudly rather than
+    // silently ignore the flag.
+    if (hasWorkspaceFlag) {
+      io.err(
+        "API keys are pinned to one workspace; --workspace only applies to interactive `atlas login` sessions.",
+      );
+      return 1;
+    }
+
+    const opts: SqlClientOptions = {
+      baseUrl: deps.baseUrl,
+      apiKey,
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    };
+    return runAndRender(opts, sql, connectionId, json, csv, io);
+  }
+
   if (!deps.session) {
-    io.err("Not logged in. Run `atlas login` first.");
+    io.err("Not logged in. Run `atlas login` first, or set ATLAS_API_KEY for unattended use.");
     return 1;
   }
 
@@ -172,7 +213,19 @@ export async function runSqlCommand(
     token: deps.session.token,
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
   };
+  return runAndRender(opts, sql, connectionId, json, csv, io);
+}
 
+/** Run the SQL via the client and render the result / typed error. Shared by the
+ * session and api-key credential paths so output handling can't drift. */
+async function runAndRender(
+  opts: SqlClientOptions,
+  sql: string,
+  connectionId: string | undefined,
+  json: boolean,
+  csv: boolean,
+  io: SqlIO,
+): Promise<number> {
   try {
     const result = await runSql(opts, {
       sql,
@@ -201,6 +254,10 @@ export async function runSqlCommand(
 export async function handleSql(args: string[]): Promise<void> {
   const baseUrl = resolveApiBaseUrl();
   const session = readSession(baseUrl);
-  const code = await runSqlCommand(args, { baseUrl, session });
+  // ATLAS_API_KEY (#4046) is the unattended-CI credential — it is NOT persisted
+  // to ~/.atlas/credentials (a CI secret managed by the CI system, not an
+  // interactive login). `--api-key` (parsed in runSqlCommand) overrides it.
+  const apiKey = process.env.ATLAS_API_KEY?.trim() || undefined;
+  const code = await runSqlCommand(args, { baseUrl, session, ...(apiKey ? { apiKey } : {}) });
   if (code !== 0) process.exit(code);
 }

@@ -8,14 +8,16 @@
  * the `origin=cli` audit. This maps one workspace CLI subcommand onto one route
  * and surfaces the typed outcome.
  *
- * Authorization rides entirely on the `atlas login` workspace credential: the
- * stored Better Auth session bearer (stamped `origin='cli'` server-side) is sent
- * as `Authorization: Bearer <token>`. The route resolves it live to its bound
- * workspace org (member floor — no role gating on this route), runs billing
- * gate-0, and executes the SQL against ONLY the bound workspace — the CLI never
- * re-derives any of that, and crucially never
- * sends an org/workspace field (workspace isolation derives from the credential,
- * ADR-0027 §5).
+ * Authorization rides on one of two workspace credential classes, never both:
+ *  - the `atlas login` device-flow SESSION bearer (interactive / ambient reuse),
+ *    sent as `Authorization: Bearer <token>`; OR
+ *  - a workspace-scoped API key for UNATTENDED CI (#4046), sent as
+ *    `x-api-key: <key>` (the Better Auth `apiKey()` plugin's header).
+ * Either way the route resolves the credential live to its bound workspace org
+ * (member floor — no role gating on this route), runs billing gate-0, and
+ * executes the SQL against ONLY the bound workspace — the CLI never re-derives
+ * any of that, and crucially never sends an org/workspace field (workspace
+ * isolation derives from the credential, ADR-0027 §5).
  *
  * `fetch` is injectable so the route mapping + status-code handling are
  * unit-testable without a live server (mirrors `metric-client.ts`). No function
@@ -62,8 +64,16 @@ export interface SqlRunResult {
 export interface SqlClientOptions {
   /** Normalized Atlas API base URL (no trailing slash). */
   readonly baseUrl: string;
-  /** The stored `atlas login` session bearer. */
-  readonly token: string;
+  /**
+   * The stored `atlas login` session bearer (`Authorization: Bearer`). Mutually
+   * exclusive with {@link apiKey}; exactly one credential must be supplied.
+   */
+  readonly token?: string;
+  /**
+   * A workspace-scoped API key for unattended CI (#4046), sent as `x-api-key`.
+   * Mutually exclusive with {@link token}.
+   */
+  readonly apiKey?: string;
   /** Injectable for tests; defaults to the global `fetch`. */
   readonly fetchImpl?: FetchImpl;
   /** Per-request timeout in ms (default 60s — a SQL query can be slower than metadata). */
@@ -106,12 +116,19 @@ export async function runSql(opts: SqlClientOptions, args: RunSqlArgs): Promise<
   const fetchImpl = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? 60_000;
 
+  // Exactly one credential class. A workspace API key (#4046) goes on `x-api-key`
+  // (the apiKey() plugin header); a device-flow session goes on `Authorization:
+  // Bearer`. Never send both — the server resolves whichever it sees.
+  const authHeader: Record<string, string> = opts.apiKey
+    ? { "x-api-key": opts.apiKey }
+    : { Authorization: `Bearer ${opts.token ?? ""}` };
+
   let res: Response;
   try {
     res = await fetchImpl(`${opts.baseUrl}/api/v1/execute-sql`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${opts.token}`,
+        ...authHeader,
         "Content-Type": "application/json",
       },
       // ONLY sql (+ optional connectionId) — never an org/workspace field. The

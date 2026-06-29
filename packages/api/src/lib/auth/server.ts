@@ -2370,7 +2370,19 @@ export function buildPlugins() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin types are complex union types that vary by plugin combination
   const plugins: any[] = [
     bearer(),
-    apiKey(),
+    // #4046 / ADR-0027 §6 — workspace-scoped API key for unattended CI.
+    //  - `enableSessionForAPIKeys: true` is REQUIRED, not cosmetic: the plugin's
+    //    request `before` hook only resolves an `x-api-key` header into a session
+    //    when this is set (it skips every config where it is false), so without it
+    //    the whole feature is inert — `getSession` would return null for a key.
+    //  - `enableMetadata: true` lets a key carry its `{orgId, role, claims}`
+    //    binding, which `validateManaged` (api-key-metadata.ts) reads to resolve
+    //    the key to its owning member's bound workspace + RLS claim.
+    // The default header stays `x-api-key` (the CLI sends that for a workspace
+    // key; the device-flow session bearer stays on `Authorization: Bearer`, so the
+    // two credential classes never collide). The legacy `ATLAS_API_KEY` god-key is
+    // a SEPARATE auth path (`simple-key.ts`) and is untouched.
+    apiKey({ enableMetadata: true, enableSessionForAPIKeys: true }),
     // Business-email-only signup (#3650, ADR-0018). `emailHarmony` contributes
     // the unique `normalizedEmail` column + `+alias`/dot/case normalization —
     // the teeth behind one-trial-per-user — and ships the `mailchecker`

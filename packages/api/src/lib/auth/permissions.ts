@@ -21,7 +21,7 @@
  *   user when mode is "auto".
  */
 
-import type { AtlasUser, AtlasRole } from "@atlas/api/lib/auth/types";
+import type { AtlasUser, AtlasRole, OrgRole } from "@atlas/api/lib/auth/types";
 import type { ActionApprovalMode } from "@atlas/api/lib/action-types";
 import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -114,6 +114,38 @@ export function parseRole(value: string | undefined): AtlasRole | undefined {
     return lower as AtlasRole;
   }
   return undefined;
+}
+
+/**
+ * Cap an effective role at a ceiling — returns whichever of the two ranks
+ * lower in the `member < admin < owner < platform_admin` hierarchy.
+ *
+ * Used by the workspace-API-key path (#4046): the key stores the minter's role
+ * as a CEILING at mint time, and the live member role is re-resolved at use time.
+ * Capping the live role at the stored ceiling means a key never grants MORE than
+ * the minter held when they created it (even if the member was later promoted),
+ * while a demotion still down-privileges the key (the live role is lower).
+ */
+export function capRole(role: AtlasRole, ceiling: AtlasRole): AtlasRole {
+  return ROLE_LEVEL[role] <= ROLE_LEVEL[ceiling] ? role : ceiling;
+}
+
+/**
+ * Clamp any role down to the org-assignable range (`member | admin | owner`),
+ * stripping the cross-tenant `platform_admin` to `owner`.
+ *
+ * Used by the workspace-API-key mint path (#4046): a workspace key is org-scoped
+ * and must never carry cross-tenant god-mode, so a `platform_admin` minter mints
+ * at most an `owner`-authority key. The return type is `OrgRole`, so the
+ * isolation invariant is COMPILER-guaranteed at the call site rather than rested
+ * on an `as OrgRole` cast (the single unavoidable narrowing is localized here and
+ * unit-tested). Mirrors the cli downgrade's "no cross-tenant authority on a
+ * portable credential" rule.
+ */
+export function clampToOrgRole(role: AtlasRole): OrgRole {
+  // capRole at the `owner` ceiling can only return member/admin/owner (owner
+  // outranks nothing higher in the org range), so the narrowing is sound.
+  return capRole(role, "owner") as OrgRole;
 }
 
 // ---------------------------------------------------------------------------

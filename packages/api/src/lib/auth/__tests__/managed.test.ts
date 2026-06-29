@@ -152,6 +152,281 @@ describe("validateManaged()", () => {
     });
   });
 
+  // #4046 / ADR-0027 §6 — workspace-scoped API-key enrichment. When the request
+  // carries an `x-api-key` header, the apiKey() plugin resolves the OWNING member
+  // (getSession.user), and validateManaged enriches from the key's metadata:
+  // bound org, org-role-only role capped at the mint ceiling, the member's RLS
+  // claim, and a distinct api_key marker (origin stays cli).
+  describe("workspace API key (#4046)", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock return is intentionally untyped to simulate Better Auth verifyApiKey
+    const mockVerifyApiKey = mock((): Promise<any> => Promise.resolve(null));
+
+    function installAuth(): void {
+      const instance = {
+        api: { getSession: mockGetSession, verifyApiKey: mockVerifyApiKey },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial auth mock for testing
+      } as any;
+      _setAuthInstance(instance);
+    }
+
+    function apiKeyRequest(): Request {
+      return new Request("http://localhost/api/v1/execute-sql", {
+        method: "POST",
+        headers: { "x-api-key": "atlas_wk_secretkeyvalue" },
+      });
+    }
+
+    beforeEach(() => {
+      mockVerifyApiKey.mockReset();
+      installAuth();
+    });
+
+    it("resolves to the owning member + bound org + org-role-only role from metadata", async () => {
+      // The apiKey plugin resolves getSession to the real owning user.
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_owner", email: "owner@acme.com" },
+        session: { id: "key_abc", userId: "usr_owner" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce({
+        valid: true,
+        key: {
+          userId: "usr_owner",
+          metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "owner" },
+        },
+      });
+      // Live member role lookup (resolveEffectiveRole) returns "admin".
+      mockHasInternalDB = true;
+      mockInternalQuery = () => Promise.resolve([{ role: "admin" }]);
+
+      const result = await validateManaged(apiKeyRequest());
+
+      expect(result.authenticated).toBe(true);
+      if (!result.authenticated || !result.user) throw new Error("expected authed");
+      // AC3 liveness: verifyApiKey is consulted on EVERY request, so a key
+      // revoked since the last request is caught (revocation effective next req).
+      expect(mockVerifyApiKey).toHaveBeenCalledTimes(1);
+      expect(result.user.id).toBe("usr_owner");
+      expect(result.user.label).toBe("owner@acme.com");
+      expect(result.user.activeOrganizationId).toBe("org_acme");
+      // Live role "admin" capped at mint ceiling "owner" -> "admin".
+      expect(result.user.role).toBe("admin");
+      expect(result.user.claims?.org_id).toBe("org_acme");
+      expect(result.user.claims?.sub).toBe("usr_owner");
+      // Transport stays cli; the api-key marker is the distinct signal.
+      expect(result.user.claims?.origin).toBe("cli");
+      expect(result.user.claims?.api_key).toBe(true);
+    });
+
+    it("caps the live role at the mint-time ceiling (member key can't widen to admin)", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_2", email: "u2@acme.com" },
+        session: { id: "key_2", userId: "usr_2" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce({
+        valid: true,
+        key: { metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "member" } },
+      });
+      // Member was promoted to owner AFTER minting; the key must stay member.
+      mockHasInternalDB = true;
+      mockInternalQuery = () => Promise.resolve([{ role: "owner" }]);
+
+      const result = await validateManaged(apiKeyRequest());
+      if (!result.authenticated || !result.user) throw new Error("expected authed");
+      expect(result.user.role).toBe("member");
+    });
+
+    it("fails closed to NO role when the owner is no longer a member of the org (live lookup authoritative)", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_removed", email: "removed@acme.com" },
+        session: { id: "key_rm", userId: "usr_removed" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce({
+        valid: true,
+        // The key was minted when the owner was an admin; they've since been
+        // removed from the workspace. The stored role must NOT be a floor.
+        key: { metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "admin" } },
+      });
+      mockHasInternalDB = true;
+      mockInternalQuery = () => Promise.resolve([]); // no member row
+
+      const result = await validateManaged(apiKeyRequest());
+      expect(result.authenticated).toBe(true);
+      if (!result.authenticated || !result.user) throw new Error("expected authed");
+      // No elevated role — the removed member's stored "admin" is not re-granted.
+      expect(result.user.role).toBeUndefined();
+    });
+
+    it("uses the stored metadata role on self-host (no internal DB, no live member table)", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_sh", email: "sh@acme.com" },
+        session: { id: "key_sh", userId: "usr_sh" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce({
+        valid: true,
+        key: {
+          userId: "usr_sh",
+          metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "admin" },
+        },
+      });
+      // No internal DB — there is no member table to re-resolve against, so the
+      // mint-time stored role is authoritative (the only signal available).
+      mockHasInternalDB = false;
+
+      const result = await validateManaged(apiKeyRequest());
+      if (!result.authenticated || !result.user) throw new Error("expected authed");
+      expect(result.user.role).toBe("admin");
+    });
+
+    it("merges the member's RLS claim from metadata into the claims bag", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_3", email: "u3@acme.com" },
+        session: { id: "key_3", userId: "usr_3" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce({
+        valid: true,
+        key: {
+          metadata: {
+            atlasWorkspaceKey: true,
+            orgId: "org_acme",
+            role: "member",
+            claims: { tenant_id: "acme-tenant" },
+          },
+        },
+      });
+      mockHasInternalDB = true;
+      mockInternalQuery = () => Promise.resolve([{ role: "member" }]);
+
+      const result = await validateManaged(apiKeyRequest());
+      if (!result.authenticated || !result.user) throw new Error("expected authed");
+      expect(result.user.claims?.tenant_id).toBe("acme-tenant");
+    });
+
+    it("does not let a metadata claim shadow the authoritative org_id / origin", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_4", email: "u4@acme.com" },
+        session: { id: "key_4", userId: "usr_4" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce({
+        valid: true,
+        key: {
+          metadata: {
+            atlasWorkspaceKey: true,
+            orgId: "org_real",
+            role: "member",
+            // A hostile/buggy mint trying to spoof identity claims.
+            claims: { org_id: "org_spoof", origin: "chat", api_key: false, sub: "someone-else" },
+          },
+        },
+      });
+      mockHasInternalDB = true;
+      mockInternalQuery = () => Promise.resolve([{ role: "member" }]);
+
+      const result = await validateManaged(apiKeyRequest());
+      if (!result.authenticated || !result.user) throw new Error("expected authed");
+      expect(result.user.activeOrganizationId).toBe("org_real");
+      expect(result.user.claims?.org_id).toBe("org_real");
+      expect(result.user.claims?.origin).toBe("cli");
+      expect(result.user.claims?.api_key).toBe(true);
+      expect(result.user.claims?.sub).toBe("usr_4");
+    });
+
+    it("fails closed (401) when the key metadata has no workspace binding", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_5", email: "u5@acme.com" },
+        session: { id: "key_5", userId: "usr_5" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce({
+        valid: true,
+        key: { metadata: null },
+      });
+
+      const result = await validateManaged(apiKeyRequest());
+      expect(result).toMatchObject({ authenticated: false, status: 401 });
+    });
+
+    it("fails closed (401) when verifyApiKey reports the key invalid/revoked", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_6", email: "u6@acme.com" },
+        session: { id: "key_6", userId: "usr_6" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce({ valid: false, key: null });
+
+      const result = await validateManaged(apiKeyRequest());
+      expect(result).toMatchObject({ authenticated: false, status: 401 });
+    });
+
+    it("fails closed (401) when verifyApiKey throws", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_7", email: "u7@acme.com" },
+        session: { id: "key_7", userId: "usr_7" },
+      });
+      mockVerifyApiKey.mockRejectedValueOnce(new Error("db down"));
+
+      const result = await validateManaged(apiKeyRequest());
+      expect(result).toMatchObject({ authenticated: false, status: 401 });
+    });
+
+    it("fails closed (401) when verifyApiKey returns null entirely (allow-list, not deny-one)", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_n", email: "un@acme.com" },
+        session: { id: "key_n", userId: "usr_n" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce(null);
+
+      const result = await validateManaged(apiKeyRequest());
+      expect(result).toMatchObject({ authenticated: false, status: 401 });
+    });
+
+    it("fails closed (401) when verifyApiKey omits `valid` (must be explicitly true)", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_nv", email: "unv@acme.com" },
+        session: { id: "key_nv", userId: "usr_nv" },
+      });
+      // A soft-failure shape with metadata present but no `valid: true` must NOT
+      // be admitted — the allow-list rejects it before the metadata gate.
+      mockVerifyApiKey.mockResolvedValueOnce({
+        key: { metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "member" } },
+      });
+
+      const result = await validateManaged(apiKeyRequest());
+      expect(result).toMatchObject({ authenticated: false, status: 401 });
+    });
+
+    it("fails closed (401) when the verified key owner != the session user (cookie+key mix)", async () => {
+      // getSession resolved user A (e.g. a cookie won), but the x-api-key belongs
+      // to user B. Binding A's identity to B's key scope would break owner
+      // traceability — assert the cross-check fails closed.
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_A", email: "a@acme.com" },
+        session: { id: "key_b", userId: "usr_A" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce({
+        valid: true,
+        key: {
+          userId: "usr_B",
+          metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "admin" },
+        },
+      });
+      mockHasInternalDB = true;
+      mockInternalQuery = () => Promise.resolve([{ role: "admin" }]);
+
+      const result = await validateManaged(apiKeyRequest());
+      expect(result).toMatchObject({ authenticated: false, status: 401 });
+    });
+
+    it("still enforces ban on the owning member before enrichment", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_banned_key", email: "bk@acme.com", banned: true, banExpires: null },
+        session: { id: "key_8", userId: "usr_banned_key" },
+      });
+
+      const result = await validateManaged(apiKeyRequest());
+      expect(result).toMatchObject({ authenticated: false, status: 401, error: "Account is banned" });
+      // verifyApiKey must not even be consulted for a banned owner.
+      expect(mockVerifyApiKey).not.toHaveBeenCalled();
+    });
+  });
+
   it("passes request headers to getSession", async () => {
     mockGetSession.mockResolvedValueOnce(null);
 

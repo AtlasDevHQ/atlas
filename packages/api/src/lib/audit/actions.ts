@@ -381,6 +381,19 @@ export const ADMIN_ACTIONS = {
     rateLimitUpdate: "oauth_client.rate_limit_update",
   },
   /**
+   * Workspace-scoped API key lifecycle (#4046 / ADR-0027 §6). The unattended-CI
+   * credential — a Better Auth `apiKey()` key carrying `{orgId, role, claims}`
+   * metadata so it resolves to its owning member's bound workspace. `mint` fires
+   * when a member creates a key via the Atlas mint route (which injects the
+   * metadata server-side); metadata: `{ keyId, role, hasClaims }`. The full key
+   * value is NEVER audited (it is shown to the minter once and never stored in
+   * plaintext). Revocation is the native Better Auth `/api/auth/api-key/delete`
+   * mount, which has its own request log.
+   */
+  workspace_key: {
+    mint: "workspace_key.mint",
+  },
+  /**
    * OAuth 2.1 token lifecycle audit (#2066). Emitted when Better Auth's
    * `oauthProvider` issues a fresh access token via the `refresh_token`
    * grant — the load-bearing event for "the agent stayed connected past

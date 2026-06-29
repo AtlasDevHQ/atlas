@@ -17,11 +17,20 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 
 /**
  * Discriminator on who initiated the request, threaded through audit_log
- * via #2067. All four kinds are wired (#3615): web chat / `/api/v1/query`
+ * via #2067. The kinds are wired (#3615): web chat / `/api/v1/query`
  * stamp `human`, the scheduler stamps `scheduler`, the MCP dispatchers stamp
  * `mcp`, and `logQueryAudit` defaults any agent-loop SQL with no more-specific
  * actor to `agent` (the only `executeSQL` writer is the agent loop). Rows are
  * therefore never NULL for actor-scoped filters.
+ *
+ * `api_key` (#4046 / ADR-0027 §6) marks an UNATTENDED workspace-scoped API key
+ * (Better Auth `apiKey()`) — distinct from `human`, which is a person who
+ * approved a device-flow `atlas login`. The transport (`origin`) for both is
+ * still `cli`; `actor_kind` is the *who*, so incident response can tell a
+ * leaked CI key from a compromised human session. An API key is delegated human
+ * access — it resolves to its real owning member's `userId`, never an anonymous
+ * principal (the legacy god-key's `api-key-${hash}` synthetic identity is the
+ * opposite, and lives on the separate `simple-key` auth path, not here).
  *
  * Modeled as a discriminated union so `clientId` / `toolName` are only
  * reachable on the `mcp` branch — the type system enforces the
@@ -29,11 +38,11 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
  * implies, and `audit.ts` can stamp the columns without per-field
  * truthy guards.
  */
-export const ACTOR_KINDS = ["human", "agent", "mcp", "scheduler"] as const;
+export const ACTOR_KINDS = ["human", "agent", "mcp", "scheduler", "api_key"] as const;
 export type ActorKind = (typeof ACTOR_KINDS)[number];
 
 export type RequestActor =
-  | { kind: "human" | "agent" | "scheduler" }
+  | { kind: "human" | "agent" | "scheduler" | "api_key" }
   | {
       kind: "mcp";
       /** Hosted-MCP OAuth client_id (e.g. `claude-desktop`, a DCR UUID). Stdio MCP leaves this undefined. */

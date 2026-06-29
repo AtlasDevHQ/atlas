@@ -122,6 +122,7 @@ import { adminResidency } from "./admin-residency";
 import { adminMigrate } from "./admin-migrate";
 import { adminTokens } from "./admin-tokens";
 import { adminOauthClients } from "./admin-oauth-clients";
+import { adminWorkspaceKeys } from "./admin-workspace-keys";
 import { adminConnections, getVisibleConnectionIds } from "./admin-connections";
 import { adminConnectionGroupDescriptions } from "./admin-connection-group-descriptions";
 import { adminOpenApiDatasources } from "./admin-openapi-datasources";
@@ -454,6 +455,8 @@ admin.route("/tokens", adminTokens);
 admin.route("/tokens/", adminTokens);
 admin.route("/oauth-clients", adminOauthClients);
 admin.route("/oauth-clients/", adminOauthClients);
+admin.route("/workspace-keys", adminWorkspaceKeys);
+admin.route("/workspace-keys/", adminWorkspaceKeys);
 // Per-user trusted-browsers — see me-trusted-devices.ts header.
 import { registerTrustedDeviceRoutes } from "./me-trusted-devices";
 registerTrustedDeviceRoutes(admin, reqId);

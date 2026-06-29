@@ -445,6 +445,10 @@ describe("migrateAuthTables", () => {
             // 0159 drops user.stripeCustomerId from Better Auth's "user" table
             // (#4013 two-phase drop) — a MANAGED_AUTH_MIGRATION, skipped outside
             // managed mode, so it is intentionally absent here.
+            // 0160 widens the audit_log.actor_kind CHECK with 'api_key'
+            // (ADR-0027 §6, #4046); ALTERs the Atlas-internal audit_log, no FK to
+            // a Better Auth table, so it runs in every auth mode — must be listed.
+            { name: "0160_audit_log_actor_kind_api_key.sql" },
           ],
         };
       }

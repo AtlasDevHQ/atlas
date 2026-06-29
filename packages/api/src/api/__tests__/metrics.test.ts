@@ -106,13 +106,17 @@ mock.module("@atlas/api/lib/semantic/metric-run", () => ({
 // (AsyncLocalStorage) by reading getRequestContext() inside the pipeline mock,
 // plus the opts the route forwards (sql + connectionId).
 type PipelineOpts = { sql: string; explanation: string; connectionId?: string };
-let capturedContext: { agentOrigin?: unknown; actorKind?: unknown } = {};
+let capturedContext: { agentOrigin?: unknown; actorKind?: unknown; atlasMode?: unknown } = {};
 let capturedOpts: PipelineOpts | undefined;
 const mockRunUserQueryPipeline: Mock<(opts: PipelineOpts) => Promise<UserQueryOutcome>> = mock(
   async (opts: PipelineOpts) => {
     const { getRequestContext } = await import("@atlas/api/lib/logger");
     const ctx = getRequestContext();
-    capturedContext = { agentOrigin: ctx?.agentOrigin, actorKind: ctx?.actor?.kind };
+    capturedContext = {
+      agentOrigin: ctx?.agentOrigin,
+      actorKind: ctx?.actor?.kind,
+      atlasMode: ctx?.atlasMode,
+    };
     capturedOpts = opts;
     return {
       kind: "ok" as const,
@@ -147,10 +151,11 @@ app.route("/api/v1/metrics", metrics);
 function runMetricRequest(
   id: string,
   body?: Record<string, unknown>,
+  headers?: Record<string, string>,
 ): Request {
   return new Request(`http://localhost/api/v1/metrics/${id}/run`, {
     method: "POST",
-    headers: { Authorization: "Bearer test", "Content-Type": "application/json" },
+    headers: { Authorization: "Bearer test", "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body ?? {}),
   });
 }
@@ -182,7 +187,11 @@ beforeEach(() => {
   mockRunUserQueryPipeline.mockImplementation(async (opts: PipelineOpts) => {
     const { getRequestContext } = await import("@atlas/api/lib/logger");
     const ctx = getRequestContext();
-    capturedContext = { agentOrigin: ctx?.agentOrigin, actorKind: ctx?.actor?.kind };
+    capturedContext = {
+      agentOrigin: ctx?.agentOrigin,
+      actorKind: ctx?.actor?.kind,
+      atlasMode: ctx?.atlasMode,
+    };
     capturedOpts = opts;
     return {
       kind: "ok" as const,
@@ -327,6 +336,53 @@ describe("POST /api/v1/metrics/{id}/run", () => {
     await app.fetch(runMetricRequest("total_gmv"));
     expect(capturedContext.agentOrigin).toBe("cli");
     expect(capturedContext.actorKind).toBe("human");
+  });
+
+  it("stamps actor.kind=api_key for an unattended workspace API key (#4046 / ADR-0027 §6)", async () => {
+    // The api-key auth path marks the resolved user with claims.api_key=true and
+    // keeps origin=cli (the CLI transport). This metric run is written to
+    // audit_log by runUserQueryPipeline, so the trail must distinguish the
+    // unattended key from a human device-flow login — parity with execute-sql.
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: {
+        id: "user-1",
+        mode: "managed",
+        label: "Alice",
+        role: "member",
+        activeOrganizationId: "org-1",
+        claims: { sub: "user-1", org_id: "org-1", origin: "cli", api_key: true },
+      },
+    } as unknown as AuthResult);
+    await app.fetch(runMetricRequest("total_gmv"));
+    expect(capturedContext.agentOrigin).toBe("cli");
+    expect(capturedContext.actorKind).toBe("api_key");
+  });
+
+  it("re-threads the developer atlasMode through the inner bind (withRequestContext replaces, not merges)", async () => {
+    // Regression guard for the sibling-route parity gap: the inner
+    // withRequestContext is AsyncLocalStorage.run, which REPLACES the context.
+    // Dropping atlasMode would silently downgrade a developer-mode caller to the
+    // published overlay inside runUserQueryPipeline (it reads
+    // reqCtx.atlasMode ?? "published" for connection mode-visibility + the table
+    // whitelist scope). Use an owner + the developer-mode header so standardAuth
+    // resolves atlasMode="developer" (members always resolve to published, which
+    // would mask the bug).
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: {
+        id: "user-1",
+        mode: "managed",
+        label: "Alice",
+        role: "owner",
+        activeOrganizationId: "org-1",
+        claims: { sub: "user-1", org_id: "org-1", origin: "cli" },
+      },
+    } as unknown as AuthResult);
+    await app.fetch(runMetricRequest("total_gmv", undefined, { "x-atlas-mode": "developer" }));
+    expect(capturedContext.atlasMode).toBe("developer");
   });
 
   it("falls back to origin=cli when the credential carries no origin claim", async () => {

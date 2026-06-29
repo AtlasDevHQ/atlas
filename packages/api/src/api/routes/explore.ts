@@ -38,6 +38,7 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { isRequestOrigin } from "@atlas/api/lib/approvals/types";
+import { resolveActorKind } from "@atlas/api/lib/auth/api-key-metadata";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -162,20 +163,25 @@ explore.openapi(
         ? claimsOrigin
         : undefined;
 
+    // `actor.kind` derives from the credential — `api_key` for an unattended
+    // workspace key (#4046 / ADR-0027 §6), else `human` — shared with the
+    // sibling routes via `resolveActorKind`. Explore writes no `audit_log` row,
+    // so the marker only feeds the approval context here, but it is kept correct
+    // for parity so the CLI-reachable surface can't drift.
+    const actorKind = resolveActorKind(user?.claims);
+
     // Re-establish the request context as a SUPERSET of the middleware's bind
     // (`user` + `atlasMode` + `trustDeviceIdentifier`) PLUS the audit origin +
     // a distinct actor kind, so any downstream approval/audit path traces to
     // the real owning member (ADR-0027 sub-decision 6) AND `exploreTool.execute`
     // still resolves the correct org-scoped, mode-specific semantic root.
-    // `actor.kind` is `human` for the device-flow human; unattended workspace
-    // keys (a distinct kind) are #4046's responsibility.
     return withRequestContext(
       {
         requestId,
         user,
         atlasMode,
         trustDeviceIdentifier,
-        actor: { kind: "human" },
+        actor: { kind: actorKind },
         ...(agentOrigin ? { agentOrigin } : {}),
       },
       async () => {

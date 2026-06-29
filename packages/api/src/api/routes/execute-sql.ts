@@ -44,10 +44,10 @@
  *  - Audited with a credential-derived origin (`cli` for a device-flow `atlas`
  *    bearer; left undefined for a non-CLI session, never mislabeled) + a distinct
  *    `actor_kind` traceable to the owning member: the handler binds `agentOrigin`
- *    (derived from the credential's `origin` claim, NOT hardcoded) +
- *    `actor: { kind: "human" }` into the request context so the audit row written
- *    by the pipeline traces to the real member who minted the device-flow login
- *    (ADR-0027 §6). The unattended-key `api_key` actor_kind layers in with #4046.
+ *    (derived from the credential's `origin` claim, NOT hardcoded) + an
+ *    `actor.kind` of `api_key` for an unattended workspace key (#4046) or `human`
+ *    otherwise, so the audit row written by the pipeline distinguishes a leaked
+ *    CI key from the real member who minted a device-flow login (ADR-0027 §6).
  *  - Rate limit reuses the standard per-identity bucket (inherited from
  *    `standardAuth`); per-workspace pool + auto-LIMIT + statement timeout bound
  *    the blast radius (ADR-0027 §7).
@@ -64,7 +64,7 @@ import {
   type AgentBillingGateResult,
 } from "@atlas/api/lib/billing/agent-gate";
 import { isRequestOrigin } from "@atlas/api/lib/approvals/types";
-import { API_KEY_MARKER_CLAIM } from "@atlas/api/lib/auth/api-key-metadata";
+import { resolveActorKind } from "@atlas/api/lib/auth/api-key-metadata";
 import type { UserQueryOutcome } from "@atlas/api/lib/tools/sql";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema } from "./shared-schemas";
@@ -376,10 +376,11 @@ executeSql.openapi(executeSqlRoute, async (c) => {
       // human who approved a device-flow `atlas login` in a browser → `human`; an
       // UNATTENDED workspace API key (#4046 / ADR-0027 §6) → `api_key`, so a
       // leaked CI key vs a compromised human session are distinguishable in the
-      // audit trail. The marker is stamped on the resolved user by the api-key
-      // auth path (`managed.ts` → `claims.api_key`).
-      const actorKind: "human" | "api_key" =
-        user?.claims?.[API_KEY_MARKER_CLAIM] === true ? "api_key" : "human";
+      // audit trail. Shared with the sibling CLI routes (metrics/explore/
+      // datasources) via `resolveActorKind` so the marker — stamped on the
+      // resolved user by the api-key auth path (`managed.ts` → `claims.api_key`)
+      // — is read consistently across the whole surface a key can reach.
+      const actorKind = resolveActorKind(user?.claims);
 
       // Re-establish the request context as a SUPERSET of the middleware's bind
       // (`user` + `atlasMode` + `trustDeviceIdentifier`) PLUS the audit origin +

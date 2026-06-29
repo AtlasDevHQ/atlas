@@ -63,6 +63,7 @@ import {
   type AgentBillingGateResult,
 } from "@atlas/api/lib/billing/agent-gate";
 import { isRequestOrigin } from "@atlas/api/lib/approvals/types";
+import { resolveActorKind } from "@atlas/api/lib/auth/api-key-metadata";
 import type { ProfileProgressCallbacks } from "@atlas/api/lib/profiler";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema } from "./shared-schemas";
@@ -296,6 +297,13 @@ datasources.openapi(profileRoute, async (c) => {
   const agentOrigin =
     typeof claimOrigin === "string" && isRequestOrigin(claimOrigin) ? claimOrigin : "cli";
 
+  // `actor.kind` is the *who*, distinct from `origin` (the transport): `api_key`
+  // for an UNATTENDED workspace key (#4046 / ADR-0027 §6), else `human`. The
+  // profiler persists drafts under the org inside this bound context, so the
+  // marker is kept correct for parity with the sibling routes (shared via
+  // `resolveActorKind`) rather than flattened to `human`.
+  const actorKind = resolveActorKind(user?.claims);
+
   // --- Stream NDJSON. The progress bridge writes a line per profiler callback;
   // the profiler runs inside the bound request context (origin=cli + actor.kind)
   // so its draft-persist + any approval/audit path traces to the owning member. ---
@@ -339,7 +347,7 @@ datasources.openapi(profileRoute, async (c) => {
             user,
             atlasMode,
             trustDeviceIdentifier,
-            actor: { kind: "human" },
+            actor: { kind: actorKind },
             agentOrigin,
           },
           () =>

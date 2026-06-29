@@ -24,7 +24,19 @@
  * here calls `process.exit` or `console`; the command handler owns presentation.
  */
 
+import type { CliRestErrorCode, ExecuteSqlRestResponse } from "@useatlas/types";
+import { ExecuteSqlRestResponseSchema } from "@useatlas/schemas";
+
 type FetchImpl = typeof fetch;
+
+/**
+ * The server `error`-field discriminators this client branches on, pinned to the
+ * shared registry (`satisfies Record<…, CliRestErrorCode>`) so a server-side
+ * rename surfaces here at compile time rather than dead-branching a switch.
+ */
+const ERR = {
+  badRequest: "bad_request",
+} as const satisfies Record<string, CliRestErrorCode>;
 
 /** The kinds of failure a raw-SQL call can surface, each with an actionable message. */
 export type SqlErrorKind =
@@ -50,35 +62,40 @@ export class SqlCliError extends Error {
   }
 }
 
-/** The successful raw-SQL result shape (mirrors the route's response). */
-export interface SqlRunResult {
-  readonly columns: string[];
-  readonly rows: Record<string, unknown>[];
-  readonly rowCount: number;
-  /** True when the result hit the auto-LIMIT row cap (more rows exist upstream). */
-  readonly truncated: boolean;
-  readonly executionMs: number;
-  readonly executedAt: string;
-}
+/**
+ * The successful raw-SQL result shape. Aliases the shared
+ * {@link ExecuteSqlRestResponse} wire type (the SSOT in `@useatlas/types`) so
+ * the CLI and the route can't drift; kept under the local name so command-layer
+ * imports stay stable.
+ */
+export type SqlRunResult = ExecuteSqlRestResponse;
 
-export interface SqlClientOptions {
+/** Fields common to both credential arms of {@link SqlClientOptions}. */
+interface SqlClientBaseOptions {
   /** Normalized Atlas API base URL (no trailing slash). */
   readonly baseUrl: string;
-  /**
-   * The stored `atlas login` session bearer (`Authorization: Bearer`). Mutually
-   * exclusive with {@link apiKey}; exactly one credential must be supplied.
-   */
-  readonly token?: string;
-  /**
-   * A workspace-scoped API key for unattended CI (#4046), sent as `x-api-key`.
-   * Mutually exclusive with {@link token}.
-   */
-  readonly apiKey?: string;
   /** Injectable for tests; defaults to the global `fetch`. */
   readonly fetchImpl?: FetchImpl;
   /** Per-request timeout in ms (default 60s — a SQL query can be slower than metadata). */
   readonly timeoutMs?: number;
 }
+
+/**
+ * Exactly ONE credential — the `atlas login` session bearer XOR a workspace API
+ * key (#4046) — modeled as a discriminated union so it is structurally
+ * impossible to construct with neither (the empty-`Bearer` footgun) or both.
+ */
+export type SqlClientOptions =
+  | (SqlClientBaseOptions & {
+      /** The stored `atlas login` session bearer (`Authorization: Bearer`). */
+      readonly token: string;
+      readonly apiKey?: never;
+    })
+  | (SqlClientBaseOptions & {
+      /** A workspace-scoped API key for unattended CI (#4046), sent as `x-api-key`. */
+      readonly apiKey: string;
+      readonly token?: never;
+    });
 
 export interface RunSqlArgs {
   readonly sql: string;
@@ -153,18 +170,20 @@ export async function runSql(opts: SqlClientOptions, args: RunSqlArgs): Promise<
   }
 
   if (res.ok) {
-    // intentionally ignored: a 2xx with a non-JSON body is unexpected from this
-    // route, but degrade to an empty record rather than crash — the field reads
-    // below tolerate missing values.
-    const body = asRecord(await res.json().catch(() => ({})));
-    return {
-      columns: Array.isArray(body.columns) ? (body.columns as string[]) : [],
-      rows: Array.isArray(body.rows) ? (body.rows as Record<string, unknown>[]) : [],
-      rowCount: typeof body.rowCount === "number" ? body.rowCount : 0,
-      truncated: Boolean(body.truncated),
-      executionMs: typeof body.executionMs === "number" ? body.executionMs : 0,
-      executedAt: typeof body.executedAt === "string" ? body.executedAt : "",
-    };
+    // intentionally ignored: a non-JSON 2xx body becomes `undefined` and fails
+    // the schema parse below — surfaced as a typed error, never silent garbage.
+    const raw = await res.json().catch(() => undefined);
+    // Validate the 200 against the shared wire schema (the SSOT). A shape
+    // mismatch is a server bug / version skew — surface it rather than returning
+    // a half-filled result the renderer would silently mangle.
+    const parsed = ExecuteSqlRestResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new SqlCliError(
+        "request_failed",
+        "The Atlas API returned an unexpected response shape for the query result. Update the CLI, or check the server logs.",
+      );
+    }
+    return parsed.data;
   }
 
   // intentionally ignored: an error body that isn't JSON falls back to the
@@ -192,7 +211,7 @@ export async function runSql(opts: SqlClientOptions, args: RunSqlArgs): Promise<
     case 429:
       throw new SqlCliError("rate_limited", serverMessage(body, res.status));
     case 400:
-      if (body.error === "bad_request") {
+      if (body.error === ERR.badRequest) {
         throw new SqlCliError(
           "no_workspace",
           "Your login is not bound to a workspace. Single-workspace accounts bind automatically; in-flow workspace selection for multi-workspace accounts is coming soon (ADR-0026).",

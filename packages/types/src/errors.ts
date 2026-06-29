@@ -60,6 +60,52 @@ export function isChatErrorCode(value: string): value is ChatErrorCode {
 }
 
 // ---------------------------------------------------------------------------
+// CLI REST-suite error codes — the `error`-field discriminators shared by the
+// REST routes and the `atlas` CLI switches (#4111)
+// ---------------------------------------------------------------------------
+
+/**
+ * The `error`-field discriminators the REST-backed CLI suite (raw SQL,
+ * metric-run, datasource lifecycle/profile) emits in its JSON error envelope
+ * and that the `atlas` CLI clients branch on. A PARTIAL registry on purpose —
+ * only the codes a CLI switch actually discriminates on (the HTTP status
+ * carries the rest); it deliberately does not duplicate the chat catalog in
+ * {@link CHAT_ERROR_CODES} or the admin route-response codes documented in
+ * `apps/docs/content/docs/reference/error-codes.mdx`.
+ *
+ * Before #4111 these were bare string literals on both the emitting routes and
+ * the CLI switches, with nothing shared — several emitted codes
+ * (`connection_failed`, `mfa_enrollment_required`, `reconnect_required`) were
+ * absent from any registry. Sharing the union lets the CLI's `ERR` maps pin to
+ * it (`satisfies Record<…, CliRestErrorCode>`) so a server-side rename surfaces
+ * at compile time instead of silently dead-branching a switch.
+ */
+export const CLI_REST_ERROR_CODES = [
+  /** Credential resolved but no workspace bound (the multi-workspace picker is pending, ADR-0026). */
+  "bad_request",
+  /** The member's role is not admin (datasource lifecycle/profile is admin-gated). */
+  "forbidden_role",
+  /** The admin must enroll a second factor before mutating datasources. */
+  "mfa_enrollment_required",
+  /** `datasource create` pre-flight connection test failed (driver error, DSN-scrubbed). */
+  "connection_failed",
+  /** Connection management requires an internal DB (no `DATABASE_URL` on this deploy). */
+  "not_available",
+  /** The workspace plan's datasource cap is reached. */
+  "plan_limit_exceeded",
+  /** The datasource needs to be reconnected (revoked OAuth token) before it can be profiled. */
+  "reconnect_required",
+] as const;
+
+/** Union of the {@link CLI_REST_ERROR_CODES} the CLI clients discriminate on. */
+export type CliRestErrorCode = (typeof CLI_REST_ERROR_CODES)[number];
+
+/** Type guard — checks whether a string is a known {@link CliRestErrorCode}. */
+export function isCliRestErrorCode(value: string): value is CliRestErrorCode {
+  return (CLI_REST_ERROR_CODES as ReadonlyArray<string>).includes(value);
+}
+
+// ---------------------------------------------------------------------------
 // Retryable classification — transient vs permanent errors
 // ---------------------------------------------------------------------------
 

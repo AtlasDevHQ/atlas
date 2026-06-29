@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ConnectionDetailSchema,
   ConnectionHealthSchema,
   ConnectionInfoSchema,
   ConnectionsResponseSchema,
@@ -98,5 +99,79 @@ describe("billable field survives parse (#2490)", () => {
   test("billable absent parses cleanly (mixed-version wire compat)", () => {
     const parsed = ConnectionInfoSchema.parse(validInfo);
     expect("billable" in parsed).toBe(false);
+  });
+});
+
+describe("ConnectionDetailSchema (#4111)", () => {
+  // The full GET /admin/connections/{id} response.
+  const fullDetail = {
+    id: "prod-us",
+    dbType: "postgres",
+    description: "US prod",
+    health: validHealth,
+    maskedUrl: "postgres://***@host/db",
+    schema: "public",
+    managed: true,
+    groupId: "g_prod",
+    groupName: "prod",
+  };
+
+  test("parses the full detail response", () => {
+    const r = ConnectionDetailSchema.safeParse(fullDetail);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data).toEqual(fullDetail);
+  });
+
+  test("strips a plaintext url — the no-secret-in-response invariant is in the type", () => {
+    // A server regression that echoes the raw url must never survive parse: the
+    // schema has no `url` field, so zod's default object-strip drops it. This is
+    // what retires the CLI's old defensive `delete result.url` (#4111).
+    const leaky = { ...fullDetail, url: "postgres://user:pw@host/db" };
+    const r = ConnectionDetailSchema.safeParse(leaky);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect("url" in r.data).toBe(false);
+      expect(r.data.maskedUrl).toBe("postgres://***@host/db");
+    }
+  });
+
+  test("defaults fill the create-response subset (no health/schema/managed)", () => {
+    // POST /admin/connections returns a SUBSET of the detail; the schema's
+    // `.default(...)`s mirror the server's own `?? null` / `?? "unknown"` so one
+    // schema parses both the create and get responses.
+    const createResponse = {
+      id: "ds1",
+      dbType: "postgres",
+      description: null,
+      maskedUrl: "postgres://***@h/db",
+      groupId: "prod",
+    };
+    const r = ConnectionDetailSchema.safeParse(createResponse);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data).toEqual({
+        id: "ds1",
+        dbType: "postgres",
+        description: null,
+        health: null,
+        maskedUrl: "postgres://***@h/db",
+        schema: null,
+        managed: false,
+        groupId: "prod",
+      });
+    }
+  });
+
+  test("defaults dbType to 'unknown' when absent (mirrors the server fallback)", () => {
+    const r = ConnectionDetailSchema.safeParse({ id: "ds2" });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.dbType).toBe("unknown");
+      expect(r.data.maskedUrl).toBeNull();
+    }
+  });
+
+  test("rejects a response with no id (a malformed server body, not a half-fill)", () => {
+    expect(ConnectionDetailSchema.safeParse({}).success).toBe(false);
   });
 });

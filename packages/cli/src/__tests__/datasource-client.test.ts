@@ -82,7 +82,9 @@ describe("datasource-client route mapping (#4044)", () => {
   });
 
   it("get url-encodes the id", async () => {
-    const { fetchImpl, calls } = stubFetch(200, {});
+    // The detail response must carry at least an `id` (the schema's only
+    // required field); the assertion below only checks the request URL.
+    const { fetchImpl, calls } = stubFetch(200, { id: "weird id" });
     await getDatasource(opts(fetchImpl), "weird id");
     expect(calls[0].url).toBe(`${BASE}/api/v1/admin/connections/weird%20id`);
   });
@@ -154,9 +156,11 @@ describe("datasource-client route mapping (#4044)", () => {
     expect(JSON.parse(calls[0].body!).connectionGroupId).toBe("prod");
   });
 
-  it("create strips a plaintext url from the response (defense-in-depth, never echoes the secret)", async () => {
-    // Simulate a server regression that echoes the raw url; the client must not
-    // surface it (it would otherwise reach `--json` output / a redirected log).
+  it("create strips a plaintext url from the response (the invariant is encoded in ConnectionDetail, never echoes the secret)", async () => {
+    // Simulate a server regression that echoes the raw url; parsing through
+    // `ConnectionDetailSchema` (which has no `url` field) strips it, so it can
+    // never reach `--json` output / a redirected log. `"url" in out` proves the
+    // key is absent at runtime — the type already forbids `out.url` at compile time.
     const { fetchImpl } = stubFetch(201, {
       id: "ds1",
       dbType: "postgres",
@@ -164,7 +168,7 @@ describe("datasource-client route mapping (#4044)", () => {
       url: "postgres://user:pw@h/db",
     });
     const out = await createDatasource(opts(fetchImpl), { id: "ds1" }, "postgres://user:pw@h/db");
-    expect(out.url).toBeUndefined();
+    expect("url" in out).toBe(false);
     expect(out.maskedUrl).toBe("postgres://***@h/db");
   });
 });

@@ -20,7 +20,19 @@
  * presentation.
  */
 
+import type { CliRestErrorCode, RunMetricRestResponse } from "@useatlas/types";
+import { RunMetricRestResponseSchema } from "@useatlas/schemas";
+
 type FetchImpl = typeof fetch;
+
+/**
+ * The server `error`-field discriminators this client branches on, pinned to the
+ * shared registry (`satisfies Record<…, CliRestErrorCode>`) so a server-side
+ * rename surfaces at compile time.
+ */
+const ERR = {
+  badRequest: "bad_request",
+} as const satisfies Record<string, CliRestErrorCode>;
 
 /** The kinds of failure a metric-run call can surface, each with an actionable message. */
 export type MetricErrorKind =
@@ -44,19 +56,13 @@ export class MetricCliError extends Error {
   }
 }
 
-/** The successful metric-run result shape (mirrors the route's response). */
-export interface MetricRunResult {
-  readonly id: string;
-  readonly label: string | null;
-  /** Scalar for a single-cell metric, else the full row set. */
-  readonly value: unknown;
-  readonly columns: string[];
-  readonly rows: Record<string, unknown>[];
-  readonly rowCount: number;
-  readonly truncated: boolean;
-  readonly sql: string;
-  readonly executedAt: string;
-}
+/**
+ * The successful metric-run result shape. Aliases the shared
+ * {@link RunMetricRestResponse} wire type (the SSOT in `@useatlas/types`) so the
+ * CLI and the route can't drift; kept under the local name so command-layer
+ * imports stay stable.
+ */
+export type MetricRunResult = RunMetricRestResponse;
 
 export interface MetricClientOptions {
   /** Normalized Atlas API base URL (no trailing slash). */
@@ -137,21 +143,20 @@ export async function runMetric(
   }
 
   if (res.ok) {
-    // intentionally ignored: a 2xx with a non-JSON body is unexpected from this
-    // route, but degrade to an empty record rather than crash — the field reads
-    // below tolerate missing values.
-    const body = asRecord(await res.json().catch(() => ({})));
-    return {
-      id: typeof body.id === "string" ? body.id : args.id,
-      label: typeof body.label === "string" ? body.label : null,
-      value: body.value,
-      columns: Array.isArray(body.columns) ? (body.columns as string[]) : [],
-      rows: Array.isArray(body.rows) ? (body.rows as Record<string, unknown>[]) : [],
-      rowCount: typeof body.rowCount === "number" ? body.rowCount : 0,
-      truncated: Boolean(body.truncated),
-      sql: typeof body.sql === "string" ? body.sql : "",
-      executedAt: typeof body.executedAt === "string" ? body.executedAt : "",
-    };
+    // intentionally ignored: a non-JSON 2xx body becomes `undefined` and fails
+    // the schema parse below — surfaced as a typed error, never silent garbage.
+    const raw = await res.json().catch(() => undefined);
+    // Validate the 200 against the shared wire schema (the SSOT). A shape
+    // mismatch is a server bug / version skew — surface it rather than returning
+    // a half-filled result.
+    const parsed = RunMetricRestResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new MetricCliError(
+        "request_failed",
+        `The Atlas API returned an unexpected response shape for metric "${args.id}". Update the CLI, or check the server logs.`,
+      );
+    }
+    return parsed.data;
   }
 
   // intentionally ignored: an error body that isn't JSON falls back to the
@@ -176,7 +181,7 @@ export async function runMetric(
     case 409:
       throw new MetricCliError("approval_required", serverMessage(body, res.status));
     case 400:
-      if (body.error === "bad_request") {
+      if (body.error === ERR.badRequest) {
         throw new MetricCliError(
           "no_workspace",
           "Your login is not bound to a workspace. Single-workspace accounts bind automatically; in-flow workspace selection for multi-workspace accounts is coming soon (ADR-0026).",

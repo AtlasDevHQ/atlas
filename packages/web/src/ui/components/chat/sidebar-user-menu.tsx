@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { SidebarMenuButton, useSidebar } from "@/components/ui/sidebar";
 import { authClient } from "@/lib/auth/client";
+import { signOutForgettingRegion } from "@/lib/auth/sign-out";
 import { deriveInitials } from "@/ui/components/user-menu";
 import { setTheme, useThemeMode, type ThemeMode } from "@/ui/hooks/use-dark-mode";
 
@@ -92,7 +93,7 @@ export function SidebarUserMenu() {
     if (signingOut) return;
     setSigningOut(true);
     try {
-      await authClient.signOut();
+      await signOutForgettingRegion(() => authClient.signOut());
       window.location.assign("/login");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

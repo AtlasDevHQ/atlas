@@ -4,8 +4,9 @@
  * Exercises the real handler (fetch mocked) to pin the adapter logic the pure
  * `resolveRegion` tests can't reach: the per-client-IP front-door rate limiter
  * (the PRIMARY oracle control), the probeRegion HTTP-status→throw mapping (an
- * in-map 404 is INCONCLUSIVE → `error`, never a false `none`), the cookie
- * fast-path skipping the fan-out, and input validation.
+ * in-map 404 is INCONCLUSIVE → `error`, never a false `none`), the
+ * cookie→`cookieRegion` wiring (a stale cookie never overrides the email
+ * lookup — #4090), and input validation.
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
@@ -104,13 +105,26 @@ describe("POST /api/login/resolve-region", () => {
     expect((await res.json()).outcome).toBe("error");
   });
 
-  it("cookie fast-path skips the probe fan-out and routes from the authoritative map", async () => {
+  it("#4090: a stale atlas_region cookie never overrides the email lookup", async () => {
+    // Cookie pins eu (from a signed-out EU session), but the email exists only
+    // in us. The route must fan out (not short-circuit on the cookie) and route
+    // to the email's TRUE region.
     const cookie = encodeURIComponent(JSON.stringify({ region: "eu", apiUrl: "https://evil.example" }));
-    const res = await post("alice@corp.com", { ip: "203.0.113.23", cookie });
+    probeExists = { "https://api.useatlas.dev": true };
+    const res = await post("matt+us@useatlas.dev", { ip: "203.0.113.23", cookie });
     expect(res.status).toBe(200);
-    // Authoritative apiUrl from the map — NOT the tampered cookie apiUrl.
-    expect(await res.json()).toEqual({ outcome: "single", region: "eu", apiUrl: "https://api-eu.useatlas.dev" });
-    expect(fetchCalls.some((u) => u.endsWith("/api/v1/auth/region-probe"))).toBe(false);
+    expect(await res.json()).toEqual({ outcome: "single", region: "us", apiUrl: "https://api.useatlas.dev" });
+    // The fan-out ran — the cookie did NOT skip the oracle.
+    expect(fetchCalls.some((u) => u.endsWith("/api/v1/auth/region-probe"))).toBe(true);
+  });
+
+  it("#4090: returns none for a non-existent email even with an atlas_region cookie", async () => {
+    // No region confirms a hit; the cookie must not conjure a `single`.
+    const cookie = encodeURIComponent(JSON.stringify({ region: "eu", apiUrl: "https://api-eu.useatlas.dev" }));
+    probeExists = { "https://api.useatlas.dev": false, "https://api-eu.useatlas.dev": false };
+    const res = await post("ghost@nowhere.com", { ip: "203.0.113.27", cookie });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ outcome: "none" });
   });
 
   it("returns error when the region map cannot be fetched", async () => {

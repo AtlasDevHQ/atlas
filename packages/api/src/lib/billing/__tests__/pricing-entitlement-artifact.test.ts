@@ -35,13 +35,14 @@ const COLUMNS = Object.keys(COLUMN_TIERS) as PricingColumn[];
 
 describe("COLUMN_TIERS — the column → tier ladder", () => {
   // The whole mirror's correctness rests on COLUMN_TIERS mapping each marketing
-  // column to the right PlanTier. Every gated feature is currently Business-min,
-  // so the live artifact is monochrome (every gated cell is {…, business: true})
-  // — which means the SSOT-driven tests below can't, on their own, tell `pro`
-  // apart from `business`. A fat-fingered `pro: "business"` would produce an
-  // identical artifact and slip through. These hard-coded oracles pin the
-  // ladder independently of the live SSOT, so a column→tier typo (or a future
-  // feature legitimately re-tiered to Pro+) is caught.
+  // column to the right PlanTier. The live SSOT now spans tiers (custom_domain
+  // is Pro-min; proactive + residency are trial-min; the rest Business-min), so
+  // the artifact is no longer monochrome — but leaning on whichever features
+  // happen to sit at a given tier is brittle: a future re-tier would silently
+  // change what these tests cover. These hard-coded oracles pin the column→tier
+  // ladder independently of the live SSOT, so a column→tier typo (e.g. a
+  // fat-fingered `pro: "business"`) is caught even when no live feature would
+  // distinguish the two columns on its own.
   it("maps each column to its intended tier (hard-coded oracle, not SSOT-derived)", () => {
     expect(COLUMN_TIERS).toEqual({
       selfHosted: "free",

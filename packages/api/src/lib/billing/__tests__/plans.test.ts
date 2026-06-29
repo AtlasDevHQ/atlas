@@ -99,11 +99,14 @@ describe("billing/plans", () => {
     });
 
     it("plan features are tier-appropriate", () => {
+      // Data residency is the all-paid floor, not a Business differentiator
+      // (FEATURE_ENTITLEMENTS.residency = "trial") — so it is set from the trial
+      // tier (the lowest active SaaS tier) up, including starter/pro.
+      expect(getPlanDefinition("trial").features.dataResidency).toBe(true);
+
       const starter = getPlanDefinition("starter");
       expect(starter.features.customDomain).toBe(false);
       expect(starter.features.sso).toBe(false);
-      // Data residency is all-paid-tier, not a Business differentiator
-      // (FEATURE_ENTITLEMENTS.residency = "trial").
       expect(starter.features.dataResidency).toBe(true);
 
       const pro = getPlanDefinition("pro");

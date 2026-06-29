@@ -303,5 +303,51 @@ describe("per-tier feature-entitlement route gates (#3988)", () => {
       expect(res.status).toBe(503);
       expect(await errorOf(res)).toBe("billing_check_failed");
     });
+
+    // The residency router gates SIX endpoints on the same `residency`
+    // entitlement, but the cases above only probe GET / and PUT /. The four
+    // migration routes are the highest-stakes residency surface — opening region
+    // migration to all paid tiers is this change's explicit design point — and
+    // the enforcement-parity scan only proves the gate is consulted by AT LEAST
+    // ONE call site, so a refactor dropping the `yield*` on a migration route
+    // would slip past it. Probe each migration route at the boundary (mirrors the
+    // proactive sibling's per-route describe.each). Bodies/params are valid so the
+    // request reaches the in-handler gate rather than 400-ing on validation first.
+    const MIGRATION_ROUTES: Array<{
+      label: string;
+      method: string;
+      path: string;
+      body?: unknown;
+    }> = [
+      { label: "GET /migration (status)", method: "GET", path: "/api/v1/admin/residency/migration" },
+      {
+        label: "POST /migrate (request migration)",
+        method: "POST",
+        path: "/api/v1/admin/residency/migrate",
+        body: { targetRegion: "eu-west" },
+      },
+      { label: "POST /migrate/{id}/retry", method: "POST", path: "/api/v1/admin/residency/migrate/mig_1/retry" },
+      { label: "POST /migrate/{id}/cancel", method: "POST", path: "/api/v1/admin/residency/migrate/mig_1/cancel" },
+    ];
+
+    it.each(MIGRATION_ROUTES)(
+      "denies a free-tier workspace on $label before any side effect",
+      async ({ method, path: routePath, body }) => {
+        setWorkspaceTier("free");
+        const res = await app.fetch(adminRequest(routePath, method, body));
+        expect(res.status).toBe(403);
+        expect(await errorOf(res)).toBe("plan_upgrade_required");
+      },
+    );
+
+    it("admits an active starter workspace on POST /migrate — the all-tier migration trigger passes the ladder", async () => {
+      setWorkspaceTier("starter");
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/residency/migrate", "POST", { targetRegion: "eu-west" }),
+      );
+      const err = await errorOf(res);
+      expect(err).not.toBe("plan_upgrade_required");
+      expect(err).not.toBe("billing_check_failed");
+    });
   });
 });

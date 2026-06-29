@@ -245,8 +245,8 @@ When `ATLAS_AUTH_MODE` is not set, Atlas auto-detects based on which variables a
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_API_KEY` | — | Shared secret. Clients send `Authorization: Bearer <key>` or `X-API-Key: <key>` |
-| `ATLAS_API_KEY_ROLE` | `admin` | Role for API key users. Valid values: `member`, `admin`, `owner`. Invalid values fall back to `admin` with a warning at startup |
+| `ATLAS_API_KEY` | — | **Legacy operator god-key** — a single env-configured shared secret for self-hosted simple-key auth. Clients send `Authorization: Bearer <key>` or `X-API-Key: <key>`. This is distinct from a **workspace-scoped API key**: the *same variable name* is also read by the REST-backed workspace CLI commands (`atlas sql` / `metric run` / `explore` / `datasource`) as a per-member workspace key ([#4046](https://github.com/AtlasDevHQ/atlas/issues/4046)) — see [Workspace CLI credentials](#workspace-cli-credentials) and [API Key Management](/guides/api-keys) |
+| `ATLAS_API_KEY_ROLE` | `admin` | Role for the operator god-key above. Valid values: `member`, `admin`, `owner`. Invalid values fall back to `admin` with a warning at startup. Does not apply to workspace keys, which carry their own server-side role |
 
 ```bash
 # Simple key auth for headless integrations
@@ -334,6 +334,27 @@ ATLAS_AUTH_ISSUER=https://your-tenant.auth0.com/
 ATLAS_AUTH_AUDIENCE=https://api.example.com
 # Nested claim for role extraction
 ATLAS_AUTH_ROLE_CLAIM=app_metadata.atlas_role
+```
+
+### Workspace CLI credentials
+
+How the `atlas` CLI authenticates to a running Atlas API for the [workspace commands](/reference/cli#workspace-commands) (`login`, `switch`, `sql`, `metric run`, `explore`, `datasource`). The recommended path is an ambient `atlas login` device-flow session stored in `~/.atlas/credentials`; the variables below cover targeting a non-local API and the unattended-CI / headless paths. See [API Key Management](/guides/api-keys) for the full credential model.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_API_URL` | `http://localhost:3001` | Which Atlas API the CLI talks to. Point it at a hosted instance (e.g. `https://app.useatlas.dev`) to run workspace commands against it. The credential store is keyed per normalized base URL, so you can stay logged in to several instances at once |
+| `ATLAS_API_KEY` (as a workspace key) | — | A **workspace-scoped** API key for unattended CI ([#4046](https://github.com/AtlasDevHQ/atlas/issues/4046)), sent on the `x-api-key` header by `atlas sql` / `metric run` / `explore` / `datasource`. Overridden by `--api-key <key>`. Not persisted to `~/.atlas/credentials` (a CI secret, not an interactive login). Pinned to one workspace, so `--workspace` is rejected when it is used. Distinct from the legacy operator god-key of the same name under [Simple Key](#simple-key) |
+| `ATLAS_DATASOURCE_SECRET` | — | Headless secret-capture channel for [`atlas datasource create`](/reference/cli#datasource-create): the connection URL — which embeds the datasource credential — is read from this variable, **never** passed as a flag, so it stays out of argv, shell history, and process logs. When unset, an interactive terminal prompts for it on stdin (hidden input); with no TTY and no value set, `create` defers to the dashboard or MCP. A set-but-empty value is treated as a misconfiguration and fails loudly rather than silently prompting |
+
+```bash
+# Run workspace commands against a hosted instance after `atlas login`
+ATLAS_API_URL=https://app.useatlas.dev atlas login
+
+# Unattended CI: a workspace key (no interactive login)
+ATLAS_API_KEY=<workspace-key> atlas sql "SELECT count(*) FROM orders"
+
+# Headless `datasource create`: the connection URL via the env var, never argv
+ATLAS_DATASOURCE_SECRET="postgres://user:pass@host:5432/db" atlas datasource create prod-us
 ```
 
 ### Rate Limiting
@@ -552,7 +573,7 @@ VERCEL_TOKEN=your-vercel-access-token
 | `VERCEL_PROJECT_PRODUCTION_URL` | (set by Vercel) | Vercel-platform-set production hostname. Used by managed auth (`auth/server.ts`) when deriving the trusted origins list on Vercel deployments — Atlas prepends `https://` to it. Sibling of the documented `VERCEL` runtime marker; cannot be set manually |
 | `NEXT_PUBLIC_ATLAS_API_URL` | — | Next.js frontend: cross-origin API URL. When unset, same-origin via Next.js rewrites |
 | `NEXT_PUBLIC_ATLAS_AUTH_MODE` | — | Enables proxy-level route protection in the Next.js frontend. When set to `managed`, unauthenticated users are redirected to `/signup`. Other auth modes skip proxy enforcement |
-| `ATLAS_API_URL` | `http://localhost:3001` | Rewrite target for Next.js same-origin mode (used only when `NEXT_PUBLIC_ATLAS_API_URL` is unset). Also read by the `atlas` CLI as the API endpoint for `query`, `import`, `export`, and `init` against a remote instance; the CLI defaults to `http://localhost:3001` when unset |
+| `ATLAS_API_URL` | `http://localhost:3001` | Rewrite target for Next.js same-origin mode (used only when `NEXT_PUBLIC_ATLAS_API_URL` is unset). Also read by the `atlas` CLI as the API endpoint against a remote instance — by `query` / `import` / `init` and by the [workspace commands](/reference/cli#workspace-commands) (`login` / `switch` / `sql` / `metric run` / `explore` / `datasource`). See [Workspace CLI credentials](#workspace-cli-credentials). The CLI defaults to `http://localhost:3001` when unset |
 
 ```bash
 # Production: cross-origin setup

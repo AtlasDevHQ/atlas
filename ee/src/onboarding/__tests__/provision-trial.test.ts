@@ -177,6 +177,35 @@ describe("provisionTrialWorkspace", () => {
     expect(calls.mcpLead).toHaveLength(0);
   });
 
+  it("maps a plus-addressing rejection from the signup hook to plus_addressing (#4091, actionable not internal_error)", async () => {
+    // #4091 rejects plus-addressed signups in the SAME shared user.create.before
+    // hook, throwing a typed PLUS_ADDRESSING_NOT_ALLOWED APIError out of
+    // `signUpEmail`. The provisioner must recognize it and surface the distinct
+    // `plus_addressing` code (→ a validation_failed envelope with a hint at the
+    // MCP layer) — NOT the generic internal_error/"please retry" a bare rethrow
+    // would produce. A deny is permanent, not transient.
+    const { APIError } = await import("better-auth/api");
+    const { PLUS_ADDRESSING_NOT_ALLOWED_CODE, PLUS_ADDRESSING_NOT_ALLOWED_MESSAGE } =
+      await import("@atlas/api/lib/auth/business-email");
+    const { deps, calls } = stubDeps({
+      signUpEmail: async () => {
+        throw new APIError("BAD_REQUEST", {
+          code: PLUS_ADDRESSING_NOT_ALLOWED_CODE,
+          message: PLUS_ADDRESSING_NOT_ALLOWED_MESSAGE,
+        });
+      },
+    });
+    await expect(
+      provisionTrialWorkspace({ email: "user+trial@acme.com", orgName: "Acme" }, deps),
+    ).rejects.toMatchObject({
+      code: "plus_addressing",
+      message: PLUS_ADDRESSING_NOT_ALLOWED_MESSAGE,
+    });
+    expect(calls.createOrg).toHaveLength(0);
+    expect(calls.grace).toHaveLength(0);
+    expect(calls.mcpLead).toHaveLength(0);
+  });
+
   it("rethrows a non-business-email signup throw unchanged (a generic failure stays generic)", async () => {
     // Anything other than the business-email rejection propagates untouched, so
     // the MCP layer maps it to internal_error — only the recognized deny is

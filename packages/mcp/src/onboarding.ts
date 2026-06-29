@@ -138,6 +138,17 @@ function provisioningErrorResult(
           hint: "Personal and disposable email addresses aren't supported for Atlas trials — start the trial again with your work email.",
         }),
       );
+    case "plus_addressing":
+      // A plus-addressed signup on a non-exempt domain (the shared #4091
+      // signup-hook deny). Wire code stays `validation_failed` (the closed MCP
+      // envelope catalog has no dedicated code, and a plus-tagged address IS
+      // invalid trial input), but the tailored hint tells the agent to use the
+      // primary work email rather than re-typing the same plus-tagged address.
+      return toEnvelopeResult(
+        envelope("validation_failed", err.message, {
+          hint: "Plus-addressed emails (you+tag@domain) aren't supported — start the trial again with your primary work email.",
+        }),
+      );
     case "signup_failed":
       return toEnvelopeResult(
         envelope("validation_failed", err.message, {
@@ -152,6 +163,13 @@ function provisioningErrorResult(
       return toEnvelopeResult(
         envelope("internal_error", err.message, { request_id: requestId }),
       );
+    default: {
+      // Exhaustiveness guard: a new TrialProvisioningCode that forgets a case
+      // here fails to compile (tsconfig has no noImplicitReturns, so without
+      // this arm a missing case would silently return undefined).
+      const _exhaustive: never = err.code;
+      return _exhaustive;
+    }
   }
 }
 

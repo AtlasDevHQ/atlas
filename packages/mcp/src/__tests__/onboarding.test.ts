@@ -218,16 +218,27 @@ describe("start_trial tool", () => {
       code:
         | "invalid_input"
         | "business_email"
+        | "plus_addressing"
         | "signup_failed"
         | "not_saas"
         | "org_failed"
         | "trial_not_assigned";
       envelopeCode: "validation_failed" | "forbidden" | "internal_error";
       expectHint?: boolean;
+      // Substring the hint must contain, pinning the distinct per-code wording
+      // (not just "a hint exists") so plus_addressing can't silently collapse
+      // into the generic business_email/signup_failed hint.
+      expectHintIncludes?: string;
       expectRequestId?: boolean;
     }> = [
       { code: "invalid_input", envelopeCode: "validation_failed" },
       { code: "business_email", envelopeCode: "validation_failed", expectHint: true },
+      {
+        code: "plus_addressing",
+        envelopeCode: "validation_failed",
+        expectHint: true,
+        expectHintIncludes: "you+tag",
+      },
       { code: "signup_failed", envelopeCode: "validation_failed", expectHint: true },
       { code: "not_saas", envelopeCode: "forbidden" },
       { code: "org_failed", envelopeCode: "internal_error", expectRequestId: true },
@@ -251,6 +262,11 @@ describe("start_trial tool", () => {
       const err = parseAtlasMcpToolError(arr[0]!.text);
       expect(err?.code).toBe(tc.envelopeCode);
       if (tc.expectHint) expect(typeof err?.hint).toBe("string");
+      if (tc.expectHintIncludes) {
+        expect(err?.hint, `hint for ${tc.code} must carry its distinct wording`).toContain(
+          tc.expectHintIncludes,
+        );
+      }
       if (tc.expectRequestId) {
         // Assert the shape, not mere truthiness — the literal string
         // "undefined" would pass `toBeTruthy()`. request_id is a UUID.

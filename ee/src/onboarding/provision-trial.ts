@@ -57,6 +57,7 @@ export type TrialProvisioningCode =
   | "not_saas"
   | "invalid_input"
   | "business_email"
+  | "plus_addressing"
   | "signup_failed"
   | "org_failed"
   | "trial_not_assigned";
@@ -222,6 +223,8 @@ function isValidEmail(email: string): boolean {
  * @throws {TrialProvisioningError} `not_saas` when deploy mode isn't SaaS;
  *   `invalid_input` for empty/malformed email or name; `business_email` when the
  *   address is freemium/disposable (the shared #3650 signup-hook deny);
+ *   `plus_addressing` when the address is plus-addressed on a non-exempt domain
+ *   (the shared #4091 signup-hook deny);
  *   `signup_failed` / `org_failed` when the Better Auth path returns no id;
  *   `trial_not_assigned` when the org landed on neither `trial` nor `locked`.
  */
@@ -292,6 +295,18 @@ export async function provisionTrialWorkspace(
       throw new TrialProvisioningError(
         "business_email",
         recognizer.BUSINESS_EMAIL_REQUIRED_MESSAGE,
+      );
+    }
+    // Plus-addressing reject (#4091) — same shared signup hook, distinct typed
+    // deny. Map to the `plus_addressing` code (→ a validation_failed envelope
+    // with a tailored hint at the MCP layer) so an agent tells the user to use
+    // their primary work email rather than re-typing the same plus-tagged one —
+    // NOT the generic internal_error a bare rethrow produces. A deny is
+    // permanent, not transient.
+    if (recognizer?.isPlusAddressingRejection(err)) {
+      throw new TrialProvisioningError(
+        "plus_addressing",
+        recognizer.PLUS_ADDRESSING_NOT_ALLOWED_MESSAGE,
       );
     }
     throw err;

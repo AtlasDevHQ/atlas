@@ -40,6 +40,7 @@ export type TrialProvisioningCode =
   | "not_saas"
   | "invalid_input"
   | "business_email"
+  | "plus_addressing"
   | "signup_failed"
   | "org_failed"
   | "trial_not_assigned";

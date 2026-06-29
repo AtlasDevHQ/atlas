@@ -64,6 +64,7 @@ import {
   type AgentBillingGateResult,
 } from "@atlas/api/lib/billing/agent-gate";
 import { isRequestOrigin } from "@atlas/api/lib/approvals/types";
+import { API_KEY_MARKER_CLAIM } from "@atlas/api/lib/auth/api-key-metadata";
 import type { UserQueryOutcome } from "@atlas/api/lib/tools/sql";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema } from "./shared-schemas";
@@ -362,15 +363,23 @@ executeSql.openapi(executeSqlRoute, async (c) => {
       }
 
       // Audit origin derives from the credential's claim, never hardcoded — a
-      // device-flow `atlas` bearer carries `origin: "cli"` (#4043 / ADR-0026);
-      // a web session leaves it undefined so it is not mislabeled. Validated
-      // against the canonical vocabulary so an unexpected value can't land in the
-      // approval/audit context. `actor.kind = human`: the device-flow login is a
-      // person who approved in a browser (ADR-0027 §6). The unattended-key
-      // `api_key` actor_kind is #4046's responsibility, not this slice.
+      // device-flow `atlas` bearer AND a workspace API key both carry
+      // `origin: "cli"` (the CLI transport; #4043 / ADR-0026 / #4046); a web
+      // session leaves it undefined so it is not mislabeled. Validated against the
+      // canonical vocabulary so an unexpected value can't land in the
+      // approval/audit context.
       const claimsOrigin = user?.claims?.origin;
       const agentOrigin =
         typeof claimsOrigin === "string" && isRequestOrigin(claimsOrigin) ? claimsOrigin : undefined;
+
+      // `actor.kind` is the *who*, distinct from the *transport* (`origin`): a
+      // human who approved a device-flow `atlas login` in a browser → `human`; an
+      // UNATTENDED workspace API key (#4046 / ADR-0027 §6) → `api_key`, so a
+      // leaked CI key vs a compromised human session are distinguishable in the
+      // audit trail. The marker is stamped on the resolved user by the api-key
+      // auth path (`managed.ts` → `claims.api_key`).
+      const actorKind: "human" | "api_key" =
+        user?.claims?.[API_KEY_MARKER_CLAIM] === true ? "api_key" : "human";
 
       // Re-establish the request context as a SUPERSET of the middleware's bind
       // (`user` + `atlasMode` + `trustDeviceIdentifier`) PLUS the audit origin +
@@ -384,7 +393,7 @@ executeSql.openapi(executeSqlRoute, async (c) => {
             user,
             atlasMode,
             trustDeviceIdentifier,
-            actor: { kind: "human" },
+            actor: { kind: actorKind },
             ...(agentOrigin ? { agentOrigin } : {}),
           },
           async () => {

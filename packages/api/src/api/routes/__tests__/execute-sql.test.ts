@@ -145,8 +145,16 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
 const { executeSql } = await import("../execute-sql");
 
 function userAuth(
-  opts: { orgId?: string | null; role?: "member" | "admin" | "owner"; origin?: string } = {},
+  opts: {
+    orgId?: string | null;
+    role?: "member" | "admin" | "owner";
+    origin?: string;
+    apiKey?: boolean;
+  } = {},
 ): AuthResult & { authenticated: true } {
+  const claims: Record<string, unknown> = {};
+  if (opts.origin) claims.origin = opts.origin;
+  if (opts.apiKey) claims.api_key = true;
   return {
     authenticated: true,
     mode: "managed",
@@ -156,7 +164,7 @@ function userAuth(
       label: "user@test.dev",
       role: opts.role ?? "member",
       activeOrganizationId: opts.orgId === null ? undefined : opts.orgId ?? "org-1",
-      ...(opts.origin ? { claims: { origin: opts.origin } } : {}),
+      ...(Object.keys(claims).length > 0 ? { claims } : {}),
     },
   };
 }
@@ -529,6 +537,17 @@ describe("POST /api/v1/execute-sql — audit origin (ADR-0027 §6)", () => {
     const sqlCtx = capturedContexts.find((c) => c.actor !== undefined);
     expect(sqlCtx?.agentOrigin).toBeUndefined();
     expect(sqlCtx?.actor).toEqual({ kind: "human" });
+  });
+
+  it("stamps actor.kind=api_key for an unattended workspace API key (#4046 / ADR-0027 §6)", async () => {
+    // The api-key auth path marks the resolved user with claims.api_key=true and
+    // keeps origin=cli (the CLI transport). The audit must distinguish this
+    // unattended key from a human device-flow login.
+    fakeAuth = userAuth({ origin: "cli", apiKey: true });
+    await post({ sql: "SELECT 1" });
+    const sqlCtx = capturedContexts.find((c) => c.actor !== undefined);
+    expect(sqlCtx?.agentOrigin).toBe("cli");
+    expect(sqlCtx?.actor).toEqual({ kind: "api_key" });
   });
 
   it("re-threads the developer atlasMode through the inner bind (withRequestContext replaces, not merges)", async () => {

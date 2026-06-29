@@ -28,17 +28,27 @@ function capture(): { io: SqlIO; out: string[]; err: string[] } {
   return { io: { out: (l) => out.push(l), err: (l) => err.push(l) }, out, err };
 }
 
-/** Single-canned-response fetch capturing requests + their bodies. */
+/** Single-canned-response fetch capturing requests + their bodies + headers. */
 function stubFetch(
   status: number,
   body: unknown,
-): { fetchImpl: typeof fetch; calls: Array<{ method: string; url: string; body: string }> } {
-  const calls: Array<{ method: string; url: string; body: string }> = [];
+): {
+  fetchImpl: typeof fetch;
+  calls: Array<{ method: string; url: string; body: string; headers: Record<string, string> }>;
+} {
+  const calls: Array<{ method: string; url: string; body: string; headers: Record<string, string> }> = [];
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const headers: Record<string, string> = {};
+    if (init?.headers) {
+      new Headers(init.headers as Record<string, string>).forEach((v, k) => {
+        headers[k] = v;
+      });
+    }
     calls.push({
       method: init?.method ?? "GET",
       url: typeof url === "string" ? url : url.toString(),
       body: typeof init?.body === "string" ? init.body : "",
+      headers,
     });
     return new Response(JSON.stringify(body), {
       status,
@@ -147,6 +157,73 @@ describe("runSqlCommand — request shape (ADR-0027 §5 isolation)", () => {
     const { io } = capture();
     await runSqlCommand(["sql", "SELECT 1"], deps(fetchImpl), io);
     expect(calls[0].auth).toBe("Bearer sess_abc");
+  });
+});
+
+describe("runSqlCommand — workspace API key (#4046 unattended CI)", () => {
+  it("sends the key on x-api-key (not Authorization) when ATLAS_API_KEY is set", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_ROWS);
+    const { io } = capture();
+    const code = await runSqlCommand(
+      ["sql", "SELECT 1"],
+      { baseUrl: BASE, session: null, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].headers["x-api-key"]).toBe("atlas_wk_abc");
+    expect(calls[0].headers["authorization"]).toBeUndefined();
+    // It runs without a stored login (the whole point of the unattended key)
+    // and never makes a set-active rebind call.
+    expect(calls.length).toBe(1);
+  });
+
+  it("the --api-key flag overrides ATLAS_API_KEY (deps.apiKey)", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_ROWS);
+    const { io } = capture();
+    const code = await runSqlCommand(
+      ["sql", "SELECT 1", "--api-key", "flag_key"],
+      { baseUrl: BASE, session: null, apiKey: "env_key", fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].headers["x-api-key"]).toBe("flag_key");
+  });
+
+  it("does not mistake the --api-key value for the SQL positional", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_ROWS);
+    const { io } = capture();
+    const code = await runSqlCommand(
+      ["sql", "--api-key", "flag_key", "SELECT 7"],
+      { baseUrl: BASE, session: null, fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(calls[0].body)).toEqual({ sql: "SELECT 7" });
+  });
+
+  it("the api-key path takes precedence over a stored session", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_ROWS);
+    const { io } = capture();
+    await runSqlCommand(
+      ["sql", "SELECT 1"],
+      { baseUrl: BASE, session: SESSION, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    expect(calls[0].headers["x-api-key"]).toBe("atlas_wk_abc");
+    expect(calls[0].headers["authorization"]).toBeUndefined();
+  });
+
+  it("rejects --workspace with an api-key (keys are workspace-pinned)", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_ROWS);
+    const { io, err } = capture();
+    const code = await runSqlCommand(
+      ["sql", "SELECT 1", "--workspace", "org-2"],
+      { baseUrl: BASE, session: null, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("pinned to one workspace");
+    expect(calls.length).toBe(0);
   });
 });
 

@@ -467,6 +467,10 @@ export function createApiTestMocks(
 
   mock.module("@atlas/api/lib/auth/server", () => ({
     getAuthInstance: () => null,
+    // #4046 — managed.ts imports SESSION_ORIGIN_CLI from auth/server; export it
+    // so harness consumers that transitively load managed.ts don't SyntaxError on
+    // a missing named export (CLAUDE.md: mock ALL exports a consumer reads).
+    SESSION_ORIGIN_CLI: "cli",
     listAllUsers: mock(() => Promise.resolve([])),
     setUserRole: mock(async () => {}),
     setBanStatus: mock(async () => {}),

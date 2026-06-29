@@ -190,6 +190,18 @@ describe("organization plugin wiring", () => {
     const org = plugins.find((p: { id?: string }) => p.id === "organization");
     expect(org).toBeDefined();
   });
+
+  // #4046 / ADR-0027 §6 — the workspace-scoped API key path is inert unless the
+  // apiKey() plugin is wired. The plugin's options (`enableMetadata` /
+  // `enableSessionForAPIKeys`) are NOT introspectable on the constructed plugin
+  // object, so this guards the weaker-but-load-bearing invariant that the plugin
+  // stays present in buildPlugins(); the end-to-end metadata/session behavior is
+  // pinned by managed.test.ts (enrichment) + admin-workspace-keys.test.ts (mint).
+  it("buildPlugins() includes the api-key plugin (workspace-key path, #4046)", () => {
+    const plugins = buildPlugins();
+    const apiKeyPlugin = plugins.find((p: { id?: string }) => p.id === "api-key");
+    expect(apiKeyPlugin).toBeDefined();
+  });
 });
 
 // #3159 — the Better Auth admin plugin authorized the caller off the RAW

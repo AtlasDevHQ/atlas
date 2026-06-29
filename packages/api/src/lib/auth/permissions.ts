@@ -116,6 +116,20 @@ export function parseRole(value: string | undefined): AtlasRole | undefined {
   return undefined;
 }
 
+/**
+ * Cap an effective role at a ceiling — returns whichever of the two ranks
+ * lower in the `member < admin < owner < platform_admin` hierarchy.
+ *
+ * Used by the workspace-API-key path (#4046): the key stores the minter's role
+ * as a CEILING at mint time, and the live member role is re-resolved at use time.
+ * Capping the live role at the stored ceiling means a key never grants MORE than
+ * the minter held when they created it (even if the member was later promoted),
+ * while a demotion still down-privileges the key (the live role is lower).
+ */
+export function capRole(role: AtlasRole, ceiling: AtlasRole): AtlasRole {
+  return ROLE_LEVEL[role] <= ROLE_LEVEL[ceiling] ? role : ceiling;
+}
+
 // ---------------------------------------------------------------------------
 // Permission check
 // ---------------------------------------------------------------------------

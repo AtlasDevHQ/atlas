@@ -48,6 +48,10 @@ interface CreateApiKeyResponse {
   key: string;
   id: string;
   name: string;
+  // #4046 — the Atlas mint route returns the resolved workspace binding so the
+  // reveal dialog can show the caller what the key is scoped to.
+  orgId: string;
+  role: string;
 }
 
 // Subset of the Better Auth API key list response we render in the UI.
@@ -92,10 +96,13 @@ export default function ApiKeysPage() {
   } = useAdminFetch("/api/auth/api-key/list", { schema: ListApiKeysResponseSchema });
   const apiKeys: ApiKeyRow[] = listData?.apiKeys ?? [];
 
-  // Create mutation — no invalidates here because onSuccess captures
-  // the key for display before triggering refetch manually.
+  // Create mutation — #4046: mint through the Atlas workspace-keys route, which
+  // injects {orgId, role, claims} metadata server-side so the key is bound to
+  // this workspace (a raw /api/auth/api-key/create key carries no binding and is
+  // refused at auth time). No invalidates here because onSuccess captures the key
+  // for display before triggering refetch manually.
   const createMutation = useAdminMutation<CreateApiKeyResponse>({
-    path: "/api/auth/api-key/create",
+    path: "/api/v1/admin/workspace-keys",
     method: "POST",
   });
 

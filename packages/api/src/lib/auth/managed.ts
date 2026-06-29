@@ -8,16 +8,30 @@
  * callers (middleware.ts) are expected to catch.
  */
 
-import type { AuthResult } from "@atlas/api/lib/auth/types";
+import type { AuthResult, AtlasUser } from "@atlas/api/lib/auth/types";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
-import { parseRole } from "@atlas/api/lib/auth/permissions";
-import { getAuthInstance } from "@atlas/api/lib/auth/server";
+import { parseRole, capRole } from "@atlas/api/lib/auth/permissions";
+import { getAuthInstance, SESSION_ORIGIN_CLI } from "@atlas/api/lib/auth/server";
 import { isEffectivelyBanned } from "@atlas/api/lib/auth/admin-user-ops";
+import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
+import {
+  API_KEY_MARKER_CLAIM,
+  parseApiKeyMetadata,
+} from "@atlas/api/lib/auth/api-key-metadata";
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getSetting } from "@atlas/api/lib/settings";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 
 const log = createLogger("auth:managed");
+
+/**
+ * The header carrying a workspace-scoped API key. Mirrors the Better Auth
+ * `apiKey()` plugin's default `apiKeyHeaders` (`x-api-key`). Lower-cased to match
+ * `Headers.get` normalization. Kept as a named const so the detection seam below
+ * and the plugin config in `server.ts` can't drift to different headers.
+ */
+export const API_KEY_HEADER = "x-api-key";
 
 export async function validateManaged(req: Request): Promise<AuthResult> {
   const auth = getAuthInstance();
@@ -67,6 +81,22 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   ) {
     log.info({ userId }, "Rejecting session — user is banned");
     return { authenticated: false, mode: "managed", status: 401, error: "Account is banned" };
+  }
+
+  // #4046 / ADR-0027 §6 — workspace-scoped API key (unattended CI). When the
+  // request carried an `x-api-key` header, the Better Auth `apiKey()` plugin
+  // already resolved it to its OWNING member (the session.user above is that
+  // real person — never a synthetic identity), but the synthetic session it
+  // builds carries no `activeOrganizationId`/`origin`/metadata. Enrich from the
+  // key's metadata so the key resolves through the same actor path + gate chain
+  // as the device-flow bearer: bound org, org-role-only role (capped at the
+  // mint-time ceiling), the member's RLS claim, and a distinct `api_key` marker.
+  // The non-api-key (cookie / device-flow bearer) path falls through unchanged.
+  if (req.headers.get(API_KEY_HEADER)) {
+    // The apiKey() plugin's `verifyApiKey` (server-only) isn't on the base Auth
+    // type the instance is annotated as (plugin endpoints are reached through the
+    // HTTP handler), so narrow to the structural shape resolveApiKeyAuth needs.
+    return resolveApiKeyAuth(req, auth as unknown as AuthWithApiKey, userId, email);
   }
 
   const stampedRole = sessionUser?.effectiveRole ?? sessionUser?.role;
@@ -177,4 +207,117 @@ async function resolvePasskeyCount(userId: string): Promise<number> {
     );
     return 0;
   }
+}
+
+/**
+ * Minimal shape of the Better Auth instance the API-key path needs — the
+ * server-only `verifyApiKey` endpoint, which returns the key (incl. its parsed
+ * `metadata`) for a raw key string. Typed structurally so the unit tests can
+ * inject a stub without standing up Better Auth.
+ */
+interface AuthWithApiKey {
+  api: {
+    verifyApiKey: (args: {
+      body: { key: string };
+    }) => Promise<{ valid?: boolean; key?: { metadata?: unknown } | null } | null>;
+  };
+}
+
+/**
+ * Resolve a workspace-scoped API-key request (#4046 / ADR-0027 §6) into an
+ * authenticated `AuthResult`.
+ *
+ * Preconditions (asserted by the caller): the request carried an `x-api-key`
+ * header and the Better Auth `apiKey()` plugin resolved it to its owning member
+ * (`userId`/`email` from `getSession`, after the ban check). This reads the key's
+ * metadata and produces an AtlasUser that resolves through the SAME gate chain as
+ * the device-flow bearer:
+ *  - **real owning member** — `userId` is the key owner, never a synthetic
+ *    identity (the audit log traces a leaked key to a person + scope).
+ *  - **bound org** — `activeOrganizationId` from metadata; the request body never
+ *    carries an org field (isolation derives from the credential).
+ *  - **org-role-only, capped at the mint ceiling** — the LIVE member role is
+ *    re-resolved (`resolveEffectiveRole(undefined, …)`, the cli-downgrade model:
+ *    a `platform_admin` owner's key never carries cross-tenant god-mode) and
+ *    capped at the role stored at mint time, so a later promotion can't widen the
+ *    key and a demotion down-privileges it.
+ *  - **RLS claim** — the member's claims from metadata are merged into the claims
+ *    bag so RLS-enabled workspaces filter rows (ADR-0027 §3), rather than
+ *    fail-closed-blocking a legitimate key.
+ *  - **distinct actor marker** — `claims.api_key = true` (read by the execute-sql
+ *    route to stamp `actor_kind = "api_key"`); `claims.origin = "cli"` (the
+ *    transport, a valid approval origin).
+ *
+ * Fails closed (401) when the key metadata is missing/malformed — a key minted
+ * without the workspace binding can't safely resolve an org.
+ */
+export async function resolveApiKeyAuth(
+  req: Request,
+  auth: AuthWithApiKey,
+  userId: string,
+  email: string | undefined,
+): Promise<AuthResult> {
+  const key = req.headers.get(API_KEY_HEADER);
+  if (!key) {
+    // Defensive — the caller only routes here when the header is present.
+    return { authenticated: false, mode: "managed", status: 401, error: "API key required" };
+  }
+
+  let rawMetadata: unknown;
+  try {
+    const verified = await auth.api.verifyApiKey({ body: { key } });
+    // `valid === false` means the plugin rejected the key (expired/revoked).
+    // Revocation takes effect on the NEXT request because this verify runs live.
+    if (verified && verified.valid === false) {
+      return { authenticated: false, mode: "managed", status: 401, error: "API key is invalid or revoked" };
+    }
+    rawMetadata = verified?.key?.metadata;
+  } catch (err) {
+    log.error(
+      { err: errorMessage(err), userId },
+      "verifyApiKey threw while resolving a workspace API key — failing closed",
+    );
+    return { authenticated: false, mode: "managed", status: 401, error: "API key could not be verified" };
+  }
+
+  const metadata = parseApiKeyMetadata(rawMetadata);
+  if (!metadata) {
+    log.warn(
+      { userId },
+      "Workspace API key has no valid metadata binding — refusing (a key must carry its bound workspace)",
+    );
+    return { authenticated: false, mode: "managed", status: 401, error: "API key is not bound to a workspace" };
+  }
+
+  const orgId = metadata.orgId;
+
+  // Org-role-only (cli downgrade): withhold any user-level role so a
+  // platform_admin owner's key never carries cross-tenant authority.
+  const liveRole = await resolveEffectiveRole(undefined, userId, orgId);
+  // Cap the live role at the mint-time ceiling. A key minted by an admin who
+  // was later promoted to owner stays admin-capped; a demotion lowers it.
+  const role = liveRole !== undefined && metadata.role !== undefined
+    ? capRole(liveRole, metadata.role)
+    : (liveRole ?? metadata.role);
+
+  // Claims bag: the member's RLS claim values from metadata + the standard
+  // identity claims, PLUS the cli transport origin and the distinct api-key
+  // marker. Identity/marker claims land AFTER the metadata-claims spread so a
+  // stray metadata claim named `sub`/`org_id`/`origin`/`api_key` can't shadow
+  // the authoritative values.
+  const claims: Record<string, unknown> = {
+    ...(metadata.claims ?? {}),
+    sub: userId,
+    org_id: orgId,
+    origin: SESSION_ORIGIN_CLI,
+    [API_KEY_MARKER_CLAIM]: true,
+  };
+
+  const user: AtlasUser = createAtlasUser(userId, "managed", email || userId, {
+    ...(role !== undefined ? { role } : {}),
+    activeOrganizationId: orgId,
+    claims,
+  });
+
+  return { authenticated: true, mode: "managed", user };
 }

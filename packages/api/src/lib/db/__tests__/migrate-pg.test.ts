@@ -153,6 +153,23 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     ).rejects.toMatchObject({ code: "23514" });
   }, PG_TEST_TIMEOUT_MS);
 
+  // #4046 / ADR-0027 §6 — migration 0160 widens chk_audit_log_actor_kind to
+  // include 'api_key' (the unattended workspace-key actor). A canonical value
+  // (incl. the new one) writes cleanly; an unknown actor_kind rejects with 23514.
+  it("accepts the api_key actor_kind and rejects an unknown one with 23514", async () => {
+    await pool.query(
+      `INSERT INTO audit_log (auth_mode, actor_kind, sql, duration_ms, success)
+       VALUES ('managed', 'api_key', 'SELECT 1', 0, true)`,
+    );
+
+    await expect(
+      pool.query(
+        `INSERT INTO audit_log (auth_mode, actor_kind, sql, duration_ms, success)
+         VALUES ('managed', 'robot', 'SELECT 1', 0, true)`,
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  }, PG_TEST_TIMEOUT_MS);
+
   // #2173 — workspace_model_config.chk_model_provider_key CHECK constraint
   // is the DB-layer enforcement of "non-gateway must have a key". If this
   // silently drops in a future migration, the BYOT contract breaks at the

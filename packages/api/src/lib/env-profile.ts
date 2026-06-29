@@ -187,10 +187,14 @@ const PROFILES: Record<DeployEnv, EnvProfile> = {
     mailSink: "staging-mail@useatlas.dev",
     seedDemo: false,
   },
-  // Staging dogfoods signup without making the maintainer wait on
-  // real verification emails (no Resend on staging anyway — DPA guard
-  // satisfied by a dummy key). Onboarding nudges off so dogfood signups
-  // don't trigger automated email sequences.
+  // Staging dogfoods signup without making the maintainer wait on real
+  // verification emails: `requireEmailVerification` is off, so signup is
+  // instant. Staging DOES run a real Resend key (ATLAS_EMAIL_PROVIDER=resend),
+  // but `resolveOutboundClampRegion` (lib/email/delivery.ts) rewrites every
+  // recipient to STAGING_MAIL_SINK (staging-mail@useatlas.dev), so transactional
+  // mail (OTP, password reset) is exercised end-to-end without ever emailing a
+  // real address. Onboarding nudges off so dogfood signups don't trigger
+  // automated email sequences.
   staging: {
     requireEmailVerification: false,
     onboardingEmailsEnabled: false,

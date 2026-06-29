@@ -1,0 +1,35 @@
+-- 0159_drop_user_stripe_customer_id.sql
+--
+-- Phase 2 (release N+1) of the two-phase removal of the @better-auth/stripe
+-- plugin's user-level "stripeCustomerId" column from Better Auth's "user"
+-- table (#4013). Phase 1 (#4014, shipped in v0.0.32) set
+-- createCustomerOnSignUp:false, so nothing has written this column since.
+--
+-- Atlas billing is strictly ORG-scoped: it uses organization.stripeCustomerId,
+-- never the user-level one, so the column is dead. The plugin's
+-- subscription-upgrade / billing-portal reads of user.stripeCustomerId sit in
+-- the customerType !== "organization" branch (Atlas always sends
+-- "organization"); the signup-hook write/read is off via
+-- createCustomerOnSignUp:false (#4014); the webhook reverse-lookup hits the
+-- user table only when the organization lookup misses, which Atlas's org-only
+-- customers never trigger. See the buildPlugins() strip below.
+--
+-- Idempotent across the region drift documented in #4013: US "user" HAS the
+-- column (camelCase); EU/APAC never had it (they don't register the stripe
+-- plugin, so Better Auth never declared it there). IF EXISTS handles both.
+--
+-- COMPANION CHANGE (same PR, load-bearing): buildPlugins() in lib/auth/server.ts
+-- strips user.stripeCustomerId from the stripe plugin's declared schema. This
+-- DROP applies once (the migration runner records it), but Better Auth's
+-- schema-diff auto-migrate (ctx.runMigrations) runs on every boot, before the
+-- Atlas runner — so without the strip it would re-add the column on the next
+-- restart (the plugin's getSchema declares it unconditionally), resurrecting
+-- exactly the column this migration drops. The strip + this DROP are durable
+-- only together.
+--
+-- expand-contract: N+1 contract drop; createCustomerOnSignUp — the only writer
+-- that ever fired in Atlas's org-only config (the plugin's other write is in
+-- the non-org customerType branch Atlas never sends) — was removed in v0.0.32
+-- (#4014), so no draining N-1 pod writes the column during the deploy-overlap
+-- window. (#4013)
+ALTER TABLE "user" DROP COLUMN IF EXISTS "stripeCustomerId";

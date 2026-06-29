@@ -2063,7 +2063,9 @@ export function buildStripePluginOptions(deps: {
     // EU/APAC signups have run post-residency-fix yet). No Atlas code reads
     // `user.stripeCustomerId` (the CRM conversion stamp uses the org/subscription
     // customer). Root cause #4012; the now-unwritten column is dropped in the
-    // release-N+1 migration #4013 (two-phase drop discipline).
+    // release-N+1 migration 0159 (#4013, two-phase drop discipline) — paired
+    // with `stripPluginUserStripeCustomerIdField` in buildPlugins(), without
+    // which Better Auth's boot-time auto-migrate would re-add the column.
     createCustomerOnSignUp: false,
     // #3416 — Atlas subscriptions are ORG-scoped, not user-scoped. With
     // org mode on, the plugin maintains `organization.stripeCustomerId`
@@ -2311,6 +2313,54 @@ export function buildStripePluginOptions(deps: {
       );
     },
   };
+}
+
+/**
+ * Remove the plugin-declared `user.stripeCustomerId` field from a constructed
+ * @better-auth/stripe plugin, in place (#4013).
+ *
+ * The plugin's `getSchema` declares `user.stripeCustomerId` UNCONDITIONALLY
+ * (plugin v1.6.20, `src/schema.ts`: `const user = { user: { fields: {
+ * stripeCustomerId } } }` is in `baseSchema` on every code path — enabling
+ * `organization` mode is purely additive). The Atlas migration runner applies
+ * migration 0159's `DROP COLUMN` once, but Better Auth's schema-diff
+ * auto-migrate (`ctx.runMigrations`) runs on EVERY boot, BEFORE the Atlas
+ * runner — so without this strip it re-adds the dropped column on the next
+ * restart, resurrecting the cross-region drift #4013 eliminates. Better Auth's
+ * `mergeSchema` only renames fields (sets `fieldName`/`modelName`); it cannot
+ * remove one — so the plugin's `schema` option can't do this, leaving in-place
+ * mutation of the constructed plugin as the only available seam.
+ *
+ * Safe because Atlas billing is strictly ORG-scoped — nothing reads the
+ * user-level customer in practice:
+ *   - the subscription-upgrade / billing-portal reads of `user.stripeCustomerId`
+ *     sit in the `else` branch of `customerType === "organization"`, and Atlas
+ *     sends `customerType: "organization"` on every call;
+ *   - the signup-hook read is dead via `createCustomerOnSignUp: false` (#4014);
+ *   - the webhook reverse-lookup (`findReferenceByStripeCustomerId`) queries the
+ *     `user` table only when the `organization` lookup misses, which Atlas's
+ *     org-only customers never trigger.
+ * `organization.stripeCustomerId` and the `subscription` schema (which org
+ * billing depends on) are left untouched. Pinned by
+ * stripe-plugin-enablement.test.ts.
+ *
+ * The param requires `schema.user.fields` so an upstream rename/removal of
+ * `user` breaks this build at the call site; the runtime `log.warn` covers the
+ * version-independent case (a self-hosted plugin bump we don't type-check)
+ * where the field is gone — turning a silent strip-no-op (which would let
+ * auto-migrate resurrect the column) into a greppable boot-log breadcrumb.
+ */
+function stripPluginUserStripeCustomerIdField(plugin: {
+  schema: { user: { fields: Record<string, unknown> } };
+}): void {
+  const { fields } = plugin.schema.user;
+  if ("stripeCustomerId" in fields) {
+    delete fields.stripeCustomerId;
+    return;
+  }
+  log.warn(
+    "@better-auth/stripe no longer declares user.stripeCustomerId — the #4013 schema strip is now a no-op. Verify Better Auth's boot auto-migrate does not re-add the column (the plugin schema likely changed on upgrade).",
+  );
 }
 
 export function buildPlugins() {
@@ -2765,9 +2815,15 @@ export function buildPlugins() {
           throw new Error("getStripeClient() returned null despite STRIPE_SECRET_KEY being set");
         }
 
-        plugins.push(
-          stripePlugin(buildStripePluginOptions({ stripeClient, webhookSecret })),
+        const stripeBuilt = stripePlugin(
+          buildStripePluginOptions({ stripeClient, webhookSecret }),
         );
+        // #4013 — strip the plugin's unconditionally-declared
+        // `user.stripeCustomerId` field so Better Auth's boot-time auto-migrate
+        // never re-adds the column that migration 0159 drops. Org-scoped billing
+        // is unaffected (see stripPluginUserStripeCustomerIdField).
+        stripPluginUserStripeCustomerIdField(stripeBuilt);
+        plugins.push(stripeBuilt);
 
         log.info("Stripe billing plugin enabled");
       } catch (err) {

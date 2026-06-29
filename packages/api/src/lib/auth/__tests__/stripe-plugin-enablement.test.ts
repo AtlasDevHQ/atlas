@@ -111,6 +111,36 @@ describe("Stripe plugin enablement (#3447)", () => {
     expect(errorLogs.filter((msg) => msg.includes("Stripe"))).toEqual([]);
   });
 
+  // #4013 — the registered stripe plugin must NOT declare user.stripeCustomerId
+  // in its schema. @better-auth/stripe's getSchema declares it unconditionally,
+  // and Atlas runs Better Auth's auto-migrate at boot, so an un-stripped schema
+  // would re-add the column that migration 0159 drops on every restart.
+  // buildPlugins() strips it via stripPluginUserStripeCustomerIdField.
+  it("strips user.stripeCustomerId from the registered stripe plugin's schema (#4013)", () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_dummy";
+    process.env.STRIPE_WEBHOOK_SECRET = "whsec_dummy";
+    process.env.DATABASE_URL = "postgres://fake:fake@localhost:5432/fake";
+    process.env.STRIPE_STARTER_PRICE_ID = "price_starter_test";
+    process.env.STRIPE_PRO_PRICE_ID = "price_pro_test";
+
+    const stripe = findStripePlugin(buildPlugins()) as
+      | { schema?: { [table: string]: { fields?: Record<string, unknown> } } }
+      | undefined;
+    expect(stripe).toBeDefined();
+
+    // The user-level customer field is gone…
+    expect(stripe?.schema?.user?.fields?.stripeCustomerId).toBeUndefined();
+    // …but the org-scoped schema Atlas billing depends on is untouched. These
+    // positive assertions are the load-bearing guard: if a plugin upgrade stops
+    // declaring organization.stripeCustomerId / subscription (i.e. reshapes the
+    // schema), they fail loudly so the strip can be re-evaluated. (A purely
+    // *negative* assertion on user.stripeCustomerId can't detect a reshape — it
+    // passes vacuously when the path no longer resolves; the strip helper's
+    // runtime log.warn covers that version-independent case.)
+    expect(stripe?.schema?.organization?.fields?.stripeCustomerId).toBeDefined();
+    expect(stripe?.schema?.subscription).toBeDefined();
+  });
+
   it("does NOT register the plugin when STRIPE_WEBHOOK_SECRET is missing, and logs an error (existing branch)", () => {
     process.env.STRIPE_SECRET_KEY = "sk_test_dummy";
     delete process.env.STRIPE_WEBHOOK_SECRET;

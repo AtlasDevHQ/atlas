@@ -442,6 +442,9 @@ describe("migrateAuthTables", () => {
             // 0158 adds the `origin` column to Better Auth's "session" table
             // (ADR-0026, #4043) — a MANAGED_AUTH_MIGRATION, skipped outside
             // managed mode, so it is intentionally absent here.
+            // 0159 drops user.stripeCustomerId from Better Auth's "user" table
+            // (#4013 two-phase drop) — a MANAGED_AUTH_MIGRATION, skipped outside
+            // managed mode, so it is intentionally absent here.
           ],
         };
       }

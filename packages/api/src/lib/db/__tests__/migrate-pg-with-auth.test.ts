@@ -44,6 +44,9 @@ const PG_TEST_TIMEOUT_MS = 30_000;
  *   - `user.id` — FK target for 0048's `trusted_device.user_id`
  *   - `user.emailVerified` — UPDATEd by 0050 backfill
  *   - `user.role` — cleared by 0118 (`SET role = NULL WHERE role = 'admin'`)
+ *   - `user.stripeCustomerId` — DROPped by 0159 (#4013). Seeded here to mirror
+ *     the US prod `user` table (the only region that had it), so the drop is
+ *     actually exercised rather than a silent `IF EXISTS` no-op.
  *   - `session.userId` — read by 0050 to scope the backfill
  *   - `organization.id` — ALTERed by 0027 / 0042 / 0090
  *   - `member.role` — backfilled by 0118 from `user.role='admin'`
@@ -63,6 +66,7 @@ const BETTER_AUTH_BOOTSTRAP_SQL = `
     "emailVerified" BOOLEAN NOT NULL DEFAULT false,
     name TEXT,
     role TEXT,
+    "stripeCustomerId" TEXT,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 
@@ -196,6 +200,49 @@ describeIfPg("migrate-pg-with-auth (real Postgres, Better Auth tables present)",
         `SELECT id, role FROM "user" WHERE id IN ('u-0118-promote', 'u-0118-owner')`,
       );
       expect(users.rows.every((r) => r.role === null)).toBe(true);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ── 0159 column drop (#4013) ──
+  //
+  // The fixture seeds `user."stripeCustomerId"` (mirroring US prod, the only
+  // region that had it). After the full migration set runs, 0159 must have
+  // dropped it. A regression that omits 0159 from MANAGED_AUTH_MIGRATIONS — so
+  // it never runs against the Better Auth `user` table — fails here.
+  it(
+    "0159: drops user.stripeCustomerId from the Better Auth user table",
+    async () => {
+      const col = await pool.query(
+        `SELECT 1 FROM information_schema.columns
+          WHERE table_schema = $1 AND table_name = 'user'
+            AND column_name = 'stripeCustomerId'`,
+        [schemaName],
+      );
+      expect(col.rows).toHaveLength(0);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "0159: re-applying the DROP no-ops on a column-less user table (EU/APAC path)",
+    async () => {
+      // The migration set above already dropped the column, so the table now
+      // has no `stripeCustomerId` — the same state EU/APAC always had (they
+      // never registered the stripe plugin, so Better Auth never declared it).
+      // Re-running 0159's DROP must succeed via `IF EXISTS`. Guards against a
+      // regression that removes `IF EXISTS`, which would pass the US (column-
+      // present) case above yet crash boot in the 2 column-less regions.
+      await pool.query(
+        `ALTER TABLE "user" DROP COLUMN IF EXISTS "stripeCustomerId"`,
+      );
+      const col = await pool.query(
+        `SELECT 1 FROM information_schema.columns
+          WHERE table_schema = $1 AND table_name = 'user'
+            AND column_name = 'stripeCustomerId'`,
+        [schemaName],
+      );
+      expect(col.rows).toHaveLength(0);
     },
     PG_TEST_TIMEOUT_MS,
   );

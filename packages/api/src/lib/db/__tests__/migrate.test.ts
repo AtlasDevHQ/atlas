@@ -192,7 +192,9 @@ describe("runMigrations", () => {
     //   device flow, ADR-0026, #4043) = 158.
     //   Plus 0158 (origin marker column on Better Auth's "session" table,
     //   ADR-0026, #4043) = 159.
-    expect(count).toBe(159);
+    //   Plus 0159 (drop @better-auth/stripe's user.stripeCustomerId column,
+    //   phase-2 two-phase drop, #4013) = 160.
+    expect(count).toBe(160);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -380,6 +382,7 @@ describe("runMigrations", () => {
         "0156_overage_meter_reports_cost_cents.sql",
         "0157_approval_surface_cli.sql",
         "0158_session_origin_column.sql",
+        "0159_drop_user_stripe_customer_id.sql",
       ],
     });
 

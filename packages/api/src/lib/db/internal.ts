@@ -988,6 +988,13 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // atlas-login device flow can stamp `origin='cli'` for key-scoping
   // (ADR-0026 / #4043).
   "0158_session_origin_column.sql",
+  // Drops the @better-auth/stripe plugin's user-level "stripeCustomerId" column
+  // from Better Auth's "user" table — phase 2 of the two-phase drop (#4013).
+  // MANAGED_AUTH because it ALTERs Better Auth's "user" table, which only
+  // exists in managed mode. Paired with a buildPlugins() schema strip so Better
+  // Auth's auto-migrate never re-adds the column (see server.ts / the migration
+  // header).
+  "0159_drop_user_stripe_customer_id.sql",
 ];
 
 /**

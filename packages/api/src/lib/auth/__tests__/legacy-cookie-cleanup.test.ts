@@ -81,6 +81,12 @@ describe("parentCookieDomains", () => {
   it("strips a port and lowercases", () => {
     expect(parentCookieDomains("API.useatlas.dev:443")).toEqual(["useatlas.dev"]);
   });
+
+  it("returns [] for a non-LDH / malformed host (defense-in-depth)", () => {
+    // A label outside [a-z0-9-] never flows into a `Set-Cookie: Domain=…` value.
+    expect(parentCookieDomains("evil_host.useatlas.dev")).toEqual([]);
+    expect(parentCookieDomains("has space.useatlas.dev")).toEqual([]);
+  });
 });
 
 describe("buildLegacyCookieDeletions", () => {
@@ -141,6 +147,49 @@ describe("buildLegacyCookieDeletions", () => {
         cookieHeader: SHADOWED_HEADER,
         host: "api.useatlas.dev",
         cookiePrefix: "atlas-staging",
+      }),
+    ).toEqual([]);
+  });
+
+  it("emits Domain=useatlas.dev deletions for a regional edge host (ADR-0024 §5)", () => {
+    // The parent-domain cookie leaking to api-eu is the residency violation the
+    // fix cites — assert the full deletion strings, not just the parent walk.
+    const out = buildLegacyCookieDeletions({
+      cookieHeader: SHADOWED_HEADER,
+      host: "api-eu.useatlas.dev",
+      cookiePrefix: "atlas",
+    });
+    expect(out).toEqual([
+      "__Secure-atlas.session_token=; Domain=useatlas.dev; Path=/; Max-Age=0; HttpOnly; SameSite=Lax; Secure",
+      "__Secure-atlas.session_data=; Domain=useatlas.dev; Path=/; Max-Age=0; HttpOnly; SameSite=Lax; Secure",
+    ]);
+  });
+
+  it("never targets a __Host- name even when one is present in the count", () => {
+    // A browser carrying both a __Host- and a __Secure- session token trips the
+    // ≥2 count, but __Host- forbids Domain= so it can't be the shadow — the
+    // emitted deletions must use the __Secure- spelling only.
+    const out = buildLegacyCookieDeletions({
+      cookieHeader:
+        "__Host-atlas.session_token=hostprefixed.sig; __Secure-atlas.session_token=hostonly.sig",
+      host: "api.useatlas.dev",
+      cookiePrefix: "atlas",
+    });
+    expect(out.length).toBeGreaterThan(0);
+    for (const sc of out) expect(sc).not.toContain("__Host-");
+  });
+
+  it("is a no-op end-to-end for a registrable-domain / localhost host", () => {
+    // Covers the `domains.length === 0` branch through the public entry point,
+    // not just via parentCookieDomains.
+    expect(
+      buildLegacyCookieDeletions({ cookieHeader: SHADOWED_HEADER, host: "useatlas.dev", cookiePrefix: "atlas" }),
+    ).toEqual([]);
+    expect(
+      buildLegacyCookieDeletions({
+        cookieHeader: "atlas.session_token=a; atlas.session_token=b",
+        host: "localhost",
+        cookiePrefix: "atlas",
       }),
     ).toEqual([]);
   });

@@ -73,11 +73,14 @@ function makeAuth(): { auth: ReturnType<typeof betterAuth>; getOtp: () => string
           capturedOtp = data.otp;
         },
       }),
-    ] as unknown as BuildAuthOptionsDeps["plugins"],
+      // `BuildAuthOptionsDeps["plugins"]` is `any[]` (Better Auth's plugin types
+      // are un-unifiable union generics — see `buildPlugins`), so this minimal
+      // set is assignable with no cast.
+    ],
     trustedOrigins: ["http://localhost:3000"],
     bootstrapAdmin: { mode: "none" },
   };
-  const auth = betterAuth(buildAuthOptions(deps) as Parameters<typeof betterAuth>[0]);
+  const auth = betterAuth(buildAuthOptions(deps));
   return { auth, getOtp: () => capturedOtp };
 }
 

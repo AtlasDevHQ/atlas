@@ -18,8 +18,7 @@ import {
   context as otelContext,
 } from "@opentelemetry/api";
 import { createLogger } from "@atlas/api/lib/logger";
-import { buildLegacyCookieDeletions } from "@atlas/api/lib/auth/legacy-cookie-cleanup";
-import { resolveCookiePrefix } from "@atlas/api/lib/env-profile";
+import { legacyCookieCleanupMiddleware } from "@atlas/api/lib/auth/legacy-cookie-cleanup-middleware";
 import { validationHook } from "./routes/validation-hook";
 import { chat } from "./routes/chat";
 import { health } from "./routes/health";
@@ -175,30 +174,12 @@ app.use("/api/*", async (c, next) => {
 // A browser that logged in pre-switch still carries `Domain=<registrable>`
 // copies of the session cookie that SHADOW the new host-only one; Better Auth
 // reads the stale shadow first, so every authed call 401s once the ~30s
-// cookie-cache (`session_data`) lapses and the app bounces to /login. The helper
-// is self-limiting — it emits deletions only when the request actually carries
-// the duplicate session-token cookie — and also restores the ADR-0024 §5
-// residency invariant (the parent-domain cookie was reaching every region edge).
-// See lib/auth/legacy-cookie-cleanup.ts.
-app.use("/api/*", async (c, next) => {
-  await next();
-  try {
-    const deletions = buildLegacyCookieDeletions({
-      cookieHeader: c.req.header("cookie"),
-      host: c.req.header("host"),
-      cookiePrefix: resolveCookiePrefix(process.env),
-    });
-    for (const setCookie of deletions) {
-      c.res.headers.append("set-cookie", setCookie);
-    }
-  } catch (err) {
-    // Cleanup is best-effort; a failure must never break the auth response.
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Legacy parent-domain cookie cleanup failed (#4086)",
-    );
-  }
-});
+// cookie-cache (`session_data`) lapses and the app bounces to /login. The
+// middleware is self-limiting — it emits deletions only when the request
+// actually carries the duplicate session-token cookie — and also restores the
+// ADR-0024 §5 residency invariant (the parent-domain cookie was reaching every
+// region edge). See lib/auth/legacy-cookie-cleanup{,-middleware}.ts.
+app.use("/api/*", legacyCookieCleanupMiddleware);
 
 app.route("/api/v1/chat", chat);
 app.route("/api/health", health);

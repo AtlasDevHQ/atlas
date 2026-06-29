@@ -12,11 +12,17 @@
  * `api.useatlas.dev` carries TWO `__Secure-<prefix>.session_token` cookies —
  * the stale parent-domain one AND the new host-only one. Better Auth reads the
  * stale shadow first → it points at a dead session → 401. The session survives
- * for exactly one `session.cookieCache.maxAge` window (default 30s) because the
- * `session_data` cache cookie has no parent-domain twin; once it lapses, every
- * authenticated call (`/api/v1/*`, `get-session`) 401s and the app bounces to
- * `/login`. Region-wide, and the parent-domain cookie also leaks to every region
- * edge (`api-eu`/`api-apac`), which independently violates ADR-0024 §5.
+ * for exactly one `session.cookieCache.maxAge` window (Atlas default
+ * `SESSION_COOKIE_CACHE_DEFAULT_SEC` = 30s, operator-tunable — NOT Better Auth's
+ * 300s framework default) because the *live* `session_data` cache cookie is
+ * host-only and points at the real session; any legacy parent-domain
+ * `session_data` twin is short-lived and expired long before this window, so
+ * nothing keeps the dead shadow alive. Once the live cache lapses, Better Auth
+ * falls back to the `session_token` cookie, reads the stale parent-domain shadow
+ * first → dead session → every authenticated call (`/api/v1/*`, `get-session`)
+ * 401s and the app bounces to `/login`. The parent-domain cookie also leaks to
+ * every region edge (`api-eu`/`api-apac`), which independently violates
+ * ADR-0024 §5.
  *
  * This module detects the shadow — the session-token cookie name present more
  * than once in the request `Cookie` header — and produces `Set-Cookie`
@@ -28,11 +34,24 @@
  * the same response has no `Domain` and is a distinct cookie, so it is never
  * touched.
  *
+ * Detection is name-only — the `Cookie` header carries no `Domain`, so a browser
+ * holding ONLY the stale parent-domain cookie (count = 1) is indistinguishable
+ * from a clean host-only browser and is not cleaned until a successful re-login
+ * mints the host-only twin (flipping the count to 2). That is an accepted
+ * limitation: a single cookie can't be proven stale from the request alone.
+ *
  * Pure + dependency-free so it can be unit-tested without standing up Hono or
- * Better Auth; the API wires it as a `/api/*` response middleware.
+ * Better Auth; the API wires it as a `/api/*` response middleware (see
+ * `legacy-cookie-cleanup-middleware.ts`).
  */
 
-/** Better Auth session cookie suffixes that can carry a parent-domain shadow. */
+/**
+ * Session cookie suffixes a deletion targets. `session_token` is the actual
+ * shadow that breaks auth; `session_data` is cleared defensively in case the
+ * legacy `crossSubDomainCookies` config also minted a parent-domain cache twin —
+ * in practice it has long since expired (see the module docblock), so that
+ * deletion is usually a harmless no-op rather than a load-bearing one.
+ */
 const SESSION_COOKIE_SUFFIXES = ["session_token", "session_data"] as const;
 
 /** Cookie name prefixes the browser may attach (RFC 6265bis cookie prefixes). */
@@ -68,8 +87,10 @@ export function countSessionTokenCookies(cookieHeader: string, cookiePrefix: str
 /**
  * The parent domains of `host` that a legacy cross-subdomain cookie could have
  * been scoped to — every domain suffix with ≥ 2 labels, EXCLUDING the full host
- * itself (host-only cookies need no cleanup) and never the bare public-suffix
- * label (a 1-label suffix like `dev`, which browsers reject for `Domain=`).
+ * itself (host-only cookies need no cleanup) and never a 1-label suffix (like
+ * `dev`, which browsers reject for `Domain=`). A multi-label public suffix
+ * (e.g. `co.uk`) IS emitted, but the browser rejects `Domain=co.uk`, so it stays
+ * a harmless no-op — Atlas's `useatlas.dev` never reaches that case.
  *
  * `api.useatlas.dev` → `["useatlas.dev"]`;
  * `api.staging.useatlas.dev` → `["staging.useatlas.dev", "useatlas.dev"]`.
@@ -82,6 +103,10 @@ export function countSessionTokenCookies(cookieHeader: string, cookiePrefix: str
 export function parentCookieDomains(host: string): string[] {
   const hostname = host.trim().toLowerCase().split(":")[0]; // strip any :port
   if (!hostname) return [];
+  // Defense-in-depth: only a well-formed LDH host (letters/digits/hyphen/dot)
+  // ever flows into a `Set-Cookie: Domain=…` value, so a malformed or injected
+  // Host header can never reach the response header.
+  if (!/^[a-z0-9.-]+$/.test(hostname)) return [];
   const labels = hostname.split(".").filter(Boolean);
   // Need ≥ 3 labels for a parent that is itself ≥ 2 labels (e.g. a.b.c → b.c).
   const out: string[] = [];

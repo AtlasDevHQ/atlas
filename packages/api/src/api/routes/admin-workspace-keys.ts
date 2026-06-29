@@ -41,7 +41,7 @@ import { AuthContext } from "@atlas/api/lib/effect/services";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getAuthInstance } from "@atlas/api/lib/auth/server";
-import { capRole, getUserRole } from "@atlas/api/lib/auth/permissions";
+import { capRole, clampToOrgRole, getUserRole } from "@atlas/api/lib/auth/permissions";
 import { buildApiKeyMetadata } from "@atlas/api/lib/auth/api-key-metadata";
 import { ORG_ROLES } from "@atlas/api/lib/auth/types";
 import type { OrgRole } from "@atlas/api/lib/auth/types";
@@ -145,10 +145,11 @@ adminWorkspaceKeys.openapi(mintRoute, async (c) => {
       // member can't mint an admin/owner key; an admin can't mint an owner key.
       // A workspace key is org-scoped, so clamp the ceiling to org roles — a
       // `platform_admin` minter mints at most an `owner`-authority key (a key
-      // never carries cross-tenant god-mode; mirrors the cli downgrade).
-      const minterCeiling: OrgRole = capRole(getUserRole(user), "owner") as OrgRole;
+      // never carries cross-tenant god-mode; mirrors the cli downgrade). The
+      // OrgRole return type makes the no-god-key invariant compiler-guaranteed.
+      const minterCeiling: OrgRole = clampToOrgRole(getUserRole(user));
       const requestedRole = body.role ?? minterCeiling;
-      const role: OrgRole = capRole(requestedRole, minterCeiling) as OrgRole;
+      const role: OrgRole = clampToOrgRole(capRole(requestedRole, minterCeiling));
 
       // The RLS claims to embed. Defaults to none (the workspace either has no
       // RLS, or the caller supplies the specific claim values).

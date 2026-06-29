@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { canApprove, capRole, getUserRole, parseRole, meetsRoleRequirement } from "../permissions";
+import { canApprove, capRole, clampToOrgRole, getUserRole, parseRole, meetsRoleRequirement } from "../permissions";
 import { createAtlasUser } from "../types";
 import type { AtlasRole } from "../types";
 import type { ActionApprovalMode } from "@atlas/api/lib/action-types";
@@ -29,6 +29,20 @@ describe("capRole()", () => {
     expect(capRole("owner", "admin")).toBe("admin");
     expect(capRole("admin", "member")).toBe("member");
     expect(capRole("platform_admin", "admin")).toBe("admin");
+  });
+});
+
+// clampToOrgRole() — #4046 workspace-isolation invariant: a workspace key never
+// carries cross-tenant platform_admin god-mode.
+describe("clampToOrgRole()", () => {
+  it("strips platform_admin down to owner (no cross-tenant god-key)", () => {
+    expect(clampToOrgRole("platform_admin")).toBe("owner");
+  });
+
+  it("passes org roles through unchanged", () => {
+    expect(clampToOrgRole("member")).toBe("member");
+    expect(clampToOrgRole("admin")).toBe("admin");
+    expect(clampToOrgRole("owner")).toBe("owner");
   });
 });
 

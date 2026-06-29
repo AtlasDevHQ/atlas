@@ -9,8 +9,10 @@
 -- Widening a CHECK with one more allowed value is expand-only —
 -- backward-compatible and single-release safe (old code never writes `api_key`;
 -- new code does; a reader sees a plain string either way). Mirrors the
--- chk_audit_log_actor_kind shape from migration 0049 and the auth_mode
--- widen from 0055. Idempotent: DROP IF EXISTS then re-ADD.
+-- chk_audit_log_actor_kind shape from migration 0049 and the idempotent
+-- DROP-IF-EXISTS-then-re-ADD pattern of the auth_mode constraint in 0055 (0055
+-- CREATED chk_audit_log_auth_mode on a previously-unconstrained column; this is a
+-- true widen of an existing constraint). Idempotent: DROP IF EXISTS then re-ADD.
 
 DO $$ BEGIN
   ALTER TABLE audit_log DROP CONSTRAINT IF EXISTS chk_audit_log_actor_kind;

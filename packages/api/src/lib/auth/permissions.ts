@@ -21,7 +21,7 @@
  *   user when mode is "auto".
  */
 
-import type { AtlasUser, AtlasRole } from "@atlas/api/lib/auth/types";
+import type { AtlasUser, AtlasRole, OrgRole } from "@atlas/api/lib/auth/types";
 import type { ActionApprovalMode } from "@atlas/api/lib/action-types";
 import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -128,6 +128,24 @@ export function parseRole(value: string | undefined): AtlasRole | undefined {
  */
 export function capRole(role: AtlasRole, ceiling: AtlasRole): AtlasRole {
   return ROLE_LEVEL[role] <= ROLE_LEVEL[ceiling] ? role : ceiling;
+}
+
+/**
+ * Clamp any role down to the org-assignable range (`member | admin | owner`),
+ * stripping the cross-tenant `platform_admin` to `owner`.
+ *
+ * Used by the workspace-API-key mint path (#4046): a workspace key is org-scoped
+ * and must never carry cross-tenant god-mode, so a `platform_admin` minter mints
+ * at most an `owner`-authority key. The return type is `OrgRole`, so the
+ * isolation invariant is COMPILER-guaranteed at the call site rather than rested
+ * on an `as OrgRole` cast (the single unavoidable narrowing is localized here and
+ * unit-tested). Mirrors the cli downgrade's "no cross-tenant authority on a
+ * portable credential" rule.
+ */
+export function clampToOrgRole(role: AtlasRole): OrgRole {
+  // capRole at the `owner` ceiling can only return member/admin/owner (owner
+  // outranks nothing higher in the org range), so the narrowing is sound.
+  return capRole(role, "owner") as OrgRole;
 }
 
 // ---------------------------------------------------------------------------

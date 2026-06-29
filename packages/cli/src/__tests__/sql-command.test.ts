@@ -225,6 +225,19 @@ describe("runSqlCommand — workspace API key (#4046 unattended CI)", () => {
     expect(err.join("\n")).toContain("pinned to one workspace");
     expect(calls.length).toBe(0);
   });
+
+  it("rejects the INLINE --workspace=<id> form with an api-key too (no silent ignore)", async () => {
+    const { fetchImpl, calls } = stubFetch(200, OK_ROWS);
+    const { io, err } = capture();
+    const code = await runSqlCommand(
+      ["sql", "SELECT 1", "--workspace=org-2"],
+      { baseUrl: BASE, session: null, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("pinned to one workspace");
+    expect(calls.length).toBe(0);
+  });
 });
 
 describe("runSqlCommand — --workspace override (ADR-0027 §5 / #4050)", () => {

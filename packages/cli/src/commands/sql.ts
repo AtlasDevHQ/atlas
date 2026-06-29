@@ -160,14 +160,18 @@ export async function runSqlCommand(
   // A workspace API key (#4046, unattended CI) takes precedence over a stored
   // login. The flag wins over the env var so an interactive override is possible.
   const apiKey = getFlagValue(args, "--api-key") ?? deps.apiKey;
-  const workspaceOverride = getFlagValue(args, "--workspace");
+  // `--workspace` in EITHER form — space (`--workspace x`) or inline
+  // (`--workspace=x`). `resolveActiveWorkspace` accepts both, so the api-key
+  // guard below must reject both; a space-only check would let `--workspace=x`
+  // slip past and be silently ignored.
+  const hasWorkspaceFlag = args.some((a) => a === "--workspace" || a.startsWith("--workspace="));
 
   if (apiKey) {
     // The key is pinned to its workspace by its server-side metadata, so a
     // `--workspace` override is meaningless (and a session rebind would need a
     // session bearer the key doesn't carry). Reject it loudly rather than
     // silently ignore the flag.
-    if (workspaceOverride !== undefined || args.includes("--workspace")) {
+    if (hasWorkspaceFlag) {
       io.err(
         "API keys are pinned to one workspace; --workspace only applies to interactive `atlas login` sessions.",
       );

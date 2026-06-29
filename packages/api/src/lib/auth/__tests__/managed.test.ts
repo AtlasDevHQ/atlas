@@ -190,6 +190,7 @@ describe("validateManaged()", () => {
       mockVerifyApiKey.mockResolvedValueOnce({
         valid: true,
         key: {
+          userId: "usr_owner",
           metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "owner" },
         },
       });
@@ -201,6 +202,9 @@ describe("validateManaged()", () => {
 
       expect(result.authenticated).toBe(true);
       if (!result.authenticated || !result.user) throw new Error("expected authed");
+      // AC3 liveness: verifyApiKey is consulted on EVERY request, so a key
+      // revoked since the last request is caught (revocation effective next req).
+      expect(mockVerifyApiKey).toHaveBeenCalledTimes(1);
       expect(result.user.id).toBe("usr_owner");
       expect(result.user.label).toBe("owner@acme.com");
       expect(result.user.activeOrganizationId).toBe("org_acme");
@@ -229,6 +233,27 @@ describe("validateManaged()", () => {
       const result = await validateManaged(apiKeyRequest());
       if (!result.authenticated || !result.user) throw new Error("expected authed");
       expect(result.user.role).toBe("member");
+    });
+
+    it("fails closed to NO role when the owner is no longer a member of the org (live lookup authoritative)", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_removed", email: "removed@acme.com" },
+        session: { id: "key_rm", userId: "usr_removed" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce({
+        valid: true,
+        // The key was minted when the owner was an admin; they've since been
+        // removed from the workspace. The stored role must NOT be a floor.
+        key: { metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "admin" } },
+      });
+      mockHasInternalDB = true;
+      mockInternalQuery = () => Promise.resolve([]); // no member row
+
+      const result = await validateManaged(apiKeyRequest());
+      expect(result.authenticated).toBe(true);
+      if (!result.authenticated || !result.user) throw new Error("expected authed");
+      // No elevated role — the removed member's stored "admin" is not re-granted.
+      expect(result.user.role).toBeUndefined();
     });
 
     it("merges the member's RLS claim from metadata into the claims bag", async () => {
@@ -315,6 +340,54 @@ describe("validateManaged()", () => {
         session: { id: "key_7", userId: "usr_7" },
       });
       mockVerifyApiKey.mockRejectedValueOnce(new Error("db down"));
+
+      const result = await validateManaged(apiKeyRequest());
+      expect(result).toMatchObject({ authenticated: false, status: 401 });
+    });
+
+    it("fails closed (401) when verifyApiKey returns null entirely (allow-list, not deny-one)", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_n", email: "un@acme.com" },
+        session: { id: "key_n", userId: "usr_n" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce(null);
+
+      const result = await validateManaged(apiKeyRequest());
+      expect(result).toMatchObject({ authenticated: false, status: 401 });
+    });
+
+    it("fails closed (401) when verifyApiKey omits `valid` (must be explicitly true)", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_nv", email: "unv@acme.com" },
+        session: { id: "key_nv", userId: "usr_nv" },
+      });
+      // A soft-failure shape with metadata present but no `valid: true` must NOT
+      // be admitted — the allow-list rejects it before the metadata gate.
+      mockVerifyApiKey.mockResolvedValueOnce({
+        key: { metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "member" } },
+      });
+
+      const result = await validateManaged(apiKeyRequest());
+      expect(result).toMatchObject({ authenticated: false, status: 401 });
+    });
+
+    it("fails closed (401) when the verified key owner != the session user (cookie+key mix)", async () => {
+      // getSession resolved user A (e.g. a cookie won), but the x-api-key belongs
+      // to user B. Binding A's identity to B's key scope would break owner
+      // traceability — assert the cross-check fails closed.
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_A", email: "a@acme.com" },
+        session: { id: "key_b", userId: "usr_A" },
+      });
+      mockVerifyApiKey.mockResolvedValueOnce({
+        valid: true,
+        key: {
+          userId: "usr_B",
+          metadata: { atlasWorkspaceKey: true, orgId: "org_acme", role: "admin" },
+        },
+      });
+      mockHasInternalDB = true;
+      mockInternalQuery = () => Promise.resolve([{ role: "admin" }]);
 
       const result = await validateManaged(apiKeyRequest());
       expect(result).toMatchObject({ authenticated: false, status: 401 });

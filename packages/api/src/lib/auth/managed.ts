@@ -8,7 +8,7 @@
  * callers (middleware.ts) are expected to catch.
  */
 
-import type { AuthResult, AtlasUser } from "@atlas/api/lib/auth/types";
+import type { AuthResult, AtlasUser, AtlasRole } from "@atlas/api/lib/auth/types";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { parseRole, capRole } from "@atlas/api/lib/auth/permissions";
 import { getAuthInstance, SESSION_ORIGIN_CLI } from "@atlas/api/lib/auth/server";
@@ -92,6 +92,12 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   // as the device-flow bearer: bound org, org-role-only role (capped at the
   // mint-time ceiling), the member's RLS claim, and a distinct `api_key` marker.
   // The non-api-key (cookie / device-flow bearer) path falls through unchanged.
+  //
+  // Returning HERE intentionally bypasses the interactive-session idle/absolute
+  // timeout block below: those govern human sessions, whereas an unattended key's
+  // lifetime control is its OWN `expiresIn` expiry (enforced live by
+  // `verifyApiKey` in `resolveApiKeyAuth`). The ban check above still applies to
+  // the owning member; only the idle/absolute timeouts are replaced by key expiry.
   if (req.headers.get(API_KEY_HEADER)) {
     // The apiKey() plugin's `verifyApiKey` (server-only) isn't on the base Auth
     // type the instance is annotated as (plugin endpoints are reached through the
@@ -219,7 +225,10 @@ interface AuthWithApiKey {
   api: {
     verifyApiKey: (args: {
       body: { key: string };
-    }) => Promise<{ valid?: boolean; key?: { metadata?: unknown } | null } | null>;
+    }) => Promise<{
+      valid?: boolean;
+      key?: { metadata?: unknown; userId?: string; referenceId?: string } | null;
+    } | null>;
   };
 }
 
@@ -264,18 +273,44 @@ export async function resolveApiKeyAuth(
   }
 
   let rawMetadata: unknown;
+  let keyOwner: string | undefined;
   try {
+    // `getSession` already resolved the OWNING member (it built the api-key
+    // session) — but `verifyApiKey` is the AUTHORITATIVE live read: it returns the
+    // key's metadata bag AND re-checks validity against the current row, so a
+    // revocation takes effect on the NEXT request (the cookie-cache snapshot the
+    // session path may serve can't mask it). Both calls are therefore needed —
+    // identity from the session, scope + live validity from verify.
     const verified = await auth.api.verifyApiKey({ body: { key } });
-    // `valid === false` means the plugin rejected the key (expired/revoked).
-    // Revocation takes effect on the NEXT request because this verify runs live.
-    if (verified && verified.valid === false) {
+    // ALLOW-LIST, not deny-one: require an explicit `valid === true`. A response
+    // with `valid` absent/non-boolean, or `verified === null`, fails closed here
+    // rather than relying on the downstream metadata gate to catch it — so a
+    // future plugin soft-failure shape (`{ valid: undefined, key: {...} }`)
+    // can't be admitted.
+    if (!verified || verified.valid !== true) {
       return { authenticated: false, mode: "managed", status: 401, error: "API key is invalid or revoked" };
     }
-    rawMetadata = verified?.key?.metadata;
+    rawMetadata = verified.key?.metadata;
+    keyOwner = verified.key?.userId ?? verified.key?.referenceId;
   } catch (err) {
     log.error(
       { err: errorMessage(err), userId },
       "verifyApiKey threw while resolving a workspace API key — failing closed",
+    );
+    return { authenticated: false, mode: "managed", status: 401, error: "API key could not be verified" };
+  }
+
+  // Defense-in-depth: the audited actor identity comes from `getSession`
+  // (`userId`), the scope from the verified key. If a request presented BOTH a
+  // session cookie (user A) AND an `x-api-key` (user B's key) and the cookie won
+  // `getSession`, we'd otherwise bind user A's identity to user B's key scope —
+  // breaking the "a leaked key traces to its owner" invariant. Assert the
+  // verified key's owner equals the resolved session user; fail closed on a
+  // mismatch rather than mis-attribute the actor.
+  if (keyOwner && keyOwner !== userId) {
+    log.error(
+      { userId, keyOwner },
+      "API key owner does not match the resolved session user — failing closed (possible cookie+key credential mix)",
     );
     return { authenticated: false, mode: "managed", status: 401, error: "API key could not be verified" };
   }
@@ -291,14 +326,30 @@ export async function resolveApiKeyAuth(
 
   const orgId = metadata.orgId;
 
-  // Org-role-only (cli downgrade): withhold any user-level role so a
-  // platform_admin owner's key never carries cross-tenant authority.
+  // Role resolution — fail-closed and re-resolved LIVE, never trusting the
+  // stored role as a floor:
+  //  - `resolveEffectiveRole(undefined, …)` is the cli downgrade: it withholds
+  //    any user-level role (a platform_admin owner's key never carries
+  //    cross-tenant authority) and reads the LIVE member.role for this org.
+  //  - With an internal DB present, that live lookup is AUTHORITATIVE. If the
+  //    owner is no longer a member of this org (removed) it returns `undefined`,
+  //    and the key resolves to NO elevated role — the stored `metadata.role` is
+  //    only a CEILING (cap), never a fallback that would re-grant authority to a
+  //    removed member.
+  //  - Only with NO internal DB (single-tenant self-host, no member table) is
+  //    there no live signal, so the mint-time `metadata.role` stands.
   const liveRole = await resolveEffectiveRole(undefined, userId, orgId);
-  // Cap the live role at the mint-time ceiling. A key minted by an admin who
-  // was later promoted to owner stays admin-capped; a demotion lowers it.
-  const role = liveRole !== undefined && metadata.role !== undefined
-    ? capRole(liveRole, metadata.role)
-    : (liveRole ?? metadata.role);
+  let role: AtlasRole | undefined;
+  if (!hasInternalDB()) {
+    role = metadata.role;
+  } else if (liveRole !== undefined && metadata.role !== undefined) {
+    // Cap the live role at the mint ceiling: a key minted by an admin later
+    // promoted to owner stays admin-capped; a demotion lowers it live.
+    role = capRole(liveRole, metadata.role);
+  } else {
+    // Live lookup is authoritative — a removed member resolves to no role.
+    role = liveRole;
+  }
 
   // Claims bag: the member's RLS claim values from metadata + the standard
   // identity claims, PLUS the cli transport origin and the distinct api-key

@@ -18,6 +18,7 @@
 import { resolveApiBaseUrl } from "../lib/api-base";
 import { credentialHeaders, resolveCredential } from "../lib/credential";
 import { readSession, type StoredSession } from "../lib/credentials";
+import { asRecord, serverMessage } from "../lib/http";
 
 const USAGE = `Run a read-only command against your logged-in workspace's semantic layer.
 
@@ -170,19 +171,19 @@ export async function runExplore(
     io.err("Your session is no longer valid. Run `atlas login` again.");
     return 1;
   }
-  if (res.status === 403) {
-    io.err("This workspace is not accessible with your current role.");
-    return 1;
-  }
   if (!res.ok) {
-    // The server returns 200 even for non-zero-exit commands (a `grep`
-    // no-match), so a non-ok status here is a genuine request failure.
-    let detail = "";
-    // intentionally ignored: a non-JSON error body degrades to the status code
-    // below rather than crashing.
-    const body = (await res.json().catch(() => null)) as { message?: string } | null;
-    if (body?.message) detail = `: ${body.message}`;
-    io.err(`Request failed (HTTP ${res.status})${detail}.`);
+    // The server returns 200 even for non-zero-exit commands (a `grep` no-match),
+    // so a non-ok status here is a genuine request failure. Surface the server's
+    // actionable message + requestId (Atlas error envelopes carry one) via the
+    // shared `serverMessage`, parity with `atlas sql`/`metric`/`datasource`.
+    // Explore is `standardAuth` with NO role gate — its only 403 is
+    // `ip_not_allowed`, whose server message already names the cause, so there is
+    // no role-specific copy to hardcode (the prior branch did, incorrectly).
+    // intentionally ignored: a non-JSON error body's `res.json()` rejects → the
+    // `.catch(() => null)` yields null → `asRecord(null)` returns {} → serverMessage
+    // degrades to its `HTTP <status>` fallback rather than crashing.
+    const body = asRecord(await res.json().catch(() => null));
+    io.err(serverMessage(body, res.status));
     return 1;
   }
 

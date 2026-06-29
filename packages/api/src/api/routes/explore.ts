@@ -228,12 +228,7 @@ explore.openapi(
       },
     );
   },
-  (result, c) => {
-    if (!result.success) {
-      return c.json(
-        { error: "validation_error", message: "Invalid request body.", details: result.error.issues },
-        422,
-      );
-    }
-  },
+  // Validation failures fall through to the router's shared `defaultHook`
+  // (`validationHook`) — the same 422 envelope (`{ error: "validation_error",
+  // message, details }`) the sibling routes use. No inline third-arg hook (#4113).
 );

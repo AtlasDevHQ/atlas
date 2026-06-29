@@ -54,6 +54,14 @@ let createApiKeyImpl: (opts: CreateApiKeyCall) => Promise<{ id?: string; key?: s
   async () => ({ id: "key_minted", key: "atlas_wk_thefullsecret" });
 
 // Override the harness auth/server mock with one that exposes api.createApiKey.
+// Curated stub, documented for mock-all-exports (CLAUDE.md): the ONLY real
+// `auth/server` exports this admin router's graph reaches are `getAuthInstance`
+// (reshaped here to expose `createApiKey`) and `SESSION_ORIGIN_CLI` (statically
+// imported by managed.ts), so this two-key stub is complete. The shared harness
+// mock (`__mocks__/api-test-mocks.ts`) additionally lists `listAllUsers`/
+// `setUserRole`/`setBanStatus`/`setPasswordChangeRequired`/`deleteUser`, but those
+// are NOT real exports of auth/server (stale harness residue, grep-confirmed) —
+// reproducing them here would mirror a phantom shape, not satisfy any importer.
 mock.module("@atlas/api/lib/auth/server", () => ({
   getAuthInstance: () => ({
     api: {

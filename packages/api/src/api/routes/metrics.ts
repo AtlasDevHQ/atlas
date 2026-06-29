@@ -29,6 +29,7 @@
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { HTTPException } from "hono/http-exception";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
@@ -235,6 +236,18 @@ export const metrics = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook })
 metrics.use(standardAuth);
 metrics.use(requestContext);
 
+// Normalize JSON parse errors from @hono/zod-openapi into the standard API
+// error format. Mirrors execute-sql.ts / explore.ts / datasources.ts.
+metrics.onError((err, c) => {
+  if (err instanceof HTTPException) {
+    if (err.res) return err.res;
+    if (err.status === 400) {
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
+  }
+  throw err;
+});
+
 metrics.openapi(runMetricRoute, async (c) => {
   return runEffect(
     c,
@@ -384,12 +397,18 @@ metrics.openapi(runMetricRoute, async (c) => {
         ? `CLI metric run ${metric.id}: ${metric.description}`
         : `CLI metric run ${metric.id}`;
 
-      // Origin for approval-rule matching + audit: the credential's resolved
-      // origin claim (`cli` for an `atlas login` device-flow bearer), falling
-      // back to `cli` — this endpoint is the workspace CLI metric-run surface.
+      // Audit origin derives from the credential's claim, never hardcoded — a
+      // device-flow `atlas` bearer AND a workspace API key both carry
+      // `origin: "cli"`; a non-CLI session (e.g. a web session reaching this
+      // route) leaves it undefined so it is not mislabeled. A real CLI credential
+      // ALWAYS stamps the claim, so this fallback only ever fires for a non-CLI
+      // caller — defaulting to "cli" there would mislabel it in the
+      // origin-scoped approval/audit context. Standardized to the `undefined`
+      // fallback across the four sibling CLI routes (#4113); validated against
+      // the canonical vocabulary so an unexpected value can't land in the context.
       const claimOrigin = user?.claims?.origin;
       const agentOrigin =
-        typeof claimOrigin === "string" && isRequestOrigin(claimOrigin) ? claimOrigin : "cli";
+        typeof claimOrigin === "string" && isRequestOrigin(claimOrigin) ? claimOrigin : undefined;
 
       // `actor.kind` is the *who*, distinct from `origin` (the transport): a
       // human who approved a device-flow `atlas login` → `human`; an UNATTENDED
@@ -421,8 +440,8 @@ metrics.openapi(runMetricRoute, async (c) => {
             user,
             atlasMode,
             trustDeviceIdentifier,
-            agentOrigin,
             actor: { kind: actorKind },
+            ...(agentOrigin ? { agentOrigin } : {}),
           },
           async () => {
             const { runUserQueryPipeline } = await import("@atlas/api/lib/tools/sql");

@@ -25,8 +25,7 @@
  */
 
 import { credentialHeaders, type CliCredential } from "./credential";
-
-type FetchImpl = typeof fetch;
+import { asRecord, isAbortOrTimeout, serverMessage, unreachableMessage, type FetchImpl } from "./http";
 
 /** The kinds of failure a raw-SQL call can surface, each with an actionable message. */
 export type SqlErrorKind =
@@ -83,27 +82,6 @@ export interface RunSqlArgs {
   readonly connectionId?: string;
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-/**
- * Pull the server's actionable message off a JSON error body, falling back to
- * the HTTP status. Appends the server's `requestId` (Atlas error envelopes carry
- * one) so a bug report stays log-correlatable operator-side.
- */
-function serverMessage(body: Record<string, unknown>, status: number): string {
-  const base =
-    typeof body.message === "string" && body.message.length > 0
-      ? body.message
-      : typeof body.error === "string" && body.error.length > 0
-        ? body.error
-        : `HTTP ${status}`;
-  return typeof body.requestId === "string" && body.requestId.length > 0
-    ? `${base} (request ${body.requestId})`
-    : base;
-}
-
 /**
  * Execute one validated SELECT against the bound workspace via
  * `POST /api/v1/execute-sql`, mapping every documented failure status onto a
@@ -129,17 +107,13 @@ export async function runSql(opts: SqlClientOptions, args: RunSqlArgs): Promise<
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
-    const name = err instanceof Error ? err.name : "";
-    if (name === "TimeoutError" || name === "AbortError") {
+    if (isAbortOrTimeout(err)) {
       throw new SqlCliError(
         "network",
         `Timed out after ${Math.round(timeoutMs / 1000)}s running the query.`,
       );
     }
-    throw new SqlCliError(
-      "network",
-      `Could not reach the Atlas API at ${opts.baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new SqlCliError("network", unreachableMessage(opts.baseUrl, err));
   }
 
   if (res.ok) {

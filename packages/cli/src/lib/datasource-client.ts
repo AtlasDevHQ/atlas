@@ -16,19 +16,20 @@
  *   restore  → POST   /api/v1/admin/restore-connection      { connectionId }
  *   delete   → DELETE /api/v1/admin/connections/{id}
  *
- * Authorization rides entirely on the `atlas login` workspace credential: the
- * stored Better Auth session bearer (stamped `origin='cli'` server-side) is
- * sent as `Authorization: Bearer <token>`. The routes resolve it live to
- * `{ orgId, role }` through the same gate chain a web admin session clears, so
- * the call operates on ONLY the bound workspace's datasources and is denied
- * (403) when the credential's role isn't admin. The CLI never re-derives any of
- * that — it just surfaces the typed outcome.
+ * Authorization rides on the workspace credential — a `atlas login` device-flow
+ * SESSION bearer (`Authorization: Bearer`) XOR a workspace-scoped API key for
+ * unattended CI (#4046, `x-api-key`); see {@link CliCredential}. The routes
+ * resolve it live to `{ orgId, role }` through the same gate chain a web admin
+ * session clears, so the call operates on ONLY the bound workspace's datasources
+ * and is denied (403) when the credential's role isn't admin. The CLI never
+ * re-derives any of that — it just surfaces the typed outcome.
  *
  * `fetch` is injectable so the route mapping + status-code handling are
  * unit-testable without a live server (mirrors `device-flow.ts`). No function
  * here calls `process.exit` or `console`; the command handler owns presentation.
  */
 
+import { credentialHeaders, type CliCredential } from "./credential";
 import { asRecord, isAbortOrTimeout, serverMessage, unreachableMessage, type FetchImpl } from "./http";
 
 /** The kinds of failure a datasource call can surface, each with an actionable message. */
@@ -60,8 +61,11 @@ export class DatasourceCliError extends Error {
 export interface DatasourceClientOptions {
   /** Normalized Atlas API base URL (no trailing slash). */
   readonly baseUrl: string;
-  /** The stored `atlas login` session bearer. */
-  readonly token: string;
+  /**
+   * The workspace credential — a session bearer XOR a workspace API key (never
+   * both). See {@link CliCredential}.
+   */
+  readonly credential: CliCredential;
   /** Injectable for tests; defaults to the global `fetch`. */
   readonly fetchImpl?: FetchImpl;
   /** Per-request timeout in ms (default 30s). */
@@ -96,7 +100,7 @@ async function request(
     res = await fetchImpl(`${opts.baseUrl}${spec.path}`, {
       method: spec.method,
       headers: {
-        Authorization: `Bearer ${opts.token}`,
+        ...credentialHeaders(opts.credential),
         ...(spec.body !== undefined ? { "Content-Type": "application/json" } : {}),
       },
       ...(spec.body !== undefined ? { body: JSON.stringify(spec.body) } : {}),
@@ -425,7 +429,7 @@ export async function profileDatasource(
     res = await fetchImpl(`${opts.baseUrl}/api/v1/datasources/${encodeURIComponent(args.id)}/profile`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${opts.token}`,
+        ...credentialHeaders(opts.credential),
         "Content-Type": "application/json",
       },
       body: JSON.stringify(args.schema ? { schema: args.schema } : {}),

@@ -111,6 +111,75 @@ describe("runExplore — request shaping", () => {
   });
 });
 
+describe("runExplore — workspace API key (#4112 unattended CI)", () => {
+  it("sends the key on x-api-key (not Authorization) when ATLAS_API_KEY is set, with no session", async () => {
+    const { fetchImpl, calls } = stubFetch(200, { output: "ok" });
+    const { io } = capture();
+    const code = await runExplore(
+      ["explore", "ls"],
+      { baseUrl: BASE, session: null, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    const headers = new Headers(calls[0].init?.headers);
+    expect(headers.get("x-api-key")).toBe("atlas_wk_abc");
+    expect(headers.get("authorization")).toBeNull();
+  });
+
+  it("the --api-key flag overrides ATLAS_API_KEY and never leaks into the command", async () => {
+    const { fetchImpl, calls } = stubFetch(200, { output: "ok" });
+    const { io } = capture();
+    const code = await runExplore(
+      ["explore", "ls", "entities/", "--api-key", "flag_key"],
+      { baseUrl: BASE, session: null, apiKey: "env_key", fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    const headers = new Headers(calls[0].init?.headers);
+    expect(headers.get("x-api-key")).toBe("flag_key");
+    // Neither the flag nor its value pollutes the explore command the server runs.
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ command: "ls entities/" });
+  });
+
+  it("accepts the inline --api-key=<key> form and strips it from the command", async () => {
+    const { fetchImpl, calls } = stubFetch(200, { output: "ok" });
+    const { io } = capture();
+    const code = await runExplore(
+      ["explore", "cat catalog.yml", "--api-key=inline_key"],
+      { baseUrl: BASE, session: null, fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    const headers = new Headers(calls[0].init?.headers);
+    expect(headers.get("x-api-key")).toBe("inline_key");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ command: "cat catalog.yml" });
+  });
+
+  it("the api-key path takes precedence over a stored session", async () => {
+    const { fetchImpl, calls } = stubFetch(200, { output: "ok" });
+    const { io } = capture();
+    await runExplore(
+      ["explore", "ls"],
+      { baseUrl: BASE, session: SESSION, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    const headers = new Headers(calls[0].init?.headers);
+    expect(headers.get("x-api-key")).toBe("atlas_wk_abc");
+    expect(headers.get("authorization")).toBeNull();
+  });
+
+  it("with neither a session nor an api-key, refuses with a login + ATLAS_API_KEY hint", async () => {
+    const { fetchImpl, calls } = stubFetch(200, { output: "" });
+    const { io, err } = capture();
+    const code = await runExplore(["explore", "ls"], deps(fetchImpl, null), io);
+    expect(code).toBe(1);
+    const joined = err.join("\n");
+    expect(joined).toContain("atlas login");
+    expect(joined).toContain("ATLAS_API_KEY");
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe("runExplore — output", () => {
   it("prints the command output on success (exit 0)", async () => {
     const { fetchImpl } = stubFetch(200, { output: "file1.yml\nfile2.yml" });

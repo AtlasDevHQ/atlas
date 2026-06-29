@@ -21,6 +21,7 @@
 
 import { renderTable } from "../../lib/output";
 import { resolveApiBaseUrl } from "../lib/api-base";
+import { readApiKeyFlag, resolveCredential } from "../lib/credential";
 import { readSession, type StoredSession } from "../lib/credentials";
 import {
   MetricCliError,
@@ -38,11 +39,16 @@ Arguments:
 
 Options:
   --connection <id>   Run against a specific datasource in the metric's group
+  --api-key <key>     Use a workspace API key instead of your \`atlas login\` session
+                      (unattended CI). Overrides ATLAS_API_KEY.
   --json              Machine-readable JSON output
 
 The metric's SQL is used exactly as defined (authoritative). Group routing is
 honored — a grouped metric runs against its own group's datasource.
-Requires \`atlas login\` first. Set ATLAS_API_URL to target a non-local API.`;
+
+Authentication: \`atlas login\` for interactive use (ambient session reuse — no
+key needed), OR a workspace API key via --api-key / ATLAS_API_KEY for unattended
+CI. Set ATLAS_API_URL to target a non-local API.`;
 
 /** stdout/stderr sink — injected so tests can capture output. */
 export interface MetricIO {
@@ -59,6 +65,12 @@ const defaultIO: MetricIO = {
 export interface MetricRunDeps {
   readonly baseUrl: string;
   readonly session: StoredSession | null;
+  /**
+   * A workspace-scoped API key for unattended CI (#4046), resolved from the
+   * `--api-key` flag or the `ATLAS_API_KEY` env var. When present it takes
+   * precedence over the stored session — CI never goes through `atlas login`.
+   */
+  readonly apiKey?: string;
   readonly fetchImpl?: typeof fetch;
 }
 
@@ -67,6 +79,27 @@ function getFlagValue(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
   if (idx === -1 || idx === args.length - 1) return undefined;
   return args[idx + 1];
+}
+
+/** Flags whose following token is a value, not the metric id positional. */
+const METRIC_VALUE_FLAGS = new Set(["--connection", "--api-key"]);
+
+/**
+ * The metric id: the first non-flag positional after `run`, skipping any token
+ * consumed by a value-taking flag (`--connection <id>`, `--api-key <key>`) so a
+ * flag's value can never be mistaken for the id.
+ */
+function findMetricId(args: string[]): string | undefined {
+  for (let i = 2; i < args.length; i++) {
+    const a = args[i];
+    if (METRIC_VALUE_FLAGS.has(a)) {
+      i++; // skip the value token this flag consumes
+      continue;
+    }
+    if (a.startsWith("--")) continue;
+    return a;
+  }
+  return undefined;
 }
 
 /** Render a metric result for humans: scalar inline, or a table for rows. */
@@ -117,15 +150,22 @@ export async function runMetricCommand(
     return 1;
   }
 
-  // The metric id is the first non-flag positional after `run`.
-  const id = args.slice(2).find((a) => !a.startsWith("--"));
+  // The metric id is the first non-flag positional after `run` (skipping any
+  // value consumed by `--connection`/`--api-key`).
+  const id = findMetricId(args);
   if (!id) {
-    io.err("Usage: atlas metric run <id> [--connection <id>] [--json]");
+    io.err("Usage: atlas metric run <id> [--connection <id>] [--api-key <key>] [--json]");
     return 1;
   }
 
-  if (!deps.session) {
-    io.err("Not logged in. Run `atlas login` first.");
+  // A workspace API key (#4046, unattended CI) takes precedence over a stored
+  // login; the flag (either `--api-key key` or `--api-key=key`) wins over the env
+  // var (deps.apiKey) so an interactive override is possible. Keys are
+  // workspace-pinned, so no rebind is needed.
+  const apiKey = readApiKeyFlag(args) ?? deps.apiKey;
+  const credential = resolveCredential(apiKey, deps.session);
+  if (!credential) {
+    io.err("Not logged in. Run `atlas login` first, or set ATLAS_API_KEY for unattended use.");
     return 1;
   }
 
@@ -134,7 +174,7 @@ export async function runMetricCommand(
 
   const opts: MetricClientOptions = {
     baseUrl: deps.baseUrl,
-    token: deps.session.token,
+    credential,
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
   };
 
@@ -164,6 +204,10 @@ export async function runMetricCommand(
 export async function handleMetric(args: string[]): Promise<void> {
   const baseUrl = resolveApiBaseUrl();
   const session = readSession(baseUrl);
-  const code = await runMetricCommand(args, { baseUrl, session });
+  // ATLAS_API_KEY (#4046) is the unattended-CI credential — it is NOT persisted
+  // to ~/.atlas/credentials (a CI secret managed by the CI system, not an
+  // interactive login). `--api-key` (parsed in runMetricCommand) overrides it.
+  const apiKey = process.env.ATLAS_API_KEY?.trim() || undefined;
+  const code = await runMetricCommand(args, { baseUrl, session, ...(apiKey ? { apiKey } : {}) });
   if (code !== 0) process.exit(code);
 }

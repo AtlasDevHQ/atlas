@@ -26,6 +26,7 @@
 
 import { formatCsvValue, quoteCsvField, renderTable } from "../../lib/output";
 import { resolveApiBaseUrl } from "../lib/api-base";
+import { readApiKeyFlag } from "../lib/credential";
 import { readSession, type StoredSession } from "../lib/credentials";
 import { resolveActiveWorkspace, formatWorkspaceError } from "../lib/workspaces";
 import {
@@ -158,8 +159,9 @@ export async function runSqlCommand(
   }
 
   // A workspace API key (#4046, unattended CI) takes precedence over a stored
-  // login. The flag wins over the env var so an interactive override is possible.
-  const apiKey = getFlagValue(args, "--api-key") ?? deps.apiKey;
+  // login. The flag (either `--api-key key` or `--api-key=key`) wins over the env
+  // var so an interactive override is possible.
+  const apiKey = readApiKeyFlag(args) ?? deps.apiKey;
   // `--workspace` in EITHER form — space (`--workspace x`) or inline
   // (`--workspace=x`). `resolveActiveWorkspace` accepts both, so the api-key
   // guard below must reject both; a space-only check would let `--workspace=x`
@@ -180,7 +182,7 @@ export async function runSqlCommand(
 
     const opts: SqlClientOptions = {
       baseUrl: deps.baseUrl,
-      apiKey,
+      credential: { apiKey },
       ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     };
     return runAndRender(opts, sql, connectionId, json, csv, io);
@@ -210,7 +212,7 @@ export async function runSqlCommand(
 
   const opts: SqlClientOptions = {
     baseUrl: deps.baseUrl,
-    token: deps.session.token,
+    credential: { token: deps.session.token },
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
   };
   return runAndRender(opts, sql, connectionId, json, csv, io);

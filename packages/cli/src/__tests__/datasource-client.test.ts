@@ -21,6 +21,7 @@ interface CapturedCall {
   url: string;
   method: string;
   authorization: string | null;
+  apiKey: string | null;
   body: string | undefined;
 }
 
@@ -42,6 +43,10 @@ function stubFetch(
         init?.headers && typeof init.headers === "object"
           ? ((init.headers as Record<string, string>).Authorization ?? null)
           : null,
+      apiKey:
+        init?.headers && typeof init.headers === "object"
+          ? ((init.headers as Record<string, string>)["x-api-key"] ?? null)
+          : null,
       body: typeof init?.body === "string" ? init.body : undefined,
     });
     return new Response(body === undefined ? "" : JSON.stringify(body), {
@@ -53,7 +58,12 @@ function stubFetch(
 }
 
 function opts(fetchImpl: typeof fetch): DatasourceClientOptions {
-  return { baseUrl: BASE, token: TOKEN, fetchImpl };
+  return { baseUrl: BASE, credential: { token: TOKEN }, fetchImpl };
+}
+
+const API_KEY = "atlas_wk_xyz";
+function apiKeyOpts(fetchImpl: typeof fetch): DatasourceClientOptions {
+  return { baseUrl: BASE, credential: { apiKey: API_KEY }, fetchImpl };
 }
 
 describe("datasource-client route mapping (#4044)", () => {
@@ -66,6 +76,14 @@ describe("datasource-client route mapping (#4044)", () => {
     expect(calls[0].method).toBe("GET");
     expect(calls[0].url).toBe(`${BASE}/api/v1/admin/connections`);
     expect(calls[0].authorization).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0].apiKey).toBeNull();
+  });
+
+  it("an api-key credential sends x-api-key (not Authorization) — #4112", async () => {
+    const { fetchImpl, calls } = stubFetch(200, { connections: [] });
+    await listDatasources(apiKeyOpts(fetchImpl));
+    expect(calls[0].apiKey).toBe(API_KEY);
+    expect(calls[0].authorization).toBeNull();
   });
 
   it("list tolerates a missing connections array", async () => {
@@ -218,7 +236,7 @@ describe("datasource-client error mapping (#4044)", () => {
 
   it("a network failure → network", async () => {
     const fetchImpl = (() => Promise.reject(new Error("ECONNREFUSED"))) as unknown as typeof fetch;
-    const err = await listDatasources({ baseUrl: BASE, token: TOKEN, fetchImpl }).catch((e) => e);
+    const err = await listDatasources({ baseUrl: BASE, credential: { token: TOKEN }, fetchImpl }).catch((e) => e);
     expect((err as DatasourceCliError).kind).toBe("network");
     expect((err as DatasourceCliError).message).toContain(BASE);
   });
@@ -229,7 +247,7 @@ describe("datasource-client error mapping (#4044)", () => {
       e.name = "TimeoutError";
       return Promise.reject(e);
     }) as unknown as typeof fetch;
-    const err = await testDatasource({ baseUrl: BASE, token: TOKEN, fetchImpl }, "x").catch((e) => e);
+    const err = await testDatasource({ baseUrl: BASE, credential: { token: TOKEN }, fetchImpl }, "x").catch((e) => e);
     expect((err as DatasourceCliError).kind).toBe("network");
     expect((err as DatasourceCliError).message).toContain("Timed out");
     expect((err as DatasourceCliError).message).toContain("test datasource");
@@ -253,7 +271,7 @@ describe("datasource-client error mapping (#4044)", () => {
         status: 502,
         headers: { "Content-Type": "text/html" },
       })) as unknown as typeof fetch;
-    const err = await listDatasources({ baseUrl: BASE, token: TOKEN, fetchImpl }).catch((e) => e);
+    const err = await listDatasources({ baseUrl: BASE, credential: { token: TOKEN }, fetchImpl }).catch((e) => e);
     expect((err as DatasourceCliError).kind).toBe("request_failed");
     expect((err as DatasourceCliError).message).toContain("HTTP 502");
   });
@@ -317,6 +335,10 @@ function stubNdjsonStream(chunks: string[]): { fetchImpl: typeof fetch; calls: C
         init?.headers && typeof init.headers === "object"
           ? ((init.headers as Record<string, string>).Authorization ?? null)
           : null,
+      apiKey:
+        init?.headers && typeof init.headers === "object"
+          ? ((init.headers as Record<string, string>)["x-api-key"] ?? null)
+          : null,
       body: typeof init?.body === "string" ? init.body : undefined,
     });
     const encoder = new TextEncoder();
@@ -357,7 +379,17 @@ describe("datasource-client profile streaming (#4052)", () => {
     expect(calls[0].method).toBe("POST");
     expect(calls[0].url).toBe(`${BASE}/api/v1/datasources/prod-us/profile`);
     expect(calls[0].authorization).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0].apiKey).toBeNull();
     expect(calls[0].body).toBe("{}");
+  });
+
+  it("an api-key credential sends x-api-key on the profile stream too (#4112)", async () => {
+    // profileDatasource has its OWN credentialHeaders() call site, distinct from
+    // the generic request() one — pin the key path here, not just on the bearer.
+    const { fetchImpl, calls } = stubNdjsonStream([`${resultLine}\n`]);
+    await profileDatasource(apiKeyOpts(fetchImpl), { id: "prod-us" });
+    expect(calls[0].apiKey).toBe(API_KEY);
+    expect(calls[0].authorization).toBeNull();
   });
 
   it("passes a schema override in the body when supplied", async () => {

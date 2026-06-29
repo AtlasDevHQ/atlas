@@ -70,6 +70,120 @@ describe("runDatasource — auth + dispatch guards (#4044)", () => {
   });
 });
 
+/** Like stubFetch but captures request headers so the credential path is assertable. */
+function stubFetchHeaders(
+  status: number,
+  body: unknown,
+): { fetchImpl: typeof fetch; calls: Array<{ url: string; headers: Record<string, string> }> } {
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const headers: Record<string, string> = {};
+    if (init?.headers) {
+      new Headers(init.headers as Record<string, string>).forEach((v, k) => {
+        headers[k] = v;
+      });
+    }
+    calls.push({ url: typeof url === "string" ? url : url.toString(), headers });
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+describe("runDatasource — workspace API key (#4112 unattended CI)", () => {
+  it("sends the key on x-api-key (not Authorization) when ATLAS_API_KEY is set, with no session", async () => {
+    const { fetchImpl, calls } = stubFetchHeaders(200, { connections: [] });
+    const { io } = capture();
+    const code = await runDatasource(
+      ["datasource", "list"],
+      { baseUrl: BASE, session: null, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].headers["x-api-key"]).toBe("atlas_wk_abc");
+    expect(calls[0].headers["authorization"]).toBeUndefined();
+  });
+
+  it("the --api-key flag overrides ATLAS_API_KEY (deps.apiKey)", async () => {
+    const { fetchImpl, calls } = stubFetchHeaders(200, { connections: [] });
+    const { io } = capture();
+    const code = await runDatasource(
+      ["datasource", "list", "--api-key", "flag_key"],
+      { baseUrl: BASE, session: null, apiKey: "env_key", fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].headers["x-api-key"]).toBe("flag_key");
+  });
+
+  it("does not mistake the --api-key value for the datasource id positional", async () => {
+    const { fetchImpl, calls } = stubFetchHeaders(200, { id: "prod-us", dbType: "postgres" });
+    const { io } = capture();
+    const code = await runDatasource(
+      ["datasource", "get", "--api-key", "flag_key", "prod-us"],
+      { baseUrl: BASE, session: null, fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0].url).toBe(`${BASE}/api/v1/admin/connections/prod-us`);
+  });
+
+  it("the api-key path takes precedence over a stored session", async () => {
+    const { fetchImpl, calls } = stubFetchHeaders(200, { connections: [] });
+    const { io } = capture();
+    await runDatasource(
+      ["datasource", "list"],
+      { baseUrl: BASE, session: SESSION, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    expect(calls[0].headers["x-api-key"]).toBe("atlas_wk_abc");
+    expect(calls[0].headers["authorization"]).toBeUndefined();
+  });
+
+  it("list --json falls back to a null workspaceId on the api-key path (no local session)", async () => {
+    const { fetchImpl } = stubFetchHeaders(200, { connections: [{ id: "prod-us" }] });
+    const { io, out } = capture();
+    const code = await runDatasource(
+      ["datasource", "list", "--json"],
+      { baseUrl: BASE, session: null, apiKey: "atlas_wk_abc", fetchImpl },
+      io,
+    );
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out.join("\n"));
+    expect(parsed.workspaceId).toBeNull();
+    expect(parsed.datasources[0].id).toBe("prod-us");
+  });
+
+  it("create does not mistake the --api-key value for the id positional", async () => {
+    const { fetchImpl, bodies } = stubFetchCapturing(201, { id: "prod-us", dbType: "postgres" });
+    const { io } = capture();
+    const code = await runDatasource(
+      ["datasource", "create", "--api-key", "flag_key", "prod-us"],
+      {
+        baseUrl: BASE,
+        session: null,
+        apiKey: "env_key",
+        fetchImpl,
+        secretCapture: secretDeps({ envValue: "postgres://u:p@h/db" }),
+      },
+      io,
+    );
+    expect(code).toBe(0);
+    expect(JSON.parse(bodies[0]).id).toBe("prod-us");
+  });
+
+  it("with neither a session nor an api-key, refuses with a login + ATLAS_API_KEY hint", async () => {
+    const { io, err } = capture();
+    const code = await runDatasource(["datasource", "list"], deps(undefined, null), io);
+    expect(code).toBe(1);
+    const joined = err.join("\n");
+    expect(joined).toContain("atlas login");
+    expect(joined).toContain("ATLAS_API_KEY");
+  });
+});
+
 describe("runDatasource — list (#4044)", () => {
   it("renders a table of the workspace's datasources", async () => {
     const { fetchImpl } = stubFetch(200, {

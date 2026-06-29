@@ -228,6 +228,13 @@ async function main() {
     return handleDatasource(args);
   }
 
+  // #4048 / ADR-0027 — run a canonical metric by id over the metric-run REST
+  // route, authorized by the `atlas login` workspace credential.
+  if (command === "metric") {
+    const { handleMetric } = await import("../src/commands/metric");
+    return handleMetric(args);
+  }
+
   if (command === "eval") {
     const { handleEval } = await import("./eval");
     return handleEval(args);

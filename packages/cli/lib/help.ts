@@ -455,6 +455,27 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "Set ATLAS_API_URL to target a non-local Atlas API.",
     ],
   },
+  metric: {
+    description:
+      "Run a canonical metric by id against your logged-in workspace over the Atlas API. The metric's SQL is used exactly as defined (authoritative); group routing is honored. Reaches the same gated core as the MCP `runMetric` tool, authorized by your `atlas login` credential and audited `origin=cli`. Requires `atlas login` first.",
+    usage: "metric run <id> [--connection <id>] [--json]",
+    subcommands: [
+      { name: "run <id>", description: "Execute a canonical metric and print its result" },
+    ],
+    flags: [
+      { flag: "--connection <id>", description: "Run against a specific datasource in the metric's group" },
+      { flag: "--json", description: "Machine-readable JSON output" },
+    ],
+    examples: [
+      "atlas metric run total_gmv",
+      "atlas metric run prod_signups --connection us-prod",
+      "atlas metric run total_gmv --json",
+    ],
+    notes: [
+      "Any workspace member can run a metric (parity with chat/MCP reach).",
+      "Set ATLAS_API_URL to target a non-local Atlas API.",
+    ],
+  },
   plugin: {
     description: "Manage Atlas plugins.",
     usage: "plugin <list|create|add>",
@@ -650,6 +671,7 @@ export function printOverviewHelp(): void {
       "  explore          Run read-only ls/cat/grep/find over your workspace's semantic layer\n" +
       "  switch           Choose which workspace the CLI acts on (multi-workspace users)\n" +
       "  datasource       Manage your workspace's datasources (list, get, test, archive, restore, delete)\n" +
+      "  metric           Run a canonical metric by id against your logged-in workspace\n" +
       "  validate         Validate config, semantic layer, and connectivity\n" +
       "  doctor           Alias for validate\n" +
       "  eval             Run eval pipeline against demo schemas\n" +

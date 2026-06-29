@@ -67,6 +67,11 @@ type GateResult =
 const mockCheckAgentBillingGate: Mock<(orgId: string | undefined) => Promise<GateResult>> = mock(
   () => Promise.resolve({ allowed: true }),
 );
+// The route reaches `agent-gate` only for `checkAgentBillingGate`. Spreading the
+// real module would transitively load the internal-DB graph (which we stub
+// below), so we stub just the reached export — matching the curated-stub
+// convention the adjacent semantic.test.ts uses. `BillingBlockedError` is not
+// referenced by the metrics route, so omitting it is safe.
 mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   checkAgentBillingGate: mockCheckAgentBillingGate,
 }));
@@ -120,6 +125,13 @@ const mockRunUserQueryPipeline: Mock<(opts: PipelineOpts) => Promise<UserQueryOu
     };
   },
 );
+// The route reaches `tools/sql` ONLY via a dynamic `import()` that destructures
+// `runUserQueryPipeline` (plus a type-only `UserQueryOutcome`, erased at
+// runtime). Spreading the real module here would eagerly load sql.ts's heavy
+// connection/registry graph (defeating the standalone-router isolation this
+// test relies on), so we deliberately stub just the one reached export. Bun's
+// per-file `--isolate` keeps this from leaking; if the route ever statically
+// imports another sql.ts export, this mock must grow to cover it.
 mock.module("@atlas/api/lib/tools/sql", () => ({
   runUserQueryPipeline: mockRunUserQueryPipeline,
 }));
@@ -315,6 +327,47 @@ describe("POST /api/v1/metrics/{id}/run", () => {
     await app.fetch(runMetricRequest("total_gmv"));
     expect(capturedContext.agentOrigin).toBe("cli");
     expect(capturedContext.actorKind).toBe("human");
+  });
+
+  it("falls back to origin=cli when the credential carries no origin claim", async () => {
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: {
+        id: "user-1",
+        mode: "managed",
+        label: "Alice",
+        role: "member",
+        activeOrganizationId: "org-1",
+        claims: { sub: "user-1", org_id: "org-1" }, // no origin
+      },
+    } as unknown as AuthResult);
+    await app.fetch(runMetricRequest("total_gmv"));
+    expect(capturedContext.agentOrigin).toBe("cli");
+  });
+
+  it("coerces a bogus origin claim to cli (never passes an unvetted origin through)", async () => {
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: {
+        id: "user-1",
+        mode: "managed",
+        label: "Alice",
+        role: "member",
+        activeOrganizationId: "org-1",
+        claims: { sub: "user-1", org_id: "org-1", origin: "not-a-real-origin" },
+      },
+    } as unknown as AuthResult);
+    await app.fetch(runMetricRequest("total_gmv"));
+    expect(capturedContext.agentOrigin).toBe("cli");
+  });
+
+  it("uses default routing (no connectionId) for a default-group metric", async () => {
+    await app.fetch(runMetricRequest("total_gmv"));
+    // The default-group metric (targetConnectionId undefined) must NOT inject a
+    // spurious connectionId into the pipeline.
+    expect(capturedOpts?.connectionId).toBeUndefined();
   });
 
   it("passes the resolved org through to the billing gate (credential-derived isolation)", async () => {

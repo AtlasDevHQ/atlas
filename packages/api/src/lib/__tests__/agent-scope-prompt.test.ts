@@ -158,8 +158,8 @@ mock.module("@atlas/api/lib/env-routing/lookup", () => ({
     // #3044 "no environment context" path is reachable; everything else is the
     // 3-member `prod` group the scope-routing tests rely on.
     currentMember === "ungrouped-conn"
-      ? { members: ["ungrouped-conn"], primaryMember: "ungrouped-conn", currentMember }
-      : { groupId: "prod", members: ["us-int", "eu", "apac"], primaryMember: "us-int", currentMember },
+      ? { members: ["ungrouped-conn"], primaryMember: "ungrouped-conn", currentMember, degraded: false }
+      : { groupId: "prod", members: ["us-int", "eu", "apac"], primaryMember: "us-int", currentMember, degraded: false },
 }));
 
 mock.module("@atlas/api/lib/cache/index", () => ({

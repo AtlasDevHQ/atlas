@@ -307,6 +307,26 @@ describe("POST /api/v1/metrics/{id}/run", () => {
     expect(res.status).toBe(400);
   });
 
+  it("maps a degraded routing lookup to a retryable 503, not a 400 wrong_connection (#4109)", async () => {
+    // When the internal-DB membership lookup faults, resolveMetricRun returns
+    // `routing_unavailable` rather than a confident `wrong_connection`. The route
+    // must surface that as a retryable 503 carrying the requestId — an operator
+    // debugging this sees the server-side fault, not a misleading user-input 400.
+    mockResolveMetricRun.mockResolvedValue({
+      kind: "routing_unavailable",
+      metricId: "prod_signups",
+      connectionId: "us-prod",
+    });
+    const res = await app.fetch(runMetricRequest("prod_signups", { connectionId: "us-prod" }));
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("routing_unavailable");
+    expect(body.retryable).toBe(true);
+    expect(body.requestId).toBeDefined();
+    // Routing couldn't be resolved, so the SQL pipeline must NOT run.
+    expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+  });
+
   it("maps an RLS failure to 403", async () => {
     mockRunUserQueryPipeline.mockResolvedValueOnce({
       kind: "rls_failed",

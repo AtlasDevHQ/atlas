@@ -157,8 +157,20 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
 // has "warehouse" + "warehouse_eu"; everything else is ungrouped (1×1 fallback,
 // groupId undefined). Lets the member-routing tests resolve a member id to its
 // group without a real internal DB.
+// #4109 — when set, the helper returns a fault-induced degraded 1×1 fallback
+// (groupId undefined, degraded true), simulating a transient internal-DB fault
+// in the membership lookup. Reset in beforeEach.
+let routingLookupDegraded = false;
 mock.module("@atlas/api/lib/env-routing/lookup", () => ({
   loadGroupRoutingContext: mock(async (_orgId: string | undefined, connectionId: string) => {
+    if (routingLookupDegraded) {
+      return {
+        members: [connectionId],
+        primaryMember: connectionId,
+        currentMember: connectionId,
+        degraded: true,
+      };
+    }
     const topology: Record<string, string> = {
       analytics: "analytics",
       analytics_eu: "analytics",
@@ -168,9 +180,9 @@ mock.module("@atlas/api/lib/env-routing/lookup", () => ({
     const groupId = topology[connectionId];
     if (groupId) {
       const members = Object.keys(topology).filter((c) => topology[c] === groupId);
-      return { groupId, members, primaryMember: members[0], currentMember: connectionId };
+      return { groupId, members, primaryMember: members[0], currentMember: connectionId, degraded: false };
     }
-    return { members: [connectionId], primaryMember: connectionId, currentMember: connectionId };
+    return { members: [connectionId], primaryMember: connectionId, currentMember: connectionId, degraded: false };
   }),
 }));
 
@@ -251,6 +263,7 @@ describe("MCP semantic tools", () => {
     mockExecuteSQLExecute.mockImplementation(async () => defaultExecuteSqlResult);
     billingGateVerdict = { allowed: true };
     mockCheckAgentBillingGate.mockClear();
+    routingLookupDegraded = false;
   });
 
   it("registers four typed tools", async () => {
@@ -1002,6 +1015,29 @@ describe("MCP semantic tools", () => {
     expect(result.isError).toBe(true);
     const envelope = parseAtlasMcpToolError(getContentText(result.content));
     expect(envelope!.code).toBe("validation_failed");
+    expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
+  });
+
+  it("runMetric surfaces a degraded routing lookup as retryable internal_error, not validation_failed (#4109)", async () => {
+    // When the internal-DB membership lookup faults, the helper returns a
+    // degraded 1×1 fallback. The MCP tool must NOT read that as a definitive
+    // "wrong datasource" (a terminal validation_failed the agent won't retry) —
+    // it must mirror the REST route and surface a retryable internal_error
+    // carrying request_id, so a transient fault isn't masqueraded as bad input.
+    routingLookupDegraded = true;
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "runMetric",
+      // "warehouse" ≠ the metric's group "analytics" → triggers the membership
+      // lookup, which now faults (degraded).
+      arguments: { id: "analytics_orders_count", connectionId: "warehouse" },
+    });
+
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("internal_error");
+    expect(envelope!.request_id).toBeDefined();
+    // Must short-circuit before touching SQL — the fault is in routing, not the query.
     expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
   });
 

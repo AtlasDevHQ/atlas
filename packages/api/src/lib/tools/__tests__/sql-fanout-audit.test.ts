@@ -91,6 +91,7 @@ mock.module("@atlas/api/lib/env-routing/lookup", () => ({
     members: ["us-int", "eu"] as const,
     primaryMember: "us-int",
     currentMember,
+    degraded: false,
   }),
 }));
 

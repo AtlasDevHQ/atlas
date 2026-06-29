@@ -453,9 +453,29 @@ export function registerSemanticTools(
             // metric against an arbitrary sibling connection is intentionally
             // out of scope — model it as a grouped metric and pass a member id
             // instead (decision recorded for #3281).
-            const isGroupMember =
-              metric.source !== DEFAULT_SEMANTIC_GROUP &&
-              (await loadGroupRoutingContext(workspaceId, connectionId)).groupId === metric.source;
+            let isGroupMember = false;
+            if (metric.source !== DEFAULT_SEMANTIC_GROUP) {
+              const routing = await loadGroupRoutingContext(workspaceId, connectionId);
+              if (routing.degraded) {
+                // #4109 — the internal-DB routing lookup faulted, so the
+                // `groupId: undefined` it returned is the ABSENCE of an answer,
+                // not a definitive "not a member". `validation_failed` is a
+                // terminal client error the agent won't retry, so emitting it
+                // here would masquerade a transient server fault as a confident
+                // wrong-datasource verdict. Mirror the REST route's
+                // `routing_unavailable` → 503 and surface a retryable
+                // `internal_error` carrying the request_id instead (CLAUDE.md
+                // "prefer errors over silent fallbacks").
+                return toEnvelopeResult(
+                  envelope(
+                    "internal_error",
+                    "Could not verify the connection's group membership right now (a transient internal error). Please retry shortly.",
+                    { request_id: requestId, retry_after: 2 },
+                  ),
+                );
+              }
+              isGroupMember = routing.groupId === metric.source;
+            }
             if (!isGroupMember) {
               return toEnvelopeResult(
                 envelope(

@@ -44,6 +44,7 @@ function stubDeps(over: Partial<ProvisionTrialDeps> = {}): {
       return 1;
     },
     buildConnectUrl: (id) => `https://mcp.test/mcp/${id}/sse`,
+    buildClaimUrl: (email) => `https://app.test/claim?email=${encodeURIComponent(email)}`,
     enqueueMcpSignupLead: async (email, name) => {
       calls.mcpLead.push({ email, name });
     },
@@ -66,6 +67,9 @@ describe("provisionTrialWorkspace", () => {
     expect(result.workspaceId).toBe("org_new");
     expect(result.state).toBe("grace");
     expect(result.connectUrl).toBe("https://mcp.test/mcp/org_new/sse");
+    // The claim CTA points at the /claim interstitial (#4135), prefilled with
+    // the owner email so it resumes the right account — never at /signup.
+    expect(result.claimUrl).toBe("https://app.test/claim?email=founder%40acme.com");
 
     // signUp ran with a derived name; createOrg used the user id + a slug
     // derived from the workspace name.

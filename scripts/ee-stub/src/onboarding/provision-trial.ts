@@ -33,6 +33,7 @@ export interface ProvisionTrialInput {
 export interface ProvisionTrialResult {
   readonly workspaceId: string;
   readonly connectUrl: string;
+  readonly claimUrl: string;
   readonly state: TrialWorkspaceState;
 }
 

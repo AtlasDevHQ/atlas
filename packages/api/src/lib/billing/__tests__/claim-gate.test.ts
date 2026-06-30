@@ -40,7 +40,7 @@ function deps(overrides: Partial<ClaimGateDeps>): Partial<ClaimGateDeps> {
     hasInternalDB: () => true,
     getWorkspace: async () => workspace("trial"),
     getOwnerVerification: async () => ({ emailVerified: false, email: "owner@acme.com" }),
-    buildClaimUrl: (email) => `https://app.useatlas.dev/signup${email ? `?email=${email}` : ""}`,
+    buildClaimUrl: (email) => `https://app.useatlas.dev/claim${email ? `?email=${email}` : ""}`,
     ...overrides,
   };
 }
@@ -52,7 +52,7 @@ describe("checkClaimGate — block-vs-allow matrix", () => {
     if (result.allowed) throw new Error("unreachable");
     expect(result.reason).toBe("claim_required");
     if (result.reason !== "claim_required") throw new Error("unreachable");
-    expect(result.claimUrl).toContain("/signup");
+    expect(result.claimUrl).toContain("/claim");
     expect(result.claimUrl).toContain("owner@acme.com");
   });
 
@@ -127,13 +127,13 @@ describe("checkClaimGate — block-vs-allow matrix", () => {
 
 describe("ClaimRequiredError", () => {
   it("carries the claim URL and a 403 / claim_required code", () => {
-    const err = new ClaimRequiredError("https://app.useatlas.dev/signup");
+    const err = new ClaimRequiredError("https://app.useatlas.dev/claim");
     expect(err).toBeInstanceOf(Error);
     expect(err.name).toBe("ClaimRequiredError");
     expect(err.errorCode).toBe("claim_required");
     expect(err.httpStatus).toBe(403);
-    expect(err.claimUrl).toBe("https://app.useatlas.dev/signup");
-    expect(err.message).toContain("https://app.useatlas.dev/signup");
+    expect(err.claimUrl).toBe("https://app.useatlas.dev/claim");
+    expect(err.message).toContain("https://app.useatlas.dev/claim");
   });
 });
 
@@ -203,15 +203,15 @@ describe("ClaimCheckFailedError", () => {
 });
 
 describe("buildClaimUrl", () => {
-  it("returns a relative /signup path when no web origin is configured", () => {
+  it("returns a relative /claim path when no web origin is configured", () => {
     // No ATLAS_CORS_ORIGIN / BETTER_AUTH_TRUSTED_ORIGINS in the test env.
     const url = buildClaimUrl();
-    expect(url.endsWith("/signup")).toBe(true);
+    expect(url.endsWith("/claim")).toBe(true);
   });
 
   it("encodes the email into the path when no origin is configured", () => {
     const url = buildClaimUrl("a+b@acme.com");
-    expect(url).toContain("/signup?email=");
+    expect(url).toContain("/claim?email=");
     expect(url).toContain(encodeURIComponent("a+b@acme.com"));
   });
 });

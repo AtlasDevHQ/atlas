@@ -95,6 +95,7 @@ export interface RegisterStartTrialOptions {
 const startTrialOutputShape = {
   workspaceId: z.string(),
   connectUrl: z.string(),
+  claimUrl: z.string(),
   state: z.enum(["grace", "locked"]),
 } as const;
 
@@ -350,13 +351,14 @@ export function registerStartTrialTool(
         const result = await provision(input);
         const text =
           result.state === "grace"
-            ? `Trial workspace created in grace period. Connect your agent at: ${result.connectUrl} — then claim your account on the web to start your full 14-day trial.`
+            ? `Trial workspace created in grace period. Connect your agent at: ${result.connectUrl} — then claim your account at ${result.claimUrl} (verify your email and add a passkey) to start your full 14-day trial.`
             : `Workspace created, but this account has already used its trial, so it's locked. Connect at ${result.connectUrl} and subscribe on the web to continue.`;
         return {
           content: [{ type: "text" as const, text }],
           structuredContent: {
             workspaceId: result.workspaceId,
             connectUrl: result.connectUrl,
+            claimUrl: result.claimUrl,
             state: result.state,
           },
         };

@@ -38,17 +38,22 @@ import { claimGateDecisions } from "@atlas/api/lib/metrics";
 const log = createLogger("billing:claim-gate");
 
 /**
- * Build the web claim URL — the post-signup OTP interstitial the prospect
- * completes to claim an unclaimed Workspace. Points at the `/signup` page
- * (which renders the emailOTP verify form when a pending signup is detected);
- * `email` is prefilled when known so the form can resume the right account.
+ * Build the web claim URL — the dedicated OTP→passkey claim interstitial the
+ * prospect completes to claim an unclaimed Workspace (#4135). Points at the
+ * `/claim` page (NOT `/signup`: a `start_trial` account already exists, so the
+ * new-account funnel collides at the Account step — `USER_ALREADY_EXISTS` on
+ * the throw path, an enumeration-safe synthetic 200 in prod — and can never
+ * claim it; #4125 fault A). `/claim` verifies the email by OTP, enrolls a
+ * passkey (password-free, clearing the admin-MFA gate via `passkeyCount>0`),
+ * and accepts ToS — the credential step ADR-0018 specified. `email` is
+ * prefilled when known so the interstitial can resume the right account.
  *
- * Falls back to a relative `/signup` path when the web origin can't be
+ * Falls back to a relative `/claim` path when the web origin can't be
  * resolved (only reachable off-SaaS, where the gate never fires anyway).
  */
 export function buildClaimUrl(email?: string): string {
   const origin = getWebOrigin();
-  const path = "/signup";
+  const path = "/claim";
   if (!origin) {
     return email ? `${path}?email=${encodeURIComponent(email)}` : path;
   }

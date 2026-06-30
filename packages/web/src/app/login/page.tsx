@@ -561,7 +561,23 @@ export default function LoginPage() {
         </CardContent>
       </Card>
 
+      {/* A `start_trial` (CLI/MCP) grace account is passwordless, so its owner
+          can't satisfy the form above. The region-probe is deliberately
+          existence-only (no pre-auth claim-state oracle — #4135), so rather than
+          auto-route we surface a claim affordance here; `/claim` is itself
+          OTP-gated and enumeration-safe. Carries the typed email so the
+          interstitial resumes the right account. */}
       <p className="mt-6 text-center text-sm text-muted-foreground">
+        Started a trial from the CLI or MCP?{" "}
+        <a
+          href={email ? `/claim?email=${encodeURIComponent(email)}` : "/claim"}
+          className="font-medium text-primary underline-offset-4 hover:underline"
+        >
+          Claim your account
+        </a>
+      </p>
+
+      <p className="mt-2 text-center text-sm text-muted-foreground">
         Don&apos;t have an account?{" "}
         <a
           href="/signup"

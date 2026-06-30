@@ -35,6 +35,16 @@ interface Post {
 
 const POSTS: Post[] = [
   {
+    slug: "the-price-of-ci",
+    title: "The price of /ci",
+    description:
+      "One slash command was eating about a tenth of a week's token budget. Here's the fix that cut it 97% — and the CI drift, dead code, and flaky-test mess it turned up along the way.",
+    isoDate: "2026-06-30",
+    dateLabel: "June 30, 2026",
+    readingTime: "4 min read",
+    tag: "How I build",
+  },
+  {
     slug: "why-the-semantic-layer-is-yaml",
     title: "Why the semantic layer is a YAML file",
     description:

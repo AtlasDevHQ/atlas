@@ -172,46 +172,47 @@ describe("demoUserId", () => {
 describe("checkDemoRateLimit", () => {
   const originalRpm = process.env.ATLAS_DEMO_RATE_LIMIT_RPM;
 
-  beforeEach(() => {
-    resetDemoRateLimits();
+  beforeEach(async () => {
+    await resetDemoRateLimits();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     if (originalRpm !== undefined) process.env.ATLAS_DEMO_RATE_LIMIT_RPM = originalRpm;
     else delete process.env.ATLAS_DEMO_RATE_LIMIT_RPM;
-    resetDemoRateLimits();
+    await resetDemoRateLimits();
   });
 
-  it("allows requests under limit", () => {
+  it("allows requests under limit", async () => {
     process.env.ATLAS_DEMO_RATE_LIMIT_RPM = "5";
     for (let i = 0; i < 5; i++) {
-      expect(checkDemoRateLimit("test@example.com").allowed).toBe(true);
+      expect((await checkDemoRateLimit("test@example.com")).allowed).toBe(true);
     }
   });
 
-  it("blocks at limit", () => {
+  it("blocks at limit", async () => {
     process.env.ATLAS_DEMO_RATE_LIMIT_RPM = "3";
     for (let i = 0; i < 3; i++) {
-      expect(checkDemoRateLimit("test@example.com").allowed).toBe(true);
+      expect((await checkDemoRateLimit("test@example.com")).allowed).toBe(true);
     }
-    const result = checkDemoRateLimit("test@example.com");
+    const result = await checkDemoRateLimit("test@example.com");
     expect(result.allowed).toBe(false);
+    if (result.allowed) throw new Error("unreachable: expected a blocked decision");
     expect(result.retryAfterMs).toBeGreaterThan(0);
   });
 
-  it("allows all when limit is 0 (disabled)", () => {
+  it("allows all when limit is 0 (disabled)", async () => {
     process.env.ATLAS_DEMO_RATE_LIMIT_RPM = "0";
     for (let i = 0; i < 100; i++) {
-      expect(checkDemoRateLimit("test@example.com").allowed).toBe(true);
+      expect((await checkDemoRateLimit("test@example.com")).allowed).toBe(true);
     }
   });
 
-  it("tracks different emails separately", () => {
+  it("tracks different emails separately", async () => {
     process.env.ATLAS_DEMO_RATE_LIMIT_RPM = "2";
-    expect(checkDemoRateLimit("a@b.com").allowed).toBe(true);
-    expect(checkDemoRateLimit("a@b.com").allowed).toBe(true);
-    expect(checkDemoRateLimit("a@b.com").allowed).toBe(false);
+    expect((await checkDemoRateLimit("a@b.com")).allowed).toBe(true);
+    expect((await checkDemoRateLimit("a@b.com")).allowed).toBe(true);
+    expect((await checkDemoRateLimit("a@b.com")).allowed).toBe(false);
     // Different email still has quota
-    expect(checkDemoRateLimit("c@d.com").allowed).toBe(true);
+    expect((await checkDemoRateLimit("c@d.com")).allowed).toBe(true);
   });
 });

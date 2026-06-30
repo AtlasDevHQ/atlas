@@ -43,8 +43,8 @@ afterAll(() => {
   restore("ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM", ORIG_EMAIL);
 });
 
-beforeEach(() => {
-  resetTrialAttemptRateLimits();
+beforeEach(async () => {
+  await resetTrialAttemptRateLimits();
   // High IP ceiling by default so per-email tests aren't shadowed by the IP
   // bucket, and vice versa. Individual tests narrow the relevant knob.
   process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "1000";
@@ -75,105 +75,105 @@ describe("limit resolution", () => {
 });
 
 describe("per-IP attempt window", () => {
-  test("allows up to the IP limit, then blocks with retry guidance", () => {
+  test("allows up to the IP limit, then blocks with retry guidance", async () => {
     process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "3";
     // Distinct emails so only the IP bucket can trip.
-    expect(checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "a@x.com" }).allowed).toBe(true);
-    expect(checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "b@x.com" }).allowed).toBe(true);
-    expect(checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "c@x.com" }).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "a@x.com" })).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "b@x.com" })).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "c@x.com" })).allowed).toBe(true);
     const blocked = expectBlocked(
-      checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "d@x.com" }),
+      await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "d@x.com" }),
     );
     expect(blocked.bucket).toBe("ip");
     expect(blocked.retryAfterMs).toBeGreaterThan(0);
   });
 
-  test("distinct IPs do not share the window (shared-NAT attempts are not capped per trial)", () => {
+  test("distinct IPs do not share the window (shared-NAT attempts are not capped per trial)", async () => {
     process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "1";
-    expect(checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "a@x.com" }).allowed).toBe(true);
-    expect(checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "b@x.com" }).allowed).toBe(false);
+    expect((await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "a@x.com" })).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "b@x.com" })).allowed).toBe(false);
     // Different IP — fresh budget.
-    expect(checkTrialAttemptRateLimit({ ip: "2.2.2.2", email: "c@x.com" }).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: "2.2.2.2", email: "c@x.com" })).allowed).toBe(true);
   });
 
-  test("null IP collapses to a single shared bucket", () => {
+  test("null IP collapses to a single shared bucket", async () => {
     process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "1";
-    expect(checkTrialAttemptRateLimit({ ip: null, email: "a@x.com" }).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: null, email: "a@x.com" })).allowed).toBe(true);
     const blocked = expectBlocked(
-      checkTrialAttemptRateLimit({ ip: null, email: "b@x.com" }),
+      await checkTrialAttemptRateLimit({ ip: null, email: "b@x.com" }),
     );
     expect(blocked.bucket).toBe("ip");
   });
 });
 
 describe("per-email attempt window", () => {
-  test("allows up to the email limit, then blocks", () => {
+  test("allows up to the email limit, then blocks", async () => {
     process.env.ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM = "2";
     // Distinct IPs so only the email bucket can trip.
-    expect(checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "spam@x.com" }).allowed).toBe(true);
-    expect(checkTrialAttemptRateLimit({ ip: "2.2.2.2", email: "spam@x.com" }).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "spam@x.com" })).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: "2.2.2.2", email: "spam@x.com" })).allowed).toBe(true);
     const blocked = expectBlocked(
-      checkTrialAttemptRateLimit({ ip: "3.3.3.3", email: "spam@x.com" }),
+      await checkTrialAttemptRateLimit({ ip: "3.3.3.3", email: "spam@x.com" }),
     );
     expect(blocked.bucket).toBe("email");
     expect(blocked.retryAfterMs).toBeGreaterThan(0);
   });
 
-  test("email matching is case-insensitive + trimmed", () => {
+  test("email matching is case-insensitive + trimmed", async () => {
     process.env.ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM = "1";
-    expect(checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "Spam@X.com" }).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "Spam@X.com" })).allowed).toBe(true);
     const blocked = expectBlocked(
-      checkTrialAttemptRateLimit({ ip: "2.2.2.2", email: "  spam@x.com " }),
+      await checkTrialAttemptRateLimit({ ip: "2.2.2.2", email: "  spam@x.com " }),
     );
     expect(blocked.bucket).toBe("email");
   });
 });
 
 describe("blocked attempts are not recorded", () => {
-  test("a blocked attempt does not consume the OTHER bucket's budget", () => {
+  test("a blocked attempt does not consume the OTHER bucket's budget", async () => {
     process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "1";
     process.env.ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM = "5";
     // Burn the IP bucket.
-    expect(checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "e@x.com" }).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "e@x.com" })).allowed).toBe(true);
     // This trips on IP — must NOT charge the email bucket for "e2@x.com".
-    expect(checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "e2@x.com" }).allowed).toBe(false);
+    expect((await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "e2@x.com" })).allowed).toBe(false);
     // A fresh IP with that same email still has its full email budget.
-    expect(checkTrialAttemptRateLimit({ ip: "9.9.9.9", email: "e2@x.com" }).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: "9.9.9.9", email: "e2@x.com" })).allowed).toBe(true);
   });
 });
 
 describe("disabled limits", () => {
-  test("0 disables a bucket", () => {
+  test("0 disables a bucket", async () => {
     process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "0";
     process.env.ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM = "0";
     expect(getTrialIpRpmLimit()).toBe(0);
     for (let i = 0; i < 50; i++) {
-      expect(checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "x@x.com" }).allowed).toBe(true);
+      expect((await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "x@x.com" })).allowed).toBe(true);
     }
   });
 });
 
 describe("recovery after reset", () => {
-  test("resetTrialAttemptRateLimits frees both windows", () => {
+  test("resetTrialAttemptRateLimits frees both windows", async () => {
     process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "1";
-    expect(checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "a@x.com" }).allowed).toBe(true);
-    expect(checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "b@x.com" }).allowed).toBe(false);
-    resetTrialAttemptRateLimits();
+    expect((await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "a@x.com" })).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "b@x.com" })).allowed).toBe(false);
+    await resetTrialAttemptRateLimits();
     // Window cleared — the IP recovers a full budget (simulates the passage
     // of the window, as in contact.test.ts).
-    expect(checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "c@x.com" }).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "c@x.com" })).allowed).toBe(true);
   });
 });
 
 describe("trialAttemptCleanupTick", () => {
-  test("evicts fully-stale buckets", () => {
+  test("evicts fully-stale buckets", async () => {
     process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "2";
-    checkTrialAttemptRateLimit({ ip: "ip-evict", email: "a@x.com" });
-    resetTrialAttemptRateLimits();
-    checkTrialAttemptRateLimit({ ip: "ip-recent", email: "b@x.com" });
-    trialAttemptCleanupTick();
+    await checkTrialAttemptRateLimit({ ip: "ip-evict", email: "a@x.com" });
+    await resetTrialAttemptRateLimits();
+    await checkTrialAttemptRateLimit({ ip: "ip-recent", email: "b@x.com" });
+    await trialAttemptCleanupTick();
     // ip-evict is gone (reset cleared it); ip-recent still has budget.
-    expect(checkTrialAttemptRateLimit({ ip: "ip-recent", email: "c@x.com" }).allowed).toBe(true);
+    expect((await checkTrialAttemptRateLimit({ ip: "ip-recent", email: "c@x.com" })).allowed).toBe(true);
   });
 });
 
@@ -181,38 +181,38 @@ describe("trialAttemptCleanupTick", () => {
 // just a per-replica log. Spy on the singleton counter's `.add` (works under
 // the no-op meter, which exposes no value).
 describe("rejection metric (#3796)", () => {
-  test("increments the counter with limiter=ip when the IP window trips", () => {
+  test("increments the counter with limiter=ip when the IP window trips", async () => {
     process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "1";
     process.env.ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM = "1000";
     const add = spyOn(trialAbuseRejections, "add");
     try {
-      checkTrialAttemptRateLimit({ ip: "9.9.9.9", email: "a@x.com" }); // allowed
-      checkTrialAttemptRateLimit({ ip: "9.9.9.9", email: "b@x.com" }); // IP trips
+      await checkTrialAttemptRateLimit({ ip: "9.9.9.9", email: "a@x.com" }); // allowed
+      await checkTrialAttemptRateLimit({ ip: "9.9.9.9", email: "b@x.com" }); // IP trips
       expect(add).toHaveBeenCalledWith(1, { limiter: "ip" });
     } finally {
       add.mockRestore();
     }
   });
 
-  test("increments the counter with limiter=email when the email window trips", () => {
+  test("increments the counter with limiter=email when the email window trips", async () => {
     process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "1000";
     process.env.ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM = "1";
     const add = spyOn(trialAbuseRejections, "add");
     try {
-      checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "same@x.com" }); // allowed
-      checkTrialAttemptRateLimit({ ip: "2.2.2.2", email: "same@x.com" }); // email trips
+      await checkTrialAttemptRateLimit({ ip: "1.1.1.1", email: "same@x.com" }); // allowed
+      await checkTrialAttemptRateLimit({ ip: "2.2.2.2", email: "same@x.com" }); // email trips
       expect(add).toHaveBeenCalledWith(1, { limiter: "email" });
     } finally {
       add.mockRestore();
     }
   });
 
-  test("does not increment when the attempt is allowed", () => {
+  test("does not increment when the attempt is allowed", async () => {
     process.env.ATLAS_TRIAL_IP_RATE_LIMIT_RPM = "1000";
     process.env.ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM = "1000";
     const add = spyOn(trialAbuseRejections, "add");
     try {
-      checkTrialAttemptRateLimit({ ip: "3.3.3.3", email: "ok@x.com" });
+      await checkTrialAttemptRateLimit({ ip: "3.3.3.3", email: "ok@x.com" });
       expect(add).not.toHaveBeenCalled();
     } finally {
       add.mockRestore();

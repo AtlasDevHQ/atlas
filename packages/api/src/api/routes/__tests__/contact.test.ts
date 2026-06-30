@@ -36,7 +36,7 @@ let upsertLeadShouldFail = false;
 // ── Mock the side modules BEFORE importing the route ─────────────────
 
 mock.module("@atlas/api/lib/contact", () => ({
-  checkContactRateLimit: () => ({
+  checkContactRateLimit: async () => ({
     allowed: rateLimitAllowed,
     retryAfterMs: rateLimitAllowed ? undefined : rateLimitRetryAfterMs,
   }),

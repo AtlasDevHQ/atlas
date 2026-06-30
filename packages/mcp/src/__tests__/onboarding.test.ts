@@ -50,7 +50,7 @@ import {
 const OK_TOKEN = "tok-ok";
 /** Default test stubs: Turnstile passes, rate limit allows. */
 const passTurnstile: VerifyTurnstileFn = async () => ({ ok: true });
-const allowRate: TrialAttemptLimiter = () => ({ allowed: true });
+const allowRate: TrialAttemptLimiter = async () => ({ allowed: true });
 
 // The elicitation requestState is HMAC'd from BETTER_AUTH_SECRET; set one for
 // the round-trip test and restore after (self-contained, no top-level mutation).
@@ -439,7 +439,7 @@ describe("start_trial abuse controls (#3654)", () => {
       verifyCalled = true;
       return { ok: true };
     };
-    const checkRateLimit: TrialAttemptLimiter = () => ({
+    const checkRateLimit: TrialAttemptLimiter = async () => ({
       allowed: false,
       bucket: "email",
       retryAfterMs: 42_000,
@@ -464,7 +464,7 @@ describe("start_trial abuse controls (#3654)", () => {
   it("passes the resolved email to the rate limiter and recovers once it clears", async () => {
     const seen: Array<{ ip: string | null; email: string }> = [];
     let trip = true;
-    const checkRateLimit: TrialAttemptLimiter = (input) => {
+    const checkRateLimit: TrialAttemptLimiter = async (input) => {
       seen.push(input);
       return trip
         ? { allowed: false, bucket: "ip", retryAfterMs: 1000 }

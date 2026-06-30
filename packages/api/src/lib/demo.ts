@@ -14,6 +14,11 @@ import { SaasCrm } from "@atlas/api/lib/effect/services";
 import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { getDefaultProvider, getModelForConfig } from "@atlas/api/lib/providers";
+import {
+  createSlidingWindowLimiter,
+  RATE_LIMIT_WINDOW_MS,
+  type RateLimitDecision,
+} from "@atlas/api/lib/sliding-window-rate-limit";
 import type { AtlasAiModelShape } from "@atlas/api/lib/effect/ai";
 
 const log = createLogger("demo");
@@ -268,63 +273,31 @@ export function demoUserId(email: string): string {
 // Demo rate limiter (separate from main rate limiter)
 // ---------------------------------------------------------------------------
 
-const WINDOW_MS = 60_000;
-const demoWindows = new Map<string, number[]>();
+const demoLimiter = createSlidingWindowLimiter();
 
 /**
- * Sliding-window rate limit for demo users.
- * Returns `{ allowed: true }` or `{ allowed: false, retryAfterMs }`.
+ * Sliding-window rate limit for demo users. The discriminated `RateLimitDecision`
+ * carries `retryAfterMs` IFF blocked, so callers read it after `!allowed`
+ * without a fallback.
  */
-export function checkDemoRateLimit(email: string): {
-  allowed: boolean;
-  retryAfterMs?: number;
-} {
-  const limit = getDemoRpmLimit();
-  if (limit === 0) return { allowed: true };
-
-  const now = Date.now();
-  const cutoff = now - WINDOW_MS;
-  const key = demoUserId(email);
-
-  let timestamps = demoWindows.get(key);
-  if (!timestamps) {
-    timestamps = [];
-    demoWindows.set(key, timestamps);
-  }
-
-  // Evict stale entries
-  const firstValid = timestamps.findIndex((t) => t > cutoff);
-  if (firstValid > 0) timestamps.splice(0, firstValid);
-  else if (firstValid === -1) timestamps.length = 0;
-
-  if (timestamps.length < limit) {
-    timestamps.push(now);
-    return { allowed: true };
-  }
-
-  const retryAfterMs = Math.max(1, timestamps[0] + WINDOW_MS - now);
-  return { allowed: false, retryAfterMs };
+export function checkDemoRateLimit(email: string): Promise<RateLimitDecision> {
+  return demoLimiter.check(demoUserId(email), getDemoRpmLimit());
 }
 
 /** Clear demo rate limit state. For tests. */
-export function resetDemoRateLimits(): void {
-  demoWindows.clear();
+export function resetDemoRateLimits(): Promise<void> {
+  return demoLimiter.reset();
 }
 
 /** Interval for demo rate-limit cleanup. Exported for SchedulerLayer. */
-export const DEMO_CLEANUP_INTERVAL_MS = WINDOW_MS;
+export const DEMO_CLEANUP_INTERVAL_MS = RATE_LIMIT_WINDOW_MS;
 
 /**
  * Evict stale demo rate-limit entries. Called periodically by the
  * SchedulerLayer fiber in lib/effect/layers.ts.
  */
-export function demoCleanupTick(): void {
-  const cutoff = Date.now() - WINDOW_MS;
-  for (const [key, timestamps] of demoWindows) {
-    if (timestamps.length === 0 || timestamps[timestamps.length - 1] <= cutoff) {
-      demoWindows.delete(key);
-    }
-  }
+export function demoCleanupTick(): Promise<void> {
+  return demoLimiter.cleanup();
 }
 
 // ---------------------------------------------------------------------------

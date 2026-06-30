@@ -1,76 +1,112 @@
 Run the same checks CI runs. This must pass before opening a PR.
 
-**Run all gates in parallel:**
+`/ci` is the pre-PR gate, not an iteration loop. For iteration use
+`cd packages/api && bun run scripts/test-isolated.ts --affected` (only tests
+whose source graph your branch touched — typically 10–60s vs the full suite).
 
-```bash
-bun run lint           # ESLint — 0 errors, 0 warnings
-bun run type           # TypeScript strict mode (tsgo) — 0 errors
-bun run test           # FULL suite — @atlas/api + test:others (isolated per-file)
-bun x syncpack lint    # Workspace dependency versions consistent
-SKIP_SYNCPACK=1 bash scripts/check-template-drift.sh  # Template drift
-bash scripts/check-security-headers-drift.sh  # Scaffold next.config.ts security-header parity
-bash scripts/check-pricing-parity.sh  # Pricing-page entitlement mirror ↔ FEATURE_ENTITLEMENTS SSOT parity (#3996)
-bash scripts/check-railway-watch.sh  # Railway watchPatterns cover Dockerfile COPY sources
-bash scripts/check-schema-drift.sh   # Drizzle schema.ts ↔ migrations parity
-bash scripts/check-openapi-drift.sh  # apps/docs/openapi.json + api-reference MDX ↔ live route schemas
-bash scripts/check-oauth-helper-drift.sh  # plugins/mcp/src/_oauth-helper ↔ packages/oauth-helper/src parity
-bash scripts/check-test-discipline.sh  # No new top-level env/chdir mutations in test files
-bash scripts/check-twenty-resolver-imports.sh  # Twenty operator resolver confined to ee/saas-crm (#2850)
-bash scripts/check-settings-readers.sh  # Every settings-registry key has a non-test runtime reader (#3382)
-bash scripts/check-saas-env-doc.sh  # SaaS env reference table ↔ SAAS_ENV_KEYS SSOT parity (#3707)
-bun run scripts/check-published-symbols.ts  # @useatlas/* imports in scaffold-bound source ↔ pinned-published exports parity
-```
+## How to run it (token-aware)
 
-Use the full `bun run test` here — `/ci` is the pre-PR check, not an iteration loop. For iteration, use `cd packages/api && bun run scripts/test-isolated.ts --affected` (only tests whose source graph your branch touched — typical 10–60s vs 225s full).
+All gates run through one wrapper: **`bash scripts/ci-local.sh`**. It runs every
+gate, redirects each one's output to `.ci-local/<gate>.log`, and prints only a
+compact PASS/FAIL table plus the tail of any *failed* gate — one small result
+instead of ~26 verbose ones. Exit code is 0 (all green) or 1 (something failed).
 
-**Real-Postgres tests (`*-pg.test.ts`) are SILENTLY SKIPPED without a database.** They run only when `TEST_DATABASE_URL` is set; locally unset, `bun run test` passes without exercising them, but CI's `api-tests (1/4)`–`(4/4)` shards always run them against a real Postgres. Any change to a DB-reader SELECT (e.g. `getWorkspaceDetails`) or a migration must update the hand-built table fixtures inside the `-pg` tests too, or CI fails with `column "X" does not exist` even though local gates were green (this is how #3481 first failed CI). To exercise them locally before pushing: `bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas && bun run test`.
+**Delegate the run to a subagent** so even that stays out of the main thread.
+Spawn ONE `general-purpose` agent with this prompt:
 
-**Evaluate results:**
+> Run `bash scripts/ci-local.sh` from the repo root (it takes ~4–6 min — the
+> full test suite is the long pole; wait for it). Then, only if it exited 0,
+> run the two remote-status commands in the "Remote checks" section of
+> `.claude/commands/ci.md` and summarize them. Do NOT fix anything — you are
+> reporting only. Return: (1) the gate table verbatim if anything failed, or
+> just "local: all N gates green" if not; (2) for each failed gate, its name,
+> a one-line root cause from its `.ci-local/<gate>.log`, and the file:line to
+> fix; (3) the remote-status summary. Keep the whole reply under ~40 lines —
+> do not paste full logs.
 
-| Gate | Pass criteria |
-|------|---------------|
-| Lint | Zero output (no errors or warnings) |
-| Type | No errors after build |
-| Test | All packages pass, 0 failures |
-| Syncpack | `No issues found` |
-| Template drift | `Template drift check passed` |
-| Railway watch | `all deploy Dockerfile COPY sources are covered` |
-| Schema drift | `Schema drift check passed` (every migration table is in `packages/api/src/lib/db/schema.ts`) |
-| OpenAPI drift | `OpenAPI drift check passed — spec and api-reference are in sync with routes.` Any change to a route's request/response schema (a new field, enum, status) drifts `apps/docs/openapi.json` + the api-reference MDX. **Local `bun run type`/`test` do NOT catch this** — the script regenerates and `git diff`s. Fix: `bun run --filter '@atlas/api' openapi:extract && bun run --filter '@atlas/docs' generate:api`, then commit `apps/docs/openapi.json` + `apps/docs/content/docs/api-reference`. (Both #3480 and #3481 failed CI here.) |
-| OAuth helper drift | `vendored _oauth-helper matches canonical packages/oauth-helper/src` |
-| Test discipline | `Test discipline check passed — env: N allowlisted, chdir: N allowlisted.` New offenders fail; new allowlist entries need justifying comment (see #2796). `mock.module()` is NOT gated — slice 5a verdict (#2801) proved bun's `--isolate` resets module mocks between files |
-| SaaS env doc | `SaaS env doc check passed — operator table is in sync with SAAS_ENV_KEYS.` The operator table in `apps/docs/content/docs/platform-ops/saas-environment-variables.mdx` is generated from `SAAS_ENV_KEYS` (`packages/api/src/lib/effect/saas-env.ts`). The script regenerates in `--check` mode (no write, no git) and fails when the generated block is stale. Adding/removing/renaming a SaaS boot-contract var without regenerating drifts it. Fix: `bun scripts/generate-saas-env-doc.ts`, then commit the MDX. A new SSOT key with no `KEY_META` description — or an unescaped `\|` in a cell — hard-fails the generator (#3707) |
-| Settings readers | `Settings reader check passed — …` Every key in `packages/api/src/lib/settings.ts` has a non-test runtime reader: a literal/const-indirected `getSetting`/`getSettingAuto`/`getSettingLive` call, or (platform-scoped keys only) a `process.env.<ENVVAR>` read. Fix by adding the reader, allowlisting with a justification comment in the script, or removing the setting (parity contract Rule 1, #3382) |
-| Published symbols | `Published symbol check passed.` Diffs braced **value** imports from `@useatlas/*` packages in scaffold-bound source (`packages/{api,cli,web,schemas}/src`, `ee/src`, `examples/nextjs-standalone/src`, `create-atlas/overrides`) against the symbols exported by the version `npm view` resolves for the range pinned in `create-atlas/templates/*/package.json`. Type-only imports are skipped (they erase; the scaffold's `next build` runs with `ignoreBuildErrors: true`). Fix per the version-bump-ordering rule: publish the plugin first, then bump the template ref in a follow-up PR |
+The subagent burns the verbose output in its own context and hands you back a
+short report. You (main thread) then apply any fixes — fixing needs the
+conversation context, so it stays here, not in the subagent.
 
-**If any gate fails:**
+After fixing a gate, re-verify just that one cheaply — e.g.
+`bash scripts/check-schema-drift.sh` or `bun run test path/to/file.test.ts` —
+rather than re-running the whole wrapper. Re-run the full `bash scripts/ci-local.sh`
+once at the end to confirm a clean green.
 
-1. Fix the issue directly — these are almost always small:
-   - Lint: type annotations, unused vars, unsafe types
-   - Type: missing types, interface mismatches
-   - Syncpack: run `bun x syncpack fix` then verify
-   - Template drift: run `bash create-atlas/scripts/prepare-templates.sh` then verify
-   - Tests: read the failure, fix the code or test
+**Env toggles** (pass to the wrapper): `CI_LOCAL_NO_TEST=1` skips the test suite
+for a fast gates-only pass (RESULT is flagged "tests skipped" — never a clean
+pass); `CI_LOCAL_NO_NET=1` skips the two npm-registry gates for offline runs;
+`CI_LOCAL_JOBS=N` sets Stage-1 concurrency (default 6).
 
-2. After fixing, re-run only the failed gate to verify, then run all gates once more.
+## What the wrapper covers
 
-   - **Schema drift**: a new migration created/altered a table without a matching definition in `packages/api/src/lib/db/schema.ts`. Add the drizzle table (mirror SQL types, PK, indexes, CHECK constraints) and re-run.
+It is a **superset of the historic /ci list** — it adds the drift gates real CI
+runs that the old /ci skipped (so you stop discovering them only after a push):
+`type`, `lint`, `syncpack`, `dockerfile-bun-pins`, `dockerfile-workspace`,
+`railway-watch`, `template-drift`, `security-headers-drift`, `pricing-parity`,
+`plugin-count`, `enforcement-parity`, `schema-drift`, `migration-rename`,
+`oauth-helper-drift`, `ee-imports`, `twenty-resolver`, `no-admin-plugin`,
+`no-legacy-connections`, `test-discipline`, `settings-readers`, `saas-env-doc`,
+`auth-md-parity`, `openapi-drift`, `gate-fixtures` (the adversarial
+`scripts/__tests__/*.test.sh` suites), `published-symbols`, `unpublished-versions`,
+and the full `test` suite.
 
-**If all gates pass:**
+It does **not** run the GitHub-only required checks (Deploy Validation,
+`Analyze (javascript-typescript)` / CodeQL, Symlink Stub Build) or the heavy
+`bun run build` web build — those run remotely (see "Remote checks").
 
-Report: `CI gates: lint, type, test, syncpack, drift, railway-watch, schema-drift — all pass.`
+Schedule is deliberately race- and flake-safe, not max-parallel: Stage 0 runs
+`bun run type` alone (the only gate that writes SDK `dist/`); Stage 1 fans out
+all read-only gates; Stage 2 runs the full test suite **isolated** (it flakes
+under CPU contention on WSL2).
 
----
+**Real-Postgres tests (`*-pg.test.ts`) are SILENTLY SKIPPED without a database.**
+They run only when `TEST_DATABASE_URL` is set (the wrapper prints whether it is).
+Locally unset, `bun run test` passes without exercising them; CI's
+`api-tests (1/4)`–`(4/4)` shards always run them against a real Postgres. Any
+change to a DB-reader SELECT (e.g. `getWorkspaceDetails`) or a migration must
+update the hand-built table fixtures inside the `-pg` tests too, or CI fails with
+`column "X" does not exist` even though local gates were green (how #3481 first
+failed CI). To exercise them locally:
+`bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas && bash scripts/ci-local.sh`.
 
-**After local gates pass, check remote CI and deployments:**
+## Fixing failures
 
-A merge to `main` deploys to **staging** (`api-staging` / `web-staging`) plus the `docs` and `www` prod services (both direct-from-main). Production (`api` / `api-eu` / `api-apac` / `web`) is gated behind `/release` advancing the `prod` branch — so the `main` deploy statuses below are about **staging health** (plus the direct-from-main `docs`/`www`), not the gated prod set. See [release-process.md § Mental model](../../docs/development/release-process.md#mental-model).
+Failures are almost always small. The wrapper prints the failed gate's name + log
+tail; read `.ci-local/<gate>.log` for the rest. Common fixes by gate:
+
+| Gate | Fix |
+|------|-----|
+| `lint` | type annotations, unused vars, unsafe types |
+| `type` | missing types, interface mismatches. **Fix this first** — a `type` failure leaves SDK `dist/` incomplete and can cascade into `openapi-drift`/`test` |
+| `test` | read the tail / full log, fix the code or test |
+| `syncpack` | `bun x syncpack fix` then re-verify |
+| `template-drift` | `bash create-atlas/scripts/prepare-templates.sh` then re-verify |
+| `schema-drift` | a migration created/altered a table without a matching definition in `packages/api/src/lib/db/schema.ts`. Add the drizzle table (mirror SQL types, PK, indexes, CHECK constraints) |
+| `openapi-drift` | a route's request/response schema changed (new field/enum/status). Local `type`/`test` do NOT catch this. Fix: `bun run --filter '@atlas/api' openapi:extract && bun run --filter '@atlas/docs' generate:api`, then commit `apps/docs/openapi.json` + `apps/docs/content/docs/api-reference` (#3480, #3481 both failed CI here) |
+| `saas-env-doc` | added/renamed a SaaS boot-contract var. `bun scripts/generate-saas-env-doc.ts`, commit the MDX |
+| `settings-readers` | a new `settings.ts` key has no runtime reader. Add the reader, or allowlist with a justification comment in the script |
+| `published-symbols` | used a new `@useatlas/*` export before publishing. Publish the package first, bump the template ref in a follow-up (version-bump-ordering rule) |
+| `plugin-count` | a surface's plugin count drifted from `plugins/`. **If it fails on a clean tree, suspect stale local cruft** — an untracked `plugins/<name>/` left over from an old checkout (check `git ls-files plugins/<name>/`; if 0, `rm -rf` it). CI is green because a fresh checkout doesn't have it |
+
+After fixing, re-run only the failed gate to verify, then run the full wrapper
+once more before reporting green.
+
+## Remote checks
+
+After local gates are green, check remote CI + deployments. A merge to `main`
+deploys to **staging** (`api-staging` / `web-staging`) plus the `docs` and `www`
+prod services (both direct-from-main). Production (`api` / `api-eu` / `api-apac`
+/ `web`) is gated behind `/release` advancing the `prod` branch — so the `main`
+deploy statuses below are about **staging health** (plus direct-from-main
+`docs`/`www`), not the gated prod set. See
+[release-process.md § Mental model](../../docs/development/release-process.md#mental-model).
 
 ```bash
 # GitHub Actions CI + Sync Starters (last 5 runs on main)
 gh run list -R AtlasDevHQ/atlas --branch main --limit 5 --json status,conclusion,name,createdAt,databaseId
 
-# Railway deployment status on main (staging services + docs + www — uses commit statuses, not check-runs)
+# Railway deployment status on main (staging services + docs + www — commit statuses, not check-runs)
 gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state, description}] | unique_by(.context) | .[] | "\(.context)\t\(.state)\t\(.description)"'
 ```
 
@@ -80,28 +116,27 @@ gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state
 | `Sync Starters` (GitHub Actions) | Must be `success` |
 | `satisfied-creation - api-staging` | Must be `Success`. If `Deployment failed`, check Railway dashboard for build/startup errors |
 | `satisfied-creation - web-staging` | Must be `Success` |
-| `satisfied-creation - www` | Direct-from-main: must be `Success` when `apps/www/` changed; `No deployment needed` otherwise |
+| `satisfied-creation - www` | Direct-from-main: `Success` when `apps/www/` changed; `No deployment needed` otherwise |
 | `satisfied-creation - docs` | Must be `Success` (deploys direct-from-main) |
 | `satisfied-creation - sidecar` | `No deployment needed` is fine (only deploys on sandbox changes) |
-| `satisfied-creation - api` / `web` | Prod — only updates when `/release` advances `prod`; stale relative to `main` is expected |
+| `satisfied-creation - api` / `web` | Prod — only updates when `/release` advances `prod`; stale vs `main` is expected |
 
 **If a Railway deployment fails:**
-1. Check which service failed (api-staging, web-staging, docs, www)
-2. Common causes:
-   - **Build failure**: new dependency not in `serverExternalPackages`, TypeScript error in production build
-   - **Startup crash**: missing env var on Railway, DB migration error, new table requires `DATABASE_URL`
-   - **Health check timeout**: new middleware blocking startup, new route panicking
-3. Railway logs are NOT accessible via `gh` — check the Railway dashboard or ask the user to check
-4. If the failure is from code you just shipped, fix it. If pre-existing, file an issue
+1. Identify the failed service (api-staging, web-staging, docs, www).
+2. Common causes: **build failure** (new dependency not in `serverExternalPackages`,
+   TypeScript error in production build); **startup crash** (missing env var on
+   Railway, DB migration error, new table requires `DATABASE_URL`); **health-check
+   timeout** (new middleware blocking startup, new route panicking).
+3. Railway logs are NOT accessible via `gh` — check the Railway dashboard or ask the user.
+4. If the failure is from code you just shipped, fix it. If pre-existing, file an issue.
 
-**If all checks pass:**
+## Reporting
 
-Report: `CI gates: lint, type, test, syncpack, drift, railway-watch, schema-drift — all pass. Remote: CI, Sync Starters, Railway staging (api-staging/web-staging/docs) — all green.`
+**All green:**
+`CI gates (scripts/ci-local.sh): all pass. Remote: CI, Sync Starters, Railway staging (api-staging/web-staging/docs) — all green.`
 
----
-
-**Rules:**
-- Never skip a gate or mark it as "probably fine"
-- If a gate fails on code you didn't write (pre-existing), still fix it — CI won't distinguish
-- If a test is flaky (passes on retry), note it but don't ignore it
-- Railway deployments are as important as CI — a green CI with a failed staging deploy means `main` is broken on staging, which blocks the next `/release` to prod
+## Rules
+- Never skip a gate or mark it "probably fine". The wrapper runs them all; don't second-guess a FAIL without reading the log.
+- If a gate fails on code you didn't write (pre-existing), still fix it — CI won't distinguish. The one exception is local-only cruft (see `plugin-count` above), which you remove, not fix.
+- If a test is flaky (passes on retry), note it but don't ignore it. The test suite runs isolated in Stage 2 specifically to reduce WSL2 flakiness — a failure there is more likely real.
+- Railway deployments are as important as CI — green CI with a failed staging deploy means `main` is broken on staging, which blocks the next `/release` to prod.

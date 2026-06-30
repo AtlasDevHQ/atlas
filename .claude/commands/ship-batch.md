@@ -43,13 +43,16 @@ Agent(
   run_in_background: true,
   description: "ship #<N>",
   prompt: "Run /ship-issue <N>. Follow it exactly — worktree isolation, craft loop,
-           /review-panel until clean (max 3 rounds), /ci, /pr, subscribe_pr_activity,
-           then service EVERY external reviewer (any bot/human, reviewer-agnostic) to
-           convergence per Step 5 — sweep reviews + comments + the PR body, address
-           actionable findings back-and-forth, acknowledge (never block on) approvability /
-           needs-human verdicts. Merge only when green AND own-branch AND external reviews
-           converged (wait out any in-progress 'eyes' review first — never merge or ask while a bot is mid-review). Halt and report if a review can't converge, a gate is broken, or
-           anything is ambiguous. Report PR + each reviewer's verdict + outcome."
+           /review-panel until clean (max 3 rounds), /ci, /pr, then drive to merge per
+           Step 5: wait for the first full CI to complete (gh pr checks --watch), then run
+           `bash scripts/pr-review-status.sh <N>` ONCE. If it reports no third-party
+           reviewer, converge on CI green + clean panel — do NOT wait for bots that don't
+           exist. If a reviewer IS present (reviewer-agnostic, any bot/human), categorize +
+           fix actionable findings back-and-forth, acknowledge (never block on) approvability /
+           needs-human verdicts, and wait out any EYES-UP review via the bounded subagent poll
+           before merging. Merge only when green AND own-branch AND Step-5-converged. Halt and
+           report if a review can't converge, a gate is broken, or anything is ambiguous.
+           Report PR + each reviewer's verdict (if any) + outcome."
 )
 ```
 

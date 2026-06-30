@@ -80,6 +80,20 @@ export class TrialProvisioningError extends Error {
   }
 }
 
+/**
+ * Actionable message for a **duplicate-email** signup — the address already has
+ * an account. Used by BOTH duplicate-detection paths so they read identically:
+ * the staging/dev throw path (`requireEmailVerification:false` → Better Auth
+ * throws `USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL`, mapped in the catch arm) and
+ * the SaaS-prod enumeration-protection path (`requireEmailVerification:true` →
+ * Better Auth returns a synthetic id, caught by the post-signup `userExists`
+ * check). Deliberately more definitive than the malformed-empty-return
+ * `signup_failed` message below, so the two `signup_failed` sources stay testably
+ * distinct (#4125 fault D).
+ */
+const DUPLICATE_SIGNUP_MESSAGE =
+  "An account already exists for this email — sign in on the web instead of starting a new trial.";
+
 // A type alias (not an interface) so it satisfies the
 // `Record<string, unknown>` constraint on `internalQuery<T>`. `plan_tier` is
 // typed as the closed `PlanTier` union (not a widened `string`) so the
@@ -105,6 +119,17 @@ export interface ProvisionTrialDeps {
     password: string;
     name: string;
   }) => Promise<{ user?: { id?: string } } | undefined>;
+  /**
+   * Whether a user row was actually persisted for the id `signUpEmail` returned.
+   * Load-bearing for the SaaS-prod duplicate path: under
+   * `requireEmailVerification:true`, Better Auth answers a duplicate signup with
+   * an enumeration-safe *synthetic* user carrying a freshly generated (never
+   * persisted) id, indistinguishable by shape from a real new signup — so this
+   * existence check is the only reliable signal that the email already has an
+   * account. Returns `true` for a real new user (persisted), `false` for the
+   * synthetic phantom id.
+   */
+  userExists: (userId: string) => Promise<boolean>;
   /** Better Auth server-side `createOrganization` (fires `assignSaasTrial`). */
   createOrganization: (body: {
     name: string;
@@ -152,6 +177,17 @@ function defaultDeps(): ProvisionTrialDeps {
       // sticky first-source. The ALS context propagates through the await
       // chain into the hook.
       return runWithSignupOrigin("mcp", () => signUp({ body }));
+    },
+    userExists: async (userId) => {
+      const { internalQuery } = await import("@atlas/api/lib/db/internal");
+      // `"user"` is a reserved word — keep it quoted. A single matching row is
+      // enough; the synthetic enumeration-protection response carries a generated
+      // id that was never inserted, so it returns zero rows.
+      const rows = await internalQuery<{ one: number }>(
+        `SELECT 1 AS one FROM "user" WHERE id = $1 LIMIT 1`,
+        [userId],
+      );
+      return rows.length > 0;
     },
     createOrganization: async (body) => {
       const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
@@ -225,7 +261,9 @@ function isValidEmail(email: string): boolean {
  *   address is freemium/disposable (the shared #3650 signup-hook deny);
  *   `plus_addressing` when the address is plus-addressed on a non-exempt domain
  *   (the shared #4091 signup-hook deny);
- *   `signup_failed` / `org_failed` when the Better Auth path returns no id;
+ *   `signup_failed` when the email is already registered (a Better Auth duplicate
+ *   — a throw on staging/dev, a synthetic non-persisted id on prod) or the path
+ *   returns no id; `org_failed` when org creation returns no id;
  *   `trial_not_assigned` when the org landed on neither `trial` nor `locked`.
  */
 export async function provisionTrialWorkspace(
@@ -309,17 +347,72 @@ export async function provisionTrialWorkspace(
         recognizer.PLUS_ADDRESSING_NOT_ALLOWED_MESSAGE,
       );
     }
+    // Duplicate-email signup, staging/dev path (#4125 fault D). Better Auth's
+    // duplicate handling is config-dependent (`sign-up.mjs`
+    // `shouldReturnGenericDuplicateResponse = requireEmailVerification ||
+    // autoSignIn === false`): when `requireEmailVerification` is FALSE
+    // (staging/dev env profiles), an already-registered email THROWS a typed
+    // `APIError` (`USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL`) out of `signUpEmail`,
+    // which is what reaches this catch. Without this branch it fell through to
+    // `throw err` → the MCP layer's generic `internal_error` ("please retry") —
+    // the staging Finding C/D defect. A duplicate is permanent, not transient, so
+    // map it to the actionable `signup_failed` envelope. (The SaaS-prod path,
+    // `requireEmailVerification:true`, does NOT throw — it returns a synthetic id,
+    // caught by the `userExists` check after this try/catch.) Lazily imported
+    // (mirrors the recognizer-dep philosophy above); an import failure logs and
+    // falls through to the original-error rethrow rather than masking the genuine
+    // signup failure with the import rejection.
+    let dupRecognizer:
+      | typeof import("@atlas/api/lib/auth/duplicate-user")
+      | undefined;
+    try {
+      dupRecognizer = await import("@atlas/api/lib/auth/duplicate-user");
+    } catch (importErr) {
+      log.warn(
+        { err: importErr instanceof Error ? importErr.message : String(importErr) },
+        "duplicate-user recognizer import failed; rethrowing original signup error",
+      );
+    }
+    if (dupRecognizer?.isDuplicateUserRejection(err)) {
+      throw new TrialProvisioningError("signup_failed", DUPLICATE_SIGNUP_MESSAGE);
+    }
     throw err;
   }
   const userId = signup?.user?.id;
   if (!userId) {
-    // Better Auth returns an enumeration-safe synthetic response (no real user
-    // id) when the email is already registered, so a missing id here means the
-    // account couldn't be freshly provisioned.
+    // Belt-and-suspenders guard against a `signUpEmail` result with no `user.id`
+    // at all — a malformed/empty return (a future regression, an adapter quirk, a
+    // test stub), NOT a normal Better Auth path. (The enumeration-protection
+    // duplicate response DOES carry a synthetic id, so it does not reach here — it
+    // is caught by the `userExists` check just below.) Map to the same actionable
+    // `signup_failed` envelope.
     throw new TrialProvisioningError(
       "signup_failed",
       "Could not create an account for this email. It may already be registered — sign in on the web instead.",
     );
+  }
+
+  // SaaS-prod duplicate path (#4125 fault D). With `requireEmailVerification:true`
+  // (the prod env profile), Better Auth answers a duplicate signup with an
+  // enumeration-safe SYNTHETIC 200 carrying a freshly *generated* `user.id`
+  // (`sign-up.mjs` `shouldReturnGenericDuplicateResponse` → returns a synthetic
+  // user, never inserted) — shaped identically to a real new signup, so the
+  // `!userId` guard above can't see it (the id is truthy). Confirm the user was
+  // actually persisted; a phantom id means the email already has an account, so
+  // map to the actionable `signup_failed` (same as the staging throw path) BEFORE
+  // enqueuing a CRM lead or creating an org for a user that doesn't exist — which
+  // would otherwise surface as a confusing `org_failed`/`internal_error`. A real
+  // new user is persisted, so this is a no-op on the happy path.
+  //
+  // Enumeration tradeoff (deliberate): this turns prod's enumeration-safe synthetic
+  // 200 back into a definitive "account already exists" on the unauthenticated
+  // `start_trial` surface — the actionable disclosure #4125's acceptance criteria
+  // require, and the same one the staging throw path and the `!userId` branch above
+  // already emit. It is scoped to this abuse-controlled MCP path (per-IP/email rate
+  // limit + Turnstile, ADR-0018 § Abuse posture); the public web signup form keeps
+  // Better Auth's enumeration protection (`auth/signup-response.ts`).
+  if (!(await deps.userExists(userId))) {
+    throw new TrialProvisioningError("signup_failed", DUPLICATE_SIGNUP_MESSAGE);
   }
 
   // Attribute the acquisition channel as MCP_SIGNUP. Enqueued here — right

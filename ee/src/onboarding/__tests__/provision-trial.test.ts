@@ -31,6 +31,9 @@ function stubDeps(over: Partial<ProvisionTrialDeps> = {}): {
       calls.signUp.push({ email: b.email, name: b.name });
       return { user: { id: "user_new" } };
     },
+    // Default: the returned user id was actually persisted (real new signup). The
+    // prod synthetic-duplicate test overrides this to false.
+    userExists: async () => true,
     createOrganization: async (b) => {
       calls.createOrg.push(b);
       return { id: "org_new" };
@@ -206,6 +209,67 @@ describe("provisionTrialWorkspace", () => {
     expect(calls.mcpLead).toHaveLength(0);
   });
 
+  it("maps a duplicate-email signup THROW (staging/dev) to signup_failed (#4125 fault D, actionable not internal_error)", async () => {
+    // When `requireEmailVerification` is false (staging/dev env profiles), Better
+    // Auth answers an already-registered email by THROWING
+    // `APIError(USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL)` out of `signUpEmail`. The
+    // provisioner must recognize that throw and surface the actionable
+    // `signup_failed` envelope ("An account already exists … sign in on the web")
+    // rather than letting it fall through to a bare rethrow → the MCP layer's
+    // generic `internal_error` (the staging Finding C/D defect). (The prod
+    // synthetic-id path is covered by the next test.)
+    const { APIError } = await import("better-auth/api");
+    const { deps, calls } = stubDeps({
+      signUpEmail: async () => {
+        throw APIError.from("UNPROCESSABLE_ENTITY", {
+          code: "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL",
+          message: "User already exists. Use another email.",
+        });
+      },
+    });
+    await expect(
+      provisionTrialWorkspace({ email: "dup@acme.com", orgName: "Acme" }, deps),
+    ).rejects.toMatchObject({
+      name: "TrialProvisioningError",
+      code: "signup_failed",
+      // The duplicate message — distinct from the malformed-empty-return
+      // signup_failed ("…may already be registered…") so the two branches are
+      // separable.
+      message: expect.stringContaining("already exists"),
+    });
+    // A duplicate provisions nothing: no org, no grace, no CRM lead.
+    expect(calls.createOrg).toHaveLength(0);
+    expect(calls.grace).toHaveLength(0);
+    expect(calls.mcpLead).toHaveLength(0);
+  });
+
+  it("maps a duplicate-email SYNTHETIC response (SaaS prod) to signup_failed via the userExists check (#4125 fault D)", async () => {
+    // When `requireEmailVerification` is true (SaaS prod), Better Auth does NOT
+    // throw for a duplicate — it returns an enumeration-safe synthetic 200 with a
+    // freshly *generated*, never-persisted `user.id`, shaped exactly like a real
+    // new signup. The truthy synthetic id sails past the `!userId` guard, so the
+    // provisioner confirms the user was actually persisted (`userExists`); a
+    // phantom id → the email already has an account → the same actionable
+    // `signup_failed`, BEFORE creating an org for a user that doesn't exist
+    // (which would otherwise surface as a confusing org_failed/internal_error).
+    const { deps, calls } = stubDeps({
+      signUpEmail: async () => ({ user: { id: "user_synthetic" } }),
+      userExists: async () => false, // generated id was never inserted
+    });
+    await expect(
+      provisionTrialWorkspace({ email: "dup-prod@acme.com", orgName: "Acme" }, deps),
+    ).rejects.toMatchObject({
+      name: "TrialProvisioningError",
+      code: "signup_failed",
+      message: expect.stringContaining("already exists"),
+    });
+    // No org, no grace, and — importantly — no CRM lead (the userExists check
+    // runs BEFORE the lead enqueue, so a prod duplicate is attribution-free).
+    expect(calls.createOrg).toHaveLength(0);
+    expect(calls.grace).toHaveLength(0);
+    expect(calls.mcpLead).toHaveLength(0);
+  });
+
   it("rethrows a non-business-email signup throw unchanged (a generic failure stays generic)", async () => {
     // Anything other than the business-email rejection propagates untouched, so
     // the MCP layer maps it to internal_error — only the recognized deny is
@@ -220,15 +284,16 @@ describe("provisionTrialWorkspace", () => {
     ).rejects.toThrow("better auth exploded");
   });
 
-  it("is idempotent for a duplicate email — a repeat provision is refused before any org creation", async () => {
-    // Simulate Better Auth's enumeration-safe dedup: the first signup returns a
-    // real user id; a second signup for the same email returns the synthetic
-    // no-id response. The provisioner must refuse the second BEFORE org creation
-    // so a repeat call can't mint a second workspace for one account.
+  it("refuses a repeat provision before any org creation when signUpEmail returns no id", async () => {
+    // The defensive no-`user.id` branch (a malformed/empty `signUpEmail` return —
+    // NOT the normal enumeration-protection duplicate, which carries a synthetic
+    // id, covered above). First call returns a real id; a second returns an empty
+    // user. The provisioner must refuse the second BEFORE org creation so a repeat
+    // call can't mint a second workspace for one account.
     let seen = false;
     const { deps, calls } = stubDeps({
       signUpEmail: async () => {
-        if (seen) return { user: {} }; // duplicate → no id
+        if (seen) return { user: {} }; // empty return → no id
         seen = true;
         return { user: { id: "user_first" } };
       },
@@ -291,7 +356,10 @@ describe("provisionTrialWorkspace", () => {
     ).rejects.toMatchObject({ code: "invalid_input" });
   });
 
-  it("throws signup_failed when Better Auth returns no user id (email already registered)", async () => {
+  it("throws signup_failed (defensive guard) when signUpEmail returns no user id at all", async () => {
+    // The malformed/empty-return guard — distinct from the synthetic-id duplicate
+    // path (which carries an id and is caught by `userExists`). `createOrg` never
+    // runs.
     const { deps, calls } = stubDeps({
       signUpEmail: async () => ({ user: {} }),
     });

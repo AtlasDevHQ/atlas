@@ -118,6 +118,41 @@ self-hosted simple-key auth mode) is a separate mechanism and is unchanged. Work
 keys above are the per-member, managed-auth credential.
 </Callout>
 
+## Two floors: member data vs. admin config
+
+A workspace's programmatic surface (CLI **and** MCP) has two authorization floors,
+differing only in whether a **second factor** is required:
+
+| Floor | Actions | Credential | Second factor |
+|-------|---------|------------|---------------|
+| **member** | `query` · `sql` / `executeSQL` · `explore` · `runMetric` · `profile_datasource` | `atlas login` session **or** workspace API key | none |
+| **admin** | `datasource create` / publish · workspace-key mint · governance | MFA-enrolled managed session | **required (passkey or TOTP)** |
+
+Member-floor data actions need only an authenticated principal — a member's
+programmatic reach equals their in-app agent reach, contained by SQL validation, the
+table whitelist, RLS, and approval rules. Admin-floor config actions additionally
+require a [second factor](/security/two-factor-auth) on the session — the
+`admin-mfa-required` gate, a compliance commitment that is **not** relaxed for trials.
+Hitting it unenrolled returns `mfa_enrollment_required`; that is actionable guidance,
+not a bug.
+
+### One-time browser bootstrap, then unattended forever
+
+You establish the strong factor **once**, interactively, and everything automated runs
+on a key after that:
+
+1. **Claim + enroll a factor.** Claim the account on the web, then enroll a
+   [passkey](/security/passkeys) (recommended — nothing to type or remember, and it
+   works for a self-serve trial owner who never set a password) or an authenticator app
+   under **Account → Security**. A freshly claimed trial owner enrolls a passkey here to
+   unblock admin actions — there is no password-reset detour.
+2. **Mint a workspace key.** With a factor on file, mint a workspace API key (above).
+   The minted key is **itself exempt from the second-factor check** — its lifetime
+   control is key expiry, not an interactive factor — so unattended CI uses it directly.
+
+This is the GitHub personal-access-token / Stripe restricted-key model: one interactive
+browser bootstrap, then a scoped, owner-attributed key for everything automated.
+
 ## Using API Keys
 
 Pass the key in the `Authorization` header:

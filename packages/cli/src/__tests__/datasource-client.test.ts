@@ -10,6 +10,7 @@ import {
   deleteDatasource,
   createDatasource,
   profileDatasource,
+  MFA_ENROLLMENT_MESSAGE,
   type DatasourceClientOptions,
   type ProfileTableEvent,
 } from "../lib/datasource-client";
@@ -208,11 +209,15 @@ describe("datasource-client error mapping (#4044)", () => {
     expect((err as DatasourceCliError).message).toContain("archive datasource");
   });
 
-  it("403 mfa_enrollment_required → mfa_required", async () => {
+  it("403 mfa_enrollment_required → mfa_required with actionable passkey-enrollment guidance (#4125)", async () => {
     const { fetchImpl } = stubFetch(403, { error: "mfa_enrollment_required", message: "..." });
     const err = await deleteDatasource(opts(fetchImpl), "prod-us").catch((e) => e);
     expect((err as DatasourceCliError).kind).toBe("mfa_required");
-    expect((err as DatasourceCliError).message).toContain("two-factor");
+    // Surfaces the shared, actionable guidance verbatim — names the passkey
+    // remedy + the MFA-exempt workspace-key path, never how to dodge the gate.
+    expect((err as DatasourceCliError).message).toBe(MFA_ENROLLMENT_MESSAGE);
+    expect((err as DatasourceCliError).message).toContain("passkey");
+    expect((err as DatasourceCliError).message).toContain("API key");
   });
 
   it("400 bad_request (no active org) → no_workspace", async () => {
@@ -517,6 +522,16 @@ describe("datasource-client profile streaming (#4052)", () => {
     const err = await profileDatasource(opts(fetchImpl), { id: "prod-us" }).catch((e) => e);
     expect((err as DatasourceCliError).kind).toBe("forbidden");
     expect((err as DatasourceCliError).message).toContain("admin role");
+  });
+
+  it("maps a pre-stream 403 mfa_enrollment_required to the shared MFA guidance (#4125)", async () => {
+    // profileDatasource has its OWN inline 403 dispatch, distinct from the
+    // `request()` helper exercised above — assert it surfaces the same shared
+    // MFA_ENROLLMENT_MESSAGE so the two copies can't drift.
+    const { fetchImpl } = stubFetch(403, { error: "mfa_enrollment_required", message: "..." });
+    const err = await profileDatasource(opts(fetchImpl), { id: "prod-us" }).catch((e) => e);
+    expect((err as DatasourceCliError).kind).toBe("mfa_required");
+    expect((err as DatasourceCliError).message).toBe(MFA_ENROLLMENT_MESSAGE);
   });
 
   it("maps a pre-stream 404 to not_found", async () => {

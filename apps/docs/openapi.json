@@ -2139,6 +2139,11 @@
                   "conversationId": {
                     "type": "string",
                     "format": "uuid"
+                  },
+                  "connectionId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
                   }
                 },
                 "required": [

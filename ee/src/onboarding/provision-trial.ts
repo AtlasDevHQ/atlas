@@ -28,6 +28,7 @@ import { getConfig } from "@atlas/api/lib/config";
 import { TRIAL_GRACE_HOURS } from "@atlas/api/lib/billing/plans";
 import type { PlanTier } from "@atlas/api/lib/db/internal";
 import { buildMcpConnectUrl } from "@atlas/api/lib/mcp/connect-url";
+import { buildClaimUrl } from "@atlas/api/lib/billing/claim-gate";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("provision-trial");
@@ -44,6 +45,13 @@ export interface ProvisionTrialResult {
   readonly workspaceId: string;
   /** Hosted-MCP connect URL the agent uses to attach a hosted actor (DCR/PKCE). */
   readonly connectUrl: string;
+  /**
+   * Web claim interstitial URL (`/claim?email=…`, #4135) the human opens to
+   * verify their email, enroll a passkey, and start the full 14-day trial.
+   * Absolute when the web origin resolves (always, on real SaaS — the trial
+   * path's sole caller); a relative `/claim?email=…` otherwise.
+   */
+  readonly claimUrl: string;
   /**
    * `grace` — provisioned onto `trial` in unclaimed grace (happy path).
    * `locked` — the user already consumed a trial, so the Workspace lands on
@@ -147,6 +155,8 @@ export interface ProvisionTrialDeps {
   setGraceWindow: (orgId: string, endsAtIso: string) => Promise<number>;
   /** Build the hosted-MCP connect URL for the new Workspace. */
   buildConnectUrl: (workspaceId: string) => string;
+  /** Build the web claim interstitial URL (`/claim?email=…`) for the owner. */
+  buildClaimUrl: (email: string) => string;
   /**
    * Enqueue the distinct `MCP_SIGNUP` CRM lead (ADR-0018, #3653) through the
    * existing `SaasCrm.upsertLead` → `crm_outbox` → Twenty pipeline. Mirrors
@@ -220,6 +230,7 @@ function defaultDeps(): ProvisionTrialDeps {
       return updated.length;
     },
     buildConnectUrl: (workspaceId) => buildMcpConnectUrl(workspaceId),
+    buildClaimUrl: (email) => buildClaimUrl(email),
     enqueueMcpSignupLead: async (email, name) => {
       const { dispatchMcpSignupCrmLead } = await import(
         "@atlas/api/lib/auth/server"
@@ -503,6 +514,7 @@ export async function provisionTrialWorkspace(
   return {
     workspaceId,
     connectUrl: deps.buildConnectUrl(workspaceId),
+    claimUrl: deps.buildClaimUrl(input.email),
     state,
   };
 }

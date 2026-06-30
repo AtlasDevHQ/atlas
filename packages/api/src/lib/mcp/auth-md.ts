@@ -179,6 +179,8 @@ On success it returns:
 
 - \`workspaceId\` — the id of the freshly created workspace.
 - \`connectUrl\` — the hosted-MCP connect URL to attach your agent to.
+- \`claimUrl\` — the web claim interstitial the human opens to verify their
+  email, add a passkey, and start the full 14-day trial.
 - \`state\` — \`grace\` while the account is unclaimed, or \`locked\` if the
   email already consumed a trial.
 
@@ -206,10 +208,11 @@ Only the authorization-code + PKCE path is supported.
 ## Hand off to the human to start the full trial
 
 A trial provisioned through \`start_trial\` begins **unclaimed**, in a short
-grace window. To start the full 14-day trial, the human must **claim the
-account on the web** — surface that next step to your user after connecting.
-Until they claim it, the workspace stays in the grace window and is subject
-to the trial's economic limits.
+grace window. To start the full 14-day trial, the human opens the **claim
+interstitial** on the web (the \`claimUrl\` in the \`start_trial\` result):
+they verify their email and **add a passkey** in one step — surface that next
+step to your user after connecting. Until they claim it, the workspace stays
+in the grace window and is subject to the trial's economic limits.
 
 ## Member vs admin actions: the second-factor posture
 
@@ -228,11 +231,16 @@ whether a second factor is required:
   relaxed for trials. Hitting it unenrolled returns \`mfa_enrollment_required\`
   — that is actionable guidance, not a bug, so surface it rather than retrying.
 
-**Establish the strong factor once, then run unattended.** After claiming, the
-human enrolls a **passkey** (recommended — nothing to type or remember) or an
-authenticator app in the Atlas web app under **Account → Security**. With a factor on file,
-admin actions succeed. For CI and unattended agents, the human then mints a
-**workspace API key**: it is owner-attributed, carries member- or admin-scope,
+**Establish the strong factor once, then run unattended.** The claim
+interstitial **enrolls a passkey as part of claiming** (nothing to type or
+remember), and that passkey doubles as the admin second factor, so a
+freshly-claimed owner reaches admin actions with no extra setup. (On a browser
+without passkey support, the interstitial falls back to emailing a link to set a
+sign-in credential, after which the human enrolls an authenticator app under
+**Account → Security**; either factor can also be managed there later.) With a
+factor on file, admin actions succeed. For CI and unattended agents, the human
+then mints a **workspace API key**: it is owner-attributed, carries member- or
+admin-scope,
 and is itself **exempt from the second-factor check** (its lifetime control is
 key expiry, not an interactive factor). This is the GitHub personal-access-token
 / Stripe restricted-key model — one interactive browser bootstrap, then a scoped

@@ -66,6 +66,7 @@ afterAll(() => {
 const okProvision: ProvisionTrialFn = async (input) => ({
   workspaceId: "org_new",
   connectUrl: "https://mcp.test/mcp/org_new/sse",
+  claimUrl: `https://app.test/claim?email=${encodeURIComponent(input.email)}`,
   state: input.orgName.includes("locked") ? "locked" : "grace",
 });
 
@@ -117,7 +118,7 @@ describe("start_trial tool", () => {
     expect(tools.map((t) => t.name)).toEqual(["start_trial"]);
   });
 
-  it("provisions into grace and returns { workspaceId, connectUrl, state } from args", async () => {
+  it("provisions into grace and returns { workspaceId, connectUrl, claimUrl, state } from args", async () => {
     const { client } = await wireTool(okProvision);
     const result = await client.callTool({
       name: "start_trial",
@@ -127,6 +128,7 @@ describe("start_trial tool", () => {
     expect(result.structuredContent).toEqual({
       workspaceId: "org_new",
       connectUrl: "https://mcp.test/mcp/org_new/sse",
+      claimUrl: "https://app.test/claim?email=founder%40acme.com",
       state: "grace",
     });
   });
@@ -149,6 +151,7 @@ describe("start_trial tool", () => {
       return {
         workspaceId: "org_elicited",
         connectUrl: "https://mcp.test/mcp/org_elicited/sse",
+        claimUrl: "https://app.test/claim?email=elicited%40acme.com",
         state: "grace",
       };
     };
@@ -173,6 +176,7 @@ describe("start_trial tool", () => {
       return {
         workspaceId: "org_x",
         connectUrl: "https://mcp.test/mcp/org_x/sse",
+        claimUrl: "https://app.test/claim?email=x%40acme.com",
         state: "grace",
       };
     };
@@ -196,6 +200,7 @@ describe("start_trial tool", () => {
       return {
         workspaceId: "org_partial",
         connectUrl: "https://mcp.test/mcp/org_partial/sse",
+        claimUrl: "https://app.test/claim?email=supplied%40acme.com",
         state: "grace",
       };
     };

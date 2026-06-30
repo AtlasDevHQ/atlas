@@ -11,7 +11,7 @@
  *                singleton rebuilds against that region's API (the cookie is
  *                read at import — see lib/auth/client.ts);
  *   - multiple → presents a chooser (same email in >1 region, §6);
- *   - none     → offers signup;
+ *   - none     → offers signup (and a claim-trial recovery link, #4135);
  *   - skip     → reveals the credentials form against the default base
  *                (single-region / not a multi-region deployment);
  *   - error    → lets the user retry (never silently mis-routes to US).
@@ -201,6 +201,18 @@ export function LoginRegionGate({ email, onEmailChange, onResolved }: LoginRegio
                     We couldn&apos;t find an account for that email in any region.{" "}
                     <a href="/signup" className="font-medium text-primary hover:underline">
                       Create one
+                    </a>
+                    , or{" "}
+                    {/* Recovery affordance (#4135). A genuine grace account's
+                        user row exists, so the probe finds it and routes — it
+                        normally won't reach this "none" state. This catches the
+                        edge case (e.g. a mistyped email) by offering the
+                        OTP-gated claim interstitial alongside signup. */}
+                    <a
+                      href={email ? `/claim?email=${encodeURIComponent(email)}` : "/claim"}
+                      className="font-medium text-primary hover:underline"
+                    >
+                      claim a CLI/MCP trial
                     </a>
                     .
                   </p>

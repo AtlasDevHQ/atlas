@@ -21,14 +21,14 @@ const PROVIDER_KEY_MAP: Record<string, { envVar: string; placeholder: string }> 
 };
 
 // Default models per provider. Keep in lockstep with PROVIDER_DEFAULTS in
-// packages/api/src/lib/providers.ts — gateway → Sonnet 4.6 (the hosted/SaaS
+// packages/api/src/lib/providers.ts — gateway → Sonnet 5 (the hosted/SaaS
 // default), the rest mirror the agent's per-provider defaults (#3098).
 const PROVIDER_DEFAULT_MODEL: Record<string, string> = {
   anthropic: "claude-opus-4-8",
   openai: "gpt-4o",
   bedrock: "anthropic.claude-opus-4-8",
   ollama: "llama3.1",
-  gateway: "anthropic/claude-sonnet-4.6",
+  gateway: "anthropic/claude-sonnet-5",
 };
 
 function copyDirRecursive(src: string, dest: string): void {

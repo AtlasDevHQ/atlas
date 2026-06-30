@@ -56,12 +56,12 @@ const PROVIDER_DEFAULTS: Record<ConfigProvider, string | undefined> = {
   bedrock: "anthropic.claude-opus-4-8",
   ollama: "llama3.1",
   "openai-compatible": undefined,
-  // Hosted/gateway default: balanced Sonnet 4.6, NOT Opus 4.8. The gateway
+  // Hosted/gateway default: balanced Sonnet 5, NOT Opus 4.8. The gateway
   // path is the SaaS billing surface, where an unset workspace would otherwise
   // silently run (and be billed for) Opus 4.8 at ~5x the input cost while the
   // billing picker advertised Sonnet (#3098). Keep this in lockstep with the
   // billing page's displayed default — both flow through `resolveModelId()`.
-  gateway: "anthropic/claude-sonnet-4.6",
+  gateway: "anthropic/claude-sonnet-5",
 };
 
 /**

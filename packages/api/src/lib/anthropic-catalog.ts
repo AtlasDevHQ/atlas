@@ -42,7 +42,7 @@ const FETCH_TIMEOUT_MS = 10_000;
  */
 const RECOMMENDED_MODEL_IDS: ReadonlySet<string> = new Set([
   "claude-opus-4-8",
-  "claude-sonnet-4-6",
+  "claude-sonnet-5",
   "claude-haiku-4-5",
 ]);
 

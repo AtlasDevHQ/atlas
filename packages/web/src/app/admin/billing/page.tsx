@@ -141,7 +141,7 @@ function formatDollars(amount: number): string {
 // existing workspaces don't lose their selection on first load.
 const MODEL_OPTIONS = [
   { value: "anthropic/claude-haiku-4.5", label: "Haiku 4.5", hint: "fastest, lowest cost" },
-  { value: "anthropic/claude-sonnet-4.6", label: "Sonnet 4.6", hint: "balanced" },
+  { value: "anthropic/claude-sonnet-5", label: "Sonnet 5", hint: "balanced" },
   { value: "anthropic/claude-opus-4.8", label: "Opus 4.8", hint: "most capable" },
 ] as const;
 
@@ -153,14 +153,17 @@ const MODEL_OPTIONS = [
 //
 // Two kinds of migration live here:
 //   1. Format canonicalization — hyphen → slash+dot (e.g. `claude-sonnet-4-6`).
-//   2. Version roll-forward — a deprecated Opus version that no longer has its
-//      own picker row (4.6, the prior 4.7 default) is mapped to the current
-//      flagship `anthropic/claude-opus-4.8`. This is a version upgrade, not
-//      just a format change, so the Select highlights a valid option instead
-//      of rendering blank for workspaces still on the old default (#3076).
+//   2. Version roll-forward — a deprecated version that no longer has its own
+//      picker row (Opus 4.6/4.7, the prior Opus defaults; Sonnet 4.6, the
+//      prior Sonnet default) is mapped to the current flagship
+//      (`anthropic/claude-opus-4.8`, `anthropic/claude-sonnet-5`). This is a
+//      version upgrade, not just a format change, so the Select highlights a
+//      valid option instead of rendering blank for workspaces still on the
+//      old default (#3076).
 const LEGACY_MODEL_ALIASES: Record<string, string> = {
   "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
-  "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6",
+  "claude-sonnet-4-6": "anthropic/claude-sonnet-5",
+  "anthropic/claude-sonnet-4.6": "anthropic/claude-sonnet-5",
   "claude-opus-4-6": "anthropic/claude-opus-4.8",
   "claude-opus-4-7": "anthropic/claude-opus-4.8",
   "anthropic/claude-opus-4.7": "anthropic/claude-opus-4.8",

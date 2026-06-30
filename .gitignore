@@ -18,6 +18,8 @@ tsconfig.tsbuildinfo
 !.claude/skills/
 /semantic/
 .expert-cache/
+# Local CI wrapper logs (scripts/ci-local.sh)
+.ci-local/
 create-atlas/templates/*/semantic/
 create-atlas/templates/*/bin/
 create-atlas/templates/*/lib/

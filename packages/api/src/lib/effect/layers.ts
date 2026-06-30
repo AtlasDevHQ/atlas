@@ -2110,13 +2110,13 @@ export function makeSchedulerLive(
       );
 
       // ── Periodic fiber: demo rate-limit cleanup — interval from DEMO_CLEANUP_INTERVAL_MS ──
-      const demoTick = Effect.try({
-        try: () => {
+      const demoTick = Effect.tryPromise({
+        try: async () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           const { demoCleanupTick } = require("@atlas/api/lib/demo") as {
-            demoCleanupTick: () => void;
+            demoCleanupTick: () => Promise<void>;
           };
-          demoCleanupTick();
+          await demoCleanupTick();
         },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(
@@ -2147,13 +2147,13 @@ export function makeSchedulerLive(
       // Unauthenticated public endpoint with a per-IP map; without
       // periodic eviction the map leaks one entry per distinct source IP
       // until process restart.
-      const contactTick = Effect.try({
-        try: () => {
+      const contactTick = Effect.tryPromise({
+        try: async () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           const { contactCleanupTick } = require("@atlas/api/lib/contact") as {
-            contactCleanupTick: () => void;
+            contactCleanupTick: () => Promise<void>;
           };
-          contactCleanupTick();
+          await contactCleanupTick();
         },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(
@@ -2182,13 +2182,13 @@ export function makeSchedulerLive(
       // trims timestamps WITHIN a live entry, never removes the key, so
       // without this sweep a spammer cycling distinct IPs/emails grows the
       // maps until restart. `trialAttemptCleanupTick` evicts fully-stale keys.
-      const trialTick = Effect.try({
-        try: () => {
+      const trialTick = Effect.tryPromise({
+        try: async () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           const { trialAttemptCleanupTick } = require("@atlas/api/lib/trial-abuse") as {
-            trialAttemptCleanupTick: () => void;
+            trialAttemptCleanupTick: () => Promise<void>;
           };
-          trialAttemptCleanupTick();
+          await trialAttemptCleanupTick();
         },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(

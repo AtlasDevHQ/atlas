@@ -432,9 +432,9 @@ demo.openapi(demoStartRoute, async (c) => {
 
     // IP-based rate limit to prevent abuse (email enumeration, DB flooding)
     const ip = getClientIP(c.req.raw);
-    const startRateCheck = checkDemoRateLimit(ip ?? "anon-start");
+    const startRateCheck = yield* Effect.promise(() => checkDemoRateLimit(ip ?? "anon-start"));
     if (!startRateCheck.allowed) {
-      const retryAfterSeconds = Math.ceil((startRateCheck.retryAfterMs ?? 60000) / 1000);
+      const retryAfterSeconds = Math.ceil(startRateCheck.retryAfterMs / 1000);
       return c.json(
         { error: "rate_limited", message: "Too many requests. Please wait.", retryAfterSeconds, requestId },
         { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
@@ -516,9 +516,9 @@ demo.openapi(demoChatRoute, async (c) => {
   const userId = demoUserId(email);
 
   // Demo rate limit
-  const rateCheck = checkDemoRateLimit(email);
+  const rateCheck = await checkDemoRateLimit(email);
   if (!rateCheck.allowed) {
-    const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
+    const retryAfterSeconds = Math.ceil(rateCheck.retryAfterMs / 1000);
     return c.json(
       {
         error: "rate_limited",

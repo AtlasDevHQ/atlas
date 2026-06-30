@@ -80,7 +80,7 @@ export type VerifyTurnstileFn = (opts: {
 export type TrialAttemptLimiter = (input: {
   ip: string | null;
   email: string;
-}) => TrialAttemptRateLimitResult;
+}) => Promise<TrialAttemptRateLimitResult>;
 
 export interface RegisterStartTrialOptions {
   /** Override the provisioner (tests inject a stub). */
@@ -270,7 +270,7 @@ export function registerStartTrialTool(
         // spam before it can burn a Turnstile round-trip or a DB write), then
         // Turnstile. The limiter bounds creation ATTEMPTS per-IP/per-email —
         // NOT trials per IP (shared NATs must keep signing up).
-        const rate = checkRateLimit({ ip: clientIp, email: input.email });
+        const rate = await checkRateLimit({ ip: clientIp, email: input.email });
         if (!rate.allowed) {
           const retryAfter = Math.ceil(rate.retryAfterMs / 1000);
           log.warn(

@@ -153,7 +153,7 @@ afterAll(() => {
   }
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   // Clear call history so per-test "was/wasn't called" assertions are
   // honest (the mock accumulates across the whole file otherwise).
   mocks.mockAuthenticateRequest.mockClear();
@@ -176,7 +176,7 @@ beforeEach(() => {
   mocks.mockCheckRateLimit.mockImplementation(() => ({ allowed: true }));
   // Demo rate limiter is keyed by demoUserId(email) and persists across
   // tests in module-level state — clear it so per-test budgets are reset.
-  resetDemoRateLimits();
+  await resetDemoRateLimits();
   demoIndustryFixture = undefined;
   mockListFavorites.mockReset();
   mockListFavorites.mockImplementation(async () => []);

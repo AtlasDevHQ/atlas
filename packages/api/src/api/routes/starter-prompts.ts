@@ -266,9 +266,9 @@ const demoOrStandardAuth = createMiddleware<AuthEnv>(async (c, next) => {
     // Same per-email throttle the rest of the demo surface uses. Returning
     // 429 with Retry-After mirrors `/api/v1/demo/chat` so the widget can
     // back off without bespoke handling.
-    const rateCheck = checkDemoRateLimit(demoEmail);
+    const rateCheck = await checkDemoRateLimit(demoEmail);
     if (!rateCheck.allowed) {
-      const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60_000) / 1000);
+      const retryAfterSeconds = Math.ceil(rateCheck.retryAfterMs / 1000);
       return c.json(
         {
           error: "rate_limited",

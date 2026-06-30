@@ -179,9 +179,9 @@ contact.openapi(contactRoute, async (c) => {
           "ATLAS_TRUST_PROXY is not set — contact-form per-IP rate-limit collapses to one global bucket. Set ATLAS_TRUST_PROXY=true behind a trusted proxy (Cloudflare, Railway edge) to enable per-IP enforcement.",
         );
       }
-      const rateCheck = checkContactRateLimit(ip ?? "anon-contact");
+      const rateCheck = yield* Effect.promise(() => checkContactRateLimit(ip ?? "anon-contact"));
       if (!rateCheck.allowed) {
-        const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
+        const retryAfterSeconds = Math.ceil(rateCheck.retryAfterMs / 1000);
         return c.json(
           {
             error: "rate_limited",

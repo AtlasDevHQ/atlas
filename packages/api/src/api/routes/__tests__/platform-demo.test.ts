@@ -146,10 +146,10 @@ mock.module("@atlas/api/lib/demo", () => ({
   demoRunAgentModelParams: () => ({}),
   signDemoToken: () => "",
   verifyDemoToken: () => null,
-  checkDemoRateLimit: () => ({ allowed: true }),
-  resetDemoRateLimits: () => {},
+  checkDemoRateLimit: async () => ({ allowed: true }),
+  resetDemoRateLimits: async () => {},
   DEMO_CLEANUP_INTERVAL_MS: 60_000,
-  demoCleanupTick: () => {},
+  demoCleanupTick: async () => {},
   captureDemoLead: async () => ({}),
   countDemoConversations: async () => 0,
 }));

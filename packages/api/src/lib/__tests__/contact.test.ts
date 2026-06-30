@@ -19,8 +19,8 @@ afterAll(() => {
   else process.env.ATLAS_CONTACT_RATE_LIMIT_RPM = ORIGINAL_ENV;
 });
 
-beforeEach(() => {
-  resetContactRateLimits();
+beforeEach(async () => {
+  await resetContactRateLimits();
 });
 
 describe("getContactRpmLimit", () => {
@@ -39,44 +39,45 @@ describe("getContactRpmLimit", () => {
     expect(getContactRpmLimit()).toBe(5);
   });
 
-  test("0 disables the limit", () => {
+  test("0 disables the limit", async () => {
     process.env.ATLAS_CONTACT_RATE_LIMIT_RPM = "0";
     expect(getContactRpmLimit()).toBe(0);
-    expect(checkContactRateLimit("1.2.3.4").allowed).toBe(true);
+    expect((await checkContactRateLimit("1.2.3.4")).allowed).toBe(true);
   });
 });
 
 describe("checkContactRateLimit", () => {
-  test("allows up to limit submissions per IP per minute", () => {
+  test("allows up to limit submissions per IP per minute", async () => {
     process.env.ATLAS_CONTACT_RATE_LIMIT_RPM = "3";
-    expect(checkContactRateLimit("ip-a").allowed).toBe(true);
-    expect(checkContactRateLimit("ip-a").allowed).toBe(true);
-    expect(checkContactRateLimit("ip-a").allowed).toBe(true);
-    const blocked = checkContactRateLimit("ip-a");
+    expect((await checkContactRateLimit("ip-a")).allowed).toBe(true);
+    expect((await checkContactRateLimit("ip-a")).allowed).toBe(true);
+    expect((await checkContactRateLimit("ip-a")).allowed).toBe(true);
+    const blocked = await checkContactRateLimit("ip-a");
     expect(blocked.allowed).toBe(false);
+    if (blocked.allowed) throw new Error("unreachable: expected a blocked decision");
     expect(blocked.retryAfterMs).toBeGreaterThan(0);
   });
 
-  test("separate IPs do not share the window", () => {
+  test("separate IPs do not share the window", async () => {
     process.env.ATLAS_CONTACT_RATE_LIMIT_RPM = "1";
-    expect(checkContactRateLimit("ip-x").allowed).toBe(true);
-    expect(checkContactRateLimit("ip-x").allowed).toBe(false);
+    expect((await checkContactRateLimit("ip-x")).allowed).toBe(true);
+    expect((await checkContactRateLimit("ip-x")).allowed).toBe(false);
     // Different IP — fresh budget.
-    expect(checkContactRateLimit("ip-y").allowed).toBe(true);
+    expect((await checkContactRateLimit("ip-y")).allowed).toBe(true);
   });
 });
 
 describe("contactCleanupTick", () => {
   test("evicts entries whose newest timestamp is older than the window", async () => {
     process.env.ATLAS_CONTACT_RATE_LIMIT_RPM = "2";
-    checkContactRateLimit("ip-evict");
+    await checkContactRateLimit("ip-evict");
     // Drop the timestamps to expired (simulate the passage of >60s).
-    // Implementation detail: contactCleanupTick walks the same map, so
+    // Implementation detail: contactCleanupTick walks the same store, so
     // we just call it after manually fast-forwarding via reset.
-    resetContactRateLimits();
-    checkContactRateLimit("ip-recent");
-    contactCleanupTick();
+    await resetContactRateLimits();
+    await checkContactRateLimit("ip-recent");
+    await contactCleanupTick();
     // ip-evict is gone (reset cleared everything); ip-recent stays.
-    expect(checkContactRateLimit("ip-recent").allowed).toBe(true);
+    expect((await checkContactRateLimit("ip-recent")).allowed).toBe(true);
   });
 });

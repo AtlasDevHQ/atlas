@@ -24,7 +24,7 @@ import { StickyNav } from "../../../components/sticky-nav";
 export const metadata: Metadata = {
   title: "Why the Semantic Layer Is a YAML File",
   description:
-    "Ask a text-to-SQL agent what your revenue is and it picks a number. Atlas reads a file first — plain YAML, written by a person — that says what your data actually means. Here's why that file is the most important thing in the system.",
+    "Ask a text-to-SQL agent what your revenue is and it picks a number. Atlas reads a file first — plain YAML, the kind you can open and edit — that says what your data actually means. Here's why that file is the most important thing in the system.",
   authors: [{ name: "Matt Sywulak" }],
   openGraph: {
     title: "Why the Semantic Layer Is a YAML File",
@@ -51,7 +51,7 @@ export default function WhyTheSemanticLayerIsYaml() {
           dateLabel="June 29, 2026"
           readingTime="6 min read"
           title="Why the semantic layer is a YAML file"
-          dek="Ask a text-to-SQL agent what your revenue is and it picks a number. Atlas reads a file first — plain YAML, written by a person — that says what your data actually means."
+          dek="Ask a text-to-SQL agent what your revenue is and it picks a number. Atlas reads a file first — plain YAML, the kind you can open and edit — that says what your data actually means."
         />
 
         <Lead>
@@ -118,8 +118,7 @@ export default function WhyTheSemanticLayerIsYaml() {
           included, with no way to know which four will quietly poison an answer.
           The semantic layer is the editorial pass the schema can&apos;t do for
           itself: it covers the thirteen entities that are real, leaves the
-          deadweight out, and points the agent only at tables a person has
-          vouched for.
+          deadweight out, and steers the agent clear of the junk.
         </P>
 
         <H2>A column name is not a fact</H2>
@@ -212,7 +211,8 @@ export default function WhyTheSemanticLayerIsYaml() {
         </P>
 
         <PullQuote>
-          Every answer Atlas trusts traces back to a line a person wrote down.
+          Every answer Atlas trusts traces back to a line written down in plain
+          text.
         </PullQuote>
 
         <H2>Why I chose plain text</H2>
@@ -249,11 +249,13 @@ export default function WhyTheSemanticLayerIsYaml() {
 
         <H2>You can read it, and change it</H2>
         <P>
-          On Atlas Cloud the layer isn&apos;t a repo you maintain, and most teams
-          never hand-write the YAML at all. You connect a database and Atlas
-          profiles it into a first draft for you. From there you shape it inside
-          the product, through the setup wizard, the CLI, the MCP server, or by
-          asking the agent to refine it in chat.
+          Most teams never hand-write the YAML from scratch. You connect a
+          database and Atlas scans it into a first draft with no model in the
+          loop, instant and free. From there you can enrich it with an LLM,
+          AI-written descriptions, business terms, and known query patterns, and
+          you can edit any line yourself, through the setup wizard, the CLI, the
+          MCP server, or by asking the agent to refine it in chat. On Atlas Cloud
+          it lives inside the product, not a repo you maintain.
         </P>
         <P>
           What stays true underneath is that the layer is a real, readable

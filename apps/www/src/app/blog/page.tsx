@@ -38,7 +38,7 @@ const POSTS: Post[] = [
     slug: "why-the-semantic-layer-is-yaml",
     title: "Why the semantic layer is a YAML file",
     description:
-      "Ask a text-to-SQL agent what your revenue is and it picks a number. Atlas reads a file first — plain YAML, written by a person — that says what your data actually means, and why a column called shipping_cost will lie to you. Here's why that file is the most important thing in the system, and not embeddings, fine-tuning, or a schema crawl.",
+      "Ask a text-to-SQL agent what your revenue is and it picks a number. Atlas reads a file first — plain YAML, the kind you can open and edit — that says what your data actually means, and why a column called shipping_cost will lie to you. Here's why that file is the most important thing in the system, and not embeddings, fine-tuning, or a schema crawl.",
     isoDate: "2026-06-29",
     dateLabel: "June 29, 2026",
     readingTime: "6 min read",

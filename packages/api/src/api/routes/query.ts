@@ -41,6 +41,15 @@ const log = createLogger("query");
 export const QueryRequestSchema = z.object({
   question: z.string().trim().min(1, "question must not be empty"),
   conversationId: z.string().uuid().optional(),
+  /**
+   * Optional explicit datasource connection id. Omit to run against the
+   * workspace's default (published) connection. Resolved against the bound
+   * workspace's `ConnectionRegistry` server-side (mirrors `/api/v1/execute-sql`);
+   * a connection id in another workspace simply isn't found. Workspace isolation
+   * derives from the credential — there is NO org/workspace/owner field here a
+   * caller could spoof (#4124).
+   */
+  connectionId: z.string().min(1).max(256).optional(),
 });
 
 export const QueryResponseSchema = z.object({
@@ -230,36 +239,57 @@ query.openapi(
         // HTTP envelope in the catch below; the 80–109% warning band
         // arrives on `queryResult.planWarning`.
 
-        // --- Startup diagnostics ---
-        const diagnostics = await validateEnvironment();
-        if (diagnostics.length > 0) {
-          return c.json(
-            {
-              error: "configuration_error",
-              message: diagnostics.map((d) => d.message).join("\n\n"),
-              diagnostics,
-            },
-            400,
-          );
+        // --- Datasource availability gate ---
+        // A bound workspace resolves its datasource from the per-tenant
+        // `ConnectionRegistry` (DB-driven) INSIDE the agent loop — exactly like
+        // `/api/v1/execute-sql`. The env-level `validateEnvironment()` +
+        // `resolveDatasourceUrl()` checks below only apply to the self-hosted
+        // single-tenant fallback (`ATLAS_DATASOURCE_URL`). Running them for a
+        // SaaS workspace wrongly blocked the NL agent with
+        // `MISSING_DATASOURCE_URL`, because a multi-tenant deployment never sets
+        // a process-level datasource URL (the connection lives in the workspace's
+        // registered datasources) — so the NL `/query` path could never run on
+        // SaaS even though `executeSQL` did (#4124).
+        const orgId = authResult.user?.activeOrganizationId;
+        if (!orgId) {
+          // --- Startup diagnostics (self-hosted single-tenant only) ---
+          const diagnostics = await validateEnvironment();
+          if (diagnostics.length > 0) {
+            return c.json(
+              {
+                error: "configuration_error",
+                message: diagnostics.map((d) => d.message).join("\n\n"),
+                diagnostics,
+              },
+              400,
+            );
+          }
+
+          const { resolveDatasourceUrl: resolveUrl } = await import("@atlas/api/lib/db/connection");
+          if (!resolveUrl()) {
+            return c.json(
+              {
+                error: "no_datasource",
+                message:
+                  "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to query your data.",
+              },
+              400,
+            );
+          }
         }
-    
-        const { resolveDatasourceUrl: resolveUrl } = await import("@atlas/api/lib/db/connection");
-        if (!resolveUrl()) {
-          return c.json(
-            {
-              error: "no_datasource",
-              message:
-                "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to query your data.",
-            },
-            400,
-          );
-        }
-    
-        const { question, conversationId: parsedConversationId } = c.req.valid("json");
+
+        const { question, conversationId: parsedConversationId, connectionId } = c.req.valid("json");
         let conversationId = parsedConversationId;
-    
+
         try {
-          const queryResult = await executeAgentQuery(question, requestId);
+          // Thread the explicit connectionId (when supplied) into the agent run;
+          // `executeAgentQuery` binds it onto the RequestContext so the agent's
+          // `executeSQL` tool resolves the workspace's registered connection via
+          // `ConnectionRegistry` instead of the env-level `ATLAS_DATASOURCE_URL`
+          // (#4124). When omitted, the workspace's default connection resolves.
+          const queryResult = await executeAgentQuery(question, requestId, {
+            ...(connectionId ? { connectionId } : {}),
+          });
     
           // Persist conversation — best-effort. createConversation awaits an INSERT; addMessage calls are fire-and-forget.
           if (hasInternalDB()) {

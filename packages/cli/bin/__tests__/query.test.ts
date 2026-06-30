@@ -217,24 +217,42 @@ describe("handleActionApproval", () => {
     }
   });
 
-  test("passes API key in Authorization header", async () => {
-    const originalFetch = globalThis.fetch;
+  // #4124 — credential parity with `sql`: a device-flow SESSION rides
+  // `Authorization: Bearer`, a workspace API KEY rides `x-api-key` (the Better
+  // Auth `apiKey()` plugin's header), NEVER `Authorization: Bearer`.
+  test("passes a session bearer in the Authorization header", async () => {
     let capturedHeaders: Headers | undefined;
-    globalThis.fetch = mock((_input: unknown, init?: RequestInit) => {
+    const fetchImpl = mock((_input: unknown, init?: RequestInit) => {
       capturedHeaders = new Headers(init?.headers);
       return Promise.resolve(
         new Response(JSON.stringify({ status: "approved" }), { status: 200 }),
       );
     }) as unknown as typeof fetch;
 
-    try {
-      await handleActionApproval(
-        "http://localhost:3001/api/v1/actions/abc/approve",
-        "my-secret-key",
+    await handleActionApproval(
+      "http://localhost:3001/api/v1/actions/abc/approve",
+      { token: "sess_abc" },
+      fetchImpl,
+    );
+    expect(capturedHeaders?.get("Authorization")).toBe("Bearer sess_abc");
+    expect(capturedHeaders?.get("x-api-key")).toBeNull();
+  });
+
+  test("passes a workspace API key in the x-api-key header (not Authorization)", async () => {
+    let capturedHeaders: Headers | undefined;
+    const fetchImpl = mock((_input: unknown, init?: RequestInit) => {
+      capturedHeaders = new Headers(init?.headers);
+      return Promise.resolve(
+        new Response(JSON.stringify({ status: "approved" }), { status: 200 }),
       );
-      expect(capturedHeaders?.get("Authorization")).toBe("Bearer my-secret-key");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    }) as unknown as typeof fetch;
+
+    await handleActionApproval(
+      "http://localhost:3001/api/v1/actions/abc/approve",
+      { apiKey: "atlas_key_xyz" },
+      fetchImpl,
+    );
+    expect(capturedHeaders?.get("x-api-key")).toBe("atlas_key_xyz");
+    expect(capturedHeaders?.get("Authorization")).toBeNull();
   });
 });

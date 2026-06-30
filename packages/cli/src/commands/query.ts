@@ -1,7 +1,22 @@
 /**
  * atlas query — Ask a natural language question via the Atlas API.
  *
- * Extracted from atlas.ts to reduce monolith size.
+ * The NL happy path (Shape A): the caller asks a question, Atlas's server-side
+ * LLM writes + runs the SQL and returns a narrative answer. `atlas sql` is the
+ * advanced raw-SQL surface (Shape B).
+ *
+ * Authorization rides on the SAME workspace credential as `sql`/`datasource`/
+ * `explore` (#4112 / ADR-0027 §5): the `atlas login` device-flow SESSION bearer
+ * (sent as `Authorization: Bearer`) for interactive use, OR a workspace-scoped
+ * API key for unattended CI (`--api-key` / `ATLAS_API_KEY`, sent as `x-api-key`
+ * — the Better Auth `apiKey()` plugin's header, NOT `Authorization: Bearer`).
+ * The credential resolution is single-sourced through `lib/credential` so
+ * `query` can't drift from the other REST-backed subcommands (#4124).
+ *
+ * The dispatch + rendering live in the testable `runQueryCommand` core (the
+ * session, the API base URL, the api-key, and `fetch` are injected), so credential
+ * resolution, request shape, and output are unit-tested without a live server or
+ * `process.exit`. `handleQuery` is the thin shell main() calls.
  */
 
 import * as p from "@clack/prompts";
@@ -12,6 +27,14 @@ import {
   quoteCsvField,
   renderTable,
 } from "../../lib/output";
+import { resolveApiBaseUrl } from "../lib/api-base";
+import {
+  readApiKeyFlag,
+  resolveCredential,
+  credentialHeaders,
+  type CliCredential,
+} from "../lib/credential";
+import { readSession, type StoredSession } from "../lib/credentials";
 
 // --- Types ---
 
@@ -38,23 +61,51 @@ interface QueryAPIError {
   message: string;
 }
 
+/** stdout/stderr sink — injected so tests can capture output (mirrors `sql.ts`). */
+export interface QueryIO {
+  readonly out: (line: string) => void;
+  readonly err: (line: string) => void;
+}
+
+const defaultIO: QueryIO = {
+  out: (line) => console.log(line),
+  err: (line) => console.error(line),
+};
+
+/** Everything `runQueryCommand` needs, injected so it stays server-free in tests. */
+export interface QueryRunDeps {
+  readonly baseUrl: string;
+  readonly session: StoredSession | null;
+  /**
+   * A workspace-scoped API key for unattended CI (#4046), resolved from the
+   * `--api-key` flag or the `ATLAS_API_KEY` env var. When present it takes
+   * precedence over the stored session — CI never goes through `atlas login`.
+   */
+  readonly apiKey?: string;
+  readonly fetchImpl?: typeof fetch;
+}
+
 // --- Action approval ---
 
 /**
- * Call the approve or deny endpoint for a pending action.
+ * Call the approve or deny endpoint for a pending action, authorized by the
+ * same workspace credential the query ran under (session bearer XOR API key —
+ * the latter rides `x-api-key`, never `Authorization: Bearer`).
+ *
  * Returns { ok: true, status } on success, { ok: false, error } on failure.
  */
 export async function handleActionApproval(
   url: string,
-  apiKey?: string,
+  credential?: CliCredential,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<{ ok: boolean; status?: string; error?: string }> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...(credential ? credentialHeaders(credential) : {}),
   };
-  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
   try {
-    const res = await fetch(url, {
+    const res = await fetchImpl(url, {
       method: "POST",
       headers,
       signal: AbortSignal.timeout(30_000),
@@ -89,36 +140,54 @@ export async function handleActionApproval(
   }
 }
 
-// --- Main handler ---
+// --- Testable core ---
 
-export async function handleQuery(args: string[]): Promise<void> {
-  // Parse the question -- first positional arg after "query"
-  const question = args.find(
-    (a, i) =>
-      i > 0 &&
-      !a.startsWith("--") &&
-      (i === 1 || args[i - 1] !== "--connection"),
-  );
+/**
+ * Testable core: dispatch one `atlas query` invocation. Returns the process exit
+ * code (0 success, 1 failure) without calling `process.exit`, so tests can assert
+ * on it directly (mirrors `runSqlCommand`).
+ *
+ * `args` is the full argv slice (args[0] === "query").
+ */
+export async function runQueryCommand(
+  args: string[],
+  deps: QueryRunDeps,
+  io: QueryIO = defaultIO,
+): Promise<number> {
+  // The question is the first positional after "query" that isn't a flag and
+  // isn't the value consumed by a value-taking flag (`--connection <id>`,
+  // `--api-key <key>`). The inline forms (`--connection=x`, `--api-key=x`) start
+  // with `--`, so they're skipped by the flag check.
+  const question = args.find((a, i) => {
+    if (i === 0 || a.startsWith("--")) return false;
+    const prev = args[i - 1];
+    if (prev === "--connection" || prev === "--api-key") return false;
+    return true;
+  });
 
   if (!question) {
-    console.error(
+    io.err(
       'Usage: atlas query "your question" [options]\n\n' +
         "Options:\n" +
         "  --json               Raw JSON output (pipe-friendly)\n" +
         "  --csv                CSV output (headers + rows only)\n" +
         "  --quiet              Data only -- no narrative, SQL, or stats\n" +
         "  --auto-approve       Auto-approve any pending actions\n" +
-        "  --connection <id>    Query a specific datasource\n\n" +
+        "  --connection <id>    Query a specific datasource\n" +
+        "  --api-key <key>      Use a workspace API key instead of your `atlas login` session\n\n" +
+        "Authentication:\n" +
+        "  `atlas login` for interactive use (ambient session reuse -- no key needed),\n" +
+        "  OR a workspace API key via --api-key / ATLAS_API_KEY for unattended CI.\n\n" +
         "Environment:\n" +
         "  ATLAS_API_URL        API server URL (default: http://localhost:3001)\n" +
-        "  ATLAS_API_KEY        API key for authentication\n\n" +
+        "  ATLAS_API_KEY        Workspace API key for unattended authentication\n\n" +
         "Examples:\n" +
         '  atlas query "top 5 customers by revenue"\n' +
         '  atlas query "monthly GMV trend" --json\n' +
         '  atlas query "count of orders" --csv\n' +
         '  atlas query "top categories" --connection warehouse',
     );
-    process.exit(1);
+    return 1;
   }
 
   const jsonOutput = args.includes("--json");
@@ -128,29 +197,38 @@ export async function handleQuery(args: string[]): Promise<void> {
   const connectionId = getFlag(args, "--connection");
 
   if (jsonOutput && csvOutput) {
-    console.error("Error: --json and --csv are mutually exclusive.");
-    process.exit(1);
+    io.err("Error: --json and --csv are mutually exclusive.");
+    return 1;
   }
 
-  const apiUrl = (
-    process.env.ATLAS_API_URL ?? "http://localhost:3001"
-  ).replace(/\/$/, "");
-  const apiKey = process.env.ATLAS_API_KEY;
+  // Resolve the workspace credential exactly like `sql`/`datasource`: a key
+  // (the `--api-key` flag, else `ATLAS_API_KEY`) wins over the stored login.
+  // A key rides `x-api-key`; a session bearer rides `Authorization: Bearer`.
+  const apiKey = readApiKeyFlag(args) ?? deps.apiKey;
+  const credential = resolveCredential(apiKey, deps.session);
+  if (!credential) {
+    io.err(
+      "Not logged in. Run `atlas login` first, or set ATLAS_API_KEY for unattended use.",
+    );
+    return 1;
+  }
 
-  // Build request
+  const apiUrl = deps.baseUrl.replace(/\/$/, "");
+  const fetchImpl = deps.fetchImpl ?? fetch;
+
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...credentialHeaders(credential),
   };
-  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
   const body = { question, ...(connectionId && { connectionId }) };
 
   // Call the API
-  if (!jsonOutput && !csvOutput) process.stderr.write("Thinking...\n");
+  if (!jsonOutput && !csvOutput) io.err("Thinking...");
 
   let res: Response;
   try {
-    res = await fetch(`${apiUrl}/api/v1/query`, {
+    res = await fetchImpl(`${apiUrl}/api/v1/query`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
@@ -159,21 +237,17 @@ export async function handleQuery(args: string[]): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (/abort|timeout/i.test(msg)) {
-      console.error("Error: Request timed out after 120 seconds.");
-      console.error(
+      io.err("Error: Request timed out after 120 seconds.");
+      io.err(
         "  The query may be too complex, or the server may be overloaded.",
       );
     } else if (/ECONNREFUSED|fetch failed/i.test(msg)) {
-      console.error(
-        `Error: Cannot connect to Atlas API at ${apiUrl}`,
-      );
-      console.error(
-        "  Is the server running? Start it with: bun run dev:api",
-      );
+      io.err(`Error: Cannot connect to Atlas API at ${apiUrl}`);
+      io.err("  Is the server running? Start it with: bun run dev:api");
     } else {
-      console.error(`Error: ${msg}`);
+      io.err(`Error: ${msg}`);
     }
-    process.exit(1);
+    return 1;
   }
 
   // Handle HTTP errors
@@ -195,43 +269,43 @@ export async function handleQuery(args: string[]): Promise<void> {
     }
 
     if (res.status === 401 || res.status === 403) {
-      console.error(`Error: Authentication failed -- ${message}`);
-      console.error("  Set ATLAS_API_KEY to a valid API key.");
+      io.err(`Error: Authentication failed -- ${message}`);
+      io.err(
+        "  Run `atlas login`, or set ATLAS_API_KEY to a valid workspace API key.",
+      );
     } else if (res.status === 429) {
-      console.error(`Error: Rate limit exceeded -- ${message}`);
+      io.err(`Error: Rate limit exceeded -- ${message}`);
     } else if (errorCode === "no_datasource") {
-      console.error(`Error: ${message}`);
-      console.error(
-        "  The API server has no datasource configured. Set ATLAS_DATASOURCE_URL on the server.",
+      io.err(`Error: ${message}`);
+      io.err(
+        "  No datasource is available for this workspace. Add one in the Atlas console, or set ATLAS_DATASOURCE_URL on a self-hosted server.",
       );
     } else if (errorCode === "configuration_error") {
-      console.error(
-        `Error: Server configuration problem -- ${message}`,
-      );
+      io.err(`Error: Server configuration problem -- ${message}`);
     } else {
-      console.error(`Error: ${message}`);
+      io.err(`Error: ${message}`);
     }
-    process.exit(1);
+    return 1;
   }
 
   let data: QueryAPIResponse;
   try {
     data = (await res.json()) as QueryAPIResponse;
   } catch {
-    console.error("Error: Failed to parse API response as JSON.");
-    console.error(
+    io.err("Error: Failed to parse API response as JSON.");
+    io.err(
       `  The server at ${apiUrl} returned a 200 status but the body was not valid JSON.`,
     );
-    process.exit(1);
+    return 1;
   }
 
   // Runtime validation of response shape
   if (!Array.isArray(data.data)) {
-    console.error(
+    io.err(
       "Error: Unexpected API response -- the server may be running a different version.",
     );
-    if (data.answer) console.log(`\n${data.answer}`);
-    process.exit(1);
+    if (data.answer) io.out(`\n${data.answer}`);
+    return 1;
   }
   if (!Array.isArray(data.sql)) data.sql = [];
   if (!data.usage || typeof data.usage.totalTokens !== "number") {
@@ -240,88 +314,78 @@ export async function handleQuery(args: string[]): Promise<void> {
 
   // --- JSON output: print raw response and exit ---
   if (jsonOutput) {
-    console.log(JSON.stringify(data, null, 2));
-    return;
+    io.out(JSON.stringify(data, null, 2));
+    return 0;
   }
 
   // --- CSV output: headers + rows, no narrative ---
   if (csvOutput) {
     for (const dataset of data.data) {
-      console.log(dataset.columns.map(quoteCsvField).join(","));
+      io.out(dataset.columns.map(quoteCsvField).join(","));
       for (const row of dataset.rows) {
         const cells = dataset.columns.map((col) =>
           quoteCsvField(formatCsvValue(row[col])),
         );
-        console.log(cells.join(","));
+        io.out(cells.join(","));
       }
     }
-    return;
+    return 0;
   }
 
   // --- Table output (default) ---
 
   // Narrative answer
   if (!quietOutput && data.answer) {
-    console.log(`\n${data.answer}\n`);
+    io.out(`\n${data.answer}\n`);
   }
 
   // Data tables
   for (const dataset of data.data) {
     if (dataset.columns.length > 0 && dataset.rows.length > 0) {
-      console.log(renderTable(dataset.columns, dataset.rows));
-      console.log();
+      io.out(renderTable(dataset.columns, dataset.rows));
+      io.out("");
     }
   }
 
   // Footer: SQL + stats
   if (!quietOutput) {
     if (data.sql.length > 0) {
-      console.log(pc.dim(`SQL: ${data.sql[data.sql.length - 1]}`));
+      io.out(pc.dim(`SQL: ${data.sql[data.sql.length - 1]}`));
     }
     const tokens =
       typeof data.usage?.totalTokens === "number"
         ? data.usage.totalTokens.toLocaleString()
         : "n/a";
-    console.log(
-      pc.dim(`Steps: ${data.steps ?? "?"} | Tokens: ${tokens}`),
-    );
+    io.out(pc.dim(`Steps: ${data.steps ?? "?"} | Tokens: ${tokens}`));
   }
 
   // --- Handle pending actions ---
   if (data.pendingActions?.length) {
-    console.log();
-    console.log(
-      pc.yellow(
-        `${data.pendingActions.length} action(s) require approval:`,
-      ),
+    io.out("");
+    io.out(
+      pc.yellow(`${data.pendingActions.length} action(s) require approval:`),
     );
 
     if (autoApprove) {
       // Auto-approve all pending actions
       for (const action of data.pendingActions) {
-        process.stderr.write(
-          `  Approving: ${action.summary}... `,
-        );
+        io.err(`  Approving: ${action.summary}... `);
         const result = await handleActionApproval(
           action.approveUrl,
-          apiKey,
+          credential,
+          fetchImpl,
         );
         if (result.ok) {
-          console.error(
-            pc.green(`${result.status ?? "approved"}`),
-          );
+          io.err(pc.green(`${result.status ?? "approved"}`));
         } else {
-          console.error(pc.red(`failed: ${result.error}`));
+          io.err(pc.red(`failed: ${result.error}`));
         }
       }
     } else if (process.stdout.isTTY) {
       // Interactive TTY mode -- prompt per action
       for (const action of data.pendingActions) {
-        console.log(
-          `\n  ${pc.bold(action.type)}: ${action.summary}`,
-        );
-        if (action.target)
-          console.log(`  Target: ${action.target}`);
+        io.out(`\n  ${pc.bold(action.type)}: ${action.summary}`);
+        if (action.target) io.out(`  Target: ${action.target}`);
 
         const choice = await p.select({
           message: "What would you like to do?",
@@ -333,42 +397,47 @@ export async function handleQuery(args: string[]): Promise<void> {
         });
 
         if (p.isCancel(choice) || choice === "skip") {
-          console.log(pc.dim(`  Skipped. Approve/deny later:`));
-          console.log(
-            pc.dim(
-              `    Approve: curl -X POST ${action.approveUrl}`,
-            ),
-          );
-          console.log(
-            pc.dim(
-              `    Deny:    curl -X POST ${action.denyUrl}`,
-            ),
-          );
+          io.out(pc.dim(`  Skipped. Approve/deny later:`));
+          io.out(pc.dim(`    Approve: curl -X POST ${action.approveUrl}`));
+          io.out(pc.dim(`    Deny:    curl -X POST ${action.denyUrl}`));
           continue;
         }
 
         const url =
-          choice === "approve"
-            ? action.approveUrl
-            : action.denyUrl;
-        const result = await handleActionApproval(url, apiKey);
+          choice === "approve" ? action.approveUrl : action.denyUrl;
+        const result = await handleActionApproval(url, credential, fetchImpl);
         if (result.ok) {
-          console.log(
-            pc.green(
-              `  Action ${result.status ?? choice}d.`,
-            ),
-          );
+          io.out(pc.green(`  Action ${result.status ?? choice}d.`));
         } else {
-          console.log(pc.red(`  Failed: ${result.error}`));
+          io.out(pc.red(`  Failed: ${result.error}`));
         }
       }
     } else {
       // Non-TTY, no --auto-approve -- print URLs and exit
       for (const action of data.pendingActions) {
-        console.log(`\n  ${action.type}: ${action.summary}`);
-        console.log(`    Approve: ${action.approveUrl}`);
-        console.log(`    Deny:    ${action.denyUrl}`);
+        io.out(`\n  ${action.type}: ${action.summary}`);
+        io.out(`    Approve: ${action.approveUrl}`);
+        io.out(`    Deny:    ${action.denyUrl}`);
       }
     }
   }
+
+  return 0;
+}
+
+// --- Main handler ---
+
+/** Thin shell main() invokes: resolve the credential inputs + base URL, dispatch. */
+export async function handleQuery(args: string[]): Promise<void> {
+  const baseUrl = resolveApiBaseUrl();
+  const session = readSession(baseUrl);
+  // ATLAS_API_KEY (#4046) is the unattended-CI credential — NOT persisted to
+  // ~/.atlas/credentials. `--api-key` (parsed in runQueryCommand) overrides it.
+  const apiKey = process.env.ATLAS_API_KEY?.trim() || undefined;
+  const code = await runQueryCommand(args, {
+    baseUrl,
+    session,
+    ...(apiKey ? { apiKey } : {}),
+  });
+  if (code !== 0) process.exit(code);
 }

@@ -252,6 +252,8 @@ mock.module("@atlas/api/lib/billing/claim-gate", () => ({
 }));
 
 // Import after mocks are registered
+const { createAtlasUser } = await import("@atlas/api/lib/auth/types");
+const { getRequestContext } = await import("@atlas/api/lib/logger");
 const { app } = await import("../index");
 
 // --- Helpers ---
@@ -500,6 +502,76 @@ describe("POST /api/v1/query", () => {
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.error).toBe("configuration_error");
     expect(mockRunAgent).not.toHaveBeenCalled();
+  });
+
+  // ── #4124: a bound workspace resolves its datasource from the per-tenant
+  // ConnectionRegistry inside the agent loop, NOT the env-level
+  // ATLAS_DATASOURCE_URL. The env gate (validateEnvironment + resolveDatasourceUrl)
+  // is the self-hosted single-tenant fallback — running it for a SaaS workspace
+  // wrongly blocked the NL agent with MISSING_DATASOURCE_URL because a
+  // multi-tenant deployment never sets a process-level datasource URL. ──
+
+  function authedWorkspaceUser() {
+    return {
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: createAtlasUser("u-4124", "managed", "Workspace User", {
+        activeOrganizationId: "org-acme",
+      }),
+    };
+  }
+
+  it("runs the agent for a bound workspace even when ATLAS_DATASOURCE_URL is unset (skips the env gate)", async () => {
+    // SaaS shape: a workspace is bound, but there is NO process-level datasource.
+    delete process.env.ATLAS_DATASOURCE_URL;
+    mockAuthenticateRequest.mockResolvedValueOnce(authedWorkspaceUser());
+
+    const response = await app.fetch(makeQueryRequest({ question: "how many users?" }));
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.answer).toBe("The answer is 42.");
+    expect(mockRunAgent).toHaveBeenCalledTimes(1);
+    // The env-level startup gate must NOT be consulted for a bound workspace —
+    // the connection resolves from the workspace's ConnectionRegistry downstream.
+    expect(mockValidateEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("threads connectionId from the request body into the agent's request context", async () => {
+    delete process.env.ATLAS_DATASOURCE_URL;
+    mockAuthenticateRequest.mockResolvedValueOnce(authedWorkspaceUser());
+
+    let capturedConnectionId: string | undefined = "UNSET";
+    mockRunAgent.mockImplementationOnce(() => {
+      // The route → executeAgentQuery binds connectionId onto the RequestContext;
+      // the agent's executeSQL tool reads it from there to resolve the workspace's
+      // registered connection (instead of env ATLAS_DATASOURCE_URL).
+      capturedConnectionId = getRequestContext()?.connectionId;
+      return Promise.resolve(makeAgentResult());
+    });
+
+    const response = await app.fetch(
+      makeQueryRequest({ question: "rows in the actions table", connectionId: "ds_actions" }),
+    );
+    expect(response.status).toBe(200);
+    expect(capturedConnectionId).toBe("ds_actions");
+  });
+
+  it("leaves the request-context connectionId unset when the body omits it (workspace default resolves)", async () => {
+    delete process.env.ATLAS_DATASOURCE_URL;
+    mockAuthenticateRequest.mockResolvedValueOnce(authedWorkspaceUser());
+
+    let capturedConnectionId: string | undefined = "UNSET";
+    mockRunAgent.mockImplementationOnce(() => {
+      capturedConnectionId = getRequestContext()?.connectionId;
+      return Promise.resolve(makeAgentResult());
+    });
+
+    const response = await app.fetch(makeQueryRequest({ question: "how many users?" }));
+    expect(response.status).toBe(200);
+    // No explicit connectionId → none bound; downstream resolves the workspace's
+    // default/published connection via getForOrg(orgId, "default").
+    expect(capturedConnectionId).toBeUndefined();
   });
 
   it("returns 400 for malformed JSON", async () => {

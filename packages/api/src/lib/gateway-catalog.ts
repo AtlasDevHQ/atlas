@@ -42,7 +42,7 @@ const FETCH_TIMEOUT_MS = 10_000;
  */
 const RECOMMENDED_MODEL_IDS: ReadonlySet<string> = new Set([
   "anthropic/claude-opus-4.8",
-  "anthropic/claude-sonnet-4.6",
+  "anthropic/claude-sonnet-5",
   "openai/gpt-4o",
   "openai/gpt-4o-mini",
   "google/gemini-2.0-flash",
@@ -66,12 +66,12 @@ const FALLBACK_MODELS: GatewayCatalogModel[] = [
     recommended: true,
   },
   {
-    id: "anthropic/claude-sonnet-4.6",
-    name: "Claude Sonnet 4.6",
+    id: "anthropic/claude-sonnet-5",
+    name: "Claude Sonnet 5",
     provider: "anthropic",
     type: "language",
-    contextWindow: 200_000,
-    maxOutputTokens: 64_000,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
     inputPrice: null,
     outputPrice: null,
     recommended: true,

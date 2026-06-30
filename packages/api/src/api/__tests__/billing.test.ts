@@ -493,9 +493,9 @@ describe("billing routes", () => {
       expect(body.connections.count).toBe(0);
     });
 
-    it("reports the gateway provider default (Sonnet 4.6) when nothing is saved (#3098)", async () => {
+    it("reports the gateway provider default (Sonnet 5) when nothing is saved (#3098)", async () => {
       // The exact bug: on the SaaS gateway path with no saved model, the
-      // picker must show what actually runs — Sonnet 4.6 — not the plan's
+      // picker must show what actually runs — Sonnet 5 — not the plan's
       // recommended model and not a hardcoded UI fallback.
       const origProvider = process.env.ATLAS_PROVIDER;
       const origModel = process.env.ATLAS_MODEL;
@@ -515,7 +515,7 @@ describe("billing routes", () => {
         expect(res.status).toBe(200);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
         const body = await res.json() as any;
-        expect(body.currentModel).toBe("anthropic/claude-sonnet-4.6");
+        expect(body.currentModel).toBe("anthropic/claude-sonnet-5");
       } finally {
         if (origProvider !== undefined) process.env.ATLAS_PROVIDER = origProvider;
         else delete process.env.ATLAS_PROVIDER;

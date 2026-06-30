@@ -190,7 +190,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     name: "pro",
     displayName: "Pro",
     pricePerSeat: 69,
-    defaultModel: "anthropic/claude-sonnet-4.6",
+    defaultModel: "anthropic/claude-sonnet-5",
     includedUsageDollarsPerSeat: 20,
     limits: {
       tokenBudgetPerSeat: 5_000_000,
@@ -230,7 +230,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     name: "business",
     displayName: "Business",
     pricePerSeat: 149,
-    defaultModel: "anthropic/claude-sonnet-4.6",
+    defaultModel: "anthropic/claude-sonnet-5",
     includedUsageDollarsPerSeat: 20,
     limits: {
       tokenBudgetPerSeat: 15_000_000,

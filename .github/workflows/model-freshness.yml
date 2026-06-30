@@ -4,8 +4,15 @@ name: Model freshness check
 # Haiku than we've pinned in our defaults" gap. Hits the gateway's
 # /v1/models endpoint monthly, compares against the IDs hardcoded in
 # our defaults/recommended/fallback sites, and opens a tracking issue
-# when our pins are behind. No auto-bumps — the labels we use are
-# tier-stable choices that humans should curate.
+# when any of the three pinned tiers is behind. No auto-bumps — the
+# labels we use are tier-stable choices that humans should curate.
+#
+# Pin source: `MODEL_OPTIONS` in packages/web/src/app/admin/billing/page.tsx
+# — the live SaaS tier picker, which always carries exactly one current
+# gateway-format (slash+dot) ID per tier. providers.ts's `gateway:` key
+# only holds whichever single tier is the platform default (Sonnet today)
+# and can't tell us what's pinned for the other two tiers, so it's the
+# wrong extraction source for this check.
 
 on:
   schedule:
@@ -34,21 +41,39 @@ jobs:
           latest_opus=$(latest_for "anthropic/claude-opus-")
           latest_sonnet=$(latest_for "anthropic/claude-sonnet-")
           latest_haiku=$(latest_for "anthropic/claude-haiku-")
-          pinned_opus=$(grep -oE 'gateway: "anthropic/claude-opus-[0-9.]+"' \
-            packages/api/src/lib/providers.ts \
-            | grep -oE 'anthropic/claude-opus-[0-9.]+')
+
+          model_options=$(sed -n '/^const MODEL_OPTIONS = \[/,/^\] as const;/p' \
+            packages/web/src/app/admin/billing/page.tsx)
+          pinned_for() {
+            echo "$model_options" | grep -oE "anthropic/claude-$1-[0-9]+(\.[0-9]+)?" | head -1
+          }
+          pinned_opus=$(pinned_for opus)
+          pinned_sonnet=$(pinned_for sonnet)
+          pinned_haiku=$(pinned_for haiku)
+
           echo "Latest on gateway — opus:$latest_opus sonnet:$latest_sonnet haiku:$latest_haiku"
-          echo "Pinned (providers.ts gateway): $pinned_opus"
+          echo "Pinned (billing/page.tsx MODEL_OPTIONS) — opus:$pinned_opus sonnet:$pinned_sonnet haiku:$pinned_haiku"
+
+          drift=false
+          drifted_tiers=""
+          for tier in opus sonnet haiku; do
+            pinned_var="pinned_$tier"
+            latest_var="latest_$tier"
+            if [ "${!pinned_var}" != "${!latest_var}" ]; then
+              drift=true
+              drifted_tiers="$drifted_tiers $tier"
+            fi
+          done
+
           {
             echo "latest_opus=$latest_opus"
             echo "latest_sonnet=$latest_sonnet"
             echo "latest_haiku=$latest_haiku"
             echo "pinned_opus=$pinned_opus"
-            if [ "$pinned_opus" != "$latest_opus" ]; then
-              echo "drift=true"
-            else
-              echo "drift=false"
-            fi
+            echo "pinned_sonnet=$pinned_sonnet"
+            echo "pinned_haiku=$pinned_haiku"
+            echo "drift=$drift"
+            echo "drifted_tiers=${drifted_tiers# }"
           } >> "$GITHUB_OUTPUT"
       - name: Open tracking issue on drift
         if: steps.drift.outputs.drift == 'true'
@@ -61,6 +86,9 @@ jobs:
           LATEST_SONNET: ${{ steps.drift.outputs.latest_sonnet }}
           LATEST_HAIKU: ${{ steps.drift.outputs.latest_haiku }}
           PINNED_OPUS: ${{ steps.drift.outputs.pinned_opus }}
+          PINNED_SONNET: ${{ steps.drift.outputs.pinned_sonnet }}
+          PINNED_HAIKU: ${{ steps.drift.outputs.pinned_haiku }}
+          DRIFTED_TIERS: ${{ steps.drift.outputs.drifted_tiers }}
         run: |
           set -euo pipefail
           existing=$(gh issue list -R "$GITHUB_REPOSITORY" \
@@ -70,30 +98,36 @@ jobs:
             echo "Drift issue #$existing already open — skipping."
             exit 0
           fi
-          title="chore: model defaults drift vs Vercel AI Gateway (Opus $PINNED_OPUS → $LATEST_OPUS)"
+          status_line() {
+            # $1=label $2=pinned $3=latest
+            if [ "$2" != "$3" ]; then printf '⚠️  %s: `%s` → `%s`' "$1" "$2" "$3"
+            else printf '✅ %s: `%s` (current)' "$1" "$2"
+            fi
+          }
+          title="chore: model defaults drift vs Vercel AI Gateway ($DRIFTED_TIERS)"
           # Build the body as a single printf — heredocs inside the
           # YAML run: block need column-0 terminators, which we can't
           # provide without breaking GitHub's indentation parser.
           body=$(printf '%s\n' \
-            "Monthly freshness check detected drift between our pinned Opus default and Vercel AI Gateway's latest Opus." \
+            "Monthly freshness check detected drift between our pinned defaults and Vercel AI Gateway's latest catalog." \
             "" \
-            "**Latest on gateway:**" \
-            "- opus:   \`$LATEST_OPUS\`" \
-            "- sonnet: \`$LATEST_SONNET\`" \
-            "- haiku:  \`$LATEST_HAIKU\`" \
-            "" \
-            "**Currently pinned (providers.ts gateway default):** \`$PINNED_OPUS\`" \
+            "**Tier status (pinned → latest):**" \
+            "- $(status_line opus "$PINNED_OPUS" "$LATEST_OPUS")" \
+            "- $(status_line sonnet "$PINNED_SONNET" "$LATEST_SONNET")" \
+            "- $(status_line haiku "$PINNED_HAIKU" "$LATEST_HAIKU")" \
             "" \
             "### Sites to update when bumping" \
             "" \
-            "1. \`packages/web/src/app/admin/billing/page.tsx\` — \`MODEL_OPTIONS\` (SaaS tier picker)" \
-            "2. \`packages/api/src/lib/billing/plans.ts\` — \`defaultModel\` per plan tier (only if the tier-flagship changed)" \
+            "1. \`packages/web/src/app/admin/billing/page.tsx\` — \`MODEL_OPTIONS\` (SaaS tier picker) + \`LEGACY_MODEL_ALIASES\` (roll the old version forward)" \
+            "2. \`packages/api/src/lib/billing/plans.ts\` — \`defaultModel\` per plan tier (only if the tier-flagship changed; Starter/Trial/Locked stay on Haiku by design)" \
             "3. \`packages/api/src/lib/providers.ts\` — \`PROVIDER_DEFAULTS.anthropic\` + \`.gateway\` (and \`.bedrock\` once AWS GAs the new version)" \
-            "4. \`packages/api/src/lib/anthropic-catalog.ts\` — \`RECOMMENDED_MODEL_IDS\` (sparkles in BYOT direct picker)" \
-            "5. \`packages/api/src/lib/gateway-catalog.ts\` — \`RECOMMENDED_MODEL_IDS\` + \`FALLBACK_MODELS\` (gateway picker)" \
-            "6. \`packages/web/src/app/admin/model-config/page.tsx\` — \`PLATFORM_MODEL_LABELS\` (admin UI label map)" \
+            "4. \`packages/cli/src/doctor.ts\` and \`create-atlas/index.ts\` — each has its own mirrored \`PROVIDER_DEFAULTS\`/\`PROVIDER_DEFAULT_MODEL\` map; keep in lockstep with #3" \
+            "5. \`packages/api/src/lib/anthropic-catalog.ts\` — \`RECOMMENDED_MODEL_IDS\` (sparkles in BYOT direct picker)" \
+            "6. \`packages/api/src/lib/gateway-catalog.ts\` — \`RECOMMENDED_MODEL_IDS\` + \`FALLBACK_MODELS\` (gateway picker)" \
+            "7. \`packages/web/src/app/admin/model-config/page.tsx\` — \`PLATFORM_MODEL_LABELS\` (admin UI label map; additive, keep old entries)" \
+            "8. Docs: \`apps/docs/content/docs/guides/billing-and-plans.mdx\` (Default model row) + \`apps/docs/content/docs/reference/environment-variables.mdx\` (gateway default table)" \
             "" \
-            "The BYOT-direct picker (Anthropic / OpenAI / Bedrock) is driven by the live provider catalog and doesn't need a code change to surface new models — only the defaults / recommendations / labels are hardcoded.")
+            "The full searchable gateway picker (Admin → AI Provider → gateway) is NOT in this list — it's served live from \`getGatewayCatalog()\` (TTL-cached fetch of \`https://ai-gateway.vercel.sh/v1/models\`) and needs no code change for new models to appear. Only the curated/recommended subset and the offline fallback bundle are hardcoded (sites 6–7 above).")
           gh issue create -R "$GITHUB_REPOSITORY" \
             --title "$title" \
             --label "chore,area: api" \

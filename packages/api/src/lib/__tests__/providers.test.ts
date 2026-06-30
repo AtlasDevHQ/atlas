@@ -202,12 +202,12 @@ describe("resolveModelId — SSOT default (#3098)", () => {
     expect(resolveModelId("gateway", undefined)).toBe(agentDefault);
   });
 
-  test("platform gateway default is Sonnet 4.6 (documented decision, #3098)", () => {
+  test("platform gateway default is Sonnet 5 (documented decision, #3098)", () => {
     delete process.env.ATLAS_MODEL;
     // Decision: the hosted/gateway default is the balanced, ~5x-cheaper Sonnet
-    // 4.6 — NOT Opus 4.8. Pinning it here so UI and runtime can't silently
+    // 5 — NOT Opus 4.8. Pinning it here so UI and runtime can't silently
     // diverge back to the expensive default.
-    expect(resolveModelId("gateway", undefined)).toBe("anthropic/claude-sonnet-4.6");
+    expect(resolveModelId("gateway", undefined)).toBe("anthropic/claude-sonnet-5");
   });
 
   test("an explicitly saved model overrides the default", () => {
@@ -226,7 +226,7 @@ describe("resolveModelId — SSOT default (#3098)", () => {
   });
 
   // The bug end-to-end: a SaaS deployment with nothing configured must resolve
-  // gateway → Sonnet 4.6, NOT anthropic → Opus. With no provider override and no
+  // gateway → Sonnet 5, NOT anthropic → Opus. With no provider override and no
   // ATLAS_PROVIDER, the provider falls through to getDefaultProvider() (gateway
   // on SaaS), then to PROVIDER_DEFAULTS.gateway. #3098.
   test("unset provider+model on SaaS resolves the gateway Sonnet default", () => {
@@ -234,7 +234,7 @@ describe("resolveModelId — SSOT default (#3098)", () => {
     delete process.env.ATLAS_MODEL;
     delete process.env.VERCEL;
     process.env.ATLAS_DEPLOY_MODE = "saas";
-    expect(resolveModelId(undefined, undefined)).toBe("anthropic/claude-sonnet-4.6");
+    expect(resolveModelId(undefined, undefined)).toBe("anthropic/claude-sonnet-5");
   });
 });
 

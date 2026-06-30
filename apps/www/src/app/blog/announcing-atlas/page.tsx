@@ -185,6 +185,14 @@ export default function AnnouncingAtlas() {
           writes a query. Correctness was always the floor; now the generated
           SQL is tuned to run fast as well.
         </P>
+        <P>
+          I made the case for why that file is plain YAML, and the most
+          important thing in Atlas, in{" "}
+          <a href="/blog/why-the-semantic-layer-is-yaml" className="link-accent">
+            Why the semantic layer is a YAML file
+          </a>
+          .
+        </P>
 
         <H2>A smarter agent</H2>
         <DefList>

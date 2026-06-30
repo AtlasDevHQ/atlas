@@ -61,6 +61,22 @@ const ERR = {
   reconnectRequired: "reconnect_required",
 } as const satisfies Record<string, CliRestErrorCode>;
 
+/**
+ * The actionable guidance shown when an admin-floor action is refused by the
+ * `admin-mfa-required` gate (#4125 fault C). The gate is a deliberate DPA
+ * commitment (#1925) and is NOT a bug — so the CLI explains how to satisfy it,
+ * never how to dodge it. It names the canonical remedy (a passkey — the
+ * password-free admin-MFA factor, ADR-0025), the web location, and the
+ * one-time-bootstrap-then-unattended key model (a minted workspace key is itself
+ * MFA-exempt, #4110 — the GitHub-PAT / Stripe-restricted-key shape). Both 403
+ * branches below share this single string so the copy can't drift.
+ */
+export const MFA_ENROLLMENT_MESSAGE =
+  "Admin actions require a second factor on your account. Enroll a passkey " +
+  "(recommended — nothing to type or remember) or an authenticator app in the " +
+  "Atlas web app under Account → Security, then retry. For unattended/CI use, " +
+  "mint a workspace API key once enrolled — keys are exempt from this check.";
+
 /** The kinds of failure a datasource call can surface, each with an actionable message. */
 export type DatasourceErrorKind =
   | "unauthorized" // 401 — bearer missing/expired
@@ -163,10 +179,7 @@ async function request(
       );
     case 403: {
       if (body.error === ERR.mfaEnrollmentRequired) {
-        throw new DatasourceCliError(
-          "mfa_required",
-          "Admin actions require two-factor authentication. Enroll an authenticator or passkey in the Atlas console, then retry.",
-        );
+        throw new DatasourceCliError("mfa_required", MFA_ENROLLMENT_MESSAGE);
       }
       throw new DatasourceCliError(
         "forbidden",
@@ -493,10 +506,7 @@ export async function profileDatasource(
         );
       case 403:
         if (body.error === ERR.mfaEnrollmentRequired) {
-          throw new DatasourceCliError(
-            "mfa_required",
-            "Admin actions require two-factor authentication. Enroll an authenticator or passkey in the Atlas console, then retry.",
-          );
+          throw new DatasourceCliError("mfa_required", MFA_ENROLLMENT_MESSAGE);
         }
         // A billing block also returns 403 (trial-expired etc.); surface the
         // server's actionable message for those. A bare role denial gets the

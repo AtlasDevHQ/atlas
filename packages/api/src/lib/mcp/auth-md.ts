@@ -211,6 +211,33 @@ account on the web** — surface that next step to your user after connecting.
 Until they claim it, the workspace stays in the grace window and is subject
 to the trial's economic limits.
 
+## Member vs admin actions: the second-factor posture
+
+A workspace's programmatic surface has two floors, and they differ only in
+whether a second factor is required:
+
+- **Member-floor data actions** — \`query\`, \`executeSQL\`/\`sql\`, \`explore\`,
+  \`runMetric\`, and \`profile_datasource\` — need only an authenticated
+  principal: your hosted OAuth actor, or a workspace API key. **No second
+  factor.** A member's programmatic reach equals their in-app agent reach,
+  bounded by SQL validation, the table whitelist, RLS, and approval rules.
+- **Admin-floor config actions** — creating or publishing a datasource,
+  minting a workspace API key, and other governance changes — require an
+  **MFA-enrolled managed session** (the workspace \`admin\`/\`owner\` role with a
+  second factor on file). This is a deliberate compliance commitment, **not**
+  relaxed for trials. Hitting it unenrolled returns \`mfa_enrollment_required\`
+  — that is actionable guidance, not a bug, so surface it rather than retrying.
+
+**Establish the strong factor once, then run unattended.** After claiming, the
+human enrolls a **passkey** (recommended — nothing to type or remember) or an
+authenticator app in the Atlas web app under **Account → Security**. With a factor on file,
+admin actions succeed. For CI and unattended agents, the human then mints a
+**workspace API key**: it is owner-attributed, carries member- or admin-scope,
+and is itself **exempt from the second-factor check** (its lifetime control is
+key expiry, not an interactive factor). This is the GitHub personal-access-token
+/ Stripe restricted-key model — one interactive browser bootstrap, then a scoped
+key for everything automated.
+
 ## Go deeper
 
 For the complete integration guide, see the Atlas documentation:

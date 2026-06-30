@@ -49,44 +49,37 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
 ```
 All gates must pass. Fix anything red (these are usually small). Run full `bun run test` once here even if `--affected` was green.
 
-**Step 5 — Open the PR, then service it to convergence**
+**Step 5 — Open the PR, then drive it to merge**
 
 ```
 /pr
 ```
-`/pr` branches/commits/pushes and opens the PR with `Closes #<N>`. Then **keep this session alive to service CI + every external reviewer**:
+`/pr` branches/commits/pushes and opens the PR with `Closes #<N>`. Two gates must be green on the head SHA: the **internal `/review-panel`** (already run in Step 3) and **required CI**. Third-party review bots are now the *exception* — the panel is the review — so handle them only when one is actually on the PR. The settling point is the **first full CI completion**, not an open-ended wait for reviewers that may not exist.
 
-```
-subscribe_pr_activity for the new PR
-```
-
-External reviewers (review bots AND humans) post *after* `/pr` and are **slower than required CI** — so do NOT merge the instant CI greens. Give them a round, then sweep them explicitly before every merge attempt.
-
-**The external-review loop — reviewer-agnostic.** Read whatever reviewers are installed; never hardcode names (today Macroscope + Greptile; tomorrow Codex, Claude, Cline, a human — same handling):
-
-1. **Sweep every reviewer on the current head SHA.** They post in *three different places* — miss one and you miss the review:
+1. **Wait for the first full CI run to complete** on the head SHA:
    ```bash
-   gh pr view <N> -R AtlasDevHQ/atlas --json reviews,latestReviews,headRefOid,body
-   gh api repos/AtlasDevHQ/atlas/issues/<N>/comments   # bot summaries (Macroscope, …) post here
-   gh api repos/AtlasDevHQ/atlas/pulls/<N>/comments     # inline review threads
+   gh pr checks <N> -R AtlasDevHQ/atlas --watch
    ```
-   ⚠️ Some bots edit their summary **into the PR body** between markers (Greptile: `<!-- greptile_comment -->`) — `reviews`/`comments` both miss it; only `--json body` catches it. Ignore your own (author) output and stale verdicts on superseded SHAs — only the latest per reviewer on the head SHA counts; a flag may already be fixed by a later commit, so reconcile against the merged diff, don't assume it's live.
+   A required check that goes red is serviced like a panel finding — fix, `git commit -o <files>`, push (which re-runs CI) → back to (1). `--admin` is only for a genuinely *broken* gate, never a slow one.
 
-   ⚠️ **Don't sweep a review that's still running, and NEVER surface a merge decision while a bot still has "eyes" on the PR.** An in-progress review hasn't reached a verdict — reading it now gets a stale/empty result, and merging *or* asking the human while it's mid-review is exactly the premature call we're avoiding (#3839). Greptile shows its state in the **body block**: 👀 while reviewing, 👍 when done, and a `Last reviewed commit` tag at the bottom naming the SHA it actually reviewed. Greptile has finished the **current head iff that SHA equals `headRefOid`** (a fresh push re-triggers it, so the tag lags — eyes up — until it catches up):
+2. **Once CI is complete, take ONE review snapshot** — reviewer-agnostic, no hardcoded names:
    ```bash
-   HEAD_SHA=$(gh pr view <N> -R AtlasDevHQ/atlas --json headRefOid -q .headRefOid)
-   GREPTILE_SHA=$(gh pr view <N> -R AtlasDevHQ/atlas --json body -q '.body' \
-     | grep -i 'Last reviewed commit' | grep -oE '/commit/[0-9a-f]{40}' | grep -oE '[0-9a-f]{40}' | tail -1)
-   # eyes still up while GREPTILE_SHA != HEAD_SHA (or the block is absent right after a push)
+   bash scripts/pr-review-status.sh <N>
    ```
-   If any review bot is still mid-review on the head SHA, it is **not converged** — wait it out (bounded: poll ~every 30–60s, up to ~10 min), then re-sweep. Do **not** merge and do **not** `AskUserQuestion` while eyes are up. If it still hasn't landed after the bound, proceed advisory and say so in the report — `main` is staging, a late bot review is fixed forward, never a block.
-2. **Categorize each reviewer's latest output:**
-   - **Actionable finding** (a code concern, or a summary flagging real behavior/risk) → treat like a panel finding: fix it, `git commit -o <files>`, push. The push re-triggers the reviewers on the new SHA → **back to step 1.** This is the back-and-forth — iterate until no reviewer has an open actionable finding.
-   - **Ambiguous / architecturally significant fix** → `AskUserQuestion`; don't guess.
-   - **Approvability / "needs human review" / policy sign-off with no code ask** → **acknowledge only.** Quote it in the report. It does **NOT** block the merge and is **NOT** a halt — `main` deploys to staging, not prod (`prod` is `/release`-gated behind a human). Never sit waiting on a human-approval verdict.
-3. **Converged** when, on the head SHA: required CI green, internal panel was clean, **every review bot has actually finished reviewing the head SHA (no lingering "eyes" — e.g. Greptile's `Last reviewed commit` == `headRefOid`),** and every external reviewer is either re-reviewed-clean or carries only an acknowledged non-actionable verdict → **merge.** (A required check that goes red after a push is serviced the same way — fix, `git commit -o`, push, re-sweep — not a new path.)
+   It sweeps every reviewer in all three places (formal reviews + inline threads + known body-blocks like Macroscope/Greptile), compares each against head, and writes the full payloads to `.pr-review/<N>/` (read a specific `inline.json`/`issue.json` entry only when you need a finding's full prose). Its **VERDICT** drives the next move:
+   - **`SETTLED — CI-gated only; no third-party reviewer`** (the common case) → there is nothing to poll. Required CI green + the Step-3 panel clean ⇒ **converged → merge.** Do **not** wait for bots that don't exist. (CI-status issue-comments like the Lighthouse `github-actions[bot]` summary are not a reviewer and don't count.)
+   - **`SETTLED — present, all caught up`** → a reviewer is on the PR and has reviewed head → go to (3).
+   - **`EYES-UP — behind head`** (exit 10) → a bot is mid-review on an older SHA (a fresh push re-triggered it). Do **not** merge and do **not** `AskUserQuestion` while eyes are up (#3839). **Delegate the wait to a subagent** so the poll iterations never land in this thread:
+     > Run `bash scripts/pr-review-status.sh <N>` every ~45s until it no longer exits 10 (EYES-UP clears) or ~10 min elapses; return only the final snapshot — do not paste intermediate runs.
 
-Cap the back-and-forth at **3 reviewer rounds** like the panel; if it won't converge, STOP and ask.
+     Then act on the returned verdict. If the bound elapses still eyes-up, proceed advisory and say so in the report — `main` is staging; a late bot review is fixed forward, never a block.
+
+3. **A reviewer is present — categorize its findings** (only when (2) reported one):
+   - **Actionable** (code concern, or a summary flagging real behavior/risk) → fix it, `git commit -o <files>`, push. The push re-triggers CI and the bot → **back to (1).** Iterate until no reviewer has an open actionable finding.
+   - **Ambiguous / architecturally significant** → `AskUserQuestion`; don't guess.
+   - **Approvability / "needs human review" / policy sign-off with no code ask** → **acknowledge only.** Quote it in the report. It does **NOT** block the merge and is **NOT** a halt — `main` deploys to staging, not prod. Never sit waiting on a human-approval verdict.
+
+**Converged** when, on the head SHA: required CI green, the Step-3 panel was clean, and **either** no external reviewer is present **or** every present reviewer is re-reviewed-clean / carries only an acknowledged non-actionable verdict → **merge.** Cap the reviewer back-and-forth at **3 rounds** like the panel; if it won't converge, STOP and ask.
 
 **HARD HALTS (never autonomous):**
 - **Fork PR** (`isCrossRepository: true`) → STOP, surface provenance, get human sign-off. Never `--admin` past `fork-pr-gate`.

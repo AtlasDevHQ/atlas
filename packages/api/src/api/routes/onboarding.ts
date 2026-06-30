@@ -1009,7 +1009,7 @@ onboarding.openapi(
 
 import { residencyDomainError } from "./shared-residency";
 import { ResidencyError } from "@atlas/api/lib/residency/errors";
-import { buildAvailableRegions } from "@atlas/api/lib/residency/picker";
+import { buildSignupRegions, isRegionSelectable } from "@atlas/api/lib/residency/picker";
 import { RegionPickerItemSchema } from "@useatlas/schemas";
 
 // OnboardingRegionSchema previously duplicated this shape inline; the signup
@@ -1142,12 +1142,44 @@ onboarding.openapi(getRegionsRoute, async (c) => {
     }
 
     try {
-      const defaultRegion = mod.getDefaultRegion();
+      const configDefault = mod.getDefaultRegion();
       const regions = mod.getConfiguredRegions();
+      const apiRegion = getApiRegion();
+      // A set `ATLAS_API_REGION` that names no configured region is an operator
+      // misconfig (a typo'd value never falls back — `getApiRegion()` only
+      // defaults when the var is *empty*). The home-arm collapse can't fire, so
+      // the full selectable set is served — correct on a real prod arm, but on a
+      // deploy whose true home is non-selectable this is the #4131 cross-origin
+      // dead-end. Either way the misconfig should be visible, so surface it as a
+      // named, monitorable event (same event pattern as `onboarding.regions_error`
+      // below, at warn level since the picker still serves a usable set).
+      if (apiRegion && !regions[apiRegion]) {
+        log.warn(
+          { event: "onboarding.region_identity_unknown", requestId, apiRegion, configured: Object.keys(regions) },
+          "ATLAS_API_REGION does not match any configured region — serving the full selectable picker",
+        );
+      }
       // Exclude regions flagged `selectable: false` (e.g. the internal `staging`
       // arm) from the customer-facing picker — they exist for the boot guard +
       // routing only, never as a selectable residency choice for signups (#3948).
-      const availableRegions = buildAvailableRegions(regions, defaultRegion);
+      // Passing this deploy's own region collapses the picker to the home arm
+      // when that arm is itself non-selectable (the api-staging soak deploy claims
+      // `ATLAS_API_REGION=staging` but ships the shared prod config), so staging
+      // signup doesn't POST to the prod edges and dead-end cross-origin (#4131).
+      // `buildSignupRegions` also reports the OFFERED default (the collapsed arm),
+      // not the config default, so the page pre-selects a region that is actually
+      // in the list (the cross-field invariant the signup page relies on).
+      const { defaultRegion, availableRegions } = buildSignupRegions(regions, configDefault, { apiRegion });
+      // Parity breadcrumb: when the config default itself isn't an offerable
+      // region, `buildSignupRegions` promoted a fallback arm so signup still
+      // completes — but the misconfig (a non-selectable/unknown `defaultRegion`)
+      // should be visible, not silently corrected (mirrors the warn above).
+      if (!isRegionSelectable(regions[configDefault])) {
+        log.warn(
+          { event: "onboarding.default_region_unselectable", requestId, configDefault, offered: availableRegions.map((r) => r.id) },
+          "Configured default region is unknown or non-selectable — pre-selecting the first offered region",
+        );
+      }
       return c.json({ configured: true, defaultRegion, availableRegions }, 200);
     } catch (err) {
       if (err instanceof ResidencyError && err.code === "not_configured") {

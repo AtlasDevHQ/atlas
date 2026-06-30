@@ -278,6 +278,13 @@ RESULT: FAIL — 1 of 27 gates failed: test
             stage now, instead of randomly taking down a clean pass.
           </DefItem>
         </DefList>
+        <P>
+          None of it showed up because I went looking for it. It showed up
+          because the cost fix forced me to actually run and read every gate,
+          rather than trust that a green checkmark meant the pipeline was
+          healthy. A command you stop reading is a command you stop knowing
+          the truth about.
+        </P>
 
         <H2>Where it stops</H2>
         <P>

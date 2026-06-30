@@ -5,6 +5,7 @@ import { Nav } from "../../../components/nav";
 import {
   Article,
   BackToBlog,
+  CodeBlock,
   DefItem,
   DefList,
   H2,
@@ -164,11 +165,73 @@ export default function ThePriceOfCi() {
           if a gate actually fails.
         </P>
 
+        <P>
+          Here&apos;s the same run, both ways — real output, captured from one
+          actual <InlineCode>/ci</InlineCode> pass.
+        </P>
+        <CodeBlock title="before — the test gate alone, one of 16 separate streams">{`$ bun run test:api && bun run test:others
+$ bun run --filter '@atlas/api' test
+@atlas/api test: Running 745 test files (concurrency: 32)
+@atlas/api test:
+@atlas/api test:   PASS  src/__tests__/test-isolated-retry.test.ts  (122ms)
+@atlas/api test:   PASS  src/api/__tests__/admin-marketplace.test.ts  (425ms)
+@atlas/api test:   PASS  src/__tests__/demo-capture.test.ts  (977ms)
+@atlas/api test:   PASS  src/api/__tests__/admin-last-admin-pg.test.ts  (1646ms)
+@atlas/api test:   PASS  src/api/__tests__/admin-compliance.test.ts  (1706ms)
+  … 925 more lines just like this, every PASS spelled out …
+@atlas/api test:   FAIL  src/lib/tools/__tests__/explore-backend.test.ts  (1905ms)
+@atlas/api test:   FAIL  src/lib/tools/__tests__/python.test.ts  (8091ms)
+@atlas/api test:   FAIL  src/lib/tools/__tests__/explore-workspace-override.test.ts  (10266ms)
+@atlas/api test:
+@atlas/api test: ────────────────────────────────────────────────────────────
+@atlas/api test:   Files: 745  |  Passed: 742  |  Failed: 3  |  Time: 1161993ms
+@atlas/api test: ────────────────────────────────────────────────────────────
+error: script "test:api" exited with code 1
+error: script "test" exited with code 1
+944 lines, this gate alone — and 15 more gates streamed in just like it.`}</CodeBlock>
+        <CodeBlock title="after — scripts/ci-local.sh, all 27 gates">{`Atlas local CI — mirrors the required \`ci\` gate. Logs: .ci-local/<gate>.log
+
+GATE                         RESULT   TIME
+------------------------------------------------
+type                         PASS      18s
+lint                         PASS      23s
+syncpack                     PASS       0s
+dockerfile-bun-pins          PASS       8s
+dockerfile-workspace         PASS       0s
+railway-watch                PASS       1s
+template-drift               PASS       4s
+security-headers-drift       PASS       0s
+pricing-parity               PASS       1s
+plugin-count                 PASS       1s
+enforcement-parity           PASS       0s
+schema-drift                 PASS       1s
+migration-rename             PASS       1s
+oauth-helper-drift           PASS       1s
+ee-imports                   PASS       0s
+twenty-resolver              PASS       0s
+no-admin-plugin              PASS       0s
+no-legacy-connections        PASS       0s
+test-discipline              PASS       5s
+settings-readers             PASS       3s
+saas-env-doc                 PASS       1s
+auth-md-parity               PASS       0s
+openapi-drift                PASS       3s
+gate-fixtures                PASS      33s
+published-symbols            PASS       2s
+unpublished-versions         PASS       1s
+test                         FAIL      58s
+------------------------------------------------
+RESULT: FAIL — 1 of 27 gates failed: test
+
+▼ test  (.ci-local/test.log — last 40 lines)
+    (same WSL2 sandbox flakes as above — explore-backend, python,
+    explore-workspace-override — not regressions)`}</CodeBlock>
+
         <StatStrip
           items={[
             { value: "97%", label: "less output per run" },
-            { value: "26", label: "gates, one report" },
-            { value: "10", label: "new gates closing drift" },
+            { value: "27", label: "gates, one report" },
+            { value: "11", label: "new gates closing drift" },
           ]}
         />
         <P>
@@ -195,7 +258,7 @@ export default function ThePriceOfCi() {
         </P>
         <DefList>
           <DefItem term="Drift closed">
-            Real CI was already running 10 gates the local command had
+            Real CI was already running 11 gates the local command had
             quietly never picked up — checks that catch a Dockerfile
             drifting from the workspace it&apos;s built from, enterprise-only
             code leaking into the open-source core, a published package

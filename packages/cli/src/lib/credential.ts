@@ -27,11 +27,25 @@ export type CliCredential =
  * `Authorization: Bearer` for a device-flow session. The XOR type guarantees
  * exactly one branch applies — there is no "both/neither" runtime ambiguity to
  * defend against.
+ *
+ * Also sends `X-Atlas-Mode: developer` on every request (#4126). The CLI is
+ * itself a "developer" surface — distinct from the published end-user `/chat`
+ * — so an admin operating it should see and query their OWN just-created
+ * drafts (`atlas datasource create`/`profile` land as drafts, ADR per
+ * `docs/development/content-mode.md`) without first publishing, exactly as
+ * the admin console's developer-mode toggle already lets them. This is safe
+ * to send unconditionally: `resolveMode` (`api/routes/middleware.ts`)
+ * downgrades the request back to `published` server-side for any non-admin
+ * role, so a member-floor credential gets no extra visibility — only the
+ * admin-gated datasource ops this header actually matters for see any effect.
  */
 export function credentialHeaders(credential: CliCredential): Record<string, string> {
-  return credential.apiKey
-    ? { "x-api-key": credential.apiKey }
-    : { Authorization: `Bearer ${credential.token}` };
+  return {
+    ...(credential.apiKey
+      ? { "x-api-key": credential.apiKey }
+      : { Authorization: `Bearer ${credential.token}` }),
+    "X-Atlas-Mode": "developer",
+  };
 }
 
 /**

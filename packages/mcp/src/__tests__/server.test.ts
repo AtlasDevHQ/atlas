@@ -81,6 +81,7 @@ describe("MCP server integration", () => {
       "listEntities",
       "list_datasources",
       "profile_datasource",
+      "publish_datasources",
       "restore_datasource",
       "runMetric",
       "searchGlossary",

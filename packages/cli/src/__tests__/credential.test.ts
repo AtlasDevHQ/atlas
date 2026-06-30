@@ -19,13 +19,24 @@ import {
 
 describe("credentialHeaders", () => {
   it("sends a session token on Authorization: Bearer", () => {
-    expect(credentialHeaders({ token: "sess_abc" })).toEqual({ Authorization: "Bearer sess_abc" });
+    expect(credentialHeaders({ token: "sess_abc" })).toEqual({
+      Authorization: "Bearer sess_abc",
+      "X-Atlas-Mode": "developer",
+    });
   });
 
   it("sends a workspace key on x-api-key (never Authorization)", () => {
     const headers = credentialHeaders({ apiKey: "atlas_wk_abc" });
-    expect(headers).toEqual({ "x-api-key": "atlas_wk_abc" });
+    expect(headers).toEqual({ "x-api-key": "atlas_wk_abc", "X-Atlas-Mode": "developer" });
     expect(headers.Authorization).toBeUndefined();
+  });
+
+  // #4126 — the CLI always requests developer mode so an admin sees/queries
+  // their own just-created drafts; the server downgrades non-admins back to
+  // published, so this is safe to send unconditionally for either credential.
+  it("always requests developer mode regardless of credential kind", () => {
+    expect(credentialHeaders({ token: "sess_abc" })["X-Atlas-Mode"]).toBe("developer");
+    expect(credentialHeaders({ apiKey: "atlas_wk_abc" })["X-Atlas-Mode"]).toBe("developer");
   });
 });
 

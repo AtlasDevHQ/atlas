@@ -4,15 +4,20 @@
  * This module owns EVERY datasource MCP tool. The Phase-1 lifecycle tools
  * land here first:
  *
- *   - `list_datasources`    — read; configured datasources, credential-free
- *   - `test_datasource`     — read; connection health-check
- *   - `archive_datasource`  — mutate (reversible); soft-archive an install
- *   - `restore_datasource`  — mutate (reversible); un-archive an install
- *   - `delete_datasource`   — mutate (DESTRUCTIVE); hard-delete, approval-gated
+ *   - `list_datasources`     — read; configured datasources, credential-free
+ *   - `test_datasource`      — read; connection health-check
+ *   - `archive_datasource`   — mutate (reversible); soft-archive an install
+ *   - `restore_datasource`   — mutate (reversible); un-archive an install
+ *   - `delete_datasource`    — mutate (DESTRUCTIVE); hard-delete, approval-gated
  *
  * (The Phase-2 provisioning/profiling tools — `create_datasource` #3511 /
  * `profile_datasource` #3512 — register here too once Session A's
  * elicitation #3499 + progress/cancel #3500 seams merge.)
+ *
+ *   - `publish_datasources`  — mutate; atomically promotes EVERY pending
+ *     draft in the workspace (#4126 — the CLI/MCP-native path to the same
+ *     promotion the admin console's "Publish" button and `POST
+ *     /api/v1/admin/publish` run; not per-datasource, no `id` argument).
  *
  * ── Lib-layer only (no loopback HTTP) ─────────────────────────────────
  * Every tool calls the lib seam in `@atlas/api/lib/datasources/mcp-lifecycle`,
@@ -891,7 +896,7 @@ export function registerDatasourceTools(
               ? {
                   persisted_status: "draft",
                   publish_hint:
-                    "Generated entities are saved as drafts. Run the admin publish flow to make them queryable from the published /chat surface; they are queryable now in developer mode.",
+                    "Generated entities are saved as drafts — already queryable via list_datasources/test_datasource (developer mode). Call publish_datasources to also make them queryable from the published /chat surface.",
                 }
               : {}),
             entities_generated: r.entities.length,
@@ -914,6 +919,37 @@ export function registerDatasourceTools(
               ? { incomplete_tables: r.errors.map((e) => e.table) }
               : {}),
             elapsed_ms: r.elapsedMs,
+          });
+        },
+      ),
+  );
+
+  // --- publish_datasources (mutate; promotes EVERY pending workspace draft) ---
+  server.registerTool(
+    "publish_datasources",
+    {
+      title: "Publish Datasources",
+      description: withErrorContract(PUBLISH_DATASOURCES_DESCRIPTION, DATASOURCE_WRITE_ERROR_CODES),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: {},
+    },
+    async (): Promise<CallToolResult> =>
+      dispatch(
+        "publish_datasources",
+        {
+          checksBilling: true,
+          requiresWrite: true,
+          requiresBoundOrg: true,
+          minRole: DATASOURCE_MIN_ROLE,
+          actionCategory: "datasource",
+        },
+        async () => {
+          const orgId = boundOrg();
+          const result = await (await lifecycle()).publishWorkspaceDrafts(orgId);
+          return toJsonContent({
+            published: true,
+            promoted: result.promoted,
+            deleted_entities: result.deletedEntities,
           });
         },
       ),
@@ -992,7 +1028,7 @@ const TEST_DATASOURCE_DESCRIPTION = `Run a connection health-check (a \`SELECT 1
 
 const ARCHIVE_DATASOURCE_DESCRIPTION = `Archive (soft-disable) a datasource: its pool is drained and it stops being queryable, but the configuration is retained so it can be restored. Reversible via restore_datasource. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example response: \`{ "id": "prod-us", "status": "archived", "archived": true }\`.`;
 
-const RESTORE_DATASOURCE_DESCRIPTION = `Restore (un-archive) a previously archived datasource. The connection is revived as a \`draft\` (same as a freshly-created datasource) so an admin can review it before it becomes queryable via the atomic publish endpoint (\`/api/v1/admin/publish\`). Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example response: \`{ "id": "prod-us", "status": "draft", "restored": true }\`.`;
+const RESTORE_DATASOURCE_DESCRIPTION = `Restore (un-archive) a previously archived datasource. The connection is revived as a \`draft\` (same as a freshly-created datasource) so an admin can review it before it becomes queryable from the published /chat surface — call publish_datasources (or use the admin console) when ready. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example response: \`{ "id": "prod-us", "status": "draft", "restored": true }\`.`;
 
 const DELETE_DATASOURCE_DESCRIPTION = `Permanently delete a datasource — removes the configuration and drains the pool. IRREVERSIBLE (use archive_datasource for a recoverable disable). Destructive: requires the \`mcp:write\` scope and the admin role, and routes through the workspace approval flow when an origin=mcp approval rule requires it (the response then carries \`approval_required: true\` with an \`approval_request_id\` to follow up on). Example call: \`{ "id": "old-staging" }\`. Example success: \`{ "id": "old-staging", "deleted": true }\`.`;
 
@@ -1000,7 +1036,9 @@ const CREATE_DATASOURCE_DESCRIPTION = `Provision a NEW datasource for this works
 
 const CREATE_REST_DATASOURCE_DESCRIPTION = `Provision a NEW generic REST datasource from an OpenAPI 3.x spec for this workspace. You may pass an optional non-secret \`display_name\`; the spec URL, authentication type, and credential are ALL collected via a secure masked prompt to the user — they are never passed as tool arguments and never shared with you. The spec is fetched + validated BEFORE anything is persisted (a failed probe persists nothing). On success the API's operations become available to the agent; it is read-only by default (any write allowlist is configured via the admin console). Use this instead of create_datasource for HTTP/REST APIs (Stripe, GitHub, an internal service); use create_datasource for SQL databases. Requires the \`mcp:write\` scope and the admin role. Example success: \`{ "id": "<install-id>", "created": true, "kind": "rest" }\`.`;
 
-const PROFILE_DATASOURCE_DESCRIPTION = `Profile a datasource (introspect its tables) and generate its semantic layer — entities + the table whitelist — so the agent can query it with executeSQL. Long-running: emits progress per table and is cancellable. Typically run right after create_datasource. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example success: \`{ "id": "prod-us", "queryable": true, "entities_generated": 12, "tables": ["orders", "users"], "elapsed_ms": 1840 }\`.`;
+const PROFILE_DATASOURCE_DESCRIPTION = `Profile a datasource (introspect its tables) and generate its semantic layer — entities + the table whitelist — so the agent can query it with executeSQL. Long-running: emits progress per table and is cancellable. Typically run right after create_datasource; follow up with publish_datasources to make the result queryable from the published /chat surface. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example success: \`{ "id": "prod-us", "queryable": true, "entities_generated": 12, "tables": ["orders", "users"], "elapsed_ms": 1840 }\`.`;
+
+const PUBLISH_DATASOURCES_DESCRIPTION = `Atomically promote EVERY pending draft in this workspace — every datasource, semantic entity, prompt collection, and starter prompt created/edited but not yet live — to published, making them queryable from the published /chat surface. This is the SAME atomic, workspace-wide operation as the admin console's single "Publish" button (NOT a per-datasource action — there is no \`id\` argument, and it is not scoped to one datasource even if you just created or profiled only one). Typically the last step after create_datasource → profile_datasource. A no-op (zero counts) when nothing is pending. Requires the \`mcp:write\` scope and the admin role. Example success: \`{ "published": true, "promoted": { "connections": 1, "entities": 12, "prompts": 0, "starterPrompts": 0 }, "deleted_entities": 0 }\`.`;
 
 // Read tools: not-found surfaces as `unknown_entity`; everything else as
 // `internal_error`. RBAC denial (gate 3) surfaces as `forbidden`.

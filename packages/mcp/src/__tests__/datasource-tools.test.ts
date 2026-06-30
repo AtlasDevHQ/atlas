@@ -195,6 +195,15 @@ const mockProfileLive = mock<(...a: unknown[]) => Promise<unknown>>(async (...a:
   return profileResult;
 });
 
+// #4126 — publish_datasources' lib call. Default: nothing pending.
+let publishResult: unknown = {
+  promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0 },
+  deletedEntities: 0,
+};
+const mockPublishWorkspaceDrafts = mock<(...a: unknown[]) => Promise<unknown>>(
+  async () => publishResult,
+);
+
 mock.module("@atlas/api/lib/datasources/mcp-lifecycle", () => ({
   listDatasources: mockListDatasources,
   resolveDatasourceCatalogSlug: mockResolveCatalogSlug,
@@ -210,6 +219,7 @@ mock.module("@atlas/api/lib/datasources/mcp-lifecycle", () => ({
   loadProvisionConfigFields: mockLoadConfigFields,
   resolveLiveConnection: mockResolveLiveConnection,
   profileLiveDatasource: mockProfileLive,
+  publishWorkspaceDrafts: mockPublishWorkspaceDrafts,
   MCP_PROVISIONABLE_CATALOG_SLUGS: ["postgres", "mysql"],
 }));
 
@@ -310,6 +320,11 @@ beforeEach(() => {
   mockResolveLiveConnection.mockClear();
   mockProfileLive.mockClear();
   mockElicit.mockClear();
+  mockPublishWorkspaceDrafts.mockClear();
+  publishResult = {
+    promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0 },
+    deletedEntities: 0,
+  };
   gateCalls = [];
   installerCalls = [];
   elicitCalls = [];
@@ -359,7 +374,7 @@ beforeEach(() => {
 // ── Tool registration ─────────────────────────────────────────────────
 
 describe("datasource tools — registration", () => {
-  it("registers all eight lifecycle tools", async () => {
+  it("registers all nine lifecycle tools", async () => {
     const client = await createTestClient();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
@@ -371,6 +386,7 @@ describe("datasource tools — registration", () => {
         "delete_datasource",
         "list_datasources",
         "profile_datasource",
+        "publish_datasources",
         "restore_datasource",
         "test_datasource",
       ].sort(),
@@ -424,12 +440,14 @@ describe("datasource tools — gate requirements", () => {
     await client.callTool({ name: "delete_datasource", arguments: { id: "prod-us" } });
     await client.callTool({ name: "create_datasource", arguments: { db_type: "postgres", install_id: "new-pg" } });
     await client.callTool({ name: "profile_datasource", arguments: { id: "prod-us" } });
+    await client.callTool({ name: "publish_datasources", arguments: {} });
     for (const tool of [
       "archive_datasource",
       "restore_datasource",
       "delete_datasource",
       "create_datasource",
       "profile_datasource",
+      "publish_datasources",
     ]) {
       expect(gateCallFor(tool)?.reqs.actionCategory).toBe("datasource");
     }
@@ -552,6 +570,7 @@ describe("datasource tools declare gate-0 billing (#3601)", () => {
     ["profile_datasource", { id: "prod-us" }],
     ["create_datasource", { db_type: "postgres", install_id: "new-pg" }],
     ["create_rest_datasource", {}],
+    ["publish_datasources", {}],
   ];
   for (const [tool, args] of cases) {
     it(`${tool} passes checksBilling:true so gate-0 enforces workspace solvency`, async () => {
@@ -582,6 +601,7 @@ describe("native requiresWrite agrees with the shared mcpToolMutates predicate (
     create_datasource: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     create_rest_datasource: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     profile_datasource: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    publish_datasources: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   };
   const args: Record<string, Record<string, unknown>> = {
     list_datasources: {},
@@ -592,6 +612,7 @@ describe("native requiresWrite agrees with the shared mcpToolMutates predicate (
     profile_datasource: { id: "prod-us" },
     create_datasource: { db_type: "postgres", install_id: "new-pg" },
     create_rest_datasource: {},
+    publish_datasources: {},
   };
   for (const [tool, annotations] of Object.entries(annotationsByTool)) {
     it(`${tool}: requiresWrite === mcpToolMutates(annotations)`, async () => {
@@ -660,6 +681,7 @@ describe("no bound workspace → mutations refused (consistency with gate orgId)
       ["create_datasource", { db_type: "postgres", install_id: "new-pg" }],
       ["create_rest_datasource", {}],
       ["profile_datasource", { id: "prod-us" }],
+      ["publish_datasources", {}],
     ] as const;
     for (const [tool, args] of mutating) {
       const res = await client.callTool({ name: tool, arguments: args });
@@ -812,6 +834,40 @@ describe("restore_datasource", () => {
     // (The response body reflects whatever the installer returns — the critical
     // assertion is the CALL args above, not the response status string, because
     // the mock installer is free to return any status for test purposes.)
+  });
+});
+
+describe("publish_datasources (#4126)", () => {
+  it("calls the lib seam with the bound org and shapes the promoted/deleted counts", async () => {
+    publishResult = {
+      promoted: { connections: 1, entities: 3, prompts: 0, starterPrompts: 0 },
+      deletedEntities: 1,
+    };
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "publish_datasources", arguments: {} });
+    expect(mockPublishWorkspaceDrafts).toHaveBeenCalledWith("org_ds");
+    const body = JSON.parse(getContentText(res.content));
+    expect(body).toEqual({
+      published: true,
+      promoted: { connections: 1, entities: 3, prompts: 0, starterPrompts: 0 },
+      deleted_entities: 1,
+    });
+  });
+
+  it("is a clean no-op (zero counts) when nothing is pending", async () => {
+    const client = await createTestClient();
+    const res = await client.callTool({ name: "publish_datasources", arguments: {} });
+    const body = JSON.parse(getContentText(res.content));
+    expect(body.promoted).toEqual({ connections: 0, entities: 0, prompts: 0, starterPrompts: 0 });
+    expect(body.deleted_entities).toBe(0);
+  });
+
+  it("requires a bound workspace — refused before the lib call", async () => {
+    const NO_ORG_ACTOR = createAtlasUser("u_noorg2", "managed", "noorg2@test", { role: "admin" });
+    const client = await createTestClient(NO_ORG_ACTOR);
+    const res = await client.callTool({ name: "publish_datasources", arguments: {} });
+    expect(parseAtlasMcpToolError(getContentText(res.content))?.code).toBe("forbidden");
+    expect(mockPublishWorkspaceDrafts).not.toHaveBeenCalled();
   });
 });
 

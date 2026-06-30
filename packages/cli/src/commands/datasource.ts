@@ -39,6 +39,7 @@ import {
   getDatasource,
   listDatasources,
   profileDatasource,
+  publishDatasources,
   restoreDatasource,
   testDatasource,
   type CreateDatasourceMetadata,
@@ -57,11 +58,12 @@ const USAGE = `Manage the datasources of your logged-in workspace.
 Usage: atlas datasource <command> [id] [options]
 
 Commands:
-  list                List the workspace's datasources
+  list                List the workspace's datasources (including your own drafts)
   get <id>            Show one datasource's detail
   test <id>           Health-check a datasource connection
   create <id>         Provision a new datasource (secret captured on stdin)
   profile <id>        Profile a datasource & generate its semantic layer (drafts)
+  publish [id]        Publish every pending draft in the workspace (atomic, not per-id)
   archive <id>        Archive a datasource (reversible via restore)
   restore <id>        Restore an archived datasource
   delete <id>         Delete a datasource (soft — recoverable via restore)
@@ -83,18 +85,25 @@ no env var defers datasource creation to the dashboard or MCP.
 Every datasource command requires the workspace admin role (admin/owner); a
 non-admin member is denied with an actionable message.
 \`profile\` is long-running: it streams per-table progress and is cancellable
-(Ctrl-C). Generated entities land as DRAFTS — publish them from the admin console.
+(Ctrl-C). Generated entities land as DRAFTS — this CLI runs in developer mode,
+so they're already visible to \`list\`/\`test\`/\`sql\`/\`metric run\` (marked
+\`draft\`); run \`atlas datasource publish\` to also make them queryable from
+the published /chat surface.
 
 Authentication: \`atlas login\` for interactive use (ambient session reuse — no
 key needed), OR a workspace API key via --api-key / ATLAS_API_KEY for unattended
 CI. Set ATLAS_API_URL to target a non-local API.`;
 
-/** The id-taking lifecycle subcommands (everything except `list` and `create`). */
+/** The id-taking lifecycle subcommands (everything except `list`, `create`, and `publish`). */
 const ID_SUBCOMMANDS = ["get", "test", "profile", "archive", "restore", "delete"] as const;
 type IdSubcommand = (typeof ID_SUBCOMMANDS)[number];
 
-/** Every datasource subcommand. `create` takes an id positional plus option flags. */
-const DATASOURCE_SUBCOMMANDS = ["list", "create", ...ID_SUBCOMMANDS] as const;
+/**
+ * Every datasource subcommand. `create` takes an id positional plus option
+ * flags; `publish` takes an OPTIONAL id (purely for confirmation messaging —
+ * the underlying endpoint is workspace-wide, see {@link runPublish}).
+ */
+const DATASOURCE_SUBCOMMANDS = ["list", "create", "publish", ...ID_SUBCOMMANDS] as const;
 type DatasourceSubcommand = (typeof DATASOURCE_SUBCOMMANDS)[number];
 
 function isDatasourceSubcommand(value: string): value is DatasourceSubcommand {
@@ -252,8 +261,8 @@ function renderProfileResult(io: DatasourceIO, result: ProfileResult): void {
       ` and ${result.metricsGenerated} metrics as ${status}.`,
   );
   if (result.persisted) {
-    io.out("  Generated entities are saved as drafts — publish them from the admin console to make");
-    io.out("  them queryable from the published /chat surface (they are queryable now in developer mode).");
+    io.out("  Generated entities are saved as drafts — already queryable from this CLI (it runs in");
+    io.out("  developer mode). Run `atlas datasource publish` to also make them queryable from /chat.");
   }
   if (result.incomplete) {
     const failed = result.incompleteTables ?? [];
@@ -311,6 +320,12 @@ export async function runDatasource(
   // id-subcommand path so its distinct argument shape and secret capture apply.
   if (subcommand === "create") {
     return runCreate(args, opts, json, deps, io);
+  }
+
+  // `publish` takes an OPTIONAL id (see runPublish) — handled before the
+  // id-required branch below so it isn't forced through that requirement.
+  if (subcommand === "publish") {
+    return runPublish(args, opts, json, io);
   }
 
   // Lifecycle subcommands other than `list` require a datasource id.
@@ -546,9 +561,56 @@ async function runCreate(
       const maskedUrl = typeof result.maskedUrl === "string" ? result.maskedUrl : "";
       io.out(`Created datasource "${id}"${dbType ? ` (${dbType})` : ""} from ${captured.source}.`);
       if (maskedUrl.length > 0) io.out(`  URL: ${maskedUrl}`);
-      io.out(`  It landed as a draft — publish it in the Atlas console (or it stays dev-only).`);
+      io.out(`  It landed as a draft — already visible to this CLI. Run \`atlas datasource publish\` to`);
+      io.out(`  also make it queryable from the published /chat surface.`);
       io.out(`  Health-check it with: atlas datasource test ${id}`);
     }
+    return 0;
+  } catch (err) {
+    return handleError(err, io);
+  }
+}
+
+/**
+ * `atlas datasource publish [id]` — promote every pending draft in the
+ * workspace (#4126). The `id` positional is OPTIONAL and purely cosmetic: it
+ * tailors the confirmation line, but `POST /api/v1/admin/publish` is atomic
+ * and workspace-wide (the same endpoint backs the admin console's single
+ * "Publish" button) — there is no per-id selective publish to call instead.
+ */
+async function runPublish(
+  args: string[],
+  opts: DatasourceClientOptions,
+  json: boolean,
+  io: DatasourceIO,
+): Promise<number> {
+  const id = positionalId(args);
+  try {
+    const result = await publishDatasources(opts);
+    if (json) {
+      io.out(JSON.stringify(result, null, 2));
+      return 0;
+    }
+    const promoted = asRecord(result.promoted);
+    const counts = {
+      connections: typeof promoted.connections === "number" ? promoted.connections : 0,
+      entities: typeof promoted.entities === "number" ? promoted.entities : 0,
+      prompts: typeof promoted.prompts === "number" ? promoted.prompts : 0,
+      starterPrompts: typeof promoted.starterPrompts === "number" ? promoted.starterPrompts : 0,
+    };
+    const total = counts.connections + counts.entities + counts.prompts + counts.starterPrompts;
+    if (total === 0) {
+      io.out("Nothing to publish — no pending drafts in this workspace.");
+      return 0;
+    }
+    io.out(
+      `Published ${counts.connections} datasource${counts.connections === 1 ? "" : "s"}, ` +
+        `${counts.entities} entit${counts.entities === 1 ? "y" : "ies"}, ${counts.prompts} prompt ` +
+        `collection${counts.prompts === 1 ? "" : "s"}, and ${counts.starterPrompts} starter ` +
+        `prompt${counts.starterPrompts === 1 ? "" : "s"}.`,
+    );
+    io.out("  This is atomic and workspace-wide — every pending draft just went live, not only");
+    io.out(`  ${id ? `"${id}"` : "the datasource you may have had in mind"}.`);
     return 0;
   } catch (err) {
     return handleError(err, io);

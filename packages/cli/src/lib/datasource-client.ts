@@ -407,6 +407,28 @@ export async function deleteDatasource(
   );
 }
 
+/**
+ * POST /api/v1/admin/publish — promote every pending draft in the workspace
+ * (#4126). The endpoint is atomic and workspace-wide — there is no per-id
+ * selective publish (the same endpoint backs the admin console's single
+ * "Publish" button), so this promotes every pending connection, entity,
+ * prompt collection, and starter-prompt draft, not just one datasource. No
+ * `archiveConnections` is sent — that admin-console-only demo→BYOC swap is
+ * out of scope for the CLI's create→profile→publish loop.
+ */
+export async function publishDatasources(
+  opts: DatasourceClientOptions,
+): Promise<Record<string, unknown>> {
+  return asRecord(
+    await request(opts, {
+      method: "POST",
+      path: "/api/v1/admin/publish",
+      body: {},
+      operation: "publish datasources",
+    }),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // profile — POST /api/v1/datasources/{id}/profile (#4052)
 //

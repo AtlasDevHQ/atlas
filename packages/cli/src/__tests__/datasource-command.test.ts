@@ -225,6 +225,22 @@ describe("runDatasource — list (#4044)", () => {
     expect(parsed.workspaceId).toBe("org-1");
     expect(parsed.datasources[0].id).toBe("prod-us");
   });
+
+  // #4126 — the CLI requests developer mode (credentialHeaders), so a
+  // just-created draft is now returned by the server instead of being
+  // filtered out; this pins that it renders with its draft status visible
+  // rather than the prior "Workspace has no datasources" empty state.
+  it("renders a just-created draft, clearly marked, instead of hiding it", async () => {
+    const { fetchImpl } = stubFetch(200, {
+      connections: [{ id: "fresh-pg", dbType: "postgres", status: "draft", groupId: null }],
+    });
+    const { io, out } = capture();
+    const code = await runDatasource(["datasource", "list"], deps(fetchImpl), io);
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain("fresh-pg");
+    expect(text).toContain("draft");
+  });
 });
 
 describe("runDatasource — get/test (#4044)", () => {
@@ -323,6 +339,61 @@ describe("runDatasource — mutations (#4044)", () => {
     const text = err.join("\n");
     expect(text).toContain("admin role");
     expect(text).toContain("atlas login");
+  });
+});
+
+describe("runDatasource — publish (#4126)", () => {
+  it("publishes every pending draft and reports the counts", async () => {
+    const { fetchImpl, calls } = stubFetch(200, {
+      promoted: { connections: 1, entities: 3, prompts: 0, starterPrompts: 0 },
+      deleted: { entities: 0 },
+      archived: { connections: 0, entities: 0, prompts: 0 },
+    });
+    const { io, out } = capture();
+    const code = await runDatasource(["datasource", "publish"], deps(fetchImpl), io);
+    expect(code).toBe(0);
+    expect(calls[0]).toBe("POST http://localhost:3001/api/v1/admin/publish");
+    const text = out.join("\n");
+    expect(text).toContain("Published 1 datasource");
+    expect(text).toContain("3 entities");
+    expect(text).toContain("workspace-wide");
+  });
+
+  it("does not require an id, but echoes it in the confirmation when given", async () => {
+    const { fetchImpl } = stubFetch(200, {
+      promoted: { connections: 1, entities: 0, prompts: 0, starterPrompts: 0 },
+    });
+    const { io, out } = capture();
+    const code = await runDatasource(["datasource", "publish", "fresh-pg"], deps(fetchImpl), io);
+    expect(code).toBe(0);
+    expect(out.join("\n")).toContain('"fresh-pg"');
+  });
+
+  it("reports a clean no-op when there is nothing to publish", async () => {
+    const { fetchImpl } = stubFetch(200, {
+      promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0 },
+    });
+    const { io, out } = capture();
+    const code = await runDatasource(["datasource", "publish"], deps(fetchImpl), io);
+    expect(code).toBe(0);
+    expect(out.join("\n")).toContain("Nothing to publish");
+  });
+
+  it("--json emits the raw publish response", async () => {
+    const body = { promoted: { connections: 1, entities: 0, prompts: 0, starterPrompts: 0 } };
+    const { fetchImpl } = stubFetch(200, body);
+    const { io, out } = capture();
+    const code = await runDatasource(["datasource", "publish", "--json"], deps(fetchImpl), io);
+    expect(code).toBe(0);
+    expect(JSON.parse(out.join("\n"))).toEqual(body);
+  });
+
+  it("a non-admin member is denied with an actionable message", async () => {
+    const { fetchImpl } = stubFetch(403, { error: "forbidden_role", message: "Admin role required." });
+    const { io, err } = capture();
+    const code = await runDatasource(["datasource", "publish"], deps(fetchImpl), io);
+    expect(code).toBe(1);
+    expect(err.join("\n")).toContain("admin role");
   });
 });
 

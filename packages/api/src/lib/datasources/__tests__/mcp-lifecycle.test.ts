@@ -33,9 +33,67 @@ const mockInternalQuery = mock<(...a: unknown[]) => Promise<unknown>>(
 );
 const mockHasInternalDB = mock<() => boolean>(() => true);
 
+// ── Transactional client mock for `publishWorkspaceDrafts` (#4126) ─────
+// `runPublishPhases` is real/unmocked (pure dispatch over `tx.query(...)`),
+// so the simple-table promote SQL needs real `{ rowCount }` responses —
+// mirrors `api/__tests__/admin-publish.test.ts`'s harness for the SAME
+// registry call. The exotic `semantic_entities` adapter is exercised
+// through stubbed `applyTombstones`/`promoteDraftEntities` below instead of
+// real SQL — their own logic is already covered by admin-publish.test.ts.
+interface PublishClientQuery {
+  sql: string;
+  params?: unknown[];
+}
+let publishClientQueries: PublishClientQuery[] = [];
+let publishClientReleased = false;
+let publishClientReleaseArg: unknown;
+let publishQueryHandler: (
+  sql: string,
+  params?: unknown[],
+) => Promise<{ rows: unknown[]; rowCount?: number }> = async () => ({ rows: [] });
+
+function makePublishMockClient() {
+  return {
+    query: async (sql: string, params?: unknown[]) => {
+      publishClientQueries.push({ sql, params });
+      return publishQueryHandler(sql, params);
+    },
+    release: (err?: unknown) => {
+      publishClientReleased = true;
+      publishClientReleaseArg = err;
+    },
+  };
+}
+const mockGetInternalDB = mock(() => ({ connect: async () => makePublishMockClient() }));
+let reconcileCalls: string[] = [];
+let reconcileHandler: (
+  orgId: string,
+) => Promise<{ registered: number; deregistered: number }> = async () => ({
+  registered: 0,
+  deregistered: 0,
+});
+const mockReconcileWorkspaceDatasources = mock(async (orgId: string) => {
+  reconcileCalls.push(orgId);
+  return reconcileHandler(orgId);
+});
+
 mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mockHasInternalDB,
+  getInternalDB: mockGetInternalDB,
+  reconcileWorkspaceDatasources: mockReconcileWorkspaceDatasources,
+}));
+
+// `promoteSemanticEntities` (the exotic content-mode adapter) composes these
+// two real helpers — stub them to canned counts so `publishWorkspaceDrafts`
+// tests assert the publish-phases WIRING without re-proving entities SQL.
+let tombstonesAppliedFixture = 0;
+let entitiesPromotedFixture = 0;
+const mockApplyTombstones = mock(async () => tombstonesAppliedFixture);
+const mockPromoteDraftEntities = mock(async () => entitiesPromotedFixture);
+mock.module("@atlas/api/lib/semantic/entities", () => ({
+  applyTombstones: mockApplyTombstones,
+  promoteDraftEntities: mockPromoteDraftEntities,
 }));
 
 let describeRows: Array<unknown> = [];
@@ -117,6 +175,7 @@ const {
   provisionDatasource,
   resolveLiveConnection,
   loadProvisionConfigFields,
+  publishWorkspaceDrafts,
 } = await import("../mcp-lifecycle.js");
 
 beforeEach(() => {
@@ -133,6 +192,14 @@ beforeEach(() => {
   poolConfigResult = { dbType: "postgres", url: "postgres://u:p@h/db", schema: "public" };
   pluginConnection = undefined;
   mockHasInternalDB.mockReturnValue(true);
+  publishClientQueries = [];
+  publishClientReleased = false;
+  publishClientReleaseArg = undefined;
+  publishQueryHandler = async () => ({ rows: [] });
+  reconcileCalls = [];
+  reconcileHandler = async () => ({ registered: 0, deregistered: 0 });
+  tombstonesAppliedFixture = 0;
+  entitiesPromotedFixture = 0;
 });
 
 describe("listDatasources", () => {
@@ -717,5 +784,67 @@ describe("resolveLiveConnection (#3667)", () => {
       // The configured pool schema surfaces as defaultSchema for the wizard.
       expect(res.defaultSchema).toBe("analytics");
     }
+  });
+});
+
+describe("publishWorkspaceDrafts (#4126)", () => {
+  it("throws when there is no internal database", async () => {
+    mockHasInternalDB.mockReturnValue(false);
+    await expect(publishWorkspaceDrafts("org_1")).rejects.toThrow(/internal database/);
+  });
+
+  it("BEGINs, promotes every simple table + the exotic entities adapter, COMMITs, and shapes the counts", async () => {
+    tombstonesAppliedFixture = 1;
+    entitiesPromotedFixture = 2;
+    publishQueryHandler = async (sql) => {
+      if (/UPDATE\s+workspace_plugins\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
+        return { rows: [], rowCount: 1 };
+      }
+      if (/UPDATE\s+prompt_collections\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (/UPDATE\s+query_suggestions\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
+        return { rows: [], rowCount: 3 };
+      }
+      return { rows: [] };
+    };
+
+    const result = await publishWorkspaceDrafts("org_1");
+
+    expect(result).toEqual({
+      promoted: { connections: 1, entities: 2, prompts: 0, starterPrompts: 3 },
+      deletedEntities: 1,
+    });
+    const sqlLog = publishClientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqlLog[0]).toBe("BEGIN");
+    expect(sqlLog).toContain("COMMIT");
+    expect(sqlLog.indexOf("COMMIT")).toBeGreaterThan(0);
+    expect(publishClientReleased).toBe(true);
+    expect(publishClientReleaseArg).toBeUndefined();
+    // Best-effort hot-register runs post-commit (#3856 parity).
+    expect(reconcileCalls).toEqual(["org_1"]);
+  });
+
+  it("rolls back, rethrows, and skips the reconcile on a phase failure", async () => {
+    publishQueryHandler = async (sql) => {
+      if (/UPDATE\s+workspace_plugins/i.test(sql)) throw new Error("boom");
+      return { rows: [] };
+    };
+
+    await expect(publishWorkspaceDrafts("org_1")).rejects.toThrow();
+
+    const sqlLog = publishClientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqlLog).toContain("ROLLBACK");
+    expect(sqlLog).not.toContain("COMMIT");
+    expect(publishClientReleased).toBe(true);
+    expect(reconcileCalls).toEqual([]);
+  });
+
+  it("a transient post-commit reconcile failure does not fail an already-committed publish", async () => {
+    reconcileHandler = async () => {
+      throw new Error("registry busy");
+    };
+    const result = await publishWorkspaceDrafts("org_1");
+    expect(result.promoted).toEqual({ connections: 0, entities: 0, prompts: 0, starterPrompts: 0 });
   });
 });

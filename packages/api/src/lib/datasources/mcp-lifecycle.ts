@@ -31,7 +31,7 @@ import type { WorkspaceId } from "@useatlas/types";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
 import { connections } from "@atlas/api/lib/db/connection";
 import type { HealthCheckResult, DBType } from "@atlas/api/lib/db/connection";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { getInternalDB, hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import {
   catalogSlugToDbType,
   resolveDatasourcePoolConfig,
@@ -240,6 +240,94 @@ function safeDbType(catalogSlug: string): string {
     // intentionally ignored: an unrecognised slug is non-fatal for a
     // metadata listing — surface a placeholder type, not a 500.
     return "unknown";
+  }
+}
+
+// ── Publish (#4126) ─────────────────────────────────────────────────────
+
+/** Promotion counts returned by {@link publishWorkspaceDrafts}. */
+export interface PublishWorkspaceDraftsResult {
+  readonly promoted: {
+    readonly connections: number;
+    readonly entities: number;
+    readonly prompts: number;
+    readonly starterPrompts: number;
+  };
+  readonly deletedEntities: number;
+}
+
+/**
+ * Atomically promote every pending `draft` (and apply every `draft_delete`
+ * tombstone) for the org — the MCP-native path to the same content-mode
+ * promotion `POST /api/v1/admin/publish` and the admin console's "Publish"
+ * button run (ADR-0016: lib seam, no loopback HTTP — an `origin=mcp` tool
+ * must never proxy its own product's HTTP API).
+ *
+ * Mirrors phases 1–3 of `admin-publish.ts` (tombstones + entity promotion +
+ * connections/prompts/starter-prompts) via the SAME `contentModeRegistry`
+ * the route uses, so the promotion algorithm has exactly one implementation.
+ * Deliberately omits the route's phase-4 `archiveConnections` cascade — the
+ * demo→BYOC swap it powers is an admin-console-only workflow, not part of
+ * the MCP `create_datasource` → `profile_datasource` → publish loop this
+ * serves; add it here if an MCP tool ever needs it.
+ */
+export async function publishWorkspaceDrafts(orgId: string): Promise<PublishWorkspaceDraftsResult> {
+  if (!hasInternalDB()) {
+    throw new Error("Publishing requires an internal database (DATABASE_URL).");
+  }
+
+  const pool = getInternalDB();
+  const client = await pool.connect();
+  let rollbackErr: Error | null = null;
+  try {
+    await client.query("BEGIN");
+    const reports = await Effect.runPromise(
+      contentModeRegistry.runPublishPhases(client as unknown as import("pg").PoolClient, orgId),
+    );
+    await client.query("COMMIT");
+
+    const find = (table: string) => reports.find((r) => r.table === table);
+    const entitiesReport = find("semantic_entities");
+    const result: PublishWorkspaceDraftsResult = {
+      promoted: {
+        // #2744 — the `connections` segment key points at the physical
+        // `workspace_plugins` table; mirrors `admin-publish.ts`.
+        connections: find("workspace_plugins")?.promoted ?? 0,
+        entities: entitiesReport?.promoted ?? 0,
+        prompts: find("prompt_collections")?.promoted ?? 0,
+        starterPrompts: find("query_suggestions")?.promoted ?? 0,
+      },
+      deletedEntities: entitiesReport?.tombstonesApplied ?? 0,
+    };
+
+    // Best-effort hot-register into the live ConnectionRegistry — same
+    // posture as admin-publish.ts (#3856): a transient failure here must
+    // not turn an already-committed publish into an error for the caller.
+    // Lazy import: several test fixtures partial-mock `db/internal` with a
+    // subset of exports, and a top-level import would break those on any
+    // fixture omitting this symbol (same posture as admin-publish.ts).
+    try {
+      const { reconcileWorkspaceDatasources } = await import("@atlas/api/lib/db/internal");
+      await reconcileWorkspaceDatasources(orgId);
+    } catch (reconcileErr) {
+      log.warn(
+        { orgId, err: errorMessage(reconcileErr) },
+        "Publish committed, but reconciling datasources into the ConnectionRegistry failed",
+      );
+    }
+
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch((rbErr: unknown) => {
+      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+      log.warn(
+        { err: rollbackErr.message, orgId },
+        "ROLLBACK failed after publish error — client will be destroyed",
+      );
+    });
+    throw err;
+  } finally {
+    client.release(rollbackErr ?? undefined);
   }
 }
 

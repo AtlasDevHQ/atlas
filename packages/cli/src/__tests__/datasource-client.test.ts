@@ -10,6 +10,7 @@ import {
   deleteDatasource,
   createDatasource,
   profileDatasource,
+  publishDatasources,
   MFA_ENROLLMENT_MESSAGE,
   type DatasourceClientOptions,
   type ProfileTableEvent,
@@ -138,6 +139,19 @@ describe("datasource-client route mapping (#4044)", () => {
     expect(out.success).toBe(true);
     expect(calls[0].method).toBe("DELETE");
     expect(calls[0].url).toBe(`${BASE}/api/v1/admin/connections/prod-us`);
+  });
+
+  it("publish → POST /api/v1/admin/publish with no archiveConnections (#4126)", async () => {
+    const { fetchImpl, calls } = stubFetch(200, {
+      promoted: { connections: 1, entities: 2, prompts: 0, starterPrompts: 0 },
+      deleted: { entities: 0 },
+      archived: { connections: 0, entities: 0, prompts: 0 },
+    });
+    const out = await publishDatasources(opts(fetchImpl));
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].url).toBe(`${BASE}/api/v1/admin/publish`);
+    expect(JSON.parse(calls[0].body!)).toEqual({});
+    expect(out.promoted).toEqual({ connections: 1, entities: 2, prompts: 0, starterPrompts: 0 });
   });
 
   it("create → POST /api/v1/admin/connections with the secret url in the body", async () => {

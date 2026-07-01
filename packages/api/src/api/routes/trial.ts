@@ -8,7 +8,7 @@
  * end, length, expired flag — so every member (and the signup success page)
  * can see it.
  *
- * `endsAt` is the *effective* trial end from `lib/billing/trial-expiry.ts`:
+ * `endsAt` is the *effective* trial end from `lib/billing/trial-state.ts`:
  * `trial_ends_at`, falling back to `createdAt + TRIAL_DAYS` — the same date
  * enforcement uses, so a NULL-trial_ends_at workspace still gets an honest
  * countdown. Reads go through enforcement's workspace cache

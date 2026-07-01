@@ -3,8 +3,9 @@
  *
  * `deriveTrialState` is the single derivation of the two CONTEXT.md axes —
  * metered/full (claim) and expired/solvent (Gate 0) — plus the countdown.
- * The matrix here pins the semantics its four consumers (claim-gate,
- * enforcement, grace reaper, trial-eligibility) rely on; the SQL-fragment
+ * The matrix here pins the semantics its four predicate consumers
+ * (claim-gate, enforcement, grace reaper, trial-eligibility) rely on — the
+ * billing/admin/trial routes and the email engine consume the clock helpers; the SQL-fragment
  * tests pin the load-bearing atoms of the generated "unclaimed trial"
  * clauses so the SQL twin can't lose a guard silently.
  *
@@ -14,12 +15,13 @@
  * page that enforcement uses to cut it off.
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll } from "bun:test";
 import { TRIAL_DAYS, TRIAL_GRACE_HOURS } from "../plans";
 import {
   deriveTrialState,
   effectiveTrialEndsAt,
   fullTrialEndsAtFrom,
+  getOwnerVerification,
   isTrialExpiredAt,
   isTrialTier,
   trialDaysRemaining,
@@ -27,7 +29,7 @@ import {
   unclaimedGraceHorizonFrom,
   unclaimedOwnerExistsSql,
 } from "../trial-state";
-import type { PlanTier } from "@atlas/api/lib/db/internal";
+import { _resetPool, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
@@ -270,5 +272,57 @@ describe("SQL fragments — the SQL twin of the unclaimed-trial predicate", () =
     expect(sql).toContain('u."emailVerified" = false');
     // Set form: EXISTS, not a row-returning join.
     expect(sql).toMatch(/EXISTS\s*\(/);
+  });
+
+  it("rejects a non-static ref — the fragment builders never accept request-shaped input", () => {
+    expect(() => trialTierSql("o; DROP TABLE organization")).toThrow(/static identifier/);
+    expect(() => unclaimedOwnerExistsSql("' OR 1=1")).toThrow(/static identifier/);
+    // The legitimate refs all pass.
+    expect(() => trialTierSql("o")).not.toThrow();
+    expect(() => unclaimedOwnerExistsSql("o.id")).not.toThrow();
+    expect(() => unclaimedOwnerExistsSql("$1")).not.toThrow();
+  });
+});
+
+describe("getOwnerVerification — the row-shape owner read", () => {
+  const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
+  const queries: Array<{ sql: string; params?: unknown[] }> = [];
+
+  function poolReturning(rows: Array<Record<string, unknown>>): InternalPool {
+    return {
+      query: async (sql: string, params?: unknown[]) => {
+        queries.push({ sql, params });
+        return { rows, rowCount: rows.length };
+      },
+    } as unknown as InternalPool;
+  }
+
+  beforeEach(() => {
+    process.env.DATABASE_URL = "postgresql://test/test";
+    queries.length = 0;
+  });
+
+  afterAll(() => {
+    _resetPool(null);
+    if (ORIGINAL_DATABASE_URL === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
+  });
+
+  it("keys on the earliest-created owner (the documented multi-owner tiebreak) and maps the row shape", async () => {
+    _resetPool(poolReturning([{ emailVerified: 1, email: "owner@acme.com" }]));
+
+    const owner = await getOwnerVerification("org-1");
+
+    // The multi-owner tiebreak the docstring promises: earliest membership wins.
+    expect(queries[0].sql).toMatch(/ORDER BY m\."createdAt" ASC/);
+    expect(queries[0].sql).toMatch(/LIMIT 1/);
+    expect(queries[0].params).toEqual(["org-1"]);
+    // Truthy DB value coerced to a real boolean.
+    expect(owner).toEqual({ emailVerified: true, email: "owner@acme.com" });
+  });
+
+  it("returns null when no owner row exists (vacuously claimed upstream)", async () => {
+    _resetPool(poolReturning([]));
+    expect(await getOwnerVerification("org-ownerless")).toBeNull();
   });
 });

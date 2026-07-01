@@ -2,7 +2,7 @@
  * Trial-expiry email engine (#3434).
  *
  * Each scheduler tick scans trial workspaces, computes the *effective*
- * trial end (`lib/billing/trial-expiry.ts` — `trial_ends_at`, falling back
+ * trial end (`lib/billing/trial-state.ts` — `trial_ends_at`, falling back
  * to `createdAt + TRIAL_DAYS`, the same date enforcement cuts the
  * workspace off at), and sends the due T-3d / T-1d / expiry notice to the
  * workspace's owners and admins.

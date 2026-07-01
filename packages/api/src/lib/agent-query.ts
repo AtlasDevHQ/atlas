@@ -150,8 +150,8 @@ export interface ExecuteAgentQueryOptions {
  * **Billing enforcement seam (#3419/#3420, #3651, #4128):** before the
  * agent runs, the bound actor's workspace is checked against
  * {@link checkAgentQueryGates} — Gate 0 (workspace status → abuse status
- * → plan limits) then the metered claim-gate, ordering encoded in the
- * seam per ADR-0018. A blocked workspace throws
+ * → plan limits) then the metered claim-gate (ADR-0018), with the
+ * Gate-0-first ordering encoded in the seam (#4128). A blocked workspace throws
  * {@link BillingBlockedError}, {@link ClaimRequiredError}, or
  * {@link ClaimCheckFailedError} — whose `message`s are user-safe — with
  * ZERO LLM spend. Putting the gate here (rather than per-callsite) means

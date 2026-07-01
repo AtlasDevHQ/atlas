@@ -26,7 +26,7 @@
  * `BillingBlockedError.message` as an in-thread reply, and the
  * scheduler records it on the task run.
  *
- * **80–109% warning band:** never blocks. The gate passes the
+ * **80%→ceiling warning/metered bands (#4038):** never block. The gate passes the
  * `checkPlanLimits` warning through on the allowed arm; callers that
  * render warnings (the web/API surfaces) attach it to their response,
  * while machine-initiated surfaces (chat platforms, scheduler)
@@ -103,7 +103,7 @@ export class BillingBlockedError extends Error {
  * `orgId` is the workspace of the bound actor (undefined when the run
  * has no org — self-hosted, CLI eval tooling — which always allows).
  * Returns the first block encountered, or `{ allowed: true }` with the
- * optional plan-limit warning (80–109% band) passed through.
+ * optional plan-limit warning (80%→ceiling warning/metered bands) passed through.
  */
 export async function checkAgentBillingGate(
   orgId: string | undefined,

@@ -417,7 +417,8 @@ describe("billing routes", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       // mockWorkspace.createdAt = 2026-01-01 → +14d = 2026-01-15. The exact
-      // date enforcement's isTrialExpired fallback computes.
+      // date `trial-state`'s effectiveTrialEndsAt fallback computes (which
+      // enforcement now consumes).
       expect(body.plan.trialEndsAt).toBeNull();
       expect(body.plan.trialEndsAtEffective).toBe("2026-01-15T00:00:00.000Z");
     });

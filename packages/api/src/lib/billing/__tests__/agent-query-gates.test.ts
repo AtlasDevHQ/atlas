@@ -6,8 +6,8 @@
  * block there short-circuits BEFORE the claim check — so an expired trial
  * reports `trial_expired`, never `claim_required` — and both gates ride one
  * door, so a new Atlas-token caller can't get one without the other. Uses
- * the injectable-deps seam (no `mock.module`), matching the claim-gate /
- * reaper test style. The executeAgentQuery-level integration (throws, zero
+ * the injectable-deps seam (no `mock.module`), matching the claim-gate
+ * test style. The executeAgentQuery-level integration (throws, zero
  * agent spend) is pinned separately in
  * `lib/__tests__/agent-query-claim-gate.test.ts` and `agent-query-billing.test.ts`.
  */
@@ -89,6 +89,9 @@ describe("checkAgentQueryGates — Gate-0-before-claim ordering", () => {
     });
 
     expect(result.allowed).toBe(true);
+    if (!result.allowed) throw new Error("unreachable");
+    // No Gate 0 warning → none invented on the way through.
+    expect(result.warning).toBeUndefined();
     expect(checkBilling).toHaveBeenCalledWith("org-claimed");
     expect(checkClaim).toHaveBeenCalledWith("org-claimed");
   });

@@ -21,9 +21,10 @@
  * readers (claim-gate, enforcement, the grace reaper, trial-eligibility),
  * with "unclaimed trial" existing in two shapes — TS in the claim-gate, SQL
  * in the reaper — that could silently drift. The TS form is
- * {@link deriveTrialState}; the SQL form is generated from the same fragments
- * ({@link trialTierSql}, {@link unclaimedOwnerExistsSql}), so a change to one
- * shape is a change to both.
+ * {@link deriveTrialState}; the SQL form is generated from fragments
+ * ({@link trialTierSql}, {@link unclaimedOwnerExistsSql}) colocated with the
+ * TS predicate and pinned against it by `trial-state.test.ts`, so drift is
+ * caught rather than silent.
  */
 
 import type { PlanTier, WorkspaceRow } from "@atlas/api/lib/db/internal";
@@ -48,12 +49,29 @@ export function isTrialTier(tier: PlanTier): boolean {
 }
 
 /**
+ * Guard for the SQL-fragment builders: their argument is interpolated raw
+ * into SQL text, so it must be a static identifier (`o`, `o.id`) or a bind
+ * placeholder (`$1`) written at a call site — never request-derived data.
+ * Throws (rather than sanitizing silently) on anything else, per the
+ * prefer-errors rule; every legitimate ref matches.
+ */
+function assertStaticSqlRef(ref: string): void {
+  if (!/^(\$\d+|[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)?)$/.test(ref)) {
+    throw new Error(
+      `trial-state SQL fragment ref ${JSON.stringify(ref)} is not a static identifier or bind placeholder`,
+    );
+  }
+}
+
+/**
  * SQL twin of {@link isTrialTier} over `alias` (e.g. `trialTierSql("o")` →
  * `o.plan_tier = 'trial'`). Keeping tier membership in one fragment means a
  * future second meterable tier changes the claim-gate, the reaper, and the
- * claim-time clock extension together or not at all.
+ * claim-time clock extension together or not at all. `alias` must be a
+ * static identifier ({@link assertStaticSqlRef}).
  */
 export function trialTierSql(alias: string): string {
+  assertStaticSqlRef(alias);
   return `${alias}.plan_tier = 'trial'`;
 }
 
@@ -116,18 +134,24 @@ export function trialDaysRemaining(
 /**
  * ISO timestamp of the full {@link TRIAL_DAYS} clock end measured from
  * `nowMs` — the `trial_ends_at` a trial carries once its clock has started
- * (web signup at org creation, or MCP signup at claim time).
+ * (web signup at org creation, or MCP signup at claim time). Consumed by
+ * `extendTrialOnClaim`; `assignSaasTrial` and the boot backfill still stamp
+ * the same arithmetic inline — #4127 folded the predicates, not the
+ * stampers.
  */
 export function fullTrialEndsAtFrom(nowMs: number): string {
   return new Date(nowMs + TRIAL_DAYS * MS_PER_DAY).toISOString();
 }
 
 /**
- * ISO timestamp of the unclaimed-grace horizon measured from `nowMs`. A
- * stamped `trial_ends_at` at or below this horizon can only be a
- * {@link TRIAL_GRACE_HOURS} grace window (never a full {@link TRIAL_DAYS}
- * clock) — the guard that makes the claim-time clock extension idempotent
- * (`extendTrialOnClaim`).
+ * ISO timestamp of the unclaimed-grace horizon measured from `nowMs`. In
+ * practice a stamped `trial_ends_at` at or below this horizon is a
+ * {@link TRIAL_GRACE_HOURS} grace window rather than a full
+ * {@link TRIAL_DAYS} clock — the guard that makes the claim-time clock
+ * extension (`extendTrialOnClaim`) idempotent. Not an absolute: a full
+ * clock re-enters the horizon in its final {@link TRIAL_GRACE_HOURS}, so a
+ * re-verification firing there re-extends — an accepted edge, inherited
+ * from the original #3651 guard.
  */
 export function unclaimedGraceHorizonFrom(nowMs: number): string {
   return new Date(nowMs + TRIAL_GRACE_HOURS * MS_PER_HOUR).toISOString();
@@ -151,6 +175,7 @@ export interface OwnerVerification {
  * SQL forms of "the owner" cannot drift.
  */
 function ownerJoinSql(orgRef: string): string {
+  assertStaticSqlRef(orgRef);
   return `FROM member m
         JOIN "user" u ON u.id = m."userId"
        WHERE m."organizationId" = ${orgRef}
@@ -165,7 +190,8 @@ function ownerJoinSql(orgRef: string): string {
  * The set form is deliberately conservative on the rare multi-owner
  * workspace: ANY unverified owner matches, whereas the row lookup keys on the
  * earliest-created owner (the original creator). Both agree on the
- * single-owner case every MCP-provisioned trial actually is.
+ * single-owner case every MCP-provisioned trial actually is. `orgRef` must
+ * be a static identifier or bind placeholder ({@link assertStaticSqlRef}).
  */
 export function unclaimedOwnerExistsSql(orgRef: string): string {
   return `EXISTS (

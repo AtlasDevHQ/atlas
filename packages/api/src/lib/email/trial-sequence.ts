@@ -2,7 +2,7 @@
  * Trial-expiry email sequence definition (#3434).
  *
  * Three billing notices sent to trial-workspace owners/admins relative to
- * the workspace's *effective* trial end (`lib/billing/trial-expiry.ts` —
+ * the workspace's *effective* trial end (`lib/billing/trial-state.ts` —
  * the same date enforcement cuts the workspace off at):
  *
  *   T-3d  → "your trial ends in 3 days"

@@ -81,15 +81,19 @@ export async function reapUnclaimedGraceWorkspaces(
     // guards, in order:
     //   - trial tier (`trial-state`)      — only a live trial can be reaped;
     //     an already-locked/paid row is skipped (idempotent, concurrency-safe).
-    //   - `trial_ends_at < NOW()`         — the grace window has lapsed. A
-    //     within-grace Workspace (future `trial_ends_at`) is left alone.
+    //   - `trial_ends_at IS NOT NULL` + `< NOW()` — a STAMPED grace window has
+    //     lapsed. A within-grace Workspace (future `trial_ends_at`) is left
+    //     alone, and a NULL-clock trial is never reaped (unlike Gate 0's
+    //     `createdAt + TRIAL_DAYS` fallback — the reaper only eats what
+    //     `start_trial` explicitly stamped).
     //   - operator-override guard         — never clobber an active
     //     `plan_override_until` grant (#3427), matching `reconcilePlanTiers`.
     //   - EXISTS unverified owner (`trial-state`) — UNCLAIMED. A claimed trial
     //     (owner `emailVerified = true`) never matches, so it is never touched.
-    // The tier + unclaimed clauses are generated from the same `trial-state`
-    // fragments the TS claim-gate predicate derives from, so the SQL and TS
-    // forms of "unclaimed trial" cannot silently drift (#4127).
+    // The tier + unclaimed clauses are generated from fragments colocated
+    // (and test-pinned, `trial-state.test.ts`) with the TS claim-gate
+    // predicate in `trial-state`, so SQL/TS drift is caught rather than
+    // silent (#4127).
     const reaped = await internalQuery<{ id: string }>(
       `UPDATE organization o
           SET plan_tier = 'locked'

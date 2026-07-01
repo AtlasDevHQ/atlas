@@ -1,9 +1,11 @@
 /**
  * The composed billing seam for Atlas-token agent runs (#4128, ADR-0018).
  *
- * `executeAgentQuery` — the one code path where Atlas's own tokens are spent
- * (web `/api/v1/query`, the chat platforms, the scheduler) — must consult
- * BOTH gates, in an order ADR-0018 calls load-bearing:
+ * `executeAgentQuery` — the single headless Atlas-token path (web
+ * `/api/v1/query`, the chat platforms, the scheduler, and the MCP `query`
+ * NL tool, #4094) — must consult BOTH gates, in the order the #3651
+ * claim-gate seam established and CONTEXT.md records (an expired trial is
+ * blocked by Gate 0 regardless of claim state):
  *
  *   1. **Gate 0** (`checkAgentBillingGate`) — solvency: workspace status,
  *      abuse status, plan limits. Owns `trial_expired` / `locked` /
@@ -15,12 +17,16 @@
  *
  * That order used to be two inline blocks in `executeAgentQuery` with a
  * comment as the only guard: a reorder would have silently let an unclaimed
- * trial spend Atlas tokens before the claim check, and a future 4th
- * Atlas-token caller could have bypassed the claim-gate entirely by not
- * copying the second block. This seam encodes the ordering in the function
- * body — any Atlas-token-spending caller gets both gates or neither.
+ * trial spend Atlas tokens before the claim check, and a future Atlas-token
+ * caller could have bypassed the claim-gate entirely by not copying the
+ * second block. This seam encodes the ordering in the function body — any
+ * headless Atlas-token caller gets both gates or neither.
  *
- * Deliberately NOT used by the Gate-0-only surfaces (the MCP `checksBilling`
+ * Web `/api/v1/chat` also spends Atlas tokens but streams via `runAgent`
+ * directly and runs Gate 0 at the route (#3451) without the claim-gate: a
+ * claim-gateable workspace is one whose owner has no verified credential
+ * yet, so it cannot hold the web session that route requires. Deliberately
+ * NOT used by the Gate-0-only surfaces either (the MCP `checksBilling`
  * tools, `executeSQL`, the setup/metrics routes): those spend no Atlas
  * tokens and must stay open pre-claim — that asymmetry is the point of
  * ADR-0018, and routing them through this seam would close the metered
@@ -41,8 +47,8 @@ import type { PlanLimitWarning } from "./enforcement";
  * `ClaimGateDeps` / `ReapDeps`).
  */
 export interface AgentQueryGatesDeps {
-  checkBillingGate: (orgId: string | undefined) => Promise<AgentBillingGateResult>;
-  checkClaimGate: (orgId: string | undefined) => Promise<ClaimGateResult>;
+  readonly checkBillingGate: (orgId: string | undefined) => Promise<AgentBillingGateResult>;
+  readonly checkClaimGate: (orgId: string | undefined) => Promise<ClaimGateResult>;
 }
 
 export type AgentQueryGatesResult =
@@ -55,7 +61,8 @@ export type AgentQueryGatesResult =
  * Run both gates for an Atlas-token agent run, Gate 0 first. Returns the
  * first block encountered — a solvency failure short-circuits BEFORE the
  * claim check — or `{ allowed: true }` with Gate 0's plan-limit warning
- * (80–99% band) passed through for surfaces that render it.
+ * (the 80%→ceiling warning/metered bands, #4038) passed through for
+ * surfaces that render it.
  *
  * Both underlying gates fail CLOSED on lookup errors (503-shaped blocks),
  * so this seam never converts an indeterminate billing/claim status into a

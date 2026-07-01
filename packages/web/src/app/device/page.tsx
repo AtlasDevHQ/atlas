@@ -5,10 +5,12 @@
  *
  * `atlas login` runs the OAuth 2.0 device flow (RFC 8628): the CLI prints a
  * user code + this page's URL. A signed-in human lands here (the plugin's
- * `verificationUri`), confirms the code, and approves — handing the decision to
- * Better Auth via `authClient.device.approve({ userCode })`. The CLI, polling
- * `/device/token`, then receives a workspace-scoped session bearer stamped
- * `origin='cli'`.
+ * `verificationUri`), confirms the code, and approves. Approving first *claims*
+ * the code for the verifying session (GET `/device` via `authClient.device`) —
+ * Better Auth requires that before it will accept `authClient.device.approve/
+ * deny({ userCode })` (#4167) — then hands the decision to Better Auth. The
+ * CLI, polling `/device/token`, then receives a workspace-scoped session bearer
+ * stamped `origin='cli'`.
  *
  * Not signed in? We bounce to /login carrying a redirect back to this exact
  * URL (the user code rides in the query string), so the user returns here
@@ -66,6 +68,17 @@ function DeviceApproval() {
     setSubmitting(decision);
     setError(null);
     try {
+      // Claim the code for THIS signed-in session first (GET /device via the
+      // base `authClient.device` call). Better Auth's device plugin rejects
+      // approve/deny until a verifying session has claimed the code — without
+      // this the human's first click always errors "Device code has not been
+      // claimed by a verifying session…" (#4167). Claiming and deciding ride
+      // the same session on the same click, so there's no claim/approve race.
+      const claim = await authClient.device?.({ query: { user_code: trimmedCode } });
+      if (claim?.error) {
+        setError(deviceErrorMessage(claim.error));
+        return;
+      }
       const res = await action({ userCode: trimmedCode });
       if (res?.error) {
         setError(deviceErrorMessage(res.error));

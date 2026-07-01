@@ -32,7 +32,18 @@ describe("resolveDeviceVerificationUri (#4167)", () => {
     expect(new URL(uri).pathname).toBe("/device");
   });
 
-  it("falls back to the relative /device when no web origin is configured (single-origin/off-SaaS dev)", () => {
+  it("falls back to the relative /device when no web origin is configured (single-origin embedded deploy)", () => {
     expect(resolveDeviceVerificationUri(null)).toBe("/device");
+  });
+
+  it("owns its no-trailing-slash precondition — never emits //device", () => {
+    // getWebOrigin() strips trailing slashes today, but the module enforces it
+    // itself so a future caller can't reintroduce a double slash.
+    expect(resolveDeviceVerificationUri("https://app.useatlas.dev/")).toBe(
+      "https://app.useatlas.dev/device",
+    );
+    expect(resolveDeviceVerificationUri("https://app.useatlas.dev///")).toBe(
+      "https://app.useatlas.dev/device",
+    );
   });
 });

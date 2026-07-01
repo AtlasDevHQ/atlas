@@ -115,6 +115,9 @@ describe("DevicePage — claim before approve (#4167)", () => {
       expect(deviceDenyMock).toHaveBeenCalledTimes(1);
     });
     expect(callLog).toEqual(["claim", "deny"]);
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Request denied");
+    });
   });
 
   test("a failed claim surfaces the error and never calls approve", async () => {
@@ -138,5 +141,47 @@ describe("DevicePage — claim before approve (#4167)", () => {
     // Approve must NOT fire when the claim failed.
     expect(deviceApproveMock).not.toHaveBeenCalled();
     expect(callLog).toEqual(["claim"]);
+  });
+
+  test("a failed claim on Deny surfaces the error and never calls deny (shared submit() path)", async () => {
+    deviceClaimMock.mockImplementation(async () => {
+      callLog.push("claim");
+      return { data: null, error: { error_description: "That code is invalid or has expired." } };
+    });
+
+    render(<DevicePage />);
+    const btn = await screen.findByRole("button", { name: /deny/i });
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("That code is invalid or has expired.");
+    });
+    expect(deviceDenyMock).not.toHaveBeenCalled();
+    expect(callLog).toEqual(["claim"]);
+  });
+
+  test("a THROWN claim routes through catch, surfaces the error, and never approves", async () => {
+    deviceClaimMock.mockImplementation(async () => {
+      callLog.push("claim");
+      throw new TypeError("network down");
+    });
+
+    render(<DevicePage />);
+    const btn = await screen.findByRole("button", { name: /approve/i });
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+
+    await waitFor(() => {
+      // A thrown Error surfaces its .message through deviceErrorMessage — the
+      // catch path shows the real cause, it isn't swallowed.
+      expect(document.body.textContent).toContain("network down");
+    });
+    expect(deviceApproveMock).not.toHaveBeenCalled();
+    expect(callLog).toEqual(["claim"]);
+    // Buttons re-enabled after the throw (finally { setSubmitting(null) }).
+    expect((await screen.findByRole("button", { name: /approve/i })).hasAttribute("disabled")).toBe(false);
   });
 });

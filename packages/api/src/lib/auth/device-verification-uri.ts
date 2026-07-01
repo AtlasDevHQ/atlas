@@ -16,11 +16,20 @@
  * (api.*→app.* swap, #3706), so the device URL stays consistent with the
  * `/claim` URL across regions.
  *
- * When `getWebOrigin()` is null (single-origin / off-SaaS dev, where the API
- * and web app share a host) the relative `/device` still resolves correctly
- * against that shared origin, so we fall back to it — the device flow's browser
- * approval isn't a SaaS-only path.
+ * `getWebOrigin()` is null only when NONE of `ATLAS_CORS_ORIGIN`,
+ * `BETTER_AUTH_TRUSTED_ORIGINS`, or a region resolves — i.e. a genuinely
+ * single-origin embedded deploy (e.g. `nextjs-standalone` with the Hono API
+ * mounted on the web app's own origin), where the relative `/device` resolves
+ * correctly against that shared origin. Note the standard split-port
+ * `bun run dev` (API :3001, web :3000) is NOT that case: it ships
+ * `BETTER_AUTH_TRUSTED_ORIGINS=http://localhost:3000`, so this returns the
+ * absolute `http://localhost:3000/device` there too — the relative fallback is
+ * for embedded single-origin deploys, not "any local dev".
+ *
+ * The `.replace(/\/+$/, "")` makes the module own its own no-trailing-slash
+ * precondition (avoids `//device`) rather than trusting every caller — even
+ * though `getWebOrigin()` already strips trailing slashes today.
  */
 export function resolveDeviceVerificationUri(webOrigin: string | null): string {
-  return webOrigin ? `${webOrigin}/device` : "/device";
+  return webOrigin ? `${webOrigin.replace(/\/+$/, "")}/device` : "/device";
 }

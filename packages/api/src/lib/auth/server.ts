@@ -2818,14 +2818,8 @@ export function buildPlugins() {
     deviceAuthorization({
       // The web page where a signed-in human enters the user code and
       // approves/denies. Lives in packages/web at src/app/device/page.tsx —
-      // the WEB origin. Better Auth resolves a *relative* verificationUri
-      // against its OWN base URL (the API origin), so a bare "/device" would
-      // 404 on `api.<env>.useatlas.dev` (there's no /device route there); the
-      // CLI prints that URL verbatim, dead-ending the human flow (#4167).
-      // resolveDeviceVerificationUri hands the plugin an ABSOLUTE web-app URL
-      // via getWebOrigin() (region/env-aware api.*→app.* swap — the same
-      // source buildClaimUrl uses), falling back to "/device" only off-SaaS
-      // where API and web share an origin.
+      // the WEB origin, so this MUST be absolute or the CLI-printed URL 404s on
+      // the API host (#4167). See `resolveDeviceVerificationUri` for why.
       verificationUri: resolveDeviceVerificationUri(getWebOrigin()),
       // `schema: {}` works around a better-auth 1.6.20 × zod 4.4.3
       // incompatibility: the plugin's options schema declares

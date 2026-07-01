@@ -5,12 +5,11 @@
  *
  * `atlas login` runs the OAuth 2.0 device flow (RFC 8628): the CLI prints a
  * user code + this page's URL. A signed-in human lands here (the plugin's
- * `verificationUri`), confirms the code, and approves. Approving first *claims*
- * the code for the verifying session (GET `/device` via `authClient.device`) —
- * Better Auth requires that before it will accept `authClient.device.approve/
- * deny({ userCode })` (#4167) — then hands the decision to Better Auth. The
- * CLI, polling `/device/token`, then receives a workspace-scoped session bearer
- * stamped `origin='cli'`.
+ * `verificationUri`), confirms the code, then *claims* it (GET `/device` via
+ * `authClient.device`) and submits the decision. Better Auth requires the claim
+ * before it will accept EITHER `authClient.device.approve` or `.deny` (#4167).
+ * The CLI, polling `/device/token`, then receives a workspace-scoped session
+ * bearer stamped `origin='cli'`.
  *
  * Not signed in? We bounce to /login carrying a redirect back to this exact
  * URL (the user code rides in the query string), so the user returns here
@@ -76,6 +75,10 @@ function DeviceApproval() {
       // the same session on the same click, so there's no claim/approve race.
       const claim = await authClient.device?.({ query: { user_code: trimmedCode } });
       if (claim?.error) {
+        // Surfaced to the user below; also keep the raw cause in the console so
+        // a support case for THIS flow (the one #4167 fixes) is reconstructable
+        // when deviceErrorMessage degrades an unexpected shape to its default.
+        console.debug("device code claim failed", claim.error);
         setError(deviceErrorMessage(claim.error));
         return;
       }
@@ -86,6 +89,7 @@ function DeviceApproval() {
       }
       setOutcome(decision === "approve" ? "approved" : "denied");
     } catch (err) {
+      console.debug("device approval threw", err);
       setError(deviceErrorMessage(err));
     } finally {
       setSubmitting(null);

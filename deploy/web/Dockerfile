@@ -84,9 +84,19 @@ ARG NEXT_PUBLIC_ATLAS_AUTH_MODE=managed
 # defeating prod/staging session isolation. Prod keeps the default; web-staging
 # overrides via `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=atlas-staging` as a build arg.
 ARG NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=atlas
+# Cloudflare Turnstile site key for the interactive web signup (#4159). Public
+# (it ships to browsers), but MUST be threaded as a build ARG, not just a runtime
+# service var: `NEXT_PUBLIC_*` is inlined into the client bundle at `next build`
+# time, so a runtime-only value leaves the signup page with no site key baked in
+# — `isTurnstileConfigured()` reads false, the widget never renders, and signup
+# runs ungated. Railway maps the web service's `NEXT_PUBLIC_TURNSTILE_SITE_KEY`
+# var onto this `--build-arg` automatically. Empty default = no widget (correct
+# for self-hosted / any deploy that doesn't set it).
+ARG NEXT_PUBLIC_TURNSTILE_SITE_KEY=
 ENV NEXT_PUBLIC_ATLAS_API_URL=$NEXT_PUBLIC_ATLAS_API_URL
 ENV NEXT_PUBLIC_ATLAS_AUTH_MODE=$NEXT_PUBLIC_ATLAS_AUTH_MODE
 ENV NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=$NEXT_PUBLIC_ATLAS_COOKIE_PREFIX
+ENV NEXT_PUBLIC_TURNSTILE_SITE_KEY=$NEXT_PUBLIC_TURNSTILE_SITE_KEY
 RUN cd packages/web && bun run build
 
 # --- runner ---

@@ -53,6 +53,15 @@ describe("buildCsp", () => {
       "'self' 'unsafe-inline'",
     );
   });
+
+  it("frame-src admits the Cloudflare Turnstile challenge iframe (#4159)", () => {
+    // The signup Turnstile widget renders its challenge in an iframe from
+    // challenges.cloudflare.com; without this host, `frame-src 'self'` blocks it
+    // and the widget never renders (the button stays permanently disabled).
+    const frame = directive(buildCsp(NONCE, "'self'", "prod"), "frame-src")!;
+    expect(frame).toContain("'self'");
+    expect(frame).toContain("https://challenges.cloudflare.com");
+  });
 });
 
 describe("frameAncestorsFor", () => {

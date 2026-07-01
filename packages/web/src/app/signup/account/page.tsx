@@ -21,6 +21,7 @@ import { Separator } from "@/components/ui/separator";
 import { GoogleIcon, GitHubIcon, MicrosoftIcon } from "@/ui/components/social-icons";
 import { SignupShell } from "@/ui/components/signup/signup-shell";
 import { VerifyEmailOTPForm } from "@/ui/components/auth/verify-email-otp-form";
+import { TurnstileWidget, isTurnstileConfigured } from "@/ui/components/auth/turnstile-widget";
 import { Loader2, MailCheck } from "lucide-react";
 
 /**
@@ -44,6 +45,34 @@ import { Loader2, MailCheck } from "lucide-react";
  * survives the region step's hard reload, which wipes React state). No draft
  * means the user deep-linked here — bounce them back to the email step.
  */
+/**
+ * Map a Better Auth captcha-plugin error message to actionable copy (#4159).
+ * The plugin surfaces vendor strings — "Missing CAPTCHA response" (400),
+ * "Captcha verification failed" (403), and the generic "Something went wrong"
+ * (500) — none of which tell a user what to do.
+ *
+ * Gated on `captchaRequired` so we never tell a user to "complete the
+ * challenge again" on a deploy where no widget is on the page: `"Something went
+ * wrong"` is Better Auth's *generic* 500 fallback (not captcha-exclusive), so
+ * on a self-hosted / no-widget deploy it maps to a neutral message instead of
+ * pointing at a nonexistent challenge. Returns `null` for any other error so
+ * business-email / USER_ALREADY_EXISTS messages pass through with their own
+ * meaningful copy.
+ */
+function friendlyCaptchaError(raw: string | undefined, captchaRequired: boolean): string | null {
+  if (!raw) return null;
+  const isGenericServerError = raw === "Something went wrong";
+  if (captchaRequired && (/captcha/i.test(raw) || isGenericServerError)) {
+    return "Bot-protection check failed. Please complete the challenge again and retry.";
+  }
+  // No challenge on the page: never surface the bare generic 500 string, but
+  // don't reference a challenge that isn't there.
+  if (isGenericServerError) {
+    return "Something went wrong on our end. Please try again in a moment.";
+  }
+  return null;
+}
+
 export default function AccountPage() {
   const router = useRouter();
   const ctx = useSignupContext();
@@ -65,6 +94,17 @@ export default function AccountPage() {
   // then dispatch the OTP ourselves (#4010) and hold the email to render the
   // code-entry interstitial instead of navigating.
   const [pendingEmail, setPendingEmail] = useState<string | null>(null);
+  // Cloudflare Turnstile (#4159) — the interactive signup door's proof-of-human,
+  // which moved off the headless MCP `start_trial` door. Required only when a
+  // site key is configured (SaaS). Self-hosted/dev renders no widget; the server
+  // then also runs no captcha plugin, but that alignment is an operator-
+  // discipline assumption (two independent env vars — `NEXT_PUBLIC_TURNSTILE_SITE_KEY`
+  // here, `TURNSTILE_SECRET_KEY` server-side), not a code-enforced invariant. A
+  // secret-set / site-key-unset misconfig surfaces via the captcha error mapping.
+  const captchaRequired = isTurnstileConfigured();
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  // Bumped to remount the widget (fresh one-time token) after a rejected submit.
+  const [captchaNonce, setCaptchaNonce] = useState(0);
 
   // Hydrate the email/invitation from the signup draft. A missing draft means
   // the user landed here directly (no email step) — send them back to start.
@@ -112,17 +152,42 @@ export default function AccountPage() {
     e.preventDefault();
     if (!email || !password) return;
 
+    // Bot-protection (#4159): block submission until the Turnstile challenge is
+    // solved, but only when a site key is configured. The token rides the
+    // `x-captcha-response` header the server's captcha plugin reads.
+    if (captchaRequired && !turnstileToken) {
+      setError("Please complete the bot-protection check below before continuing.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
     try {
-      const res = await authClient.signUp.email({
-        email,
-        password,
-        name: name || email.split("@")[0],
-      });
+      const res = await authClient.signUp.email(
+        {
+          email,
+          password,
+          name: name || email.split("@")[0],
+        },
+        turnstileToken
+          ? { headers: { "x-captcha-response": turnstileToken } }
+          : undefined,
+      );
       if (res.error) {
-        setError(res.error.message ?? "Sign up failed");
+        // Log for client-side telemetry symmetry with the thrown-error and OTP
+        // paths below (the underlying 500 is also logged server-side w/ requestId).
+        console.warn("Signup returned an error:", res.error.message ?? "unknown");
+        // Map the captcha plugin's vendor error strings to actionable copy;
+        // non-captcha errors keep their own meaningful message.
+        setError(friendlyCaptchaError(res.error.message, captchaRequired) ?? res.error.message ?? "Sign up failed");
+        // A rejected submit (including a failed captcha verify) burns the
+        // one-time token — remount the widget so the user gets a fresh
+        // challenge instead of a permanently-stuck button.
+        if (captchaRequired) {
+          setTurnstileToken(null);
+          setCaptchaNonce((n) => n + 1);
+        }
         return;
       }
       // Verification off (self-hosted dev) → token present, navigate straight
@@ -330,6 +395,14 @@ export default function AccountPage() {
                 minLength={8}
               />
             </div>
+            {captchaRequired && (
+              <TurnstileWidget
+                key={captchaNonce}
+                onToken={setTurnstileToken}
+                onError={setError}
+                className="flex justify-center"
+              />
+            )}
             {error && (
               <p role="alert" className="text-sm text-destructive">
                 {error}
@@ -338,7 +411,7 @@ export default function AccountPage() {
             <Button
               type="submit"
               className="w-full"
-              disabled={loading || !password}
+              disabled={loading || !password || (captchaRequired && !turnstileToken)}
             >
               {loading ? "Creating account..." : "Create account"}
             </Button>

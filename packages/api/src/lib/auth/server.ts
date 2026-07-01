@@ -19,6 +19,7 @@ import {
   jwt,
   customSession,
   deviceAuthorization,
+  captcha,
 } from "better-auth/plugins";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { emailOTP } from "better-auth/plugins/email-otp";
@@ -2366,6 +2367,52 @@ function stripPluginUserStripeCustomerIdField(plugin: {
   );
 }
 
+/**
+ * Build the Better Auth Cloudflare Turnstile captcha plugin, scoped to the
+ * interactive email/password sign-up endpoint ONLY (#4159). Returns `null` when
+ * `TURNSTILE_SECRET_KEY` is unset so the caller can skip registration.
+ *
+ * Why gate on the secret rather than deploy mode: the captcha plugin's
+ * `onRequest` middleware throws `MISSING_SECRET_KEY` (→ 500) on any *matched*
+ * request when it has no secret, which would break signup on a self-hosted
+ * deploy that carries no Turnstile secret. On SaaS the `TURNSTILE_SECRET_KEY`
+ * boot guard guarantees the secret, so the plugin is always active there; a
+ * self-hoster who opts into Turnstile by setting the secret also gets it. The
+ * secret's presence IS the switch.
+ *
+ * Scope + exemptions:
+ *  - `endpoints: ["/sign-up/email"]` — sign-in, password-reset, and every other
+ *    auth surface stay ungated. Proof-of-human is a signup-only control (#4159);
+ *    the plugin's default set (`/sign-in/email`, `/request-password-reset`) is
+ *    deliberately overridden so it does NOT gate those.
+ *  - The plugin is an `onRequest` middleware, which fires ONLY through Better
+ *    Auth's HTTP router. In-process `auth.api.signUpEmail()` calls — the MCP
+ *    `provisionTrialWorkspace` seam — bypass `onRequest`, so the headless trial
+ *    door needs no captcha header. That is exactly the #4159 posture: Turnstile
+ *    on the interactive door, never on the headless one.
+ *  - No `expectedAction`/`allowedHostnames`: a successful siteverify alone gates
+ *    the signup. The web widget does tag its token with `action: "signup"`
+ *    (Cloudflare analytics only), but pinning `expectedAction` server-side is
+ *    unnecessary defense-in-depth for a single-purpose signup widget, so we omit
+ *    it — the token's action is not checked here.
+ *
+ * The web signup page must send the token in the `x-captcha-response` header
+ * (the plugin's fixed header name) on `authClient.signUp.email`, and
+ * `NEXT_PUBLIC_TURNSTILE_SITE_KEY` must be available to the web service in every
+ * region.
+ */
+export function buildSignupCaptchaPlugin(
+  env: NodeJS.ProcessEnv,
+): ReturnType<typeof captcha> | null {
+  const secretKey = env.TURNSTILE_SECRET_KEY;
+  if (!secretKey) return null;
+  return captcha({
+    provider: "cloudflare-turnstile",
+    secretKey,
+    endpoints: ["/sign-up/email"],
+  });
+}
+
 export function buildPlugins() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin types are complex union types that vary by plugin combination
   const plugins: any[] = [
@@ -2486,6 +2533,16 @@ export function buildPlugins() {
       },
     }),
   ];
+
+  // Cloudflare Turnstile bot-protection on the interactive email/password
+  // sign-up endpoint ONLY (#4159). Registered when `TURNSTILE_SECRET_KEY` is
+  // set (always true on SaaS via the boot guard). The headless MCP
+  // `start_trial` door is exempt by construction — the plugin is `onRequest`
+  // middleware that fires only through the HTTP router, and the in-process
+  // `provisionTrialWorkspace` → `auth.api.signUpEmail` seam bypasses it. See
+  // `buildSignupCaptchaPlugin` for the full scope/exemption rationale.
+  const signupCaptcha = buildSignupCaptchaPlugin(process.env);
+  if (signupCaptcha) plugins.push(signupCaptcha);
 
   // Email OTP — the only email-verification path Atlas ships. An
   // 8-character one-time code, 10-minute expiry. With

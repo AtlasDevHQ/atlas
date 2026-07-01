@@ -372,15 +372,14 @@ This endpoint speaks the **Streamable HTTP** MCP transport (a single URL handlin
 
 ### start_trial
 
-Provision a new trial workspace and get a connect URL back. The tool collects a **business email**, a **workspace name**, and a **Cloudflare Turnstile token** — supply them as arguments, or let your agent prompt you for the email and workspace name via MCP elicitation:
+Provision a new trial workspace and get a connect URL back. The tool collects a **business email** and a **workspace name** — supply them as arguments, or let your agent prompt you for them via MCP elicitation:
 
 ```
 email: "you@yourcompany.com"
 orgName: "Acme Analytics"
-turnstileToken: "0.abc…"   # REQUIRED — a Turnstile token proving a human triggered the call
 ```
 
-The `turnstileToken` is mandatory: a call without one is rejected with a `validation_failed` envelope, and a token that fails Cloudflare siteverify is rejected with `forbidden`. `start_trial` is also rate-limited per-IP and per-email (defaults 5 / 3 attempts per minute, tunable via `ATLAS_TRIAL_IP_RATE_LIMIT_RPM` / `ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM`); exceeding a limit returns a `rate_limited` envelope carrying `retry_after`.
+That is the whole input — a headless caller needs no browser and no bot-protection token. `start_trial` is rate-limited per-IP and per-email (defaults 5 / 3 attempts per minute, tunable via `ATLAS_TRIAL_IP_RATE_LIMIT_RPM` / `ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM`); exceeding a limit returns a `rate_limited` envelope carrying `retry_after`. Personal/disposable email addresses are rejected (`validation_failed`), and an unclaimed trial is reaped after a short grace window. (Bot-protection lives on the interactive web signup, which a CLI/AI-agent caller can't drive — not on this headless door.)
 
 It returns:
 

@@ -27,7 +27,12 @@ mock.module("next/navigation", () => ({
 }));
 
 type SignUpResult = { data?: { token?: string | null } | null; error?: { message?: string } | null };
-const signUpEmailMock = mock(async (_opts: { email: string; password: string; name: string }): Promise<SignUpResult> => ({
+// 2nd arg is Better Auth's per-call fetchOptions — where the #4159 captcha token
+// rides as the `x-captcha-response` header. Captured so tests can assert it.
+const signUpEmailMock = mock(async (
+  _opts: { email: string; password: string; name: string },
+  _fetchOpts?: { headers?: Record<string, string> },
+): Promise<SignUpResult> => ({
   data: { token: "tok" },
   error: null,
 }));
@@ -77,6 +82,28 @@ mock.module("@/ui/components/auth/verify-email-otp-form", () => ({
   ),
 }));
 
+// Turnstile widget (#4159) — configurable per test. Default OFF so every
+// captcha-less test above runs the self-hosted branch unchanged; the #4159
+// block flips it ON. The stub renders a "solve" button (mints a token via
+// onToken) and a "block" button (fires onError, simulating a blocked Cloudflare
+// script). BOTH exports are stubbed per the mock-all rule.
+let turnstileConfigured = false;
+mock.module("@/ui/components/auth/turnstile-widget", () => ({
+  isTurnstileConfigured: () => turnstileConfigured,
+  TurnstileWidget: ({
+    onToken,
+    onError,
+  }: {
+    onToken: (t: string | null) => void;
+    onError?: (m: string) => void;
+  }) => (
+    <div>
+      <button type="button" onClick={() => onToken("web-turnstile-token")}>solve-captcha</button>
+      <button type="button" onClick={() => onError?.("captcha script blocked")}>block-captcha</button>
+    </div>
+  ),
+}));
+
 // social-providers probe — configurable per test (default none → no buttons).
 let socialProviders: string[] = [];
 const fetchMock = mock(async (): Promise<Response> =>
@@ -104,6 +131,7 @@ beforeEach(() => {
   clearDraftMock.mockReset();
   fetchMock.mockClear();
   socialProviders = [];
+  turnstileConfigured = false;
 });
 
 afterEach(() => {
@@ -341,6 +369,196 @@ describe("AccountPage — create account on the regional client (#3972)", () => 
       expect(screen.getByRole("alert").textContent).toMatch(/unable to reach the server/i);
     });
     expect(navigatePostAuthMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("AccountPage — Turnstile bot-protection on the interactive signup (#4159)", () => {
+  test("with a site key, submit is gated until the challenge is solved, then the token rides as the x-captcha-response header", async () => {
+    turnstileConfigured = true;
+    render(<AccountPage />);
+    await screen.findByText("jane@example.com");
+    fillPassword("hunter2hunter2");
+
+    // No token yet → the Create-account button is disabled and can't sign up.
+    const submitBefore = screen.getByRole("button", { name: /create account/i }) as HTMLButtonElement;
+    expect(submitBefore.disabled).toBe(true);
+    await act(async () => {
+      fireEvent.click(submitBefore);
+    });
+    expect(signUpEmailMock).not.toHaveBeenCalled();
+
+    // Solve the challenge → button enables → submit attaches the token header.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /solve-captcha/i }));
+    });
+    expect(
+      (screen.getByRole("button", { name: /create account/i }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    });
+
+    await waitFor(() => {
+      expect(signUpEmailMock).toHaveBeenCalledTimes(1);
+    });
+    // The one behavior that, if broken, silently 400s every SaaS signup: the
+    // token must ride as the captcha plugin's `x-captcha-response` header.
+    expect(signUpEmailMock.mock.calls[0][1]).toEqual({
+      headers: { "x-captcha-response": "web-turnstile-token" },
+    });
+  });
+
+  test("submitting the form with no token surfaces the bot-protection message and never signs up", async () => {
+    turnstileConfigured = true;
+    render(<AccountPage />);
+    await screen.findByText("jane@example.com");
+    fillPassword("hunter2hunter2");
+
+    // Bypass the disabled button (e.g. Enter-key submit) to exercise the guard.
+    const form = screen.getByRole("button", { name: /create account/i }).closest("form")!;
+    await act(async () => {
+      fireEvent.submit(form);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toMatch(/bot-protection check/i);
+    });
+    expect(signUpEmailMock).not.toHaveBeenCalled();
+  });
+
+  test("a rejected captcha maps the vendor error to actionable copy and remounts a fresh challenge", async () => {
+    turnstileConfigured = true;
+    signUpEmailMock.mockImplementation(async () => ({
+      data: null,
+      error: { message: "Captcha verification failed" },
+    }));
+    render(<AccountPage />);
+    await screen.findByText("jane@example.com");
+    fillPassword("hunter2hunter2");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /solve-captcha/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    });
+
+    await waitFor(() => {
+      // The vendor string is mapped to actionable copy, not surfaced raw.
+      expect(screen.getByRole("alert").textContent).toMatch(/bot-protection check failed/i);
+    });
+    // The one-time token was burned + cleared → the button re-disables until the
+    // remounted widget is solved again (no permanently-stuck button).
+    expect(
+      (screen.getByRole("button", { name: /create account/i }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(navigatePostAuthMock).not.toHaveBeenCalled();
+  });
+
+  test("a blocked Turnstile script surfaces an actionable message via onError (not a silently-disabled button)", async () => {
+    turnstileConfigured = true;
+    render(<AccountPage />);
+    await screen.findByText("jane@example.com");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /block-captcha/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("captcha script blocked");
+    });
+  });
+
+  test("with no site key (self-hosted), signup proceeds and sends NO captcha header", async () => {
+    // turnstileConfigured defaults false → no widget, no gating, no header.
+    render(<AccountPage />);
+    await screen.findByText("jane@example.com");
+    fillPassword("hunter2hunter2");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    });
+
+    await waitFor(() => {
+      expect(signUpEmailMock).toHaveBeenCalledTimes(1);
+    });
+    // No fetchOptions/header when captcha isn't configured.
+    expect(signUpEmailMock.mock.calls[0][1]).toBeUndefined();
+  });
+
+  test("a captcha-required 500 ('Something went wrong') maps to the bot-protection retry copy, not the raw vendor string", async () => {
+    turnstileConfigured = true;
+    // The captcha plugin's UNKNOWN_ERROR (siteverify timeout/outage) surfaces
+    // Better Auth's generic "Something went wrong" — the exact phrasing we never
+    // surface verbatim. With a challenge on the page, retry copy is correct.
+    signUpEmailMock.mockImplementation(async () => ({
+      data: null,
+      error: { message: "Something went wrong" },
+    }));
+    render(<AccountPage />);
+    await screen.findByText("jane@example.com");
+    fillPassword("hunter2hunter2");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /solve-captcha/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toMatch(/bot-protection check failed/i);
+    });
+    expect(screen.getByRole("alert").textContent).not.toContain("Something went wrong");
+  });
+
+  test("with no captcha, a generic 500 maps to a neutral message — never 'complete the challenge' when no challenge is shown", async () => {
+    // turnstileConfigured defaults false → no widget. A genuine non-captcha 500
+    // must NOT tell the user to redo a challenge that isn't on the page.
+    signUpEmailMock.mockImplementation(async () => ({
+      data: null,
+      error: { message: "Something went wrong" },
+    }));
+    render(<AccountPage />);
+    await screen.findByText("jane@example.com");
+    fillPassword("hunter2hunter2");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toMatch(/something went wrong on our end/i);
+    });
+    // Neither the bare vendor string nor a challenge reference.
+    expect(screen.getByRole("alert").textContent).not.toMatch(/challenge/i);
+  });
+
+  test("with captcha on, a NON-captcha error passes through verbatim and still remounts the challenge", async () => {
+    turnstileConfigured = true;
+    signUpEmailMock.mockImplementation(async () => ({
+      data: null,
+      error: { message: "Email already in use" },
+    }));
+    render(<AccountPage />);
+    await screen.findByText("jane@example.com");
+    fillPassword("hunter2hunter2");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /solve-captcha/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    });
+
+    await waitFor(() => {
+      // Non-captcha message is not rewritten.
+      expect(screen.getByRole("alert").textContent).toContain("Email already in use");
+    });
+    // Token still burned + cleared → button re-disables (fresh challenge needed).
+    expect(
+      (screen.getByRole("button", { name: /create account/i }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 });
 

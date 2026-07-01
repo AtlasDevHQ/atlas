@@ -2,7 +2,7 @@
 
 Human-in-the-loop verification that the **two non-web front doors work end-to-end**: a brand-new account is **provisioned through MCP** (`start_trial` → DCR/PKCE connect → a real MCP tool call), the grace account is **claimed**, and then that same account is **driven from the v0.0.35 CLI** (device-flow login → workspace bind → a REST-backed command, plus a workspace **API key** for the unattended path). Together with `/verify-prod-signup` (the web funnel) this covers all three entry points for v0.1.0.
 
-**Build it on staging, then promote to prod.** Staging is the soak environment and relaxes two gates: **`requireEmailVerification: false`** (`lib/env-profile.ts:194`) and **Turnstile runs Cloudflare's always-pass test secret** so any non-empty token string is accepted (verified 2026-06-29 — a garbage token provisioned an account). **Phase A (MCP signup) is fully scriptable on staging.**
+**Build it on staging, then promote to prod.** Staging is the soak environment and relaxes **`requireEmailVerification: false`** (`lib/env-profile.ts:194`). As of **#4159**, `start_trial` takes **only `email` + `orgName`** — there is no Turnstile token on the headless door (bot-protection moved to the interactive *web* signup, which a CLI/agent can't drive). **Phase A (MCP signup) is fully scriptable on staging** and now exercises the *same* input contract as prod. (Turnstile fidelity moved to the *web-signup* slice of #3958: staging should run the real web-signup secret, not the always-pass test secret.)
 
 > ✅ **The whole flow is fully automatable on staging — no browser, no human (verified end-to-end 2026-06-29).** The claim looks walled (an MCP `start_trial` account has a **server-side random throwaway password that's never returned**, the web `/signup` funnel **collides** `422 USER_ALREADY_EXISTS`, `resolve-region` returns `none` for a grace account, and the OTP is **hashed** in the DB) — but staging runs a **real Resend key** and **clamps every recipient to the sink `staging-mail@useatlas.dev`**, and Resend's `GET /emails` list + `GET /emails/{id}` expose the sent OTP body. So the claim is automatable via the **email-OTP sign-in** path: `start_trial` → trigger `send-verification-otp` → read the OTP from the Resend API → `sign-in/email-otp` → **session**. From the session, the real `atlas login` device-flow completes headlessly (claim `GET /api/auth/device?user_code=…` with the session cookie → `device/approve` → `device/token`). See the **Automation recipe** at the bottom for the exact, proven steps. (One caveat: the workspace **API-key mint is MFA-gated** — `mfa_enrollment_required` — so the unattended *API-key* path needs TOTP enrollment; the *session* path needs none.) Prod deltas are enumerated below.
 
@@ -16,7 +16,7 @@ Human-in-the-loop verification that the **two non-web front doors work end-to-en
 
 | Phase | Surface | Auth | Key files |
 |-------|---------|------|-----------|
-| A | **MCP signup** — `start_trial` (anonymous) | Turnstile token only (no-op on staging) | `packages/mcp/src/onboarding.ts`, `ee/src/onboarding/provision-trial.ts` |
+| A | **MCP signup** — `start_trial` (anonymous) | none — `email` + `orgName` only (no token; #4159) | `packages/mcp/src/onboarding.ts`, `ee/src/onboarding/provision-trial.ts` |
 | B | **MCP use** — connect + a real tool call | OAuth 2.1 bearer (DCR + PKCE, `mcp:read`/`mcp:write`) | `packages/mcp/src/hosted.ts`, `packages/api/src/lib/mcp/auth-md.ts` |
 | C | **CLI setup + use** — login, bind, query, API key | Device-flow session **+** workspace API key | `packages/cli/src/commands/*`, `packages/api/src/api/routes/admin-workspace-keys.ts` |
 
@@ -52,7 +52,7 @@ The MCP onboarding contract is the canonical guidance the server itself serves a
 
 ## Phase A — Provision through MCP (`start_trial`)
 
-`start_trial` is the **only** capability on the unauthenticated onboarding endpoint (Streamable HTTP, `mcp-session-id` assigned by the server). It needs `email`, `orgName`, `turnstileToken` and returns `{ workspaceId, connectUrl, state }` (`onboarding.ts:230-384`). It runs **outside** the dispatch gate and is **SaaS-only**.
+`start_trial` is the **only** capability on the unauthenticated onboarding endpoint (Streamable HTTP, `mcp-session-id` assigned by the server). It needs `email` + `orgName` (no bot-protection token — #4159) and returns `{ workspaceId, connectUrl, claimUrl, state }` (`onboarding.ts`). It runs **outside** the dispatch gate and is **SaaS-only**.
 
 **The Streamable HTTP handshake matters** — you do *not* invent the session id; the server assigns it on `initialize` and you echo it back. Responses are SSE (`data: {…}`):
 
@@ -70,11 +70,11 @@ curl -sS -o /dev/null "$API/mcp/onboarding" -H "mcp-session-id: $SID" \
   -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
 
-# 3. start_trial. On staging ANY non-empty turnstileToken is accepted.
+# 3. start_trial — email + orgName only (no token; #4159).
 curl -sS "$API/mcp/onboarding" -H "mcp-session-id: $SID" \
   -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"start_trial",
-       "arguments":{"email":"matt+mcpverify@useatlas.dev","orgName":"Atlas MCP+CLI Verify","turnstileToken":"staging-noop"}}}' \
+       "arguments":{"email":"matt+mcpverify@useatlas.dev","orgName":"Atlas MCP+CLI Verify"}}}' \
   | sed -n 's/^data: //p'
 ```
 
@@ -92,12 +92,13 @@ curl -sS "$API/api/v1/auth/region-probe" -H 'content-type: application/json' -d 
 
 | Input | Result |
 |-------|--------|
-| `turnstileToken: "   "` (empty/whitespace) | `validation_failed` — "A Cloudflare Turnstile token is required" (presence check, before verification) |
 | `email: someone@gmail.com` | `validation_failed` — "Please sign up with your work email address" (business-email gate) |
 | `email: biz+tag@useatlas.dev` | **succeeds** — `useatlas.dev` is plus-exempt (would be `validation_failed`/`plus_addressing` on a non-exempt customer domain) |
 | second `start_trial`, same email | ✅ `validation_failed` — "An account already exists for this email — sign in on the web instead of starting a new trial." (**fixed in `v0.0.36`**; was a 500-shaped `internal_error`) |
 
-**Phase A pass:** `start_trial` returns `state: "grace"` + `workspaceId` + `connectUrl`; region-probe → `exists:true`; the empty-token and free-mail negative gates fire.
+> **No Turnstile gate here anymore (#4159).** The old empty-token / dummy-token negative gates are gone: the headless door takes `email` + `orgName` only. A stray `turnstileToken` argument is silently ignored (stripped by the tool's input schema), not an error.
+
+**Phase A pass:** `start_trial` returns `state: "grace"` + `workspaceId` + `connectUrl`; region-probe → `exists:true`; the free-mail negative gate fires.
 
 ---
 
@@ -171,8 +172,8 @@ To exercise the **full** data path on staging instead of deferring it, provision
 
 ## Acceptance criteria (staging)
 
-- [ ] **MCP signup:** `start_trial` returns `state: "grace"` + `workspaceId` + `connectUrl`; region-probe → `exists:true`
-- [ ] **Negative gates fire:** empty token → `validation_failed`; free-mail → business-email `validation_failed`
+- [ ] **MCP signup:** `start_trial` returns `state: "grace"` + `workspaceId` + `connectUrl`; region-probe → `exists:true` — with **no** Turnstile token (#4159)
+- [ ] **Negative gate fires:** free-mail → business-email `validation_failed`
 - [ ] **Idempotency:** second `start_trial` on the same email returns an *actionable* `validation_failed` ("account already exists — sign in on the web") — **fixed in `v0.0.36`**; regression-guard it stays out of the 500-shape
 - [ ] **MCP connect:** unauth 401 → discovery chain resolves; DCR + PKCE yields a `mcp:read` bearer; a read tool returns a structured result (not `401`/`403`)
 - [ ] **Claim sets a real credential:** after the OAuth claim, the account is loginable (Phase C proves this)
@@ -223,7 +224,7 @@ atlas logout                                          # clears the staging entry
 Once green on staging, the prod run (`api.useatlas.dev` + region edges) differs in four ways:
 
 1. **Email OTP returns.** `requireEmailVerification: true` in prod — the **claim** step (Phase B) sends an 8-char OTP via Resend; a human reads it (same HITL hand-off as `/verify-prod-signup`). `start_trial` itself still needs no OTP.
-2. **Turnstile becomes real — and Phase A is currently BLOCKED for real users on prod (⚠️ [#4159](https://github.com/AtlasDevHQ/atlas/issues/4159)).** Prod sets a live `TURNSTILE_SECRET_KEY`, so `start_trial`'s `turnstileToken` must be genuine (empty → `validation_failed`; dummy → `forbidden` "Bot-protection check failed"). **The old "harvest it from the prod signup widget" instruction is STALE** — the current prod web signup renders **no** Turnstile widget at all (`window.turnstile` undefined; zero Turnstile refs across the loaded JS chunks), and no onboarding surface mints a token. The *only* live prod widget is the **`www` "talk to sales"** form (`apps/www/src/components/talk-to-sales-form.tsx`, sitekey `0x4AAAAAADVDqK…`, same widget-ID prefix as the api secret `0x4AAAAAADVDqB…`). Until #4159 is fixed, the only way to get a token for the smoke is a **hack**: open `www.useatlas.dev/pricing` → "or talk to sales" → the managed widget solves → read the token via `window.turnstile.getResponse()` (NOT a `cf-turnstile-response` input — the form uses `render=explicit` + a callback), then pass it to `start_trial` within ~300s. **Flag prominently that this is not a real user flow.** Staging can't catch this because its Turnstile is the always-pass **test** secret (no-op) — see #4159's detection-gap section.
+2. **No Turnstile on `start_trial` — ✅ fixed by [#4159](https://github.com/AtlasDevHQ/atlas/issues/4159).** `start_trial` now takes **only `email` + `orgName`** on **both** staging and prod — no token, no dummy-token hack. Bot-protection moved to the interactive **web** email/password signup (Better Auth `captcha` plugin scoped to `/sign-up/email`, verified server-side against Cloudflare); the headless MCP door is exempt by construction (the plugin is HTTP-router `onRequest` middleware, and `provisionTrialWorkspace` calls `auth.api.signUpEmail` in-process). So Phase A is a real user flow on prod again — just call `start_trial` with `email` + `orgName`. **The prod/staging delta here is now on the *web signup*, not `start_trial`:** confirm the prod web signup renders a Turnstile widget and rejects a tokenless `POST /api/auth/sign-up/email` with `400`, and that **staging runs the real web-signup secret** (not the always-pass test secret) so the verify path matches prod — the web-signup slice of #3958.
 3. **Demo data is present** → the real-answer criterion **runs** on prod: MCP `executeSQL` and `atlas query` should return an answer over NovaMart. (The criterion deferred on staging.)
 4. **Three regions.** Pick a region at claim; the bearer audience + `connectUrl` are region-specific (`mcp{,-eu,-apac}.useatlas.dev`). Cross-region MCP misrouting must return **`421 misdirected_request`** with the correct regional URL (`hosted.ts:621-682`) — the MCP analogue of `/verify-prod-signup`'s edge matrix. Point the CLI at the matching edge (`ATLAS_API_URL=https://api-<region>.useatlas.dev`). Teardown via `railway ssh --service api{,-eu,-apac}` (region = picked).
    - ⚠️ **Clear `atlas_region` between regions when driving the browser `/claim` per region.** The prerequisite purge isn't one-and-done: picking a region at claim pins that region's `apiUrl` in the cookie, so the *next* region's `/claim` bootstrap (`get-session` / `resolve-region` / the region fast-path) rides the **prior** region's edge until you clear it. On prod there's **no CORS to expose this** — every region host is a real same-family host, so a stale pin silently drives claim/session at the wrong region and can mask a misroute or fake a pass. Re-run the `atlas_region` purge snippet (Prerequisites) after each region's claim, before the next. The CLI side is cookie-free (base is `ATLAS_API_URL` + `~/.atlas/credentials` keyed per base-URL), so this is browser-only — but the browser claim is what pins the wrong region.
@@ -276,7 +277,7 @@ Gotchas baked in above: `device/approve` needs an **`Origin` header** (else `MIS
 
 ## Findings (live run 2026-06-29 — file as issues)
 
-> **Re-run 2026-07-01 (post-`v0.0.36` tag):** **A and C are FIXED** by the v0.0.36 CLI/MCP hardening; **B is confirmed still present** and its root cause pinned down (region-map serves prod → stale cookie); **D is re-characterized** — the admin-MFA mint gate still fires by design, and the passkey enrolled at `/claim` is the fix that clears it (verified end-to-end). The prod run additionally surfaced **[#4159](https://github.com/AtlasDevHQ/atlas/issues/4159)** — `start_trial`'s Turnstile token has no onboarding mint surface (Phase A blocked for real prod users). Details inline below.
+> **Re-run 2026-07-01 (post-`v0.0.36` tag):** **A and C are FIXED** by the v0.0.36 CLI/MCP hardening; **B is confirmed still present** and its root cause pinned down (region-map serves prod → stale cookie); **D is re-characterized** — the admin-MFA mint gate still fires by design, and the passkey enrolled at `/claim` is the fix that clears it (verified end-to-end). The prod run additionally surfaced **[#4159](https://github.com/AtlasDevHQ/atlas/issues/4159)** — `start_trial`'s Turnstile token had no onboarding mint surface (Phase A blocked for real prod users); **now ✅ fixed**: Turnstile moved off the headless door onto the interactive web signup, so `start_trial` is tokenless (see Prod delta #2 above). Details inline below.
 
 - **A. ~~MCP `start_trial` → "claim your account on the web" has no working *web* claim path.~~ ✅ FIXED (`v0.0.36`, #4125/#4135).** `start_trial` now returns a `claimUrl` → `https://app.<env>.useatlas.dev/claim?email=<owner>` and the message reads "claim your account at …/claim (verify your email and add a passkey)". The dedicated `/claim` interstitial (`packages/web/src/app/claim/page.tsx`) runs the ADR-0018 ceremony — emailOTP verify (claims + extends grace→14d) → enroll a WebAuthn passkey (doubles as the admin-MFA strong factor) → accept ToS. No more `/signup` `422 USER_ALREADY_EXISTS` dead-end. *(Original: the throwaway password is never returned and `/signup` collided; that path is gone.)*
 - **B. Staging region routing hands out PROD API bases — CONFIRMED still broken (2026-07-01).** Root cause pinned: the **staging API's `GET /api/v1/auth/region-map` returns the PROD hosts** (`us→api.useatlas.dev`, `eu→api-eu.useatlas.dev`, `apac→api-apac.useatlas.dev`) because `api-staging` shares the prod config (`reference_api_staging_shares_prod_config`). The web front-door (`resolve-region` → `login-frontdoor`) and the signup region picker feed those prod `apiUrl`s into `applyRegionSignal`, which persists them in the **`atlas_region` cookie on `app.staging.useatlas.dev`**. On the very next visit `getApiUrl()` returns that pinned prod base ahead of the correct staging default, so `/claim` (and signup) fire OTP/session/health at `api.useatlas.dev` and die on CORS (`net::ERR_FAILED`) — the page still optimistically shows "We sent a code". A **fresh grace-account claim in a CLEAN browser works** (`resolve-region`→`none` → falls through to the staging default), so this bites returning users and any browser with a stale region pin — hence the mandatory cookie-purge in Prerequisites. **Fix belongs in the region-map: staging must advertise only the `staging` arm (`api.staging.useatlas.dev`), not prod hosts.** #3948-class, hard funnel break.

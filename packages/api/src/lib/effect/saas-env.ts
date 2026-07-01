@@ -77,14 +77,17 @@ export interface SaasEnv {
   readonly ATLAS_SMTP_URL: string | undefined;
   readonly RESEND_API_KEY: string | undefined;
 
-  // Cloudflare Turnstile abuse gate (TurnstileGuardLive, #3795). Read by
-  // `lib/turnstile.ts :: verifyTurnstile` — the bot-protection gate in front
-  // of the talk-to-sales contact form AND the self-serve `start_trial` MCP
-  // onboarding bootstrap (#3654). When unset, `verifyTurnstile` fails CLOSED
-  // (every contact submission + every trial attempt 403s) — so a missing
-  // secret is a silent 100% signup outage that boots green. Listed here so the
-  // boot-smoke fixture populates it and `TurnstileGuardLive` asserts on it via
-  // `readSaasEnv()`.
+  // Cloudflare Turnstile abuse gate (TurnstileGuardLive, #3795). Backs the
+  // bot-protection in front of the talk-to-sales contact form
+  // (`lib/turnstile.ts :: verifyTurnstile`) AND the interactive web
+  // email/password signup (Better Auth `captcha` plugin scoped to
+  // `/sign-up/email`, #4159 — moved here off the headless `start_trial` door).
+  // When the secret is unset the two fail differently, both silently: contact
+  // fails CLOSED (submissions 403), while web signup fails OPEN (the captcha
+  // plugin isn't registered without a secret → signups proceed unprotected, an
+  // open signup door). Boots green either way, so `TurnstileGuardLive` fails
+  // boot instead. Listed here so the boot-smoke fixture populates it and the
+  // guard asserts on it via `readSaasEnv()`.
   readonly TURNSTILE_SECRET_KEY: string | undefined;
 
   // Boot-survival keys (not guard-enforced — required for the API

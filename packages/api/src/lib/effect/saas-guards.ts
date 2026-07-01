@@ -698,17 +698,24 @@ export const RateLimitGuardLive: Layer.Layer<never, RateLimitRequiredError, Conf
 
 /**
  * {@link TurnstileGuardLive} (#3795) — `TURNSTILE_SECRET_KEY` unset (or
- * empty) in SaaS. Turnstile gates the talk-to-sales contact form AND the
- * self-serve `start_trial` MCP onboarding bootstrap (#3654). `verifyTurnstile`
- * fails CLOSED when the secret is missing, so a deploy with the secret unset
- * boots green, serves a 200 `/health`, and silently 403s 100% of signups and
- * contact submissions — the only signal a per-request `turnstile.no_secret`
- * log nobody is watching. This guard turns that silent outage into a loud boot
- * failure. `Config`-only and reads env directly (same shape as
- * `RateLimitGuardLive`), so it fails fast alongside the other env-checking
- * guards. Presence-only: the value is validated at per-request siteverify, not
- * here. The onboarding router + contact route are SaaS carve-outs, so the
- * guard is inert on self-hosted (Turnstile stays opt-in there).
+ * empty) in SaaS. The secret backs the talk-to-sales contact form AND the
+ * interactive web email/password signup (Better Auth `captcha` plugin scoped to
+ * `/sign-up/email`, #4159 — it moved here off the headless `start_trial` door,
+ * which a non-browser caller can't solve). The two surfaces fail DIFFERENTLY
+ * when the secret is missing, and both are silent:
+ *   - Contact form (`verifyTurnstile`) fails CLOSED — every submission 403s.
+ *   - Web signup fails OPEN — `buildSignupCaptchaPlugin` returns null without a
+ *     secret, so the captcha plugin is never registered and signups proceed with
+ *     NO bot-protection (an open signup door). Registering it secretless would
+ *     instead 500 every signup, which is exactly why we gate on the secret —
+ *     see `buildSignupCaptchaPlugin`.
+ * Either way the deploy boots green and serves a 200 `/health`, so the misconfig
+ * is invisible at runtime. This guard turns it into a loud boot failure.
+ * `Config`-only and reads env directly (same shape as `RateLimitGuardLive`), so
+ * it fails fast alongside the other env-checking guards. Presence-only: the
+ * value is validated at per-request siteverify, not here. The web signup +
+ * contact route are SaaS carve-outs, so the guard is inert on self-hosted
+ * (Turnstile stays opt-in there).
  */
 export const TurnstileGuardLive: Layer.Layer<never, TurnstileSecretRequiredError, Config> = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -721,10 +728,11 @@ export const TurnstileGuardLive: Layer.Layer<never, TurnstileSecretRequiredError
       return yield* Effect.fail(
         new TurnstileSecretRequiredError({
           message:
-            `SaaS region booted without TURNSTILE_SECRET_KEY set — verifyTurnstile() in lib/turnstile.ts ` +
-            `fails CLOSED, so every talk-to-sales contact submission AND every start_trial MCP onboarding ` +
-            `attempt 403s while boot and /health stay green (a silent 100% signup outage). ` +
-            `Set TURNSTILE_SECRET_KEY from the Cloudflare Turnstile dashboard. See ${TURNSTILE_ISSUE_REF}.`,
+            `SaaS region booted without TURNSTILE_SECRET_KEY set — the talk-to-sales contact form ` +
+            `fails CLOSED (every submission 403s) while the interactive web signup fails OPEN (the ` +
+            `captcha plugin isn't registered without the secret, so bots sign up freely) — all while ` +
+            `boot and /health stay green. Set TURNSTILE_SECRET_KEY from the Cloudflare Turnstile ` +
+            `dashboard. See ${TURNSTILE_ISSUE_REF}.`,
         }),
       );
     }

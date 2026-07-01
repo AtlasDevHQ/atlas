@@ -42,14 +42,10 @@ import {
   createOnboardingMcpServer,
   createOnboardingMcpRouter,
   type ProvisionTrialFn,
-  type VerifyTurnstileFn,
   type TrialAttemptLimiter,
 } from "../onboarding.js";
 
-/** A Turnstile token that passes the default injected verifier in tests. */
-const OK_TOKEN = "tok-ok";
-/** Default test stubs: Turnstile passes, rate limit allows. */
-const passTurnstile: VerifyTurnstileFn = async () => ({ ok: true });
+/** Default test stub: rate limit allows. */
 const allowRate: TrialAttemptLimiter = async () => ({ allowed: true });
 
 // The elicitation requestState is HMAC'd from BETTER_AUTH_SECRET; set one for
@@ -76,8 +72,6 @@ async function wireTool(
     withElicitation?: { email: string; orgName: string };
     /** Raw elicitation reply — lets a test decline/cancel or return partial content. */
     elicit?: () => { action: string; content?: Record<string, string> };
-    /** Override the Turnstile verifier (defaults to a passing stub). */
-    verifyTurnstile?: VerifyTurnstileFn;
     /** Override the attempt limiter (defaults to allow-all). */
     checkRateLimit?: TrialAttemptLimiter;
   } = {},
@@ -85,7 +79,6 @@ async function wireTool(
   const server = new McpServer({ name: "test", version: "0.0.1" });
   registerStartTrialTool(server, {
     provision,
-    verifyTurnstile: opts.verifyTurnstile ?? passTurnstile,
     checkRateLimit: opts.checkRateLimit ?? allowRate,
   });
 
@@ -122,7 +115,7 @@ describe("start_trial tool", () => {
     const { client } = await wireTool(okProvision);
     const result = await client.callTool({
       name: "start_trial",
-      arguments: { email: "founder@acme.com", orgName: "Acme", turnstileToken: OK_TOKEN },
+      arguments: { email: "founder@acme.com", orgName: "Acme" },
     });
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent).toEqual({
@@ -137,7 +130,7 @@ describe("start_trial tool", () => {
     const { client } = await wireTool(okProvision);
     const result = await client.callTool({
       name: "start_trial",
-      arguments: { email: "founder@acme.com", orgName: "locked-acme", turnstileToken: OK_TOKEN },
+      arguments: { email: "founder@acme.com", orgName: "locked-acme"},
     });
     expect(
       (result.structuredContent as { state: string }).state,
@@ -160,7 +153,7 @@ describe("start_trial tool", () => {
     });
     const result = await client.callTool({
       name: "start_trial",
-      arguments: { turnstileToken: OK_TOKEN },
+      arguments: {},
     });
     expect(result.isError).toBeFalsy();
     expect(seen).toEqual([{ email: "elicited@acme.com", orgName: "Elicited Co" }]);
@@ -210,7 +203,7 @@ describe("start_trial tool", () => {
     });
     const result = await client.callTool({
       name: "start_trial",
-      arguments: { email: "supplied@acme.com", turnstileToken: OK_TOKEN },
+      arguments: { email: "supplied@acme.com"},
     });
     expect(result.isError).toBeFalsy();
     expect(seen).toEqual([
@@ -260,7 +253,7 @@ describe("start_trial tool", () => {
       const { client } = await wireTool(provision);
       const result = await client.callTool({
         name: "start_trial",
-        arguments: { email: "x@y.com", orgName: "Acme", turnstileToken: OK_TOKEN },
+        arguments: { email: "x@y.com", orgName: "Acme" },
       });
       expect(result.isError).toBe(true);
       const arr = result.content as Array<{ type: string; text: string }>;
@@ -287,7 +280,7 @@ describe("start_trial tool", () => {
     const { client } = await wireTool(provision);
     const result = await client.callTool({
       name: "start_trial",
-      arguments: { email: "x@y.com", orgName: "Acme", turnstileToken: OK_TOKEN },
+      arguments: { email: "x@y.com", orgName: "Acme" },
     });
     expect(result.isError).toBe(true);
     const arr = result.content as Array<{ type: string; text: string }>;
@@ -302,7 +295,7 @@ describe("start_trial tool", () => {
     const { client } = await wireTool(provision);
     const result = await client.callTool({
       name: "start_trial",
-      arguments: { email: "x@y.com", orgName: "Acme", turnstileToken: OK_TOKEN },
+      arguments: { email: "x@y.com", orgName: "Acme" },
     });
     expect(result.isError).toBe(true);
     const arr = result.content as Array<{ type: string; text: string }>;
@@ -312,142 +305,66 @@ describe("start_trial tool", () => {
   });
 });
 
-describe("start_trial abuse controls (#3654)", () => {
-  // ── Turnstile ───────────────────────────────────────────────────────────
-  it("rejects a missing Turnstile token with validation_failed before provisioning", async () => {
-    let provisioned = false;
-    const provision: ProvisionTrialFn = async () => {
-      provisioned = true;
-      return okProvision({ email: "x@y.com", orgName: "Acme" });
+describe("start_trial abuse controls (#3654 / #4159)", () => {
+  // ── No Turnstile on the headless door (#4159) ─────────────────────────────
+  // Turnstile is proof-of-human-in-a-browser; a CLI/AI-agent caller can't solve
+  // it. It moved to the interactive web signup (server captcha plugin +
+  // rendered widget). The headless door provisions with NO token; its abuse
+  // bound is rate-limit + business-email policy + the unclaimed-grace reaper.
+  it("provisions with NO Turnstile token — the headless door needs none (#4159)", async () => {
+    const seen: Array<{ email: string; orgName: string }> = [];
+    const provision: ProvisionTrialFn = async (input) => {
+      seen.push(input);
+      return okProvision(input);
     };
     const { client } = await wireTool(provision);
     const result = await client.callTool({
       name: "start_trial",
       arguments: { email: "founder@acme.com", orgName: "Acme" }, // no turnstileToken
     });
-    expect(result.isError).toBe(true);
-    const err = parseAtlasMcpToolError(
-      (result.content as Array<{ text: string }>)[0]!.text,
-    );
-    expect(err?.code).toBe("validation_failed");
-    expect(err?.hint).toBeTruthy();
-    expect(provisioned).toBe(false);
-  });
-
-  it("rejects a blank Turnstile token (whitespace only) without a siteverify round-trip", async () => {
-    let verifyCalled = false;
-    const verifyTurnstile: VerifyTurnstileFn = async () => {
-      verifyCalled = true;
-      return { ok: true };
-    };
-    const { client } = await wireTool(okProvision, { verifyTurnstile });
-    const result = await client.callTool({
-      name: "start_trial",
-      arguments: { email: "founder@acme.com", orgName: "Acme", turnstileToken: "   " },
-    });
-    expect(result.isError).toBe(true);
-    const err = parseAtlasMcpToolError(
-      (result.content as Array<{ text: string }>)[0]!.text,
-    );
-    expect(err?.code).toBe("validation_failed");
-    // A clearly-absent token must NOT burn a Turnstile round-trip.
-    expect(verifyCalled).toBe(false);
-  });
-
-  it("rejects an invalid Turnstile token with a forbidden envelope (no secret/codes leaked)", async () => {
-    let provisioned = false;
-    const provision: ProvisionTrialFn = async () => {
-      provisioned = true;
-      return okProvision({ email: "x@y.com", orgName: "Acme" });
-    };
-    const verifyTurnstile: VerifyTurnstileFn = async () => ({
-      ok: false,
-      errorCodes: ["invalid-input-response"],
-      reason: "siteverify_rejected",
-    });
-    const { client } = await wireTool(provision, { verifyTurnstile });
-    const result = await client.callTool({
-      name: "start_trial",
-      arguments: { email: "founder@acme.com", orgName: "Acme", turnstileToken: "bad-token" },
-    });
-    expect(result.isError).toBe(true);
-    const err = parseAtlasMcpToolError(
-      (result.content as Array<{ text: string }>)[0]!.text,
-    );
-    expect(err?.code).toBe("forbidden");
-    // No Cloudflare error codes / reason / secret leaked into the envelope.
-    expect(JSON.stringify(err)).not.toContain("invalid-input-response");
-    expect(JSON.stringify(err)).not.toContain("siteverify_rejected");
-    expect(provisioned).toBe(false);
-  });
-
-  it("forwards the token + client IP to the verifier and provisions on a Turnstile pass", async () => {
-    const seen: Array<{ token: string; remoteIp?: string | null }> = [];
-    const verifyTurnstile: VerifyTurnstileFn = async ({ token, remoteIp }) => {
-      seen.push({ token, remoteIp });
-      return { ok: true };
-    };
-    const { client } = await wireTool(okProvision, { verifyTurnstile });
-    const result = await client.callTool({
-      name: "start_trial",
-      arguments: { email: "founder@acme.com", orgName: "Acme", turnstileToken: "good-token" },
-    });
     expect(result.isError).toBeFalsy();
-    expect(seen).toEqual([{ token: "good-token", remoteIp: null }]);
-    // The pass must actually reach provisioning — assert the payoff, not just
-    // that the verifier was called.
+    // Provisioning actually ran — not a validation short-circuit.
+    expect(seen).toEqual([{ email: "founder@acme.com", orgName: "Acme" }]);
     expect(
       (result.structuredContent as { workspaceId: string }).workspaceId,
     ).toBe("org_new");
   });
 
-  it("fails CLOSED (forbidden) when the verifier THROWS — an abuse control denies on a verifier defect", async () => {
-    // The real verifier never throws (it folds every failure into ok:false), so
-    // this pins the defensive contract: an unexpected verifier throw must deny
-    // as a failed bot-check (forbidden), NOT fall through to an internal_error
-    // that invites endless retries — and must NEVER provision.
-    let provisioned = false;
-    const provision: ProvisionTrialFn = async () => {
-      provisioned = true;
-      return okProvision({ email: "x@y.com", orgName: "Acme" });
-    };
-    const verifyTurnstile: VerifyTurnstileFn = async () => {
-      throw new Error("siteverify client blew up");
-    };
-    const { client } = await wireTool(provision, { verifyTurnstile });
+  it("ignores a stray turnstileToken arg — stripped by the input schema, not an error (#4159)", async () => {
+    // An older client that still sends `turnstileToken` must not fail: the tool
+    // input schema no longer declares the field, so the MCP SDK strips the
+    // unknown key and provisioning proceeds normally.
+    const { client } = await wireTool(okProvision);
     const result = await client.callTool({
       name: "start_trial",
-      arguments: { email: "founder@acme.com", orgName: "Acme", turnstileToken: "tok" },
+      arguments: {
+        email: "founder@acme.com",
+        orgName: "Acme",
+        turnstileToken: "leftover-from-an-old-client",
+      } as Record<string, unknown>,
     });
-    expect(result.isError).toBe(true);
-    const err = parseAtlasMcpToolError(
-      (result.content as Array<{ text: string }>)[0]!.text,
-    );
-    expect(err?.code).toBe("forbidden");
-    expect(provisioned).toBe(false);
+    expect(result.isError).toBeFalsy();
+    expect(
+      (result.structuredContent as { workspaceId: string }).workspaceId,
+    ).toBe("org_new");
   });
 
   // ── Rate limiting ─────────────────────────────────────────────────────────
   it("returns a typed rate_limited envelope with retry guidance when the limiter trips", async () => {
     let provisioned = false;
-    let verifyCalled = false;
     const provision: ProvisionTrialFn = async () => {
       provisioned = true;
       return okProvision({ email: "x@y.com", orgName: "Acme" });
-    };
-    const verifyTurnstile: VerifyTurnstileFn = async () => {
-      verifyCalled = true;
-      return { ok: true };
     };
     const checkRateLimit: TrialAttemptLimiter = async () => ({
       allowed: false,
       bucket: "email",
       retryAfterMs: 42_000,
     });
-    const { client } = await wireTool(provision, { verifyTurnstile, checkRateLimit });
+    const { client } = await wireTool(provision, { checkRateLimit });
     const result = await client.callTool({
       name: "start_trial",
-      arguments: { email: "spam@acme.com", orgName: "Acme", turnstileToken: OK_TOKEN },
+      arguments: { email: "spam@acme.com", orgName: "Acme" },
     });
     expect(result.isError).toBe(true);
     const err = parseAtlasMcpToolError(
@@ -456,8 +373,8 @@ describe("start_trial abuse controls (#3654)", () => {
     expect(err?.code).toBe("rate_limited");
     expect(err?.retry_after).toBe(42); // ceil(42000 / 1000)
     expect(err?.hint).toBeTruthy();
-    // Rate-limit is the FIRST guard: neither Turnstile nor provisioning runs.
-    expect(verifyCalled).toBe(false);
+    // Rate-limit is the FIRST (and now only pre-provision) guard: provisioning
+    // must not run once the limiter trips.
     expect(provisioned).toBe(false);
   });
 
@@ -475,7 +392,7 @@ describe("start_trial abuse controls (#3654)", () => {
     // First call trips the limiter.
     const blocked = await client.callTool({
       name: "start_trial",
-      arguments: { email: "burst@acme.com", orgName: "Acme", turnstileToken: OK_TOKEN },
+      arguments: { email: "burst@acme.com", orgName: "Acme" },
     });
     expect(blocked.isError).toBe(true);
     expect(
@@ -486,7 +403,7 @@ describe("start_trial abuse controls (#3654)", () => {
     trip = false;
     const ok = await client.callTool({
       name: "start_trial",
-      arguments: { email: "burst@acme.com", orgName: "Acme", turnstileToken: OK_TOKEN },
+      arguments: { email: "burst@acme.com", orgName: "Acme" },
     });
     expect(ok.isError).toBeFalsy();
     expect(seen).toEqual([

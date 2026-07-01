@@ -172,8 +172,10 @@ query data or bind an actor. Call it with:
 
 - \`email\` — a business email for the new account.
 - \`orgName\` — a name for the new workspace.
-- \`turnstileToken\` — a Cloudflare Turnstile token proving the signup is
-  human-initiated. Required.
+
+That is the whole input — a headless caller needs no browser and no
+bot-protection token. (Proof-of-human lives on the interactive web signup, not
+on this door.)
 
 On success it returns:
 
@@ -185,8 +187,9 @@ On success it returns:
   email already consumed a trial.
 
 \`start_trial\` is abuse-controlled: signups are rate-limited per IP and per
-email, and a missing or invalid Turnstile token is rejected. Surface those
-failures to the user rather than retrying blindly.
+email, personal/disposable addresses are rejected, and an unclaimed trial is
+reaped after a short grace window. Surface those failures to the user rather
+than retrying blindly.
 
 ## Connect: DCR + PKCE against the connect URL
 

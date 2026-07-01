@@ -176,6 +176,7 @@ describe("SSE server — MCP client integration", () => {
       "list_datasources",
       "profile_datasource",
       "publish_datasources",
+      "query",
       "restore_datasource",
       "runMetric",
       "searchGlossary",
@@ -272,12 +273,12 @@ describe("SSE server — MCP client integration", () => {
     await client2.connect(transport2);
 
     // Both clients can list tools independently — explore + executeSQL +
-    // the four typed semantic tools (#2020) + the nine datasource lifecycle
-    // tools (#3511–#3514, #3547, #4126) = 15.
+    // the NL-agent query tool (#4094) + the four typed semantic tools (#2020)
+    // + the nine datasource lifecycle tools (#3511–#3514, #3547, #4126) = 16.
     const result1 = await client1.listTools();
     const result2 = await client2.listTools();
-    expect(result1.tools.length).toBe(15);
-    expect(result2.tools.length).toBe(15);
+    expect(result1.tools.length).toBe(16);
+    expect(result2.tools.length).toBe(16);
 
     // Health shows 2+ sessions
     const res = await fetch(`http://localhost:${handle.server.port}/health`);

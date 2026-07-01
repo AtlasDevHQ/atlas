@@ -102,6 +102,32 @@ export const runMetricOutputShape = {
   ...approvalFields,
 } as const;
 
+/**
+ * A single agent result set — the `{ columns, rows }` pair the NL-agent
+ * `query` tool surfaces once per SELECT the agent ran. The agent can run
+ * several queries per turn, so `query`'s `data` is an ARRAY of these (one
+ * per `executeSQL` step), unlike `executeSQL`/`runMetric` which return one.
+ */
+const dataSetField = z.array(z.object({ columns: columnsField, rows: rowsField }));
+
+/**
+ * `query` (Shape-A NL agent) output — #4094. Data branch: the agent's prose
+ * `answer`, the `sql` statements it ran, the `data` result sets, the agent
+ * `steps` count, and Atlas-plan token `usage` (Shape A burns Atlas tokens, so
+ * the double-billing cost is surfaced back). Plus the same `approval_required`
+ * governance branch every datasource tool carries — a SELECT the agent tried
+ * hit an approval rule and was parked rather than run.
+ */
+export const queryOutputShape = {
+  answer: z.string().optional(),
+  sql: z.array(z.string()).optional(),
+  data: dataSetField.optional(),
+  steps: z.number().int().nonnegative().optional(),
+  usage: z.object({ total_tokens: z.number().int().nonnegative() }).optional(),
+  ...approvalFields,
+} as const;
+
 /** Zod objects for validating a result against the declared output schema. */
 export const executeSqlOutputSchema = z.object(executeSqlOutputShape);
 export const runMetricOutputSchema = z.object(runMetricOutputShape);
+export const queryOutputSchema = z.object(queryOutputShape);

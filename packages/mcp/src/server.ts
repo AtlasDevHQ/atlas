@@ -16,6 +16,7 @@ import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { loadSettings } from "@atlas/api/lib/settings";
 import { registerTools } from "./tools.js";
+import { registerQueryTool } from "./query-tool.js";
 import { registerDatasourceTools } from "./datasource-tools.js";
 import { registerPluginTools } from "./plugin-tools.js";
 import { bootPluginsForMcp } from "@atlas/api/lib/plugins";
@@ -147,6 +148,19 @@ export async function createAtlasMcpServer(
   );
 
   registerTools(server, { actor, transport, clientId, ...(scopes && { scopes }) });
+
+  // #4094 — the high-level NL-agent `query` tool (Shape A). Separate file
+  // because it dispatches into the whole `runAgent` graph (lazy-imported), so
+  // isolating it keeps that coupling out of the raw-tool file. Wired here like
+  // the datasource tools rather than from within `registerTools`.
+  registerQueryTool(server, {
+    actor,
+    transport,
+    ...(clientId && { clientId }),
+    ...(scopes && { scopes }),
+    workspaceId: actor.activeOrganizationId ?? actor.id,
+    deployMode: getConfig()?.deployMode ?? "self-hosted",
+  });
 
   // Datasource lifecycle admin tools (Tier 2 — list/test/archive/restore/
   // delete/create/profile). Self-contained in `datasource-tools.ts`; this is

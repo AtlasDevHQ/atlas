@@ -25,7 +25,16 @@ Every typed MCP tool description must:
 - Include at least one **inline JSON example** showing call shape (preferred) or response shape. LLMs trained on tool use produce better-shaped calls when the description shows the call shape verbatim.
 - End with the structured **`Error contract:`** section. Appended at the MCP layer by `withErrorContract(BASE, CODES)` — the LLM reads purpose → recovery in one continuous block. Codes must match what the dispatch path actually returns.
 
-The base description bodies live in [`packages/api/src/lib/tools/descriptions.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/descriptions.ts) — the single source of truth that both `explore` / `executeSQL` (legacy AI SDK tool wrappers) and `listEntities` / `describeEntity` / `searchGlossary` / `runMetric` (typed semantic tools) read from.
+The base description bodies live in [`packages/api/src/lib/tools/descriptions.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/tools/descriptions.ts) — the single source of truth that both `explore` / `executeSQL` (legacy AI SDK tool wrappers), `listEntities` / `describeEntity` / `searchGlossary` / `runMetric` (typed semantic tools), and `query` (the NL-agent tool) read from.
+
+### `query` vs `executeSQL` — two shapes of data access
+
+The MCP exposes two ways to answer a data question, and the routing directives in their descriptions steer the client's LLM to the right one:
+
+- **`query` (Shape A, recommended)** — the caller sends a *question*; Atlas's own server-side agent explores the semantic layer, writes and runs the SQL, and returns the answer plus the SQL it ran. It dispatches into `executeAgentQuery` **in-process** (not a loopback HTTP call, per ADR-0016). Like every datasource-reaching tool it declares `checksBilling` for the gate-0 workspace-solvency check; *additionally*, because it spends Atlas plan tokens (a second, server-side LLM — the caller pays twice), `executeAgentQuery` layers on the claim gate + token metering.
+- **`executeSQL` (Shape B, advanced/raw escape hatch)** — the caller's own LLM wrote the `SELECT`; Atlas validates + runs it, spending no Atlas-agent tokens.
+
+Both clear the same dispatch gate chain and land the same `origin=mcp` audit trail. Position `query` as the default for question-answering; `executeSQL` for callers that want full control over the query.
 
 ## Template
 

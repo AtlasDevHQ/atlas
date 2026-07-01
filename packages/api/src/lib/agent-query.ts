@@ -106,8 +106,11 @@ export interface ExecuteAgentQueryOptions {
    * (e.g. `scheduler`). When omitted, the actor is propagated from the
    * parent RequestContext (e.g. the `/query` route stamps `human`); when
    * neither is present, `logQueryAudit` defaults the row to `agent`.
-   * Excludes `mcp` because the MCP dispatchers set their own actor (with
-   * `clientId` / `toolName`) and never route through `executeAgentQuery`.
+   * Excludes `mcp` because the MCP path binds its actor via the inherited
+   * RequestContext (the `mcpActor` set in `mcp-dispatch.ts`, carrying
+   * `clientId` / `toolName`), never via this option — even the NL-agent `query`
+   * MCP tool (#4094), which DOES route through `executeAgentQuery`, inherits
+   * that actor rather than passing `actorKind`.
    */
   actorKind?: Exclude<ActorKind, "mcp">;
   /**

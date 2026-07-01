@@ -61,6 +61,7 @@ import { envelope, toEnvelopeResult, toJsonContent } from "./error-envelope.js";
 import { createMcpDispatch, errorMessage } from "./mcp-dispatch.js";
 import { elicitMaskedForm } from "./elicitation.js";
 import { withProgressAndCancellation, OperationCancelledError } from "./progress.js";
+import { publishDatasourcesOutputShape } from "./structured-output.js";
 
 // ── Lazy heavy-module loaders ─────────────────────────────────────────
 //
@@ -932,6 +933,10 @@ export function registerDatasourceTools(
       description: withErrorContract(PUBLISH_DATASOURCES_DESCRIPTION, DATASOURCE_WRITE_ERROR_CODES),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: {},
+      // #4156 — typed result keyed off the shared PublishResult core, so an MCP
+      // client parses `{ published, promoted, deleted: { entities } }` instead of
+      // re-parsing the text block (retained below for back-compat).
+      outputSchema: publishDatasourcesOutputShape,
     },
     async (): Promise<CallToolResult> =>
       dispatch(
@@ -946,11 +951,22 @@ export function registerDatasourceTools(
         async () => {
           const orgId = boundOrg();
           const result = await (await lifecycle()).publishWorkspaceDrafts(orgId);
-          return toJsonContent({
+          // #4156 — single-cased (all camelCase) output keyed off the shared
+          // PublishResult core: `deleted: { entities }`, never snake
+          // `deleted_entities`. `published: true` is the MCP success sentinel.
+          // The declared outputSchema makes `structuredContent` required (#3498);
+          // the text block is retained for clients that read it.
+          const structured = {
             published: true,
             promoted: result.promoted,
-            deleted_entities: result.deletedEntities,
-          });
+            deleted: { entities: result.deleted.entities },
+          };
+          return {
+            content: [
+              { type: "text" as const, text: JSON.stringify(structured, null, 2) },
+            ],
+            structuredContent: structured,
+          };
         },
       ),
   );
@@ -1038,7 +1054,7 @@ const CREATE_REST_DATASOURCE_DESCRIPTION = `Provision a NEW generic REST datasou
 
 const PROFILE_DATASOURCE_DESCRIPTION = `Profile a datasource (introspect its tables) and generate its semantic layer — entities + the table whitelist — so the agent can query it with executeSQL. Long-running: emits progress per table and is cancellable. Typically run right after create_datasource; follow up with publish_datasources to make the result queryable from the published /chat surface. Requires the \`mcp:write\` scope and the admin role. Example call: \`{ "id": "prod-us" }\`. Example success: \`{ "id": "prod-us", "queryable": true, "entities_generated": 12, "tables": ["orders", "users"], "elapsed_ms": 1840 }\`.`;
 
-const PUBLISH_DATASOURCES_DESCRIPTION = `Atomically promote EVERY pending draft in this workspace — every datasource, semantic entity, prompt collection, and starter prompt created/edited but not yet live — to published, making them queryable from the published /chat surface. This is the SAME atomic, workspace-wide operation as the admin console's single "Publish" button (NOT a per-datasource action — there is no \`id\` argument, and it is not scoped to one datasource even if you just created or profiled only one). Typically the last step after create_datasource → profile_datasource. A no-op (zero counts) when nothing is pending. Requires the \`mcp:write\` scope and the admin role. Example success: \`{ "published": true, "promoted": { "connections": 1, "entities": 12, "prompts": 0, "starterPrompts": 0 }, "deleted_entities": 0 }\`.`;
+const PUBLISH_DATASOURCES_DESCRIPTION = `Atomically promote EVERY pending draft in this workspace — every datasource, semantic entity, prompt collection, and starter prompt created/edited but not yet live — to published, making them queryable from the published /chat surface. This is the SAME atomic, workspace-wide operation as the admin console's single "Publish" button (NOT a per-datasource action — there is no \`id\` argument, and it is not scoped to one datasource even if you just created or profiled only one). Typically the last step after create_datasource → profile_datasource. A no-op (zero counts) when nothing is pending. Requires the \`mcp:write\` scope and the admin role. Example success: \`{ "published": true, "promoted": { "connections": 1, "entities": 12, "prompts": 0, "starterPrompts": 0 }, "deleted": { "entities": 0 } }\`.`;
 
 // Read tools: not-found surfaces as `unknown_entity`; everything else as
 // `internal_error`. RBAC denial (gate 3) surfaces as `forbidden`.

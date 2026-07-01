@@ -22,6 +22,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
+import type { PublishResult } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { getInternalDB } from "@atlas/api/lib/db/internal";
@@ -116,6 +117,17 @@ const PublishResponseSchema = z.object({
 });
 
 export type PublishResponse = z.infer<typeof PublishResponseSchema>;
+
+// #4156 drift guard: the REST response must stay a structural superset of the
+// shared `PublishResult` core (promoted counts + `deleted.entities`) so the
+// REST / MCP / CLI publish surfaces can't diverge on the delete-count field
+// name. Reshaping the core here (e.g. `deleted` → `deleted_entities`, or a
+// promoted-count rename) fails this assignment at compile time. The REST schema
+// itself stays local hono-`z` because `@useatlas/schemas` carries no
+// `.openapi()` metadata and this response adds the REST-only `archived` +
+// `warnings` blocks on top of the shared core.
+const _publishResponseConformsToShared: PublishResult =
+  undefined as unknown as PublishResponse;
 
 // ---------------------------------------------------------------------------
 // Route definition

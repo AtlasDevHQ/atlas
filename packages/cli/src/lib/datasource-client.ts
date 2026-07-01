@@ -35,6 +35,7 @@ import type {
   ConnectionInfo,
   DatasourceProfileResult,
   DatasourceProfileTableEvent,
+  PublishResult,
 } from "@useatlas/types";
 import {
   ConnectionDetailSchema,
@@ -418,15 +419,21 @@ export async function deleteDatasource(
  */
 export async function publishDatasources(
   opts: DatasourceClientOptions,
-): Promise<Record<string, unknown>> {
-  return asRecord(
-    await request(opts, {
-      method: "POST",
-      path: "/api/v1/admin/publish",
-      body: {},
-      operation: "publish datasources",
-    }),
-  );
+): Promise<PublishResult> {
+  // Typed pass-through of the shared PublishResult core (#4156 — the SSOT in
+  // `@useatlas/types`). Deliberately NOT `.safeParse()`d + thrown like the
+  // `atlas sql` / `atlas metric` clients: those render structured column/row
+  // data a shape skew would mangle, whereas the publish command reads only a few
+  // counts and degrades a missing count to 0 (`runPublish`), so this client
+  // stays tolerant. The raw body is returned verbatim, so `--json` still emits
+  // the REST-only `archived` / `warnings` blocks the command layer ignores.
+  const raw = await request(opts, {
+    method: "POST",
+    path: "/api/v1/admin/publish",
+    body: {},
+    operation: "publish datasources",
+  });
+  return raw as PublishResult;
 }
 
 // ---------------------------------------------------------------------------

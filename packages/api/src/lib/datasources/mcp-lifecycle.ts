@@ -27,7 +27,7 @@
 
 import { Cause, Effect, ManagedRuntime } from "effect";
 import type { AtlasMode } from "@useatlas/types/auth";
-import type { WorkspaceId } from "@useatlas/types";
+import type { PublishResult, WorkspaceId } from "@useatlas/types";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
 import { connections } from "@atlas/api/lib/db/connection";
 import type { HealthCheckResult, DBType } from "@atlas/api/lib/db/connection";
@@ -245,16 +245,14 @@ function safeDbType(catalogSlug: string): string {
 
 // ── Publish (#4126) ─────────────────────────────────────────────────────
 
-/** Promotion counts returned by {@link publishWorkspaceDrafts}. */
-export interface PublishWorkspaceDraftsResult {
-  readonly promoted: {
-    readonly connections: number;
-    readonly entities: number;
-    readonly prompts: number;
-    readonly starterPrompts: number;
-  };
-  readonly deletedEntities: number;
-}
+/**
+ * Result of {@link publishWorkspaceDrafts} — the shared {@link PublishResult}
+ * wire type (#4156). The lib returns exactly the shared core (`promoted` +
+ * `deleted.entities`); the REST route and MCP tool extend it with their
+ * surface-specific extras (see {@link PublishResult}). Kept as a named alias so
+ * this module's callers keep a domain-local name.
+ */
+export type PublishWorkspaceDraftsResult = PublishResult;
 
 /**
  * Atomically promote every pending `draft` (and apply every `draft_delete`
@@ -297,7 +295,9 @@ export async function publishWorkspaceDrafts(orgId: string): Promise<PublishWork
         prompts: find("prompt_collections")?.promoted ?? 0,
         starterPrompts: find("query_suggestions")?.promoted ?? 0,
       },
-      deletedEntities: entitiesReport?.tombstonesApplied ?? 0,
+      // #4156 — `deleted.entities` (shared shape), NOT the old flat
+      // `deletedEntities`; mirrors the REST route's `deleted: { entities }`.
+      deleted: { entities: entitiesReport?.tombstonesApplied ?? 0 },
     };
 
     // Best-effort hot-register into the live ConnectionRegistry — same

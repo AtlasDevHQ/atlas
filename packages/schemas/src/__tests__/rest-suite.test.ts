@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ExecuteSqlRestResponseSchema } from "../execute-sql";
 import { RunMetricRestResponseSchema } from "../metric-run";
+import { PublishResultSchema } from "../mode";
 
 // These schemas validate untrusted server JSON, so fixtures cross the boundary
 // as `unknown` and are checked with `.safeParse()` (how the CLI consumes them).
@@ -59,5 +60,49 @@ describe("RunMetricRestResponseSchema (#4111)", () => {
   test("rejects a body missing the sql field", () => {
     const { sql: _sql, ...noSql } = scalar;
     expect(RunMetricRestResponseSchema.safeParse(noSql).success).toBe(false);
+  });
+});
+
+describe("PublishResultSchema (#4156)", () => {
+  const ok = {
+    promoted: { connections: 1, entities: 12, prompts: 0, starterPrompts: 2 },
+    deleted: { entities: 3 },
+  };
+
+  test("parses the shared publish-result core", () => {
+    const r = PublishResultSchema.safeParse(ok);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data).toEqual(ok);
+  });
+
+  test("strips REST-only extras (archived / warnings) to the shared core", () => {
+    const withExtras = {
+      ...ok,
+      archived: { connections: 0, entities: 0, prompts: 0 },
+      warnings: { incompleteLayers: [] },
+    };
+    const r = PublishResultSchema.safeParse(withExtras);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data).toEqual(ok);
+  });
+
+  test("rejects the pre-#4156 flat delete-count shapes", () => {
+    // `deleted_entities` (MCP) / `deletedEntities` (lib) are the drifted shapes
+    // this unification retired — the canonical field is nested `deleted.entities`.
+    expect(
+      PublishResultSchema.safeParse({ promoted: ok.promoted, deleted_entities: 3 }).success,
+    ).toBe(false);
+    expect(
+      PublishResultSchema.safeParse({ promoted: ok.promoted, deletedEntities: 3 }).success,
+    ).toBe(false);
+  });
+
+  test("rejects a negative count", () => {
+    expect(
+      PublishResultSchema.safeParse({
+        promoted: { ...ok.promoted, connections: -1 },
+        deleted: { entities: 0 },
+      }).success,
+    ).toBe(false);
   });
 });

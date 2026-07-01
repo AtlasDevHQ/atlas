@@ -69,3 +69,43 @@ export interface ModeStatusResponse {
    */
   readonly draftActivity: ModeDraftActivity | null;
 }
+
+/**
+ * Per-content-type promotion counts returned by the atomic publish operation
+ * (#4126) — one number per promotable content surface. Keys mirror the
+ * `promoted` block of {@link ModeStatusResponse}'s draft summary.
+ */
+export interface PublishPromotedCounts {
+  /** Datasource connections promoted `draft` → `published`. */
+  readonly connections: number;
+  /** Semantic entities promoted. */
+  readonly entities: number;
+  /** Prompt collections promoted. */
+  readonly prompts: number;
+  /** Starter-prompt suggestions promoted. */
+  readonly starterPrompts: number;
+}
+
+/**
+ * Shared wire type for the atomic publish operation's result — the single
+ * shape every publish surface keys off (#4156). Returned by the atomic publish
+ * endpoint (`POST /api/v1/admin/publish`), the MCP `publish_datasources` tool,
+ * and `atlas datasource publish` — all of which promote the same workspace-wide
+ * drafts and so must report the same counts.
+ *
+ * The delete-count field is `deleted.entities` on EVERY surface (this closes the
+ * pre-#4156 drift where REST used `deleted.entities`, MCP `deleted_entities`, and
+ * the lib `deletedEntities`). Surfaces that carry MORE than the shared core
+ * extend this type rather than reshaping it: the REST response adds `archived`
+ * (its phase-4 connection cascade) + `warnings` (partial-profile markers); the
+ * MCP tool adds `published: true`; the lib returns exactly this core.
+ */
+export interface PublishResult {
+  /** Per-content-type counts promoted `draft` → `published`. */
+  readonly promoted: PublishPromotedCounts;
+  /** Published rows removed by applying `draft_delete` tombstones. */
+  readonly deleted: {
+    /** Published entities superseded/removed by the promotion's tombstones. */
+    readonly entities: number;
+  };
+}

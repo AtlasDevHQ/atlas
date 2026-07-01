@@ -6,10 +6,10 @@
  *
  * The SDK's transport handles HTTP method dispatch internally: POST for
  * JSON-RPC, GET to open a notification stream, DELETE for session termination.
- * (The GET/POST responses are `text/event-stream`-encoded — that SSE framing is
- * Streamable HTTP's streaming wire format, NOT the deprecated HTTP+SSE
- * transport, which used a dedicated long-lived GET stream + a separate POST
- * message endpoint.)
+ * (GET, and request-bearing POST, responses are `text/event-stream`-encoded —
+ * that SSE framing is Streamable HTTP's streaming wire format, NOT the
+ * deprecated HTTP+SSE transport, which used a dedicated long-lived GET stream +
+ * a separate POST message endpoint. Notification-only POSTs return 202.)
  *
  * Endpoints:
  * - /mcp     — All MCP traffic (POST, GET, DELETE) delegated to the SDK transport
@@ -54,7 +54,7 @@ import {
   _setIdleTimeoutForTests,
 } from "./session-store.js";
 
-// Re-exported unchanged so the test seam keeps its import path (`../sse.js`).
+// Re-exported unchanged so the test seam keeps its import path (`../streamable-http.js`).
 // The override is module-scoped in `session-store.ts` (it tunes env-driven
 // timeout resolution, not any one server instance's store).
 export { _setIdleTimeoutForTests };

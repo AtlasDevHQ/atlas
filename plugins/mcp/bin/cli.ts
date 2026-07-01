@@ -231,7 +231,7 @@ interface CreateMcpServerOptions {
 interface ServerModule {
   createAtlasMcpServer: (opts?: CreateMcpServerOptions) => Promise<AtlasMcpServer>;
 }
-interface SseHandle {
+interface StreamableHttpHandle {
   server: { hostname: string; port: number };
   close(): Promise<void>;
 }
@@ -239,7 +239,7 @@ interface StreamableHttpModule {
   startStreamableHttpServer: (
     factory: () => Promise<AtlasMcpServer>,
     opts: { port: number },
-  ) => Promise<SseHandle>;
+  ) => Promise<StreamableHttpHandle>;
 }
 
 function formatErr(err: unknown): string {

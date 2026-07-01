@@ -107,7 +107,7 @@ const log = createLogger("mcp-hosted");
 // sweep, cap-check, reservation, GET/POST stream liveness — and is shared
 // verbatim with streamable-http.ts;
 // see `session-store.ts`. The cap resolver passed here is env-only (hosted has
-// no caller-pinned cap analogous to sse's `opts.maxSessions`).
+// no caller-pinned cap analogous to streamable-http's `opts.maxSessions`).
 
 const sessions = new McpSessionStore(() => resolveMaxSessions());
 

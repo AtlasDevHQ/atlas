@@ -308,7 +308,8 @@ export const staticPaths: Record<string, unknown> = {
   // -------------------------------------------------------------------
   // Hosted MCP — Streamable HTTP transport for MCP clients
   //
-  // The same path serves three verbs (see packages/mcp/src/hosted.ts:HOSTED_PATHS):
+  // The same path serves three verbs (packages/mcp/src/hosted.ts:HANDLED_METHODS)
+  // on both the canonical path and its /sse alias (hosted.ts:HOSTED_PATHS):
   //   POST   — JSON-RPC frames (client → server)
   //   GET    — opens the notification stream (server → client)
   //   DELETE — explicit session termination

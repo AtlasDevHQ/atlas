@@ -25,9 +25,11 @@
  * Web `/api/v1/chat` also spends Atlas tokens but streams via `runAgent`
  * directly and runs Gate 0 at the route (#3451) without the claim-gate: a
  * claim-gateable workspace is one whose owner has no verified credential
- * yet, so it cannot hold the web session that route requires. Deliberately
- * NOT used by the Gate-0-only surfaces either (the MCP `checksBilling`
- * tools, `executeSQL`, the setup/metrics routes): those spend no Atlas
+ * yet, so on production it cannot hold any credential that route accepts
+ * (session, API key, device-flow bearer — all bootstrap from a verified
+ * web sign-in). Deliberately NOT used by the Gate-0-only surfaces either
+ * (the MCP `checksBilling` tools, `executeSQL`, the setup/metrics routes):
+ * those spend no Atlas
  * tokens and must stay open pre-claim — that asymmetry is the point of
  * ADR-0018, and routing them through this seam would close the metered
  * trial's setup path.
@@ -64,9 +66,11 @@ export type AgentQueryGatesResult =
  * (the 80%→ceiling warning/metered bands, #4038) passed through for
  * surfaces that render it.
  *
- * Both underlying gates fail CLOSED on lookup errors (503-shaped blocks),
- * so this seam never converts an indeterminate billing/claim status into a
- * token spend.
+ * Both underlying gates fail CLOSED on status/claim lookup errors
+ * (503-shaped blocks), so this seam never converts an indeterminate
+ * billing/claim STATUS into a token spend. (Usage-read failures inside
+ * Gate 0 deliberately fail open per #3428, surfacing as an allowed-arm
+ * warning — an indeterminate usage amount, not an indeterminate status.)
  */
 export async function checkAgentQueryGates(
   orgId: string | undefined,

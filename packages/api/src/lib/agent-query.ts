@@ -56,8 +56,9 @@ export interface AgentQueryResult {
    */
   pendingApproval?: PendingApproval;
   /**
-   * #3419/#3420 — the 80–109% plan-usage warning band from the billing
-   * gate. Never blocks the run. Surfaces that render usage warnings
+   * #3419/#3420 — the plan-usage warning (80%→ceiling warning/metered
+   * bands, #4038) from the billing gate. Never blocks the run. Surfaces
+   * that render usage warnings
    * (the `/api/v1/query` JSON envelope) attach it to their response;
    * machine-initiated surfaces (chat platforms, scheduler) deliberately
    * leave it unrendered — the band is logged by `billing/enforcement.ts`

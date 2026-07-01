@@ -84,8 +84,8 @@ export async function reapUnclaimedGraceWorkspaces(
     //   - `trial_ends_at IS NOT NULL` + `< NOW()` — a STAMPED grace window has
     //     lapsed. A within-grace Workspace (future `trial_ends_at`) is left
     //     alone, and a NULL-clock trial is never reaped (unlike Gate 0's
-    //     `createdAt + TRIAL_DAYS` fallback — the reaper only eats what
-    //     `start_trial` explicitly stamped).
+    //     `createdAt + TRIAL_DAYS` fallback — the reaper only eats a trial
+    //     that carries a stamped clock).
     //   - operator-override guard         — never clobber an active
     //     `plan_override_until` grant (#3427), matching `reconcilePlanTiers`.
     //   - EXISTS unverified owner (`trial-state`) — UNCLAIMED. A claimed trial

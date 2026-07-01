@@ -22,7 +22,21 @@ Human-in-the-loop verification that a **real, end-to-end signup works through ea
 
 ## Flow (repeat per region: us → eu → apac)
 
-Start each region from a clean session: if already signed in, open the user menu → **Sign out**, then go to `/signup`.
+Start each region from a **truly clean slate — sign-out alone is NOT enough.** Signing out clears the Better-Auth session but **leaves the `atlas_region` cookie**, which pins the API base to the *previous* region (`packages/web/src/lib/api-url.ts:158` — `getApiUrl()` returns the pinned `apiUrl` ahead of the default). A leftover pin silently routes the pre-picker calls (`get-session` / `health` / `resolve-region`) — and any region **fast-path** that reads `getActiveRegion()` — at the **wrong region's edge**. ⚠️ On prod this is *more* dangerous than the staging CORS false-green: every region edge is a real, same-family host, so a stale pin **succeeds against the wrong region** with no error — masking a misroute or manufacturing a pass. So between regions: sign out (user menu → **Sign out** if signed in), then **purge the region pin + local state** before navigating to `/signup`:
+
+```js
+// browser_evaluate on app.useatlas.dev BEFORE going to /signup for the next region.
+() => {
+  const host = location.hostname; // app.useatlas.dev
+  for (const d of [host, "."+host, ".useatlas.dev"])
+    document.cookie = `atlas_region=; path=/; max-age=0; SameSite=Lax; domain=${d}`;
+  document.cookie = `atlas_region=; path=/; max-age=0; SameSite=Lax`;
+  try { localStorage.clear(); sessionStorage.clear(); } catch {}
+  return document.cookie; // confirm atlas_region is gone
+}
+```
+
+Then `browser_navigate` to `/signup` fresh, and confirm via `browser_network_requests` that the pre-picker calls target the region you're about to test (or the default `api.useatlas.dev` before the picker pins one) — **not** a leftover `api-eu`/`api-apac` from the prior iteration.
 
 1. **Account** — `https://app.useatlas.dev/signup`. Fill Name / Work email (`matt+<region>@useatlas.dev`) / Password. Screenshot. Click **Create account** → sends the OTP.
 2. **OTP (HITL hand-off)** — screenshot the "Enter your code" step, then **stop and ask the human for the 8-char code** from the inbox. Type it in; it auto-submits on the 8th char.

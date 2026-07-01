@@ -36,6 +36,8 @@ import {
   EXPLORE_TOOL_DESCRIPTION,
   LIST_ENTITIES_ERROR_CODES,
   LIST_ENTITIES_TOOL_DESCRIPTION,
+  QUERY_ERROR_CODES,
+  QUERY_TOOL_DESCRIPTION,
   RUN_METRIC_ERROR_CODES,
   RUN_METRIC_TOOL_DESCRIPTION,
   SEARCH_GLOSSARY_ERROR_CODES,
@@ -65,6 +67,8 @@ const RECOGNIZED_EXAMPLE_KEYS = [
   "matches", // searchGlossary response
   "entities", // listEntities response
   "count", // listEntities / searchGlossary response
+  "question", // query
+  "answer", // query response
 ] as const;
 const JSON_EXAMPLE_RE = new RegExp(
   `\\{[^{}]*"(?:${RECOGNIZED_EXAMPLE_KEYS.join("|")})"\\s*:[^{}]+\\}`,
@@ -83,6 +87,7 @@ const TOOLS: readonly ToolUnderRubric[] = [
   { name: "describeEntity", base: DESCRIBE_ENTITY_TOOL_DESCRIPTION, codes: DESCRIBE_ENTITY_ERROR_CODES },
   { name: "searchGlossary", base: SEARCH_GLOSSARY_TOOL_DESCRIPTION, codes: SEARCH_GLOSSARY_ERROR_CODES },
   { name: "runMetric", base: RUN_METRIC_TOOL_DESCRIPTION, codes: RUN_METRIC_ERROR_CODES },
+  { name: "query", base: QUERY_TOOL_DESCRIPTION, codes: QUERY_ERROR_CODES },
 ];
 
 function wordCount(text: string): number {
@@ -96,6 +101,7 @@ describe("MCP tool description rubric", () => {
       "executeSQL",
       "explore",
       "listEntities",
+      "query",
       "runMetric",
       "searchGlossary",
     ]);

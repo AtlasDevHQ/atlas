@@ -59,6 +59,12 @@ Use this whenever a metric exists for what the user asked — never re-derive me
 
 Don't use this when no metric id matches; fall back to \`executeSQL\` with a query pattern from \`describeEntity\`. Avoid passing \`filters\` — pass-through is reserved for future work and is rejected today.`;
 
+export const QUERY_TOOL_DESCRIPTION = `Ask Atlas's server-side analyst agent a natural-language question; it explores the semantic layer, writes and runs the SELECTs itself, and returns a prose \`answer\` plus every SQL statement it ran and the result rows. This is the recommended path for question-answering — the agent knows the catalog, glossary, canonical metrics, joins, and RLS, so it composes better SQL than a generic client writing raw SQL blind. It runs a second server-side LLM and spends Atlas plan tokens; prefer it when answer quality matters. Example call: \`{ "question": "top 5 products by revenue last quarter" }\`. Example response: \`{ "answer": "...", "sql": ["SELECT ..."], "data": [...] }\`.
+
+Use this when the user asks a data question in words and you want a high-quality answer without hand-writing SQL.
+
+Don't use this when you already have exact SQL — call \`executeSQL\`, the raw escape hatch — or for catalog discovery (\`listEntities\` / \`describeEntity\`).`;
+
 // ── Per-tool error catalogs ───────────────────────────────────────────
 //
 // Surfaced in tool descriptions via `withErrorContract` so an agent can
@@ -115,6 +121,19 @@ export const RUN_METRIC_ERROR_CODES = [
   "query_timeout",
   "rate_limited",
   "billing_blocked",
+  "internal_error",
+] as const satisfies readonly AtlasMcpToolErrorCode[];
+// #4094 — the NL-agent `query` tool. Its datasource work happens inside the
+// agent loop (executeSQL swallows per-query SQL failures into the answer, so
+// no validation/rls/timeout code surfaces at the tool boundary). What DOES
+// surface: the gate-0 billing block (`billing_blocked`), the abuse-throttle /
+// per-client rate limit (`rate_limited`), and the catch-all (`internal_error`,
+// which also carries the fail-closed claim-check-unverifiable case). The
+// unclaimed-trial claim gate maps to `billing_blocked` (resolve on the web),
+// reusing the closed catalog rather than minting a new code.
+export const QUERY_ERROR_CODES = [
+  "billing_blocked",
+  "rate_limited",
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
 

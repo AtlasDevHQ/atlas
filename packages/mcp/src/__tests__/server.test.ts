@@ -60,7 +60,7 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
 const { createAtlasMcpServer } = await import("../server.js");
 
 describe("MCP server integration", () => {
-  it("creates a server and lists explore + executeSQL + the four typed semantic tools", async () => {
+  it("creates a server and lists explore + executeSQL + query + the four typed semantic tools", async () => {
     const server = await createAtlasMcpServer({ actor: TEST_ACTOR });
     const client = new Client({ name: "test-client", version: "0.0.1" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -82,6 +82,7 @@ describe("MCP server integration", () => {
       "list_datasources",
       "profile_datasource",
       "publish_datasources",
+      "query",
       "restore_datasource",
       "runMetric",
       "searchGlossary",

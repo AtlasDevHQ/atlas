@@ -330,6 +330,15 @@ Atlas ships with a NovaMart demo dataset (orders, customers, sellers, returns) �
 
 If your agent doesn't see the Atlas tools at all, **restart the client** — most MCP clients only re-read their config at startup.
 
+### Two ways to ask: `query` vs `executeSQL`
+
+There are two shapes of data access over MCP, and the **recommended** one is the high-level `query` tool:
+
+- **`query` (recommended)** — hand Atlas a **natural-language question** and let *Atlas's own server-side agent* answer it. Atlas explores its semantic layer, picks the right entities and canonical metrics, writes and runs the SQL, and returns a prose `answer` plus the exact SQL it ran and the result rows. Because it knows your catalog, glossary, joins, and RLS, it composes better SQL than a generic client writing raw SQL blind. Example: `{ "question": "top 5 customers by revenue last quarter" }`. Note it runs a second, server-side LLM and **spends your Atlas plan tokens** (your client's model already paid once), so reach for it when answer quality on a complex schema matters most.
+- **`executeSQL` (advanced / raw escape hatch)** — you (or your client's model) already wrote the exact `SELECT`; Atlas validates it through the [SQL pipeline](/security/sql-validation) and runs it. No Atlas-agent tokens are spent — your client's model did the SQL authoring. Use it when you want full control over the query, or when the question is simple enough that your client's own model writes correct SQL against the semantic layer's `describeEntity` output.
+
+Both clear the same dispatch gate (billing solvency → action policy → `mcp:write` → RBAC → approval) and land the same `origin=mcp` audit trail; `query` additionally runs the **claim gate** (unclaimed-trial metering) because it spends Atlas plan tokens.
+
 ---
 
 ## Client status

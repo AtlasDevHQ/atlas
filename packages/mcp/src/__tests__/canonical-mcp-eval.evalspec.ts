@@ -599,6 +599,8 @@ describe("MCP path canonical eval (#2074)", () => {
         "listEntities",
         "list_datasources",
         "profile_datasource",
+        "publish_datasources",
+        "query",
         "restore_datasource",
         "runMetric",
         "searchGlossary",

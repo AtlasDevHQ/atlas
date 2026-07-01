@@ -5,10 +5,11 @@
  *
  * `atlas login` runs the OAuth 2.0 device flow (RFC 8628): the CLI prints a
  * user code + this page's URL. A signed-in human lands here (the plugin's
- * `verificationUri`), confirms the code, and approves — handing the decision to
- * Better Auth via `authClient.device.approve({ userCode })`. The CLI, polling
- * `/device/token`, then receives a workspace-scoped session bearer stamped
- * `origin='cli'`.
+ * `verificationUri`), confirms the code, then *claims* it (GET `/device` via
+ * `authClient.device`) and submits the decision. Better Auth requires the claim
+ * before it will accept EITHER `authClient.device.approve` or `.deny` (#4167).
+ * The CLI, polling `/device/token`, then receives a workspace-scoped session
+ * bearer stamped `origin='cli'`.
  *
  * Not signed in? We bounce to /login carrying a redirect back to this exact
  * URL (the user code rides in the query string), so the user returns here
@@ -66,6 +67,21 @@ function DeviceApproval() {
     setSubmitting(decision);
     setError(null);
     try {
+      // Claim the code for THIS signed-in session first (GET /device via the
+      // base `authClient.device` call). Better Auth's device plugin rejects
+      // approve/deny until a verifying session has claimed the code — without
+      // this the human's first click always errors "Device code has not been
+      // claimed by a verifying session…" (#4167). Claiming and deciding ride
+      // the same session on the same click, so there's no claim/approve race.
+      const claim = await authClient.device?.({ query: { user_code: trimmedCode } });
+      if (claim?.error) {
+        // Surfaced to the user below; also keep the raw cause in the console so
+        // a support case for THIS flow (the one #4167 fixes) is reconstructable
+        // when deviceErrorMessage degrades an unexpected shape to its default.
+        console.debug("device code claim failed", claim.error);
+        setError(deviceErrorMessage(claim.error));
+        return;
+      }
       const res = await action({ userCode: trimmedCode });
       if (res?.error) {
         setError(deviceErrorMessage(res.error));
@@ -73,6 +89,7 @@ function DeviceApproval() {
       }
       setOutcome(decision === "approve" ? "approved" : "denied");
     } catch (err) {
+      console.debug("device approval threw", err);
       setError(deviceErrorMessage(err));
     } finally {
       setSubmitting(null);

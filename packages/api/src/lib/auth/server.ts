@@ -57,6 +57,7 @@ import { deriveRegionApiUrl } from "@atlas/api/lib/residency/origins";
 // eagerly without importing better-auth (#3045). Re-exported here so the auth
 // surface (and its tests) keep a single import site.
 import { resolvePasskeyRpId } from "@atlas/api/lib/auth/rpid";
+import { resolveDeviceVerificationUri } from "@atlas/api/lib/auth/device-verification-uri";
 import { resolveOAuthValidAudiences } from "@atlas/api/lib/auth/oauth-audiences";
 import { ATLAS_OAUTH_SCOPES } from "@atlas/api/lib/auth/oauth-scopes";
 export { resolvePasskeyRpId, DEFAULT_RP_ID } from "@atlas/api/lib/auth/rpid";
@@ -2816,8 +2817,10 @@ export function buildPlugins() {
   plugins.push(
     deviceAuthorization({
       // The web page where a signed-in human enters the user code and
-      // approves/denies. Lives in packages/web at src/app/device/page.tsx.
-      verificationUri: "/device",
+      // approves/denies. Lives in packages/web at src/app/device/page.tsx —
+      // the WEB origin, so this MUST be absolute or the CLI-printed URL 404s on
+      // the API host (#4167). See `resolveDeviceVerificationUri` for why.
+      verificationUri: resolveDeviceVerificationUri(getWebOrigin()),
       // `schema: {}` works around a better-auth 1.6.20 × zod 4.4.3
       // incompatibility: the plugin's options schema declares
       // `schema: z.custom(() => true)` WITHOUT `.optional()`, and zod v4

@@ -329,8 +329,8 @@ async function main() {
       );
 
       if (transportFlag === "sse") {
-        const { startSseServer } = await import("@atlas/mcp/sse");
-        const handle = await startSseServer(
+        const { startStreamableHttpServer } = await import("@atlas/mcp/streamable-http");
+        const handle = await startStreamableHttpServer(
           () => createAtlasMcpServer(),
           { port: portFlag },
         );

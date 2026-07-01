@@ -21,13 +21,13 @@ mock.module("@modelcontextprotocol/sdk/server/stdio.js", () => ({
   StdioServerTransport: class MockStdioTransport {},
 }));
 
-const mockSseClose = mock(async () => {});
-const mockSseServer = { hostname: "0.0.0.0", port: 8080 };
+const mockStreamableHttpClose = mock(async () => {});
+const mockStreamableHttpServer = { hostname: "0.0.0.0", port: 8080 };
 
-mock.module("@atlas/mcp/sse", () => ({
-  startSseServer: mock(async () => ({
-    server: mockSseServer,
-    close: mockSseClose,
+mock.module("@atlas/mcp/streamable-http", () => ({
+  startStreamableHttpServer: mock(async () => ({
+    server: mockStreamableHttpServer,
+    close: mockStreamableHttpClose,
   })),
 }));
 
@@ -387,7 +387,7 @@ describe("mcpPlugin — SSE lifecycle", () => {
   beforeEach(() => {
     mockConnect.mockClear();
     mockClose.mockClear();
-    mockSseClose.mockClear();
+    mockStreamableHttpClose.mockClear();
   });
 
   test("SSE teardown closes the SSE handle", async () => {
@@ -398,7 +398,7 @@ describe("mcpPlugin — SSE lifecycle", () => {
     await plugin.teardown!();
 
     // SSE handle manages per-session servers internally; plugin only closes the handle
-    expect(mockSseClose).toHaveBeenCalledTimes(1);
+    expect(mockStreamableHttpClose).toHaveBeenCalledTimes(1);
   });
 
   test("SSE start → health → stop lifecycle works", async () => {

@@ -522,6 +522,70 @@ describe("hosted MCP — bearer enforcement", () => {
     }
   });
 
+  it("resolves BOTH the canonical /mcp/{id} and the legacy /mcp/{id}/sse alias to the same handler (#4169)", async () => {
+    // #4169 dropped the misleading `/sse` suffix from the canonical hosted
+    // path but kept it as a back-compat alias (HOSTED_PATHS). Both must reach
+    // the bearer gate — a 401 (not a 404) proves the route is wired. The rest
+    // of this suite already exercises the `/sse` alias end-to-end; this pins
+    // that the bare canonical path is not a 404 dead-end.
+    const handle = await startServer();
+    try {
+      for (const path of [`/mcp/${ORG_A}`, `/mcp/${ORG_A}/sse`]) {
+        const res = await fetch(`${handle.url}${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+        });
+        expect(res.status).toBe(401);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe("missing_bearer");
+      }
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("authenticated initialize on the BARE canonical /mcp/{id} path issues a session (#4169)", async () => {
+    // The 401 test above proves both paths reach the bearer gate. This proves
+    // the canonical path works all the way through — an authenticated
+    // Streamable HTTP `initialize` on the bare `/mcp/{id}` (no /sse) returns 200
+    // and issues an `mcp-session-id`. buildMcpConnectUrl now hands real trial
+    // clients this bare URL exclusively, so it's the primary production path.
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      jti: "jti_canonical",
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "initialize",
+          id: 1,
+          params: {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+            clientInfo: { name: "canonical", version: "0.0.1" },
+          },
+        }),
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("mcp-session-id")).toBeTruthy();
+    } finally {
+      handle.close();
+    }
+  });
+
   it("returns 401 when verifyAccessToken throws (bad signature / audience / issuer / expired)", async () => {
     // verifyAccessToken collapses these distinct failure modes into a
     // single thrown Error / APIError("UNAUTHORIZED"). Our route

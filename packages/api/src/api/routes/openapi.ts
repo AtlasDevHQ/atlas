@@ -306,25 +306,31 @@ export const staticPaths: Record<string, unknown> = {
   },
 
   // -------------------------------------------------------------------
-  // Hosted MCP — Server-Sent Events transport for MCP clients
+  // Hosted MCP — Streamable HTTP transport for MCP clients
   //
-  // The same path serves three verbs (see packages/mcp/src/hosted.ts:7-9):
+  // The same path serves three verbs (packages/mcp/src/hosted.ts:HANDLED_METHODS)
+  // on both the canonical path and its /sse alias (hosted.ts:HOSTED_PATHS):
   //   POST   — JSON-RPC frames (client → server)
-  //   GET    — SSE notifications (server → client)
+  //   GET    — opens the notification stream (server → client)
   //   DELETE — explicit session termination
+  //
+  // This is the Streamable HTTP transport; the `text/event-stream` framing on
+  // GET/POST is its streaming wire format, NOT the deprecated HTTP+SSE
+  // transport. The canonical path dropped its misleading `/sse` suffix in
+  // #4169; the legacy `/mcp/{workspace_id}/sse` alias still resolves.
   //
   // Auth, workspace claim binding, and session-cap behavior are shared
   // across all three. See the MCP authorization spec for the full
   // request/response contract on the JSON-RPC payloads.
   // -------------------------------------------------------------------
-  "/mcp/{workspace_id}/sse": {
+  "/mcp/{workspace_id}": {
     get: {
-      operationId: "hostedMcpSseStream",
-      summary: "Hosted MCP — SSE notifications stream",
+      operationId: "hostedMcpStream",
+      summary: "Hosted MCP — notification stream",
       description:
-        "Server-sent-events stream for MCP server → client notifications. " +
-        "Companion to `POST /mcp/{workspace_id}/sse` (JSON-RPC frames) and " +
-        "`DELETE /mcp/{workspace_id}/sse` (session termination). " +
+        "Opens the MCP server → client notification stream (text/event-stream). " +
+        "Companion to `POST /mcp/{workspace_id}` (JSON-RPC frames) and " +
+        "`DELETE /mcp/{workspace_id}` (session termination). " +
         "Authentication is OAuth 2.1 + RFC 9728: clients first hit " +
         "`/.well-known/oauth-protected-resource/mcp/{workspace_id}` to discover the " +
         "authorization server, complete the OAuth flow, then connect with " +
@@ -356,10 +362,10 @@ export const staticPaths: Record<string, unknown> = {
       },
     },
     post: {
-      operationId: "hostedMcpSseRequest",
+      operationId: "hostedMcpRequest",
       summary: "Hosted MCP — submit a JSON-RPC frame",
       description:
-        "Client → server JSON-RPC frames over the MCP transport. Same auth + workspace-claim contract as `GET /mcp/{workspace_id}/sse`. Payload shape is defined by the MCP protocol spec; Atlas accepts any conformant JSON-RPC request (initialize, tools/list, tools/call, prompts/list, prompts/get, …).",
+        "Client → server JSON-RPC frames over the MCP transport. Same auth + workspace-claim contract as `GET /mcp/{workspace_id}`. Payload shape is defined by the MCP protocol spec; Atlas accepts any conformant JSON-RPC request (initialize, tools/list, tools/call, prompts/list, prompts/get, …).",
       tags: ["MCP"],
       security: [{ bearerAuth: [] }],
       parameters: [
@@ -388,10 +394,10 @@ export const staticPaths: Record<string, unknown> = {
       },
     },
     delete: {
-      operationId: "hostedMcpSseTerminate",
+      operationId: "hostedMcpTerminate",
       summary: "Hosted MCP — terminate the session",
       description:
-        "Explicit session termination. Drops the server-side session state and any in-flight SSE stream for the caller's workspace. Same auth + workspace-claim contract as the other verbs.",
+        "Explicit session termination. Drops the server-side session state and any in-flight notification stream for the caller's workspace. Same auth + workspace-claim contract as the other verbs.",
       tags: ["MCP"],
       security: [{ bearerAuth: [] }],
       parameters: [

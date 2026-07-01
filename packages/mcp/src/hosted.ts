@@ -4,9 +4,14 @@
  * Self-hosted users connect via stdio (the bunx installer in @useatlas/mcp).
  * SaaS / remote users connect via this hosted endpoint:
  *
- *   POST   /mcp/{workspace_id}/sse   — JSON-RPC frames
- *   GET    /mcp/{workspace_id}/sse   — SSE notifications
- *   DELETE /mcp/{workspace_id}/sse   — explicit session termination
+ *   POST   /mcp/{workspace_id}   — JSON-RPC frames
+ *   GET    /mcp/{workspace_id}   — opens the notification stream
+ *   DELETE /mcp/{workspace_id}   — explicit session termination
+ *
+ * (The legacy `/mcp/{workspace_id}/sse` alias still resolves — see
+ * {@link HOSTED_PATHS}. This is the Streamable HTTP transport; the
+ * `text/event-stream` framing on GET/POST is its streaming wire format, not the
+ * deprecated HTTP+SSE transport.)
  *
  * ── Authentication (#2024 PR C) ────────────────────────────────────
  *
@@ -96,12 +101,13 @@ const log = createLogger("mcp-hosted");
 // ── Module-scoped session store (#3600) ────────────────────────────
 //
 // The hosted transport owns a SINGLE module-scoped store: every per-region
-// request shares one cap / session map. (sse.ts, by contrast, constructs one
-// store PER `startSseServer` call — its intentional shape difference.) The
-// store owns the session lifecycle — register, dispatch, sweep, cap-check,
-// reservation, GET/POST stream liveness — and is shared verbatim with sse.ts;
+// request shares one cap / session map. (streamable-http.ts, by contrast,
+// constructs one store PER `startStreamableHttpServer` call — its intentional
+// shape difference.) The store owns the session lifecycle — register, dispatch,
+// sweep, cap-check, reservation, GET/POST stream liveness — and is shared
+// verbatim with streamable-http.ts;
 // see `session-store.ts`. The cap resolver passed here is env-only (hosted has
-// no caller-pinned cap analogous to sse's `opts.maxSessions`).
+// no caller-pinned cap analogous to streamable-http's `opts.maxSessions`).
 
 const sessions = new McpSessionStore(() => resolveMaxSessions());
 
@@ -1177,12 +1183,39 @@ function wwwAuthenticateHeader(
   return `Bearer realm="Atlas MCP", resource_metadata="${resourceMetadata}"${scopeAttr}`;
 }
 
+/**
+ * The paths the hosted endpoint answers on (relative to its `/mcp` mount):
+ *   - `/:workspaceId`     → `/mcp/{workspaceId}`     — the canonical Streamable HTTP path.
+ *   - `/:workspaceId/sse` → `/mcp/{workspaceId}/sse` — a back-compat alias.
+ *
+ * This endpoint speaks the **Streamable HTTP** MCP transport (one URL handling
+ * POST/GET/DELETE with an `mcp-session-id` header), NOT the deprecated HTTP+SSE
+ * transport that a trailing `/sse` connotes. #4169 dropped the misleading
+ * suffix from the canonical path (matching what #3886 did for the onboarding
+ * endpoint); the `/sse` alias stays so any client already pinned to it keeps
+ * working. Both patterns capture the same `workspaceId` param. The onboarding
+ * router is mounted at `/mcp/onboarding` BEFORE this one, so the literal
+ * `onboarding` segment is matched there, never by the bare `/:workspaceId`.
+ */
+const HOSTED_PATHS = ["/:workspaceId", "/:workspaceId/sse"];
+
 export function createHostedMcpRouter(): Hono {
   const router = new Hono();
 
-  router.on(HANDLED_METHODS, "/:workspaceId/sse", async (c) => {
+  router.on(HANDLED_METHODS, HOSTED_PATHS, async (c) => {
     const requestId = crypto.randomUUID();
     const pathWorkspaceId = c.req.param("workspaceId");
+    // Unreachable in practice: every HOSTED_PATHS pattern binds `:workspaceId`.
+    // But the array-of-paths route form widens `param()` to `string | undefined`
+    // (Hono can't prove the segment across all patterns), so narrow it here and
+    // fail closed — if a future path is ever added without the segment, that's a
+    // 404, never an `undefined` flowing into the bearer/workspace checks.
+    if (!pathWorkspaceId) {
+      return c.json(
+        { error: "not_found", message: "Missing workspace id in path.", requestId },
+        404,
+      );
+    }
 
     const verified = await verifyMcpBearer(c.req.raw, requestId);
     if (verified.kind === "fail") {

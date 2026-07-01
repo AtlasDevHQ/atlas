@@ -67,9 +67,9 @@ export function buildMcpPlugin(
       if (config.transport === "sse") {
         // Dynamic import to avoid pulling in @atlas/mcp (and its transitive
         // @atlas/api deps) at module evaluation time.
-        const { startSseServer } = await import("@atlas/mcp/sse");
+        const { startStreamableHttpServer } = await import("@atlas/mcp/streamable-http");
         const { createAtlasMcpServer } = await import("@atlas/mcp/server");
-        const handle = await startSseServer(
+        const handle = await startStreamableHttpServer(
           () => createAtlasMcpServer({ skipConfig: true }),
           { port: config.port ?? 8080 },
         );

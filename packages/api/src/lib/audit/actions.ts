@@ -436,7 +436,7 @@ export const ADMIN_ACTIONS = {
   },
   /**
    * Hosted MCP session lifecycle (#2024 PR C). Emitted on every new
-   * session-init at `/mcp/{workspace_id}/sse` — sampled per session,
+   * session-init at `/mcp/{workspace_id}` — sampled per session,
    * not per JSON-RPC frame, since a single agent connection can issue
    * thousands of tool calls. Metadata carries `sessionId`, `orgId`,
    * `clientId` (the OAuth client_id, e.g. `claude-desktop` or a DCR

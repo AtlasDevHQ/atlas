@@ -13,9 +13,9 @@
  * the `@atlas/api` workspace dependency) off the import path entirely when
  * telemetry is disabled.
  *
- * Telemetry lifecycle is owned by the PROCESS entry, not the SSE library: the
- * NodeSDK installs global providers, so the entry point inits once at boot and
- * shuts down on SIGINT/SIGTERM. `startSseServer` / `createAtlasMcpServer` stay
+ * Telemetry lifecycle is owned by the PROCESS entry, not the transport library:
+ * the NodeSDK installs global providers, so the entry point inits once at boot
+ * and shuts down on SIGINT/SIGTERM. `startStreamableHttpServer` / `createAtlasMcpServer` stay
  * free of process-global state so they remain safe to embed (and to call from
  * tests).
  */

@@ -114,7 +114,7 @@ export interface EvalAuthFixture {
 }
 
 export interface EvalAuthOptions {
-  /** Hono app that mounts /mcp/{workspace_id}/sse — supplied by the eval. */
+  /** Hono app that mounts /mcp/{workspace_id} — supplied by the eval. */
   readonly mcpRouter: Hono;
   /** Email for the provisioned admin. Defaults to `eval@atlas.test`. */
   readonly userEmail?: string;

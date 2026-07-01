@@ -1,19 +1,19 @@
 /**
  * `McpSessionStore` — the single owner of the Streamable-HTTP session
- * lifecycle shared by both MCP transports (`hosted.ts` + `sse.ts`).
+ * lifecycle shared by both MCP transports (`hosted.ts` + `streamable-http.ts`).
  *
  * ── Why this exists (#3600) ────────────────────────────────────────
  *
- * `hosted.ts` (the SaaS per-region Hono router) and `sse.ts` (the
+ * `hosted.ts` (the SaaS per-region Hono router) and `streamable-http.ts` (the
  * self-hosted `--transport sse` standalone Bun server) carried the SAME
  * session-lifecycle logic twice — the `SessionEntry` shape, the
  * `resolveMaxSessions` / `sessionIdleTimeoutMs` / `maxHeldStreamAgeMs`
  * env resolution, the idle-session `sweep`, the `pendingReservations`
  * TOCTOU cap guard, the GET-stream / POST-stream liveness wiring
  * (`lastSeenAt` / `activeStreams` / `streamOpenedAt`), and the
- * `_sweepIdleSessionsForTests` test seam. `sse.ts`'s own docstring
+ * `_sweepIdleSessionsForTests` test seam. `streamable-http.ts`'s own docstring
  * admitted it mirrored `hosted.ts` "kept in lockstep"; the #3527 backport
- * (sse re-acquiring hardening hosted already had) was the structural tell
+ * (streamable-http re-acquiring hardening hosted already had) was the structural tell
  * that the duplication had already drifted once and been manually re-synced.
  *
  * This module collapses that duplicated surface into one tested unit. The
@@ -25,8 +25,8 @@
  *
  *   - **hosted** constructs ONE module-scoped store (its session map was
  *     module-scoped: all per-region requests share one cap).
- *   - **sse** constructs one store PER `startSseServer` call (each
- *     standalone server owns its own cap / session map).
+ *   - **streamable-http** constructs one store PER `startStreamableHttpServer`
+ *     call (each standalone server owns its own cap / session map).
  *
  * The store is a plain class instance, so both lifetimes fall out of
  * *where the caller constructs it* — module scope vs. factory closure.
@@ -96,7 +96,7 @@ export interface SessionEntry {
 // The cap resolves through the env-profile (`resolveMcpMaxSessions`): the
 // `ATLAS_MCP_MAX_SESSIONS` override wins when a positive integer, otherwise
 // the deploy-env profile default (100) applies. An explicit value passed by
-// the caller (sse's `opts.maxSessions`) always wins over the env. The
+// the caller (streamable-http's `opts.maxSessions`) always wins over the env. The
 // resolver is pure and cannot log, so the malformed-override warn lives here
 // at the call site where a logger is available.
 
@@ -230,7 +230,7 @@ export function maxHeldStreamAgeMs(): number {
  * Transport-specific bits the store needs to materialize one new session.
  * Both transports supply the same two steps; only their bodies differ:
  *
- *   - `createServer` — hosted builds a bearer-bound `McpServer`; sse just
+ *   - `createServer` — hosted builds a bearer-bound `McpServer`; streamable-http just
  *     calls the caller's factory.
  *   - `onRegistered` — fires inside `onsessioninitialized` AFTER the entry
  *     is stored, so hosted can emit its `mcp_session.start` audit with the
@@ -260,7 +260,7 @@ export class McpSessionStore {
   constructor(
     /**
      * Resolves the concurrent-session cap for THIS store. hosted passes the
-     * env-only resolver; sse passes one closing over its explicit
+     * env-only resolver; streamable-http passes one closing over its explicit
      * `opts.maxSessions` so a caller-pinned cap wins over the env.
      */
     private readonly resolveCap: () => number,
@@ -355,7 +355,7 @@ export class McpSessionStore {
    *
    * `wrap` lets a caller run the transport's `handleRequest` inside an
    * ambient context. hosted threads the freshly-resolved live actor through
-   * `withLiveActor` so dispatch-gate gate-3 is revocation-immediate; sse
+   * `withLiveActor` so dispatch-gate gate-3 is revocation-immediate; streamable-http
    * passes no wrapper.
    */
   async dispatchExisting(
@@ -533,7 +533,7 @@ export class McpSessionStore {
   /**
    * Tear down every live session and reset the reservation counter. Takes
    * ownership of the entries and clears the map first to prevent
-   * callback-triggered double-cleanup. Used by `sse.ts`'s `close()` and by
+   * callback-triggered double-cleanup. Used by `streamable-http.ts`'s `close()` and by
    * `hosted.ts`'s test-reset seam.
    */
   async reset(): Promise<void> {

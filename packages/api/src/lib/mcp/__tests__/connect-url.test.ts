@@ -37,15 +37,15 @@ describe("buildMcpConnectUrl", () => {
     mockLogWarn.mockClear();
   });
 
-  it("builds /mcp/{workspaceId}/sse from an explicit base override", () => {
+  it("builds the canonical /mcp/{workspaceId} (no /sse) from an explicit base override", () => {
     expect(buildMcpConnectUrl("org_123", "https://example.test")).toBe(
-      "https://example.test/mcp/org_123/sse",
+      "https://example.test/mcp/org_123",
     );
   });
 
   it("trims trailing slashes from the base", () => {
     expect(buildMcpConnectUrl("org_123", "https://example.test/")).toBe(
-      "https://example.test/mcp/org_123/sse",
+      "https://example.test/mcp/org_123",
     );
   });
 
@@ -57,7 +57,7 @@ describe("buildMcpConnectUrl", () => {
       "https://mcp-eu.useatlas.dev",
     );
     expect(buildMcpConnectUrl("org_x", "https://api-eu.useatlas.dev")).toBe(
-      "https://mcp-eu.useatlas.dev/mcp/org_x/sse",
+      "https://mcp-eu.useatlas.dev/mcp/org_x",
     );
   });
 
@@ -65,12 +65,12 @@ describe("buildMcpConnectUrl", () => {
     delete process.env.ATLAS_PUBLIC_API_URL;
     process.env.BETTER_AUTH_URL = "https://auth.example.test";
     expect(buildMcpConnectUrl("org_a")).toBe(
-      "https://auth.example.test/mcp/org_a/sse",
+      "https://auth.example.test/mcp/org_a",
     );
 
     process.env.ATLAS_PUBLIC_API_URL = "https://public.example.test";
     expect(buildMcpConnectUrl("org_a")).toBe(
-      "https://public.example.test/mcp/org_a/sse",
+      "https://public.example.test/mcp/org_a",
     );
   });
 
@@ -95,7 +95,7 @@ describe("buildMcpConnectUrl", () => {
     // different fallback is caught.
     delete process.env.ATLAS_PUBLIC_API_URL;
     delete process.env.BETTER_AUTH_URL;
-    expect(buildMcpConnectUrl("org_z")).toBe("/mcp/org_z/sse");
+    expect(buildMcpConnectUrl("org_z")).toBe("/mcp/org_z");
     // The warn is the actual point of the fix — surface the misconfiguration
     // rather than silently handing back a relative path. Assert it fired with
     // the workspace id so a regression that drops the warn is caught.
@@ -105,7 +105,7 @@ describe("buildMcpConnectUrl", () => {
 
   it("does NOT warn when a base resolves", () => {
     expect(buildMcpConnectUrl("org_ok", "https://example.test")).toBe(
-      "https://example.test/mcp/org_ok/sse",
+      "https://example.test/mcp/org_ok",
     );
     expect(mockLogWarn).not.toHaveBeenCalled();
   });

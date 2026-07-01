@@ -92,8 +92,8 @@ async function main() {
     await initializeConfig();
     const actor = await resolveMcpActor();
 
-    const { startSseServer } = await import("../src/sse.js");
-    const handle = await startSseServer(
+    const { startStreamableHttpServer } = await import("../src/streamable-http.js");
+    const handle = await startStreamableHttpServer(
       () => createAtlasMcpServer({ skipConfig: true, actor, transport: "sse" }),
       { port, corsOrigin },
     );

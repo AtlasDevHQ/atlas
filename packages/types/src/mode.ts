@@ -72,8 +72,10 @@ export interface ModeStatusResponse {
 
 /**
  * Per-content-type promotion counts returned by the atomic publish operation
- * (#4126) — one number per promotable content surface. Keys mirror the
- * `promoted` block of {@link ModeStatusResponse}'s draft summary.
+ * (#4126) — one number per promotable content surface. These are the four
+ * surfaces the publish flow promotes, a subset of {@link ModeDraftCounts}: that
+ * type's `entityEdits` fold into `entities`, and its `entityDeletes` become the
+ * separate {@link PublishResult.deleted} `entities` count.
  */
 export interface PublishPromotedCounts {
   /** Datasource connections promoted `draft` → `published`. */

@@ -152,6 +152,20 @@ describe("datasource-client route mapping (#4044)", () => {
     expect(calls[0].url).toBe(`${BASE}/api/v1/admin/publish`);
     expect(JSON.parse(calls[0].body!)).toEqual({});
     expect(out.promoted).toEqual({ connections: 1, entities: 2, prompts: 0, starterPrompts: 0 });
+    // Lock the delete-count pass-through at the client boundary too (#4156).
+    expect(out.deleted).toEqual({ entities: 0 });
+  });
+
+  it("publish surfaces a typed error on an unexpected 200 shape, not a silent no-op (#4156)", async () => {
+    // A 200 whose body isn't a real PublishResult — version skew, or a proxy /
+    // captive portal answering 200 with HTML. Must throw (so the operator sees
+    // it) rather than pass an empty shape that `runPublish` degrades to
+    // "Nothing to publish".
+    const { fetchImpl } = stubFetch(200, { promoted: { connections: 1 } });
+    const err = await publishDatasources(opts(fetchImpl)).catch((e) => e);
+    expect(err).toBeInstanceOf(DatasourceCliError);
+    expect((err as DatasourceCliError).kind).toBe("request_failed");
+    expect((err as DatasourceCliError).message).toContain("unexpected response shape");
   });
 
   it("create → POST /api/v1/admin/connections with the secret url in the body", async () => {

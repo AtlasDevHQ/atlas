@@ -121,13 +121,13 @@ export type PublishResponse = z.infer<typeof PublishResponseSchema>;
 // #4156 drift guard: the REST response must stay a structural superset of the
 // shared `PublishResult` core (promoted counts + `deleted.entities`) so the
 // REST / MCP / CLI publish surfaces can't diverge on the delete-count field
-// name. Reshaping the core here (e.g. `deleted` → `deleted_entities`, or a
-// promoted-count rename) fails this assignment at compile time. The REST schema
-// itself stays local hono-`z` because `@useatlas/schemas` carries no
-// `.openapi()` metadata and this response adds the REST-only `archived` +
-// `warnings` blocks on top of the shared core.
-const _publishResponseConformsToShared: PublishResult =
-  undefined as unknown as PublishResponse;
+// name. This never-called function fails to compile if the REST core reshapes
+// (e.g. `deleted` → `deleted_entities`, or a promoted-count rename); the
+// `archived` + `warnings` extras don't break it (a superset is assignable to
+// the core). The REST schema itself stays local hono-`z` because
+// `@useatlas/schemas` carries no `.openapi()` metadata. Mirrors the guard idiom
+// in `packages/mcp/src/structured-output.ts`.
+const _assertPublishResponseIsShared = (r: PublishResponse): PublishResult => r;
 
 // ---------------------------------------------------------------------------
 // Route definition

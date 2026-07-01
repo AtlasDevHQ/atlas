@@ -197,6 +197,14 @@ export default function ClaimPage() {
         credentials: "same-origin",
         body: JSON.stringify({ email: targetEmail }),
       });
+      if (!res.ok) {
+        // A non-2xx (e.g. a 500 whose JSON body has no `outcome`) must NOT fall
+        // through to the exhaustive `default` and silently `proceed` on the
+        // default base — that mis-routes OTP for a home-region account. Surface
+        // it as the retryable `error` the code screen already renders.
+        console.warn("[claim] region resolution HTTP error:", res.status);
+        return { kind: "error", message: "We couldn't route your claim to the right region. Please try again." };
+      }
       const result = (await res.json()) as RegionResolution;
       switch (result.outcome) {
         case "single":
@@ -218,8 +226,11 @@ export default function ClaimPage() {
           return { kind: "proceed" };
         default: {
           const _exhaustive: never = result;
-          void _exhaustive;
-          return { kind: "proceed" };
+          // A 2xx with an unmodeled `outcome` is a server-contract violation;
+          // log it (never silently swallow) and surface a retryable error
+          // rather than proceeding on a possibly-wrong base.
+          console.warn("[claim] unexpected region resolution outcome:", JSON.stringify(_exhaustive));
+          return { kind: "error", message: "We couldn't route your claim to the right region. Please try again." };
         }
       }
     } catch (err) {

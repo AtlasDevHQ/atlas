@@ -379,6 +379,20 @@ describe("runDatasource — publish (#4126)", () => {
     expect(out.join("\n")).toContain("Nothing to publish");
   });
 
+  it("a deletion-only publish reports the prune, not a clean no-op", async () => {
+    // 0 promoted but >0 tombstoned entities is a real publish, not a no-op.
+    const { fetchImpl } = stubFetch(200, {
+      promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0 },
+      deleted: { entities: 2 },
+    });
+    const { io, out } = capture();
+    const code = await runDatasource(["datasource", "publish"], deps(fetchImpl), io);
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).not.toContain("Nothing to publish");
+    expect(text).toContain("Pruned 2 stale entities");
+  });
+
   it("--json emits the raw publish response", async () => {
     const body = { promoted: { connections: 1, entities: 0, prompts: 0, starterPrompts: 0 } };
     const { fetchImpl } = stubFetch(200, body);

@@ -9,7 +9,7 @@
  * `assignSaasTrial` / `claimTrialGrant` path verbatim: creating the
  * organization fires Better Auth's `afterCreateOrganization` hook, which runs
  * `assignSaasTrial` (atomic one-trial-per-user claim + tier assignment). This
- * provisioner then narrows `trial_ends_at` from the full {@link TRIAL_DAYS}
+ * provisioner then narrows `trial_ends_at` from the full `TRIAL_DAYS` (14-day)
  * window down to {@link TRIAL_GRACE_HOURS} — the 14-day clock only starts when
  * a human *claims* the account on the web.
  *

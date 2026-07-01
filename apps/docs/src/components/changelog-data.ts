@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.38",
+    title: "MCP/CLI Onboarding Fixes",
+    date: "2026-07-01",
+    summary:
+      "Finishes the trial onboarding journey over the MCP server and CLI, closing the last gaps a cold-browser verification pass surfaced on production. A new trial can now open the claim page directly instead of being bounced to the login screen and looping, and signing the CLI in through the browser device-approval flow works start to finish — the approval link opens a real page and the pending code gets claimed. The MCP server's hosted transport is also named correctly now (Streamable HTTP), removing a misleading label. All three fixes were verified on staging before release.",
+    highlights: [
+      "The /claim page is now publicly reachable so MCP and CLI trials can claim their account instead of bouncing to /login (#4164)",
+      "atlas login browser device-approval works end-to-end — the approval link renders and the pending code is claimed (#4167)",
+      "MCP hosted transport renamed from the misleading \"SSE\" to Streamable HTTP, matching what the server actually speaks (#4169)",
+    ],
+  },
+  {
     version: "v0.0.37",
     title: "Turnstile Signup Fix",
     date: "2026-07-01",

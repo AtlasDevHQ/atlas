@@ -177,7 +177,7 @@ The commands in this group act on a **workspace** through a running Atlas API �
 **Authentication** rides on exactly one of two mutually exclusive credentials — never both:
 
 - **Ambient `atlas login` session (recommended).** Run [`atlas login`](#login) once; the OAuth device flow stores a session in `~/.atlas/credentials` and every later `atlas` command (and any agent running in that logged-in shell) reuses it automatically — the `gh auth login` / `railway login` model. No key to provision.
-- **Workspace API key (unattended CI).** Mint a workspace-scoped key on the `/admin/api-keys` page and pass it via the `ATLAS_API_KEY` environment variable or `--api-key <key>` (the flag overrides the env var). Honored by the four REST-backed commands — `sql`, `metric run`, `explore`, and `datasource`. A key is pinned to one workspace, so the `--workspace` override does not apply to it. Commands that need an interactive session (`switch`, `entities`) still require `atlas login`.
+- **Workspace API key (unattended CI).** Mint a workspace-scoped key on the `/admin/api-keys` page and pass it via the `ATLAS_API_KEY` environment variable or `--api-key <key>` (the flag overrides the env var). Honored by the REST-backed commands — [`query`](#query), `sql`, `metric run`, `explore`, and `datasource`. A key is pinned to one workspace, so the `--workspace` override does not apply to it. Commands that need an interactive session (`switch`, `entities`) still require `atlas login`.
 
 Set `ATLAS_API_URL` (default `http://localhost:3001`) to target a non-local API. See [API Key Management](/guides/api-keys) for the full credential model — ambient login vs. workspace key, scope, and RLS-claim bounds — and [Environment Variables](/reference/environment-variables#workspace-cli-credentials) for `ATLAS_API_URL` / `ATLAS_API_KEY` / `ATLAS_DATASOURCE_SECRET`.
 
@@ -253,6 +253,10 @@ bun run atlas -- sql "SELECT ..." [options]
 | `--csv` | CSV output (headers + rows, pipe-friendly). Mutually exclusive with `--json` |
 
 DML/DDL, multi-statement (`;`-chained), non-whitelisted-table, and unparseable SQL are all rejected by the server. Human output is a table (`(no rows)` when empty); a row-limited result prints a truncation note.
+
+<Callout title="A workspace admin can disable raw SQL">
+Raw caller-authored SQL over the programmatic surfaces is a governance category. A workspace admin can turn it off under **Admin → MCP action policy** (the `raw_sql` category); when disabled, both `atlas sql` and the MCP `executeSQL` tool are blocked and members are pointed at the natural-language [`atlas query`](#query) path instead. The Atlas agent, chat, and `atlas query` are **never** affected — this restricts only the raw pass-through, not the analyst agent.
+</Callout>
 
 **Examples:**
 
@@ -337,6 +341,7 @@ bun run atlas -- datasource <command> [id] [options]
 | [`test <id>`](#datasource-test) | Health-check a datasource connection |
 | [`create <id>`](#datasource-create) | Provision a new datasource (connection URL captured on stdin / env, never a flag) |
 | [`profile <id>`](#datasource-profile) | Profile a datasource and generate its semantic layer as drafts (long-running, cancellable) |
+| [`publish [id]`](#datasource-publish) | Publish every pending draft in the workspace (atomic, workspace-wide — the optional `id` is only for confirmation messaging) |
 | [`archive <id>`](#datasource-archive) | Archive a datasource (reversible via `restore`) |
 | [`restore <id>`](#datasource-restore) | Restore an archived datasource (republishes it) |
 | [`delete <id>`](#datasource-delete) | Delete a datasource (soft — recoverable via `restore`) |
@@ -395,7 +400,7 @@ ATLAS_DATASOURCE_SECRET="postgres://user:pass@host:5432/db" bun run atlas -- dat
 The connection URL is captured by exactly one of two paths, in priority order: (1) the `ATLAS_DATASOURCE_SECRET` environment variable (the headless-agent path — read at request time, never lands in argv), or (2) a masked stdin prompt (the interactive path — keystrokes don't echo and don't enter shell history). With **no TTY and no env var** (a CI runner), `create` fails closed and defers datasource creation to the dashboard or the [Atlas MCP](/guides/mcp); a set-but-empty `ATLAS_DATASOURCE_SECRET` is treated as a misconfiguration and fails loudly rather than silently prompting.
 </Callout>
 
-The new datasource lands as a **draft** — publish it in the Atlas console (or it stays developer-mode-only). The command suggests `atlas datasource test <id>` to verify connectivity.
+The new datasource lands as a **draft** — run [`atlas datasource publish`](#datasource-publish) (or publish it in the Atlas console), or it stays developer-mode-only. The command suggests `atlas datasource test <id>` to verify connectivity.
 
 ### datasource profile
 
@@ -406,7 +411,21 @@ bun run atlas -- datasource profile <id>
 bun run atlas -- datasource profile <id> --json
 ```
 
-Generated entities and metrics are persisted as **drafts** — they are **not** auto-published. They are queryable immediately in developer mode; publish them from the admin console to make them queryable from the published `/chat` surface. If some tables fail introspection, the result is reported as incomplete and names the absent tables.
+Generated entities and metrics are persisted as **drafts** — they are **not** auto-published. They are queryable immediately in developer mode; run [`atlas datasource publish`](#datasource-publish) (or publish from the admin console) to make them queryable from the published `/chat` surface. If some tables fail introspection, the result is reported as incomplete and names the absent tables.
+
+### datasource publish
+
+Publish every pending datasource draft in the workspace, making CLI/MCP-generated datasources — and the entities/metrics `profile` generated for them — queryable from the published `/chat` surface. It is a thin client over the atomic workspace-wide publish endpoint (`POST /api/v1/admin/publish`): it promotes **all** pending drafts in one transaction, **not** a single datasource, so the `id` positional is **optional** and used only to phrase the confirmation. Requires the workspace admin role.
+
+```bash
+# Publish every pending draft in the workspace
+bun run atlas -- datasource publish
+
+# The id is accepted but only for confirmation messaging — the publish is still workspace-wide
+bun run atlas -- datasource publish <id>
+```
+
+The MCP equivalent is the [`publish_datasources`](/guides/mcp#publish_datasources) tool. Drafts created by the CLI/MCP are already queryable in developer mode before publishing; `publish` is what exposes them on the published `/chat` surface.
 
 ### datasource archive
 

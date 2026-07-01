@@ -165,7 +165,7 @@ A workspace provisioned over MCP by `start_trial` starts **unclaimed (metered)**
 
 | Code | Class | HTTP Status | Trigger | Fix | Retryable |
 |------|-------|-------------|---------|-----|-----------|
-| `claim_required` | `ClaimRequiredError` | 403 | Atlas-token Q&A was attempted on an unclaimed (metered) trial workspace. The response body carries `claimUrl` (the web OTP interstitial) alongside `message` | Open `claimUrl`, verify the owner's email (enter the emailed one-time code), set a credential, and accept the Terms. Verifying email **is** the claim — it flips the workspace metered → full | No |
+| `claim_required` | `ClaimRequiredError` | 403 | Atlas-token Q&A was attempted on an unclaimed (metered) trial workspace. The response body carries `claimUrl` (the web OTP interstitial) alongside `message` | Open `claimUrl` (the `/claim` interstitial), verify the owner's email (enter the emailed one-time code), enroll a passkey (password-free), and accept the Terms. Verifying email **is** the claim — it flips the workspace metered → full | No |
 | `claim_check_failed` | `ClaimCheckFailedError` | 503 | The claim-gate could not read the owner's `emailVerified` state (e.g. internal DB transiently unavailable). Surfaced as a retryable 503 rather than spending Atlas tokens on an unverifiable request | Retry after a short backoff. If it persists, check internal-DB (`DATABASE_URL`) health | Yes |
 
 ### Self-serve trial signup over MCP (`start_trial`)

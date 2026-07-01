@@ -394,7 +394,7 @@ It returns:
 
 `state` is one of `grace` (a fresh trial in its unclaimed-grace window) or `locked` (this account has already used its one trial — the workspace is created but starts blocked, and you must subscribe on the web to use it).
 
-Point your agent's MCP client at `connectUrl` to run the normal OAuth 2.1 + DCR + PKCE [connect flow](#path-a--in-product-wizard-recommended) and attach a hosted actor to the new workspace. The workspace starts in a short **unclaimed grace period** (`state: "grace"`) — setup (connect a datasource, build the semantic layer) and client-paid MCP querying work immediately; the full 14-day trial clock starts when you **claim** the account on the web (verify email → set a credential → accept ToS).
+Point your agent's MCP client at `connectUrl` to run the normal OAuth 2.1 + DCR + PKCE [connect flow](#path-a--in-product-wizard-recommended) and attach a hosted actor to the new workspace. The workspace starts in a short **unclaimed grace period** (`state: "grace"`) — setup (connect a datasource, build the semantic layer) and client-paid MCP querying work immediately; the full 14-day trial clock starts when you **claim** the account on the web (verify email by OTP → enroll a passkey → accept ToS — no password).
 
 #### Metered until claimed
 
@@ -403,13 +403,23 @@ While the workspace is unclaimed, it is **metered**: everything you do over MCP 
 - **Open pre-claim:** `start_trial`, the datasource setup/lifecycle tools, `executeSQL`, `runMetric`, and the rest of the MCP surface. The client model pays for MCP querying, so it costs Atlas nothing.
 - **Withheld pre-claim:** Atlas-token Q&A on the web `/api/v1/query` endpoint, chat platforms, and the scheduler. These return a typed `claim_required` response carrying the claim URL (the web OTP interstitial) instead of an answer.
 
-**Claim the account on the web** — open the claim URL, enter the emailed one-time code to verify your email (never a magic link), set a credential or passkey, and accept the Terms. Verifying your email **is** the claim: it flips the workspace metered → full and starts the full 14-day trial clock. No payment is required. Once claimed, Atlas-token Q&A runs within the normal trial budget, and `checksBilling` MCP tool responses include the number of **trial days remaining**.
+**Claim the account on the web** — open the claim URL (the `/claim` interstitial), enter the emailed one-time code to verify your email (never a magic link), enroll a passkey (password-free — this also clears the admin-MFA requirement), and accept the Terms. Verifying your email **is** the claim: it flips the workspace metered → full and starts the full 14-day trial clock. No payment is required. Once claimed, Atlas-token Q&A runs within the normal trial budget, and `checksBilling` MCP tool responses include the number of **trial days remaining**.
 
 See [Claiming a Self-Serve (MCP) Trial](/guides/signup#claiming-a-self-serve-mcp-trial) for the full claim flow. Note this is distinct from trial **expiry**: once a trial expires, every surface — MCP included — is blocked with `billing_blocked` until a paid subscription is added.
 
 ## Available tools
 
-The MCP server exposes six core semantic tools — two general-purpose and four typed accessors over the semantic layer — plus a set of admin [datasource lifecycle tools](#datasource-lifecycle-tools) covered below. Prefer the typed tools when you only need catalog/glossary/metric data; reach for `explore` only when you need raw file access.
+The MCP server exposes seven core semantic tools — three general-purpose and four typed accessors over the semantic layer — plus a set of admin [datasource lifecycle tools](#datasource-lifecycle-tools) covered below. Prefer the typed tools when you only need catalog/glossary/metric data; reach for `explore` only when you need raw file access.
+
+### query
+
+Hand Atlas a **natural-language question** and let its server-side agent answer it — the recommended, highest-quality path. See [Two ways to ask: `query` vs `executeSQL`](#two-ways-to-ask-query-vs-executesql) for when to reach for it versus the raw `executeSQL` escape hatch.
+
+```
+question: "top 5 customers by revenue last quarter"
+```
+
+It returns a prose `answer` plus the exact SQL it ran and the result rows. Because it runs a second, server-side LLM it **spends your Atlas plan tokens** and additionally clears the claim gate (unclaimed-trial metering).
 
 ### explore
 
@@ -528,9 +538,9 @@ The `filters` parameter is reserved for future pre-aggregation filter pass-throu
 
 ## Datasource lifecycle tools
 
-Beyond the read-only semantic tools above, the server exposes a set of **admin, write-scoped** tools for managing datasources from an agent: `list_datasources`, `test_datasource`, `create_datasource`, `create_rest_datasource`, `profile_datasource`, `archive_datasource`, `restore_datasource`, and `delete_datasource`. They require the `admin` role and (for the mutating tools) the `mcp:write` scope, and route through RBAC plus the per-workspace MCP action policy; the `destructive` `delete_datasource` additionally routes through the approval gate. None of them ever return a connection URL or any secret — `create_datasource` collects the credential via a separate masked prompt that is never shared with the agent.
+Beyond the read-only semantic tools above, the server exposes a set of **admin, write-scoped** tools for managing datasources from an agent: `list_datasources`, `test_datasource`, `create_datasource`, `create_rest_datasource`, `profile_datasource`, `publish_datasources`, `archive_datasource`, `restore_datasource`, and `delete_datasource`. They require the `admin` role and (for the mutating tools) the `mcp:write` scope, and route through RBAC plus the per-workspace MCP action policy; the `destructive` `delete_datasource` additionally routes through the approval gate. None of them ever return a connection URL or any secret — `create_datasource` collects the credential via a separate masked prompt that is never shared with the agent.
 
-The two-step path to make a new datasource queryable is **create → profile**:
+The path to make a new datasource queryable on the published `/chat` surface is **create → profile → publish**:
 
 ### create_datasource
 
@@ -560,9 +570,19 @@ Profiling does two things with the generated layer:
 }
 ```
 
-Because the persisted rows land as **drafts**, they follow the standard [content-mode](/security/sql-validation) status discipline: queryable immediately in **developer mode** (the draft overlay), but **not** on the published `/chat` surface until an admin promotes them through the atomic publish endpoint (`/api/v1/admin/publish`). This keeps machine-generated, unreviewed entities out of the published whitelist until a human signs off. Profiling fails loud (a `validation_failed` envelope) rather than report success if any generated table cannot be persisted — a partially-persisted layer would silently leave some tables unqueryable.
+Because the persisted rows land as **drafts**, they follow the standard [content-mode](/security/sql-validation) status discipline: queryable immediately in **developer mode** (the draft overlay), but **not** on the published `/chat` surface until an admin promotes them through the atomic publish endpoint (`/api/v1/admin/publish`) — reachable from an agent via the [`publish_datasources`](#publish_datasources) tool below, from a shell via [`atlas datasource publish`](/reference/cli#datasource-publish), or from the admin console. This keeps machine-generated, unreviewed entities out of the published whitelist until a human signs off. Profiling fails loud (a `validation_failed` envelope) rather than report success if any generated table cannot be persisted — a partially-persisted layer would silently leave some tables unqueryable.
 
 If profiling persists fewer rows than it generated, or the workspace has no internal database configured (a self-hosted stdio server with no `DATABASE_URL`), `persisted` is `false` and only the in-process whitelist is populated for the current session.
+
+### publish_datasources
+
+Promote **every** pending datasource draft in the workspace to `published` in one atomic transaction, so the entities and metrics `profile_datasource` generated become queryable from the published `/chat` surface (not just in developer mode). It is the agent-facing client for the same atomic publish endpoint (`/api/v1/admin/publish`) as [`atlas datasource publish`](/reference/cli#datasource-publish); it is **workspace-wide**, not per-datasource. Requires the `admin` role and the `mcp:write` scope, and routes through the per-workspace action policy.
+
+```jsonc
+// Example publish_datasources success
+// `promoted` = draft rows flipped to published; `deleted_entities` = stale rows pruned by the publish
+{ "published": true, "promoted": 16, "deleted_entities": 0 }
+```
 
 ---
 
@@ -575,7 +595,16 @@ Each workspace has a **per-workspace MCP action policy** — a customer-admin ki
 - **Governance is raise-only** (ADR-0016): the policy can only ever *tighten* what MCP clients may do. It never lowers the non-configurable origin ceiling — MCP can restrict, but never broaden, the workspace's configured permissions.
 - Policy changes and gated dispatches carry audit-trail attribution.
 
-This is the kill-switch to reach for when you want to keep, say, datasource mutation or destructive actions off the MCP surface for a workspace while leaving the read-only analyst tools available.
+The categories are:
+
+| Category | Governs |
+|----------|---------|
+| `datasource` | Creating, testing, profiling, publishing, and deleting datasources via MCP |
+| `integration` | Connecting delivery integrations (Slack, GitHub, Linear, Email) via MCP |
+| `policy` | Raising governance via MCP — approval rules and PII classifications (tighten-only) |
+| `raw_sql` | Running caller-authored SQL over the **programmatic** surfaces — the MCP `executeSQL` tool **and** the CLI's [`atlas sql`](/reference/cli#sql) |
+
+Most categories are the kill-switch to reach for when you want to keep, say, datasource mutation or destructive actions off the MCP surface for a workspace while leaving the read-only analyst tools available. The `raw_sql` category is broader than MCP alone: blocking it disables raw `executeSQL` over **both** MCP and the CLI, restricting members to the natural-language [`atlas query`](/reference/cli#query) path. The Atlas analyst agent, chat, and `atlas query` itself are **never** gated by it — it restricts only the raw pass-through, not the agent.
 
 ---
 

@@ -9,8 +9,9 @@
 import { runAgent } from "@atlas/api/lib/agent";
 import { createLogger, getRequestContext, withRequestContext } from "@atlas/api/lib/logger";
 import type { ActorKind, RequestActor } from "@atlas/api/lib/logger";
-import { checkAgentBillingGate, BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
-import { checkClaimGate, ClaimRequiredError, ClaimCheckFailedError } from "@atlas/api/lib/billing/claim-gate";
+import { BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
+import { ClaimRequiredError, ClaimCheckFailedError } from "@atlas/api/lib/billing/claim-gate";
+import { checkAgentQueryGates } from "@atlas/api/lib/billing/agent-query-gates";
 import type { PlanLimitWarning } from "@atlas/api/lib/billing/enforcement";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { ApprovalRequestOrigin } from "@useatlas/types";
@@ -55,8 +56,9 @@ export interface AgentQueryResult {
    */
   pendingApproval?: PendingApproval;
   /**
-   * #3419/#3420 — the 80–109% plan-usage warning band from the billing
-   * gate. Never blocks the run. Surfaces that render usage warnings
+   * #3419/#3420 — the plan-usage warning (80%→ceiling warning/metered
+   * bands, #4038) from the billing gate. Never blocks the run. Surfaces
+   * that render usage warnings
    * (the `/api/v1/query` JSON envelope) attach it to their response;
    * machine-initiated surfaces (chat platforms, scheduler) deliberately
    * leave it unrendered — the band is logged by `billing/enforcement.ts`
@@ -146,14 +148,16 @@ export interface ExecuteAgentQueryOptions {
  * Creates a UIMessage from the question, invokes the agent loop, and
  * extracts SQL queries, data, and the final answer from tool results.
  *
- * **Billing enforcement seam (#3419/#3420):** before the agent runs,
- * the bound actor's workspace is checked against
- * {@link checkAgentBillingGate} (workspace status → abuse status →
- * plan limits). A blocked workspace throws {@link BillingBlockedError}
- * — whose `message` is user-safe — with ZERO LLM spend. Putting the
- * gate here (rather than per-callsite) means every current and future
- * caller is covered by construction. Self-hosted deployments and runs
- * without an org pass through untouched.
+ * **Billing enforcement seam (#3419/#3420, #3651, #4128):** before the
+ * agent runs, the bound actor's workspace is checked against
+ * {@link checkAgentQueryGates} — Gate 0 (workspace status → abuse status
+ * → plan limits) then the metered claim-gate (ADR-0018), with the
+ * Gate-0-first ordering encoded in the seam (#4128). A blocked workspace throws
+ * {@link BillingBlockedError}, {@link ClaimRequiredError}, or
+ * {@link ClaimCheckFailedError} — whose `message`s are user-safe — with
+ * ZERO LLM spend. Putting the gate here (rather than per-callsite) means
+ * every current and future caller is covered by construction.
+ * Self-hosted deployments and runs without an org pass through untouched.
  */
 export async function executeAgentQuery(
   question: string,
@@ -198,50 +202,39 @@ export async function executeAgentQuery(
       ...(connectionGroupId ? { connectionGroupId } : {}),
     },
     async () => {
-    // #3419/#3420 — the single billing-enforcement seam for agent runs.
-    // Blocks before any tool registry / LLM work so a suspended,
-    // trial-expired, hard-capped, or abuse-flagged workspace consumes
-    // zero platform-paid tokens regardless of which origin called.
+    // #3419/#3420 + ADR-0018/#3651 — the single billing seam for Atlas-token
+    // agent runs: Gate 0 (solvency) then the metered claim-gate, with the
+    // load-bearing ordering encoded in checkAgentQueryGates itself (#4128),
+    // not here. Blocks before any tool registry / LLM work so a suspended,
+    // trial-expired, hard-capped, abuse-flagged, or unclaimed (metered)
+    // workspace consumes zero platform-paid tokens regardless of which
+    // origin called. The claim-gate lives on this Atlas-token path only —
+    // NOT in Gate 0, which every MCP `checksBilling` tool (incl. setup)
+    // routes through, so MCP executeSQL + setup stay open pre-claim.
     const gateOrgId = boundUser?.activeOrganizationId;
-    const gate = await checkAgentBillingGate(gateOrgId);
-    if (!gate.allowed) {
-      log.warn(
-        {
-          requestId: id,
-          orgId: gateOrgId,
-          errorCode: gate.errorCode,
-          httpStatus: gate.httpStatus,
-          ...(origin ? { agentOrigin: origin } : {}),
-        },
-        "Agent run blocked by billing enforcement",
-      );
-      throw new BillingBlockedError(gate);
-    }
-
-    // ADR-0018 / #3651 — claim-gated metering. AFTER Gate 0 (solvency), an
-    // unclaimed (metered) trial Workspace withholds Atlas-token Q&A until a
-    // human claims it on the web. Keyed on the owner's `emailVerified` bit and
-    // placed HERE on the Atlas-token-spending path only — NOT in Gate 0, which
-    // every MCP `checksBilling` tool (incl. setup) routes through, so MCP
-    // executeSQL + setup stay open pre-claim (client model pays, no Atlas
-    // tokens). Off-SaaS / no-org / claimed workspaces pass through untouched.
-    const claim = await checkClaimGate(gateOrgId);
-    if (!claim.allowed) {
-      if (claim.reason === "check_failed") {
+    const gates = await checkAgentQueryGates(gateOrgId);
+    if (!gates.allowed) {
+      const blockCtx = {
+        requestId: id,
+        orgId: gateOrgId,
+        ...(origin ? { agentOrigin: origin } : {}),
+      };
+      if (gates.gate === "billing") {
+        log.warn(
+          { ...blockCtx, errorCode: gates.block.errorCode, httpStatus: gates.block.httpStatus },
+          "Agent run blocked by billing enforcement",
+        );
+        throw new BillingBlockedError(gates.block);
+      }
+      if (gates.reason === "check_failed") {
         // Fail closed: claim status couldn't be determined (lookup error).
         // Surface a retryable 503 rather than spend Atlas tokens on an
         // unverifiable workspace.
-        log.warn(
-          { requestId: id, orgId: gateOrgId, ...(origin ? { agentOrigin: origin } : {}) },
-          "Agent run blocked: claim status could not be verified",
-        );
+        log.warn(blockCtx, "Agent run blocked: claim status could not be verified");
         throw new ClaimCheckFailedError();
       }
-      log.warn(
-        { requestId: id, orgId: gateOrgId, ...(origin ? { agentOrigin: origin } : {}) },
-        "Agent run blocked: workspace unclaimed (claim required)",
-      );
-      throw new ClaimRequiredError(claim.claimUrl);
+      log.warn(blockCtx, "Agent run blocked: workspace unclaimed (claim required)");
+      throw new ClaimRequiredError(gates.claimUrl);
     }
 
     const priorUIMessages = (options?.priorMessages ?? []).map((m, i) => ({
@@ -393,7 +386,7 @@ export async function executeAgentQuery(
       },
       ...(pendingActions.length > 0 && { pendingActions }),
       ...(pendingApproval ? { pendingApproval } : {}),
-      ...(gate.warning ? { planWarning: gate.warning } : {}),
+      ...(gates.warning ? { planWarning: gates.warning } : {}),
       // #3750 — surface the durable run id + conversation so async-approval
       // surfaces can re-arm and resume a parked turn. `result.runId` is always
       // set by runAgent (Object.assign at the loop's return).

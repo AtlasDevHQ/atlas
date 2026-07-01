@@ -30,7 +30,7 @@ import {
   getWorkspaceDetails,
 } from "@atlas/api/lib/db/internal";
 import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
-import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-expiry";
+import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-state";
 import { plugins } from "@atlas/api/lib/plugins/registry";
 import {
   getSettingsForAdmin,

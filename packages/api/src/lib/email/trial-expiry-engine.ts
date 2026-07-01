@@ -2,7 +2,7 @@
  * Trial-expiry email engine (#3434).
  *
  * Each scheduler tick scans trial workspaces, computes the *effective*
- * trial end (`lib/billing/trial-expiry.ts` — `trial_ends_at`, falling back
+ * trial end (`lib/billing/trial-state.ts` — `trial_ends_at`, falling back
  * to `createdAt + TRIAL_DAYS`, the same date enforcement cuts the
  * workspace off at), and sends the due T-3d / T-1d / expiry notice to the
  * workspace's owners and admins.
@@ -21,7 +21,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
-import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-expiry";
+import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-state";
 import { isOnboardingEmailEnabled, getBrandingForOrg, getBaseUrl } from "./engine";
 import { nextDueTrialStep, TRIAL_EMAIL_STEPS, type TrialEmailStep } from "./trial-sequence";
 import { renderTrialExpiryEmail } from "./templates";

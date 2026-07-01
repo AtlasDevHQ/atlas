@@ -709,7 +709,7 @@ chat.openapi(chatRoute, async (c) => {
     // scheduler, so web chat can never drift from those surfaces. This
     // route streams via `runAgent` directly and never reaches the seam, so
     // it calls the gate here and maps the block to the chat error envelope.
-    // The 80–109% warning arrives on the allowed arm and is folded into the
+    // The 80%→ceiling warning/metered-band warning arrives on the allowed arm and is folded into the
     // `data-context-warning` stream at the writer below.
     const gateCheck = yield* Effect.promise(() => checkAgentBillingGate(authResult.user?.activeOrganizationId));
     if (!gateCheck.allowed) {

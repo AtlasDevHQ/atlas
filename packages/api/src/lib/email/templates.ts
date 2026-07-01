@@ -380,7 +380,7 @@ function trialExpiredContent(
  *
  * @param step - Which trial notice to render.
  * @param args.trialEndsAt - The *effective* trial end (see
- *   `lib/billing/trial-expiry.ts`) — the same date enforcement uses.
+ *   `lib/billing/trial-state.ts`) — the same date enforcement uses.
  */
 export function renderTrialExpiryEmail(
   step: TrialEmailStep,

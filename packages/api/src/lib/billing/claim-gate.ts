@@ -27,10 +27,16 @@
  * `deployMode === 'saas'` + `hasInternalDB()`, never importing `isEnterpriseEnabled`).
  */
 
-import type { PlanTier, WorkspaceRow } from "@atlas/api/lib/db/internal";
-import { hasInternalDB as defaultHasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import type { WorkspaceRow } from "@atlas/api/lib/db/internal";
+import { hasInternalDB as defaultHasInternalDB } from "@atlas/api/lib/db/internal";
 import { getConfig } from "@atlas/api/lib/config";
 import { getCachedWorkspace } from "./enforcement";
+import {
+  deriveTrialState,
+  getOwnerVerification,
+  isTrialTier,
+  type OwnerVerification,
+} from "./trial-state";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import { createLogger } from "@atlas/api/lib/logger";
 import { claimGateDecisions } from "@atlas/api/lib/metrics";
@@ -112,16 +118,12 @@ export type ClaimGateResult =
   | { allowed: false; reason: "claim_required"; claimUrl: string }
   | { allowed: false; reason: "check_failed" };
 
-/** Owner-verification shape resolved per org. */
-interface OwnerVerification {
-  emailVerified: boolean;
-  email: string | null;
-}
-
 /**
  * Injectable boundaries for {@link checkClaimGate}, so the block-vs-allow
  * matrix can be exercised without `mock.module`. Mirrors the dependency-
- * injection seam in `ee/src/onboarding/provision-trial.ts`.
+ * injection seam in `ee/src/onboarding/provision-trial.ts`. The owner read
+ * defaults to the shared `trial-state` lookup — the single TS reader of the
+ * owner `emailVerified` bit.
  */
 export interface ClaimGateDeps {
   getDeployMode: () => "saas" | "self-hosted" | undefined;
@@ -131,40 +133,14 @@ export interface ClaimGateDeps {
   buildClaimUrl: (email?: string) => string;
 }
 
-/**
- * Resolve the workspace owner's `emailVerified` bit (and email, for the
- * claim-URL prefill). The owner is the `member.role = 'owner'` row; on the
- * rare multi-owner workspace the earliest-created membership wins (the
- * original creator). Returns `null` when no owner row exists.
- */
-async function defaultGetOwnerVerification(orgId: string): Promise<OwnerVerification | null> {
-  const rows = await internalQuery<{ emailVerified: boolean; email: string | null }>(
-    `SELECT u."emailVerified" AS "emailVerified", u.email AS email
-       FROM member m
-       JOIN "user" u ON u.id = m."userId"
-      WHERE m."organizationId" = $1 AND m.role = 'owner'
-      ORDER BY m."createdAt" ASC
-      LIMIT 1`,
-    [orgId],
-  );
-  const row = rows[0];
-  if (!row) return null;
-  return { emailVerified: !!row.emailVerified, email: row.email ?? null };
-}
-
 function defaultDeps(): ClaimGateDeps {
   return {
     getDeployMode: () => getConfig()?.deployMode,
     hasInternalDB: defaultHasInternalDB,
     getWorkspace: getCachedWorkspace,
-    getOwnerVerification: defaultGetOwnerVerification,
+    getOwnerVerification,
     buildClaimUrl,
   };
-}
-
-/** Tiers the claim-gate applies to. Only an unclaimed *trial* is metered. */
-function isMeterableTier(tier: PlanTier): boolean {
-  return tier === "trial";
 }
 
 /**
@@ -233,9 +209,10 @@ async function computeSaasClaimGate(
     return { allowed: false, reason: "check_failed" };
   }
 
-  // No org row (pre-migration / Better-Auth-only) or a non-metered tier:
-  // nothing to meter. Paid/locked/free workspaces are never claim-gated.
-  if (!workspace || !isMeterableTier(workspace.plan_tier)) {
+  // No org row (pre-migration / Better-Auth-only) or a non-trial tier:
+  // nothing to meter — only a trial can be metered (`trial-state`), so the
+  // owner lookup is skipped entirely for paid/locked/free workspaces.
+  if (!workspace || !isTrialTier(workspace.plan_tier)) {
     return { allowed: true };
   }
 
@@ -253,8 +230,9 @@ async function computeSaasClaimGate(
     return { allowed: false, reason: "check_failed" };
   }
 
-  // No owner row, or owner already verified → claimed (or not a metered trial).
-  if (!owner || owner.emailVerified) {
+  // The authoritative derivation (`trial-state`): metered = unclaimed trial.
+  // No owner row, or owner already verified → claimed → not metered.
+  if (!deriveTrialState(workspace, owner).metered) {
     return { allowed: true };
   }
 
@@ -262,6 +240,6 @@ async function computeSaasClaimGate(
   return {
     allowed: false,
     reason: "claim_required",
-    claimUrl: deps.buildClaimUrl(owner.email ?? undefined),
+    claimUrl: deps.buildClaimUrl(owner?.email ?? undefined),
   };
 }

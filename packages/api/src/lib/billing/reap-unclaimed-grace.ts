@@ -40,6 +40,7 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getConfig } from "@atlas/api/lib/config";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
+import { trialTierSql, unclaimedOwnerExistsSql } from "./trial-state";
 
 const log = createLogger("billing.reap-unclaimed-grace");
 
@@ -78,29 +79,29 @@ export async function reapUnclaimedGraceWorkspaces(
   try {
     // Demote unclaimed past-grace trials to the 'locked' churn tier. The
     // guards, in order:
-    //   - `plan_tier = 'trial'`           — only a live trial can be reaped;
+    //   - trial tier (`trial-state`)      — only a live trial can be reaped;
     //     an already-locked/paid row is skipped (idempotent, concurrency-safe).
-    //   - `trial_ends_at < NOW()`         — the grace window has lapsed. A
-    //     within-grace Workspace (future `trial_ends_at`) is left alone.
+    //   - `trial_ends_at IS NOT NULL` + `< NOW()` — a STAMPED grace window has
+    //     lapsed. A within-grace Workspace (future `trial_ends_at`) is left
+    //     alone, and a NULL-clock trial is never reaped (unlike Gate 0's
+    //     `createdAt + TRIAL_DAYS` fallback — the reaper only eats a trial
+    //     that carries a stamped clock).
     //   - operator-override guard         — never clobber an active
     //     `plan_override_until` grant (#3427), matching `reconcilePlanTiers`.
-    //   - EXISTS unverified owner         — UNCLAIMED. A claimed trial (owner
-    //     `emailVerified = true`) never matches, so it is never touched.
+    //   - EXISTS unverified owner (`trial-state`) — UNCLAIMED. A claimed trial
+    //     (owner `emailVerified = true`) never matches, so it is never touched.
+    // The tier + unclaimed clauses are generated from fragments colocated
+    // (and test-pinned, `trial-state.test.ts`) with the TS claim-gate
+    // predicate in `trial-state`, so SQL/TS drift is caught rather than
+    // silent (#4127).
     const reaped = await internalQuery<{ id: string }>(
       `UPDATE organization o
           SET plan_tier = 'locked'
-        WHERE o.plan_tier = 'trial'
+        WHERE ${trialTierSql("o")}
           AND o.trial_ends_at IS NOT NULL
           AND o.trial_ends_at < NOW()
           AND (o.plan_override_until IS NULL OR o.plan_override_until <= NOW())
-          AND EXISTS (
-            SELECT 1
-              FROM member m
-              JOIN "user" u ON u.id = m."userId"
-             WHERE m."organizationId" = o.id
-               AND m.role = 'owner'
-               AND u."emailVerified" = false
-          )
+          AND ${unclaimedOwnerExistsSql("o.id")}
         RETURNING id`,
     );
     const orgIds = reaped.map((r) => r.id);

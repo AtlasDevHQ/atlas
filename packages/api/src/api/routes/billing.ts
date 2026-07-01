@@ -34,7 +34,7 @@ import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, getStripePlans, computeTokenBudget, computeUsageDollarBudget, isUnlimited, type PaidPlanTier } from "@atlas/api/lib/billing/plans";
 import { buildMetricStatus, resolveUsageCeiling, computeOverageDollars, type SpendPolicy } from "@atlas/api/lib/billing/enforcement";
 import { getSeatCount } from "@atlas/api/lib/billing/seat-count";
-import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-expiry";
+import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-state";
 import { getSettingLive } from "@atlas/api/lib/settings";
 import { getConfig } from "@atlas/api/lib/config";
 import { resolveModelId } from "@atlas/api/lib/providers";

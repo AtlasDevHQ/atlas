@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.37",
+    title: "Turnstile Signup Fix",
+    date: "2026-07-01",
+    summary:
+      "Fixes a bot-protection misplacement that made trial onboarding over the MCP server and CLI impossible on production. The Cloudflare Turnstile challenge was guarding the headless trial-provisioning endpoint — a door no onboarding surface could open, because there was nowhere to solve the challenge and mint a token. Turnstile now lives on the web signup form where a person can actually complete it, so MCP and CLI onboarding go through cleanly while signup stays protected against automated abuse.",
+    highlights: [
+      "Turnstile moved off the headless start_trial endpoint onto the web signup form, unblocking prod MCP and CLI onboarding (#4159)",
+      "The web build now receives the Turnstile site key so the challenge renders in the client (#4162)",
+      "Web content-security-policy frame-src updated to allow the Turnstile iframe (#4163)",
+    ],
+  },
+  {
     version: "v0.0.36",
     title: "CLI & MCP Hardening",
     date: "2026-07-01",

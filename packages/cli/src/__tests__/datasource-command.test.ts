@@ -362,6 +362,7 @@ describe("runDatasource — publish (#4126)", () => {
   it("does not require an id, but echoes it in the confirmation when given", async () => {
     const { fetchImpl } = stubFetch(200, {
       promoted: { connections: 1, entities: 0, prompts: 0, starterPrompts: 0 },
+      deleted: { entities: 0 },
     });
     const { io, out } = capture();
     const code = await runDatasource(["datasource", "publish", "fresh-pg"], deps(fetchImpl), io);
@@ -372,6 +373,7 @@ describe("runDatasource — publish (#4126)", () => {
   it("reports a clean no-op when there is nothing to publish", async () => {
     const { fetchImpl } = stubFetch(200, {
       promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0 },
+      deleted: { entities: 0 },
     });
     const { io, out } = capture();
     const code = await runDatasource(["datasource", "publish"], deps(fetchImpl), io);
@@ -394,7 +396,12 @@ describe("runDatasource — publish (#4126)", () => {
   });
 
   it("--json emits the raw publish response", async () => {
-    const body = { promoted: { connections: 1, entities: 0, prompts: 0, starterPrompts: 0 } };
+    // A realistic REST response — always includes the `deleted` core (the client
+    // validates the shape before emitting); `--json` echoes it verbatim.
+    const body = {
+      promoted: { connections: 1, entities: 0, prompts: 0, starterPrompts: 0 },
+      deleted: { entities: 0 },
+    };
     const { fetchImpl } = stubFetch(200, body);
     const { io, out } = capture();
     const code = await runDatasource(["datasource", "publish", "--json"], deps(fetchImpl), io);

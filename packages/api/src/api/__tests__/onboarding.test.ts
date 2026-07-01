@@ -11,9 +11,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock, type Mock } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 import { makeQueryEffectMock } from "@atlas/api/testing/api-test-mocks";
+import { ResidencyResolver, type ResidencyResolverShape } from "@atlas/api/lib/effect/services";
 
 // --- Mocks ---
 
@@ -223,6 +224,41 @@ mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   isIPAllowed: mock(() => true),
 }));
 
+// Residency resolver injection (#4156). The `/regions` route yields
+// `ResidencyResolver` (the ONLY enterprise Tag onboarding uses) from the
+// enterprise runtime; the real runtime resolves it to the no-op (available:
+// false) in a self-hosted test build. Override `getEnterpriseRuntime` to a
+// runtime whose ResidencyResolver reads mutable per-test vars via getters, so a
+// test can drive the configured multi-region path without the heavier
+// effect-module shim `admin-residency.test.ts` uses. Default = unavailable, so
+// the pre-existing `configured:false` regions test is unaffected.
+let mockResidencyAvailable = false;
+let mockResidencyDefaultRegion = "us";
+let mockResidencyRegions: Record<
+  string,
+  { label: string; apiUrl?: string; selectable?: boolean }
+> = {};
+const fakeResidencyResolver = {
+  get available() {
+    return mockResidencyAvailable;
+  },
+  listRegions: () => Effect.succeed([]),
+  getDefaultRegion: () => mockResidencyDefaultRegion,
+  getConfiguredRegions: () => mockResidencyRegions,
+  assignWorkspaceRegion: () => Effect.succeed(null),
+  getWorkspaceRegionAssignment: () => Effect.succeed(null),
+  listWorkspaceRegions: () => Effect.succeed([]),
+  isConfiguredRegion: (r: string) => r in mockResidencyRegions,
+} as unknown as ResidencyResolverShape;
+const testEnterpriseRuntime = ManagedRuntime.make(
+  Layer.succeed(ResidencyResolver, fakeResidencyResolver),
+);
+const realEnterpriseLayer = await import("@atlas/api/lib/effect/enterprise-layer");
+mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+  ...realEnterpriseLayer,
+  getEnterpriseRuntime: () => testEnterpriseRuntime,
+}));
+
 // --- Import the route after mocks are set up ---
 
 const { onboarding } = await import("../routes/onboarding");
@@ -305,6 +341,54 @@ describe("GET /api/v1/onboarding/regions (public — pre-auth, ADR-0024 §4)", (
     } finally {
       // Restore even if the assertion throws, so the mode can't leak forward.
       mockAuthMode = "managed";
+    }
+  });
+
+  it("collapses the picker to this deploy's own (non-selectable staging) home arm — the { apiRegion } wiring (#4131/#4156)", async () => {
+    // The staging deploy claims ATLAS_API_REGION=staging while building from the
+    // shared prod config, so its home arm is the non-selectable `staging` entry.
+    // The route MUST thread `{ apiRegion: getApiRegion() }` into
+    // buildSignupRegions so the picker collapses to ONLY that home arm — every
+    // public arm's apiUrl points at a DIFFERENT deploy, so offering them would
+    // cross-origin the signup POST and dead-end (#4131). Dropping the
+    // `{ apiRegion }` argument (a plausible refactor) would offer the selectable
+    // prod arms (us, eu) instead and this assertion fails — the regression this
+    // route test exists to catch.
+    mockAuthMode = "managed";
+    mockResidencyAvailable = true;
+    mockResidencyDefaultRegion = "us";
+    mockResidencyRegions = {
+      us: { label: "US", apiUrl: "https://api.useatlas.dev", selectable: true },
+      eu: { label: "EU", apiUrl: "https://eu.api.useatlas.dev", selectable: true },
+      staging: {
+        label: "Staging",
+        apiUrl: "https://api-staging.useatlas.dev",
+        selectable: false,
+      },
+    };
+    const prevApiRegion = process.env.ATLAS_API_REGION;
+    process.env.ATLAS_API_REGION = "staging";
+    try {
+      const res = await request("/api/v1/onboarding/regions");
+      expect(res.status).toBe(200);
+      const data = await json(res);
+      expect(data.configured).toBe(true);
+      // Collapsed to the home arm only — NOT the selectable prod arms.
+      expect(data.defaultRegion).toBe("staging");
+      expect(data.availableRegions).toEqual([
+        {
+          id: "staging",
+          label: "Staging",
+          isDefault: true,
+          apiUrl: "https://api-staging.useatlas.dev",
+        },
+      ]);
+    } finally {
+      if (prevApiRegion === undefined) delete process.env.ATLAS_API_REGION;
+      else process.env.ATLAS_API_REGION = prevApiRegion;
+      mockResidencyAvailable = false;
+      mockResidencyRegions = {};
+      mockResidencyDefaultRegion = "us";
     }
   });
 });

@@ -28,6 +28,7 @@ import {
   mcpToolMutates,
   type McpToolAnnotationsShape,
 } from "@atlas/api/lib/mcp/dispatch-gate-contract";
+import { publishDatasourcesOutputSchema } from "../structured-output.js";
 
 const TEST_ACTOR = createAtlasUser("u_ds", "managed", "ds@test", {
   role: "admin",
@@ -195,10 +196,11 @@ const mockProfileLive = mock<(...a: unknown[]) => Promise<unknown>>(async (...a:
   return profileResult;
 });
 
-// #4126 — publish_datasources' lib call. Default: nothing pending.
+// #4126 — publish_datasources' lib call. Default: nothing pending. The lib
+// returns the shared PublishResult core (#4156 — `deleted: { entities }`).
 let publishResult: unknown = {
   promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0 },
-  deletedEntities: 0,
+  deleted: { entities: 0 },
 };
 const mockPublishWorkspaceDrafts = mock<(...a: unknown[]) => Promise<unknown>>(
   async () => publishResult,
@@ -323,7 +325,7 @@ beforeEach(() => {
   mockPublishWorkspaceDrafts.mockClear();
   publishResult = {
     promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0 },
-    deletedEntities: 0,
+    deleted: { entities: 0 },
   };
   gateCalls = [];
   installerCalls = [];
@@ -841,17 +843,25 @@ describe("publish_datasources (#4126)", () => {
   it("calls the lib seam with the bound org and shapes the promoted/deleted counts", async () => {
     publishResult = {
       promoted: { connections: 1, entities: 3, prompts: 0, starterPrompts: 0 },
-      deletedEntities: 1,
+      deleted: { entities: 1 },
     };
     const client = await createTestClient();
     const res = await client.callTool({ name: "publish_datasources", arguments: {} });
     expect(mockPublishWorkspaceDrafts).toHaveBeenCalledWith("org_ds");
-    const body = JSON.parse(getContentText(res.content));
-    expect(body).toEqual({
+    // #4156 — single-cased (all camelCase) output keyed off the shared
+    // PublishResult core: nested `deleted: { entities }`, NOT snake
+    // `deleted_entities`.
+    const expected = {
       published: true,
       promoted: { connections: 1, entities: 3, prompts: 0, starterPrompts: 0 },
-      deleted_entities: 1,
-    });
+      deleted: { entities: 1 },
+    };
+    const body = JSON.parse(getContentText(res.content));
+    expect(body).toEqual(expected);
+    // #3498 — the declared outputSchema makes structuredContent mandatory; it
+    // mirrors the text block and conforms to publishDatasourcesOutputSchema.
+    expect(res.structuredContent).toEqual(expected);
+    expect(publishDatasourcesOutputSchema.safeParse(res.structuredContent).success).toBe(true);
   });
 
   it("is a clean no-op (zero counts) when nothing is pending", async () => {
@@ -859,7 +869,7 @@ describe("publish_datasources (#4126)", () => {
     const res = await client.callTool({ name: "publish_datasources", arguments: {} });
     const body = JSON.parse(getContentText(res.content));
     expect(body.promoted).toEqual({ connections: 0, entities: 0, prompts: 0, starterPrompts: 0 });
-    expect(body.deleted_entities).toBe(0);
+    expect(body.deleted).toEqual({ entities: 0 });
   });
 
   it("requires a bound workspace — refused before the lib call", async () => {

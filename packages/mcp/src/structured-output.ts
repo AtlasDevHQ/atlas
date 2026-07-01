@@ -24,6 +24,7 @@
  */
 
 import { z } from "zod/v4";
+import type { PublishResult } from "@useatlas/types";
 
 /** A result row: a flat map of column name → cell value. */
 const rowsField = z.array(z.record(z.string(), z.unknown()));
@@ -127,7 +128,36 @@ export const queryOutputShape = {
   ...approvalFields,
 } as const;
 
+/**
+ * `publish_datasources` output (#4126 / #4156). Unlike the query tools, publish
+ * has a SINGLE non-error result — the atomic promotion always returns the same
+ * shape (it is additive, never approval-gated, so there is no `approval_required`
+ * branch) — so every field is required, not optional. `published` is the success
+ * sentinel; `promoted` + `deleted` are the shared {@link PublishResult} core,
+ * single-cased camelCase throughout (`deleted: { entities }`, never a snake
+ * `deleted_entities`).
+ */
+export const publishDatasourcesOutputShape = {
+  published: z.boolean(),
+  promoted: z.object({
+    connections: z.number().int().nonnegative(),
+    entities: z.number().int().nonnegative(),
+    prompts: z.number().int().nonnegative(),
+    starterPrompts: z.number().int().nonnegative(),
+  }),
+  deleted: z.object({ entities: z.number().int().nonnegative() }),
+} as const;
+
 /** Zod objects for validating a result against the declared output schema. */
 export const executeSqlOutputSchema = z.object(executeSqlOutputShape);
 export const runMetricOutputSchema = z.object(runMetricOutputShape);
 export const queryOutputSchema = z.object(queryOutputShape);
+export const publishDatasourcesOutputSchema = z.object(publishDatasourcesOutputShape);
+
+// #4156 drift guard: the publish output's data fields conform to the shared
+// PublishResult core (the `published` sentinel is MCP-only, alongside it). A
+// rename/reshape of `promoted`/`deleted` here fails to compile against the SSOT
+// type in `@useatlas/types`.
+const _publishOutputConformsToShared = (
+  o: z.infer<typeof publishDatasourcesOutputSchema>,
+): PublishResult => ({ promoted: o.promoted, deleted: o.deleted });

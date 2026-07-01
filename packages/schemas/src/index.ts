@@ -12,6 +12,7 @@ export * from "./dashboard";
 export * from "./datasource-profile";
 export * from "./execute-sql";
 export * from "./metric-run";
+export * from "./mode";
 export * from "./integrations";
 export * from "./mcp-prompts";
 export * from "./mcp-usage";

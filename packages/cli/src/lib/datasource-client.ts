@@ -35,10 +35,12 @@ import type {
   ConnectionInfo,
   DatasourceProfileResult,
   DatasourceProfileTableEvent,
+  PublishResult,
 } from "@useatlas/types";
 import {
   ConnectionDetailSchema,
   ConnectionsResponseSchema,
+  PublishResultSchema,
   parseDatasourceProfileStreamEvent,
 } from "@useatlas/schemas";
 import { credentialHeaders, type CliCredential } from "./credential";
@@ -418,15 +420,29 @@ export async function deleteDatasource(
  */
 export async function publishDatasources(
   opts: DatasourceClientOptions,
-): Promise<Record<string, unknown>> {
-  return asRecord(
-    await request(opts, {
-      method: "POST",
-      path: "/api/v1/admin/publish",
-      body: {},
-      operation: "publish datasources",
-    }),
-  );
+): Promise<PublishResult> {
+  const raw = await request(opts, {
+    method: "POST",
+    path: "/api/v1/admin/publish",
+    body: {},
+    operation: "publish datasources",
+  });
+  // Validate the shared PublishResult core (the SSOT in `@useatlas/types`) — a
+  // shape mismatch is a server bug / version skew. Returning it unchecked would
+  // let `runPublish`'s degrade-a-missing-count-to-0 reads misreport a real
+  // publish (or a 200 from a misrouted proxy / captive portal) as a clean
+  // "Nothing to publish" no-op — the worst failure mode for a mutation command.
+  // Surface it as a typed error instead, like the sibling `atlas sql` /
+  // `atlas metric` clients. VALIDATE only: return the RAW body (NOT
+  // `parsed.data`, which would strip the REST-only `archived` / `warnings`
+  // blocks `--json` surfaces); the command layer reads only the validated core.
+  if (!PublishResultSchema.safeParse(raw).success) {
+    throw new DatasourceCliError(
+      "request_failed",
+      "The Atlas API returned an unexpected response shape for publish datasources. Update the CLI, or check the server logs.",
+    );
+  }
+  return raw as PublishResult;
 }
 
 // ---------------------------------------------------------------------------

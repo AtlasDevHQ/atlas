@@ -811,9 +811,11 @@ describe("publishWorkspaceDrafts (#4126)", () => {
 
     const result = await publishWorkspaceDrafts("org_1");
 
+    // #4156 — shared PublishResult core: nested `deleted: { entities }`, not the
+    // old flat `deletedEntities`.
     expect(result).toEqual({
       promoted: { connections: 1, entities: 2, prompts: 0, starterPrompts: 3 },
-      deletedEntities: 1,
+      deleted: { entities: 1 },
     });
     const sqlLog = publishClientQueries.map((q) => q.sql.trim().toUpperCase());
     expect(sqlLog[0]).toBe("BEGIN");

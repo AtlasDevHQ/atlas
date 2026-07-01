@@ -35,14 +35,29 @@ const log = createLogger("mcp:action-policy");
  * `McpActionCategory` union in `@useatlas/types/mcp` — the value tuple lives
  * here (not exported from `@useatlas/types`) so adding a category never breaks
  * the scaffold smoke tests that pull the published `@useatlas/types`. The
- * `satisfies` keeps the two in lockstep: a category added to the union but not
- * here (or vice-versa) is a compile error.
+ * `satisfies` catches tuple→union drift (a bogus tuple element); the
+ * `_AssertCategoriesComplete` check below catches union→tuple drift (a category
+ * added to the wire union but forgotten here). Together they keep the two in
+ * lockstep in BOTH directions, so a security-relevant kill-switch category can't
+ * silently exist in the wire type without runtime enforcement.
  */
 export const MCP_ACTION_CATEGORIES = [
   "datasource",
   "integration",
   "policy",
+  "raw_sql",
 ] as const satisfies readonly McpActionCategory[];
+
+// Compile-time check: every `McpActionCategory` must appear in the tuple above.
+// `satisfies` alone only proves tuple ⊆ union; this proves union ⊆ tuple. If a
+// category is added to `McpActionCategory` but not appended here, this resolves
+// to `never` and the assignment fails to compile. Mirrors the
+// `ATLAS_ERROR_TAG_LIST` precedent in `lib/effect/errors.ts`.
+type _AssertCategoriesComplete = McpActionCategory extends (typeof MCP_ACTION_CATEGORIES)[number]
+  ? true
+  : never;
+const _assertCategoriesComplete: _AssertCategoriesComplete = true;
+void _assertCategoriesComplete;
 
 /** Server-authoritative label + description per category for the dashboard. */
 export interface McpActionCategoryMeta {
@@ -75,7 +90,37 @@ export const MCP_ACTION_CATEGORY_META: readonly McpActionCategoryMeta[] = [
     description:
       "Raising governance via MCP — adding approval rules and PII classifications. MCP can only tighten controls, never loosen them (the origin ceiling).",
   },
+  {
+    category: "raw_sql",
+    label: "Raw SQL execution",
+    description:
+      "Running caller-authored SQL directly over the programmatic surfaces — the CLI (`atlas sql`) and the MCP `executeSQL` tool. Disable to restrict members to the natural-language `atlas query` path. The Atlas agent, chat, and `atlas query` are never affected.",
+  },
 ];
+
+/**
+ * Denial copy for a blocked category, transport-neutral so the CLI/REST and MCP
+ * enforcement points surface identical wording (no per-surface drift, #4095).
+ * `raw_sql` points members at the NL `atlas query` path; the mutation categories
+ * share the generic copy the gate has always used. Single-sourced here alongside
+ * the category labels rather than inlined at each gate.
+ */
+export function mcpActionDenialCopy(category: McpActionCategory): {
+  message: string;
+  hint: string;
+} {
+  if (category === "raw_sql") {
+    return {
+      message:
+        "Raw SQL execution is disabled for this workspace by an administrator. Use the natural-language `atlas query` command instead.",
+      hint: "A workspace admin can re-enable raw SQL under Admin → MCP action policy.",
+    };
+  }
+  return {
+    message: `MCP '${category}' actions are disabled for this workspace by an administrator.`,
+    hint: "A workspace admin can re-enable this category under Admin → MCP action policy.",
+  };
+}
 
 /** Type guard — narrows an arbitrary string to a known category. */
 export function isMcpActionCategory(value: string): value is McpActionCategory {

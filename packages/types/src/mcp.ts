@@ -219,6 +219,11 @@ export type CanonicalToggle = "auto" | "always" | "never";
  *   - `datasource`  — datasource create / test / profile / delete (Tier-2 flagship)
  *   - `integration` — BYOT integration connections (Slack/GitHub/Linear/Email, Phase 4)
  *   - `policy`      — governance-*raising* tools (approval rules, PII classes, Phase 4)
+ *   - `raw_sql`     — caller-authored raw SQL over the programmatic surfaces
+ *     (CLI `atlas sql`, MCP `executeSQL`). The *read/query* category (#4095):
+ *     the mutation categories above govern writes, this governs the advanced
+ *     read surface. Disabling it restricts members to the NL `atlas query`
+ *     path; the Atlas agent / chat / `atlas query` are never gated by it.
  *
  * Type-only here (no value tuple) so `@atlas/web` shares the union without
  * reaching into `@atlas/api`; the runtime tuple + per-category labels live in
@@ -226,7 +231,7 @@ export type CanonicalToggle = "auto" | "always" | "never";
  * categories straight off the policy API response — same no-value-export
  * discipline as `CanonicalToggle` above.
  */
-export type McpActionCategory = "datasource" | "integration" | "policy";
+export type McpActionCategory = "datasource" | "integration" | "policy" | "raw_sql";
 
 /**
  * Stored state of one category for a workspace. The default posture is

@@ -236,8 +236,19 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         "executeSQL",
         // Reaches a datasource → gate-0 billing (#3437/#3601). SELECT-only
         // (the 4-layer validator rejects DML/DDL) so it is read-only — no
-        // mcp:write — and member-callable.
-        { requiresWrite: false, requiresBoundOrg: false, minRole: "member", checksBilling: true },
+        // mcp:write — and member-callable. `actionCategory: "raw_sql"` opts it
+        // into the gate-1 per-workspace kill-switch (#4095): a workspace admin
+        // can disable raw SQL over MCP/CLI, restricting members to the NL
+        // `atlas query` path. Default is enabled (no `blocked` row), so this is
+        // a no-op until an admin flips it — the agent loop / chat are unaffected
+        // (they never route through this tool).
+        {
+          requiresWrite: false,
+          requiresBoundOrg: false,
+          minRole: "member",
+          checksBilling: true,
+          actionCategory: "raw_sql",
+        },
         async (requestId) => {
           // #3500 — progress + cancellation around the query work.
           // #3575 — `executeSQL.execute` does not read `abortSignal` from the

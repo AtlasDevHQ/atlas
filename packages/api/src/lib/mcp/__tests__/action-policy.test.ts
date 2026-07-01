@@ -7,11 +7,14 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   loadMcpActionPolicy,
   getMcpActionPolicyEntries,
   setMcpActionCategoryStatus,
   isMcpActionCategory,
+  mcpActionDenialCopy,
   MCP_ACTION_CATEGORIES,
   MCP_ACTION_CATEGORY_META,
   type ActionPolicyQuery,
@@ -120,6 +123,50 @@ describe("setMcpActionCategoryStatus", () => {
 describe("isMcpActionCategory", () => {
   it("accepts canonical categories and rejects others", () => {
     expect(isMcpActionCategory("datasource")).toBe(true);
+    expect(isMcpActionCategory("raw_sql")).toBe(true);
     expect(isMcpActionCategory("nope")).toBe(false);
+  });
+});
+
+describe("raw_sql category (#4095)", () => {
+  it("is a canonical category with server-authoritative dashboard copy", () => {
+    expect(MCP_ACTION_CATEGORIES).toContain("raw_sql");
+    const meta = MCP_ACTION_CATEGORY_META.find((m) => m.category === "raw_sql");
+    expect(meta).toBeDefined();
+    expect(meta?.label).toBe("Raw SQL execution");
+    // The description must point members at the NL happy path and reassure that
+    // the agent/chat are untouched — the whole framing of the off-switch.
+    expect(meta?.description).toContain("atlas query");
+  });
+});
+
+describe("raw_sql gate scope (#4095 AC2b — the agent/chat path is never gated)", () => {
+  it("the shared runUserQueryPipeline (lib/tools/sql.ts) never consults the raw_sql kill-switch", () => {
+    // AC2(b): disabling raw_sql must NOT gate the Atlas agent loop / chat / NL
+    // `atlas query` — those bottom out in `runUserQueryPipeline`, while the gate
+    // lives ONLY in the REST route (`api/routes/execute-sql.ts`) and the MCP tool
+    // (`mcp/tools.ts`). This grep-guard (per the #4095 review panel) locks the
+    // seam: a future refactor that moved the policy check into the shared pipeline
+    // would fail here rather than silently gating the agent with no failing test.
+    const sqlSource = readFileSync(join(import.meta.dir, "../../tools/sql.ts"), "utf8");
+    expect(sqlSource).not.toContain("loadMcpActionPolicy");
+    expect(sqlSource).not.toContain("mcpActionDenialCopy");
+    expect(sqlSource).not.toContain("mcp/action-policy");
+  });
+});
+
+describe("mcpActionDenialCopy", () => {
+  it("gives raw_sql tailored copy that points members at `atlas query`", () => {
+    const { message, hint } = mcpActionDenialCopy("raw_sql");
+    expect(message).toContain("Raw SQL execution is disabled");
+    expect(message).toContain("atlas query");
+    expect(hint).toContain("re-enable raw SQL");
+  });
+
+  it("gives the mutation categories the generic per-category copy", () => {
+    const { message } = mcpActionDenialCopy("datasource");
+    expect(message).toBe(
+      "MCP 'datasource' actions are disabled for this workspace by an administrator.",
+    );
   });
 });

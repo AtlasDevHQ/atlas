@@ -104,6 +104,35 @@ mock.module("@atlas/api/lib/billing/agent-gate", () => ({
   },
 }));
 
+// ── MCP action policy mock (gate 1 — raw-SQL kill-switch, #4095) ──────────────
+//
+// The route now consults `loadMcpActionPolicy` for the `raw_sql` category before
+// the pipeline (parity with the MCP `executeSQL` tool). Swap per-test to exercise
+// allow / block / read-throw (fail-closed). Sentinel denial copy asserts the
+// route surfaces the CENTRALIZED `mcpActionDenialCopy` (the real wording is pinned
+// in action-policy.test.ts); mock ALL runtime exports so a sibling test loading the
+// real module doesn't inherit a partial mock (CLAUDE.md mock-all-exports).
+let rawSqlPolicy: "allow" | "block" | "throw" = "allow";
+let policyCalls: Array<string> = [];
+const ALL_CATEGORIES = ["datasource", "integration", "policy", "raw_sql"];
+
+mock.module("@atlas/api/lib/mcp/action-policy", () => ({
+  loadMcpActionPolicy: async (orgId: string) => {
+    policyCalls.push(orgId);
+    if (rawSqlPolicy === "throw") throw new Error("policy read boom");
+    return { isBlocked: (c: string) => c === "raw_sql" && rawSqlPolicy === "block" };
+  },
+  mcpActionDenialCopy: (category: string) => ({
+    message: `denied:${category}`,
+    hint: `hint:${category}`,
+  }),
+  MCP_ACTION_CATEGORIES: ALL_CATEGORIES,
+  MCP_ACTION_CATEGORY_META: [],
+  isMcpActionCategory: (v: string) => ALL_CATEGORIES.includes(v),
+  getMcpActionPolicyEntries: async () => [],
+  setMcpActionCategoryStatus: async () => {},
+}));
+
 // ── runUserQueryPipeline mock ─────────────────────────────────────────────────
 //
 // Replace the shared pipeline so the route is tested without a live datasource.
@@ -182,6 +211,8 @@ beforeEach(() => {
   capturedContexts = [];
   gateCalls = [];
   pipelineCalls = [];
+  rawSqlPolicy = "allow";
+  policyCalls = [];
   gateImpl = async () => ({ allowed: true });
   pipelineImpl = async () => ({
     kind: "ok",
@@ -224,6 +255,64 @@ describe("POST /api/v1/execute-sql — auth + member floor (ADR-0027 §2)", () =
     expect(pipelineCalls[0]).toEqual(pipelineCalls[1]);
     // Neither was rejected for role.
     expect(pipelineCalls[0]).toMatchObject({ sql: "SELECT id FROM users" });
+  });
+});
+
+describe("POST /api/v1/execute-sql — raw-SQL kill-switch (gate 1, #4095)", () => {
+  it("allows raw SQL through to the pipeline when the policy permits it (default enabled)", async () => {
+    fakeAuth = userAuth();
+    rawSqlPolicy = "allow";
+    const res = await post({ sql: "SELECT 1" });
+    expect(res.status).toBe(200);
+    expect(policyCalls).toEqual(["org-1"]);
+    expect(pipelineCalls).toHaveLength(1);
+  });
+
+  it("blocks with 403 raw_sql_disabled (and never runs the pipeline) when an admin disabled raw SQL", async () => {
+    fakeAuth = userAuth();
+    rawSqlPolicy = "block";
+    const res = await post({ sql: "SELECT 1" });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string; message: string; hint: string; requestId?: string };
+    expect(body.error).toBe("raw_sql_disabled");
+    // The route surfaces the centralized `mcpActionDenialCopy` (sentinel here;
+    // real "use `atlas query`" wording pinned in action-policy.test.ts).
+    expect(body.message).toBe("denied:raw_sql");
+    expect(body.hint).toBe("hint:raw_sql");
+    expect(body.requestId).toBeDefined();
+    expect(pipelineCalls).toHaveLength(0);
+  });
+
+  it("fails closed to 503 action_policy_unavailable when the policy read throws", async () => {
+    fakeAuth = userAuth();
+    rawSqlPolicy = "throw";
+    const res = await post({ sql: "SELECT 1" });
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string; retryable?: boolean; requestId?: string };
+    expect(body.error).toBe("action_policy_unavailable");
+    expect(body.retryable).toBe(true);
+    expect(body.requestId).toBeDefined();
+    expect(pipelineCalls).toHaveLength(0);
+  });
+
+  it("runs the policy gate AFTER billing — a billing block short-circuits before the policy check", async () => {
+    fakeAuth = userAuth();
+    rawSqlPolicy = "block";
+    gateImpl = async () => ({
+      allowed: false,
+      errorCode: "trial_expired",
+      errorMessage: "Trial expired.",
+      httpStatus: 403,
+      retryable: false,
+    });
+    const res = await post({ sql: "SELECT 1" });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    // Billing wins the ordering — the raw_sql block never fires, the policy is
+    // never consulted, and the pipeline never runs.
+    expect(body.error).toBe("trial_expired");
+    expect(policyCalls).toHaveLength(0);
+    expect(pipelineCalls).toHaveLength(0);
   });
 });
 

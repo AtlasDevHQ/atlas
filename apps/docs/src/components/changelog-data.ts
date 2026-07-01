@@ -20,6 +20,22 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.36",
+    title: "CLI & MCP Hardening",
+    date: "2026-07-01",
+    summary:
+      "Hardens the CLI and MCP trial-to-action path end-to-end, closing the gaps an end-to-end verification pass surfaced. A brand-new trial account can now claim itself on the web with a passkey (no password required), set up the CLI, and ask natural-language questions of its own workspace datasource — over both the CLI and the MCP server. The high-level MCP query tool lets an agent ask a question in plain language and get an answer from Atlas's semantic agent, without writing SQL. Datasources created over the CLI or MCP can be published so they go live on chat, and a workspace admin can turn off raw SQL over those surfaces to keep members on the governed natural-language path.",
+    highlights: [
+      "MCP: new high-level query tool — ask a natural-language question and Atlas's semantic agent answers, no SQL required (#4094)",
+      "atlas query now routes correctly against a workspace datasource over the CLI (#4124)",
+      "Passkey-at-claim web flow: claim a trial account with a passkey and no password, then sign in cleanly (#4125, #4135)",
+      "CLI/MCP datasource publish — promote drafts created over the CLI or MCP so they're live on chat (#4126)",
+      "Workspace-admin off-switch to disable raw SQL over the CLI and MCP, restricting members to the natural-language query path (#4095)",
+      "Clearer trial signup errors — a duplicate signup returns an actionable message instead of a 500 (#4136)",
+      "Rate limiter reworked behind a swappable store, fixing per-pod windows on the unauthenticated trial surface (#4129)",
+    ],
+  },
+  {
     version: "v0.0.35",
     title: "CLI: REST-backed Command Suite & API Keys",
     date: "2026-06-29",

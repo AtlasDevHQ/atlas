@@ -28,6 +28,14 @@
  *    suspended / trial-expired / plan-exhausted workspace is blocked before the
  *    pipeline runs. Solvency-only — Shape B runs no LLM. A throw from the gate
  *    fails closed to a 503 (never an allow).
+ *  - Action-policy gate-1 (raw-SQL kill-switch) via `loadMcpActionPolicy`, parity
+ *    with the MCP `executeSQL` tool's `actionCategory: "raw_sql"` (#4095, ADR-0016
+ *    gate 1). A workspace admin can disable raw SQL over the programmatic surfaces
+ *    (this route + the MCP tool), restricting members to the NL `atlas query`
+ *    path; both transports consult the SAME store + category so they can't drift.
+ *    Default enabled (no `blocked` row ⇒ allow), tighten-only, and fails closed
+ *    to a 503 on a policy read error. The agent loop / chat / `atlas query` never
+ *    reach this route, so they are never gated by it.
  *  - Member floor (any authenticated member; inherited from `standardAuth`) and
  *    no escalation: raw-SQL reach ≡ agent-loop reach for the same member —
  *    identical whitelist, RLS, and approval classification (the pipeline derives
@@ -65,6 +73,10 @@ import {
 } from "@atlas/api/lib/billing/agent-gate";
 import { isRequestOrigin } from "@atlas/api/lib/approvals/types";
 import { resolveActorKind } from "@atlas/api/lib/auth/api-key-metadata";
+import {
+  loadMcpActionPolicy,
+  mcpActionDenialCopy,
+} from "@atlas/api/lib/mcp/action-policy";
 import type { ExecuteSqlRestResponse } from "@useatlas/types";
 import type { UserQueryOutcome } from "@atlas/api/lib/tools/sql";
 import { validationHook } from "./validation-hook";
@@ -146,7 +158,8 @@ const executeSqlRoute = createRoute({
       content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
     },
     403: {
-      description: "Forbidden — billing block or RLS-denied",
+      description:
+        "Forbidden — billing block, RLS-denied, or raw SQL disabled for this workspace by an admin (#4095)",
       content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
     },
     404: {
@@ -174,7 +187,8 @@ const executeSqlRoute = createRoute({
       content: { "application/json": { schema: ErrorSchema } },
     },
     503: {
-      description: "Datasource or enterprise subsystem unavailable",
+      description:
+        "Datasource or enterprise subsystem unavailable, or the raw-SQL policy could not be read (fail-closed, #4095)",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -328,7 +342,7 @@ executeSql.openapi(executeSqlRoute, async (c) => {
       // the billing surface's "try again" signal instead of an opaque 500. ---
       const gate = yield* Effect.tryPromise({
         try: () => checkAgentBillingGate(orgId),
-        catch: (err) => new Error(err instanceof Error ? err.message : String(err)),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(
         Effect.catchAll((err) => {
           log.error(
@@ -366,6 +380,79 @@ executeSql.openapi(executeSqlRoute, async (c) => {
           // the gate's own.
           (gate.httpStatus ?? 403) as 403,
         );
+      }
+
+      // --- Gate 1 (parity with the MCP `executeSQL` tool): the per-workspace
+      // raw-SQL kill-switch (#4095, ADR-0016 gate 1). A workspace admin can
+      // disable raw `executeSQL` over the programmatic surfaces — this route
+      // (the `atlas sql` transport) and the MCP tool. Both consult the SAME
+      // `loadMcpActionPolicy` store + `raw_sql` category, so the two transports
+      // cannot drift (no per-surface enforcement). Tighten-only: an admin toggle
+      // can only restrict reach (add a block), never grant access below the
+      // member floor — ADR-0016's tighten-only invariant.
+      //
+      // Fails closed: a policy READ error blocks (503, retryable) rather than
+      // proceeds — a security decision must not fall through on infra failure,
+      // matching the billing gate above and the MCP dispatch gate. Absence of a
+      // `blocked` row (the default) and a DB-less deploy both resolve to allow
+      // inside `loadMcpActionPolicy`, so this is transparent until an admin
+      // flips it. The agent loop / chat / NL `atlas query` never reach this
+      // route, so they are structurally unaffected. ---
+      const rawSqlPolicy = yield* Effect.tryPromise({
+        try: async (): Promise<"allow" | "block"> =>
+          (await loadMcpActionPolicy(orgId)).isBlocked("raw_sql") ? "block" : "allow",
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.error(
+            { requestId, orgId, err, category: "action_policy_check_error" },
+            "MCP action policy read threw — failing closed (blocking raw SQL)",
+          );
+          return Effect.succeed<"unavailable">("unavailable");
+        }),
+      );
+      // Exhaustive on the tri-state so `allow` is explicit and any future state
+      // fails CLOSED (a security gate must never implicitly fall through to
+      // allow): the `never` default is both a compile guard and a 503 at runtime.
+      switch (rawSqlPolicy) {
+        case "allow":
+          break;
+        case "unavailable":
+          return c.json(
+            {
+              error: "action_policy_unavailable",
+              message:
+                "Unable to verify the raw-SQL policy for this workspace. Please try again shortly.",
+              retryable: true,
+              requestId,
+            } as never,
+            503,
+          );
+        case "block": {
+          log.warn(
+            { requestId, orgId, category: "raw_sql_disabled" },
+            "Execute-SQL blocked by workspace action policy (raw_sql disabled)",
+          );
+          const { message, hint } = mcpActionDenialCopy("raw_sql");
+          return c.json({ error: "raw_sql_disabled", message, hint, requestId } as never, 403);
+        }
+        default: {
+          const _exhaustive: never = rawSqlPolicy;
+          log.error(
+            { requestId, orgId, state: String(_exhaustive), category: "action_policy_unhandled_state" },
+            "Unhandled raw-SQL policy state — failing closed",
+          );
+          return c.json(
+            {
+              error: "action_policy_unavailable",
+              message:
+                "Unable to verify the raw-SQL policy for this workspace. Please try again shortly.",
+              retryable: true,
+              requestId,
+            } as never,
+            503,
+          );
+        }
       }
 
       // Audit origin derives from the credential's claim, never hardcoded — a

@@ -137,7 +137,7 @@ describe("admin MCP action policy route (#3509)", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { entries: { category: string; status: string }[] };
     expect(body.entries.map((e) => e.category).sort()).toEqual(
-      ["datasource", "integration", "policy"],
+      ["datasource", "integration", "policy", "raw_sql"],
     );
     expect(body.entries.every((e) => e.status === "allowed")).toBe(true);
   });
@@ -151,6 +151,13 @@ describe("admin MCP action policy route (#3509)", () => {
     const get = await request("GET");
     const getBody = (await get.json()) as { entries: { category: string; status: string }[] };
     expect(getBody.entries.find((e) => e.category === "datasource")?.status).toBe("blocked");
+  });
+
+  it("PUT can disable raw_sql — the admin off-switch for raw executeSQL over CLI/MCP (#4095)", async () => {
+    const put = await request("PUT", { category: "raw_sql", status: "blocked" });
+    expect(put.status).toBe(200);
+    const putBody = (await put.json()) as { entries: { category: string; status: string }[] };
+    expect(putBody.entries.find((e) => e.category === "raw_sql")?.status).toBe("blocked");
   });
 
   it("PUT audit-attributes the toggle with the category + status delta", async () => {

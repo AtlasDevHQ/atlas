@@ -47,6 +47,24 @@ mock.module("@atlas/api/lib/config", () => ({
   _warnPoolDefaultsInSaaS: mock(() => undefined),
 }));
 
+// Gate-1 action policy (#4095): executeSQL declares actionCategory "raw_sql",
+// so the dispatch gate consults the per-workspace policy. Stub it all-allowed
+// (no real `mcp_action_policy` table here) — mock ALL runtime exports so a
+// sibling test loading the real module doesn't inherit a partial mock (CLAUDE.md).
+mock.module("@atlas/api/lib/mcp/action-policy", () => ({
+  loadMcpActionPolicy: async () => ({ isBlocked: () => false }),
+  mcpActionDenialCopy: (category: string) => ({
+    message: `MCP '${category}' actions are disabled for this workspace by an administrator.`,
+    hint: "A workspace admin can re-enable this category under Admin → MCP action policy.",
+  }),
+  MCP_ACTION_CATEGORIES: ["datasource", "integration", "policy", "raw_sql"],
+  MCP_ACTION_CATEGORY_META: [],
+  isMcpActionCategory: (v: string) =>
+    ["datasource", "integration", "policy", "raw_sql"].includes(v),
+  getMcpActionPolicyEntries: async () => [],
+  setMcpActionCategoryStatus: async () => {},
+}));
+
 mock.module("@atlas/api/lib/tools/explore", () => ({
   explore: {
     description: "Explore the semantic layer",

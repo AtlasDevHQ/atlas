@@ -44,6 +44,25 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
   },
 }));
 
+// --- Action-policy gate mock (gate 1, #4095) ---
+// executeSQL now declares actionCategory "raw_sql", so the dispatch gate
+// consults the per-workspace policy. Stub it all-allowed (these tests have no
+// real `mcp_action_policy` table) — mock ALL runtime exports so a sibling test
+// loading the real module doesn't inherit a partial mock (CLAUDE.md).
+mock.module("@atlas/api/lib/mcp/action-policy", () => ({
+  loadMcpActionPolicy: async () => ({ isBlocked: () => false }),
+  mcpActionDenialCopy: (category: string) => ({
+    message: `MCP '${category}' actions are disabled for this workspace by an administrator.`,
+    hint: "A workspace admin can re-enable this category under Admin → MCP action policy.",
+  }),
+  MCP_ACTION_CATEGORIES: ["datasource", "integration", "policy", "raw_sql"],
+  MCP_ACTION_CATEGORY_META: [],
+  isMcpActionCategory: (v: string) =>
+    ["datasource", "integration", "policy", "raw_sql"].includes(v),
+  getMcpActionPolicyEntries: async () => [],
+  setMcpActionCategoryStatus: async () => {},
+}));
+
 // --- Billing gate mock (#3437) ---
 // The MCP layer consults `checkAgentBillingGate` before any datasource
 // query (executeSQL / runMetric). Tests flip `billingGateVerdict` to

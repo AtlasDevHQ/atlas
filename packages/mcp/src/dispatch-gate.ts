@@ -53,6 +53,7 @@ import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { meetsRoleRequirement, getUserRole } from "@atlas/api/lib/auth/permissions";
 import {
   loadMcpActionPolicy,
+  mcpActionDenialCopy,
   type McpActionPolicy,
 } from "@atlas/api/lib/mcp/action-policy";
 import {
@@ -252,15 +253,10 @@ async function runActionPolicyGate(
       },
       "MCP tool denied at gate 1 — action category blocked by workspace policy",
     );
-    return toEnvelopeResult(
-      envelope(
-        "forbidden",
-        `MCP '${actionCategory}' actions are disabled for this workspace by an administrator.`,
-        {
-          hint: "A workspace admin can re-enable this category under Admin → MCP action policy.",
-        },
-      ),
-    );
+    // Denial copy is single-sourced in `mcpActionDenialCopy` so the MCP and
+    // CLI/REST enforcement points can't drift (#4095).
+    const { message, hint } = mcpActionDenialCopy(actionCategory);
+    return toEnvelopeResult(envelope("forbidden", message, { hint }));
   } catch (err) {
     log.error(
       {

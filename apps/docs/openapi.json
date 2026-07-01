@@ -2635,7 +2635,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — billing block or RLS-denied",
+            "description": "Forbidden — billing block, RLS-denied, or raw SQL disabled for this workspace by an admin (#4095)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2733,7 +2733,7 @@
             }
           },
           "503": {
-            "description": "Datasource or enterprise subsystem unavailable",
+            "description": "Datasource or enterprise subsystem unavailable, or the raw-SQL policy could not be read (fail-closed, #4095)",
             "content": {
               "application/json": {
                 "schema": {
@@ -35931,7 +35931,8 @@
                     "enum": [
                       "datasource",
                       "integration",
-                      "policy"
+                      "policy",
+                      "raw_sql"
                     ],
                     "example": "datasource",
                     "description": "MCP action category to toggle"

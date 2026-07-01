@@ -42,7 +42,7 @@ const ERR = {
 /** The kinds of failure a raw-SQL call can surface, each with an actionable message. */
 export type SqlErrorKind =
   | "unauthorized" // 401 — bearer missing/expired
-  | "forbidden" // 403 — billing block or RLS-denied
+  | "forbidden" // 403 — billing block, RLS-denied, or raw SQL disabled by a workspace admin (#4095)
   | "no_workspace" // 400 — credential has no bound workspace
   | "workspace_not_found" // 404 — billing block: the workspace was deleted
   | "invalid_sql" // 400 — rejected by the validation pipeline (DML/whitelist/unparseable)
@@ -154,8 +154,10 @@ export async function runSql(opts: SqlClientOptions, args: RunSqlArgs): Promise<
         "Your session is no longer valid. Run `atlas login` again.",
       );
     case 403:
-      // Billing block or RLS-denied — surface the server's message (it carries
-      // the actionable remedy, e.g. trial-expired guidance or the RLS reason).
+      // Billing block, RLS-denied, or raw SQL disabled for the workspace by an
+      // admin (#4095) — surface the server's message (it carries the actionable
+      // remedy, e.g. trial-expired guidance, the RLS reason, or "use `atlas
+      // query`").
       throw new SqlCliError("forbidden", serverMessage(body, res.status));
     case 404:
       // The ONLY 404 this route emits is a billing-gate block for a deleted

@@ -148,6 +148,18 @@ const datasourceReqs: McpDispatchGateRequirements = {
   actionCategory: "datasource",
 };
 
+/**
+ * Member-floor, read-only reqs carrying the `raw_sql` read category — based on
+ * the real `executeSQL` tool (#4095), minus `checksBilling`/`requiresBoundOrg`
+ * so the test isolates gate 1 (no write scope, no billing).
+ */
+const rawSqlReqs: McpDispatchGateRequirements = {
+  toolName: "executeSQL",
+  requiresWrite: false,
+  minRole: "member",
+  actionCategory: "raw_sql",
+};
+
 describe("runMcpDispatchGate — gate order + branches (#3508)", () => {
   it("gate 2: denies a hosted mcp:read-only caller (forbidden)", async () => {
     const res = await runMcpDispatchGate(baseCtx({ scopes: ["mcp:read"] }), adminReqs);
@@ -402,6 +414,28 @@ describe("runMcpDispatchGate — gate 1: MCP action policy kill-switch (#3509)",
     });
     expect(res).toBeNull();
     expect(consulted).toBe(false); // no category ⇒ gate 1 skipped entirely
+  });
+
+  it("blocks the raw_sql read category with copy pointing members at `atlas query` (#4095)", async () => {
+    const res = await runMcpDispatchGate(baseCtx(), rawSqlReqs, {
+      loadActionPolicy: async () => stubActionPolicy(["raw_sql"]),
+    });
+    expect(res?.isError).toBe(true);
+    const env = parseAtlasMcpToolError(getContentText(res?.content));
+    expect(env?.code).toBe("forbidden");
+    // The tailored, transport-neutral copy from `mcpActionDenialCopy` — NOT the
+    // generic "MCP 'raw_sql' actions" wording (this is a read surface, and the
+    // remedy is the NL path).
+    expect(env?.message).toContain("Raw SQL execution is disabled");
+    expect(env?.message).toContain("atlas query");
+    expect(env?.message).not.toContain("MCP 'raw_sql'");
+  });
+
+  it("lets raw_sql through when the workspace has not disabled it (default enabled)", async () => {
+    const res = await runMcpDispatchGate(baseCtx(), rawSqlReqs, {
+      loadActionPolicy: async () => stubActionPolicy([]),
+    });
+    expect(res).toBeNull();
   });
 
   it("is a no-op (skipped) when there is no bound workspace (orgId undefined)", async () => {

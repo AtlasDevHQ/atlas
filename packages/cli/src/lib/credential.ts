@@ -1,8 +1,10 @@
 /**
  * The workspace credential the REST-backed CLI clients updated in #4112
- * (`sql`/`metric`/`explore`/`datasource`) authenticate with (ADR-0027 §5). The
- * legacy `query`/`import`/`init` commands route `ATLAS_API_KEY` through the
- * separate operator-Bearer path and do NOT use this type.
+ * (`sql`/`metric`/`explore`/`datasource`) authenticate with (ADR-0027 §5), plus
+ * `query`, which joined this XOR-credential path in #4124 (so `ATLAS_API_KEY`
+ * now rides as `x-api-key`, not the operator Bearer). The legacy `import`/`init`
+ * commands still route `ATLAS_API_KEY` through the separate operator-Bearer path
+ * and do NOT use this type.
  *
  * Authorization rides on exactly ONE of two mutually-exclusive credential
  * classes — never both:

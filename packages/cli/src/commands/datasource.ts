@@ -598,17 +598,32 @@ async function runPublish(
       prompts: typeof promoted.prompts === "number" ? promoted.prompts : 0,
       starterPrompts: typeof promoted.starterPrompts === "number" ? promoted.starterPrompts : 0,
     };
-    const total = counts.connections + counts.entities + counts.prompts + counts.starterPrompts;
-    if (total === 0) {
+    // The publish also tombstones stale entities superseded by the promotion
+    // (`deleted.entities`). Count it toward "did anything happen?" so a
+    // deletion-only publish isn't mislabeled a clean no-op.
+    const deletedEntities =
+      typeof asRecord(result.deleted).entities === "number"
+        ? (asRecord(result.deleted).entities as number)
+        : 0;
+    const promotedTotal =
+      counts.connections + counts.entities + counts.prompts + counts.starterPrompts;
+    if (promotedTotal === 0 && deletedEntities === 0) {
       io.out("Nothing to publish — no pending drafts in this workspace.");
       return 0;
     }
-    io.out(
-      `Published ${counts.connections} datasource${counts.connections === 1 ? "" : "s"}, ` +
-        `${counts.entities} entit${counts.entities === 1 ? "y" : "ies"}, ${counts.prompts} prompt ` +
-        `collection${counts.prompts === 1 ? "" : "s"}, and ${counts.starterPrompts} starter ` +
-        `prompt${counts.starterPrompts === 1 ? "" : "s"}.`,
-    );
+    if (promotedTotal > 0) {
+      io.out(
+        `Published ${counts.connections} datasource${counts.connections === 1 ? "" : "s"}, ` +
+          `${counts.entities} entit${counts.entities === 1 ? "y" : "ies"}, ${counts.prompts} prompt ` +
+          `collection${counts.prompts === 1 ? "" : "s"}, and ${counts.starterPrompts} starter ` +
+          `prompt${counts.starterPrompts === 1 ? "" : "s"}.`,
+      );
+    }
+    if (deletedEntities > 0) {
+      io.out(
+        `Pruned ${deletedEntities} stale entit${deletedEntities === 1 ? "y" : "ies"} superseded by this publish.`,
+      );
+    }
     io.out("  This is atomic and workspace-wide — every pending draft just went live, not only");
     io.out(`  ${id ? `"${id}"` : "the datasource you may have had in mind"}.`);
     return 0;

@@ -254,6 +254,19 @@ describe("ClaimPage — region routing", () => {
     expect(sendVerificationOtpMock).not.toHaveBeenCalled();
     expect(reloadMock).not.toHaveBeenCalled();
   });
+
+  test("a non-2xx resolve-region response surfaces a retryable error, never proceeds to OTP", async () => {
+    // Regression: a 500 whose JSON body has no `outcome` must not fall through
+    // to the exhaustive `default` and silently `proceed` on the default base —
+    // that would dispatch OTP for a home-region account against the wrong edge.
+    isCrossOriginMock.mockImplementation(() => true);
+    searchParamsStore.email = "owner@acme.com";
+    respondWith({ error: "internal_error" }, 500);
+    render(<ClaimPage />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Try again/i })).toBeTruthy());
+    expect(sendVerificationOtpMock).not.toHaveBeenCalled();
+    expect(reloadMock).not.toHaveBeenCalled();
+  });
 });
 
 // ── Credential step: passkey enrollment ─────────────────────────────────────

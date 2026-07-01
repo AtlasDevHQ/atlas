@@ -46,11 +46,13 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
 
 // --- Action-policy gate mock (gate 1, #4095) ---
 // executeSQL now declares actionCategory "raw_sql", so the dispatch gate
-// consults the per-workspace policy. Stub it all-allowed (these tests have no
-// real `mcp_action_policy` table) — mock ALL runtime exports so a sibling test
-// loading the real module doesn't inherit a partial mock (CLAUDE.md).
+// consults the per-workspace policy. Default all-allowed (these tests have no
+// real `mcp_action_policy` table); a test flips `blockedCategories` to exercise
+// the raw_sql kill-switch. Mock ALL runtime exports so a sibling test loading
+// the real module doesn't inherit a partial mock (CLAUDE.md).
+let blockedCategories = new Set<string>();
 mock.module("@atlas/api/lib/mcp/action-policy", () => ({
-  loadMcpActionPolicy: async () => ({ isBlocked: () => false }),
+  loadMcpActionPolicy: async () => ({ isBlocked: (c: string) => blockedCategories.has(c) }),
   mcpActionDenialCopy: (category: string) => ({
     message: `MCP '${category}' actions are disabled for this workspace by an administrator.`,
     hint: "A workspace admin can re-enable this category under Admin → MCP action policy.",
@@ -122,6 +124,7 @@ describe("MCP tools", () => {
     mockExploreExecute.mockClear();
     mockExecuteSQLExecute.mockClear();
     billingGateVerdict = { allowed: true };
+    blockedCategories = new Set();
     mockCheckAgentBillingGate.mockClear();
   });
 
@@ -261,6 +264,27 @@ describe("MCP tools", () => {
     expect(parsed.row_count).toBe(1);
     expect(parsed.rows).toEqual([{ count: 42 }]);
     expect(result.isError).toBeFalsy();
+  });
+
+  it("executeSQL is blocked (forbidden, pipeline never runs) when the workspace disables raw_sql (#4095)", async () => {
+    // The MCP half of the raw_sql kill-switch: executeSQL declares
+    // actionCategory "raw_sql", so a workspace that blocks the category must
+    // deny the tool at the dispatch gate BEFORE the SQL pipeline runs. Without
+    // this, dropping `actionCategory: "raw_sql"` from the tool registration
+    // would ship green while silently disabling the MCP enforcement surface.
+    blockedCategories = new Set(["raw_sql"]);
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT count(*) FROM users", explanation: "Count users" },
+    });
+
+    expect(result.isError).toBe(true);
+    const envelope = JSON.parse(getContentText(result.content));
+    expect(envelope.code).toBe("forbidden");
+    expect(envelope.message).toContain("raw_sql");
+    // The kill-switch short-circuits ahead of the SQL pipeline.
+    expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
   });
 
   it("executeSQL returns structuredContent conforming to the declared outputSchema (#3498)", async () => {

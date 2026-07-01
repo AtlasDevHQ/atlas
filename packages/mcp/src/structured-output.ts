@@ -2,8 +2,8 @@
  * Structured-output schemas for the MCP datasource-query tools (#3498,
  * spec 2025-11-25).
  *
- * `executeSQL` and `runMetric` declare an `outputSchema` and return
- * `structuredContent` so downstream clients/agents parse a typed result
+ * `executeSQL`, `runMetric`, and `query` (#4094) declare an `outputSchema` and
+ * return `structuredContent` so downstream clients/agents parse a typed result
  * instead of re-parsing the stringified text block (which is retained for
  * backward compatibility).
  *

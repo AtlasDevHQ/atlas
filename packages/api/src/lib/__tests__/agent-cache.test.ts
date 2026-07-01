@@ -412,6 +412,12 @@ describe("buildSystemParam", () => {
     expect(withEmpty).toBe(without);
     expect(withEmpty as string).not.toContain("## Working Memory");
   });
+
+  // #3819 — options-object form: an empty options bag must resolve every
+  // default exactly as omitting the argument does.
+  test("empty options object is byte-identical to omitting it", () => {
+    expect(buildSystemParam("openai", {})).toBe(buildSystemParam("openai"));
+  });
 });
 
 // ---------------------------------------------------------------------------

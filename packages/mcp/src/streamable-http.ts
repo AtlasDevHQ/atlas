@@ -4,8 +4,12 @@
  * Uses the MCP SDK's WebStandardStreamableHTTPServerTransport which works
  * natively with Bun's Web Standard APIs (Request/Response/ReadableStream).
  *
- * The SDK's transport handles HTTP method dispatch internally:
- * POST for JSON-RPC, GET for SSE notifications, DELETE for session termination.
+ * The SDK's transport handles HTTP method dispatch internally: POST for
+ * JSON-RPC, GET to open a notification stream, DELETE for session termination.
+ * (The GET/POST responses are `text/event-stream`-encoded — that SSE framing is
+ * Streamable HTTP's streaming wire format, NOT the deprecated HTTP+SSE
+ * transport, which used a dedicated long-lived GET stream + a separate POST
+ * message endpoint.)
  *
  * Endpoints:
  * - /mcp     — All MCP traffic (POST, GET, DELETE) delegated to the SDK transport
@@ -20,8 +24,8 @@
  * here and kept "in lockstep" with `hosted.ts` by hand; a future
  * transport/session-policy change now lands once.
  *
- * The one intentional shape difference from hosted: `sse.ts` is a
- * multi-instance factory — each `startSseServer` call constructs its OWN
+ * The one intentional shape difference from hosted: `streamable-http.ts` is a
+ * multi-instance factory — each `startStreamableHttpServer` call constructs its OWN
  * `McpSessionStore`, so the session map and reservation counter are
  * per-server (closure-scoped), and the per-instance test seams hang off the
  * returned handle (`_sessionCount`, `_sweepIdleSessionsForTests`). hosted, by
@@ -32,9 +36,9 @@
  * @example
  * ```typescript
  * import { createAtlasMcpServer } from "./server.js";
- * import { startSseServer } from "./sse.js";
+ * import { startStreamableHttpServer } from "./streamable-http.js";
  *
- * const handle = await startSseServer(
+ * const handle = await startStreamableHttpServer(
  *   () => createAtlasMcpServer(),
  *   { port: 8080 },
  * );
@@ -55,11 +59,11 @@ import {
 // timeout resolution, not any one server instance's store).
 export { _setIdleTimeoutForTests };
 
-const log = createLogger("mcp-sse");
+const log = createLogger("mcp-streamable-http");
 
 const DEFAULT_PORT = 8080;
 
-interface SseServerOptions {
+interface StreamableHttpServerOptions {
   /** Port to listen on. 0 for OS-assigned ephemeral port. Default: 8080. */
   port?: number;
   /** Hostname to bind to. Default: "0.0.0.0". */
@@ -76,7 +80,7 @@ interface SseServerOptions {
   maxSessions?: number;
 }
 
-interface SseServerHandle {
+interface StreamableHttpServerHandle {
   /** Read-only info about the running server. */
   readonly server: {
     readonly port: number;
@@ -111,7 +115,7 @@ function corsHeaders(origin: string): Record<string, string> {
 }
 
 /**
- * Start a Bun HTTP server that serves the MCP server over Streamable HTTP (SSE).
+ * Start a Bun HTTP server that serves the MCP server over Streamable HTTP.
  *
  * Each new initialization request creates a fresh McpServer (via createServer)
  * and a WebStandardStreamableHTTPServerTransport with a unique session ID.
@@ -121,10 +125,10 @@ function corsHeaders(origin: string): Record<string, string> {
  * Returns a handle with read-only server info and close() for graceful shutdown.
  * Pass port: 0 for an OS-assigned ephemeral port.
  */
-export async function startSseServer(
+export async function startStreamableHttpServer(
   createServer: () => Promise<McpServer>,
-  opts?: SseServerOptions,
-): Promise<SseServerHandle> {
+  opts?: StreamableHttpServerOptions,
+): Promise<StreamableHttpServerHandle> {
   const port = opts?.port ?? DEFAULT_PORT;
   const hostname = opts?.hostname ?? "0.0.0.0";
   const origin = opts?.corsOrigin ?? "*";
@@ -136,7 +140,7 @@ export async function startSseServer(
 
   const cors = corsHeaders(origin);
 
-  // Per-instance session store (#3600): each `startSseServer` call owns its
+  // Per-instance session store (#3600): each `startStreamableHttpServer` call owns its
   // own cap / session map / reservation counter — the intentional shape
   // difference from hosted's single module-scoped store. An explicit
   // `opts.maxSessions` wins over the env via the cap resolver passed here.
@@ -165,7 +169,7 @@ export async function startSseServer(
   const bunServer = Bun.serve({
     port,
     hostname,
-    idleTimeout: 0, // SSE streaming — no idle timeout
+    idleTimeout: 0, // long-lived notification streams — no idle timeout
     error(err) {
       log.error({ err }, "Unhandled server error");
       return new Response(
@@ -184,6 +188,10 @@ export async function startSseServer(
         return new Response(
           JSON.stringify({
             status: "ok",
+            // Kept as "sse" deliberately: this label (and the OTel `transport`
+            // dimension in metrics.ts / mcp-tools.ts) is a telemetry contract
+            // whose dashboard consumers can't be verified from here — renaming
+            // it is the deferred Tier 3 of #4169, done in lockstep with those.
             transport: "sse",
             sessions: store.size,
           }),

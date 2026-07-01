@@ -428,7 +428,7 @@ export class BillingConfigInvalidError extends Data.TaggedError("BillingConfigIn
 
 /**
  * SaaS region exposes hosted MCP (always mounted in SaaS — see `api/index.ts`'s
- * unconditional `/mcp/{workspace_id}/sse` mount) but the v0.0.15 MCP security
+ * unconditional `/mcp/{workspace_id}` mount) but the v0.0.15 MCP security
  * spine's OAuth audience set is not derivable at boot (#3687):
  * `resolveOAuthValidAudiences(process.env)` returns an EMPTY list because neither
  * `ATLAS_OAUTH_VALID_AUDIENCES` nor a base URL (`ATLAS_PUBLIC_API_URL` /
@@ -1601,7 +1601,7 @@ export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidErro
  * — the warn just moves DISCOVERY of an unreachable store to boot.
  *
  * **MCP-enabled predicate.** Hosted MCP is mounted UNCONDITIONALLY on every SaaS
- * api instance (`api/index.ts` mounts `/mcp/{workspace_id}/sse` with no toggle),
+ * api instance (`api/index.ts` mounts `/mcp/{workspace_id}` with no toggle),
  * so `deployMode === "saas"` IS the "MCP is exposed" gate — there is no separate
  * enable flag to consult. The guard only *enforces* spine coherence in SaaS and
  * skips self-hosted entirely: a self-hoster who opts into hosted MCP on their own

@@ -356,7 +356,7 @@ const ONBOARDING_PATHS = ["/", "/sse"];
  * is no identity yet. SaaS-only: off-SaaS the handler returns a structured 404
  * (the funnel doesn't exist).
  *
- * Must be mounted BEFORE the hosted `/mcp/:workspaceId/sse` router so the
+ * Must be mounted BEFORE the hosted `/mcp/:workspaceId` router so the
  * literal `onboarding` segment is matched here rather than treated as a
  * workspace id.
  *

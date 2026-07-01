@@ -1,7 +1,7 @@
 /**
  * Mint short-lived MCP-scoped JWTs for k6-driven load testing (#2135).
  *
- * The MCP load-test profile in CI (#2129) drives `/mcp/{workspace_id}/sse`
+ * The MCP load-test profile in CI (#2129) drives `/mcp/{workspace_id}`
  * with a Bearer token. We do NOT walk the full OAuth 2.1 DCR + auth-code +
  * PKCE ceremony to obtain that bearer — every re-run would either pollute
  * the workspace with a permanent client or get stuck in a 5-step ceremony

@@ -24,8 +24,8 @@ mock.module("@modelcontextprotocol/sdk/server/stdio.js", () => ({
 const mockSseClose = mock(async () => {});
 const mockSseServer = { hostname: "0.0.0.0", port: 8080 };
 
-mock.module("@atlas/mcp/sse", () => ({
-  startSseServer: mock(async () => ({
+mock.module("@atlas/mcp/streamable-http", () => ({
+  startStreamableHttpServer: mock(async () => ({
     server: mockSseServer,
     close: mockSseClose,
   })),

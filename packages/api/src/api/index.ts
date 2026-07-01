@@ -667,7 +667,8 @@ log.info(
 );
 
 // Hosted MCP endpoint — mounts the MCP server as a Hono route under
-// /mcp/{workspace_id}/sse so the same per-region API instance that
+// /mcp/{workspace_id} (the legacy /mcp/{workspace_id}/sse alias still
+// resolves, #4169) so the same per-region API instance that
 // serves the data also serves the agent. Keeps residency guarantees —
 // workspace data never crosses regions even via the agent path.
 //
@@ -682,7 +683,7 @@ log.info(
 // Anonymous onboarding endpoint (ADR-0018 / #3649) — the single pre-auth
 // carve-out from the dispatch gate. Mounted at /mcp/onboarding and BEFORE the
 // hosted router so the static `onboarding` segment is matched here rather than
-// treated as a workspace id by /mcp/:workspaceId/sse. It answers on the
+// treated as a workspace id by the hosted /mcp/:workspaceId router. It answers on the
 // canonical Streamable HTTP path /mcp/onboarding AND the legacy /mcp/onboarding/sse
 // alias. The routes are registered unconditionally; the SaaS gate is per-request
 // inside the handler (off-SaaS → structured 404), NOT at construction. This
@@ -714,11 +715,11 @@ try {
     /* turbopackIgnore: true */ "@atlas/mcp/hosted"
   );
   app.route("/mcp", createHostedMcpRouter());
-  log.info("Hosted MCP endpoint mounted at /mcp/{workspace_id}/sse");
+  log.info("Hosted MCP endpoint mounted at /mcp/{workspace_id} (+ /sse alias)");
 } catch (err) {
   // Promoted from log.debug — debug-level messages are filtered by
   // production Pino, which silently hid a P1 service-unavailable
-  // (every /mcp/{workspace_id}/sse request 404'd). The catch was
+  // (every /mcp/{workspace_id} request 404'd). The catch was
   // originally written for the standalone Vercel template
   // (`examples/nextjs-standalone`) where the heavy `@atlas/mcp` graph
   // is intentionally not bundled — but in any deploy that DOES intend

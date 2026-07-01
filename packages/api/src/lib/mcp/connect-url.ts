@@ -2,7 +2,9 @@
  * Build the hosted-MCP connect URL for a Workspace.
  *
  * The connect URL is the per-region MCP resource endpoint
- * (`/mcp/{workspaceId}/sse`). An MCP client pointed at it receives a 401 with
+ * (`/mcp/{workspaceId}` — the canonical Streamable HTTP path; the legacy
+ * `/mcp/{workspaceId}/sse` still resolves, see `hosted.ts:HOSTED_PATHS`, #4169).
+ * An MCP client pointed at it receives a 401 with
  * the RFC 9728 `WWW-Authenticate` resource-metadata pointer, runs Dynamic
  * Client Registration + the authorization-code-with-PKCE flow against the
  * Better Auth OAuth provider, and attaches a normal *hosted* actor to the
@@ -71,7 +73,7 @@ export function buildMcpConnectUrl(workspaceId: string, baseUrl?: string): strin
   if (!base) {
     // No public API base resolved (ATLAS_PUBLIC_API_URL / BETTER_AUTH_URL both
     // unset). SaaS boot requires these, so this is unreachable in a correctly
-    // configured region — but a bare relative `/mcp/{id}/sse` would be the
+    // configured region — but a bare relative `/mcp/{id}` would be the
     // trial's entire payoff handed back unusable. Surface the misconfiguration
     // at provision time rather than as a confusing client-side connect failure.
     log.warn(
@@ -79,5 +81,5 @@ export function buildMcpConnectUrl(workspaceId: string, baseUrl?: string): strin
       "buildMcpConnectUrl: no public API base resolved — connect URL is relative and unusable; check ATLAS_PUBLIC_API_URL/BETTER_AUTH_URL",
     );
   }
-  return `${base}/mcp/${workspaceId}/sse`;
+  return `${base}/mcp/${workspaceId}`;
 }

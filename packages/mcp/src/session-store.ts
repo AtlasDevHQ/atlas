@@ -25,8 +25,8 @@
  *
  *   - **hosted** constructs ONE module-scoped store (its session map was
  *     module-scoped: all per-region requests share one cap).
- *   - **sse** constructs one store PER `startSseServer` call (each
- *     standalone server owns its own cap / session map).
+ *   - **streamable-http** constructs one store PER `startStreamableHttpServer`
+ *     call (each standalone server owns its own cap / session map).
  *
  * The store is a plain class instance, so both lifetimes fall out of
  * *where the caller constructs it* — module scope vs. factory closure.

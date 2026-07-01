@@ -522,6 +522,29 @@ describe("hosted MCP — bearer enforcement", () => {
     }
   });
 
+  it("resolves BOTH the canonical /mcp/{id} and the legacy /mcp/{id}/sse alias to the same handler (#4169)", async () => {
+    // #4169 dropped the misleading `/sse` suffix from the canonical hosted
+    // path but kept it as a back-compat alias (HOSTED_PATHS). Both must reach
+    // the bearer gate — a 401 (not a 404) proves the route is wired. The rest
+    // of this suite already exercises the `/sse` alias end-to-end; this pins
+    // that the bare canonical path is not a 404 dead-end.
+    const handle = await startServer();
+    try {
+      for (const path of [`/mcp/${ORG_A}`, `/mcp/${ORG_A}/sse`]) {
+        const res = await fetch(`${handle.url}${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+        });
+        expect(res.status).toBe(401);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe("missing_bearer");
+      }
+    } finally {
+      handle.close();
+    }
+  });
+
   it("returns 401 when verifyAccessToken throws (bad signature / audience / issuer / expired)", async () => {
     // verifyAccessToken collapses these distinct failure modes into a
     // single thrown Error / APIError("UNAUTHORIZED"). Our route

@@ -235,8 +235,8 @@ interface SseHandle {
   server: { hostname: string; port: number };
   close(): Promise<void>;
 }
-interface SseModule {
-  startSseServer: (
+interface StreamableHttpModule {
+  startStreamableHttpServer: (
     factory: () => Promise<AtlasMcpServer>,
     opts: { port: number },
   ) => Promise<SseHandle>;
@@ -307,8 +307,8 @@ export async function runServeCommand(argv: string[]): Promise<number> {
     if (flags.transport === "sse") {
       (async () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see note on serverMod above
-        const sseMod = (await import("@atlas/mcp/sse")) as any as SseModule;
-        const handle = await sseMod.startSseServer(
+        const streamableMod = (await import("@atlas/mcp/streamable-http")) as any as StreamableHttpModule;
+        const handle = await streamableMod.startStreamableHttpServer(
           () => serverMod.createAtlasMcpServer({ transport: "sse" }),
           { port: flags.port },
         );
@@ -332,7 +332,7 @@ export async function runServeCommand(argv: string[]): Promise<number> {
             `[atlas-mcp serve] SSE server running on http://${handle.server.hostname}:${handle.server.port}/mcp`,
           );
         } catch (err) {
-          // Anything thrown after `startSseServer` resolved (signal-handler
+          // Anything thrown after `startStreamableHttpServer` resolved (signal-handler
           // setup, console write) leaves a live listener bound to the port.
           // Drain it before rejecting so we don't leak.
           await handle.close().catch((closeErr) => {

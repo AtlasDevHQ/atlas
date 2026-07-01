@@ -5,7 +5,7 @@
   "license": "AGPL-3.0-or-later",
   "exports": {
     "./server": "./src/server.ts",
-    "./sse": "./src/sse.ts",
+    "./streamable-http": "./src/streamable-http.ts",
     "./telemetry-bootstrap": "./src/telemetry-bootstrap.ts",
     "./hosted": "./src/hosted.ts",
     "./onboarding": "./src/onboarding.ts",

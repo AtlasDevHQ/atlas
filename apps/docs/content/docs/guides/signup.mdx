@@ -243,12 +243,12 @@ A workspace created over MCP starts **unclaimed (metered)**. In that state:
 {
   "error": "claim_required",
   "message": "Asking Atlas questions of your data is paused until you claim this workspace…",
-  "claimUrl": "https://app.useatlas.dev/signup?email=you@acme.com",
+  "claimUrl": "https://app.useatlas.dev/claim?email=you@acme.com",
   "retryable": false
 }
 ```
 
-**Claiming** = completing the post-signup OTP interstitial on the web: enter the emailed one-time code to verify your email (Atlas never uses magic links), set a credential or passkey, and accept the Terms. Verifying your email **is** the claim. On claim, Atlas:
+**Claiming** = completing the dedicated `/claim` interstitial on the web: enter the emailed one-time code to verify your email (Atlas never uses magic links), enroll a passkey (password-free — this also satisfies the admin-MFA requirement, so the trial owner can immediately reach admin surfaces and mint an API key), and accept the Terms. Verifying your email **is** the claim. On claim, Atlas:
 
 1. Flips the workspace from metered → full (Atlas-token Q&A is no longer withheld).
 2. Records the owner's `emailVerified` bit — the single signal the claim-gate keys on.

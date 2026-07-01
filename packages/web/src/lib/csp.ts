@@ -53,7 +53,12 @@ export function buildCsp(
     "img-src 'self' data: blob: https:",
     "font-src 'self' data:",
     "connect-src 'self' https: wss:",
-    "frame-src 'self'",
+    // `https://challenges.cloudflare.com` frames the Cloudflare Turnstile
+    // challenge on the web signup (#4159). Only `frame-src` needs the host here:
+    // the Turnstile api.js rides `script-src`'s `'strict-dynamic'` (a nonce'd
+    // bundle script injects it), but the challenge iframe is a plain frame the
+    // host allowlist must admit — `frame-src 'self'` alone blocks it.
+    "frame-src 'self' https://challenges.cloudflare.com",
     `frame-ancestors ${frameAncestors}`,
     "base-uri 'self'",
     "form-action 'self'",

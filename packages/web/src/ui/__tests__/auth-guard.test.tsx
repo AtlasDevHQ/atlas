@@ -164,6 +164,26 @@ describe("AuthGuard stale-session recovery", () => {
     expect(assignMock).not.toHaveBeenCalled();
   });
 
+  test("does NOT sign out or redirect a sessionless visitor on /claim — the MCP/CLI trial claim page is public (#4164)", async () => {
+    // A brand-new MCP/CLI trial user lands on /claim with NO session. Before the
+    // fix, /claim was missing from PUBLIC_ROUTE_PREFIXES, so this exact state
+    // (managed mode, clean "no session", non-public route) ran the stale-session
+    // recovery — signOut + hard-nav to /login — and the claim page never
+    // rendered (the page's own cold-start OTP flow was pre-empted).
+    pathname = "/claim";
+    sessionState = { data: null, isPending: false, error: null };
+
+    renderGuard();
+
+    // Flush the mount effect; the public-route early-return is synchronous, so a
+    // microtask turn is enough to prove recovery did NOT fire.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(signOutMock).not.toHaveBeenCalled();
+    expect(assignMock).not.toHaveBeenCalled();
+  });
+
   test("recovers exactly once even when the effect re-fires (one-shot guard)", async () => {
     pathname = "/";
     sessionState = { data: null, isPending: false, error: null };

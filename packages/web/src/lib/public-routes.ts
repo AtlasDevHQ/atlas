@@ -16,4 +16,10 @@ export const PUBLIC_ROUTE_PREFIXES = [
   "/shared",
   "/report",
   "/accept-invitation",
+  // The MCP/CLI trial-claim interstitial (`start_trial`'s `claimUrl`, ADR-0018 /
+  // #4125). A brand-new trial user arrives here with NO session, so it MUST be
+  // public — otherwise on cross-origin SaaS the proxy defers to AuthGuard, which
+  // treats the sessionless visitor as a stale-session case and bounces them to
+  // /login (the page never renders). See #4164.
+  "/claim",
 ] as const;

@@ -20,48 +20,20 @@ const MEMORY = "## Working memory\n\n- foo: bar";
 
 describe("buildSystemParam — Source catalog (#3894)", () => {
   it("injects the catalog block when supplied", () => {
-    const prompt = promptText(
-      buildSystemParam(
-        "openai",
-        undefined, // registry
-        undefined, // warnings
-        undefined, // orgSemanticIndex
-        undefined, // learnedPatternsSection
-        undefined, // routingContext
-        undefined, // boundDashboardContext
-        "developer",
-        undefined, // restRepresentation
-        undefined, // modelId
-        undefined, // memoryBlock
-        CATALOG, // sourceCatalog
-      ),
-    );
+    const prompt = promptText(buildSystemParam("openai", { sourceCatalog: CATALOG }));
     expect(prompt).toContain("## Source catalog");
   });
 
   it("omits the catalog when empty (no behavior change vs. today)", () => {
-    const withCatalog = promptText(
-      buildSystemParam(
-        "openai", undefined, undefined, undefined, undefined, undefined,
-        undefined, "developer", undefined, undefined, undefined, "",
-      ),
-    );
-    const without = promptText(
-      buildSystemParam(
-        "openai", undefined, undefined, undefined, undefined, undefined,
-        undefined, "developer", undefined, undefined, undefined, undefined,
-      ),
-    );
+    const withCatalog = promptText(buildSystemParam("openai", { sourceCatalog: "" }));
+    const without = promptText(buildSystemParam("openai", { sourceCatalog: undefined }));
     expect(withCatalog).not.toContain("## Source catalog");
     expect(withCatalog).toBe(without);
   });
 
   it("keeps the durable memory block AFTER the catalog (memory-LAST invariant)", () => {
     const prompt = promptText(
-      buildSystemParam(
-        "openai", undefined, undefined, undefined, undefined, undefined,
-        undefined, "developer", undefined, undefined, MEMORY, CATALOG,
-      ),
+      buildSystemParam("openai", { memoryBlock: MEMORY, sourceCatalog: CATALOG }),
     );
     expect(prompt).toContain("## Source catalog");
     expect(prompt).toContain("## Working memory");

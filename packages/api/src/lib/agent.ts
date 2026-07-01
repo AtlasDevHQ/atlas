@@ -601,27 +601,33 @@ When a question spans more than one source in the catalog above — several SQL 
 - **Report which source(s) you drew from** so the user can check provenance — e.g. "1,240 signups (Postgres), 180 of them paid (Stripe)".
 - **Never silently fall back to an unrelated source.** If the source that actually holds the answer is empty or errors, say so plainly and state the gap — do not answer from a different source and imply it is equivalent.`;
 
-export function buildSystemParam(
-  providerType: ProviderType,
-  registry: ToolRegistry = defaultRegistry,
-  warnings?: string[],
-  orgSemanticIndex?: string,
-  learnedPatternsSection?: string,
-  routingContext?: ScopeRoutingContext,
-  boundDashboardContext?: BoundDashboardAgentContext,
-  presentationMode: "developer" | "conversational" = "developer",
+export interface BuildSystemParamOptions {
+  /** Tool registry the prompt's tool-guidance sections are built from. Defaults to `defaultRegistry`. */
+  registry?: ToolRegistry;
+  /** Startup/context warnings surfaced to the agent under a `## Warnings` section. */
+  warnings?: string[];
+  /** Org-level semantic index section (multi-source workspaces). */
+  orgSemanticIndex?: string;
+  /** Learned query-pattern section (pattern cache). */
+  learnedPatternsSection?: string;
+  /** Scope-routing context (connection-group routing guidance). */
+  routingContext?: ScopeRoutingContext;
+  /** Bound dashboard context (dashboard-scoped chat). */
+  boundDashboardContext?: BoundDashboardAgentContext;
+  /** Response-audience mode; `"conversational"` appends the chat-surface addendum. Defaults to `"developer"`. */
+  presentationMode?: "developer" | "conversational";
   /**
    * #2924 — Path A REST representation. When a REST datasource resolves, the
    * trimmed operation-graph prompt context is appended so the agent can address
    * its operations with `executeRestOperation`. Absent for SQL-only workspaces.
    */
-  restRepresentation?: string,
+  restRepresentation?: string;
   /**
    * #3099 — Resolved model id, used only to detect when the `gateway` provider
    * routes to an Anthropic-family model so the system prompt gets the same
    * cache breakpoint as the direct Anthropic provider. Ignored otherwise.
    */
-  modelId?: string,
+  modelId?: string;
   /**
    * #3755 — pre-rendered durable working-memory block (the persisted slot values
    * for this session). Appended at a single deterministic position — LAST in the
@@ -632,7 +638,7 @@ export function buildSystemParam(
    * it (the slice-2 invariant recorded in ADR-0020). Empty string / omitted ⇒
    * nothing appended (memory off / empty / no internal DB → no change vs. today).
    */
-  memoryBlock?: string,
+  memoryBlock?: string;
   /**
    * #3894 — the Source catalog (ADR-0022 §4): the compact routing menu of SQL
    * Connection groups + REST datasources the agent reads to pick a source before
@@ -643,8 +649,26 @@ export function buildSystemParam(
    * Empty string / omitted ⇒ nothing appended (single-source / no-internal-DB
    * workspaces are unchanged).
    */
-  sourceCatalog?: string,
+  sourceCatalog?: string;
+}
+
+export function buildSystemParam(
+  providerType: ProviderType,
+  options: BuildSystemParamOptions = {},
 ): string | SystemModelMessage {
+  const {
+    registry = defaultRegistry,
+    warnings,
+    orgSemanticIndex,
+    learnedPatternsSection,
+    routingContext,
+    boundDashboardContext,
+    presentationMode = "developer",
+    restRepresentation,
+    modelId,
+    memoryBlock,
+    sourceCatalog,
+  } = options;
   let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext);
 
   if (sourceCatalog) {
@@ -1514,7 +1538,19 @@ export async function runAgent({
   // glossary AND the durable memory block (#3755), and is passed to the model
   // separately, so neither ever enters the message array compaction rewrites
   // (#3759).
-  const systemParam = buildSystemParam(providerType, activeRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext, presentationMode ?? "developer", restRepresentation, resolvedModelId, memoryBlock, sourceCatalog);
+  const systemParam = buildSystemParam(providerType, {
+    registry: activeRegistry,
+    warnings,
+    orgSemanticIndex,
+    learnedPatternsSection,
+    routingContext: scopeRoutingContext,
+    boundDashboardContext,
+    presentationMode: presentationMode ?? "developer",
+    restRepresentation,
+    modelId: resolvedModelId,
+    memoryBlock,
+    sourceCatalog,
+  });
 
   // #3759 — context compaction. Resolved once per turn (knobs hot-reload at the
   // next turn via the settings cache). Off by default ⇒ the prepareStep below

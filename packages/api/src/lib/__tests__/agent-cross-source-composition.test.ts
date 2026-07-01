@@ -27,24 +27,9 @@ const MEMORY = "## Working memory\n\n- foo: bar";
 
 const COMPOSITION_HEADING = "## Cross-source composition";
 
-/** Build with the catalog at its positional slot, leaving the rest defaulted. */
+/** Build with just the catalog (and optionally memory), leaving the rest defaulted. */
 function withCatalog(sourceCatalog: string | undefined, memoryBlock?: string) {
-  return promptText(
-    buildSystemParam(
-      "openai",
-      undefined, // registry
-      undefined, // warnings
-      undefined, // orgSemanticIndex
-      undefined, // learnedPatternsSection
-      undefined, // routingContext
-      undefined, // boundDashboardContext
-      "developer",
-      undefined, // restRepresentation
-      undefined, // modelId
-      memoryBlock,
-      sourceCatalog,
-    ),
-  );
+  return promptText(buildSystemParam("openai", { memoryBlock, sourceCatalog }));
 }
 
 describe("buildSystemParam — cross-source composition guidance (#3909)", () => {
@@ -70,11 +55,7 @@ describe("buildSystemParam — cross-source composition guidance (#3909)", () =>
     // anthropic/bedrock providers return a SystemModelMessage rather than a bare
     // string; the guidance must live in that message's `content` (the SYSTEM
     // prompt), never in the message transcript (ADR-0020 / memory-LAST #3755).
-    const result = buildSystemParam(
-      "anthropic",
-      undefined, undefined, undefined, undefined, undefined,
-      undefined, "developer", undefined, undefined, undefined, CATALOG,
-    );
+    const result = buildSystemParam("anthropic", { sourceCatalog: CATALOG });
     expect(typeof result).not.toBe("string");
     // Narrow off the string branch — the cache providers return an object.
     if (typeof result === "string") {
@@ -124,11 +105,7 @@ describe("buildSystemParam — cross-source composition guidance (#3909)", () =>
     // the deep per-REST-datasource detail it routes into.
     const REST = "## REST datasource: acme\n\noperations...";
     const prompt = promptText(
-      buildSystemParam(
-        "openai",
-        undefined, undefined, undefined, undefined, undefined,
-        undefined, "developer", REST, undefined, undefined, CATALOG,
-      ),
+      buildSystemParam("openai", { restRepresentation: REST, sourceCatalog: CATALOG }),
     );
     expect(prompt).toContain(COMPOSITION_HEADING);
     expect(prompt).toContain("## REST datasource: acme");

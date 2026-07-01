@@ -21,7 +21,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
-import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-expiry";
+import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-state";
 import { isOnboardingEmailEnabled, getBrandingForOrg, getBaseUrl } from "./engine";
 import { nextDueTrialStep, TRIAL_EMAIL_STEPS, type TrialEmailStep } from "./trial-sequence";
 import { renderTrialExpiryEmail } from "./templates";

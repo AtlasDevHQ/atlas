@@ -47,7 +47,13 @@ import {
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getSettingLive } from "@atlas/api/lib/settings";
 import { getSeatCount, SeatCountUnavailableError } from "./seat-count";
-import { computeUsageDollarBudget, getPlanLimits, isUnlimited, TRIAL_DAYS } from "./plans";
+import { computeUsageDollarBudget, getPlanLimits, isUnlimited } from "./plans";
+import {
+  effectiveTrialEndsAt,
+  isTrialExpiredAt,
+  isTrialTier,
+  trialDaysRemaining,
+} from "./trial-state";
 import type { OverageStatus, PlanLimitStatus } from "@useatlas/types";
 
 const log = createLogger("billing:enforcement");
@@ -401,9 +407,9 @@ export async function checkPlanLimits(
     return { allowed: true };
   }
 
-  // Trial expiry check
-  if (tier === "trial") {
-    const trialExpired = isTrialExpired(workspace);
+  // Trial expiry check — the expired/solvent axis, defined in `trial-state`.
+  if (isTrialTier(tier)) {
+    const trialExpired = isTrialExpiredAt(effectiveTrialEndsAt(workspace));
     if (trialExpired) {
       log.warn({ orgId, tier, reason: "trial_expired" }, "Plan enforcement blocked request — trial expired");
       return {
@@ -761,11 +767,14 @@ export function severityOf(status: OverageStatus): number {
  * Days remaining in a workspace's trial, for surfacing in MCP tool responses
  * (ADR-0018 / #3651). Returns `null` when there is nothing to surface: no
  * internal DB, no org, the workspace is absent, or it isn't on the `trial`
- * tier. Otherwise the whole-days count until `trial_ends_at`, floored at 0
- * (an already-lapsed trial reports 0, not a negative).
+ * tier. Otherwise the `trial-state` countdown — whole days until the
+ * effective trial end, floored at 0 (an already-lapsed trial reports 0, not
+ * a negative).
  *
  * Never throws — a lookup failure logs and returns `null`, so a caller can
  * attach the line opportunistically without risking the underlying response.
+ * Lives here (not in `trial-state`) because it owns the cached-workspace
+ * lookup; the derivation itself is `trial-state`'s.
  */
 export async function getTrialDaysRemaining(
   orgId: string | undefined,
@@ -781,25 +790,8 @@ export async function getTrialDaysRemaining(
     );
     return null;
   }
-  if (!workspace || workspace.plan_tier !== "trial") return null;
-
-  const endsAt = workspace.trial_ends_at
-    ? new Date(workspace.trial_ends_at)
-    : new Date(new Date(workspace.createdAt).getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
-  const msRemaining = endsAt.getTime() - Date.now();
-  if (!Number.isFinite(msRemaining)) return null;
-  return Math.max(0, Math.ceil(msRemaining / (24 * 60 * 60 * 1000)));
-}
-
-function isTrialExpired(workspace: WorkspaceRow): boolean {
-  if (!workspace.trial_ends_at) {
-    // No trial_ends_at set — check if the workspace was created more than TRIAL_DAYS ago
-    const createdAt = new Date(workspace.createdAt);
-    const trialCutoff = new Date(Date.now() - TRIAL_DAYS * 24 * 60 * 60 * 1000);
-    return createdAt < trialCutoff;
-  }
-
-  return new Date(workspace.trial_ends_at) < new Date();
+  if (!workspace || !isTrialTier(workspace.plan_tier)) return null;
+  return trialDaysRemaining(workspace);
 }
 
 // ---------------------------------------------------------------------------

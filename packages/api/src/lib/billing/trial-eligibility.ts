@@ -31,7 +31,7 @@
  */
 
 import { internalQuery } from "@atlas/api/lib/db/internal";
-import { TRIAL_DAYS, TRIAL_GRACE_HOURS } from "./plans";
+import { fullTrialEndsAtFrom, trialTierSql, unclaimedGraceHorizonFrom } from "./trial-state";
 
 /**
  * Whether `userId` has already consumed a SaaS trial via some org other
@@ -109,14 +109,15 @@ export async function claimTrialGrant(
  * Auth's `emailVerification.afterEmailVerification` hook; that hook calls this
  * with the verifying user's id.
  *
- * Extends `trial_ends_at` to `NOW() + TRIAL_DAYS` for every `trial`-tier
- * Workspace this user OWNS that is still inside the short unclaimed-grace
- * window — i.e. an MCP-provisioned trial (`start_trial` narrowed it to
- * {@link TRIAL_GRACE_HOURS}). The `trial_ends_at <= NOW() + TRIAL_GRACE_HOURS`
- * guard makes this idempotent and scoped:
- *   - A normal web-signup trial already carries the full {@link TRIAL_DAYS}
- *     window (`assignSaasTrial` stamped it at org creation), so it is OUTSIDE
- *     the grace horizon and left untouched — its clock already started.
+ * Extends `trial_ends_at` to the full trial window (`trial-state`'s
+ * {@link fullTrialEndsAtFrom}) for every `trial`-tier Workspace this user
+ * OWNS that is still inside the short unclaimed-grace window — i.e. an
+ * MCP-provisioned trial (`start_trial` narrowed it to the grace hours). The
+ * `trial_ends_at <= graceHorizon` guard ({@link unclaimedGraceHorizonFrom})
+ * makes this idempotent and scoped:
+ *   - A normal web-signup trial already carries the full trial window
+ *     (`assignSaasTrial` stamped it at org creation), so it is OUTSIDE the
+ *     grace horizon and left untouched — its clock already started.
  *   - Once a grace trial is extended to the full window here, a re-fire of the
  *     verification hook (a later profile/credential update re-verifying) finds
  *     it outside the grace horizon and is a no-op — no free clock resets.
@@ -127,8 +128,8 @@ export async function claimTrialGrant(
  */
 export async function extendTrialOnClaim(userId: string): Promise<string[]> {
   const now = Date.now();
-  const trialEndsAt = new Date(now + TRIAL_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  const graceHorizon = new Date(now + TRIAL_GRACE_HOURS * 60 * 60 * 1000).toISOString();
+  const trialEndsAt = fullTrialEndsAtFrom(now);
+  const graceHorizon = unclaimedGraceHorizonFrom(now);
   const rows = await internalQuery<{ id: string }>(
     `UPDATE organization o
         SET trial_ends_at = $2
@@ -136,7 +137,7 @@ export async function extendTrialOnClaim(userId: string): Promise<string[]> {
       WHERE m."organizationId" = o.id
         AND m."userId" = $1
         AND m.role = 'owner'
-        AND o.plan_tier = 'trial'
+        AND ${trialTierSql("o")}
         AND o.trial_ends_at IS NOT NULL
         AND o.trial_ends_at <= $3
       RETURNING o.id`,

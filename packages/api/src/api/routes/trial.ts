@@ -25,7 +25,7 @@ import { AuthContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getCachedWorkspace } from "@atlas/api/lib/billing/enforcement";
 import { TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
-import { effectiveTrialEndsAt, isTrialExpiredAt } from "@atlas/api/lib/billing/trial-expiry";
+import { effectiveTrialEndsAt, isTrialExpiredAt } from "@atlas/api/lib/billing/trial-state";
 import { TrialStatusSchema } from "@useatlas/schemas";
 import { validationHook } from "./validation-hook";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";

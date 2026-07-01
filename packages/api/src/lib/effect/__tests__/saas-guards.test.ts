@@ -752,7 +752,9 @@ describe("TurnstileGuardLive", () => {
       expect((failure as TTurnstileSecretRequiredError)._tag).toBe("TurnstileSecretRequiredError");
       expect((failure as TTurnstileSecretRequiredError).message).toContain("#3795");
       expect((failure as TTurnstileSecretRequiredError).message).toContain("TURNSTILE_SECRET_KEY");
-      expect((failure as TTurnstileSecretRequiredError).message).toContain("start_trial");
+      // #4159 — Turnstile moved off the headless `start_trial` door onto the
+      // interactive web signup; the boot-guard message names that surface now.
+      expect((failure as TTurnstileSecretRequiredError).message).toContain("interactive web signup");
     });
   });
 

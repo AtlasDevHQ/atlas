@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { betterAuth } from "better-auth";
 import { bearer } from "better-auth/plugins";
+import { memoryAdapter } from "better-auth/adapters/memory";
 import { apiKey } from "@better-auth/api-key";
 import { APIError } from "better-auth/api";
 import {
@@ -9,6 +10,7 @@ import {
   assertInvitationRoleAllowed,
   isTransportError,
   buildPlugins,
+  buildSignupCaptchaPlugin,
   resolvePasskeyRpId,
   DEFAULT_RP_ID,
 } from "../server";
@@ -201,6 +203,119 @@ describe("organization plugin wiring", () => {
     const plugins = buildPlugins();
     const apiKeyPlugin = plugins.find((p: { id?: string }) => p.id === "api-key");
     expect(apiKeyPlugin).toBeDefined();
+  });
+});
+
+// #4159 — Cloudflare Turnstile moved OFF the headless MCP `start_trial` door
+// (a non-browser caller can't solve it) ONTO the interactive web email/password
+// signup. The captcha plugin is scoped to `/sign-up/email` only and is
+// registered iff `TURNSTILE_SECRET_KEY` is set (a secretless registration would
+// 500 every matched request). `buildSignupCaptchaPlugin` takes env explicitly so
+// these cases are pure — no process.env mutation, no shared-state leakage.
+describe("buildSignupCaptchaPlugin (#4159)", () => {
+  it("returns null when TURNSTILE_SECRET_KEY is unset (no captcha → self-hosted signup unbroken)", () => {
+    expect(buildSignupCaptchaPlugin({} as NodeJS.ProcessEnv)).toBeNull();
+  });
+
+  it("builds a cloudflare-turnstile captcha scoped to /sign-up/email ONLY when the secret is set", () => {
+    const plugin = buildSignupCaptchaPlugin({
+      TURNSTILE_SECRET_KEY: "0xSECRET-test",
+    } as NodeJS.ProcessEnv);
+    expect(plugin).not.toBeNull();
+    expect(plugin?.id).toBe("captcha");
+    // `.options` is typed as CaptchaOptions on the plugin's return, so read it
+    // directly (provider/secretKey/endpoints are all on the union).
+    expect(plugin?.options.provider).toBe("cloudflare-turnstile");
+    expect(plugin?.options.secretKey).toBe("0xSECRET-test");
+    // Signup-only: NOT the plugin's default set (which also gates /sign-in/email
+    // and /request-password-reset). Proof-of-human is a signup-only control here.
+    expect(plugin?.options.endpoints).toEqual(["/sign-up/email"]);
+  });
+
+  it("buildPlugins() registers the captcha plugin when the secret is present", () => {
+    const prev = process.env.TURNSTILE_SECRET_KEY;
+    process.env.TURNSTILE_SECRET_KEY = "0xSECRET-buildplugins";
+    try {
+      const plugins = buildPlugins();
+      const captchaPlugin = plugins.find((p: { id?: string }) => p.id === "captcha");
+      expect(captchaPlugin).toBeDefined();
+    } finally {
+      if (prev === undefined) delete process.env.TURNSTILE_SECRET_KEY;
+      else process.env.TURNSTILE_SECRET_KEY = prev;
+    }
+  });
+
+  it("buildPlugins() omits the captcha plugin when the secret is absent", () => {
+    const prev = process.env.TURNSTILE_SECRET_KEY;
+    delete process.env.TURNSTILE_SECRET_KEY;
+    try {
+      const plugins = buildPlugins();
+      const captchaPlugin = plugins.find((p: { id?: string }) => p.id === "captcha");
+      expect(captchaPlugin).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.TURNSTILE_SECRET_KEY;
+      else process.env.TURNSTILE_SECRET_KEY = prev;
+    }
+  });
+});
+
+// #4159 — the load-bearing guarantee behind moving Turnstile onto the web
+// signup: the captcha plugin gates the HTTP `/sign-up/email` door but NEVER the
+// in-process `auth.api.signUpEmail` seam that `provisionTrialWorkspace` (the MCP
+// `start_trial` path) uses. The captcha is `onRequest` middleware, which fires
+// only through Better Auth's HTTP router; direct `auth.api.*` calls bypass it.
+describe("captcha gates the HTTP signup door only, not the in-process seam (#4159)", () => {
+  afterEach(() => {
+    resetAuthInstance();
+  });
+
+  function instanceWithCaptcha() {
+    const captchaPlugin = buildSignupCaptchaPlugin({
+      TURNSTILE_SECRET_KEY: "0xSECRET-test",
+    } as NodeJS.ProcessEnv);
+    return betterAuth({
+      baseURL: "http://localhost:3000",
+      // Real in-memory adapter so both the HTTP handler and the in-process
+      // `auth.api` seam actually run (a null adapter fails `$context` init
+      // before either can exercise the captcha boundary). The core email/
+      // password models must be declared up-front — the memory adapter throws
+      // "Model … not found" for a table it wasn't given.
+      database: memoryAdapter({ user: [], account: [], session: [], verification: [] }),
+      secret: "test-secret-at-least-32-characters-long",
+      emailAndPassword: { enabled: true },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
+      plugins: [captchaPlugin] as any[],
+    });
+  }
+
+  it("rejects an HTTP /sign-up/email with NO x-captcha-response header (400)", async () => {
+    const instance = instanceWithCaptcha();
+    const res = await instance.handler(
+      new Request("http://localhost:3000/api/auth/sign-up/email", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "a@b.com", password: "password123", name: "A" }),
+      }),
+    );
+    // The captcha onRequest short-circuits the HTTP door — a missing token is
+    // the plugin's 400 MISSING_RESPONSE body.
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("CAPTCHA");
+    await instance.$context.catch(() => {});
+  });
+
+  it("does NOT gate the in-process auth.api.signUpEmail seam — the MCP trial path needs no token", async () => {
+    const instance = instanceWithCaptcha();
+    // The in-process call bypasses `onRequest` (which fires only through the
+    // HTTP router), so it is NOT rejected for a missing CAPTCHA — it runs to
+    // completion and creates the user. If a future change made the captcha fire
+    // on in-process calls, this would throw the MISSING_RESPONSE captcha error
+    // and the headless MCP `start_trial` door would break (#4159).
+    const out = await instance.api.signUpEmail({
+      body: { email: "seam@example.com", password: "password123", name: "Seam" },
+    });
+    expect(out.user.email).toBe("seam@example.com");
+    await instance.$context.catch(() => {});
   });
 });
 

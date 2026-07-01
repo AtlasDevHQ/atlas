@@ -115,11 +115,15 @@ describe("buildAuthMd — content contract", () => {
     expect(md).toContain("/mcp/onboarding/sse");
   });
 
-  it("documents the start_trial input contract (email, orgName, turnstileToken)", () => {
+  it("documents the start_trial input contract as email + orgName ONLY — no Turnstile token (#4159)", () => {
     const md = buildAuthMd(BASE_OPTS);
     expect(md).toContain("email");
     expect(md).toContain("orgName");
-    expect(md).toContain("turnstileToken");
+    // #4159 — Turnstile moved to the interactive web signup. The headless door
+    // must advertise no token source it doesn't serve: an agent that reads a
+    // required `turnstileToken` here has no product surface to obtain one.
+    expect(md).not.toContain("turnstileToken");
+    expect(md).not.toMatch(/turnstile/i);
   });
 
   it("documents the start_trial output contract (workspaceId, connectUrl, state)", () => {

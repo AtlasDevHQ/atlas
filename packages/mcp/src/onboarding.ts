@@ -39,10 +39,6 @@ import {
 } from "@atlas/api/lib/logger";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import {
-  verifyTurnstile as defaultVerifyTurnstile,
-  type VerifyTurnstileResult,
-} from "@atlas/api/lib/turnstile";
-import {
   checkTrialAttemptRateLimit as defaultCheckRateLimit,
   type TrialAttemptRateLimitResult,
 } from "@atlas/api/lib/trial-abuse";
@@ -69,13 +65,6 @@ export type ProvisionTrialFn = (
   input: ProvisionTrialInput,
 ) => Promise<ProvisionTrialResult>;
 
-/** Injected for tests; defaults to the real Cloudflare Turnstile verifier. */
-export type VerifyTurnstileFn = (opts: {
-  token: string;
-  remoteIp?: string | null;
-  requestId?: string;
-}) => Promise<VerifyTurnstileResult>;
-
 /** Injected for tests; defaults to the real per-IP/email attempt limiter. */
 export type TrialAttemptLimiter = (input: {
   ip: string | null;
@@ -85,8 +74,6 @@ export type TrialAttemptLimiter = (input: {
 export interface RegisterStartTrialOptions {
   /** Override the provisioner (tests inject a stub). */
   readonly provision?: ProvisionTrialFn;
-  /** Override Turnstile verification (tests inject a pass/fail stub). */
-  readonly verifyTurnstile?: VerifyTurnstileFn;
   /** Override the creation-attempt rate limiter (tests force a trip). */
   readonly checkRateLimit?: TrialAttemptLimiter;
 }
@@ -108,15 +95,12 @@ const startTrialInputShape = {
     .string()
     .optional()
     .describe("Name for the new workspace. Elicited if omitted."),
-  turnstileToken: z
-    .string()
-    .max(4096)
-    .optional()
-    .describe(
-      "Cloudflare Turnstile token proving the signup is human-initiated. " +
-        "REQUIRED — obtain it from the Turnstile challenge presented during the " +
-        "onboarding handshake. Missing or invalid tokens are rejected.",
-    ),
+  // No Turnstile token: this headless door structurally cannot produce a
+  // proof-of-human-in-a-browser token (ADR-0018, #4159). Bot-protection moved
+  // to the interactive web signup; the abuse bound here is rate-limit +
+  // business-email policy + the unclaimed-grace reaper. An unknown extra field
+  // (e.g. a stray `turnstileToken` from an older client) is stripped by the
+  // tool's input schema, not an error.
 } as const;
 
 /** Map a typed provisioning failure onto the MCP tool-error envelope. */
@@ -225,7 +209,6 @@ export function registerStartTrialTool(
   opts: RegisterStartTrialOptions = {},
 ): void {
   const provision = opts.provision ?? defaultProvision;
-  const verifyTurnstileFn = opts.verifyTurnstile ?? defaultVerifyTurnstile;
   const checkRateLimit = opts.checkRateLimit ?? defaultCheckRateLimit;
 
   server.registerTool(
@@ -265,11 +248,14 @@ export function registerStartTrialTool(
           );
         }
 
-        // ── Abuse controls (ADR-0018 § Abuse posture, #3654) ───────────────
-        // Order: rate-limit FIRST (cheap, throttles even malformed/tokenless
-        // spam before it can burn a Turnstile round-trip or a DB write), then
-        // Turnstile. The limiter bounds creation ATTEMPTS per-IP/per-email —
-        // NOT trials per IP (shared NATs must keep signing up).
+        // ── Abuse controls (ADR-0018 § Abuse posture, #3654 / #4159) ───────
+        // This headless door's abuse bound is the three non-interactive
+        // controls: per-IP/per-email creation-attempt rate-limiting (here), the
+        // business-email-only signup policy, and the unclaimed-grace reaper.
+        // Turnstile is NOT applied here — a CLI/AI-agent caller can't solve a
+        // browser challenge, so proof-of-human lives on the interactive web
+        // signup instead (#4159). The limiter bounds creation ATTEMPTS
+        // per-IP/per-email — NOT trials per IP (shared NATs must keep signing up).
         const rate = await checkRateLimit({ ip: clientIp, email: input.email });
         if (!rate.allowed) {
           const retryAfter = Math.ceil(rate.retryAfterMs / 1000);
@@ -285,65 +271,6 @@ export function registerStartTrialTool(
                 retry_after: retryAfter,
                 hint: "Self-serve trial signups are rate-limited per IP and per email. Wait the indicated time before retrying.",
               },
-            ),
-          );
-        }
-
-        // Turnstile token presence — a client that never ran the widget gets a
-        // validation rejection (not a Turnstile failure: that requires a
-        // server round-trip we skip when the token is clearly absent).
-        const token = args.turnstileToken?.trim();
-        if (!token) {
-          log.warn(
-            { requestId, event: "start_trial.turnstile_missing" },
-            "start_trial called without a Turnstile token",
-          );
-          return toEnvelopeResult(
-            envelope(
-              "validation_failed",
-              "A Cloudflare Turnstile token is required to start a trial.",
-              {
-                hint: "Complete the bot-protection challenge and pass its token as `turnstileToken`.",
-              },
-            ),
-          );
-        }
-
-        // Turnstile siteverify — fails closed (missing secret, network error,
-        // and explicit rejection all return ok:false). Never leak the secret,
-        // the token, or Cloudflare error codes to the caller; log them only.
-        // The real verifier never throws (it folds every failure into ok:false),
-        // but an abuse control must fail CLOSED even on an unexpected verifier
-        // defect: a throw is treated as a failed bot-check (forbidden/deny), not
-        // a generic internal_error that would invite endless retries.
-        let verify: VerifyTurnstileResult;
-        try {
-          verify = await verifyTurnstileFn({ token, remoteIp: clientIp, requestId });
-        } catch (err) {
-          log.error(
-            {
-              requestId,
-              err: err instanceof Error ? err.message : String(err),
-              event: "start_trial.turnstile_threw",
-            },
-            "start_trial Turnstile verifier threw — failing closed (deny)",
-          );
-          verify = { ok: false, errorCodes: [], reason: "verifier_threw" };
-        }
-        if (!verify.ok) {
-          log.warn(
-            {
-              requestId,
-              errorCodes: verify.errorCodes,
-              reason: verify.reason,
-              event: "start_trial.turnstile_failed",
-            },
-            "start_trial Turnstile verification failed",
-          );
-          return toEnvelopeResult(
-            envelope(
-              "forbidden",
-              "Bot-protection check failed. Refresh the challenge and try again.",
             ),
           );
         }

@@ -10,10 +10,12 @@
  * of executing. Designated approvers (via custom roles) can approve or deny.
  * Approved queries can then be re-executed. Stale requests auto-expire.
  *
- * All exported functions return Effect. CRUD and listing operations call
- * `requireEnterpriseEffect()` (fails with EnterpriseError). Functions in the agent's
+ * All exported functions return Effect. CRUD and listing operations route
+ * through the `eeRead`/`eeWrite` combinators, which apply `requireEnterpriseEffect()`
+ * (fails with EnterpriseError). Functions in the agent's
  * critical path (`checkApprovalRequired`, `hasApprovedRequest`,
- * `expireStaleRequests`, `getPendingCount`) catch `EnterpriseError` and return
+ * `expireStaleRequests`, `getPendingCount`) are deliberately NOT combinator-wrapped —
+ * they check the DB first, then catch `EnterpriseError` and return
  * a safe default (false, 0, or empty) while re-throwing unexpected errors.
  */
 

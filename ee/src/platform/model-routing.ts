@@ -2,7 +2,8 @@
  * Enterprise workspace-level model routing.
  *
  * CRUD for per-organization LLM provider/model configuration. Every CRUD
- * function calls `requireEnterpriseEffect("model-routing")` — unlicensed
+ * function routes through the `eeRead`/`eeWrite` combinators, which apply the
+ * `requireEnterpriseEffect("model-routing")` gate — unlicensed
  * deployments get a clear error. API keys are stored encrypted using the
  * same AES-256-GCM pattern as connection URLs.
  *

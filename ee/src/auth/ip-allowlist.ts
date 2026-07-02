@@ -5,7 +5,8 @@
  * allowed CIDR ranges can access the workspace. Uses `ipaddr.js` for
  * robust IP/CIDR parsing with full IPv4-mapped IPv6 support.
  *
- * CRUD functions call `requireEnterprise("ip-allowlist")`.
+ * CRUD functions route through the `eeRead`/`eeWrite` combinators, which apply
+ * the `requireEnterpriseEffect("ip-allowlist")` gate.
  * Validation helpers do not require a license.
  */
 

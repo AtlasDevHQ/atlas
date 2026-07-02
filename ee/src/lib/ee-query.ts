@@ -14,9 +14,15 @@
  *
  * The individual guards were extracted long ago (`requireEnterpriseEffect` in
  * `../index`, `requireInternalDBEffect` in `./db-guard`, `hasInternalDB` in
- * core); this composes the *combination* so the ~90 sites that re-type it stop
- * doing so by hand, and so a new EE query cannot reach the internal DB without
- * routing through the gate + guard — the wrapper is the only door.
+ * core); this composes the *combination* so the dozens of read/write functions
+ * that re-type it stop doing so by hand. Because the gate + guard now live in
+ * one wrapper rather than a hand-copied preamble, a reviewer can tell at a
+ * glance whether a new gated EE query routes through it — the point is that
+ * skipping the gate or DB guard becomes visually obvious in review, not that
+ * it's mechanically impossible. (Deliberately-ungated helpers — public getters
+ * like `getWorkspaceBrandingPublic`, provisioning-hot-path lookups like
+ * `resolveGroupToRole` — stay explicit `Effect.gen`s and are the documented
+ * exceptions.)
  *
  * These are leverage-via-composition, NOT a full collapse. The per-function
  * empty-value variance (`[]` vs `null` vs `0` vs `{ allowed: true }`) is
@@ -41,7 +47,7 @@ import { requireInternalDBEffect } from "./db-guard";
  * When unlicensed, fails with `EnterpriseError` (never touching the DB). When
  * licensed but DB-less, returns `whenNoDb` without running `query`.
  *
- * `whenNoDb` is the per-function empty value (`[]`, `null`, `0`,
+ * `whenNoDb` is the per-function empty value (`[]`, `null`, `0`, `false`,
  * `{ allowed: true }`, …) and is passed explicitly — it is `NoInfer` so the
  * result type `A` is driven by `query`, and `whenNoDb` is merely checked
  * against it (e.g. `null` against `CustomRole | null`).
@@ -50,11 +56,11 @@ import { requireInternalDBEffect } from "./db-guard";
  * @param whenNoDb - Value returned when no internal DB is configured.
  * @param query - The DB-backed read; only evaluated when gate + guard pass.
  */
-export const eeRead = <A, E>(
+export const eeRead = <A, E, R>(
   feature: string,
   whenNoDb: NoInfer<A>,
-  query: Effect.Effect<A, E>,
-): Effect.Effect<A, E | EnterpriseError> =>
+  query: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E | EnterpriseError, R> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect(feature);
     if (!hasInternalDB()) return whenNoDb;
@@ -76,12 +82,12 @@ export const eeRead = <A, E>(
  * @param query - The DB-backed write; only evaluated when gate + guard pass.
  * @param errorFactory - Optional factory for a domain-specific no-DB error, preserving per-module typing.
  */
-export const eeWrite = <A, E>(
+export const eeWrite = <A, E, R>(
   feature: string,
   label: string,
-  query: Effect.Effect<A, E>,
+  query: Effect.Effect<A, E, R>,
   errorFactory?: () => Error,
-): Effect.Effect<A, E | EnterpriseError | Error> =>
+): Effect.Effect<A, E | EnterpriseError | Error, R> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect(feature);
     yield* requireInternalDBEffect(label, errorFactory);

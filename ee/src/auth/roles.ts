@@ -5,8 +5,9 @@
  * Three built-in roles (admin, analyst, viewer) are seeded on migration and
  * cannot be deleted. Custom roles are per-organization.
  *
- * CRUD functions call `requireEnterprise("roles")` — unlicensed deployments
- * get a clear error. Permission check helpers do NOT require a license and
+ * CRUD functions route through the `eeRead`/`eeWrite` combinators, which apply
+ * the `requireEnterpriseEffect("roles")` gate — unlicensed deployments get a
+ * clear error. Permission check helpers do NOT require a license and
  * fall back to legacy admin/member role mapping.
  */
 

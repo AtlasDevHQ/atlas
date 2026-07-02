@@ -7,7 +7,8 @@
  * `@better-auth/scim` plugin registered in server.ts — this module only
  * wraps the enterprise gate and the custom group-mapping layer.
  *
- * Every admin-facing CRUD function calls `requireEnterprise("scim")` —
+ * Every admin-facing CRUD function routes through the `eeRead`/`eeWrite`
+ * combinators, which apply the `requireEnterpriseEffect("scim")` gate —
  * unlicensed deployments get a clear error. The `resolveGroupToRole`
  * helper is designed for the provisioning hot path and intentionally
  * skips the gate, returning null when no mapping exists.

@@ -3,7 +3,8 @@
  *
  * CRUD for per-organization SAML/OIDC identity providers,
  * domain-based auto-provisioning, and DNS TXT domain ownership
- * verification. Every CRUD function calls `requireEnterprise("sso")`
+ * verification. Every CRUD function routes through the `eeRead`/`eeWrite`
+ * combinators, which apply the `requireEnterpriseEffect("sso")` gate
  * — unlicensed deployments get a clear error. Validation helpers
  * and domain-matching functions do not require a license.
  */

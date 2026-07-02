@@ -1,8 +1,9 @@
 /**
  * Enterprise workspace branding (white-labeling).
  *
- * CRUD for per-organization branding settings. Every mutation calls
- * `requireEnterpriseEffect("branding")` — unlicensed deployments get a clear error.
+ * CRUD for per-organization branding settings. Every mutation routes through
+ * the `eeWrite` combinator (reads through `eeRead`), which applies the
+ * `requireEnterpriseEffect("branding")` gate — unlicensed deployments get a clear error.
  * Read operations (getWorkspaceBranding) also gate on enterprise so the admin
  * UI can show the feature-disabled state.
  *

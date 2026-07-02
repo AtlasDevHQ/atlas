@@ -6,7 +6,8 @@
  * 2. User Activity Report — query counts, last login, tables accessed, role info
  *
  * Both reports query the internal DB (audit_log + user/session/member tables)
- * and are enterprise-gated via requireEnterpriseEffect("compliance").
+ * and are enterprise-gated via the `eeWrite` combinator, which applies the
+ * `requireEnterpriseEffect("compliance")` gate.
  *
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */

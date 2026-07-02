@@ -6,28 +6,15 @@ import { createEEMock, EnterpriseError } from "../__mocks__/internal";
 //
 // The combinator composes three guards. We mock the enterprise gate
 // (`../index`) and `hasInternalDB` (`@atlas/api/lib/db/internal`) via the
-// shared factory, and shim `./db-guard` so `requireInternalDBEffect` reads the
-// same toggled `hasInternalDB` — mirroring the real guard's behaviour without
-// pulling in core config.
+// shared factory. We deliberately do NOT mock `./db-guard`: the REAL
+// `requireInternalDBEffect` reads `hasInternalDB` from the (already-mocked)
+// `@atlas/api/lib/db/internal`, so letting it run exercises the actual
+// collaborator — including its default no-DB message — rather than a shim copy.
 
 const ee = createEEMock();
 
 mock.module("../index", () => ee.enterpriseMock);
 mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
-
-const hasDB = () => (ee.internalDBMock.hasInternalDB as () => boolean)();
-mock.module("./db-guard", () => ({
-  requireInternalDB: (label: string, factory?: () => Error) => {
-    if (!hasDB()) {
-      if (factory) throw factory();
-      throw new Error(`Internal database required for ${label}.`);
-    }
-  },
-  requireInternalDBEffect: (label: string, factory?: () => Error) =>
-    hasDB()
-      ? Effect.void
-      : Effect.fail(factory?.() ?? new Error(`Internal database required for ${label}.`)),
-}));
 
 // Import after mocks
 const { eeRead, eeWrite } = await import("./ee-query");
@@ -72,13 +59,21 @@ describe("eeRead", () => {
     expect(ran).toBe(false);
   });
 
-  it("preserves the per-function empty value (null, 0, {}) verbatim", async () => {
+  it("preserves the per-function empty value (null, 0, false, {}) verbatim", async () => {
     ee.setHasInternalDB(false);
     expect(await run(eeRead("roles", null, Effect.succeed<string | null>("x")))).toBeNull();
     expect(await run(eeRead("q", 0, Effect.succeed(99)))).toBe(0);
+    expect(await run(eeRead("delete", false, Effect.succeed(true)))).toBe(false);
     expect(await run(eeRead("ip", { allowed: true }, Effect.succeed({ allowed: false })))).toEqual({
       allowed: true,
     });
+  });
+
+  it("propagates the query's own failure (E channel) unchanged when DB present", async () => {
+    const failing: Effect.Effect<number[], Error> = Effect.fail(new Error("boom"));
+    const err = await runFail(eeRead("roles", [], failing));
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("boom");
   });
 
   it("fails with EnterpriseError and never touches the DB when unlicensed", async () => {
@@ -151,5 +146,12 @@ describe("eeWrite", () => {
     const err = await runFail(eeWrite("roles", "role assignment", query));
     expect(err).toBeInstanceOf(EnterpriseError);
     expect(ran).toBe(false);
+  });
+
+  it("propagates the query's own failure (E channel) unchanged when licensed + DB present", async () => {
+    const failing: Effect.Effect<string, Error> = Effect.fail(new Error("write boom"));
+    const err = await runFail(eeWrite("roles", "role assignment", failing));
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("write boom");
   });
 });

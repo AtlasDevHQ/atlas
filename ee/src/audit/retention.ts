@@ -2,7 +2,8 @@
  * Enterprise audit log retention — configurable retention policies,
  * soft-delete purging, hard-delete cleanup, and compliance export.
  *
- * All mutating operations call `requireEnterpriseEffect("audit-retention")`.
+ * All read/write operations route through the `eeRead`/`eeWrite` combinators,
+ * which apply the `requireEnterpriseEffect("audit-retention")` gate.
  * Read operations (get policy) are gated too so non-enterprise users
  * don't see partial config states.
  *

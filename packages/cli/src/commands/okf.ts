@@ -9,7 +9,9 @@
  *   (entities/glossary/metrics YAML); the scan -> enrich -> edit flow takes
  *   over from there. One-shot draft generator, NOT a maintained sync.
  * - `okf export`  — semantic layer directory -> conformant OKF bundle, with
- *   an `atlas:` frontmatter extension that makes re-import lossless.
+ *   an `atlas:` frontmatter extension that makes re-import lossless for
+ *   entity/glossary objects and metric fields (metric SQL is re-stamped
+ *   unverified on import — authority never travels through a bundle).
  *
  * Named `okf` (subcommand group) because bare `import` already means
  * "sync on-disk semantic YAML -> internal DB" (import.ts) and `migrate-import`
@@ -102,8 +104,10 @@ function collectFiles(root: string, extensions: RegExp): InteropFile[] {
  * that escapes it. The mapping engine validates names on its side; this is
  * the defense-in-depth sink guard (CLAUDE.md path-traversal rule) so no
  * future engine bug can turn an import into an arbitrary file write.
+ * Exported for direct tests — this layer only matters when the engine gate
+ * has regressed, a scenario end-to-end tests can't reach.
  */
-function resolveInside(outDir: string, relPath: string): string {
+export function resolveInside(outDir: string, relPath: string): string {
   const root = path.resolve(outDir);
   const target = path.resolve(root, ...relPath.split("/"));
   if (target !== root && !target.startsWith(root + path.sep)) {

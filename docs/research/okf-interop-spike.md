@@ -53,20 +53,23 @@ table instead), metrics and joins are `type: Reference` docs tagged
 | anything else (`Playbook`, `API Endpoint`, …) | reported unmapped | by design — but this is exactly the content a knowledge-connection store would want (#4182) |
 | entity type / grain / measures / virtual dims / sample stats | not inferable from prose | left for the existing scan → enrich → edit flow |
 
-Every *heuristically* imported artifact carries an `okf:` provenance block
-(source path, resource, tags, timestamp) — legal because `EntityShape` is
-passthrough. Native `atlas:` restores keep whatever the source object carried.
+Every *heuristically* imported entity/metric/term carries an `okf:`
+provenance block (source path, resource, tags, timestamp; joins carry
+`source_path` only) — legal because `EntityShape` is passthrough. Native
+`atlas:` restores keep whatever the source object carried.
 
 **Trust boundary:** a bundle is third-party input, and the `atlas:` extension
 is trivially forgeable. Table names are validated via `safeSemanticRowName`
 on *both* import paths (a forged `atlas.entity.table: "../../x"` is reported
 and dropped, never written), the CLI's `writeFiles` independently refuses any
-path escaping `--out`, and metric authority never transfers (next section).
+path escaping `--out`, and metric authority never transfers (see Round-trip
+fidelity below).
 
 ### Export (Atlas → OKF)
 
-Total: every entity, metric, and glossary term becomes a conformant concept
-doc with prose a foreign consumer can read (`# Schema` bullets, measures,
+Near-total: every well-formed entity, metric, and glossary term becomes a
+conformant concept doc (filename-stem collisions are first-wins, reported)
+with prose a foreign consumer can read (`# Schema` bullets, measures,
 joins, example queries) plus navigation `index.md`s and root `okf_version`.
 What foreign consumers **lose is semantics, not data**:
 

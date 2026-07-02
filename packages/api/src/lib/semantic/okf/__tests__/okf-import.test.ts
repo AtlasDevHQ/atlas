@@ -288,6 +288,49 @@ title: Orders
     expect(report.unmapped.some((u) => u.includes('duplicate table "orders"'))).toBe(true);
   });
 
+  it("reports duplicate tables case-insensitively (case-insensitive filesystems)", () => {
+    const table = (p: string, title: string): { path: string; content: string } => ({
+      path: p,
+      content: `---\ntype: Table\ntitle: ${title}\n---\n\n# Schema\n- \`id\` (INTEGER): id.\n`,
+    });
+    const { files, report } = importOkfBundle([
+      table("a/Orders.md", "Orders"),
+      table("b/orders.md", "orders"),
+    ]);
+    expect(files.filter((f) => f.path.startsWith("entities/"))).toHaveLength(1);
+    expect(report.unmapped.some((u) => u.includes("duplicate table"))).toBe(true);
+  });
+
+  it("reports duplicate metric ids instead of emitting ambiguous entries", () => {
+    const metric = (p: string): { path: string; content: string } => ({
+      path: p,
+      content: `---\ntype: Reference\ntitle: Total\ntags:\n- metric\n---\n\n\`\`\`sql\nCOUNT(*)\n\`\`\`\n`,
+    });
+    const { files, report } = importOkfBundle([
+      metric("references/metrics/total.md"),
+      metric("other/metrics/total.md"),
+    ]);
+    const doc = yaml.load(
+      files.find((f) => f.path === "metrics/okf-imported.yml")?.content ?? "",
+    ) as { metrics: Array<Record<string, unknown>> };
+    expect(doc.metrics).toHaveLength(1);
+    expect(report.unmapped.some((u) => u.includes('duplicate metric id "total"'))).toBe(true);
+  });
+
+  it("imports glossary terms named after Object.prototype members", () => {
+    const { files, report } = importOkfBundle([
+      {
+        path: "glossary/constructor.md",
+        content: `---\ntype: Reference\ntitle: constructor\ndescription: A business term, honestly.\ntags:\n- glossary\n---\n\nBody.\n`,
+      },
+    ]);
+    const glossary = yaml.load(files.find((f) => f.path === "glossary.yml")?.content ?? "") as {
+      terms: Record<string, Record<string, unknown>>;
+    };
+    expect(glossary.terms.constructor.status).toBe("defined");
+    expect(report.unmapped.some((u) => u.includes("duplicate"))).toBe(false);
+  });
+
   it("notes columns whose type had to be guessed", () => {
     const { files, report } = importOkfBundle([
       {

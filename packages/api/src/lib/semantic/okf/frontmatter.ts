@@ -3,8 +3,8 @@
  *
  * OKF conformance requires every non-reserved `.md` file to carry parseable
  * YAML frontmatter with a non-empty `type`. Parsing failures are surfaced to
- * the caller (never silently skipped) so a malformed bundle is reported, not
- * partially imported.
+ * the caller as typed results, so malformed files land in the mapping report
+ * (never silently dropped) while the rest of the bundle still imports.
  */
 
 import * as yaml from "js-yaml";

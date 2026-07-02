@@ -83,9 +83,17 @@ export function importOkfBundle(
   const concepts = parseBundle(files, report);
 
   const entities: DraftEntity[] = [];
+  // Case-insensitive: SAFE_TABLE_NAME admits uppercase, but entities/<t>.yml
+  // lands on possibly case-insensitive filesystems (APFS/NTFS), where
+  // `Orders.yml` and `orders.yml` would silently clobber. attachJoins already
+  // treats table identity case-insensitively — the dedup key must match.
   const seenTables = new Set<string>();
   const metrics: Record<string, unknown>[] = [];
-  const terms: Record<string, unknown> = {};
+  const seenMetricIds = new Set<string>();
+  // Null prototype: a glossary term legitimately named "constructor" or
+  // "toString" must not false-positive the duplicate check via the
+  // prototype chain (and `__proto__` must stay an ordinary key).
+  const terms: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   const datasetNotes: string[] = [];
   const joinConcepts: OkfConcept[] = [];
   let foreignTermCount = 0;
@@ -96,19 +104,31 @@ export function importOkfBundle(
       case "table": {
         const entity = importTable(concept, report);
         if (!entity) break;
-        if (seenTables.has(entity.table)) {
+        if (seenTables.has(entity.table.toLowerCase())) {
           report.unmapped.push(
-            `${concept.path}: duplicate table "${entity.table}" — an earlier concept already produced entities/${entity.table}.yml; this one skipped`,
+            `${concept.path}: duplicate table "${entity.table}" — an earlier concept already produced its entity file; this one skipped`,
           );
           break;
         }
-        seenTables.add(entity.table);
+        seenTables.add(entity.table.toLowerCase());
         entities.push(entity);
         break;
       }
-      case "metric":
-        metrics.push(importMetric(concept, report));
+      case "metric": {
+        const metric = importMetric(concept, report);
+        const id = typeof metric.id === "string" ? metric.id : undefined;
+        // Metric SQL is looked up by id downstream — an ambiguous id is the
+        // last-write-wins class this loop exists to prevent.
+        if (id !== undefined && seenMetricIds.has(id)) {
+          report.unmapped.push(
+            `${concept.path}: duplicate metric id "${id}" — an earlier concept already defined it; this one skipped`,
+          );
+          break;
+        }
+        if (id !== undefined) seenMetricIds.add(id);
+        metrics.push(metric);
         break;
+      }
       case "join":
         joinConcepts.push(concept);
         break;
@@ -292,7 +312,7 @@ function importTerm(
   const nativeName = ext?.term;
   const nativeEntry = ext?.entry;
   if (typeof nativeName === "string" && isRecord(nativeEntry)) {
-    if (nativeName in terms) {
+    if (Object.hasOwn(terms, nativeName)) {
       report.unmapped.push(`${concept.path}: duplicate glossary term "${nativeName}" — skipped`);
       return "skipped";
     }
@@ -304,7 +324,7 @@ function importTerm(
     typeof concept.frontmatter.title === "string"
       ? concept.frontmatter.title
       : conceptStem(concept.path);
-  if (name in terms) {
+  if (Object.hasOwn(terms, name)) {
     report.unmapped.push(`${concept.path}: duplicate glossary term "${name}" — skipped`);
     return "skipped";
   }

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { runOkf, type OkfIO } from "../commands/okf";
+import { resolveInside, runOkf, type OkfIO } from "../commands/okf";
 
 interface CapturedIO extends OkfIO {
   readonly outLines: string[];
@@ -87,6 +87,27 @@ function writeSemanticLayer(): string {
   fs.writeFileSync(path.join(layer, "entities", "orders.yml"), ENTITY_YAML);
   return layer;
 }
+
+describe("resolveInside (defense-in-depth sink guard)", () => {
+  it("resolves normal nested paths under the output root", () => {
+    const out = path.join(workDir, "out");
+    expect(resolveInside(out, "entities/orders.yml")).toBe(
+      path.join(out, "entities", "orders.yml"),
+    );
+  });
+
+  it("throws on traversal segments", () => {
+    const out = path.join(workDir, "out");
+    expect(() => resolveInside(out, "entities/../../escaped.yml")).toThrow(
+      "refusing to write outside",
+    );
+  });
+
+  it("throws on prefix-sibling escapes (out vs out-evil)", () => {
+    const out = path.join(workDir, "out");
+    expect(() => resolveInside(out, "../out-evil/x.yml")).toThrow("refusing to write outside");
+  });
+});
 
 describe("okf command dispatch", () => {
   it("prints usage and exits 1 with no subcommand", () => {

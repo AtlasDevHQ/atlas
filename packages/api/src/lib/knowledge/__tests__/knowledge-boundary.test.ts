@@ -25,7 +25,6 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     internalQuery: () => Promise.resolve(queryRows),
     hasInternalDB: () => internalDBPresent,
   }),
-  hasInternalDB: () => internalDBPresent,
   getInternalDB: () => null,
 }));
 

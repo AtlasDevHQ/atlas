@@ -4,8 +4,8 @@
  * advisory (clients and endpoints can omit or misstate it); only counting the
  * bytes as they arrive bounds memory. Both untrusted-input paths of the
  * knowledge pillar read through this: the admin bundle upload
- * (`api/routes/admin-knowledge.ts` ingest route) and the scheduled
- * bundle-endpoint fetch (`lib/knowledge/sync.ts`).
+ * (`api/routes/admin-knowledge.ts` ingest route) and the bundle-endpoint
+ * fetch (`lib/knowledge/sync.ts` — scheduled and manual "Sync now" alike).
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -27,11 +27,15 @@ export class BodyCapExceededError extends Error {
 /**
  * Read `body` fully, throwing `BodyCapExceededError` the moment the cumulative
  * byte count crosses `maxBytes` (the connection is released either way). A
- * null body resolves to an empty buffer.
+ * null body resolves to an empty buffer. `logContext` identifies the caller in
+ * the cancel-failure debug log (e.g. `{ host }` from the sync fetch,
+ * `{ requestId }` from the ingest route) — the shared helper otherwise
+ * couldn't say WHICH byte source misbehaved.
  */
 export async function readBodyWithCap(
   body: ReadableStream<Uint8Array> | null,
   maxBytes: number,
+  logContext: Record<string, unknown> = {},
 ): Promise<Uint8Array> {
   if (!body) return new Uint8Array(0);
   const reader = body.getReader();
@@ -52,7 +56,7 @@ export async function readBodyWithCap(
     // Release the connection whether we finished or bailed on the cap.
     await reader.cancel().catch((err: unknown) => {
       log.debug(
-        { err: err instanceof Error ? err.message : String(err) },
+        { ...logContext, err: err instanceof Error ? err.message : String(err) },
         "Body reader cancel failed after read completed/aborted",
       );
     });

@@ -806,15 +806,19 @@ describe("publishWorkspaceDrafts (#4126)", () => {
       if (/UPDATE\s+query_suggestions\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
         return { rows: [], rowCount: 3 };
       }
+      if (/UPDATE\s+knowledge_documents\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
+        return { rows: [], rowCount: 5 };
+      }
       return { rows: [] };
     };
 
     const result = await publishWorkspaceDrafts("org_1");
 
     // #4156 — shared PublishResult core: nested `deleted: { entities }`, not the
-    // old flat `deletedEntities`.
+    // old flat `deletedEntities`. The non-zero knowledgeDocuments pins the
+    // "knowledge_documents" report lookup — a table-name typo would read 0 here.
     expect(result).toEqual({
-      promoted: { connections: 1, entities: 2, prompts: 0, starterPrompts: 3, knowledgeDocuments: 0 },
+      promoted: { connections: 1, entities: 2, prompts: 0, starterPrompts: 3, knowledgeDocuments: 5 },
       deleted: { entities: 1 },
     });
     const sqlLog = publishClientQueries.map((q) => q.sql.trim().toUpperCase());

@@ -362,7 +362,7 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
         rejected: [],
       };
     }
-    bytes = await readBodyWithCap(response.body, maxBundleBytes);
+    bytes = await readBodyWithCap(response.body, maxBundleBytes, { host });
   } catch (err) {
     // `EgressBlockedError` (SSRF block) carries a host-redacted, actionable
     // message by construction — pass it through. The shared cap error carries

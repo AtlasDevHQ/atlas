@@ -10,9 +10,9 @@ import type { ModeDraftCounts } from "@useatlas/types/mode";
  *
  * Shows the number of drafts split by resource type (connections, entities,
  * prompts) so admins can see at a glance what's in flight. The underlying
- * counts come from `GET /api/v1/mode` which unions five `COUNT(*)` queries
- * over indexed `(org_id, status)` pairs — cheap enough to poll on every
- * focus via TanStack Query.
+ * counts come from `GET /api/v1/mode`, which unions per-segment `COUNT(*)`
+ * branches over indexed `(org_id, status)` pairs — cheap enough to poll on
+ * every focus via TanStack Query.
  *
  * Renders nothing when there are no drafts so the banner stays visually
  * quiet in the common "admin just toggled developer mode" case.

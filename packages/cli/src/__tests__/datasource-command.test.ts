@@ -395,6 +395,21 @@ describe("runDatasource — publish (#4126)", () => {
     expect(text).toContain("Pruned 2 stale entities");
   });
 
+  it("a knowledge-documents-only publish is a real publish, not a clean no-op (v0.0.41)", async () => {
+    // A workspace whose only drafts are knowledge documents must not be told
+    // "Nothing to publish" — the count joins promotedTotal and the summary line.
+    const { fetchImpl } = stubFetch(200, {
+      promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0, knowledgeDocuments: 12 },
+      deleted: { entities: 0 },
+    });
+    const { io, out } = capture();
+    const code = await runDatasource(["datasource", "publish"], deps(fetchImpl), io);
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).not.toContain("Nothing to publish");
+    expect(text).toContain("12 knowledge documents");
+  });
+
   it("--json emits the publish response with the validated core normalized", async () => {
     // A realistic REST response from an OLDER API (no `knowledgeDocuments`) —
     // the client validates + overlays the parsed core, so `--json` emits the

@@ -248,11 +248,33 @@ describe("POST /{collectionSlug}/ingest — guards", () => {
     expect(((await res.json()) as { error: string }).error).toBe("empty_bundle");
   });
 
-  it("400s when the raw bundle exceeds the size cap", async () => {
+  it("400s via the STREAMING cap when an over-cap body arrives with no Content-Length", async () => {
+    // Requests constructed by the test client carry no Content-Length header,
+    // so this flows past the advisory pre-check into `readBodyWithCap` — the
+    // "upload aborted" wording uniquely identifies the streaming branch, so
+    // this test fails loudly if the runtime ever starts stamping the header
+    // and the streaming branch silently loses its route-level exercise.
     MAX_BUNDLE_BYTES = 10;
     const res = await ingest("/runbooks/ingest", zipSync({ "a.md": strToU8("# A longer body") }));
     expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: string }).error).toBe("bundle_too_large");
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("bundle_too_large");
+    expect(body.message).toContain("upload aborted");
+  });
+
+  it("400s on the advisory Content-Length pre-check before reading any body byte", async () => {
+    MAX_BUNDLE_BYTES = 10;
+    const res = await adminKnowledge.request("/runbooks/ingest", {
+      method: "POST",
+      body: zipSync({ "a.md": strToU8("# A") }),
+      headers: { "content-type": "application/octet-stream", "content-length": "99999" },
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("bundle_too_large");
+    // The pre-check message names the declared byte count — distinct from the
+    // streaming branch's "upload aborted".
+    expect(body.message).toContain("99999 bytes");
   });
 
   it("400s on an unrecognized format", async () => {

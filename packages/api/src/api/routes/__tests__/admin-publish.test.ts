@@ -153,8 +153,8 @@ describe("POST /api/v1/admin/publish — promoted counts projection", () => {
   });
 
   it("a knowledge-documents-only publish is NOT reported as 'nothing promoted'", async () => {
-    // The M5 review finding: a workspace whose only drafts are knowledge docs
-    // must not get back an all-zero `promoted` block.
+    // A workspace whose only drafts are knowledge documents must not get back
+    // an all-zero `promoted` block.
     REPORTS = [{ table: "knowledge_documents", promoted: 12 }];
     const res = await publish();
     const body = (await res.json()) as { promoted: Record<string, number> };

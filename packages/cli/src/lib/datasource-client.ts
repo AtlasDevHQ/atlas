@@ -443,9 +443,18 @@ export async function publishDatasources(
   }
   // Overlay the VALIDATED core on the raw body: the schema's defaults fill
   // fields an older API omits (e.g. `promoted.knowledgeDocuments`, v0.0.41),
-  // while the REST-only `archived` / `warnings` extras — which `parsed.data`
-  // alone would strip — still pass through for `--json` consumers.
-  return { ...(raw as Record<string, unknown>), ...parsed.data } as PublishResult;
+  // while everything `parsed.data` alone would strip still passes through for
+  // `--json` consumers — the top-level REST-only `archived` / `warnings`
+  // blocks via the raw spread, and any NESTED extras a newer API adds inside
+  // `promoted` / `deleted` via the per-block deep merge (validated keys win).
+  const rawRec = raw as Record<string, unknown>;
+  const rawBlock = (v: unknown): Record<string, unknown> =>
+    v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  return {
+    ...rawRec,
+    promoted: { ...rawBlock(rawRec.promoted), ...parsed.data.promoted },
+    deleted: { ...rawBlock(rawRec.deleted), ...parsed.data.deleted },
+  } as PublishResult;
 }
 
 // ---------------------------------------------------------------------------

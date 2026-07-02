@@ -114,7 +114,11 @@ export interface KnowledgeIngestSummary {
   readonly linksWritten: number;
   readonly published: boolean;
   readonly rejected: ReadonlyArray<KnowledgeRejectedFile>;
-  /** Non-markdown / asset files skipped by design (only `.md` ingests). */
+  /**
+   * Non-markdown / asset files skipped by design (only `.md` ingests).
+   * Reserved OKF navigation files (`index.md` / `log.md`) are also excluded
+   * from ingest but are NOT counted here.
+   */
   readonly skippedNonMarkdown: number;
 }
 

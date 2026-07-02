@@ -628,7 +628,7 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
     }
     let bytes: Uint8Array;
     try {
-      bytes = await readBodyWithCap(c.req.raw.body, maxBundleBytes);
+      bytes = await readBodyWithCap(c.req.raw.body, maxBundleBytes, { requestId });
     } catch (err) {
       if (err instanceof BodyCapExceededError) {
         return c.json(

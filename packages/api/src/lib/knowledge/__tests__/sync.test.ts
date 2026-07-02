@@ -145,13 +145,22 @@ function fakeTxClient() {
 }
 
 let HAS_INTERNAL_DB = true;
+// When set, the cycle's installs SELECT throws — exercises `queryFailed`.
+let INSTALLS_QUERY_THROWS = false;
 const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<unknown[]> => {
+  // NOTE dispatch order/specificity: the EXISTS-guarded state upsert ALSO
+  // contains "FROM workspace_plugins", so the state branch must match first
+  // and the installs branch matches on the cycle SELECT's projection, not the
+  // table name.
   if (sql.includes("INSERT INTO knowledge_sync_state")) {
     if (STATE_WRITE_THROWS) throw new Error("state table unavailable");
     stateWrites.push({ params });
     return [];
   }
-  if (sql.includes("FROM workspace_plugins")) return INSTALL_ROWS;
+  if (sql.includes("SELECT workspace_id, install_id")) {
+    if (INSTALLS_QUERY_THROWS) throw new Error("installs table unavailable");
+    return INSTALL_ROWS;
+  }
   throw new Error(`unexpected internalQuery SQL: ${sql.slice(0, 60)}`);
 });
 
@@ -253,6 +262,7 @@ beforeEach(() => {
   txControl.length = 0;
   stateWrites.length = 0;
   INSTALL_ROWS = [];
+  INSTALLS_QUERY_THROWS = false;
   TX_INSTALL_STATUS = "published";
   invalidateCalls.length = 0;
   internalQuery.mockClear();
@@ -740,6 +750,13 @@ describe("runKnowledgeSyncCycle", () => {
     HAS_INTERNAL_DB = false;
     const result = await runKnowledgeSyncCycle();
     expect(result).toEqual({ inspected: 0, succeeded: 0, failed: 0, queryFailed: false });
+  });
+
+  it("reports queryFailed when the installs query throws — never an idle-looking cycle", async () => {
+    INSTALLS_QUERY_THROWS = true;
+    const result = await runKnowledgeSyncCycle();
+    expect(result).toEqual({ inspected: 0, succeeded: 0, failed: 0, queryFailed: true });
+    expect(stateWrites).toHaveLength(0);
   });
 });
 

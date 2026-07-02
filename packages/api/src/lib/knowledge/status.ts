@@ -1,9 +1,10 @@
 /**
  * The content-mode lifecycle vocabulary for knowledge documents — the CHECK
  * constraint on `knowledge_documents.status` (migration 0162) admits exactly
- * these values. Lives here (not inside any single consumer) because the
- * ingest core, the admin routes, and the searchKnowledge tool all narrow DB
- * read-backs against it.
+ * these values. Lives here (not inside any single consumer) so it names the
+ * pillar's status vocabulary once; `searchKnowledge` narrows DB read-backs
+ * through it today, while the ingest core and admin routes carry their own
+ * inline fail-closed comparisons against the same literals.
  */
 
 export const KNOWLEDGE_DOCUMENT_STATUSES = ["draft", "published", "archived"] as const;

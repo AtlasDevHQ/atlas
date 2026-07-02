@@ -24,6 +24,7 @@
  */
 
 import { z } from "zod/v4";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { PublishResult } from "@useatlas/types";
 
 /** A result row: a flat map of column name → cell value. */
@@ -68,6 +69,117 @@ export function withResumeHint(message: unknown): string {
   const base = typeof message === "string" && message.length > 0 ? message : "";
   if (base.includes(MCP_APPROVAL_RESUME_HINT)) return base;
   return base ? `${base} ${MCP_APPROVAL_RESUME_HINT}` : MCP_APPROVAL_RESUME_HINT;
+}
+
+/**
+ * Validation guard for the payload {@link approvalRequiredResult} emits:
+ * the approval branch of every declared tool output schema, with
+ * `approval_required` pinned to `true`, `message` required (the resume hint
+ * guarantees one), and tool-specific leading fields (`id`, `answer`, `sql`)
+ * passed through via catchall.
+ */
+const approvalPayloadSchema = z
+  .object({
+    // Derived from the `approvalFields` SSOT so a loosen/rename there can't
+    // drift the guard out of sync with the consuming output schemas; only the
+    // two invariants this builder enforces are tightened on top.
+    ...approvalFields,
+    approval_required: z.literal(true),
+    message: z.string(),
+  })
+  .catchall(z.unknown());
+
+/**
+ * Reserved keys the builder owns; stripped from caller-supplied `extra` before
+ * the spread so a caller can't inject e.g. `approval_request_id` through the
+ * passthrough and defeat the null-omission / `approval_required: true`
+ * invariants this builder exists to enforce (#4199).
+ */
+const RESERVED_APPROVAL_KEYS: ReadonlySet<string> = new Set([
+  "approval_required",
+  "approval_request_id",
+  "matched_rules",
+  "message",
+]);
+
+function sanitizeExtra(
+  extra: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (!extra) return {};
+  const clean: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(extra)) {
+    if (!RESERVED_APPROVAL_KEYS.has(key)) clean[key] = value;
+  }
+  return clean;
+}
+
+/**
+ * #4199 — the ONE validated builder for the non-error `approval_required`
+ * governance payload. `executeSQL`, `runMetric`, `query`, and dispatch-gate
+ * gate-4 all emit this shape; before this builder each site re-derived the
+ * object and validation rigor had drifted (safeParse in tools.ts, none in
+ * query-tool/semantic-tools, raw JSON.stringify in gate-4).
+ *
+ * Folds in:
+ * - {@link withResumeHint} (#3750) — `message` always tells the MCP client
+ *   to re-call the identical tool once approved (all consumers dedup the
+ *   re-call via `hasApprovedRequest`, so the hint is accurate everywhere);
+ * - the #3584 safeParse guard — malformed internal fields (non-string
+ *   `approval_request_id`, non-array `matched_rules`) are stripped rather
+ *   than allowed to throw in SDK output-schema validation, which would break
+ *   the dispatch and lose the approval signal entirely. Valid fields survive;
+ * - null/undefined request-id omission — a parked approval with no queued
+ *   row must not emit `approval_request_id: null` (fails the declared
+ *   output schemas).
+ *
+ * `extra` carries the tool-specific leading fields (`{ id }` for runMetric,
+ * `{ answer, sql }` for query). `structured: false` drops
+ * `structuredContent` for tools that declare no `outputSchema` (the
+ * destructive tools gate-4 guards) — the MCP SDK rejects structuredContent
+ * from a tool without one.
+ */
+export function approvalRequiredResult({
+  approvalRequestId,
+  matchedRules,
+  message,
+  extra,
+  structured = true,
+}: {
+  approvalRequestId?: unknown;
+  matchedRules?: unknown;
+  message?: unknown;
+  extra?: Record<string, unknown>;
+  structured?: boolean;
+}): CallToolResult {
+  const hinted = withResumeHint(message);
+  const safeExtra = sanitizeExtra(extra);
+  const raw: Record<string, unknown> = {
+    ...safeExtra,
+    approval_required: true,
+    ...(approvalRequestId !== undefined && approvalRequestId !== null
+      ? { approval_request_id: approvalRequestId }
+      : {}),
+    ...(matchedRules !== undefined ? { matched_rules: matchedRules } : {}),
+    message: hinted,
+  };
+  // Serialize `raw` itself when it validates (preserves the caller's field
+  // order in the text block); rebuild field-by-field when it doesn't,
+  // keeping every field whose runtime type matches the declared schema.
+  const payload = approvalPayloadSchema.safeParse(raw).success
+    ? raw
+    : {
+        ...safeExtra,
+        approval_required: true as const,
+        ...(typeof approvalRequestId === "string"
+          ? { approval_request_id: approvalRequestId }
+          : {}),
+        ...(Array.isArray(matchedRules) ? { matched_rules: matchedRules } : {}),
+        message: hinted,
+      };
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+    ...(structured ? { structuredContent: payload } : {}),
+  };
 }
 
 /**

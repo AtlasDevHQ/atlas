@@ -45,7 +45,7 @@ import {
 import { type McpTransport, type McpDeployMode } from "./telemetry.js";
 import { envelope, toEnvelopeResult, toStructuredContent } from "./error-envelope.js";
 import { createMcpDispatch } from "./mcp-dispatch.js";
-import { queryOutputShape, withResumeHint } from "./structured-output.js";
+import { approvalRequiredResult, queryOutputShape } from "./structured-output.js";
 import { withProgressAndCancellation } from "./progress.js";
 
 // The question is free text the customer's LLM composed. Cap it so a hostile
@@ -227,14 +227,18 @@ export function registerQueryTool(
           // governance signal (NOT an error) so the client re-runs the identical
           // call once approved, mirroring executeSQL/runMetric.
           if (result.pendingApproval) {
+            // #4199 — shared validated builder: #3584 safeParse guard (a null
+            // approvalId is omitted, never emitted as `approval_request_id:
+            // null`) + #3750 resume hint.
             const { requestId: approvalId, matchedRules, message } = result.pendingApproval;
-            return toStructuredContent({
-              answer: result.answer,
-              ...(result.sql.length > 0 ? { sql: result.sql } : {}),
-              approval_required: true,
-              ...(approvalId ? { approval_request_id: approvalId } : {}),
-              matched_rules: matchedRules,
-              message: withResumeHint(message),
+            return approvalRequiredResult({
+              approvalRequestId: approvalId,
+              matchedRules,
+              message,
+              extra: {
+                answer: result.answer,
+                ...(result.sql.length > 0 ? { sql: result.sql } : {}),
+              },
             });
           }
 

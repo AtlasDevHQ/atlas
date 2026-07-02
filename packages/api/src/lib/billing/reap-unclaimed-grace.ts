@@ -40,9 +40,35 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getConfig } from "@atlas/api/lib/config";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
+import { getSetting } from "@atlas/api/lib/settings";
 import { trialTierSql, unclaimedOwnerExistsSql } from "./trial-state";
 
 const log = createLogger("billing.reap-unclaimed-grace");
+
+/**
+ * Default sweep cadence: hourly. The grace window is measured in hours
+ * (TRIAL_GRACE_HOURS), so an hourly sweep keeps the abandoned-signup horizon
+ * tight without adding meaningful load (one guarded UPDATE per pass).
+ */
+export const DEFAULT_UNCLAIMED_GRACE_REAP_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * Sweep interval in milliseconds — settings-registry-backed (#4130).
+ *
+ * Resolves ATLAS_UNCLAIMED_GRACE_REAP_INTERVAL_HOURS through getSetting()
+ * (platform DB override > env > registry default of 1). Platform-scoped:
+ * the reaper is a single process-global fiber forked once at boot by
+ * `makeSchedulerLive` (lib/effect/layers.ts), so there is no per-workspace
+ * tick. Boot-consumed — retuning needs a restart (`requiresRestart` in the
+ * registry), not a redeploy.
+ */
+export function getUnclaimedGraceReapIntervalMs(): number {
+  const raw = getSetting("ATLAS_UNCLAIMED_GRACE_REAP_INTERVAL_HOURS");
+  if (!raw) return DEFAULT_UNCLAIMED_GRACE_REAP_INTERVAL_MS;
+  const hours = parseFloat(raw);
+  if (!Number.isFinite(hours) || hours <= 0) return DEFAULT_UNCLAIMED_GRACE_REAP_INTERVAL_MS;
+  return hours * 60 * 60 * 1000;
+}
 
 export interface ReapResult {
   /** Number of unclaimed past-grace Workspaces demoted to 'locked' this pass. */

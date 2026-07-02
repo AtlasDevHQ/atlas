@@ -25,6 +25,7 @@ import {
   BuiltinDatasourceCatalogSeed,
   SCHEDULER_CLEANUP_SPAN_NAMES,
   SCHEDULER_WORK_SPAN_NAMES,
+  registerPeriodicFiber,
   type ConfigShape,
   type MigrationShape,
   type SettingsShape,
@@ -395,12 +396,13 @@ describe("makeSchedulerLive", () => {
   // standing up an in-memory trace exporter (would add
   // `@opentelemetry/sdk-trace-base` to @atlas/api devDeps — out of scope).
   // Instead, for each single-source span-name record:
-  //   (a) the production wrap sites derive their span name from the record,
-  //       and the derivation/prefix guard below pins that record's shape; and
+  //   (a) `registerPeriodicFiber` (#4130) derives every fiber's span from the
+  //       record via `SCHEDULER_SPAN_NAMES[spec.name]`, and the
+  //       derivation/prefix guard below pins each record's shape; and
   //   (b) a structural source-scan guard asserts each key is referenced by a
-  //       `withEffectSpan(<RECORD>.<key>` call site, and that the call-site
-  //       count matches the record exactly.
-  // Together these make "rename a span" AND "delete a wrap at a call site"
+  //       `name: "<key>"` registration site, and that the registration count
+  //       matches the record exactly.
+  // Together these make "rename a span" AND "delete a fiber registration"
   // (the precise regression these spans exist to prevent) both fail here.
   //
   // Two records: cleanup/sweep fibers (#2945/#2944) and background-work fibers
@@ -415,9 +417,10 @@ describe("makeSchedulerLive", () => {
   const SPAN_RECORDS = [
     {
       // Cleanup/sweep fibers. Eight were retrofitted by #2945;
-      // `orphan_task_reconcile` (#2944) shipped with its span and is the only
-      // member (of either record) that also attaches a result attribute (the
-      // orphan count).
+      // `orphan_task_reconcile` (#2944) shipped with its span and attaches
+      // the orphan count as a result attribute (one of the two
+      // `spanResultAttributes` fibers — the other is `unclaimed_grace_reap`
+      // in the work record, #3796).
       constName: "SCHEDULER_CLEANUP_SPAN_NAMES",
       record: SCHEDULER_CLEANUP_SPAN_NAMES as Record<string, string>,
       expectedKeys: [
@@ -437,7 +440,7 @@ describe("makeSchedulerLive", () => {
     },
     {
       // Background-work fibers spanned by #2987. `settings_refresh` is forked
-      // in `SettingsLive`; the other three in `makeSchedulerLive`. The source
+      // in `SettingsLive`; the other eight in `makeSchedulerLive`. The source
       // scan reads the whole file, so the defining function doesn't matter.
       constName: "SCHEDULER_WORK_SPAN_NAMES",
       record: SCHEDULER_WORK_SPAN_NAMES as Record<string, string>,
@@ -477,46 +480,230 @@ describe("makeSchedulerLive", () => {
       });
 
       // Structural wiring guard: the name-set test above proves the const is
-      // correct, but a wrap site can be deleted while every other test stays
-      // green — re-hiding the exact regression these spans prevent. Scan the
-      // `layers.ts` source and assert each key is referenced by a
-      // `withEffectSpan(<constName>.<key>` call AND that the call-site count
-      // matches the record exactly, so deleting/adding a wrap fails here.
+      // correct, but a fiber registration can be deleted while every other
+      // test stays green — re-hiding the exact regression these spans
+      // prevent. Post-#4130 every periodic fiber is registered through
+      // `registerPeriodicFiber`, which derives the span from the fiber name
+      // (`SCHEDULER_SPAN_NAMES[spec.name]`), so the scan targets the
+      // registration sites: assert each key is referenced by a
+      // `name: "<key>"` registration AND that the registration count matches
+      // the record exactly, so deleting/adding a registration fails here.
       // (A full in-memory OTel exporter test was rejected as too heavy — see
       // the block comment above; this source scan is the pragmatic guard.)
-      describe("wrap-site wiring guard", () => {
-        // Matches `withEffectSpan(<constName>.<key>` tolerating arbitrary
-        // whitespace/newlines around the call paren and the dot.
-        const wrapCallRegex = new RegExp(
-          `withEffectSpan\\s*\\(\\s*${constName}\\s*\\.\\s*([A-Za-z_][A-Za-z0-9_]*)`,
-          "g",
-        );
+      describe("registration wiring guard", () => {
+        // Matches `name: "<key>"` registration properties, tolerating
+        // arbitrary whitespace around the colon. `layers.ts` has no other
+        // `name: "..."` object properties, and the cross-record filter below
+        // keeps the count honest per record.
+        const registrationRegex = /name\s*:\s*"([A-Za-z_][A-Za-z0-9_]*)"/g;
 
-        test("each fiber has a withEffectSpan wrap site", () => {
+        test("each fiber has a registerPeriodicFiber registration site", () => {
           for (const key of expectedKeys) {
-            const perKey = new RegExp(
-              `withEffectSpan\\s*\\(\\s*${constName}\\s*\\.\\s*${key}\\b`,
-            );
+            const perKey = new RegExp(`name\\s*:\\s*"${key}"`);
             expect(layersSource).toMatch(perKey);
           }
         });
 
-        test(`there are exactly ${expectedKeys.length} ${constName} wrap sites`, () => {
-          const matchedKeys = [...layersSource.matchAll(wrapCallRegex)].map(
-            (m) => m[1],
-          );
+        test(`there are exactly ${expectedKeys.length} ${constName} registrations`, () => {
+          const matchedKeys = [...layersSource.matchAll(registrationRegex)]
+            .map((m) => m[1])
+            .filter((key) => key in record);
           expect(matchedKeys).toHaveLength(expectedKeys.length);
-          // Every matched call site references a known fiber key — guards
-          // against a typo'd `.foo` reference that wouldn't type-check anyway
-          // but keeps the scan honest if the const is widened later.
+          // Every matched registration references a known fiber key — a
+          // typo'd name wouldn't type-check anyway (PeriodicFiberName), but
+          // this keeps the scan honest if the records are widened later.
           expect(matchedKeys.toSorted()).toEqual([...expectedKeys].toSorted());
         });
       });
     });
   }
 
+  // The registration guard above only proves each fiber is registered — this
+  // pins the helper's side of the contract: the span is derived from the
+  // merged record and actually applied around the tick. Without it, the
+  // helper could stop spanning and every per-record scan would stay green.
+  describe("registerPeriodicFiber span derivation (#4130)", () => {
+    test("derives the span from the merged record and wraps the tick in BOTH branches", () => {
+      expect(layersSource).toMatch(/SCHEDULER_SPAN_NAMES\[spec\.name\]/);
+      // The helper has two spanning branches (spanResultAttributes inverts
+      // the recovery ordering); de-spanning either one — e.g. the default
+      // branch that serves 19 of 21 fibers — must fail here, not just the
+      // rarely-exercised attribute branch.
+      expect(layersSource.match(/withEffectSpan\s*\(\s*span\b/g) ?? []).toHaveLength(2);
+    });
+
+    test("every registration flows through registerPeriodicFiber", () => {
+      // Ties the per-record `name:` scans above to the helper: a deleted
+      // registration can't hide behind an unrelated `{ name: "<key>" }`
+      // object literal appearing elsewhere in the file.
+      const expectedCount =
+        Object.keys(SCHEDULER_CLEANUP_SPAN_NAMES).length +
+        Object.keys(SCHEDULER_WORK_SPAN_NAMES).length;
+      expect(
+        layersSource.match(/yield\* registerPeriodicFiber\(/g) ?? [],
+      ).toHaveLength(expectedCount);
+    });
+
+    test("the two #4130 settings-backed cadences are wired to their getters", () => {
+      // A re-hardcoded interval would orphan the new registry knobs while
+      // the tuning-knob precedence tests stayed green.
+      expect(layersSource).toContain("getBillingReconcileIntervalMs");
+      expect(layersSource).toContain("getUnclaimedGraceReapIntervalMs");
+    });
+  });
+
+  // ── registerPeriodicFiber behavioral contract (#4130) ─────────────────
+  // The helper is the single seam every periodic fiber now flows through,
+  // so a helper-level bug is a 21-fiber blast radius. These pin the four
+  // behaviors the structural scans above cannot see: the forked fiber
+  // actually ticks and repeats (the #2864 forkScoped regression), a failing
+  // tick is recovered so the repeat loop survives, a false gate skips the
+  // fork, and a throwing gate skips without failing the Layer build.
+  describe("registerPeriodicFiber behavior (#4130)", () => {
+    // Runs the registration inside a scope, holds the scope open for
+    // `holdMs` of live-clock ticking, then closes it (interrupting the
+    // fiber via the scope finalizer — the forkScoped contract).
+    const runScoped = (
+      registration: ReturnType<typeof registerPeriodicFiber>,
+      holdMs: number,
+    ) =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            yield* registration;
+            yield* Effect.sleep(holdMs);
+          }),
+        ),
+      );
+
+    test("forked fiber ticks eagerly, repeats, and stops when the scope closes", async () => {
+      let ticks = 0;
+      await runScoped(
+        registerPeriodicFiber({
+          name: "oauth_state_cleanup",
+          intervalMs: 1,
+          tick: Effect.sync(() => {
+            ticks++;
+          }),
+          onTickFailure: { level: "warn", message: "test tick failed" },
+        }),
+        50,
+      );
+      // Eager boot tick + at least one spaced repeat within the window.
+      expect(ticks).toBeGreaterThanOrEqual(2);
+      const afterClose = ticks;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(ticks).toBe(afterClose);
+    });
+
+    test("the boot tick runs eagerly, not one interval late", async () => {
+      // At a large interval, only the eager `Effect.repeat` boot tick can
+      // land inside the hold window. Were the loop schedule-driven-only
+      // (first tick delayed by one interval), this would observe 0 ticks —
+      // and the billing reconcile would silently lose its
+      // "a deploy also doubles as an immediate reconcile" contract (#3446).
+      let ticks = 0;
+      await runScoped(
+        registerPeriodicFiber({
+          name: "oauth_state_cleanup",
+          intervalMs: 60_000,
+          tick: Effect.sync(() => {
+            ticks++;
+          }),
+          onTickFailure: { level: "warn", message: "test tick failed" },
+        }),
+        30,
+      );
+      expect(ticks).toBe(1);
+    });
+
+    test("a failing tick is recovered and the repeat loop survives", async () => {
+      let attempts = 0;
+      await runScoped(
+        registerPeriodicFiber({
+          name: "oauth_state_cleanup",
+          intervalMs: 1,
+          tick: Effect.suspend(() => {
+            attempts++;
+            return Effect.fail(new Error("boom"));
+          }),
+          onTickFailure: { level: "warn", message: "test tick failed" },
+        }),
+        50,
+      );
+      // Were the failure NOT recovered per-tick, the repeat loop would exit
+      // after the first attempt (withFiberDeathLog fires once, fiber dies).
+      expect(attempts).toBeGreaterThanOrEqual(2);
+    });
+
+    test("viaCause recovers a tick DEFECT and the repeat loop survives", async () => {
+      // The agent_runs sweep's contract: with `viaCause`, catchAllCause
+      // recovers defects per-tick (a plain catchAll would let the defect
+      // escape the repeat loop and kill the fiber after one attempt).
+      let attempts = 0;
+      await runScoped(
+        registerPeriodicFiber({
+          name: "oauth_state_cleanup",
+          intervalMs: 1,
+          tick: Effect.sync(() => {
+            attempts++;
+            throw new Error("defect");
+          }),
+          onTickFailure: { level: "error", message: "test tick died", viaCause: true },
+        }),
+        50,
+      );
+      expect(attempts).toBeGreaterThanOrEqual(2);
+    });
+
+    test("a false gate skips the fork entirely", async () => {
+      let ticks = 0;
+      await runScoped(
+        registerPeriodicFiber({
+          name: "oauth_state_cleanup",
+          intervalMs: 1,
+          tick: Effect.sync(() => {
+            ticks++;
+          }),
+          onTickFailure: { level: "warn", message: "test tick failed" },
+          gate: { check: () => false, skipLog: "test fiber skipped" },
+        }),
+        30,
+      );
+      expect(ticks).toBe(0);
+    });
+
+    test("a throwing gate skips without failing the Layer build", async () => {
+      let ticks = 0;
+      // The interval thunk throws too — it must never be resolved when the
+      // gate skips (thunks resolve only after the gate passes).
+      await runScoped(
+        registerPeriodicFiber({
+          name: "oauth_state_cleanup",
+          intervalMs: () => {
+            throw new Error("interval must not resolve on a skipped fiber");
+          },
+          tick: Effect.sync(() => {
+            ticks++;
+          }),
+          onTickFailure: { level: "warn", message: "test tick failed" },
+          gate: {
+            check: () => {
+              throw new Error("gate exploded");
+            },
+            failLog: "test gate check failed — skipping",
+            skipLog: "test fiber skipped",
+          },
+        }),
+        30,
+      );
+      expect(ticks).toBe(0);
+    });
+  });
+
   // ── agent_runs retention tick: sweep ORDER guard (#3757) ──────────────────
-  // The memory sweep MUST run before the runs sweep in `agentRunsRetentionTick`:
+  // The memory sweep MUST run before the runs sweep in the
+  // `agent_runs_retention_sweep` tick body:
   // `sweepExpiredSessionMemory` dates each session by its newest `agent_runs`
   // row, so the terminal runs must still exist when it runs. If a refactor
   // reordered the two lines, the runs sweep would delete the terminal rows first

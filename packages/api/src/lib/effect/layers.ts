@@ -37,7 +37,8 @@
  * share token cleanup) that are interrupted when their Layer scope closes.
  */
 
-import { Context, Duration, Effect, Layer, Schedule } from "effect";
+import { Context, Duration, Effect, Layer, Schedule, type Scope } from "effect";
+import type { Attributes } from "@opentelemetry/api";
 import { createLogger } from "@atlas/api/lib/logger";
 import { withEffectSpan } from "@atlas/api/lib/tracing";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -163,13 +164,14 @@ function withFiberDeathLog<A, E, R>(
 // span — a wedged fiber then shows up as an absence of spans against its
 // expected cadence.
 //
-// OK-on-failure trade-off: each tick's loop-liveness `catchAll` sits INSIDE
+// OK-on-failure trade-off: each tick's loop-liveness recovery sits INSIDE
 // the span, so a failed-but-recovered tick still records span status OK (the
 // error itself goes to `log.warn`). These spans answer "is the fiber still
 // ticking?" via presence/absence + cadence, NOT "did this tick error?". The
-// lone exception is `orphan_task_reconcile` below, which rides a result
-// attribute and so deliberately inverts the ordering (raw tick spanned,
-// `catchAll` applied OUTSIDE) to keep that attribute truthful — see its site.
+// exceptions are the two `spanResultAttributes` fibers — `orphan_task_reconcile`
+// (#2944) and `unclaimed_grace_reap` (#3796) — which deliberately invert the
+// ordering (raw tick spanned, recovery applied OUTSIDE) to keep their result
+// attributes truthful; see `registerPeriodicFiber` below.
 //
 // Membership splits into two single-source records, by fiber kind:
 //
@@ -177,10 +179,11 @@ function withFiberDeathLog<A, E, R>(
 //     expired in-memory or DB state). Eight were retrofitted with a span by
 //     #2945 (the TTL/ratelimit/state sweeps below); the ninth,
 //     `orphan_task_reconcile` (#2944), shipped with its span from day one and
-//     additionally attaches the orphan count as a result attribute (the only
-//     fiber in either record that passes `setResultAttributes` — the BYOT
-//     catalog-refresh fiber and the scheduler engine use that 4th arg
-//     elsewhere, inside their own modules). The tenth,
+//     additionally attaches the orphan count as a result attribute (one of
+//     the two `spanResultAttributes` fibers in these records — the other is
+//     `unclaimed_grace_reap` in the work record; the BYOT catalog-refresh
+//     fiber and the scheduler engine use that 4th arg elsewhere, inside
+//     their own modules). The tenth,
 //     `trial_rate_limit_cleanup` (#3654), sweeps the unauthenticated
 //     `start_trial` per-IP/email attempt-limiter maps. The eleventh,
 //     `agent_runs_retention_sweep` (#3745, ADR-0020), deletes terminal
@@ -195,8 +198,8 @@ function withFiberDeathLog<A, E, R>(
 //     `stripe_teardown_sweep`, `unclaimed_grace_reap`, `overage_report`.
 //     Spanned by #2987 (+#3423 for billing_reconcile, #3992 for
 //     overage_report) — identical rationale and wrap shape, no result
-//     attributes (each tick returns void, matching the attribute-less
-//     cleanup fibers).
+//     attributes except `unclaimed_grace_reap` (#3796), which attaches the
+//     reaped count.
 //
 // Two records, not one: "cleanup sweep" vs "background work" is a real
 // distinction (it drives the log wording and the operator's mental model),
@@ -221,12 +224,13 @@ function withFiberDeathLog<A, E, R>(
 // label; the LOW finding in #2945 is about NOT dropping the dotted
 // `atlas.scheduler.` prefix, not about the underscores within the op.
 //
-// Each record is the single source of truth for its span names: every wrap
-// site below reads from it. `layers.test.ts` asserts, for each record, both
-// the exact name set AND (via a structural source-scan guard) that every key
-// has exactly one matching `withEffectSpan(<RECORD>.<key>` wrap site — so
-// renaming an entry OR deleting a wrap at a call site is a test failure
-// rather than a silent regression.
+// Each record is the single source of truth for its span names:
+// `registerPeriodicFiber` (below) derives every fiber's span from the merged
+// `SCHEDULER_SPAN_NAMES[spec.name]` lookup. `layers.test.ts` asserts, for
+// each record, both the exact name set AND (via a structural source-scan
+// guard) that every key has exactly one matching `name: "<key>"`
+// registration site — so renaming an entry OR deleting a registration is a
+// test failure rather than a silent regression.
 export const SCHEDULER_CLEANUP_SPAN_NAMES = {
   oauth_state_cleanup: "atlas.scheduler.oauth_state_cleanup",
   rate_limit_cleanup: "atlas.scheduler.rate_limit_cleanup",
@@ -256,6 +260,167 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   unclaimed_grace_reap: "atlas.scheduler.unclaimed_grace_reap",
   overage_report: "atlas.scheduler.overage_report",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
+
+// ── registerPeriodicFiber — the periodic-fiber choreography, once (#4130) ──
+// Every periodic scheduler fiber repeats the same five moves: evaluate an
+// enablement gate, resolve an interval, wrap the tick in its per-tick span +
+// `withFiberDeathLog`, `forkScoped` it, and log on start (or debug-log the
+// skip). This helper owns that choreography once; each registration site
+// declares only what is fiber-specific — the gate predicate, the interval
+// source, the tick body, and the log copy. The span name is derived from
+// `name` via the merged record below, so the "span op segment matches the
+// `withFiberDeathLog` label" convention pinned by `layers.test.ts` holds by
+// construction — a registered fiber cannot mismatch its label and span.
+//
+// The CRM/email outbox flusher fibers (`lead_outbox_*`, `email_outbox_*`)
+// are NOT registered through this helper on purpose: they carry heartbeat +
+// stall-watchdog liveness instead of a per-tick span (see the record block
+// comment above) plus startup/shutdown recovery sequencing that doesn't fit
+// the five-move shape.
+const SCHEDULER_SPAN_NAMES = {
+  ...SCHEDULER_CLEANUP_SPAN_NAMES,
+  ...SCHEDULER_WORK_SPAN_NAMES,
+} as const;
+
+/** Names of the periodic fibers registered via {@link registerPeriodicFiber}. */
+type PeriodicFiberName = keyof typeof SCHEDULER_SPAN_NAMES;
+
+interface PeriodicFiberSpec<A, E> {
+  /** Fiber label — also selects the per-tick span from the records above. */
+  readonly name: PeriodicFiberName;
+  /**
+   * Interval between tick completions (`Schedule.spaced`). A thunk is
+   * resolved once, after the gate passes — so a module that only makes
+   * sense to `require` when its feature is enabled can supply the value,
+   * and a settings-registry-backed knob is read after `loadSettings()`.
+   * The thunk must not throw: a throw here is a layer-build defect (boot
+   * failure). Self-guard if the source module may be absent, as the
+   * `dashboard_rate_limit_cleanup` thunk does.
+   */
+  readonly intervalMs: number | (() => number);
+  /** Raw per-tick body. Recovery is applied by the helper per `onTickFailure`. */
+  readonly tick: Effect.Effect<A, E>;
+  /**
+   * Per-tick recovery keeping the repeat loop alive. `viaCause` recovers
+   * defects too (`catchAllCause` — the agent_runs sweep); everything else
+   * recovers typed failures only, so a genuine defect still reaches
+   * `withFiberDeathLog`. Applied INSIDE the span — a failed-but-recovered
+   * tick records span status OK, the OK-on-failure trade-off documented
+   * above — unless `spanResultAttributes` is set, which inverts the order.
+   */
+  readonly onTickFailure: {
+    readonly level: "warn" | "error";
+    readonly message: string;
+    readonly viaCause?: boolean;
+  };
+  /**
+   * Attach result attributes to the per-tick span (orphan_task_reconcile /
+   * unclaimed_grace_reap). The span then wraps the RAW tick and recovery is
+   * applied OUTSIDE it, so a failed tick records ERROR + the exception
+   * rather than a status-OK span carrying fabricated attributes. Do not
+   * combine with `viaCause` — recovering defects outside the span is a
+   * semantics no fiber wants.
+   */
+  readonly spanResultAttributes?: (result: A) => Attributes;
+  /**
+   * Enablement gate, evaluated once at registration. `check` may throw
+   * (module-availability probes): a throw debug-logs `failLog` and then
+   * proceeds as a `false` return, so both `failLog` and `skipLog` fire on
+   * a throw (each when provided).
+   */
+  readonly gate?: {
+    readonly check: () => boolean;
+    readonly failLog?: string;
+    readonly skipLog?: string;
+  };
+  /** info-level log once the fiber is forked, with the resolved interval. */
+  readonly startLog?: string;
+}
+
+// Exported for the behavioral contract tests in layers.test.ts — every
+// record-listed periodic fiber flows through this one seam (the outbox
+// flushers stay outside, see above), so a helper-level bug is a 21-fiber
+// blast radius the structural source scans alone cannot see.
+export function registerPeriodicFiber<A, E>(
+  spec: PeriodicFiberSpec<A, E>,
+): Effect.Effect<void, never, Scope.Scope> {
+  return Effect.gen(function* () {
+    const { gate, onTickFailure } = spec;
+    if (gate) {
+      // Normalize to Error per the Effect.try/tryPromise rule; the catchAll
+      // below logs it and degrades to "fiber not started".
+      const enabled = yield* Effect.try({
+        try: gate.check,
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.debug(
+              { err: errorMessage(err) },
+              gate.failLog ?? `${spec.name} gate check failed — skipping`,
+            );
+            return false;
+          }),
+        ),
+      );
+      if (!enabled) {
+        if (gate.skipLog) log.debug(gate.skipLog);
+        return;
+      }
+    }
+
+    const intervalMs =
+      typeof spec.intervalMs === "function" ? spec.intervalMs() : spec.intervalMs;
+
+    const recover = (eff: Effect.Effect<A, E>): Effect.Effect<void> =>
+      onTickFailure.viaCause
+        ? eff.pipe(
+            Effect.catchAllCause((cause) =>
+              Effect.sync(() => {
+                log[onTickFailure.level](
+                  { err: cause.toString() },
+                  onTickFailure.message,
+                );
+              }),
+            ),
+            Effect.asVoid,
+          )
+        : eff.pipe(
+            Effect.catchAll((err) =>
+              Effect.sync(() => {
+                log[onTickFailure.level](
+                  { err: errorMessage(err) },
+                  onTickFailure.message,
+                );
+              }),
+            ),
+            Effect.asVoid,
+          );
+
+    const span = SCHEDULER_SPAN_NAMES[spec.name];
+    const iteration = spec.spanResultAttributes
+      ? recover(withEffectSpan(span, {}, spec.tick, spec.spanResultAttributes))
+      : withEffectSpan(span, {}, recover(spec.tick));
+
+    // `forkScoped`, not `fork` — the bare `fork` API links the child fiber
+    // to the *parent fiber's* lifetime, and the parent here is the Layer's
+    // build gen function, which completes as soon as the Layer builds. With
+    // `Effect.fork` the first scheduled iteration of
+    // `Effect.repeat(Schedule.spaced)` never runs because the child is
+    // interrupted at gen completion (verified by repro; diagnosed in #2864).
+    // `forkScoped` binds to the Scope provided by `Layer.scoped`, so the
+    // fiber lives until layer shutdown. No companion
+    // `addFinalizer(Fiber.interrupt)` needed — scope handles it.
+    yield* Effect.forkScoped(
+      withFiberDeathLog(
+        spec.name,
+        iteration.pipe(Effect.repeat(Schedule.spaced(Duration.millis(intervalMs)))),
+      ),
+    );
+
+    if (spec.startLog) log.info({ intervalMs }, spec.startLog);
+  });
+}
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  Enterprise gate (#2563 slice 1/11 of #2017; #2564 slice 2/11)
@@ -1398,58 +1563,34 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.scoped(
       }),
     );
 
-    // In SaaS mode, fork a periodic refresh fiber for multi-instance consistency
-    const isSaas = yield* Effect.try({
-      try: () => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { getConfig } = require("@atlas/api/lib/config") as { getConfig: () => { deployMode?: string } | null };
-        return getConfig()?.deployMode === "saas";
+    // In SaaS mode, fork a periodic refresh fiber for multi-instance
+    // consistency. Registered via `registerPeriodicFiber`, which owns the
+    // gate/span/forkScoped choreography (#4130) — see the helper for the
+    // forkScoped-vs-fork rationale (#2864).
+    yield* registerPeriodicFiber({
+      name: "settings_refresh",
+      intervalMs: resolveSettingsRefreshInterval,
+      gate: {
+        check: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { getConfig } = require("@atlas/api/lib/config") as { getConfig: () => { deployMode?: string } | null };
+          return getConfig()?.deployMode === "saas";
+        },
+        failLog: "Config not available for SaaS detection — defaulting to self-hosted",
       },
-      catch: (err) => {
-        log.debug({ err: errorMessage(err) }, "Config not available for SaaS detection — defaulting to self-hosted");
-        return false;
-      },
-    }).pipe(Effect.catchAll(() => Effect.succeed(false)));
-
-    if (isSaas) {
-      const intervalMs = resolveSettingsRefreshInterval();
-      const tick = Effect.tryPromise({
+      tick: Effect.tryPromise({
         try: async () => {
           const { refreshSettingsTick } = await import("@atlas/api/lib/settings");
           await refreshSettingsTick();
         },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.warn(
-              { err: errorMessage(err) },
-              "Periodic settings refresh failed — will retry next interval",
-            );
-          }),
-        ),
-      );
-
-      // `forkScoped`, not `fork` — the bare `fork` API links the child
-      // fiber to the *parent fiber's* lifetime, and the parent here is
-      // this gen function which returns the service shape immediately
-      // after the fork. With `Effect.fork` the first scheduled iteration
-      // of `Effect.repeat(Schedule.spaced)` never runs because the child
-      // is interrupted at gen completion (verified by repro; diagnosed
-      // in #2864). `forkScoped` binds to the Scope provided
-      // by `Layer.scoped`, so the fiber lives until layer shutdown. No
-      // companion `addFinalizer(Fiber.interrupt)` needed — scope handles it.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "settings_refresh",
-          withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.settings_refresh, {}, tick).pipe(
-            Effect.repeat(Schedule.spaced(Duration.millis(intervalMs))),
-          ),
-        ),
-      );
-
-      log.info({ intervalMs }, "Started periodic settings refresh fiber");
-    }
+      }),
+      onTickFailure: {
+        level: "warn",
+        message: "Periodic settings refresh failed — will retry next interval",
+      },
+      startLog: "Started periodic settings refresh fiber",
+    });
 
     return { loaded } satisfies SettingsShape;
   }),
@@ -1528,147 +1669,101 @@ export function makeSchedulerLive(
       }
 
       // ── Periodic fiber: onboarding email scheduler (#1276) ──────────
-      const emailEnabled = yield* Effect.try({
-        try: () => {
+      yield* registerPeriodicFiber({
+        name: "onboarding_email",
+        intervalMs: () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { isEmailSchedulerEnabled } = require("@atlas/api/lib/email/scheduler") as {
-            isEmailSchedulerEnabled: () => boolean;
+          const { DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS } = require("@atlas/api/lib/email/scheduler") as {
+            DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS: number;
           };
-          return isEmailSchedulerEnabled();
+          return DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS;
         },
-        catch: (err) => {
-          log.debug({ err: errorMessage(err) }, "Email scheduler module not available — skipping");
-          return false;
+        gate: {
+          check: () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { isEmailSchedulerEnabled } = require("@atlas/api/lib/email/scheduler") as {
+              isEmailSchedulerEnabled: () => boolean;
+            };
+            return isEmailSchedulerEnabled();
+          },
+          failLog: "Email scheduler module not available — skipping",
+          skipLog: "Onboarding email scheduler not started — feature disabled",
         },
-      }).pipe(Effect.catchAll(() => Effect.succeed(false)));
-
-      if (emailEnabled) {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS } = require("@atlas/api/lib/email/scheduler") as {
-          DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS: number;
-        };
-        const emailTick = Effect.tryPromise({
+        tick: Effect.tryPromise({
           try: async () => {
             const { runTick } = await import("@atlas/api/lib/email/scheduler");
             await runTick();
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-        }).pipe(
-          Effect.catchAll((err) =>
-            Effect.sync(() => {
-              log.warn({ err: errorMessage(err) }, "Onboarding email tick failed");
-            }),
-          ),
-        );
-        // forkScoped, not fork — see SettingsLive for rationale.
-        yield* Effect.forkScoped(
-          withFiberDeathLog(
-            "onboarding_email",
-            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.onboarding_email, {}, emailTick).pipe(
-              Effect.repeat(Schedule.spaced(Duration.millis(DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS))),
-            ),
-          ),
-        );
-      } else {
-        log.debug("Onboarding email scheduler not started — feature disabled");
-      }
+        }),
+        onTickFailure: { level: "warn", message: "Onboarding email tick failed" },
+      });
 
       // ── Periodic fiber: semantic expert scheduler (#1269) ──────────
-      const expertEnabled = yield* Effect.try({
-        try: () => {
+      yield* registerPeriodicFiber({
+        name: "expert_scheduler",
+        // Settings-registry-backed (platform DB override > env > default);
+        // boot-consumed, so retuning needs a restart (#3392/#3399).
+        intervalMs: () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { isExpertSchedulerEnabled } = require("@atlas/api/lib/semantic/expert/scheduler") as {
-            isExpertSchedulerEnabled: () => boolean;
+          const { getExpertSchedulerIntervalMs } = require("@atlas/api/lib/semantic/expert/scheduler") as {
+            getExpertSchedulerIntervalMs: () => number;
           };
-          return isExpertSchedulerEnabled();
+          return getExpertSchedulerIntervalMs();
         },
-        catch: (err) => {
-          log.debug({ err: errorMessage(err) }, "Expert scheduler module not available — skipping");
-          return false;
+        gate: {
+          check: () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { isExpertSchedulerEnabled } = require("@atlas/api/lib/semantic/expert/scheduler") as {
+              isExpertSchedulerEnabled: () => boolean;
+            };
+            return isExpertSchedulerEnabled();
+          },
+          failLog: "Expert scheduler module not available — skipping",
+          skipLog: "Semantic expert scheduler not started — feature disabled",
         },
-      }).pipe(Effect.catchAll(() => Effect.succeed(false)));
-
-      if (expertEnabled) {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { getExpertSchedulerIntervalMs } = require("@atlas/api/lib/semantic/expert/scheduler") as {
-          getExpertSchedulerIntervalMs: () => number;
-        };
-        const expertTick = Effect.tryPromise({
+        tick: Effect.tryPromise({
           try: async () => {
             const { runExpertSchedulerTick } = await import("@atlas/api/lib/semantic/expert/scheduler");
             await runExpertSchedulerTick();
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-        }).pipe(
-          Effect.catchAll((err) =>
-            Effect.sync(() => {
-              log.warn({ err: errorMessage(err) }, "Expert scheduler tick failed");
-            }),
-          ),
-        );
-        // forkScoped, not fork — see SettingsLive for rationale.
-        yield* Effect.forkScoped(
-          withFiberDeathLog(
-            "expert_scheduler",
-            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.expert_scheduler, {}, expertTick).pipe(
-              Effect.repeat(Schedule.spaced(Duration.millis(getExpertSchedulerIntervalMs()))),
-            ),
-          ),
-        );
-        log.info({ intervalMs: getExpertSchedulerIntervalMs() }, "Semantic expert scheduler started");
-      } else {
-        log.debug("Semantic expert scheduler not started — feature disabled");
-      }
+        }),
+        onTickFailure: { level: "warn", message: "Expert scheduler tick failed" },
+        startLog: "Semantic expert scheduler started",
+      });
 
       // ── Periodic fiber: learned-pattern auto-promote/decay (#3636) ──
-      const promoteDecayEnabled = yield* Effect.try({
-        try: () => {
+      yield* registerPeriodicFiber({
+        name: "promote_decay",
+        intervalMs: () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { isPromoteDecaySchedulerEnabled } = require("@atlas/api/lib/learn/promote-decay-scheduler") as {
-            isPromoteDecaySchedulerEnabled: () => boolean;
+          const { getPromoteDecaySchedulerIntervalMs } = require("@atlas/api/lib/learn/promote-decay-scheduler") as {
+            getPromoteDecaySchedulerIntervalMs: () => number;
           };
-          return isPromoteDecaySchedulerEnabled();
+          return getPromoteDecaySchedulerIntervalMs();
         },
-        catch: (err) => {
-          log.debug({ err: errorMessage(err) }, "Promote/decay scheduler module not available — skipping");
-          return false;
+        gate: {
+          check: () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { isPromoteDecaySchedulerEnabled } = require("@atlas/api/lib/learn/promote-decay-scheduler") as {
+              isPromoteDecaySchedulerEnabled: () => boolean;
+            };
+            return isPromoteDecaySchedulerEnabled();
+          },
+          failLog: "Promote/decay scheduler module not available — skipping",
+          skipLog: "Learned-pattern auto-promote/decay scheduler not started — feature disabled",
         },
-      }).pipe(Effect.catchAll(() => Effect.succeed(false)));
-
-      if (promoteDecayEnabled) {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { getPromoteDecaySchedulerIntervalMs } = require("@atlas/api/lib/learn/promote-decay-scheduler") as {
-          getPromoteDecaySchedulerIntervalMs: () => number;
-        };
-        const promoteDecayTick = Effect.tryPromise({
+        tick: Effect.tryPromise({
           try: async () => {
             const { runPromoteDecayTick } = await import("@atlas/api/lib/learn/promote-decay-scheduler");
             await runPromoteDecayTick();
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-        }).pipe(
-          Effect.catchAll((err) =>
-            Effect.sync(() => {
-              log.warn({ err: errorMessage(err) }, "Promote/decay tick failed");
-            }),
-          ),
-        );
-        // forkScoped, not fork — see SettingsLive for rationale.
-        yield* Effect.forkScoped(
-          withFiberDeathLog(
-            "promote_decay",
-            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.promote_decay, {}, promoteDecayTick).pipe(
-              Effect.repeat(Schedule.spaced(Duration.millis(getPromoteDecaySchedulerIntervalMs()))),
-            ),
-          ),
-        );
-        log.info(
-          { intervalMs: getPromoteDecaySchedulerIntervalMs() },
-          "Learned-pattern auto-promote/decay scheduler started",
-        );
-      } else {
-        log.debug("Learned-pattern auto-promote/decay scheduler not started — feature disabled");
-      }
+        }),
+        onTickFailure: { level: "warn", message: "Promote/decay tick failed" },
+        startLog: "Learned-pattern auto-promote/decay scheduler started",
+      });
 
       // ── Periodic fiber: plan-tier reconciliation sweep (#3423) ──────
       // Safety net under the Stripe webhook path: heals plan_tier drift
@@ -1690,36 +1785,38 @@ export function makeSchedulerLive(
       // proceeds to the `hasInternalDB()` gate, which short-circuits
       // exactly as before.
       yield* Migration;
-      const billingReconcileEnabled = yield* Effect.try({
-        try: () => {
-          if (!process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_WEBHOOK_SECRET) {
-            return false;
-          }
-          // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
-          const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
-            hasInternalDB: () => boolean;
-          };
-          return hasInternalDB();
-        },
-        // Normalize to Error per the Effect.try/tryPromise rule; the
-        // catchAll below logs it and degrades to "fiber not started".
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.debug({ err: errorMessage(err) }, "Billing reconcile gate check failed — skipping");
-            return false;
-          }),
-        ),
-      );
-
-      if (billingReconcileEnabled) {
-        // 6h: drift heals well inside Stripe's ~3-week retry horizon
+      yield* registerPeriodicFiber({
+        name: "billing_reconcile",
+        // Default 6h: drift heals well inside Stripe's ~3-week retry horizon
         // without adding meaningful load (one org-table scan per pass).
-        // `Effect.repeat` runs the tick once at boot, then on the spacing
-        // — so a deploy also doubles as an immediate reconcile.
-        const BILLING_RECONCILE_INTERVAL_MS = 6 * 60 * 60 * 1000;
-        const reconcileTick = Effect.tryPromise({
+        // Settings-registry-backed (#4130): platform DB override > env >
+        // default; boot-consumed, so retuning needs a restart (not a
+        // redeploy) — same shape as expert_scheduler (#3399). `Effect.repeat`
+        // runs the tick once at boot, then on the spacing — so a deploy also
+        // doubles as an immediate reconcile.
+        intervalMs: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { getBillingReconcileIntervalMs } = require("@atlas/api/lib/billing/reconcile-plan-tiers") as {
+            getBillingReconcileIntervalMs: () => number;
+          };
+          return getBillingReconcileIntervalMs();
+        },
+        gate: {
+          check: () => {
+            if (!process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_WEBHOOK_SECRET) {
+              return false;
+            }
+            // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            return hasInternalDB();
+          },
+          failLog: "Billing reconcile gate check failed — skipping",
+          skipLog:
+            "Plan-tier reconciliation sweep not started — Stripe billing or internal DB not configured",
+        },
+        tick: Effect.tryPromise({
           try: async () => {
             const { reconcilePlanTiers } = await import(
               "@atlas/api/lib/billing/reconcile-plan-tiers"
@@ -1727,34 +1824,13 @@ export function makeSchedulerLive(
             await reconcilePlanTiers();
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-        }).pipe(
-          Effect.catchAll((err) =>
-            Effect.sync(() => {
-              log.warn(
-                { err: errorMessage(err) },
-                "Plan-tier reconciliation tick failed — will retry next interval",
-              );
-            }),
-          ),
-        );
-        // forkScoped, not fork — see SettingsLive for rationale.
-        yield* Effect.forkScoped(
-          withFiberDeathLog(
-            "billing_reconcile",
-            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.billing_reconcile, {}, reconcileTick).pipe(
-              Effect.repeat(Schedule.spaced(Duration.millis(BILLING_RECONCILE_INTERVAL_MS))),
-            ),
-          ),
-        );
-        log.info(
-          { intervalMs: BILLING_RECONCILE_INTERVAL_MS },
-          "Plan-tier reconciliation sweep started",
-        );
-      } else {
-        log.debug(
-          "Plan-tier reconciliation sweep not started — Stripe billing or internal DB not configured",
-        );
-      }
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Plan-tier reconciliation tick failed — will retry next interval",
+        },
+        startLog: "Plan-tier reconciliation sweep started",
+      });
 
       // ── Periodic fiber: Stripe teardown outbox sweep (#3679) ────────
       // Symmetric counterpart to the plan-tier reconcile above: drains the
@@ -1766,31 +1842,28 @@ export function makeSchedulerLive(
       // outbox). The `yield* Migration` barrier above already sequences this
       // after `MigrationLive`, so the eager boot tick can't race migration
       // 0141 creating the table.
-      const teardownSweepEnabled = yield* Effect.try({
-        try: () => {
-          if (!process.env.STRIPE_SECRET_KEY) return false;
-          // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
-          const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
-            hasInternalDB: () => boolean;
+      yield* registerPeriodicFiber({
+        name: "stripe_teardown_sweep",
+        intervalMs: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as orphan_task_reconcile)
+          const { STRIPE_TEARDOWN_SWEEP_INTERVAL_MS } = require("@atlas/api/lib/billing/reconcile-stripe-teardown") as {
+            STRIPE_TEARDOWN_SWEEP_INTERVAL_MS: number;
           };
-          return hasInternalDB();
+          return STRIPE_TEARDOWN_SWEEP_INTERVAL_MS;
         },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.debug({ err: errorMessage(err) }, "Stripe teardown sweep gate check failed — skipping");
-            return false;
-          }),
-        ),
-      );
-
-      if (teardownSweepEnabled) {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as orphan_task_reconcile)
-        const { STRIPE_TEARDOWN_SWEEP_INTERVAL_MS } = require("@atlas/api/lib/billing/reconcile-stripe-teardown") as {
-          STRIPE_TEARDOWN_SWEEP_INTERVAL_MS: number;
-        };
-        const teardownSweepTick = Effect.tryPromise({
+        gate: {
+          check: () => {
+            if (!process.env.STRIPE_SECRET_KEY) return false;
+            // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            return hasInternalDB();
+          },
+          failLog: "Stripe teardown sweep gate check failed — skipping",
+          skipLog: "Stripe teardown outbox sweep not started — Stripe or internal DB not configured",
+        },
+        tick: Effect.tryPromise({
           try: async () => {
             const { sweepStripeTeardownPending } = await import(
               "@atlas/api/lib/billing/reconcile-stripe-teardown"
@@ -1798,34 +1871,13 @@ export function makeSchedulerLive(
             await sweepStripeTeardownPending();
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-        }).pipe(
-          Effect.catchAll((err) =>
-            Effect.sync(() => {
-              log.warn(
-                { err: errorMessage(err) },
-                "Stripe teardown sweep tick failed — will retry next interval",
-              );
-            }),
-          ),
-        );
-        // forkScoped, not fork — see SettingsLive for rationale.
-        yield* Effect.forkScoped(
-          withFiberDeathLog(
-            "stripe_teardown_sweep",
-            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.stripe_teardown_sweep, {}, teardownSweepTick).pipe(
-              Effect.repeat(Schedule.spaced(Duration.millis(STRIPE_TEARDOWN_SWEEP_INTERVAL_MS))),
-            ),
-          ),
-        );
-        log.info(
-          { intervalMs: STRIPE_TEARDOWN_SWEEP_INTERVAL_MS },
-          "Stripe teardown outbox sweep started",
-        );
-      } else {
-        log.debug(
-          "Stripe teardown outbox sweep not started — Stripe or internal DB not configured",
-        );
-      }
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Stripe teardown sweep tick failed — will retry next interval",
+        },
+        startLog: "Stripe teardown outbox sweep started",
+      });
 
       // ── Periodic fiber: at-cost overage meter reporter (#3992; #4039) ────
       // Flushes each paid workspace's current-period at-cost usage overage (in
@@ -1838,31 +1890,28 @@ export function makeSchedulerLive(
       // The `yield* Migration` barrier above already sequences this after
       // `MigrationLive`, so the eager boot tick can't race migration 0154/0156
       // on `overage_meter_reports`.
-      const overageReportEnabled = yield* Effect.try({
-        try: () => {
-          if (!process.env.STRIPE_SECRET_KEY) return false;
-          // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
-          const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
-            hasInternalDB: () => boolean;
+      yield* registerPeriodicFiber({
+        name: "overage_report",
+        intervalMs: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as stripe_teardown_sweep)
+          const { OVERAGE_REPORT_INTERVAL_MS } = require("@atlas/api/lib/billing/overage-meter") as {
+            OVERAGE_REPORT_INTERVAL_MS: number;
           };
-          return hasInternalDB();
+          return OVERAGE_REPORT_INTERVAL_MS;
         },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.debug({ err: errorMessage(err) }, "Overage reporter gate check failed — skipping");
-            return false;
-          }),
-        ),
-      );
-
-      if (overageReportEnabled) {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as stripe_teardown_sweep)
-        const { OVERAGE_REPORT_INTERVAL_MS } = require("@atlas/api/lib/billing/overage-meter") as {
-          OVERAGE_REPORT_INTERVAL_MS: number;
-        };
-        const overageReportTick = Effect.tryPromise({
+        gate: {
+          check: () => {
+            if (!process.env.STRIPE_SECRET_KEY) return false;
+            // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            return hasInternalDB();
+          },
+          failLog: "Overage reporter gate check failed — skipping",
+          skipLog: "At-cost overage meter reporter not started — Stripe or internal DB not configured",
+        },
+        tick: Effect.tryPromise({
           try: async () => {
             const { reportPeriodOverages } = await import(
               "@atlas/api/lib/billing/overage-meter"
@@ -1870,34 +1919,13 @@ export function makeSchedulerLive(
             await reportPeriodOverages();
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-        }).pipe(
-          Effect.catchAll((err) =>
-            Effect.sync(() => {
-              log.warn(
-                { err: errorMessage(err) },
-                "Overage-meter reporting tick failed — will retry next interval",
-              );
-            }),
-          ),
-        );
-        // forkScoped, not fork — see SettingsLive for rationale.
-        yield* Effect.forkScoped(
-          withFiberDeathLog(
-            "overage_report",
-            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.overage_report, {}, overageReportTick).pipe(
-              Effect.repeat(Schedule.spaced(Duration.millis(OVERAGE_REPORT_INTERVAL_MS))),
-            ),
-          ),
-        );
-        log.info(
-          { intervalMs: OVERAGE_REPORT_INTERVAL_MS },
-          "At-cost overage meter reporter started",
-        );
-      } else {
-        log.debug(
-          "At-cost overage meter reporter not started — Stripe or internal DB not configured",
-        );
-      }
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Overage-meter reporting tick failed — will retry next interval",
+        },
+        startLog: "At-cost overage meter reporter started",
+      });
 
       // ── Periodic fiber: unclaimed-grace reaper (#3652, ADR-0018) ────────
       // Bounds the free pre-claim window of self-serve trial Workspaces
@@ -1911,58 +1939,49 @@ export function makeSchedulerLive(
       // off-SaaS / without an internal DB. The `yield* Migration` barrier above
       // already sequences this after `MigrationLive`, so the eager boot tick
       // can't race the `organization`/`member`/`user` tables into existence.
-      if (config.deployMode === "saas") {
-        // 1h: the grace window is measured in hours (TRIAL_GRACE_HOURS), so an
-        // hourly sweep keeps the abandoned-signup horizon tight without adding
-        // meaningful load (one guarded UPDATE per pass). `Effect.repeat` runs
-        // the tick once at boot, then on the spacing.
-        const UNCLAIMED_GRACE_REAP_INTERVAL_MS = 60 * 60 * 1000;
+      yield* registerPeriodicFiber({
+        name: "unclaimed_grace_reap",
+        // Default 1h: the grace window is measured in hours
+        // (TRIAL_GRACE_HOURS), so an hourly sweep keeps the abandoned-signup
+        // horizon tight without adding meaningful load (one guarded UPDATE
+        // per pass). Settings-registry-backed (#4130): platform DB override
+        // > env > default; boot-consumed, so retuning needs a restart (not a
+        // redeploy) — same shape as expert_scheduler (#3399). `Effect.repeat`
+        // runs the tick once at boot, then on the spacing.
+        intervalMs: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { getUnclaimedGraceReapIntervalMs } = require("@atlas/api/lib/billing/reap-unclaimed-grace") as {
+            getUnclaimedGraceReapIntervalMs: () => number;
+          };
+          return getUnclaimedGraceReapIntervalMs();
+        },
+        gate: {
+          check: () => config.deployMode === "saas",
+          skipLog: "Unclaimed-grace reaper not started — not a SaaS deployment",
+        },
+        tick: Effect.tryPromise({
+          try: async () => {
+            const { reapUnclaimedGraceWorkspaces } = await import(
+              "@atlas/api/lib/billing/reap-unclaimed-grace"
+            );
+            return reapUnclaimedGraceWorkspaces();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
         // #3796 — attach the reaped count as a span result attribute (the
         // orphan_task_reconcile pattern): the span wraps the raw tick so the
         // attribute is truthful, and the loop-liveness catchAll is applied
         // OUTSIDE the span so a failed tick records ERROR (not OK-with-a-
-        // fabricated-zero) while the hourly fiber survives a DB blip.
-        const reapTick = withEffectSpan(
-          SCHEDULER_WORK_SPAN_NAMES.unclaimed_grace_reap,
-          {},
-          Effect.tryPromise({
-            try: async () => {
-              const { reapUnclaimedGraceWorkspaces } = await import(
-                "@atlas/api/lib/billing/reap-unclaimed-grace"
-              );
-              return reapUnclaimedGraceWorkspaces();
-            },
-            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-          }),
-          (result) => ({ "atlas.unclaimed_grace.reaped_count": result.reapedCount }),
-        ).pipe(
-          Effect.catchAll((err) =>
-            Effect.sync(() => {
-              log.warn(
-                { err: errorMessage(err) },
-                "Unclaimed-grace reaper tick failed — will retry next interval",
-              );
-            }),
-          ),
-        );
-        // forkScoped, not fork — see SettingsLive for rationale.
-        yield* Effect.forkScoped(
-          withFiberDeathLog(
-            "unclaimed_grace_reap",
-            reapTick.pipe(
-              Effect.repeat(Schedule.spaced(Duration.millis(UNCLAIMED_GRACE_REAP_INTERVAL_MS))),
-            ),
-          ),
-        );
-        log.info(
-          { intervalMs: UNCLAIMED_GRACE_REAP_INTERVAL_MS },
-          "Unclaimed-grace reaper started",
-        );
-      } else {
-        log.debug(
-          "Unclaimed-grace reaper not started — not a SaaS deployment",
-        );
-      }
+        // fabricated-zero) while the (default-hourly) fiber survives a DB blip.
+        spanResultAttributes: (result) => ({
+          "atlas.unclaimed_grace.reaped_count": result.reapedCount,
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Unclaimed-grace reaper tick failed — will retry next interval",
+        },
+        startLog: "Unclaimed-grace reaper started",
+      });
 
       // Start audit purge scheduler via the `AuditPurgeScheduler` Tag
       // (#2587 — split out of `AuditRetention` so the cron lifecycle is
@@ -2050,131 +2069,81 @@ export function makeSchedulerLive(
       );
 
       // ── Periodic fiber: OAuth state cleanup (#1273) — every 10 min ──
-      const oauthTick = Effect.tryPromise({
-        try: async () => {
-          const { cleanExpiredOAuthState } = await import(
-            "@atlas/api/lib/auth/oauth-state"
-          );
-          await cleanExpiredOAuthState();
-        },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.warn(
-              { err: errorMessage(err) },
-              "OAuth state cleanup tick failed",
+      yield* registerPeriodicFiber({
+        name: "oauth_state_cleanup",
+        intervalMs: 10 * 60 * 1000,
+        tick: Effect.tryPromise({
+          try: async () => {
+            const { cleanExpiredOAuthState } = await import(
+              "@atlas/api/lib/auth/oauth-state"
             );
-          }),
-        ),
-      );
-      // forkScoped, not fork — see SettingsLive for rationale.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "oauth_state_cleanup",
-          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.oauth_state_cleanup, {}, oauthTick).pipe(
-            Effect.repeat(Schedule.spaced(Duration.minutes(10))),
-          ),
-        ),
-      );
+            await cleanExpiredOAuthState();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        onTickFailure: { level: "warn", message: "OAuth state cleanup tick failed" },
+      });
 
       // ── Periodic fiber: rate-limit cleanup (#1274) — every 60s ──────
       // Interval matches WINDOW_MS in middleware.ts (sliding-window duration).
-      const rateLimitTick = Effect.try({
-        try: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { rateLimitCleanupTick } = require("@atlas/api/lib/auth/middleware") as {
-            rateLimitCleanupTick: () => void;
-          };
-          rateLimitCleanupTick();
-        },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.warn(
-              { err: errorMessage(err) },
-              "Rate limit cleanup tick failed",
-            );
-          }),
-        ),
-      );
-      // forkScoped, not fork — see SettingsLive for rationale.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "rate_limit_cleanup",
-          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.rate_limit_cleanup, {}, rateLimitTick).pipe(
-            Effect.repeat(Schedule.spaced(Duration.seconds(60))),
-          ),
-        ),
-      );
+      yield* registerPeriodicFiber({
+        name: "rate_limit_cleanup",
+        intervalMs: 60 * 1000,
+        tick: Effect.try({
+          try: () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { rateLimitCleanupTick } = require("@atlas/api/lib/auth/middleware") as {
+              rateLimitCleanupTick: () => void;
+            };
+            rateLimitCleanupTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        onTickFailure: { level: "warn", message: "Rate limit cleanup tick failed" },
+      });
 
       // ── Periodic fiber: demo rate-limit cleanup — interval from DEMO_CLEANUP_INTERVAL_MS ──
-      const demoTick = Effect.tryPromise({
-        try: async () => {
+      yield* registerPeriodicFiber({
+        name: "demo_rate_limit_cleanup",
+        intervalMs: () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { demoCleanupTick } = require("@atlas/api/lib/demo") as {
-            demoCleanupTick: () => Promise<void>;
+          const { DEMO_CLEANUP_INTERVAL_MS } = require("@atlas/api/lib/demo") as {
+            DEMO_CLEANUP_INTERVAL_MS: number;
           };
-          await demoCleanupTick();
+          return DEMO_CLEANUP_INTERVAL_MS;
         },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.error(
-              { err: errorMessage(err) },
-              "Demo rate-limit cleanup tick failed",
-            );
-          }),
-        ),
-      );
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { DEMO_CLEANUP_INTERVAL_MS } = require("@atlas/api/lib/demo") as {
-        DEMO_CLEANUP_INTERVAL_MS: number;
-      };
-      // forkScoped, not fork — see SettingsLive for rationale.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "demo_rate_limit_cleanup",
-          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.demo_rate_limit_cleanup, {}, demoTick).pipe(
-            Effect.repeat(Schedule.spaced(Duration.millis(DEMO_CLEANUP_INTERVAL_MS))),
-          ),
-        ),
-      );
+        tick: Effect.tryPromise({
+          try: async () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { demoCleanupTick } = require("@atlas/api/lib/demo") as {
+              demoCleanupTick: () => Promise<void>;
+            };
+            await demoCleanupTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        onTickFailure: { level: "error", message: "Demo rate-limit cleanup tick failed" },
+      });
 
       // ── Periodic fiber: contact rate-limit cleanup — every 60s ────
       // Unauthenticated public endpoint with a per-IP map; without
       // periodic eviction the map leaks one entry per distinct source IP
       // until process restart.
-      const contactTick = Effect.tryPromise({
-        try: async () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { contactCleanupTick } = require("@atlas/api/lib/contact") as {
-            contactCleanupTick: () => Promise<void>;
-          };
-          await contactCleanupTick();
-        },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.error(
-              { err: errorMessage(err) },
-              "Contact rate-limit cleanup tick failed",
-            );
-          }),
-        ),
-      );
-      // forkScoped, not fork — see SettingsLive for rationale.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "contact_rate_limit_cleanup",
-          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.contact_rate_limit_cleanup, {}, contactTick).pipe(
-            Effect.repeat(Schedule.spaced(Duration.seconds(60))),
-          ),
-        ),
-      );
+      yield* registerPeriodicFiber({
+        name: "contact_rate_limit_cleanup",
+        intervalMs: 60 * 1000,
+        tick: Effect.tryPromise({
+          try: async () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { contactCleanupTick } = require("@atlas/api/lib/contact") as {
+              contactCleanupTick: () => Promise<void>;
+            };
+            await contactCleanupTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        onTickFailure: { level: "error", message: "Contact rate-limit cleanup tick failed" },
+      });
 
       // ── Periodic fiber: trial-signup rate-limit cleanup — every 60s ──
       // Same leak shape as the contact limiter (#3654): the unauthenticated
@@ -2182,207 +2151,141 @@ export function makeSchedulerLive(
       // trims timestamps WITHIN a live entry, never removes the key, so
       // without this sweep a spammer cycling distinct IPs/emails grows the
       // maps until restart. `trialAttemptCleanupTick` evicts fully-stale keys.
-      const trialTick = Effect.tryPromise({
-        try: async () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { trialAttemptCleanupTick } = require("@atlas/api/lib/trial-abuse") as {
-            trialAttemptCleanupTick: () => Promise<void>;
-          };
-          await trialAttemptCleanupTick();
-        },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.error(
-              { err: errorMessage(err) },
-              "Trial rate-limit cleanup tick failed",
-            );
-          }),
-        ),
-      );
-      // forkScoped, not fork — see SettingsLive for rationale.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "trial_rate_limit_cleanup",
-          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.trial_rate_limit_cleanup, {}, trialTick).pipe(
-            Effect.repeat(Schedule.spaced(Duration.seconds(60))),
-          ),
-        ),
-      );
+      yield* registerPeriodicFiber({
+        name: "trial_rate_limit_cleanup",
+        intervalMs: 60 * 1000,
+        tick: Effect.tryPromise({
+          try: async () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { trialAttemptCleanupTick } = require("@atlas/api/lib/trial-abuse") as {
+              trialAttemptCleanupTick: () => Promise<void>;
+            };
+            await trialAttemptCleanupTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        onTickFailure: { level: "error", message: "Trial rate-limit cleanup tick failed" },
+      });
 
       // ── Periodic fiber: abuse detection cleanup — every 5 min ──────
-      const abuseTick = Effect.try({
-        try: () => {
+      yield* registerPeriodicFiber({
+        name: "abuse_cleanup",
+        intervalMs: () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { abuseCleanupTick } = require("@atlas/api/lib/security/abuse") as {
-            abuseCleanupTick: () => void;
+          const { ABUSE_CLEANUP_INTERVAL_MS } = require("@atlas/api/lib/security/abuse") as {
+            ABUSE_CLEANUP_INTERVAL_MS: number;
           };
-          abuseCleanupTick();
+          return ABUSE_CLEANUP_INTERVAL_MS;
         },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.warn(
-              { err: errorMessage(err) },
-              "Abuse cleanup tick failed",
-            );
-          }),
-        ),
-      );
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { ABUSE_CLEANUP_INTERVAL_MS } = require("@atlas/api/lib/security/abuse") as {
-        ABUSE_CLEANUP_INTERVAL_MS: number;
-      };
-      // forkScoped, not fork — see SettingsLive for rationale.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "abuse_cleanup",
-          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.abuse_cleanup, {}, abuseTick).pipe(
-            Effect.repeat(Schedule.spaced(Duration.millis(ABUSE_CLEANUP_INTERVAL_MS))),
-          ),
-        ),
-      );
+        tick: Effect.try({
+          try: () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { abuseCleanupTick } = require("@atlas/api/lib/security/abuse") as {
+              abuseCleanupTick: () => void;
+            };
+            abuseCleanupTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        onTickFailure: { level: "warn", message: "Abuse cleanup tick failed" },
+      });
 
       // ── Periodic fiber: dashboard public rate-limit cleanup — every 60s ─
-      const dashboardTick = Effect.try({
-        try: () => {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { dashboardRateLimitCleanupTick } = require("@atlas/api/api/routes/dashboards") as {
-            dashboardRateLimitCleanupTick: () => void;
-          };
-          dashboardRateLimitCleanupTick();
+      yield* registerPeriodicFiber({
+        name: "dashboard_rate_limit_cleanup",
+        intervalMs: () => {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const mod = require("@atlas/api/api/routes/dashboards") as {
+              DASHBOARD_RATE_CLEANUP_INTERVAL_MS: number;
+            };
+            return mod.DASHBOARD_RATE_CLEANUP_INTERVAL_MS;
+          } catch {
+            // intentionally ignored: use default interval if module can't be resolved
+            return 60_000;
+          }
         },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.warn(
-              { err: errorMessage(err) },
-              "Dashboard rate-limit cleanup tick failed",
-            );
-          }),
-        ),
-      );
-      let dashboardCleanupIntervalMs = 60_000;
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const mod = require("@atlas/api/api/routes/dashboards") as {
-          DASHBOARD_RATE_CLEANUP_INTERVAL_MS: number;
-        };
-        dashboardCleanupIntervalMs = mod.DASHBOARD_RATE_CLEANUP_INTERVAL_MS;
-      } catch {
-        // intentionally ignored: use default interval if module can't be resolved
-      }
-      // forkScoped, not fork — see SettingsLive for rationale.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "dashboard_rate_limit_cleanup",
-          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.dashboard_rate_limit_cleanup, {}, dashboardTick).pipe(
-            Effect.repeat(Schedule.spaced(Duration.millis(dashboardCleanupIntervalMs))),
-          ),
-        ),
-      );
+        tick: Effect.try({
+          try: () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { dashboardRateLimitCleanupTick } = require("@atlas/api/api/routes/dashboards") as {
+              dashboardRateLimitCleanupTick: () => void;
+            };
+            dashboardRateLimitCleanupTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        onTickFailure: { level: "warn", message: "Dashboard rate-limit cleanup tick failed" },
+      });
 
       // ── Periodic fiber: conversation public rate sweep — every 60s ──
-      const convSweepTick = Effect.try({
-        try: () => {
+      yield* registerPeriodicFiber({
+        name: "conversation_rate_sweep",
+        intervalMs: () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { conversationRateSweepTick } = require("@atlas/api/api/routes/conversations") as {
-            conversationRateSweepTick: () => void;
+          const { CONVERSATION_RATE_SWEEP_INTERVAL_MS } = require("@atlas/api/api/routes/conversations") as {
+            CONVERSATION_RATE_SWEEP_INTERVAL_MS: number;
           };
-          conversationRateSweepTick();
+          return CONVERSATION_RATE_SWEEP_INTERVAL_MS;
         },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.warn(
-              { err: errorMessage(err) },
-              "Conversation rate sweep tick failed",
-            );
-          }),
-        ),
-      );
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { CONVERSATION_RATE_SWEEP_INTERVAL_MS, SHARE_CLEANUP_INTERVAL_MS } = require("@atlas/api/api/routes/conversations") as {
-        CONVERSATION_RATE_SWEEP_INTERVAL_MS: number;
-        SHARE_CLEANUP_INTERVAL_MS: number;
-      };
-      // forkScoped, not fork — see SettingsLive for rationale.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "conversation_rate_sweep",
-          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.conversation_rate_sweep, {}, convSweepTick).pipe(
-            Effect.repeat(Schedule.spaced(Duration.millis(CONVERSATION_RATE_SWEEP_INTERVAL_MS))),
-          ),
-        ),
-      );
+        tick: Effect.try({
+          try: () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { conversationRateSweepTick } = require("@atlas/api/api/routes/conversations") as {
+              conversationRateSweepTick: () => void;
+            };
+            conversationRateSweepTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        onTickFailure: { level: "warn", message: "Conversation rate sweep tick failed" },
+      });
 
       // ── Periodic fiber: region-probe public rate sweep — every 60s ──
-      const regionProbeSweepTick = Effect.try({
-        try: () => {
+      yield* registerPeriodicFiber({
+        name: "region_probe_rate_sweep",
+        intervalMs: () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { regionProbeRateSweepTick } = require("@atlas/api/api/routes/region-routing") as {
-            regionProbeRateSweepTick: () => void;
+          const { REGION_PROBE_RATE_SWEEP_INTERVAL_MS } = require("@atlas/api/api/routes/region-routing") as {
+            REGION_PROBE_RATE_SWEEP_INTERVAL_MS: number;
           };
-          regionProbeRateSweepTick();
+          return REGION_PROBE_RATE_SWEEP_INTERVAL_MS;
         },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.warn(
-              { err: errorMessage(err) },
-              "Region probe rate sweep tick failed",
-            );
-          }),
-        ),
-      );
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { REGION_PROBE_RATE_SWEEP_INTERVAL_MS } = require("@atlas/api/api/routes/region-routing") as {
-        REGION_PROBE_RATE_SWEEP_INTERVAL_MS: number;
-      };
-      // forkScoped, not fork — see SettingsLive for rationale.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "region_probe_rate_sweep",
-          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.region_probe_rate_sweep, {}, regionProbeSweepTick).pipe(
-            Effect.repeat(Schedule.spaced(Duration.millis(REGION_PROBE_RATE_SWEEP_INTERVAL_MS))),
-          ),
-        ),
-      );
+        tick: Effect.try({
+          try: () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { regionProbeRateSweepTick } = require("@atlas/api/api/routes/region-routing") as {
+              regionProbeRateSweepTick: () => void;
+            };
+            regionProbeRateSweepTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        onTickFailure: { level: "warn", message: "Region probe rate sweep tick failed" },
+      });
 
       // ── Periodic fiber: share token cleanup — every 60 min ─────────
-      const shareCleanupEffect = Effect.tryPromise({
-        try: () => {
+      yield* registerPeriodicFiber({
+        name: "share_token_cleanup",
+        intervalMs: () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { shareCleanupTick: tick } = require("@atlas/api/api/routes/conversations") as {
-            shareCleanupTick: () => Promise<void>;
+          const { SHARE_CLEANUP_INTERVAL_MS } = require("@atlas/api/api/routes/conversations") as {
+            SHARE_CLEANUP_INTERVAL_MS: number;
           };
-          return tick();
+          return SHARE_CLEANUP_INTERVAL_MS;
         },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.error(
-              { err: errorMessage(err) },
-              "Unexpected error in share cleanup tick",
-            );
-          }),
-        ),
-      );
-      // forkScoped, not fork — see SettingsLive for rationale.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "share_token_cleanup",
-          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.share_token_cleanup, {}, shareCleanupEffect).pipe(
-            Effect.repeat(Schedule.spaced(Duration.millis(SHARE_CLEANUP_INTERVAL_MS))),
-          ),
-        ),
-      );
+        tick: Effect.tryPromise({
+          try: () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { shareCleanupTick: tick } = require("@atlas/api/api/routes/conversations") as {
+              shareCleanupTick: () => Promise<void>;
+            };
+            return tick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        onTickFailure: { level: "error", message: "Unexpected error in share cleanup tick" },
+      });
 
       // ── Periodic fiber: agent_runs retention sweep (#3745, ADR-0020) ──
       // Deletes terminal (done/failed) durable-session runs past the retention
@@ -2393,46 +2296,35 @@ export function makeSchedulerLive(
       // effect without a restart. Hourly, like the share-token sweep.
       const durableSession = yield* DurableSession;
       const durableState = yield* DurableState;
-      // Per-tick catch (inside repeat) so the loop survives a transient fault
-      // and keeps sweeping — same resilience shape as the share-token sweep.
-      // #3748 — the same tick also fails `parked` runs past the max-park window
-      // (a turn awaiting a human approval decision that never landed), reading
-      // the operator-global window per-tick so a settings change takes effect
-      // without a restart.
-      const agentRunsRetentionTick = Effect.gen(function* () {
-        // #3757 — sweep working memory BEFORE the runs sweep, on the SAME window:
-        // the memory sweep dates a session by its newest `agent_runs` row, so the
-        // terminal runs must still be present when it runs. The runs sweep then
-        // deletes those terminal rows. Memory is thus swept WITH its session
-        // (no separate sweeper). A session with a live run keeps its memory.
-        yield* durableState.sweepExpired(getRetentionDays());
-        yield* durableSession.sweepTerminal(getRetentionDays());
-        yield* durableSession.sweepParked(getMaxParkMinutes());
-      }).pipe(
-        Effect.catchAllCause((cause) =>
-          Effect.sync(() => {
-            // A defect here is genuinely unexpected: `sweepTerminal` already
-            // self-catches DB errors → -1, so this only fires on an escaped
-            // defect (e.g. `getRetentionDays()` throwing). `error`, not `warn`,
-            // matching the sibling share-token sweep's unexpected-error level.
-            log.error(
-              { err: cause.toString() },
-              "agent_runs retention sweep tick failed",
-            );
-          }),
-        ),
-      );
-      // forkScoped, not fork — see SettingsLive for rationale.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "agent_runs_retention_sweep",
-          withEffectSpan(
-            SCHEDULER_CLEANUP_SPAN_NAMES.agent_runs_retention_sweep,
-            {},
-            agentRunsRetentionTick,
-          ).pipe(Effect.repeat(Schedule.spaced(Duration.hours(1)))),
-        ),
-      );
+      yield* registerPeriodicFiber({
+        name: "agent_runs_retention_sweep",
+        intervalMs: 60 * 60 * 1000,
+        tick: Effect.gen(function* () {
+          // #3757 — sweep working memory BEFORE the runs sweep, on the SAME window:
+          // the memory sweep dates a session by its newest `agent_runs` row, so the
+          // terminal runs must still be present when it runs. The runs sweep then
+          // deletes those terminal rows. Memory is thus swept WITH its session
+          // (no separate sweeper). A session with a live run keeps its memory.
+          yield* durableState.sweepExpired(getRetentionDays());
+          yield* durableSession.sweepTerminal(getRetentionDays());
+          yield* durableSession.sweepParked(getMaxParkMinutes());
+        }),
+        // Per-tick catch (inside repeat) so the loop survives a transient fault
+        // and keeps sweeping — same resilience shape as the share-token sweep.
+        // `viaCause`: a defect here is genuinely unexpected — `sweepTerminal`
+        // already self-catches DB errors → -1, so this only fires on an escaped
+        // defect (e.g. `getRetentionDays()` throwing). `error`, not `warn`,
+        // matching the sibling share-token sweep's unexpected-error level.
+        // #3748 — the same tick also fails `parked` runs past the max-park window
+        // (a turn awaiting a human approval decision that never landed), reading
+        // the operator-global window per-tick so a settings change takes effect
+        // without a restart.
+        onTickFailure: {
+          level: "error",
+          message: "agent_runs retention sweep tick failed",
+          viaCause: true,
+        },
+      });
 
       // ── Periodic fiber: orphan plugin-task reconcile (#2944) — hourly ──
       // Counts `scheduled_tasks` whose `plugin_id` has no live
@@ -2445,20 +2337,23 @@ export function makeSchedulerLive(
       // (default off — measure-only); the module no-ops when the internal DB
       // is absent.
       //
-      // Error ordering matters: `withEffectSpan` wraps the RAW tick, so a
-      // failed tick records span status ERROR + the exception (rather than a
-      // misleading status-OK span carrying a fabricated `count=0`). The
-      // loop-liveness `catchAll` is applied OUTSIDE the span — it logs the
-      // failure and lets the hourly fiber survive a DB blip without painting
-      // the failed tick green or asserting a false-healthy zero into traces.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { ORPHAN_TASK_RECONCILE_INTERVAL_MS } = require("@atlas/api/lib/scheduler/orphan-task-reconcile") as {
-        ORPHAN_TASK_RECONCILE_INTERVAL_MS: number;
-      };
-      const orphanReconcileTick = withEffectSpan(
-        SCHEDULER_CLEANUP_SPAN_NAMES.orphan_task_reconcile,
-        {},
-        Effect.tryPromise({
+      // Error ordering matters: `spanResultAttributes` makes the helper wrap
+      // the RAW tick in the span, so a failed tick records span status ERROR
+      // + the exception (rather than a misleading status-OK span carrying a
+      // fabricated `count=0`), and the loop-liveness recovery is applied
+      // OUTSIDE the span — it logs the failure and lets the hourly fiber
+      // survive a DB blip without painting the failed tick green or
+      // asserting a false-healthy zero into traces.
+      yield* registerPeriodicFiber({
+        name: "orphan_task_reconcile",
+        intervalMs: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { ORPHAN_TASK_RECONCILE_INTERVAL_MS } = require("@atlas/api/lib/scheduler/orphan-task-reconcile") as {
+            ORPHAN_TASK_RECONCILE_INTERVAL_MS: number;
+          };
+          return ORPHAN_TASK_RECONCILE_INTERVAL_MS;
+        },
+        tick: Effect.tryPromise({
           try: async () => {
             const { runOrphanTaskReconcileTick } = await import(
               "@atlas/api/lib/scheduler/orphan-task-reconcile"
@@ -2467,33 +2362,14 @@ export function makeSchedulerLive(
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
         }),
-        (result) => ({
+        spanResultAttributes: (result) => ({
           "atlas.orphan_tasks.count": result.orphanedTasks,
           "atlas.orphan_tasks.installs": result.orphanedInstalls,
           "atlas.orphan_tasks.reconcile_enabled": result.reconcileEnabled,
           "atlas.orphan_tasks.deleted": result.deleted,
         }),
-      ).pipe(
-        // Recover AFTER the span has recorded any error, so the trace shows
-        // ERROR (not OK-with-zero) while the loop stays alive.
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.warn(
-              { err: errorMessage(err) },
-              "Orphan plugin-task reconcile tick failed",
-            );
-          }),
-        ),
-      );
-      // forkScoped, not fork — see SettingsLive for rationale.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "orphan_task_reconcile",
-          orphanReconcileTick.pipe(
-            Effect.repeat(Schedule.spaced(Duration.millis(ORPHAN_TASK_RECONCILE_INTERVAL_MS))),
-          ),
-        ),
-      );
+        onTickFailure: { level: "warn", message: "Orphan plugin-task reconcile tick failed" },
+      });
 
       // ── Periodic fiber: sub-processor change-feed publisher (#1924) ──
       // Cron sweep, not build-hook: the source JSON can be hot-edited
@@ -2508,36 +2384,15 @@ export function makeSchedulerLive(
         subProcessorPublisherTick: () => Promise<void>;
         SUBPROCESSOR_PUBLISH_INTERVAL_MS: number;
       };
-      const subProcessorTick = Effect.tryPromise({
-        try: () => subProcessorPublisher.subProcessorPublisherTick(),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            log.warn(
-              { err: errorMessage(err) },
-              "Sub-processor publisher tick failed",
-            );
-          }),
-        ),
-      );
-      // forkScoped, not fork — see SettingsLive for rationale.
-      yield* Effect.forkScoped(
-        withFiberDeathLog(
-          "sub_processor_publisher",
-          withEffectSpan(
-            SCHEDULER_WORK_SPAN_NAMES.sub_processor_publisher,
-            {},
-            subProcessorTick,
-          ).pipe(
-            Effect.repeat(
-              Schedule.spaced(
-                Duration.millis(subProcessorPublisher.SUBPROCESSOR_PUBLISH_INTERVAL_MS),
-              ),
-            ),
-          ),
-        ),
-      );
+      yield* registerPeriodicFiber({
+        name: "sub_processor_publisher",
+        intervalMs: subProcessorPublisher.SUBPROCESSOR_PUBLISH_INTERVAL_MS,
+        tick: Effect.tryPromise({
+          try: () => subProcessorPublisher.subProcessorPublisherTick(),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        onTickFailure: { level: "warn", message: "Sub-processor publisher tick failed" },
+      });
 
       // ── Periodic fiber: SaaS CRM outbox flusher (#2729) ─────────────
       // The flusher polls `crm_outbox` for pending / due rows, claims
@@ -2842,7 +2697,7 @@ export function makeSchedulerLive(
           outboxNextTrigger = reason === "kick" ? "kick" : "backstop";
         });
 
-        // forkScoped, not fork — see SettingsLive for rationale.
+        // forkScoped, not fork — see registerPeriodicFiber for the #2864 rationale.
         // The recovery sweep finalizer is registered ABOVE this fork
         // (not below) so LIFO finalizer order interrupts this fiber
         // (and the watchdog below) before the sweep runs.
@@ -2880,7 +2735,7 @@ export function makeSchedulerLive(
             `Outbox flusher fiber appears stalled — no tick in ${Math.round(sinceMs / 1000)}s (threshold ${Math.round(OUTBOX_STALL_THRESHOLD_MS / 1000)}s). Redeploy to restart; investigate the prior tick_complete / tick_failed line for the trigger.`,
           );
         });
-        // forkScoped, not fork — see SettingsLive for rationale.
+        // forkScoped, not fork — see registerPeriodicFiber for the #2864 rationale.
         yield* Effect.forkScoped(
           withFiberDeathLog(
             "lead_outbox_watchdog",
@@ -3081,7 +2936,7 @@ export function makeSchedulerLive(
               }),
             ),
           );
-          // forkScoped, not fork — see SettingsLive. Recovery finalizer is
+          // forkScoped, not fork — see registerPeriodicFiber (#2864). Recovery finalizer is
           // registered ABOVE this fork so LIFO interrupts this fiber before
           // the sweep runs.
           yield* Effect.forkScoped(
@@ -3111,7 +2966,7 @@ export function makeSchedulerLive(
               `Email outbox flusher fiber appears stalled — no tick in ${Math.round(sinceMs / 1000)}s (threshold ${Math.round(EMAIL_STALL_THRESHOLD_MS / 1000)}s). Redeploy to restart.`,
             );
           });
-          // forkScoped, not fork — see SettingsLive for rationale.
+          // forkScoped, not fork — see registerPeriodicFiber for the #2864 rationale.
           yield* Effect.forkScoped(
             withFiberDeathLog(
               "email_outbox_watchdog",

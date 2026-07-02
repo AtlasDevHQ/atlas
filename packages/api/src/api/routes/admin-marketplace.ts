@@ -351,8 +351,8 @@ platformCatalog.openapi(createCatalogRoute, async (c) => {
         return c.json({ error: "conflict", message: `A catalog entry with slug "${body.slug}" already exists.`, requestId }, 409);
       }
 
-      // Operator-curated-only gate (#4174/#4099): this route is the one
-      // interactive catalog write path and is platform_admin-gated.
+      // Operator-curated-only gate (#4174/#4099): the one interactive path
+      // that creates catalog rows; platform_admin-gated.
       assertOperatorCatalogWrite("platform-admin-crud");
       const rows = yield* queryEffect<CatalogRow>(
         `INSERT INTO plugin_catalog (id, name, slug, description, type, npm_package, icon_url, config_schema, min_plan, enabled)
@@ -457,6 +457,9 @@ platformCatalog.openapi(updateCatalogRoute, async (c) => {
         priorLookup = { slug: null, failed: true };
       }
 
+      // Operator-curated-only gate (#4174/#4099): this UPDATE can repoint
+      // trust-carrying fields (npm_package, config_schema); platform_admin-gated.
+      assertOperatorCatalogWrite("platform-admin-crud");
       const rows = yield* queryEffect<CatalogRow>(
         `UPDATE plugin_catalog SET ${setClauses.join(", ")} WHERE id = $${paramIdx} RETURNING *`,
         params,

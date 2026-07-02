@@ -242,6 +242,14 @@ async function main() {
     return handleMetric(args);
   }
 
+  // #4140 — OKF (Open Knowledge Format) interop spike. File <-> file only
+  // (no REST, no DB), so it lives in the published binary; named `okf` because
+  // bare `import` already means "sync semantic YAML -> internal DB".
+  if (command === "okf") {
+    const { handleOkf } = await import("../src/commands/okf");
+    return handleOkf(args);
+  }
+
   if (command === "eval") {
     const { handleEval } = await import("./eval");
     return handleEval(args);

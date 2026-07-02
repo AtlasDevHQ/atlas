@@ -696,6 +696,52 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas completions fish > ~/.config/fish/completions/atlas.fish",
     ],
   },
+  okf: {
+    description:
+      "OKF (Open Knowledge Format) interop — import a bundle as a draft semantic layer, or export the semantic layer as an OKF bundle.",
+    usage: "okf <import|export> [options]",
+    subcommands: [
+      {
+        name: "import",
+        description: "OKF bundle directory -> first-draft semantic layer YAML",
+      },
+      {
+        name: "export",
+        description: "Semantic layer directory -> OKF v0.1 bundle",
+      },
+    ],
+    flags: [
+      {
+        flag: "--bundle <dir>",
+        description: "(import) OKF bundle to read (required)",
+      },
+      {
+        flag: "--out <dir>",
+        description:
+          "Output directory (import default: ./semantic; export: required)",
+      },
+      {
+        flag: "--name <name>",
+        description: "(import) Catalog name for the draft",
+      },
+      {
+        flag: "--semantic <dir>",
+        description: "(export) Semantic layer to read (default: ./semantic)",
+      },
+      {
+        flag: "--force",
+        description: "Overwrite existing/non-empty output",
+      },
+    ],
+    examples: [
+      "atlas okf import --bundle ./ga4-bundle --out ./semantic",
+      "atlas okf export --semantic ./semantic --out ./okf-bundle",
+    ],
+    notes: [
+      "Import produces DRAFTS: metric SQL from a bundle is unverified prose until reviewed.",
+      "Spike findings + mapping table: docs/research/okf-interop-spike.md (#4140).",
+    ],
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -728,6 +774,7 @@ export function printOverviewHelp(): void {
       "  canonical-eval   Run canonical-question harness against the demo dataset (no LLM by default)\n" +
       "  smoke            Run E2E smoke tests against a running Atlas deployment\n" +
       "  migrate          Semantic layer versioning (snapshot, diff, rollback)\n" +
+      "  okf              OKF interop — import/export Open Knowledge Format bundles\n" +
       "  plugin           Manage plugins (list, create, add)\n" +
       "  benchmark        Run BIRD benchmark for text-to-SQL accuracy\n" +
       "  mcp              Start MCP server (stdio or SSE transport)\n" +

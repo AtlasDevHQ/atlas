@@ -2725,3 +2725,20 @@ The implementation survey narrowed the candidate's "16 pages" to the surfaces th
 - Zero behavior change on reachable paths — pinned by the untouched claim-gate / reaper / enforcement / agent-query suites; one knowing corner-case unification (unparseable-but-set `trial_ends_at`, unreachable with real timestamptz rows) resolved a latent banner-vs-enforcement disagreement in the fail-closed direction.
 
 **Category:** Predicate consolidation across language boundaries (TS + SQL twins generated/pinned from one module) plus an ordering invariant promoted from comment-and-copy-discipline to a named seam — review-panel-driven (4 specialists, 2 rounds to CLEAN).
+
+## 99. `buildSystemParam` takes an options object — position-encoded meaning eliminated at the system-prompt seam (#3819)
+
+**Date:** 2026-07-01
+**Issue:** #3819 (Architecture Backlog; debt flagged during review of #3816)
+**PR:** #4175
+
+**Problem:** `buildSystemParam` — the single seam where every optional system-prompt section (org index, learned patterns, scope routing, REST representation, memory block, source catalog, …) converges — had grown to 12 positional parameters, the trailing six same-typed optional strings. At the sole production call site a transposition of any two would type-check cleanly and fail silently; every new prompt section (#3894 was the 12th) deepened the hole, and ~40 test call sites padded `undefined`s to reach their slot.
+
+**Solution:** `(providerType, options)` two-arg form: the one required, return-shape-discriminating input stays positional; the eleven optionals move to an exported `BuildSystemParamOptions` interface (readonly fields, per-field JSDoc migrated intact with its issue provenance). Single destructure applies the defaults. Single-arg callers unchanged; all 23 multi-arg positional calls migrated to named options.
+
+**Impact:**
+- Transposition at the prompt seam is now structurally impossible — named fields + excess-property checking turn the old silent-failure class into compile errors, and a stale positional caller fails loudly (`ToolRegistry` shares no properties with the options bag).
+- Behavior-neutral by proof, not assertion: output byte-identical across a 17-combo before/after input matrix (gateway→Anthropic cache branch, `""` ≡ omitted semantics, memory-LAST ordering all covered); a new test pins `{}` ≡ omitted.
+- The next prompt section is a one-field addition, not a 13th positional slot rippling through 40 call sites.
+
+**Category:** Signature de-positionalization at a growth seam — the options-object threshold crossed deliberately as its own mechanical PR, isolated from feature logic so it reviews as pure churn (panel: CLEAN in 1 round).

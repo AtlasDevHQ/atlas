@@ -20,6 +20,20 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.39",
+    title: "Architecture Deepening Rollup",
+    date: "2026-07-02",
+    summary:
+      "An internal-architecture release with no user-facing behavior changes. Trial and billing gate decisions now flow through one authoritative trial-state module, background scheduler jobs register through a single seam that applies gating, intervals, and tracing uniformly, and the plugin marketplace catalog structurally enforces that only operator-curated plugins can be listed. These consolidations reduce drift risk in the billing, scheduling, and marketplace paths ahead of upcoming feature work.",
+    highlights: [
+      "One authoritative trial-state module — tier, claimed, metered, expired, and days-remaining computed in a single place (#4127)",
+      "Agent-query billing gates folded into a named checkAgentQueryGates seam, so gate ordering is enforced by code rather than comments (#4128)",
+      "Scheduler fibers register through a registerPeriodicFiber seam — deploy-mode gating, intervals, tracing spans, and forking handled once (#4130)",
+      "Marketplace plugin-catalog write path structurally enforces operator-curated-only listings (#4174)",
+      "Agent system-prompt construction refactored to an extensible options form (#3819)",
+    ],
+  },
+  {
     version: "v0.0.38",
     title: "MCP/CLI Onboarding Fixes",
     date: "2026-07-01",

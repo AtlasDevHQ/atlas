@@ -152,7 +152,6 @@ mock.module("@atlas/api/lib/knowledge/sync", () => ({
   runKnowledgeSyncCycle: async () => ({ inspected: 0, succeeded: 0, failed: 0 }),
   getKnowledgeSyncFetchTimeoutMs: () => 60_000,
   DEFAULT_SYNC_FETCH_TIMEOUT_SECONDS: 60,
-  ARCHIVE_ABSENT_SQL: "",
   SYNC_STATE_UPSERT_SQL: "",
 }));
 

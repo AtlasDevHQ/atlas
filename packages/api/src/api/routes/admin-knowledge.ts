@@ -27,28 +27,13 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import type { PoolClient } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import {
-  getInternalDB,
-  internalQuery,
-  type InternalPoolClient,
-} from "@atlas/api/lib/db/internal";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
-import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
-import { Effect } from "effect";
-import { extractBundle, BundleFormatError } from "@atlas/api/lib/knowledge/bundle-archive";
-import { parseLenientBundle } from "@atlas/api/lib/knowledge/parse-lenient";
-import {
-  ingestBundleIntoCollection,
-  type IngestClient,
-} from "@atlas/api/lib/knowledge/ingest";
-import {
-  getIngestMaxDocs,
-  getIngestMaxDocBytes,
-  getIngestMaxBundleBytes,
-} from "@atlas/api/lib/knowledge/ingest-limits";
+import { ingestBundle } from "@atlas/api/lib/knowledge/ingest-bundle";
+import { uninstallCollection } from "@atlas/api/lib/knowledge/collection-lifecycle";
+import { getIngestMaxBundleBytes } from "@atlas/api/lib/knowledge/ingest-limits";
 import {
   buildCollectionDocumentsQuery,
   buildDocumentStatusCountsQuery,
@@ -63,34 +48,9 @@ import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin.knowledge");
 
-/** Module-level content-mode registry — reused for "upload & publish" promotion. */
-const contentModeRegistry = makeService(CONTENT_MODE_TABLES);
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Bust the per-mode knowledge disk mirror (#4208, ADR-0028 §3) so the next
- * `explore` call rebuilds the `knowledge/` subtree from the DB. Reuses the
- * semantic layer's mode-root invalidation — `invalidateOrgModeRoots` busts every
- * mode for the org — the same lazy-rebuild machinery that backs entity serving.
- * Lazy-imported (not a top-level import) so the admin
- * router's static graph doesn't require `semantic/sync` at load time, matching
- * the reconcile posture in `admin-publish.ts`; best-effort, since the DB write has
- * already committed and a stale in-process cache self-heals on the next boot.
- */
-async function invalidateKnowledgeMirror(orgId: string): Promise<void> {
-  try {
-    const { invalidateOrgModeRoots } = await import("@atlas/api/lib/semantic/sync");
-    invalidateOrgModeRoots(orgId);
-  } catch (err) {
-    log.warn(
-      { orgId, err: err instanceof Error ? err.message : String(err) },
-      "Failed to invalidate knowledge mirror — the agent may serve a stale knowledge/ subtree until the next rebuild",
-    );
-  }
-}
 
 /**
  * Load one collection install scoped to the workspace, or null. Matches ANY
@@ -137,35 +97,6 @@ function sourceOf(catalogId: string): "upload" | "bundle-sync" | "unknown" {
   if (catalogId === OKF_UPLOAD_CATALOG_ID) return "upload";
   if (catalogId === BUNDLE_SYNC_CATALOG_ID) return "bundle-sync";
   return "unknown";
-}
-
-/**
- * Run `fn` inside a transaction on a dedicated internal-DB client. Mirrors the
- * BEGIN/COMMIT/ROLLBACK + `release(err)` discipline in `admin-publish.ts`: a
- * failed ROLLBACK destroys the client so a dirty connection can't poison the
- * next borrower.
- */
-async function withTransaction<T>(fn: (client: InternalPoolClient) => Promise<T>): Promise<T> {
-  const pool = getInternalDB();
-  const client = await pool.connect();
-  let rollbackErr: Error | null = null;
-  try {
-    await client.query("BEGIN");
-    const result = await fn(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (err) {
-    await client.query("ROLLBACK").catch((rbErr: unknown) => {
-      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
-      log.warn(
-        { err: rollbackErr.message },
-        "ROLLBACK failed after knowledge transaction error — client will be destroyed",
-      );
-    });
-    throw err;
-  } finally {
-    client.release(rollbackErr ?? undefined);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -577,12 +508,10 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
       );
     }
 
-    // Read the raw bundle bytes. The total-size cap is the first line of defense
-    // against a decompression bomb (the streaming extractor enforces the decoded
-    // cap too). Reject on the declared Content-Length BEFORE buffering the body,
-    // so an obviously-oversized upload never fully materializes in memory; the
-    // client-supplied header is advisory, so the post-buffer check below stays as
-    // the authoritative guard.
+    // Reject on the declared Content-Length BEFORE buffering the body, so an
+    // obviously-oversized upload never fully materializes in memory. The
+    // client-supplied header is advisory — the authoritative size/decompression
+    // caps live inside `ingestBundle` (the shared orchestration seam).
     const maxBundleBytes = getIngestMaxBundleBytes();
     const declaredLength = Number(c.req.header("content-length"));
     if (Number.isFinite(declaredLength) && declaredLength > maxBundleBytes) {
@@ -596,104 +525,63 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
       );
     }
     const bytes = new Uint8Array(await c.req.arrayBuffer());
-    if (bytes.length === 0) {
-      return c.json({ error: "empty_bundle", message: "The uploaded bundle is empty.", requestId }, 400);
-    }
-    if (bytes.length > maxBundleBytes) {
-      return c.json(
-        {
-          error: "bundle_too_large",
-          message: `Bundle is ${bytes.length} bytes, over the ${maxBundleBytes}-byte limit.`,
-          requestId,
-        },
-        400,
-      );
-    }
 
-    // ── Extract (in memory) → parse leniently ───────────────────────────────
-    let extracted: ReturnType<typeof extractBundle>;
-    try {
-      extracted = extractBundle(bytes, {
-        maxDocBytes: getIngestMaxDocBytes(),
-        maxTotalBytes: maxBundleBytes,
-      });
-    } catch (err) {
-      if (err instanceof BundleFormatError) {
-        return c.json({ error: "invalid_bundle", message: err.message, requestId }, 400);
-      }
-      throw err;
-    }
-
-    const parsed = parseLenientBundle(extracted.files);
-    // Per-file rejections from BOTH stages, surfaced together — never silently
-    // dropped (AC #2).
-    const rejected = [...extracted.errors, ...parsed.errors];
-
-    const maxDocs = getIngestMaxDocs();
-    if (parsed.docs.length > maxDocs) {
-      return c.json(
-        {
-          error: "too_many_documents",
-          message: `Bundle has ${parsed.docs.length} documents, over the ${maxDocs}-document limit.`,
-          requestId,
-        },
-        400,
-      );
-    }
-    if (parsed.docs.length === 0) {
-      return c.json(
-        {
-          error: "no_documents",
-          message:
-            rejected.length > 0
-              ? "No ingestable documents — every file was rejected. See `rejected` for per-file reasons."
-              : "No ingestable markdown documents found in the bundle.",
-          requestId,
-          rejected,
-        },
-        400,
-      );
-    }
-
-    // ── Ingest (+ optional atomic publish) in one transaction ───────────────
-    const report = await withTransaction(async (client) => {
-      const ingestReport = await ingestBundleIntoCollection({
-        // `InternalPoolClient.query` is non-generic, so it can't structurally
-        // satisfy `IngestClient`'s generic `query<T>` without a cast — the same
-        // unchecked-DB-row seam the `PoolClient` cast below uses. The ingest core
-        // only calls `.query()`.
-        client: client as unknown as IngestClient,
-        workspaceId: orgId,
-        collectionId: collectionSlug,
-        // v0 has only the explicit upload source; connector syncs (later) never
-        // reach this route and never get the publish option (ADR-0028 §4).
-        source: "upload",
-        docs: parsed.docs,
-      });
-
-      if (shouldPublish) {
-        // "Upload & publish" — promote through the SAME content-mode phases the
-        // atomic publish endpoint uses, inside this transaction, so the ingested
-        // drafts go live atomically with the upload (ADR-0028 §4; content-mode.md
-        // "promoted inside the existing transaction"). Never a bespoke status
-        // stamp outside the publish mechanism. NOTE: `runPublishPhases` is
-        // workspace-wide (ADR-0028 §4 "runs that same endpoint") — it promotes
-        // EVERY pending draft in the workspace across all content-mode tables
-        // (other knowledge collections, entities, prompts, connections), not just
-        // this bundle's docs, exactly as clicking Publish would. The registry's
-        // adapters only call `.query()` — the same minimal-client cast
-        // admin-publish.ts uses.
-        await Effect.runPromise(
-          contentModeRegistry.runPublishPhases(client as unknown as PoolClient, orgId),
-        );
-      }
-
-      return ingestReport;
+    // The shared seam owns extract → parse → caps → transaction (+ the atomic
+    // "upload & publish" promotion, ADR-0028 §4 — upload collections only, the
+    // source gate above) → mirror invalidation. This route is the HTTP
+    // disposition adapter: every failure kind maps to a 400.
+    const outcome = await ingestBundle({
+      workspaceId: orgId,
+      collectionId: collectionSlug,
+      source: "upload",
+      bytes,
+      publish: shouldPublish,
     });
 
-    // Rebuild the knowledge mirror: new/updated drafts appear in developer mode
-    // immediately, and an "upload & publish" surfaces in published mode too.
-    await invalidateKnowledgeMirror(orgId);
+    if (outcome.kind !== "ok") {
+      switch (outcome.kind) {
+        case "empty_bundle":
+          return c.json(
+            { error: "empty_bundle", message: "The uploaded bundle is empty.", requestId },
+            400,
+          );
+        case "bundle_too_large":
+          return c.json(
+            {
+              error: "bundle_too_large",
+              message: `Bundle is ${outcome.bytes} bytes, over the ${outcome.maxBundleBytes}-byte limit.`,
+              requestId,
+            },
+            400,
+          );
+        case "invalid_bundle":
+          return c.json({ error: "invalid_bundle", message: outcome.message, requestId }, 400);
+        case "too_many_documents":
+          return c.json(
+            {
+              error: "too_many_documents",
+              message: `Bundle has ${outcome.count} documents, over the ${outcome.maxDocs}-document limit.`,
+              requestId,
+            },
+            400,
+          );
+        case "no_documents":
+          return c.json(
+            {
+              error: "no_documents",
+              message:
+                outcome.rejected.length > 0
+                  ? "No ingestable documents — every file was rejected. See `rejected` for per-file reasons."
+                  : "No ingestable markdown documents found in the bundle.",
+              requestId,
+              rejected: [...outcome.rejected],
+            },
+            400,
+          );
+      }
+    }
+
+    const { report, rejected } = outcome;
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.knowledge.ingest,
@@ -703,7 +591,7 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
       metadata: {
         collectionSlug,
-        format: extracted.format,
+        format: outcome.format,
         created: report.created,
         updated: report.updated,
         demoted: report.demoted,
@@ -716,14 +604,14 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
     });
 
     log.info(
-      { requestId, orgId, collectionSlug, format: extracted.format, ...report, published: shouldPublish, rejected: rejected.length },
+      { requestId, orgId, collectionSlug, format: outcome.format, ...report, published: shouldPublish, rejected: rejected.length },
       "Knowledge bundle ingested",
     );
 
     return c.json(
       {
         collection: collectionSlug,
-        format: extracted.format,
+        format: outcome.format,
         documents: {
           created: report.created,
           updated: report.updated,
@@ -734,7 +622,7 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
         },
         linksWritten: report.linksWritten,
         published: shouldPublish,
-        rejected,
+        rejected: [...rejected],
       },
       200,
     );
@@ -826,43 +714,13 @@ adminKnowledge.openapi(deleteRoute, async (c) =>
       );
     }
 
-    // Archive the collection container + its documents in one transaction.
-    // Documents are ARCHIVED, never hard-deleted (ADR-0028 §5); `knowledge_links`
-    // cascade only on document DELETE, so archiving leaves the graph intact
-    // (link visibility follows its source document's status). Sync bookkeeping
-    // and the endpoint credential (bundle-sync collections, #4211) are
-    // hard-DELETED — secrets never outlive their install, and both are no-op
-    // for upload collections.
-    const archivedDocuments = await withTransaction(async (client) => {
-      await client.query(
-        `UPDATE workspace_plugins
-            SET status = 'archived', enabled = false, updated_at = NOW()
-          WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'knowledge'`,
-        [orgId, collectionSlug],
-      );
-      const docs = await client.query(
-        `UPDATE knowledge_documents
-            SET status = 'archived', updated_at = NOW()
-          WHERE workspace_id = $1 AND collection_id = $2 AND status <> 'archived'
-          RETURNING id`,
-        [orgId, collectionSlug],
-      );
-      await client.query(
-        `DELETE FROM knowledge_sync_credentials
-          WHERE workspace_id = $1 AND collection_id = $2`,
-        [orgId, collectionSlug],
-      );
-      await client.query(
-        `DELETE FROM knowledge_sync_state
-          WHERE workspace_id = $1 AND collection_id = $2`,
-        [orgId, collectionSlug],
-      );
-      return docs.rows.length;
+    // The shared lifecycle seam owns the archive-on-uninstall transaction
+    // (ADR-0028 §5 — documents archived, never hard-deleted; sync bookkeeping
+    // + endpoint credential hard-deleted) and the mirror invalidation.
+    const { archivedDocuments } = await uninstallCollection({
+      workspaceId: orgId,
+      collectionSlug,
     });
-
-    // Archived documents must drop out of both the published and developer
-    // mirrors on the next explore call.
-    await invalidateKnowledgeMirror(orgId);
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.knowledge.uninstall,

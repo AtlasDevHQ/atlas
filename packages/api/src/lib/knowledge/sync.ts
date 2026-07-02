@@ -23,7 +23,8 @@
  * **No publish path exists here — structurally.** Synced content always lands
  * `draft` (ADR-0028 §4: connector-style ingest has no upload-&-publish
  * shortcut). This module never imports the content-mode registry and never
- * writes `status='published'`; a test pins that.
+ * writes `status='published'` (a test pins both), and the shared
+ * `ingestBundle` seam itself rejects `publish` for non-upload sources.
  *
  * **The fetched bundle is third-party input**, so the fetch is hardened on top
  * of the #4207 ingest caps (which all still apply — doc cap, per-doc bytes,
@@ -50,12 +51,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import {
-  getInternalDB,
-  hasInternalDB,
-  internalQuery,
-  type InternalPoolClient,
-} from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import type { KnowledgeIngestDocumentCounts } from "@useatlas/types";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import {
@@ -63,19 +59,10 @@ import {
   hostForLog,
   EgressBlockedError,
 } from "@atlas/api/lib/openapi/egress-guard";
-import { extractBundle, BundleFormatError, type BundleEntryError } from "./bundle-archive";
-import { parseLenientBundle } from "./parse-lenient";
-import {
-  ingestBundleIntoCollection,
-  type IngestClient,
-  type IngestReport,
-} from "./ingest";
-import {
-  getIngestMaxDocs,
-  getIngestMaxDocBytes,
-  getIngestMaxBundleBytes,
-  positiveIntSetting,
-} from "./ingest-limits";
+import type { BundleEntryError } from "./bundle-archive";
+import type { IngestReport } from "./ingest";
+import { ingestBundle } from "./ingest-bundle";
+import { getIngestMaxBundleBytes, positiveIntSetting } from "./ingest-limits";
 import { readSyncCredential } from "./sync-credentials";
 import {
   BUNDLE_SYNC_CATALOG_ID,
@@ -89,18 +76,6 @@ export const DEFAULT_SYNC_FETCH_TIMEOUT_SECONDS = 60;
 
 /** Bound the per-file rejection list persisted in `knowledge_sync_state.report`. */
 const REPORT_REJECTED_CAP = 50;
-
-/**
- * Archive every previously-ingested doc whose path is NOT in the fetched
- * bundle's present set (`$3` — parsed docs plus per-file rejections; a
- * present-but-broken file must not archive its reviewed document). Exported so
- * the real-Postgres test executes this exact string against the live schema.
- */
-export const ARCHIVE_ABSENT_SQL = `UPDATE knowledge_documents
-            SET status = 'archived', updated_at = NOW()
-          WHERE workspace_id = $1 AND collection_id = $2 AND status <> 'archived'
-            AND path <> ALL($3::text[])
-          RETURNING id`;
 
 /**
  * The per-collection sync bookkeeping upsert, keyed on the migration-0164
@@ -236,32 +211,9 @@ export async function syncCollection(params: SyncCollectionParams): Promise<Know
 
   await recordSyncState(workspaceId, collectionSlug, outcome);
 
-  // Bust the per-mode knowledge disk mirror (#4208, ADR-0028 §3) whenever a
-  // sync actually changed documents, so the next `explore` call rebuilds the
-  // `knowledge/` subtree from the DB — the same posture as the admin ingest /
-  // uninstall routes. Scheduled syncs have no route hook, so the invalidation
-  // must live here. An all-unchanged sync skips it (no churn).
-  if (
-    attempt.kind === "ok" &&
-    attempt.report.created +
-      attempt.report.updated +
-      attempt.report.demoted +
-      attempt.report.resurrected +
-      attempt.archivedAbsent >
-      0
-  ) {
-    try {
-      // Lazy import (mirrors admin-knowledge.ts) so the scheduler's static
-      // graph doesn't require `semantic/sync` at load time.
-      const { invalidateOrgModeRoots } = await import("@atlas/api/lib/semantic/sync");
-      invalidateOrgModeRoots(workspaceId);
-    } catch (err) {
-      log.warn(
-        { workspaceId, collectionSlug, err: err instanceof Error ? err.message : String(err) },
-        "Failed to invalidate knowledge mirror after sync — the agent may serve a stale knowledge/ subtree until the next rebuild",
-      );
-    }
-  }
+  // Mirror invalidation is owned by the shared `ingestBundle` seam (it fires
+  // exactly when the committed write changed something visible), so scheduled
+  // and manual syncs get it without a route hook.
 
   if (outcome.status === "success") {
     log.info(
@@ -372,80 +324,23 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
     };
   }
 
-  if (bytes.length === 0) {
-    return {
-      kind: "error",
-      error: `Bundle endpoint "${host}" returned an empty body — nothing was synced.`,
-      rejected: [],
-    };
-  }
-
-  // ── Extract → parse (the #4207 caps + per-file rejections apply) ─────────
-  let extracted: ReturnType<typeof extractBundle>;
+  // ── Ingest through the shared seam (`ingestBundle` owns extract → parse →
+  // caps → transaction → archive-absent → mirror invalidation; the #4207 caps
+  // + per-file rejections all apply). This engine is the sync disposition
+  // adapter: every failure kind maps to a `status:"error"` outcome with
+  // endpoint-appropriate wording — never an HTTP status, never a throw.
+  let outcome: Awaited<ReturnType<typeof ingestBundle>>;
   try {
-    extracted = extractBundle(bytes, {
-      maxDocBytes: getIngestMaxDocBytes(),
-      maxTotalBytes: maxBundleBytes,
+    outcome = await ingestBundle({
+      workspaceId,
+      collectionId: collectionSlug,
+      source: "bundle-sync",
+      bytes,
+      // The endpoint owns the tree: paths absent from the fetched bundle are
+      // archived (never hard-deleted). NO publish option exists on this path —
+      // `ingestBundle` itself rejects publish for non-upload sources (ADR-0028 §4).
+      archiveAbsent: true,
     });
-  } catch (err) {
-    if (err instanceof BundleFormatError) {
-      return { kind: "error", error: err.message, rejected: [] };
-    }
-    throw err;
-  }
-
-  const parsed = parseLenientBundle(extracted.files);
-  const rejected: BundleEntryError[] = [...extracted.errors, ...parsed.errors];
-
-  const maxDocs = getIngestMaxDocs();
-  if (parsed.docs.length > maxDocs) {
-    return {
-      kind: "error",
-      error: `Bundle has ${parsed.docs.length} documents, over the ${maxDocs}-document limit.`,
-      rejected,
-    };
-  }
-  // Refuse to act on a doc-less bundle: proceeding would archive the ENTIRE
-  // collection off one bad response (a wrong URL, an HTML error page that
-  // happened to be a valid archive, an emptied repo). Fail the sync instead.
-  if (parsed.docs.length === 0) {
-    return {
-      kind: "error",
-      error:
-        rejected.length > 0
-          ? "No ingestable documents — every file in the fetched bundle was rejected (see the per-file errors). Nothing was changed."
-          : "The fetched bundle contains no markdown documents. Nothing was changed.",
-      rejected,
-    };
-  }
-
-  // ── Ingest + archive-absent in ONE transaction ───────────────────────────
-  // Absent = not among the parsed docs AND not among per-file rejections: a
-  // file that is present-but-broken this round must not archive its
-  // previously-reviewed document.
-  const presentPaths = [
-    ...parsed.docs.map((d) => d.path),
-    ...rejected.map((r) => r.path),
-  ];
-
-  try {
-    const { report, archivedAbsent } = await withTransaction(async (client) => {
-      const ingestReport = await ingestBundleIntoCollection({
-        // Same minimal-client cast the admin ingest route uses — the ingest
-        // core only calls `.query()`.
-        client: client as unknown as IngestClient,
-        workspaceId,
-        collectionId: collectionSlug,
-        source: "bundle-sync",
-        docs: parsed.docs,
-      });
-      const archivedRows = await (client as unknown as IngestClient).query<{ id: string }>(
-        ARCHIVE_ABSENT_SQL,
-        [workspaceId, collectionSlug, presentPaths],
-      );
-      return { report: ingestReport, archivedAbsent: archivedRows.rows.length };
-    });
-    return { kind: "ok", format: extracted.format, report, archivedAbsent, rejected };
   } catch (err) {
     log.error(
       { workspaceId, collectionSlug, err: err instanceof Error ? err.message : String(err) },
@@ -454,8 +349,54 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
     return {
       kind: "error",
       error: `Ingest failed after a successful fetch: ${err instanceof Error ? err.message : String(err)}`,
-      rejected,
+      rejected: [],
     };
+  }
+
+  switch (outcome.kind) {
+    case "ok":
+      return {
+        kind: "ok",
+        format: outcome.format,
+        report: outcome.report,
+        archivedAbsent: outcome.archivedAbsent ?? 0,
+        rejected: outcome.rejected,
+      };
+    case "empty_bundle":
+      return {
+        kind: "error",
+        error: `Bundle endpoint "${host}" returned an empty body — nothing was synced.`,
+        rejected: [],
+      };
+    case "bundle_too_large":
+      // Normally unreachable — `readBodyWithCap` already aborts an over-cap
+      // stream — but the seam reports it, so map it.
+      return {
+        kind: "error",
+        error: `Bundle from "${host}" is ${outcome.bytes} bytes, over the ${outcome.maxBundleBytes}-byte limit.`,
+        rejected: [],
+      };
+    case "invalid_bundle":
+      return { kind: "error", error: outcome.message, rejected: [] };
+    case "too_many_documents":
+      return {
+        kind: "error",
+        error: `Bundle has ${outcome.count} documents, over the ${outcome.maxDocs}-document limit.`,
+        rejected: outcome.rejected,
+      };
+    case "no_documents":
+      // Refuse to act on a doc-less bundle: proceeding would have archived the
+      // ENTIRE collection off one bad response (a wrong URL, an HTML error page
+      // that happened to be a valid archive, an emptied repo). `ingestBundle`
+      // fails before any write.
+      return {
+        kind: "error",
+        error:
+          outcome.rejected.length > 0
+            ? "No ingestable documents — every file in the fetched bundle was rejected (see the per-file errors). Nothing was changed."
+            : "The fetched bundle contains no markdown documents. Nothing was changed.",
+        rejected: outcome.rejected,
+      };
   }
 }
 
@@ -666,36 +607,3 @@ export async function runKnowledgeSyncCycle(options?: {
   return { inspected: installs.length, succeeded, failed };
 }
 
-// ---------------------------------------------------------------------------
-// Local transaction helper
-// ---------------------------------------------------------------------------
-
-/**
- * Run `fn` inside a transaction on a dedicated internal-DB client. Mirrors the
- * BEGIN/COMMIT/ROLLBACK + `release(err)` discipline in `admin-publish.ts` /
- * `admin-knowledge.ts` (a failed ROLLBACK destroys the client so a dirty
- * connection can't poison the next borrower). Local copy because `lib/` must
- * not import from `api/routes/`.
- */
-async function withTransaction<T>(fn: (client: InternalPoolClient) => Promise<T>): Promise<T> {
-  const pool = getInternalDB();
-  const client = await pool.connect();
-  let rollbackErr: Error | null = null;
-  try {
-    await client.query("BEGIN");
-    const result = await fn(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (err) {
-    await client.query("ROLLBACK").catch((rbErr: unknown) => {
-      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
-      log.warn(
-        { err: rollbackErr.message },
-        "ROLLBACK failed after knowledge sync transaction error — client will be destroyed",
-      );
-    });
-    throw err;
-  } finally {
-    client.release(rollbackErr ?? undefined);
-  }
-}

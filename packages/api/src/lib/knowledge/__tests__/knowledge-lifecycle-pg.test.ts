@@ -30,7 +30,8 @@ import {
   type KnowledgeDocRowWithBody,
 } from "@atlas/api/lib/knowledge/queries";
 import { BUNDLE_SYNC_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
-import { ARCHIVE_ABSENT_SQL, SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
+import { SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
+import { ARCHIVE_COLLECTION_DOCS_SQL } from "@atlas/api/lib/knowledge/collection-lifecycle";
 import { SYNC_CREDENTIAL_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync-credentials";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
@@ -438,7 +439,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     expect(projection.rows[0]?.last_sync_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("archives absent paths via ARCHIVE_ABSENT_SQL without touching present or rejected paths", async () => {
+  it("archives absent paths via ARCHIVE_COLLECTION_DOCS_SQL without touching present or rejected paths", async () => {
     await ingestBundleIntoCollection({
       client,
       workspaceId: ws,
@@ -447,7 +448,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
       docs: docsFrom({ "keep.md": "# keep", "gone.md": "# gone", "broken.md": "# broken" }),
     });
     // Next pull: keep.md present, broken.md present-but-rejected, gone.md absent.
-    const archived = await pool.query<{ id: string }>(ARCHIVE_ABSENT_SQL, [
+    const archived = await pool.query<{ id: string }>(ARCHIVE_COLLECTION_DOCS_SQL, [
       ws,
       "synced-docs",
       ["keep.md", "broken.md"],

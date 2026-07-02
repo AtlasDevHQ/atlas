@@ -32,16 +32,7 @@ function promptText(
 
 describe("buildSystemParam — presentation mode (#2705)", () => {
   it("appends the conversational addendum when mode is 'conversational'", () => {
-    const result = buildSystemParam(
-      "openai",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      "conversational",
-    );
+    const result = buildSystemParam("openai", { presentationMode: "conversational" });
     const prompt = promptText(result);
     // The addendum heading is the canonical pin — guards a future
     // refactor that renames the section without updating callers.
@@ -55,16 +46,7 @@ describe("buildSystemParam — presentation mode (#2705)", () => {
   });
 
   it("omits the conversational addendum in 'developer' mode (the default)", () => {
-    const developer = buildSystemParam(
-      "openai",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      "developer",
-    );
+    const developer = buildSystemParam("openai", { presentationMode: "developer" });
     const developerPrompt = promptText(developer);
     expect(developerPrompt).not.toContain("Presentation mode — conversational");
     expect(developerPrompt).not.toContain("Do NOT include SQL");
@@ -85,16 +67,7 @@ describe("buildSystemParam — presentation mode (#2705)", () => {
     // the addendum entirely) breaks this assertion.
     const developer = promptText(buildSystemParam("openai"));
     const conversational = promptText(
-      buildSystemParam(
-        "openai",
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        "conversational",
-      ),
+      buildSystemParam("openai", { presentationMode: "conversational" }),
     );
     expect(conversational.length).toBeGreaterThan(developer.length);
     // The exact delta IS the addendum (modulo no other branches differ
@@ -110,16 +83,7 @@ describe("buildSystemParam — presentation mode (#2705)", () => {
     // Anthropic / Bedrock-Anthropic return a SystemModelMessage so the
     // adapter applies cache control. The addendum must live inside
     // `content`, not get stripped by the wrapping.
-    const wrapped = buildSystemParam(
-      "anthropic",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      "conversational",
-    );
+    const wrapped = buildSystemParam("anthropic", { presentationMode: "conversational" });
     expect(typeof wrapped).toBe("object");
     if (typeof wrapped === "string") return; // unreachable, narrows TS
     expect(wrapped.role).toBe("system");

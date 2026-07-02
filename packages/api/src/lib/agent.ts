@@ -527,20 +527,6 @@ function buildSystemPrompt(
 }
 
 /**
- * Build the system prompt with provider-appropriate cache control.
- *
- * The prompt body is composed from the registry's tool descriptions via
- * `registry.describe()`, sandwiched between the standard prefix and suffix.
- *
- * - Anthropic / Bedrock-Anthropic: returns a SystemModelMessage with
- *   `providerOptions.anthropic.cacheControl` (~80% savings on steps 2+).
- * - Bedrock (non-Anthropic): returns a SystemModelMessage with
- *   `providerOptions.bedrock.cachePoint`.
- * - OpenAI / Ollama / OpenAI-compatible / Gateway: returns a plain string
- *   (OpenAI caches automatically for prompts >= 1024 tokens; others have
- *   no caching).
- */
-/**
  * #2705 — Conversational-mode addendum.
  *
  * Appended to the system prompt when the caller requests
@@ -601,27 +587,36 @@ When a question spans more than one source in the catalog above — several SQL 
 - **Report which source(s) you drew from** so the user can check provenance — e.g. "1,240 signups (Postgres), 180 of them paid (Stripe)".
 - **Never silently fall back to an unrelated source.** If the source that actually holds the answer is empty or errors, say so plainly and state the gap — do not answer from a different source and imply it is equivalent.`;
 
-export function buildSystemParam(
-  providerType: ProviderType,
-  registry: ToolRegistry = defaultRegistry,
-  warnings?: string[],
-  orgSemanticIndex?: string,
-  learnedPatternsSection?: string,
-  routingContext?: ScopeRoutingContext,
-  boundDashboardContext?: BoundDashboardAgentContext,
-  presentationMode: "developer" | "conversational" = "developer",
+/** Response-audience mode; `"conversational"` renders chat-platform-friendly answers (#2705). */
+export type PresentationMode = "developer" | "conversational";
+
+export interface BuildSystemParamOptions {
+  /** Tool registry the prompt's tool-guidance sections are built from. Defaults to `defaultRegistry`. */
+  readonly registry?: ToolRegistry;
+  /** Startup/context warnings surfaced to the agent under a `## Warnings` section. */
+  readonly warnings?: readonly string[];
+  /** Org-scoped (DB-backed) semantic index section; preferred over the file-based index when present. */
+  readonly orgSemanticIndex?: string;
+  /** Org-knowledge section: learned query patterns + favorites + approved suggestions (#3633). */
+  readonly learnedPatternsSection?: string;
+  /** Scope-routing context; guidance renders only for >1-member connection groups. */
+  readonly routingContext?: ScopeRoutingContext;
+  /** Bound dashboard context (dashboard-scoped chat). */
+  readonly boundDashboardContext?: BoundDashboardAgentContext;
+  /** `"conversational"` appends the chat-surface addendum. Defaults to `"developer"`. */
+  readonly presentationMode?: PresentationMode;
   /**
    * #2924 — Path A REST representation. When a REST datasource resolves, the
    * trimmed operation-graph prompt context is appended so the agent can address
    * its operations with `executeRestOperation`. Absent for SQL-only workspaces.
    */
-  restRepresentation?: string,
+  readonly restRepresentation?: string;
   /**
    * #3099 — Resolved model id, used only to detect when the `gateway` provider
    * routes to an Anthropic-family model so the system prompt gets the same
    * cache breakpoint as the direct Anthropic provider. Ignored otherwise.
    */
-  modelId?: string,
+  readonly modelId?: string;
   /**
    * #3755 — pre-rendered durable working-memory block (the persisted slot values
    * for this session). Appended at a single deterministic position — LAST in the
@@ -632,7 +627,7 @@ export function buildSystemParam(
    * it (the slice-2 invariant recorded in ADR-0020). Empty string / omitted ⇒
    * nothing appended (memory off / empty / no internal DB → no change vs. today).
    */
-  memoryBlock?: string,
+  readonly memoryBlock?: string;
   /**
    * #3894 — the Source catalog (ADR-0022 §4): the compact routing menu of SQL
    * Connection groups + REST datasources the agent reads to pick a source before
@@ -643,8 +638,42 @@ export function buildSystemParam(
    * Empty string / omitted ⇒ nothing appended (single-source / no-internal-DB
    * workspaces are unchanged).
    */
-  sourceCatalog?: string,
+  readonly sourceCatalog?: string;
+}
+
+/**
+ * Build the system prompt with provider-appropriate cache control.
+ *
+ * The prompt body is composed from the registry's tool descriptions via
+ * `registry.describe()`, sandwiched between the standard prefix and suffix.
+ *
+ * - Anthropic / Bedrock-Anthropic: returns a SystemModelMessage with
+ *   `providerOptions.anthropic.cacheControl` (~80% savings on steps 2+).
+ * - Bedrock (non-Anthropic): returns a SystemModelMessage with
+ *   `providerOptions.bedrock.cachePoint`.
+ * - OpenAI / Ollama / OpenAI-compatible: returns a plain string (OpenAI
+ *   caches automatically for prompts >= 1024 tokens; others have no caching).
+ * - Gateway: plain string, EXCEPT when `options.modelId` resolves to an
+ *   Anthropic-family model — then it takes the Anthropic cacheControl branch
+ *   (#3099, see `cacheProviderFor`).
+ */
+export function buildSystemParam(
+  providerType: ProviderType,
+  options: BuildSystemParamOptions = {},
 ): string | SystemModelMessage {
+  const {
+    registry = defaultRegistry,
+    warnings,
+    orgSemanticIndex,
+    learnedPatternsSection,
+    routingContext,
+    boundDashboardContext,
+    presentationMode = "developer",
+    restRepresentation,
+    modelId,
+    memoryBlock,
+    sourceCatalog,
+  } = options;
   let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext);
 
   if (sourceCatalog) {
@@ -987,7 +1016,7 @@ export async function runAgent({
    * Optional + defaulting to `"developer"` keeps every pre-#2705
    * caller's behavior unchanged.
    */
-  presentationMode?: "developer" | "conversational";
+  presentationMode?: PresentationMode;
   /**
    * #3747 — crash-resume re-entry (ADR-0020 phase 2). When supplied, the agent
    * RE-ENTERS an interrupted turn instead of starting a fresh one:
@@ -1514,7 +1543,19 @@ export async function runAgent({
   // glossary AND the durable memory block (#3755), and is passed to the model
   // separately, so neither ever enters the message array compaction rewrites
   // (#3759).
-  const systemParam = buildSystemParam(providerType, activeRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext, presentationMode ?? "developer", restRepresentation, resolvedModelId, memoryBlock, sourceCatalog);
+  const systemParam = buildSystemParam(providerType, {
+    registry: activeRegistry,
+    warnings,
+    orgSemanticIndex,
+    learnedPatternsSection,
+    routingContext: scopeRoutingContext,
+    boundDashboardContext,
+    presentationMode: presentationMode ?? "developer",
+    restRepresentation,
+    modelId: resolvedModelId,
+    memoryBlock,
+    sourceCatalog,
+  });
 
   // #3759 — context compaction. Resolved once per turn (knobs hot-reload at the
   // next turn via the settings cache). Off by default ⇒ the prepareStep below

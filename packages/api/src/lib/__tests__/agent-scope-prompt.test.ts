@@ -293,18 +293,13 @@ function findToolResults(
 
 describe("buildSystemParam — scope guidance section (slice 2)", () => {
   it("appends Cross-Environment Routing section when routingContext has >1 members", () => {
-    const result = buildSystemParam(
-      "openai",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      {
+    const result = buildSystemParam("openai", {
+      routingContext: {
         members: ["us-int", "eu", "apac"],
         currentMember: "us-int",
         groupId: "prod",
       },
-    );
+    });
     expect(typeof result).toBe("string");
     const prompt = result as string;
     expect(prompt).toContain("Cross-Environment Routing");
@@ -332,30 +327,20 @@ describe("buildSystemParam — scope guidance section (slice 2)", () => {
   });
 
   it("omits the scope guidance section when routingContext has a single member", () => {
-    const result = buildSystemParam(
-      "openai",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { members: ["only"], currentMember: "only" },
-    );
+    const result = buildSystemParam("openai", {
+      routingContext: { members: ["only"], currentMember: "only" },
+    });
     const prompt = result as string;
     expect(prompt).not.toContain("Cross-Environment Routing");
   });
 
   it("renders the current member as the anchor for `scope: \"this\"`", () => {
-    const result = buildSystemParam(
-      "openai",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      {
+    const result = buildSystemParam("openai", {
+      routingContext: {
         members: ["us-int", "eu", "apac"],
         currentMember: "eu",
       },
-    );
+    });
     const prompt = result as string;
     expect(prompt).toMatch(/current member is `eu`/);
   });
@@ -391,17 +376,7 @@ describe("buildRestDatasourceScopeNote — REST env-scope framing (#3044)", () =
     // section; buildSystemParam appends the whole restRepresentation string.
     const scopeNote = buildRestDatasourceScopeNote({}, { boundToEnvironment: true });
     const rep = `${scopeNote}\n\n### REST Datasource\nuse executeRestOperation…`;
-    const result = buildSystemParam(
-      "openai",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      "developer",
-      rep,
-    );
+    const result = buildSystemParam("openai", { restRepresentation: rep });
     const prompt = result as string;
     expect(prompt).toContain("workspace-global");
     expect(prompt).toContain("### REST Datasource");

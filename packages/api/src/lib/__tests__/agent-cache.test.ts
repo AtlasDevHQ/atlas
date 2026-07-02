@@ -321,19 +321,7 @@ describe("buildSystemParam", () => {
   // #3099 — gateway routing to an Anthropic model must cache the system prompt
   // exactly like the direct Anthropic provider (the gateway forwards the marker).
   test("returns SystemModelMessage with anthropic cacheControl for 'gateway' → Anthropic model", () => {
-    // modelId is the trailing positional arg; intermediate args default through.
-    const result = buildSystemParam(
-      "gateway",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      "developer",
-      undefined,
-      "anthropic/claude-opus-4.8",
-    );
+    const result = buildSystemParam("gateway", { modelId: "anthropic/claude-opus-4.8" });
     expect(typeof result).toBe("object");
     const msg = result as { role: string; content: string; providerOptions: Record<string, unknown> };
     expect(msg.role).toBe("system");
@@ -344,18 +332,7 @@ describe("buildSystemParam", () => {
   });
 
   test("returns plain string for 'gateway' → non-Anthropic model", () => {
-    const result = buildSystemParam(
-      "gateway",
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      "developer",
-      undefined,
-      "openai/gpt-4o",
-    );
+    const result = buildSystemParam("gateway", { modelId: "openai/gpt-4o" });
     expect(typeof result).toBe("string");
   });
 
@@ -373,17 +350,16 @@ describe("buildSystemParam", () => {
       tool: { execute: async () => "ok" } as never,
     });
 
-    const result = buildSystemParam("openai", customRegistry);
+    const result = buildSystemParam("openai", { registry: customRegistry });
     expect(typeof result).toBe("string");
     expect(result as string).toContain("Custom Step");
     expect(result as string).not.toContain("Explore the Semantic Layer");
   });
 
   test("includes warnings section when warnings are provided", () => {
-    const result = buildSystemParam("openai", undefined, [
-      "Actions failed to initialize.",
-      "Python tool is unavailable.",
-    ]);
+    const result = buildSystemParam("openai", {
+      warnings: ["Actions failed to initialize.", "Python tool is unavailable."],
+    });
     expect(typeof result).toBe("string");
     const content = result as string;
     expect(content).toContain("## Warnings");
@@ -392,7 +368,7 @@ describe("buildSystemParam", () => {
   });
 
   test("omits warnings section when warnings array is empty", () => {
-    const result = buildSystemParam("openai", undefined, []);
+    const result = buildSystemParam("openai", { warnings: [] });
     expect(typeof result).toBe("string");
     expect(result as string).not.toContain("## Warnings");
   });
@@ -404,7 +380,7 @@ describe("buildSystemParam", () => {
   });
 
   test("warnings are included in SystemModelMessage content for anthropic", () => {
-    const result = buildSystemParam("anthropic", undefined, ["Test warning"]);
+    const result = buildSystemParam("anthropic", { warnings: ["Test warning"] });
     expect(typeof result).toBe("object");
     const msg = result as { content: string };
     expect(msg.content).toContain("## Warnings");
@@ -416,19 +392,10 @@ describe("buildSystemParam", () => {
   // The runAgent-seam tests assert the block is present/absent; these pin the
   // POSITION the acceptance criterion promises so a re-ordering can't slip past.
   test("durable memory block is appended LAST — after the warnings section", () => {
-    const result = buildSystemParam(
-      "openai",
-      undefined,
-      ["A warning"], // warnings
-      undefined, // orgSemanticIndex
-      undefined, // learnedPatternsSection
-      undefined, // routingContext
-      undefined, // boundDashboardContext
-      "developer", // presentationMode
-      undefined, // restRepresentation
-      undefined, // modelId
-      "## Working Memory\n\n- `note`: \"orders\"", // memoryBlock
-    );
+    const result = buildSystemParam("openai", {
+      warnings: ["A warning"],
+      memoryBlock: "## Working Memory\n\n- `note`: \"orders\"",
+    });
     expect(typeof result).toBe("string");
     const content = result as string;
     expect(content).toContain("## Working Memory");
@@ -439,14 +406,17 @@ describe("buildSystemParam", () => {
   });
 
   test("empty durable memory block threads nothing (no change vs today)", () => {
-    const withEmpty = buildSystemParam(
-      "openai", undefined, undefined, undefined, undefined,
-      undefined, undefined, "developer", undefined, undefined, "",
-    );
+    const withEmpty = buildSystemParam("openai", { memoryBlock: "" });
     const without = buildSystemParam("openai");
     // An empty memoryBlock is byte-identical to omitting it entirely.
     expect(withEmpty).toBe(without);
     expect(withEmpty as string).not.toContain("## Working Memory");
+  });
+
+  // #3819 — options-object form: an empty options bag must resolve every
+  // default exactly as omitting the argument does.
+  test("empty options object is byte-identical to omitting it", () => {
+    expect(buildSystemParam("openai", {})).toBe(buildSystemParam("openai"));
   });
 });
 

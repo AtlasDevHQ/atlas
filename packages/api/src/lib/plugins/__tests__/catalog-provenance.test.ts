@@ -52,7 +52,10 @@ const GUARD_IMPORT = 'from "@atlas/api/lib/plugins/catalog-provenance"';
  * #4099.
  */
 const KNOWN_CATALOG_WRITE_SITES = {
-  "packages/api/src/api/routes/admin-marketplace.ts": "platform-admin-crud",
+  // #4232 — the platform-admin CRUD SQL moved out of the route into the
+  // catalog-crud builders (verbatim-executed by catalog-crud-pg.test.ts);
+  // the guard moved with it, so the SQL can't be built without passing it.
+  "packages/api/src/lib/integrations/catalog-crud.ts": "platform-admin-crud",
   "packages/api/src/lib/db/seed-builtin-datasource-catalog.ts":
     "builtin-datasource-seed",
   "packages/api/src/lib/db/seed-builtin-knowledge-catalog.ts":

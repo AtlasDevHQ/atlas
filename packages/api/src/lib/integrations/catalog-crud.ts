@@ -12,6 +12,7 @@
  */
 
 import type { Pillar, PlanTier } from "@useatlas/types";
+import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
 /**
  * The `plugin_catalog.type` values the DB admits
@@ -103,6 +104,11 @@ export function buildCatalogCreateSql(
   id: string,
   fields: CatalogCreateFields,
 ): CatalogSqlStatement {
+  // Operator-curated-only gate (#4174/#4099), moved here from the route
+  // with the SQL: the statement can't be obtained without passing it.
+  // The one interactive path that creates catalog rows; platform_admin-
+  // gated at the route.
+  assertOperatorCatalogWrite("platform-admin-crud");
   // `pillar` named explicitly (#4232): NOT NULL since 0092, and 0096
   // dropped the trigger that used to derive it — omitting it is a 23502
   // on every create.
@@ -165,6 +171,10 @@ export function buildCatalogUpdateSql(
 
   if (setClauses.length === 0) return null;
 
+  // Operator-curated-only gate (#4174/#4099) — this UPDATE can repoint
+  // trust-carrying fields (npm_package, config_schema); asserted only
+  // when a statement is actually built (an empty body writes nothing).
+  assertOperatorCatalogWrite("platform-admin-crud");
   setClauses.push(`updated_at = now()`);
   params.push(id);
   return {

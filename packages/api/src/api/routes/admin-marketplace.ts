@@ -45,7 +45,6 @@ import {
   MARKETPLACE_INSTALL_READBACK_SQL,
 } from "@atlas/api/lib/integrations/install/persist-form-install";
 import type { WorkspaceId } from "@useatlas/types";
-import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 import {
   buildCatalogCreateSql,
   buildCatalogUpdateSql,
@@ -371,9 +370,8 @@ platformCatalog.openapi(createCatalogRoute, async (c) => {
         return c.json({ error: "conflict", message: `A catalog entry with slug "${body.slug}" already exists.`, requestId }, 409);
       }
 
-      // Operator-curated-only gate (#4174/#4099): the one interactive path
-      // that creates catalog rows; platform_admin-gated.
-      assertOperatorCatalogWrite("platform-admin-crud");
+      // Operator-curated-only gate (#4174/#4099) lives inside the builder,
+      // next to the SQL (catalog-crud.ts).
       const create = buildCatalogCreateSql(id, body);
       const rows = yield* queryEffect<CatalogRow>(create.sql, create.params).pipe(Effect.tapError((err) => Effect.sync(() => {
         logAdminAction({
@@ -446,9 +444,8 @@ platformCatalog.openapi(updateCatalogRoute, async (c) => {
         priorLookup = { slug: null, failed: true };
       }
 
-      // Operator-curated-only gate (#4174/#4099): this UPDATE can repoint
-      // trust-carrying fields (npm_package, config_schema); platform_admin-gated.
-      assertOperatorCatalogWrite("platform-admin-crud");
+      // Operator-curated-only gate (#4174/#4099) lives inside the builder,
+      // next to the SQL (catalog-crud.ts).
       const rows = yield* queryEffect<CatalogRow>(update.sql, update.params).pipe(Effect.tapError((err) => Effect.sync(() => {
         logAdminAction({
           actionType: ADMIN_ACTIONS.plugin.catalogUpdate,

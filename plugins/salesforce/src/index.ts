@@ -41,7 +41,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin, warnIfStructuralOnly } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck, warnIfStructuralOnly } from "@useatlas/plugin-sdk";
 import type { AtlasDatasourcePlugin, PluginHealthResult, PluginLogger, QueryValidationResult } from "@useatlas/plugin-sdk";
 import {
   createSalesforceConnection,
@@ -280,30 +280,27 @@ export function buildSalesforcePlugin(
       if (!staticUrl) {
         return { healthy: true, message: "adapter-only: no static datasource configured" };
       }
-      const start = performance.now();
-      try {
-        const conn = getOrCreateConnection();
-        let timer: ReturnType<typeof setTimeout>;
-        const result = await Promise.race([
-          conn.listSObjects().then(() => "ok" as const),
-          new Promise<"timeout">((resolve) => {
-            timer = setTimeout(() => resolve("timeout"), 5000);
-          }),
-        ]).finally(() => clearTimeout(timer!));
-        const latencyMs = Math.round(performance.now() - start);
-        if (result === "timeout") {
-          return { healthy: false, message: "Health check timed out after 5000ms", latencyMs };
+      return measuredHealthCheck(async () => {
+        try {
+          const conn = getOrCreateConnection();
+          let timer: ReturnType<typeof setTimeout>;
+          const result = await Promise.race([
+            conn.listSObjects().then(() => "ok" as const),
+            new Promise<"timeout">((resolve) => {
+              timer = setTimeout(() => resolve("timeout"), 5000);
+            }),
+          ]).finally(() => clearTimeout(timer!));
+          if (result === "timeout") {
+            return { healthy: false, message: "Health check timed out after 5000ms" };
+          }
+          return { healthy: true };
+        } catch (err) {
+          // Returned (not rethrown) to keep the operator log line on failure.
+          const message = err instanceof Error ? err.message : String(err);
+          log?.warn(`Health check failed: ${message}`);
+          return { healthy: false, message };
         }
-        return { healthy: true, latencyMs };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        log?.warn(`Health check failed: ${message}`);
-        return {
-          healthy: false,
-          message,
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
+      });
     },
 
     async teardown(): Promise<void> {

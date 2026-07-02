@@ -19,7 +19,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type { AtlasActionPlugin, PluginAction } from "@useatlas/plugin-sdk";
 import { createObsidianTool, stripTrailingSlashes } from "./tool";
 import type { ObsidianReaderPluginConfig } from "./tool";
@@ -72,15 +72,13 @@ export const obsidianReaderPlugin = createPlugin<
       },
 
       async healthCheck() {
-        const start = performance.now();
         const base = stripTrailingSlashes(config.api_url ?? "http://127.0.0.1:27123");
-        try {
+        return measuredHealthCheck(async () => {
           const response = await fetch(`${base}/`, {
             method: "GET",
             headers: { Authorization: `Bearer ${config.api_key}` },
             signal: AbortSignal.timeout(5000),
           });
-          const latencyMs = Math.round(performance.now() - start);
           if (response.ok || response.status === 401) {
             // 401 means the plugin is running but the key is wrong — still
             // a "reachable" signal. The agent will surface the auth error
@@ -92,21 +90,14 @@ export const obsidianReaderPlugin = createPlugin<
               console.warn("[obsidian-reader] healthCheck: REST API rejected the API key (401)");
             }
             return response.ok
-              ? { healthy: true, latencyMs }
-              : { healthy: false, message: "Obsidian REST API rejected the API key", latencyMs };
+              ? { healthy: true }
+              : { healthy: false, message: "Obsidian REST API rejected the API key" };
           }
           return {
             healthy: false,
             message: `Obsidian REST API returned ${response.status}`,
-            latencyMs,
           };
-        } catch (err) {
-          return {
-            healthy: false,
-            message: err instanceof Error ? err.message : String(err),
-            latencyMs: Math.round(performance.now() - start),
-          };
-        }
+        });
       },
     };
   },

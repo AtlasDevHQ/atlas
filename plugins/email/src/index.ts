@@ -23,7 +23,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type { AtlasActionPlugin, PluginAction } from "@useatlas/plugin-sdk";
 import { createEmailTool } from "./tool";
 import type { EmailPluginConfig } from "./tool";
@@ -93,30 +93,20 @@ export const emailPlugin = createPlugin<EmailPluginConfig, AtlasActionPlugin<Ema
       },
 
       async healthCheck() {
-        const start = performance.now();
-        try {
+        return measuredHealthCheck(async () => {
           const response = await fetch("https://api.resend.com/domains", {
             method: "GET",
             headers: { Authorization: `Bearer ${config.resendApiKey}` },
             signal: AbortSignal.timeout(5000),
           });
-          const latencyMs = Math.round(performance.now() - start);
-
           if (response.ok) {
-            return { healthy: true, latencyMs };
+            return { healthy: true };
           }
           return {
             healthy: false,
             message: `Resend API returned ${response.status}`,
-            latencyMs,
           };
-        } catch (err) {
-          return {
-            healthy: false,
-            message: err instanceof Error ? err.message : String(err),
-            latencyMs: Math.round(performance.now() - start),
-          };
-        }
+        });
       },
     };
   },

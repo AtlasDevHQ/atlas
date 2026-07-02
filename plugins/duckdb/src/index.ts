@@ -31,7 +31,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult } from "@useatlas/plugin-sdk";
 import { createDuckDBConnection, parseDuckDBUrl } from "./connection";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
@@ -214,28 +214,22 @@ export function buildDuckDBPlugin(
         path: staticPath,
         readOnly: staticReadOnly,
       });
-      const start = performance.now();
-      let conn: PluginDBConnection | undefined;
-      try {
-        conn = createDuckDBConnection(dbConfig);
-        await conn.query("SELECT 1", 5000);
-        return {
-          healthy: true,
-          latencyMs: Math.round(performance.now() - start),
-        };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        log?.warn(`Health check failed: ${message}`);
-        return {
-          healthy: false,
-          message,
-          latencyMs: Math.round(performance.now() - start),
-        };
-      } finally {
-        if (conn) {
-          await conn.close();
+      return measuredHealthCheck(async () => {
+        let conn: PluginDBConnection | undefined;
+        try {
+          conn = createDuckDBConnection(dbConfig);
+          await conn.query("SELECT 1", 5000);
+          return { healthy: true };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          log?.warn(`Health check failed: ${message}`);
+          return { healthy: false, message };
+        } finally {
+          if (conn) {
+            await conn.close();
+          }
         }
-      }
+      });
     },
   };
 }

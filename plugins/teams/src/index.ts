@@ -32,7 +32,7 @@
  * ```
  */
 
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
   AtlasPluginContext,
@@ -130,25 +130,17 @@ function buildTeamsPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
-      const start = performance.now();
+      return measuredHealthCheck(() => {
+        if (!initialized) {
+          return { healthy: false, message: "Teams plugin not initialized" };
+        }
 
-      if (!initialized) {
-        return {
-          healthy: false,
-          message: "Teams plugin not initialized",
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
+        if (!config.appId || !config.appPassword) {
+          return { healthy: false, message: "Missing app credentials" };
+        }
 
-      if (!config.appId || !config.appPassword) {
-        return {
-          healthy: false,
-          message: "Missing app credentials",
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
-
-      return { healthy: true, latencyMs: Math.round(performance.now() - start) };
+        return { healthy: true };
+      });
     },
 
     async teardown() {

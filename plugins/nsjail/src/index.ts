@@ -24,7 +24,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type {
   AtlasSandboxPlugin,
   PluginExploreBackend,
@@ -256,12 +256,11 @@ export function buildNsjailSandboxPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
-      const start = performance.now();
-      const nsjailPath = findNsjailBinary(config.nsjailPath);
-      if (!nsjailPath) {
-        return { healthy: false, message: "nsjail binary not found", latencyMs: Math.round(performance.now() - start) };
-      }
-      try {
+      return measuredHealthCheck(async () => {
+        const nsjailPath = findNsjailBinary(config.nsjailPath);
+        if (!nsjailPath) {
+          return { healthy: false, message: "nsjail binary not found" };
+        }
         const args = buildNsjailArgs(nsjailPath, "/tmp", "echo nsjail-ok", config);
         const proc = Bun.spawn(args, {
           env: JAIL_ENV,
@@ -276,31 +275,19 @@ export function buildNsjailSandboxPlugin(
             readLimited(proc.stderr, MAX_OUTPUT),
           ]);
           const exitCode = await proc.exited;
-          clearTimeout(timer);
 
           if (exitCode === 0 && stdout.includes("nsjail-ok")) {
-            return {
-              healthy: true,
-              latencyMs: Math.round(performance.now() - start),
-            };
+            return { healthy: true };
           }
 
           return {
             healthy: false,
             message: `nsjail test command failed (exit ${exitCode})`,
-            latencyMs: Math.round(performance.now() - start),
           };
-        } catch (err) {
+        } finally {
           clearTimeout(timer);
-          throw err;
         }
-      } catch (err) {
-        return {
-          healthy: false,
-          message: err instanceof Error ? err.message : String(err),
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
+      });
     },
   };
 }

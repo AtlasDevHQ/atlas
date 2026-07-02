@@ -31,7 +31,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult, PluginLogger } from "@useatlas/plugin-sdk";
 import {
   createSnowflakeConnection,
@@ -184,30 +184,22 @@ export function buildSnowflakePlugin(
       if (!staticUrl) {
         return { healthy: true, message: "adapter-only: no static datasource configured" };
       }
-      const start = performance.now();
-      let conn: PluginDBConnection | undefined;
-      try {
-        conn = createSnowflakeConnection({ url: staticUrl, maxConnections: config.maxConnections });
-        await conn.query("SELECT 1", 5000);
-        return {
-          healthy: true,
-          latencyMs: Math.round(performance.now() - start),
-        };
-      } catch (err) {
-        return {
-          healthy: false,
-          message: err instanceof Error ? err.message : String(err),
-          latencyMs: Math.round(performance.now() - start),
-        };
-      } finally {
-        if (conn) {
-          try {
-            await conn.close();
-          } catch (closeErr) {
-            (log ?? console).warn(`[snowflake-datasource] Failed to close health-check connection: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`);
+      return measuredHealthCheck(async () => {
+        let conn: PluginDBConnection | undefined;
+        try {
+          conn = createSnowflakeConnection({ url: staticUrl, maxConnections: config.maxConnections });
+          await conn.query("SELECT 1", 5000);
+          return { healthy: true };
+        } finally {
+          if (conn) {
+            try {
+              await conn.close();
+            } catch (closeErr) {
+              (log ?? console).warn(`[snowflake-datasource] Failed to close health-check connection: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`);
+            }
           }
         }
-      }
+      });
     },
   };
 }

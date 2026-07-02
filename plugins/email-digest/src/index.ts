@@ -31,7 +31,7 @@
  */
 
 import { Hono } from "hono";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
   AtlasPluginContext,
@@ -452,42 +452,36 @@ function buildEmailDigestPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
-      const start = performance.now();
+      return measuredHealthCheck(async () => {
+        if (!initialized) {
+          return { healthy: false, message: "Email digest plugin not initialized" };
+        }
 
-      if (!initialized) {
-        return {
-          healthy: false,
-          message: "Email digest plugin not initialized",
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
+        if (!pluginDb) {
+          return {
+            healthy: false,
+            message: "Internal database not available — subscriptions cannot be managed",
+          };
+        }
 
-      if (!pluginDb) {
-        return {
-          healthy: false,
-          message: "Internal database not available — subscriptions cannot be managed",
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
+        if (!schemaReady) {
+          return {
+            healthy: false,
+            message: "Database schema not ready — table creation may have failed",
+          };
+        }
 
-      if (!schemaReady) {
-        return {
-          healthy: false,
-          message: "Database schema not ready — table creation may have failed",
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
-
-      try {
-        await pluginDb.query("SELECT 1 FROM digest_subscriptions LIMIT 0", []);
-        return { healthy: true, latencyMs: Math.round(performance.now() - start) };
-      } catch (err) {
-        return {
-          healthy: false,
-          message: `Table probe failed: ${err instanceof Error ? err.message : String(err)}`,
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
+        try {
+          await pluginDb.query("SELECT 1 FROM digest_subscriptions LIMIT 0", []);
+          return { healthy: true };
+        } catch (err) {
+          // Returned (not rethrown) to keep the "Table probe failed" prefix.
+          return {
+            healthy: false,
+            message: `Table probe failed: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      });
     },
 
     async teardown() {

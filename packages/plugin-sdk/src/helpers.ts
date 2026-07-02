@@ -419,6 +419,49 @@ export function collectSemanticFiles(
   return results;
 }
 
+/**
+ * Wrap a health probe with the measured-health-check bracket every plugin
+ * otherwise hand-rolls: `performance.now()` latency measurement,
+ * instanceof-Error narrowing, and `latencyMs` stamping — nothing else (no
+ * cleanup or timeout ceremony; see {@link runHealthCheckWithTimeout} for the
+ * sandbox-shaped variant, which composes this).
+ *
+ * The probe returns a `PluginHealthResult` without `latencyMs` (stamped here,
+ * measured from probe start to settle) — healthy or unhealthy, with whatever
+ * `message` it wants. A thrown error (or rejected promise) becomes
+ * `{ healthy: false, message }` with the message narrowed via
+ * `err instanceof Error ? err.message : String(err)`. Probes that need a
+ * custom failure message or a `logger.warn` on failure keep their own inner
+ * `catch` and return an unhealthy result instead of throwing.
+ *
+ * @example
+ * ```typescript
+ * async healthCheck(): Promise<PluginHealthResult> {
+ *   return measuredHealthCheck(async () => {
+ *     await conn.query("SELECT 1", 5000);
+ *     return { healthy: true };
+ *   });
+ * }
+ * ```
+ */
+export async function measuredHealthCheck(
+  fn: () =>
+    | (Omit<PluginHealthResult, "latencyMs"> & { latencyMs?: never })
+    | Promise<Omit<PluginHealthResult, "latencyMs"> & { latencyMs?: never }>,
+): Promise<PluginHealthResult> {
+  const start = performance.now();
+  try {
+    const result = await fn();
+    return { ...result, latencyMs: Math.round(performance.now() - start) };
+  } catch (err) {
+    return {
+      healthy: false,
+      message: err instanceof Error ? err.message : String(err),
+      latencyMs: Math.round(performance.now() - start),
+    };
+  }
+}
+
 /** Options for {@link runHealthCheckWithTimeout}. */
 export interface HealthCheckTimeoutOptions {
   /** Milliseconds before the probe is abandoned and reported as timed out. */
@@ -447,13 +490,16 @@ const HEALTH_CHECK_TIMEOUT = Symbol("plugin-sdk:health-check-timeout");
 /**
  * Run a sandbox `healthCheck()` probe under a timeout, attaching a measured
  * `latencyMs` and running cleanup-in-every-failing-branch (single-sourced,
- * #3373).
+ * #3373). Composes {@link measuredHealthCheck} for the latency bracket +
+ * error narrowing, adding the `Promise.race` timeout and safety-net cleanup
+ * on top.
  *
  * The probe (`fn`) creates whatever it needs, performs the check, tears down
  * its own resources on the happy path, and returns a `PluginHealthResult`
  * without `latencyMs` (added here). When the `Promise.race` timeout wins — or
  * the probe throws — `cleanup` runs to reap any resource the probe captured but
- * could not release.
+ * could not release. `latencyMs` measures the probe only, stamped when it
+ * settles (or times out) — cleanup time is never included.
  *
  * **Why not `await using`?** The timeout can win while the probe is still
  * mid-create/exec, and the sandbox SDKs expose no `AbortSignal` on create — a
@@ -473,10 +519,40 @@ export async function runHealthCheckWithTimeout(
       `runHealthCheckWithTimeout: timeoutMs must be a positive, finite number (got ${timeoutMs})`,
     );
   }
-  const start = performance.now();
   let timer: ReturnType<typeof setTimeout>;
+  // Tracks how the probe settled so the failing branches (timeout / throw) —
+  // and ONLY those — trigger the warn + cleanup after measuredHealthCheck has
+  // narrowed the error and stamped latency. A probe that RETURNS an unhealthy
+  // result owns its own teardown and logging, so it is not a failing branch.
+  // (The assertion defeats CFA literal-narrowing: the reassignments happen
+  // inside the probe closure, which TS does not track across the await.)
+  type ProbeOutcome = "returned" | "timeout" | "threw";
+  let outcome = "threw" as ProbeOutcome;
 
-  const runCleanup = async (): Promise<void> => {
+  const result = await measuredHealthCheck(async () => {
+    const raced = await Promise.race([
+      fn(),
+      new Promise<typeof HEALTH_CHECK_TIMEOUT>((resolve) => {
+        timer = setTimeout(() => resolve(HEALTH_CHECK_TIMEOUT), timeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timer!));
+
+    if (raced === HEALTH_CHECK_TIMEOUT) {
+      outcome = "timeout";
+      // Thrown so measuredHealthCheck stamps latency at the moment the
+      // timeout fired; its narrowing turns this into the result message.
+      throw new Error(`Health check timed out after ${timeoutMs}ms`);
+    }
+    outcome = "returned";
+    return raced;
+  });
+
+  if (outcome !== "returned") {
+    logger?.warn(
+      outcome === "timeout"
+        ? `[plugin-sdk] Health check timed out after ${timeoutMs}ms`
+        : `[plugin-sdk] Health check probe failed: ${result.message}`,
+    );
     try {
       await cleanup();
     } catch (err) {
@@ -484,35 +560,6 @@ export async function runHealthCheckWithTimeout(
         `[plugin-sdk] Health-check cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-  };
-
-  try {
-    const result = await Promise.race([
-      fn(),
-      new Promise<typeof HEALTH_CHECK_TIMEOUT>((resolve) => {
-        timer = setTimeout(() => resolve(HEALTH_CHECK_TIMEOUT), timeoutMs);
-      }),
-    ]).finally(() => clearTimeout(timer!));
-
-    const latencyMs = Math.round(performance.now() - start);
-    if (result === HEALTH_CHECK_TIMEOUT) {
-      logger?.warn(`[plugin-sdk] Health check timed out after ${timeoutMs}ms`);
-      await runCleanup();
-      return {
-        healthy: false,
-        message: `Health check timed out after ${timeoutMs}ms`,
-        latencyMs,
-      };
-    }
-    return { ...result, latencyMs };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    logger?.warn(`[plugin-sdk] Health check probe failed: ${message}`);
-    await runCleanup();
-    return {
-      healthy: false,
-      message,
-      latencyMs: Math.round(performance.now() - start),
-    };
   }
+  return result;
 }

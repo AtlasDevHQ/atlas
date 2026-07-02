@@ -45,7 +45,7 @@
 
 import type { Adapter, StateAdapter } from "chat";
 import type { SlackAdapter } from "@chat-adapter/slack";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
   AtlasPluginContext,
@@ -918,74 +918,65 @@ function buildChatPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
-      const start = performance.now();
+      return measuredHealthCheck(async () => {
+        if (!initialized || !bridge) {
+          return { healthy: false, message: "Chat plugin not initialized" };
+        }
 
-      if (!initialized || !bridge) {
+        const enabledAdapters: string[] = [];
+        if (slackAdapterInstance) enabledAdapters.push("slack");
+        if (telegramAdapterInstance) enabledAdapters.push("telegram");
+        if (discordAdapterInstance) enabledAdapters.push("discord");
+        if (whatsappAdapterInstance) enabledAdapters.push("whatsapp");
+        if (gchatAdapterInstance) enabledAdapters.push("gchat");
+        if (teamsAdapterInstance) enabledAdapters.push("teams");
+
+        if (enabledAdapters.length === 0) {
+          // Use the diagnostics captured at init to point operators at the
+          // actual cause: a catalog row referencing an unknown slug, or a
+          // recognized slug whose env vars are missing.
+          const parts = [
+            "No chat adapters registered.",
+          ];
+          if (adapterDiagnostics.missingCredSlugs.length > 0) {
+            parts.push(
+              `Missing env vars for: ${adapterDiagnostics.missingCredSlugs.join(", ")}.`,
+            );
+          }
+          if (adapterDiagnostics.unrecognizedSlugs.length > 0) {
+            parts.push(
+              `Unknown slugs in catalog: ${adapterDiagnostics.unrecognizedSlugs.join(", ")}.`,
+            );
+          }
+          if (
+            adapterDiagnostics.missingCredSlugs.length === 0 &&
+            adapterDiagnostics.unrecognizedSlugs.length === 0
+          ) {
+            parts.push(
+              "No chat-type catalog entries declared in atlas.config.ts (or all are disabled / form-based).",
+            );
+          }
+          return { healthy: false, message: parts.join(" ") };
+        }
+
+        // Probe state adapter health (lightweight get on a non-existent key)
+        if (stateAdapter) {
+          try {
+            await stateAdapter.get("_healthcheck");
+          } catch (stateErr) {
+            // Returned (not rethrown) to keep the "State backend error" prefix.
+            return {
+              healthy: false,
+              message: `State backend error: ${stateErr instanceof Error ? stateErr.message : String(stateErr)}`,
+            };
+          }
+        }
+
         return {
-          healthy: false,
-          message: "Chat plugin not initialized",
-          latencyMs: Math.round(performance.now() - start),
+          healthy: true,
+          message: `Adapters: ${enabledAdapters.join(", ")}`,
         };
-      }
-
-      const enabledAdapters: string[] = [];
-      if (slackAdapterInstance) enabledAdapters.push("slack");
-      if (telegramAdapterInstance) enabledAdapters.push("telegram");
-      if (discordAdapterInstance) enabledAdapters.push("discord");
-      if (whatsappAdapterInstance) enabledAdapters.push("whatsapp");
-      if (gchatAdapterInstance) enabledAdapters.push("gchat");
-      if (teamsAdapterInstance) enabledAdapters.push("teams");
-
-      if (enabledAdapters.length === 0) {
-        // Use the diagnostics captured at init to point operators at the
-        // actual cause: a catalog row referencing an unknown slug, or a
-        // recognized slug whose env vars are missing.
-        const parts = [
-          "No chat adapters registered.",
-        ];
-        if (adapterDiagnostics.missingCredSlugs.length > 0) {
-          parts.push(
-            `Missing env vars for: ${adapterDiagnostics.missingCredSlugs.join(", ")}.`,
-          );
-        }
-        if (adapterDiagnostics.unrecognizedSlugs.length > 0) {
-          parts.push(
-            `Unknown slugs in catalog: ${adapterDiagnostics.unrecognizedSlugs.join(", ")}.`,
-          );
-        }
-        if (
-          adapterDiagnostics.missingCredSlugs.length === 0 &&
-          adapterDiagnostics.unrecognizedSlugs.length === 0
-        ) {
-          parts.push(
-            "No chat-type catalog entries declared in atlas.config.ts (or all are disabled / form-based).",
-          );
-        }
-        return {
-          healthy: false,
-          message: parts.join(" "),
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
-
-      // Probe state adapter health (lightweight get on a non-existent key)
-      if (stateAdapter) {
-        try {
-          await stateAdapter.get("_healthcheck");
-        } catch (stateErr) {
-          return {
-            healthy: false,
-            message: `State backend error: ${stateErr instanceof Error ? stateErr.message : String(stateErr)}`,
-            latencyMs: Math.round(performance.now() - start),
-          };
-        }
-      }
-
-      return {
-        healthy: true,
-        message: `Adapters: ${enabledAdapters.join(", ")}`,
-        latencyMs: Math.round(performance.now() - start),
-      };
+      });
     },
 
     async teardown() {

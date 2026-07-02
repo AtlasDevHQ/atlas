@@ -29,7 +29,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin, warnIfStructuralOnly } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck, warnIfStructuralOnly } from "@useatlas/plugin-sdk";
 import type {
   AtlasDatasourcePlugin,
   ConfigSchemaField,
@@ -515,22 +515,21 @@ export function buildElasticsearchPlugin(
       if (!staticConfig) {
         return { healthy: true, message: "adapter-only: no static datasource configured" };
       }
-      const start = performance.now();
-      try {
-        // The client owns the timeout/abort (it rejects with a clear "timed out"
-        // message at 5000ms), so awaiting it directly avoids the orphaned-promise
-        // / unhandled-rejection hazard of racing it against an outer setTimeout.
-        await getOrCreateConnection().ping(5000);
-        return { healthy: true, latencyMs: Math.round(performance.now() - start) };
-      } catch (err) {
-        const message = scrubElasticsearchError(err, collectConfigSecrets(staticConfig));
-        log?.warn(`Elasticsearch health check failed: ${message}`);
-        return {
-          healthy: false,
-          message,
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
+      return measuredHealthCheck(async () => {
+        try {
+          // The client owns the timeout/abort (it rejects with a clear "timed out"
+          // message at 5000ms), so awaiting it directly avoids the orphaned-promise
+          // / unhandled-rejection hazard of racing it against an outer setTimeout.
+          await getOrCreateConnection().ping(5000);
+          return { healthy: true };
+        } catch (err) {
+          // Returned (not rethrown) so the scrubbed message — never the raw
+          // error, which can embed credentials — is what surfaces.
+          const message = scrubElasticsearchError(err, collectConfigSecrets(staticConfig));
+          log?.warn(`Elasticsearch health check failed: ${message}`);
+          return { healthy: false, message };
+        }
+      });
     },
 
     async teardown(): Promise<void> {

@@ -192,6 +192,21 @@ ATLAS_DEMO_DATA=true
 
 ---
 
+## Knowledge Base
+
+Caps and cadence for hosted [Knowledge Base collections](/guides/knowledge-base). These are **platform-scoped settings-registry knobs** — a platform admin can change them in Admin → Settings without a redeploy; the env var form below is honored on self-hosted deployments (precedence: settings registry > env > default).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS` | `1000` | Maximum number of documents a single knowledge bundle may ingest. Non-positive values fall back to the default |
+| `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` | `1000000` (1 MB) | Maximum decoded size of any single document in a knowledge bundle; oversized documents are rejected per-file (surfaced in the upload result, never silently skipped) |
+| `ATLAS_KNOWLEDGE_INGEST_MAX_BUNDLE_BYTES` | `25000000` (25 MB) | Maximum raw upload size of a knowledge bundle; also reused as the decoded-total cap that aborts a decompression bomb mid-inflate |
+| `ATLAS_KNOWLEDGE_TOC_MAX_BYTES` | `12000` (≈3k tokens) | Maximum size of the Knowledge Base collection table-of-contents injected into the agent's system prompt. Collections beyond the cap are omitted from the prompt but remain browsable via the explore tool. Non-positive values fall back to the default |
+| `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` | `24` | How often bundle-sync collections pull their endpoint (default nightly). **Read once at scheduler start — requires a restart to apply.** Non-positive values fall back to the default |
+| `ATLAS_KNOWLEDGE_SYNC_FETCH_TIMEOUT_SECONDS` | `60` | Per-sync time budget for downloading a collection's bundle endpoint, bounding the whole fetch including redirects and body streaming |
+
+---
+
 ## Security
 
 Query safety and SQL validation settings. See [SQL Validation Pipeline](/security/sql-validation) for how these are enforced.

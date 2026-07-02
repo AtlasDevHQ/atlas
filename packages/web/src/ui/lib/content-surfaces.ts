@@ -18,6 +18,7 @@
  */
 
 import { BookText, Database, FileText, Layers, Lightbulb, type LucideIcon } from "lucide-react";
+import { totalDraftCount } from "@/ui/lib/draft-counts";
 import type { ModeDraftCounts, ModeDraftActivity } from "@useatlas/types/mode";
 
 export interface ContentSurfaceDescriptor {
@@ -111,12 +112,20 @@ export function contentSurface(key: string): ContentSurfaceDescriptor {
   return found;
 }
 
-/** Total drafts across every display surface. */
+/**
+ * Total drafts across every display surface — delegates to the NaN-safe
+ * `totalDraftCount` (#4229): during a web-before-API deploy-overlap window an
+ * older API omits a newer segment, and an unguarded per-field sum would poison
+ * the total to NaN ("NaN pending" badge).
+ */
 export function totalDrafts(counts: ModeDraftCounts): number {
-  return CONTENT_SURFACES.reduce(
-    (sum, s) => sum + s.countKeys.reduce((a, k) => a + counts[k], 0),
-    0,
-  );
+  return totalDraftCount(counts);
+}
+
+/** A single wire segment's count, guarded the same way (absent/garbage → 0). */
+function countOf(counts: ModeDraftCounts, key: keyof ModeDraftCounts): number {
+  const v = counts[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
 }
 
 /** One non-zero display surface, with its folded count + freshest activity. */
@@ -141,7 +150,7 @@ export function draftSurfaceSegments(
 ): DraftSurfaceSegment[] {
   const out: DraftSurfaceSegment[] = [];
   for (const surface of CONTENT_SURFACES) {
-    const count = surface.countKeys.reduce((a, k) => a + counts[k], 0);
+    const count = surface.countKeys.reduce((a, k) => a + countOf(counts, k), 0);
     if (count === 0) continue;
     out.push({
       key: surface.key,

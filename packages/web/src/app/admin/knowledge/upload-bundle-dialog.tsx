@@ -31,6 +31,19 @@ import type { KnowledgeIngestSummary } from "@/ui/lib/types";
 
 const ACCEPT = ".tar,.tar.gz,.tgz,.zip,application/zip,application/x-tar,application/gzip";
 
+/**
+ * What the summary panel renders: a successful ingest's counts, or a
+ * rejected-files-only view synthesized from a whole-bundle 400 (`documents`
+ * null). A dedicated view type — not `KnowledgeIngestSummary` — so the error
+ * branch never has to fabricate wire fields (a made-up `format` would leak
+ * into any future panel change).
+ */
+interface IngestSummaryView {
+  readonly documents: KnowledgeIngestSummary["documents"] | null;
+  readonly rejected: ReadonlyArray<{ path: string; reason: string }>;
+  readonly skippedNonMarkdown: number;
+}
+
 export function UploadBundleDialog({
   collectionSlug,
   open,
@@ -46,7 +59,7 @@ export function UploadBundleDialog({
   const [publish, setPublish] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [summary, setSummary] = useState<IngestPanelData | null>(null);
+  const [summary, setSummary] = useState<IngestSummaryView | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -93,7 +106,7 @@ export function UploadBundleDialog({
         // ingested), so the panel gets only the rejection list — never a
         // fabricated wire summary.
         if (b.rejected && b.rejected.length > 0) {
-          setSummary({ documents: null, rejected: b.rejected });
+          setSummary({ documents: null, rejected: b.rejected, skippedNonMarkdown: 0 });
         }
         setError(apiErrorFromBody(json, res.status, "Ingest failed"));
         return;
@@ -105,7 +118,11 @@ export function UploadBundleDialog({
         return;
       }
       const data: KnowledgeIngestSummary = parsed.data;
-      setSummary({ documents: data.documents, rejected: data.rejected });
+      setSummary({
+        documents: data.documents,
+        rejected: data.rejected,
+        skippedNonMarkdown: data.skippedNonMarkdown,
+      });
       const { created, updated, demoted } = data.documents;
       toast.success(
         data.published
@@ -194,17 +211,8 @@ export function UploadBundleDialog({
   );
 }
 
-/** What the post-ingest panel actually renders: counts when an ingest ran
- *  (null on a whole-bundle rejection) plus per-file rejections. Deliberately
- *  NOT the wire `KnowledgeIngestSummary` — the error path has no real
- *  `format`/`collection` to report and must not fabricate them. */
-interface IngestPanelData {
-  readonly documents: KnowledgeIngestSummary["documents"] | null;
-  readonly rejected: ReadonlyArray<{ path: string; reason: string }>;
-}
-
 /** Post-ingest summary — document counts plus per-file rejections (AC #2). */
-function IngestSummaryPanel({ summary }: { summary: IngestPanelData }) {
+function IngestSummaryPanel({ summary }: { summary: IngestSummaryView }) {
   return (
     <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
       {summary.documents && summary.documents.total > 0 ? (
@@ -216,6 +224,13 @@ function IngestSummaryPanel({ summary }: { summary: IngestPanelData }) {
             {summary.documents.demoted > 0 ? ` · ${summary.documents.demoted} demoted` : ""}
           </span>
         </div>
+      ) : null}
+      {summary.skippedNonMarkdown > 0 ? (
+        <p className="text-xs text-muted-foreground">
+          {summary.skippedNonMarkdown} non-markdown file
+          {summary.skippedNonMarkdown === 1 ? "" : "s"} skipped — only <code>.md</code> documents
+          ingest.
+        </p>
       ) : null}
       {summary.rejected.length > 0 ? (
         <div className="space-y-1">

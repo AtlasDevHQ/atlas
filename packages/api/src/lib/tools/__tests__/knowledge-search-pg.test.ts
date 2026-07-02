@@ -196,6 +196,74 @@ describeIfPg("searchKnowledge against the live schema", () => {
     expect(res.results[1].path).toBe("runbooks/eu.md");
   }, PG_TEST_TIMEOUT_MS);
 
+  it("a draft neighbor never leaks into published-mode expansion; developer mode surfaces it", async () => {
+    // The invariant the module header promises (search-knowledge.ts): the
+    // status clause must gate the NEIGHBOR arm of the graph expansion, not
+    // just the seed search. A published doc links to one draft and one
+    // published neighbor — published mode must expand to the published
+    // neighbor only.
+    const docs = docsFrom({
+      "gate/linker.md":
+        "---\ntype: Runbook\ntitle: Gate Linker\n---\n# Gate Linker\n\nunique-gate-token links [draft](./hidden.md) and [open](./open.md).",
+      "gate/hidden.md":
+        "---\ntype: Document\ntitle: Hidden Draft\n---\n# Hidden Draft\n\ndraft-only gated content",
+      "gate/open.md": "---\ntype: Document\ntitle: Open\n---\n# Open\n\npublished neighbor body",
+    });
+    await ingestBundleIntoCollection({
+      client, workspaceId: ws, collectionId: "gate", source: "upload", docs,
+    });
+    await publish("gate", "gate/linker.md");
+    await publish("gate", "gate/open.md");
+    // gate/hidden.md stays draft.
+
+    const pub = await searchKnowledgeCore({
+      workspaceId: ws,
+      mode: "published",
+      filters: { query: "unique-gate-token", limit: 10, expand: true },
+      exec,
+    });
+    expect(pub.results.map((r) => r.path)).toEqual(["gate/linker.md"]);
+    // Expansion RAN (the published neighbor came back) — the draft one was
+    // excluded by status, not by the expansion failing.
+    expect(pub.neighbors.map((n) => n.path)).toContain("gate/open.md");
+    expect(pub.neighbors.map((n) => n.path)).not.toContain("gate/hidden.md");
+
+    const dev = await searchKnowledgeCore({
+      workspaceId: ws,
+      mode: "developer",
+      filters: { query: "unique-gate-token", limit: 10, expand: true },
+      exec,
+    });
+    const hidden = dev.neighbors.find((n) => n.path === "gate/hidden.md");
+    expect(hidden).toBeDefined();
+    expect(hidden!.provenance.status).toBe("draft");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("an archived document is invisible to search AND expansion in both modes", async () => {
+    // Archive the published neighbor seeded by the test above.
+    await pool.query(
+      `UPDATE knowledge_documents SET status = 'archived'
+        WHERE workspace_id = $1 AND collection_id = 'gate' AND path = 'gate/open.md'`,
+      [ws],
+    );
+    for (const mode of ["published", "developer"] as const) {
+      const expanded = await searchKnowledgeCore({
+        workspaceId: ws,
+        mode,
+        filters: { query: "unique-gate-token", limit: 10, expand: true },
+        exec,
+      });
+      expect(expanded.neighbors.map((n) => n.path)).not.toContain("gate/open.md");
+      const direct = await searchKnowledgeCore({
+        workspaceId: ws,
+        mode,
+        filters: { query: "published neighbor body", limit: 10, expand: false },
+        exec,
+      });
+      expect(direct.results.map((r) => r.path)).not.toContain("gate/open.md");
+    }
+  }, PG_TEST_TIMEOUT_MS);
+
   it("dedupes a neighbor linked from two seeds into one row with merged `via`", async () => {
     // A separate collection where two published seeds both link to the same doc.
     const docs = docsFrom({

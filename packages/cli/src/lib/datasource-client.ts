@@ -433,16 +433,28 @@ export async function publishDatasources(
   // publish (or a 200 from a misrouted proxy / captive portal) as a clean
   // "Nothing to publish" no-op — the worst failure mode for a mutation command.
   // Surface it as a typed error instead, like the sibling `atlas sql` /
-  // `atlas metric` clients. VALIDATE only: return the RAW body (NOT
-  // `parsed.data`, which would strip the REST-only `archived` / `warnings`
-  // blocks `--json` surfaces); the command layer reads only the validated core.
-  if (!PublishResultSchema.safeParse(raw).success) {
+  // `atlas metric` clients.
+  const parsed = PublishResultSchema.safeParse(raw);
+  if (!parsed.success) {
     throw new DatasourceCliError(
       "request_failed",
       "The Atlas API returned an unexpected response shape for publish datasources. Update the CLI, or check the server logs.",
     );
   }
-  return raw as PublishResult;
+  // Overlay the VALIDATED core on the raw body: the schema's defaults fill
+  // fields an older API omits (e.g. `promoted.knowledgeDocuments`, v0.0.41),
+  // while everything `parsed.data` alone would strip still passes through for
+  // `--json` consumers — the top-level REST-only `archived` / `warnings`
+  // blocks via the raw spread, and any NESTED extras a newer API adds inside
+  // `promoted` / `deleted` via the per-block deep merge (validated keys win).
+  const rawRec = raw as Record<string, unknown>;
+  const rawBlock = (v: unknown): Record<string, unknown> =>
+    v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  return {
+    ...rawRec,
+    promoted: { ...rawBlock(rawRec.promoted), ...parsed.data.promoted },
+    deleted: { ...rawBlock(rawRec.deleted), ...parsed.data.deleted },
+  } as PublishResult;
 }
 
 // ---------------------------------------------------------------------------

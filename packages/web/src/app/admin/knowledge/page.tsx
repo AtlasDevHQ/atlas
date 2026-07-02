@@ -178,7 +178,7 @@ export default function KnowledgePage() {
           void refetch();
           if (source === "bundle-sync") {
             // Initial full ingest: kick the first pull right away rather than
-            // waiting for the nightly schedule.
+            // waiting for the scheduled sync (daily by default).
             void handleSyncNow(slug);
           } else {
             setUploadTarget(slug);
@@ -236,7 +236,9 @@ export default function KnowledgePage() {
               {uninstallTarget
                 ? describeArchive(uninstallTarget)
                 : ""}{" "}
-              Documents are archived, never deleted — re-installing does not resurrect them.
+              {uninstallTarget?.source === "bundle-sync"
+                ? "Documents are archived, never deleted — but re-installing this synced collection pulls its endpoint again, which restores them as drafts for re-review."
+                : "Documents are archived, never deleted — re-installing alone does not resurrect them; only re-uploading a bundle with the same paths brings them back, as drafts."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -13,7 +13,7 @@ let CYCLE_CALLS = 0;
 mock.module("@atlas/api/lib/knowledge/sync", () => ({
   runKnowledgeSyncCycle: async () => {
     CYCLE_CALLS++;
-    return { inspected: 0, succeeded: 0, failed: 0 };
+    return { inspected: 0, succeeded: 0, failed: 0, queryFailed: false };
   },
   syncCollection: async () => {
     throw new Error("not used in this test");
@@ -21,6 +21,8 @@ mock.module("@atlas/api/lib/knowledge/sync", () => ({
   getKnowledgeSyncFetchTimeoutMs: () => 60_000,
   DEFAULT_SYNC_FETCH_TIMEOUT_SECONDS: 60,
   SYNC_STATE_UPSERT_SQL: "",
+  SYNC_INSTALL_RECHECK_SQL: "",
+  SYNC_CYCLE_INSTALLS_SQL: "",
 }));
 
 // The interval getter reads the settings registry; pin it via the env tier
@@ -114,7 +116,7 @@ describe("lifecycle", () => {
 describe("triggerKnowledgeBundleSyncCycle", () => {
   it("runs one cycle and returns its structured result", async () => {
     const result = await triggerKnowledgeBundleSyncCycle();
-    expect(result).toEqual({ inspected: 0, succeeded: 0, failed: 0 });
+    expect(result).toEqual({ inspected: 0, succeeded: 0, failed: 0, queryFailed: false });
     expect(CYCLE_CALLS).toBe(1);
   });
 });

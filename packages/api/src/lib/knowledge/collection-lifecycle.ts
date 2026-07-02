@@ -17,6 +17,19 @@ import { invalidateKnowledgeMirror } from "./mirror-invalidation";
 const log = createLogger("knowledge-lifecycle");
 
 /**
+ * The in-transaction install re-check backing the uninstall × in-flight-ingest
+ * race guard (`FOR UPDATE` serializes against the uninstall's UPDATE on the
+ * same row). Run by `ingestBundle` at the top of its transaction — for BOTH
+ * write paths: a sync racing an uninstall must not resurrect just-archived
+ * documents (#4229), and an upload racing an uninstall has the same hazard.
+ * Exported for the real-Postgres test.
+ */
+export const INSTALL_RECHECK_SQL = `SELECT status
+         FROM workspace_plugins
+        WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'knowledge'
+        FOR UPDATE`;
+
+/**
  * Archive every non-archived doc in a collection whose path is NOT in `$3`.
  * `$3 = '{}'` archives the whole collection (uninstall); the sync path passes
  * the fetched bundle's present set (parsed docs PLUS per-file rejections — a
@@ -40,7 +53,7 @@ export async function archiveCollectionDocuments(
   collectionId: string,
   opts?: { exceptPaths?: readonly string[] },
 ): Promise<number> {
-  const rows = await client.query<{ id: string }>(ARCHIVE_COLLECTION_DOCS_SQL, [
+  const rows = await client.query(ARCHIVE_COLLECTION_DOCS_SQL, [
     workspaceId,
     collectionId,
     [...(opts?.exceptPaths ?? [])],
@@ -70,13 +83,7 @@ export async function uninstallCollection(params: {
         WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'knowledge'`,
       [workspaceId, collectionSlug],
     );
-    // `InternalPoolClient.query` is non-generic, so it can't structurally
-    // satisfy `IngestClient`'s generic `query<T>` without a cast.
-    const archived = await archiveCollectionDocuments(
-      client as unknown as IngestClient,
-      workspaceId,
-      collectionSlug,
-    );
+    const archived = await archiveCollectionDocuments(client, workspaceId, collectionSlug);
     await client.query(
       `DELETE FROM knowledge_sync_credentials
         WHERE workspace_id = $1 AND collection_id = $2`,

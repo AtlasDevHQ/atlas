@@ -921,13 +921,13 @@ export const BuiltinDatasourceCatalogSeedLive: Layer.Layer<
 
 /**
  * Discriminated outcome of the boot-time built-in Knowledge Base catalog
- * seed (the single `okf-upload` row, ADR-0028 §5). Mirrors
- * {@link BuiltinDatasourceCatalogSeedOutcome}.
+ * seed (the `okf-upload` #4206 and `bundle-sync` #4211 rows, ADR-0028 §5).
+ * Mirrors {@link BuiltinDatasourceCatalogSeedOutcome}.
  *
  * - `skipped-gate`  — InternalDB or Migration upstream not satisfied
- * - `seeded`        — seed ran (`inserted` false on re-boot with the row present)
+ * - `seeded`        — seed ran (`inserted` false on re-boot with both rows present)
  * - `error`         — the boot wrapper or its dynamic import threw;
- *                     the pre-existing row answers admin-UI reads
+ *                     pre-existing rows answer admin-UI reads
  */
 export type BuiltinKnowledgeCatalogSeedOutcome =
   | "skipped-gate"
@@ -935,7 +935,10 @@ export type BuiltinKnowledgeCatalogSeedOutcome =
   | "error";
 
 export interface BuiltinKnowledgeCatalogSeedShape {
-  /** True when the `okf-upload` row was newly inserted this boot. */
+  /**
+   * True when ANY built-in knowledge catalog row (`okf-upload`,
+   * `bundle-sync`) was newly inserted this boot.
+   */
   readonly inserted: boolean;
   readonly outcome: BuiltinKnowledgeCatalogSeedOutcome;
   /** Scrubbed error message when `outcome === "error"`. */
@@ -947,14 +950,15 @@ export class BuiltinKnowledgeCatalogSeed extends Context.Tag(
 )<BuiltinKnowledgeCatalogSeed, BuiltinKnowledgeCatalogSeedShape>() {}
 
 /**
- * Idempotent boot-time seed of the built-in `okf-upload` Knowledge Base
- * catalog row (#4206, ADR-0028). Code-seeded through the operator-curated
- * seam and re-asserted on every boot via `ON CONFLICT DO NOTHING`.
+ * Idempotent boot-time seed of the built-in Knowledge Base catalog rows —
+ * `okf-upload` (#4206) and `bundle-sync` (#4211), ADR-0028. Code-seeded
+ * through the operator-curated seam and re-asserted on every boot via
+ * `ON CONFLICT DO NOTHING`.
  *
  * Depends on `Migration` so migration 0161's widened pillar CHECK (which
- * admits `pillar = 'knowledge'`) is guaranteed before the INSERT; depends on
+ * admits `pillar = 'knowledge'`) is guaranteed before the INSERTs; depends on
  * `InternalDB` for the pool. Non-fatal: the boot wrapper swallows errors and
- * logs at error so a failed seed leaves the pre-existing row authoritative.
+ * logs at error so a failed seed leaves the pre-existing rows authoritative.
  */
 export const BuiltinKnowledgeCatalogSeedLive: Layer.Layer<
   BuiltinKnowledgeCatalogSeed,
@@ -3199,6 +3203,26 @@ export function makeSchedulerLive(
             }),
           );
 
+          // Stop the knowledge bundle sync scheduler (#4211) symmetrically —
+          // same setInterval + `unref()` lifecycle as the siblings above.
+          yield* Effect.tryPromise({
+            try: async () => {
+              const { stopKnowledgeBundleSyncScheduler } = await import(
+                "@atlas/api/lib/scheduler/knowledge-bundle-sync"
+              );
+              stopKnowledgeBundleSyncScheduler();
+            },
+            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+          }).pipe(
+            Effect.catchAll((err) => {
+              log.warn(
+                { err: errorMessage(err) },
+                "Failed to stop knowledge bundle sync scheduler",
+              );
+              return Effect.void;
+            }),
+          );
+
           log.info("Schedulers shut down via Effect scope");
         }),
       );
@@ -3426,11 +3450,12 @@ export function buildAppLayer(
     Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
   );
 
-  // BuiltinKnowledgeCatalogSeedLive (#4206, ADR-0028) — the built-in
-  // `okf-upload` Knowledge Base row, code-seeded through the operator-curated
-  // seam. Depends on Migration so 0161's widened pillar CHECK (admitting
-  // `pillar='knowledge'`) is guaranteed before the INSERT. Independent peer of
-  // the other seeds; disjoint slug so ordering doesn't matter.
+  // BuiltinKnowledgeCatalogSeedLive (#4206/#4211, ADR-0028) — the built-in
+  // Knowledge Base rows (`okf-upload`, `bundle-sync`), code-seeded through the
+  // operator-curated seam. Depends on Migration so 0161's widened pillar CHECK
+  // (admitting `pillar='knowledge'`) is guaranteed before the INSERTs.
+  // Independent peer of the other seeds; disjoint slugs so ordering doesn't
+  // matter.
   const builtinKnowledgeCatalogSeedLayer = BuiltinKnowledgeCatalogSeedLive.pipe(
     Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
   );

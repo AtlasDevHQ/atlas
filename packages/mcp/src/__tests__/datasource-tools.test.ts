@@ -868,7 +868,13 @@ describe("publish_datasources (#4126)", () => {
     const client = await createTestClient();
     const res = await client.callTool({ name: "publish_datasources", arguments: {} });
     const body = JSON.parse(getContentText(res.content));
-    expect(body.promoted).toEqual({ connections: 0, entities: 0, prompts: 0, starterPrompts: 0, knowledgeDocuments: 0 });
+    expect(body.promoted).toEqual({
+      connections: 0,
+      entities: 0,
+      prompts: 0,
+      starterPrompts: 0,
+      knowledgeDocuments: 0,
+    });
     expect(body.deleted).toEqual({ entities: 0 });
   });
 

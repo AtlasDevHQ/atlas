@@ -25,9 +25,13 @@ const log = createLogger("knowledge-queries");
 /** Content-mode segment key for `knowledge_documents` (see content-mode/tables.ts). */
 export const KNOWLEDGE_TABLE_KEY = "knowledgeDocuments";
 
-/** The content-mode lifecycle states a knowledge document can carry (DB CHECK). */
-export const KNOWLEDGE_DOCUMENT_STATUSES = ["draft", "published", "archived"] as const;
-export type KnowledgeDocumentStatus = (typeof KNOWLEDGE_DOCUMENT_STATUSES)[number];
+// The status vocabulary's single home is `./status` (#4229) — re-exported here
+// so read-side consumers get row types and status types from one import.
+export {
+  KNOWLEDGE_DOCUMENT_STATUSES,
+  narrowKnowledgeStatus,
+  type KnowledgeDocumentStatus,
+} from "./status";
 
 // ---------------------------------------------------------------------------
 // Row shapes

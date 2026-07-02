@@ -28,12 +28,18 @@ let archiveRanInTx = false;
 let archivedPathsParam: unknown = null;
 let nextId = 1;
 
+// What the seam's in-transaction install re-check sees. `null` = row gone.
+let TX_INSTALL_STATUS: string | null = "published";
+
 function fakeTxClient() {
   return {
     async query(sql: string, params: unknown[] = []): Promise<{ rows: Record<string, unknown>[] }> {
       if (sql === "BEGIN") {
         txActive = true;
         return { rows: [] };
+      }
+      if (sql.includes("SELECT status") && sql.includes("FROM workspace_plugins")) {
+        return { rows: TX_INSTALL_STATUS === null ? [] : [{ status: TX_INSTALL_STATUS }] };
       }
       if (sql === "COMMIT" || sql === "ROLLBACK") {
         txActive = false;
@@ -134,6 +140,7 @@ function run(
 }
 
 beforeEach(() => {
+  TX_INSTALL_STATUS = "published";
   MAX_DOCS = 100;
   MAX_DOC_BYTES = 100_000;
   MAX_BUNDLE_BYTES = 200_000;
@@ -229,6 +236,15 @@ describe("the committed write", () => {
     ).rejects.toThrow(/ADR-0028/);
     expect(publishRan).toBe(false);
     expect(store.size).toBe(0);
+  });
+
+  it("aborts with install_gone (ROLLBACK, no writes, no invalidation) when the install vanished mid-ingest", async () => {
+    TX_INSTALL_STATUS = "archived";
+    const outcome = await run(zipSync({ "a.md": strToU8("# A") }));
+    expect(outcome.kind).toBe("install_gone");
+    expect(store.size).toBe(0);
+    expect(invalidations).toEqual([]);
+    expect(txActive).toBe(false); // ROLLBACK ran — the tx never committed a write
   });
 
   it("an all-unchanged ingest skips mirror invalidation (no churn, no publish)", async () => {

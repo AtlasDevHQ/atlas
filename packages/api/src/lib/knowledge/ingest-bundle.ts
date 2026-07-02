@@ -37,7 +37,6 @@ import {
 import { parseLenientBundle } from "./parse-lenient";
 import {
   ingestBundleIntoCollection,
-  type IngestClient,
   type IngestReport,
   type IngestSource,
 } from "./ingest";
@@ -46,7 +45,7 @@ import {
   getIngestMaxDocBytes,
   getIngestMaxDocs,
 } from "./ingest-limits";
-import { archiveCollectionDocuments } from "./collection-lifecycle";
+import { archiveCollectionDocuments, INSTALL_RECHECK_SQL } from "./collection-lifecycle";
 import { invalidateKnowledgeMirror } from "./mirror-invalidation";
 
 const log = createLogger("knowledge-ingest-bundle");
@@ -78,8 +77,22 @@ export interface IngestBundleParams {
   readonly archiveAbsent?: boolean;
 }
 
+/**
+ * The install row vanished (uninstalled/archived) between the caller's
+ * pre-check and the write phase — the uninstall × in-flight-ingest race
+ * (#4229). The transaction rolled back before any write; `rejected` carries
+ * the parse-stage per-file errors observed before the abort.
+ */
+class InstallGoneError extends Error {
+  constructor() {
+    super("The collection was uninstalled while the ingest was running — no changes were applied.");
+    this.name = "InstallGoneError";
+  }
+}
+
 /** A failed ingest — each `kind` is one caller-facing disposition. */
 export type IngestBundleFailure =
+  | { readonly kind: "install_gone"; readonly rejected: readonly BundleEntryError[] }
   | { readonly kind: "empty_bundle" }
   | { readonly kind: "bundle_too_large"; readonly bytes: number; readonly maxBundleBytes: number }
   | { readonly kind: "invalid_bundle"; readonly message: string }
@@ -101,6 +114,8 @@ export type IngestBundleOutcome =
       readonly published: boolean;
       /** Per-file rejections from extraction + lenient parsing — never silently dropped. */
       readonly rejected: readonly BundleEntryError[];
+      /** Non-markdown / asset files skipped by design (only `.md` ingests). */
+      readonly skippedNonMarkdown: number;
     }
   | IngestBundleFailure;
 
@@ -158,38 +173,55 @@ export async function ingestBundle(params: IngestBundleParams): Promise<IngestBu
 
   // ── Ingest (+ optional archive-absent + optional publish) in ONE tx ───────
   const presentPaths = [...parsed.docs.map((d) => d.path), ...rejected.map((r) => r.path)];
-  const { report, archivedAbsent } = await withInternalTransaction(
-    "knowledge-ingest-bundle",
-    async (client) => {
-      // `InternalPoolClient.query` is non-generic, so it can't structurally
-      // satisfy `IngestClient`'s generic `query<T>` without a cast — the same
-      // unchecked-DB-row seam the `PoolClient` cast below uses.
-      const ingestClient = client as unknown as IngestClient;
-      const ingestReport = await ingestBundleIntoCollection({
-        client: ingestClient,
-        workspaceId,
-        collectionId,
-        source,
-        docs: parsed.docs,
-      });
-      const archivedCount = archiveAbsent
-        ? await archiveCollectionDocuments(ingestClient, workspaceId, collectionId, {
-            exceptPaths: presentPaths,
-          })
-        : null;
-      if (publish) {
-        // Promote through the SAME content-mode phases the atomic publish
-        // endpoint uses, inside this transaction. NOTE: `runPublishPhases` is
-        // workspace-wide (ADR-0028 §4 "runs that same endpoint") — it promotes
-        // EVERY pending draft in the workspace across all content-mode tables,
-        // not just this bundle's docs, exactly as clicking Publish would.
-        await Effect.runPromise(
-          contentModeRegistry.runPublishPhases(client as unknown as PoolClient, workspaceId),
-        );
-      }
-      return { report: ingestReport, archivedAbsent: archivedCount };
-    },
-  );
+  let report: IngestReport;
+  let archivedAbsent: number | null;
+  try {
+    ({ report, archivedAbsent } = await withInternalTransaction(
+      "knowledge-ingest-bundle",
+      async (client) => {
+        // Re-check the install INSIDE the transaction (`FOR UPDATE`, so this
+        // serializes against a concurrent uninstall's row UPDATE): the caller
+        // checked it before reading/fetching the bundle, but an uninstall
+        // landing during that window would otherwise let this ingest resurrect
+        // just-archived documents to `draft` (and, for sync, re-create the
+        // bookkeeping the uninstall just deleted). Throwing aborts the
+        // transaction — no write survives.
+        const recheck = await client.query(INSTALL_RECHECK_SQL, [workspaceId, collectionId]);
+        const liveStatus = recheck.rows[0]?.status;
+        if (liveStatus === undefined || liveStatus === "archived") {
+          throw new InstallGoneError();
+        }
+        const ingestReport = await ingestBundleIntoCollection({
+          client,
+          workspaceId,
+          collectionId,
+          source,
+          docs: parsed.docs,
+        });
+        const archivedCount = archiveAbsent
+          ? await archiveCollectionDocuments(client, workspaceId, collectionId, {
+              exceptPaths: presentPaths,
+            })
+          : null;
+        if (publish) {
+          // Promote through the SAME content-mode phases the atomic publish
+          // endpoint uses, inside this transaction. NOTE: `runPublishPhases` is
+          // workspace-wide (ADR-0028 §4 "runs that same endpoint") — it promotes
+          // EVERY pending draft in the workspace across all content-mode tables,
+          // not just this bundle's docs, exactly as clicking Publish would.
+          await Effect.runPromise(
+            contentModeRegistry.runPublishPhases(client as unknown as PoolClient, workspaceId),
+          );
+        }
+        return { report: ingestReport, archivedAbsent: archivedCount };
+      },
+    ));
+  } catch (err) {
+    if (err instanceof InstallGoneError) {
+      return { kind: "install_gone", rejected };
+    }
+    throw err;
+  }
 
   // Invalidate exactly when the committed write changed something visible:
   // draft churn surfaces in developer mode, a publish surfaces in published
@@ -214,5 +246,6 @@ export async function ingestBundle(params: IngestBundleParams): Promise<IngestBu
     archivedAbsent,
     published: publish,
     rejected,
+    skippedNonMarkdown: parsed.skippedNonMarkdown,
   };
 }

@@ -65,7 +65,13 @@ describe("RunMetricRestResponseSchema (#4111)", () => {
 
 describe("PublishResultSchema (#4156)", () => {
   const ok = {
-    promoted: { connections: 1, entities: 12, prompts: 0, starterPrompts: 2, knowledgeDocuments: 0 },
+    promoted: {
+      connections: 1,
+      entities: 12,
+      prompts: 0,
+      starterPrompts: 2,
+      knowledgeDocuments: 4,
+    },
     deleted: { entities: 3 },
   };
 
@@ -73,6 +79,15 @@ describe("PublishResultSchema (#4156)", () => {
     const r = PublishResultSchema.safeParse(ok);
     expect(r.success).toBe(true);
     if (r.success) expect(r.data).toEqual(ok);
+  });
+
+  test("defaults knowledgeDocuments to 0 for an older API's response (deploy overlap)", () => {
+    const { knowledgeDocuments: _kd, ...olderPromoted } = ok.promoted;
+    const r = PublishResultSchema.safeParse({ ...ok, promoted: olderPromoted });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.promoted).toEqual({ ...olderPromoted, knowledgeDocuments: 0 });
+    }
   });
 
   test("strips REST-only extras (archived / warnings) to the shared core", () => {

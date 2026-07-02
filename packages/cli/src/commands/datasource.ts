@@ -597,6 +597,7 @@ async function runPublish(
       entities: typeof promoted.entities === "number" ? promoted.entities : 0,
       prompts: typeof promoted.prompts === "number" ? promoted.prompts : 0,
       starterPrompts: typeof promoted.starterPrompts === "number" ? promoted.starterPrompts : 0,
+      // v0.0.41 surface; an older API omits it (the typeof guard reads 0).
       knowledgeDocuments:
         typeof promoted.knowledgeDocuments === "number" ? promoted.knowledgeDocuments : 0,
     };
@@ -622,8 +623,8 @@ async function runPublish(
         `Published ${counts.connections} datasource${counts.connections === 1 ? "" : "s"}, ` +
           `${counts.entities} entit${counts.entities === 1 ? "y" : "ies"}, ${counts.prompts} prompt ` +
           `collection${counts.prompts === 1 ? "" : "s"}, ${counts.starterPrompts} starter ` +
-          `prompt${counts.starterPrompts === 1 ? "" : "s"}, and ${counts.knowledgeDocuments} ` +
-          `knowledge document${counts.knowledgeDocuments === 1 ? "" : "s"}.`,
+          `prompt${counts.starterPrompts === 1 ? "" : "s"}, and ${counts.knowledgeDocuments} knowledge ` +
+          `document${counts.knowledgeDocuments === 1 ? "" : "s"}.`,
       );
     }
     if (deletedEntities > 0) {

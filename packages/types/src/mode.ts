@@ -91,7 +91,7 @@ export interface PublishPromotedCounts {
   readonly prompts: number;
   /** Starter-prompt suggestions promoted. */
   readonly starterPrompts: number;
-  /** Hosted-OKF knowledge documents promoted (#4206 / ADR-0028). */
+  /** Hosted-OKF knowledge documents promoted (#4206, ADR-0028). */
   readonly knowledgeDocuments: number;
 }
 

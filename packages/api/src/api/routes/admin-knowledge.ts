@@ -40,6 +40,7 @@ import { internalQuery } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ingestBundle } from "@atlas/api/lib/knowledge/ingest-bundle";
 import { uninstallCollection } from "@atlas/api/lib/knowledge/collection-lifecycle";
+import { readBodyWithCap, BodyCapExceededError } from "@atlas/api/lib/knowledge/read-body-cap";
 import { getIngestMaxBundleBytes } from "@atlas/api/lib/knowledge/ingest-limits";
 import {
   buildCollectionDocumentsQuery,
@@ -223,6 +224,7 @@ const IngestResponseSchema = z.object({
   linksWritten: z.number().int().nonnegative(),
   published: z.boolean(),
   rejected: z.array(RejectedFileSchema),
+  skippedNonMarkdown: z.number().int().nonnegative(),
 });
 
 const ingestRoute = createRoute({
@@ -300,7 +302,7 @@ const syncRoute = createRoute({
   summary: "Sync a bundle-sync collection now",
   description:
     "Manually pull a synced collection's bundle endpoint and apply the diff immediately (the same " +
-    "run the nightly scheduler performs). Changed and new documents land as `draft` for review — " +
+    "run the scheduled sync performs — daily by default, operator-tunable). Changed and new documents land as `draft` for review — " +
     "synced content has no publish shortcut; paths absent from the fetched bundle are archived, " +
     "never hard-deleted. Returns the attempt's outcome; a failed fetch/ingest is reported as " +
     "`status: \"error\"` with an actionable message (also recorded on the collection's sync status).",
@@ -337,7 +339,10 @@ const deleteRoute = createRoute({
   summary: "Uninstall a knowledge collection",
   description:
     "Uninstall a collection: its documents are ARCHIVED (status='archived'), never hard-deleted, and the " +
-    "collection install is archived. A later re-install does not resurrect the archived documents.",
+    "collection install is archived. A later re-install does not by itself resurrect the archived " +
+    "documents — but any ingest that sees an archived path again brings it back as a `draft` for " +
+    "re-review: re-uploading a bundle (upload collections), or the next sync after re-installing a " +
+    "bundle-sync collection (the endpoint is the source of truth for its tree).",
   request: {
     params: z.object({
       collectionSlug: z.string().min(1).openapi({ param: { name: "collectionSlug", in: "path" } }),
@@ -467,7 +472,10 @@ adminKnowledge.openapi(listRoute, async (c) =>
             },
           ];
         }),
-      },
+        // `satisfies` ties the route payload to the published wire type — a
+        // schema/handler rename that drifts from `@useatlas/types` is a compile
+        // error here instead of a runtime web Zod parse failure.
+      } satisfies KnowledgeCollectionListResponse,
       200,
     );
   }),
@@ -505,7 +513,7 @@ adminKnowledge.openapi(documentsRoute, async (c) =>
           status: r.status === "published" ? ("published" as const) : ("draft" as const),
           updatedAt: r.updated_at,
         })),
-      },
+      } satisfies KnowledgeDocumentListResponse,
       200,
     );
   }),
@@ -542,10 +550,13 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
       );
     }
 
-    // Reject on the declared Content-Length BEFORE buffering the body, so an
-    // obviously-oversized upload never fully materializes in memory. The
-    // client-supplied header is advisory — the authoritative size/decompression
-    // caps live inside `ingestBundle` (the shared orchestration seam).
+    // Read the raw bundle bytes. Reject on the declared Content-Length BEFORE
+    // reading the body, so an obviously-oversized upload fails immediately; the
+    // client-supplied header is advisory, so the body is then STREAMED with a
+    // cumulative cap (the same `readBodyWithCap` guard the sync fetch uses) — a
+    // chunked or lying upload aborts the moment it crosses the limit instead of
+    // fully materializing in memory first. The remaining caps (decompression
+    // bomb, doc count/bytes) live inside `ingestBundle` (the shared seam).
     const maxBundleBytes = getIngestMaxBundleBytes();
     const declaredLength = Number(c.req.header("content-length"));
     if (Number.isFinite(declaredLength) && declaredLength > maxBundleBytes) {
@@ -558,12 +569,28 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
         400,
       );
     }
-    const bytes = new Uint8Array(await c.req.arrayBuffer());
+    let bytes: Uint8Array;
+    try {
+      bytes = await readBodyWithCap(c.req.raw.body, maxBundleBytes, { requestId });
+    } catch (err) {
+      if (err instanceof BodyCapExceededError) {
+        return c.json(
+          {
+            error: "bundle_too_large",
+            message: `Bundle exceeds the ${maxBundleBytes}-byte limit — upload aborted.`,
+            requestId,
+          },
+          400,
+        );
+      }
+      throw err;
+    }
 
     // The shared seam owns extract → parse → caps → transaction (+ the atomic
     // "upload & publish" promotion, ADR-0028 §4 — upload collections only, the
-    // source gate above) → mirror invalidation. This route is the HTTP
-    // disposition adapter: every failure kind maps to a 400.
+    // source gate above; and the uninstall × in-flight-ingest race guard) →
+    // mirror invalidation. This route is the HTTP disposition adapter: every
+    // failure kind maps to a 4xx.
     const outcome = await ingestBundle({
       workspaceId: orgId,
       collectionId: collectionSlug,
@@ -574,6 +601,15 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
 
     if (outcome.kind !== "ok") {
       switch (outcome.kind) {
+        case "install_gone":
+          // Uninstall × in-flight-upload race: the pre-check above saw a live
+          // collection, an uninstall landed while the body streamed/parsed, and
+          // the seam's in-transaction re-check aborted before any write. Same
+          // disposition as the pre-check: the collection is gone.
+          return c.json(
+            { error: "not_found", message: `No knowledge collection "${collectionSlug}".`, requestId },
+            404,
+          );
         case "empty_bundle":
           return c.json(
             { error: "empty_bundle", message: "The uploaded bundle is empty.", requestId },
@@ -657,7 +693,8 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
         linksWritten: report.linksWritten,
         published: shouldPublish,
         rejected: [...rejected],
-      },
+        skippedNonMarkdown: outcome.skippedNonMarkdown,
+      } satisfies KnowledgeIngestSummary,
       200,
     );
   }),
@@ -729,7 +766,7 @@ adminKnowledge.openapi(syncRoute, async (c) =>
         archivedAbsent: outcome.archivedAbsent,
         linksWritten: outcome.linksWritten,
         rejected: [...outcome.rejected],
-      },
+      } satisfies KnowledgeSyncRunResponse,
       200,
     );
   }),
@@ -767,7 +804,10 @@ adminKnowledge.openapi(deleteRoute, async (c) =>
 
     log.info({ requestId, orgId, collectionSlug, archivedDocuments }, "Knowledge collection uninstalled (archived)");
 
-    return c.json({ archived: true, collection: collectionSlug, archivedDocuments }, 200);
+    return c.json(
+      { archived: true, collection: collectionSlug, archivedDocuments } satisfies KnowledgeUninstallResponse,
+      200,
+    );
   }),
 );
 

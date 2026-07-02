@@ -236,6 +236,33 @@ export async function syncCollection(params: SyncCollectionParams): Promise<Know
 
   await recordSyncState(workspaceId, collectionSlug, outcome);
 
+  // Bust the per-mode knowledge disk mirror (#4208, ADR-0028 §3) whenever a
+  // sync actually changed documents, so the next `explore` call rebuilds the
+  // `knowledge/` subtree from the DB — the same posture as the admin ingest /
+  // uninstall routes. Scheduled syncs have no route hook, so the invalidation
+  // must live here. An all-unchanged sync skips it (no churn).
+  if (
+    attempt.kind === "ok" &&
+    attempt.report.created +
+      attempt.report.updated +
+      attempt.report.demoted +
+      attempt.report.resurrected +
+      attempt.archivedAbsent >
+      0
+  ) {
+    try {
+      // Lazy import (mirrors admin-knowledge.ts) so the scheduler's static
+      // graph doesn't require `semantic/sync` at load time.
+      const { invalidateOrgModeRoots } = await import("@atlas/api/lib/semantic/sync");
+      invalidateOrgModeRoots(workspaceId);
+    } catch (err) {
+      log.warn(
+        { workspaceId, collectionSlug, err: err instanceof Error ? err.message : String(err) },
+        "Failed to invalidate knowledge mirror after sync — the agent may serve a stale knowledge/ subtree until the next rebuild",
+      );
+    }
+  }
+
   if (outcome.status === "success") {
     log.info(
       { workspaceId, collectionSlug, ...outcome.documents, archivedAbsent: outcome.archivedAbsent, rejected: outcome.rejected.length },

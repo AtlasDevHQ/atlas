@@ -464,6 +464,29 @@ adminPublish.openapi(publishRoute, async (c) =>
       );
     }
 
+    // #4208 — bust the per-mode semantic + knowledge disk mirror so the next
+    // `explore` call rebuilds from the just-published DB state. Publish is a pure
+    // status flip (drafts → published), so without this the published-mode mirror
+    // keeps serving pre-publish content (notably newly-published knowledge
+    // collections) until the next entity CRUD or boot. Best-effort + post-commit:
+    // a cache-bust failure must not turn an already-committed publish into a 500.
+    // Same lazy-import posture as the reconcile above (avoid static-graph coupling
+    // that partial-mock admin-route fixtures would break) — though a different
+    // module (`semantic/sync`, not `db/internal`).
+    try {
+      const { invalidateOrgModeRoots } = await import("@atlas/api/lib/semantic/sync");
+      invalidateOrgModeRoots(orgId);
+    } catch (invalidateErr) {
+      log.warn(
+        {
+          requestId,
+          orgId,
+          err: invalidateErr instanceof Error ? invalidateErr.message : String(invalidateErr),
+        },
+        "Publish committed, but invalidating the per-mode mirror failed — the agent may serve stale semantic/knowledge content until the next rebuild",
+      );
+    }
+
     // #3682 — surface any DURABLE partial-profile markers for the org. The
     // publish just promoted these layers to `published`; if one was profiled
     // incompletely (tables failed introspection below the abort threshold), it

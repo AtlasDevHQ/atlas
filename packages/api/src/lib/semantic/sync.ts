@@ -554,6 +554,32 @@ async function _buildOrgModeRoot(
 
   await _cleanStaleFiles(root, expectedFiles);
 
+  // Knowledge Base OKF-native serving (#4208, ADR-0028 §3): mirror hosted
+  // knowledge collections into `{root}/knowledge/` as a sibling of the entity
+  // subtrees, using the SAME mode→status visibility. Folded into this build so
+  // the shared lazy-build + invalidation machinery (`ensureOrgModeSemanticRoot`
+  // / `invalidateOrgModeRoots`) covers knowledge too. Deliberately does NOT feed
+  // the `failed` counter that gates `_modeBuilt`: knowledge is a separate,
+  // descriptive-only subtree, so a knowledge-mirror failure must not force the
+  // ENTITY mode-root to rebuild on every explore call (that would break the
+  // build-coalescing the entity hot path relies on). A transient knowledge
+  // failure is logged and self-heals on the next invalidation (any knowledge
+  // mutation busts the cache). Dynamic import keeps the internal-DB + knowledge
+  // graph out of this module's static load path (same posture as the loaders
+  // above).
+  try {
+    const { mirrorKnowledgeToDisk } = await import("@atlas/api/lib/knowledge/mirror");
+    await mirrorKnowledgeToDisk(orgId, mode, root);
+  } catch (err) {
+    // warn, not error: knowledge is descriptive-only and non-blocking, and this
+    // degradation self-heals on the next invalidation — it must not trip
+    // error-rate alerting the way an entity-serving failure should.
+    log.warn(
+      { orgId, mode, err: errorMessage(err) },
+      "Failed to mirror knowledge collections — entity serving unaffected, knowledge subtree may be stale until the next rebuild",
+    );
+  }
+
   log.info(
     { orgId, mode, entityCount: rows.length, written, failed, path: root },
     "Built mode-specific semantic root",

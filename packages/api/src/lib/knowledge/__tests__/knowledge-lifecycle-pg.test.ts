@@ -24,6 +24,11 @@ import { extractBundle } from "@atlas/api/lib/knowledge/bundle-archive";
 import { parseLenientBundle } from "@atlas/api/lib/knowledge/parse-lenient";
 import { ingestBundleIntoCollection, type IngestClient } from "@atlas/api/lib/knowledge/ingest";
 import { KNOWLEDGE_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/okf-upload-form-handler";
+import {
+  buildCollectionsQuery,
+  rowToDoc,
+  type KnowledgeDocRow,
+} from "@atlas/api/lib/knowledge/mirror";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -312,5 +317,49 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
       [sourceId],
     );
     expect(Number(remaining.rows[0]?.n)).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("the serving read (#4208) applies content-mode: published excludes drafts, developer includes them", async () => {
+    // Fresh collection so this case is independent of the lifecycle above.
+    await pool.query(KNOWLEDGE_INSTALL_UPSERT_SQL, [
+      "row-serving",
+      ws,
+      "catalog:okf-upload",
+      "serving",
+      JSON.stringify({}),
+    ]);
+    await ingestBundleIntoCollection({
+      client,
+      workspaceId: ws,
+      collectionId: "serving",
+      source: "upload",
+      docs: docsFrom({
+        "pub.md": "---\ntype: Runbook\ntitle: Pub\ntags: [ops]\ntimestamp: '2026-05-28T22:49:59+00:00'\n---\n# Pub\n\nbody",
+        "draft.md": "# Draft\n\nbody",
+      }),
+    });
+    // Publish only pub.md.
+    await pool.query(
+      `UPDATE knowledge_documents SET status = 'published'
+        WHERE workspace_id = $1 AND collection_id = 'serving' AND path = 'pub.md'`,
+      [ws],
+    );
+
+    // The REAL serving SELECT (quoted "timestamp" alias, atlas_* columns, status
+    // clause) against the live schema — published mode sees only the published doc.
+    const pub = buildCollectionsQuery(ws, "published", "serving");
+    const pubRows = (await pool.query<KnowledgeDocRow>(pub.text, pub.params)).rows;
+    expect(pubRows.map((r) => r.path)).toEqual(["pub.md"]);
+    // The read→map path produces a conformant MirrorDoc with provenance + timestamp.
+    const doc = rowToDoc(pubRows[0]);
+    expect(doc.type).toBe("Runbook");
+    expect(doc.atlasSource).toBe("upload");
+    expect(doc.atlasIngestedAt).not.toBeNull();
+    expect(doc.timestamp).toBe("2026-05-28T22:49:59.000Z");
+
+    // Developer mode overlays the draft.
+    const dev = buildCollectionsQuery(ws, "developer", "serving");
+    const devRows = (await pool.query<KnowledgeDocRow>(dev.text, dev.params)).rows;
+    expect(devRows.map((r) => r.path).sort()).toEqual(["draft.md", "pub.md"]);
   }, PG_TEST_TIMEOUT_MS);
 });

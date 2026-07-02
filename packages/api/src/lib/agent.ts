@@ -456,6 +456,7 @@ function buildSystemPrompt(
   learnedPatternsSection?: string,
   routingContext?: ScopeRoutingContext,
   boundDashboardContext?: BoundDashboardAgentContext,
+  orgKnowledgeToc?: string,
 ): string {
   const suffix = boundDashboardContext ? BOUND_AGENT_PROMPT_GUIDANCE : SYSTEM_PROMPT_SUFFIX;
   let base = SYSTEM_PROMPT_PREFIX + "\n\n" + registry.describe() + "\n\n" + suffix;
@@ -476,6 +477,14 @@ function buildSystemPrompt(
     if (semanticIndex) {
       base += "\n\n" + semanticIndex;
     }
+  }
+
+  // Append the Knowledge Base collection ToC (#4208, ADR-0028 §3) right after the
+  // authoritative semantic layer — a sibling section, self-framed as third-party
+  // descriptive content (never instructions), so the descriptive/authoritative
+  // boundary reads crisply in the prompt. Empty ⇒ nothing appended.
+  if (orgKnowledgeToc) {
+    base += "\n\n" + orgKnowledgeToc;
   }
 
   // Append learned patterns (if any)
@@ -597,6 +606,13 @@ export interface BuildSystemParamOptions {
   readonly warnings?: readonly string[];
   /** Org-scoped (DB-backed) semantic index section; preferred over the file-based index when present. */
   readonly orgSemanticIndex?: string;
+  /**
+   * #4208 — Knowledge Base collection table-of-contents (ADR-0028 §3). The
+   * compressed root-index summary of the workspace's hosted OKF collections,
+   * self-framed as third-party descriptive content. Injected right after the
+   * semantic index. Empty string / omitted ⇒ nothing appended.
+   */
+  readonly orgKnowledgeToc?: string;
   /** Org-knowledge section: learned query patterns + favorites + approved suggestions (#3633). */
   readonly learnedPatternsSection?: string;
   /** Scope-routing context; guidance renders only for >1-member connection groups. */
@@ -665,6 +681,7 @@ export function buildSystemParam(
     registry = defaultRegistry,
     warnings,
     orgSemanticIndex,
+    orgKnowledgeToc,
     learnedPatternsSection,
     routingContext,
     boundDashboardContext,
@@ -674,7 +691,7 @@ export function buildSystemParam(
     memoryBlock,
     sourceCatalog,
   } = options;
-  let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext);
+  let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext, orgKnowledgeToc);
 
   if (sourceCatalog) {
     content += "\n\n" + sourceCatalog;
@@ -1140,7 +1157,7 @@ export async function runAgent({
 
   // Pre-load org-scoped semantic data and learned patterns before the agent loop.
   // Effect.all with concurrency: 2 and per-branch timeouts (30s each).
-  const [orgSemanticIndex, learnedPatternsSection] = await Effect.runPromise(
+  const [orgSemanticIndex, learnedPatternsSection, orgKnowledgeToc] = await Effect.runPromise(
     Effect.all([
       // Org semantic data: whitelist + index
       (orgId && hasInternalDB())
@@ -1224,6 +1241,31 @@ export async function runAgent({
                 detail:
                   "Atlas couldn't load similar past queries to prime this answer. The answer is still generated normally — accuracy may be slightly lower for ambiguous questions.",
               });
+              return Effect.succeed(undefined);
+            }),
+          )
+        : Effect.succeed(undefined),
+      // #4208 — Knowledge Base collection ToC (ADR-0028 §3). Best-effort: it is
+      // descriptive-only context, so a load failure/timeout degrades to no ToC
+      // and never fails the turn (the collections stay browsable via explore).
+      (orgId && hasInternalDB())
+        ? Effect.tryPromise({
+            try: async () => {
+              const { buildKnowledgeToc } = await import("./knowledge/mirror");
+              const toc = await buildKnowledgeToc(orgId, atlasMode);
+              return toc || undefined;
+            },
+            catch: normalizeError,
+          }).pipe(
+            Effect.timeoutFail({
+              duration: Duration.seconds(30),
+              onTimeout: () => new Error("Knowledge collection ToC load timed out after 30s"),
+            }),
+            Effect.catchAll((err) => {
+              log.warn(
+                { orgId, err: err.message },
+                "Failed to load knowledge collection ToC — continuing without it",
+              );
               return Effect.succeed(undefined);
             }),
           )
@@ -1547,6 +1589,7 @@ export async function runAgent({
     registry: activeRegistry,
     warnings,
     orgSemanticIndex,
+    orgKnowledgeToc,
     learnedPatternsSection,
     routingContext: scopeRoutingContext,
     boundDashboardContext,

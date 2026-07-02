@@ -58,6 +58,28 @@ const contentModeRegistry = makeService(CONTENT_MODE_TABLES);
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Bust the per-mode knowledge disk mirror (#4208, ADR-0028 §3) so the next
+ * `explore` call rebuilds the `knowledge/` subtree from the DB. Reuses the
+ * semantic layer's mode-root invalidation — `invalidateOrgModeRoots` busts every
+ * mode for the org — the same lazy-rebuild machinery that backs entity serving.
+ * Lazy-imported (not a top-level import) so the admin
+ * router's static graph doesn't require `semantic/sync` at load time, matching
+ * the reconcile posture in `admin-publish.ts`; best-effort, since the DB write has
+ * already committed and a stale in-process cache self-heals on the next boot.
+ */
+async function invalidateKnowledgeMirror(orgId: string): Promise<void> {
+  try {
+    const { invalidateOrgModeRoots } = await import("@atlas/api/lib/semantic/sync");
+    invalidateOrgModeRoots(orgId);
+  } catch (err) {
+    log.warn(
+      { orgId, err: err instanceof Error ? err.message : String(err) },
+      "Failed to invalidate knowledge mirror — the agent may serve a stale knowledge/ subtree until the next rebuild",
+    );
+  }
+}
+
 /** Load one collection install scoped to the workspace, or null. */
 async function loadCollection(
   orgId: string,
@@ -529,6 +551,10 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
       return ingestReport;
     });
 
+    // Rebuild the knowledge mirror: new/updated drafts appear in developer mode
+    // immediately, and an "upload & publish" surfaces in published mode too.
+    await invalidateKnowledgeMirror(orgId);
+
     logAdminAction({
       actionType: ADMIN_ACTIONS.knowledge.ingest,
       targetType: "knowledge",
@@ -609,6 +635,10 @@ adminKnowledge.openapi(deleteRoute, async (c) =>
       );
       return docs.rows.length;
     });
+
+    // Archived documents must drop out of both the published and developer
+    // mirrors on the next explore call.
+    await invalidateKnowledgeMirror(orgId);
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.knowledge.uninstall,

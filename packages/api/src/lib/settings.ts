@@ -1434,6 +1434,35 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "platform",
     saasVisible: false,
   },
+
+  // Knowledge Base — bundle-sync cadence + fetch caps (#4211). Platform-scoped
+  // operator knobs; the interval is read once at scheduler start (mirrors
+  // ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS), the fetch timeout is read per sync.
+  {
+    key: "ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS",
+    section: "Knowledge Base",
+    label: "Bundle Sync Interval (hours)",
+    description:
+      "How often bundle-sync knowledge collections pull their endpoint (default 24 — nightly). Read at scheduler start; non-positive values fall back to the default.",
+    type: "number",
+    default: "24",
+    envVar: "ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS",
+    scope: "platform",
+    saasVisible: false,
+    requiresRestart: true,
+  },
+  {
+    key: "ATLAS_KNOWLEDGE_SYNC_FETCH_TIMEOUT_SECONDS",
+    section: "Knowledge Base",
+    label: "Bundle Sync Fetch Timeout (seconds)",
+    description:
+      "Per-sync time budget for downloading a collection's bundle endpoint (default 60; non-positive values fall back to the default). Bounds the whole fetch including redirects and body streaming.",
+    type: "number",
+    default: "60",
+    envVar: "ATLAS_KNOWLEDGE_SYNC_FETCH_TIMEOUT_SECONDS",
+    scope: "platform",
+    saasVisible: false,
+  },
 ];
 
 // ---------------------------------------------------------------------------

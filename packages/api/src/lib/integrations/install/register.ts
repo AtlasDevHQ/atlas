@@ -33,6 +33,7 @@ import {
 import { DatasourceFormInstallHandler } from "./datasource-form-handler";
 import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
 import { OkfUploadFormInstallHandler, OKF_UPLOAD_SLUG } from "./okf-upload-form-handler";
+import { BundleSyncFormInstallHandler, BUNDLE_SYNC_SLUG } from "./bundle-sync-form-handler";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -210,6 +211,15 @@ export function registerBuiltinInstallHandlers(): void {
   // upload is a separate admin act on `/api/v1/admin/knowledge`. No env gate.
   registerFormHandler(OKF_UPLOAD_SLUG, new OkfUploadFormInstallHandler());
   log.info("Registered OkfUploadFormInstallHandler");
+  // Knowledge Base (Bundle Sync) — the built-in `bundle-sync` synced-collection
+  // install (#4211, ADR-0028 §5 follow-up). Knowledge-pillar, multi-instance.
+  // Config = endpoint URL + auth scheme; the optional auth secret lands in the
+  // dedicated `knowledge_sync_credentials` table (encrypted, INTEGRATION_TABLES
+  // participant), never in `workspace_plugins.config`. The Scheduler pulls the
+  // endpoint on a cadence (`lib/scheduler/knowledge-bundle-sync.ts`). No env
+  // gate — the customer admin supplies the endpoint at install time.
+  registerFormHandler(BUNDLE_SYNC_SLUG, new BundleSyncFormInstallHandler());
+  log.info("Registered BundleSyncFormInstallHandler");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

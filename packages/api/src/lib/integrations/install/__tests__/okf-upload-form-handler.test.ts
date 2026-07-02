@@ -13,10 +13,13 @@ import type { WorkspaceId } from "@useatlas/types";
 
 let CATALOG_ROWS: { id: string }[] = [{ id: "catalog:okf-upload" }];
 let INSERT_RETURNS_ID = true;
+// Rows returned by the cross-catalog slug guard (#4211) — non-empty = conflict.
+let CROSS_CATALOG_ROWS: { catalog_id: string }[] = [];
 const insertCalls: { sql: string; params: unknown[] }[] = [];
 
 const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<unknown[]> => {
   if (sql.includes("FROM plugin_catalog")) return CATALOG_ROWS;
+  if (sql.includes("catalog_id <> $3")) return CROSS_CATALOG_ROWS;
   if (sql.includes("INSERT INTO workspace_plugins")) {
     insertCalls.push({ sql, params });
     return INSERT_RETURNS_ID ? [{ id: params[0] }] : [];
@@ -47,6 +50,7 @@ function handler() {
 beforeEach(() => {
   CATALOG_ROWS = [{ id: "catalog:okf-upload" }];
   INSERT_RETURNS_ID = true;
+  CROSS_CATALOG_ROWS = [];
   insertCalls.length = 0;
   internalQuery.mockClear();
 });
@@ -93,6 +97,14 @@ describe("OkfUploadFormInstallHandler.validateConfig", () => {
   it("fails loud when the upsert returns no id (Postgres invariant break)", async () => {
     INSERT_RETURNS_ID = false;
     await expect(handler().validateConfig(WORKSPACE, {})).rejects.toThrow(/returned no id/);
+  });
+
+  it("rejects a slug already used by another knowledge catalog (bundle-sync) — trees must not merge (#4211)", async () => {
+    CROSS_CATALOG_ROWS = [{ catalog_id: "catalog:bundle-sync" }];
+    await expect(
+      handler().validateConfig(WORKSPACE, { __install_id__: "runbooks" }),
+    ).rejects.toBeInstanceOf(FormInstallValidationError);
+    expect(insertCalls).toHaveLength(0);
   });
 });
 

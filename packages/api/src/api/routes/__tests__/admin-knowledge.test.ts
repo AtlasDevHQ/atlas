@@ -22,11 +22,20 @@ let MAX_DOC_BYTES = 100_000;
 let MAX_BUNDLE_BYTES = 200_000;
 
 // The collection loadCollection() resolves (null → 404).
-let COLLECTION: { install_id: string; status: string; config: Record<string, unknown> } | null = {
+let COLLECTION: {
+  install_id: string;
+  catalog_id: string;
+  status: string;
+  config: Record<string, unknown>;
+} | null = {
   install_id: "runbooks",
+  catalog_id: "catalog:okf-upload",
   status: "published",
   config: {},
 };
+
+// Sync-state rows returned by the list route's knowledge_sync_state read.
+let SYNC_STATES: Array<Record<string, unknown>> = [];
 
 // In-memory knowledge store shared by the fake transactional client.
 let store: Map<string, { id: string; status: string; body: string }>;
@@ -56,6 +65,8 @@ function fakeTxClient() {
       if (sql.includes("UPDATE workspace_plugins")) return { rows: [] };
       if (sql.includes("DELETE FROM knowledge_links")) return { rows: [] };
       if (sql.includes("INSERT INTO knowledge_links")) return { rows: [] };
+      if (sql.includes("DELETE FROM knowledge_sync_credentials")) return { rows: [] };
+      if (sql.includes("DELETE FROM knowledge_sync_state")) return { rows: [] };
       throw new Error(`unexpected tx SQL: ${sql.slice(0, 60)}`);
     },
     release() {},
@@ -66,9 +77,10 @@ function fakeTxClient() {
 let DOCUMENTS: Array<Record<string, unknown>> = [];
 
 const internalQuery = mock(async (sql: string, _params: unknown[] = []): Promise<unknown[]> => {
-  if (sql.includes("SELECT install_id, status, config")) return COLLECTION ? [COLLECTION] : [];
-  if (sql.includes("ORDER BY installed_at")) return COLLECTION ? [{ install_id: COLLECTION.install_id, config: COLLECTION.config, installed_at: "2026-07-02T00:00:00.000Z" }] : [];
+  if (sql.includes("SELECT install_id, catalog_id, status, config")) return COLLECTION ? [COLLECTION] : [];
+  if (sql.includes("ORDER BY installed_at")) return COLLECTION ? [{ install_id: COLLECTION.install_id, catalog_id: COLLECTION.catalog_id, config: COLLECTION.config, installed_at: "2026-07-02T00:00:00.000Z" }] : [];
   if (sql.includes("GROUP BY collection_id")) return [{ collection_id: "runbooks", status: "published", n: 3 }];
+  if (sql.includes("FROM knowledge_sync_state")) return SYNC_STATES;
   if (sql.includes("FROM knowledge_documents") && sql.includes("ORDER BY path")) return DOCUMENTS;
   throw new Error(`unexpected internalQuery SQL: ${sql.slice(0, 60)}`);
 });
@@ -92,7 +104,39 @@ mock.module("@atlas/api/lib/logger", () => {
 
 mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: () => {},
-  ADMIN_ACTIONS: { knowledge: { ingest: "knowledge.ingest", uninstall: "knowledge.uninstall" } },
+  ADMIN_ACTIONS: {
+    knowledge: { ingest: "knowledge.ingest", sync: "knowledge.sync", uninstall: "knowledge.uninstall" },
+  },
+}));
+
+// The sync engine is pinned in lib/knowledge/__tests__/sync.test.ts — here it
+// is a spy so the route tests assert dispatch + gating only.
+const syncCollection = mock(async (params: { collectionSlug: string }) => ({
+  collection: params.collectionSlug,
+  status: "success" as const,
+  syncedAt: "2026-07-02T01:00:00.000Z",
+  error: null,
+  format: "zip" as const,
+  documents: { created: 1, updated: 0, demoted: 0, resurrected: 0, unchanged: 0, total: 1 },
+  archivedAbsent: 0,
+  linksWritten: 0,
+  rejected: [],
+}));
+mock.module("@atlas/api/lib/knowledge/sync", () => ({
+  syncCollection,
+  runKnowledgeSyncCycle: async () => ({ inspected: 0, succeeded: 0, failed: 0 }),
+  getKnowledgeSyncFetchTimeoutMs: () => 60_000,
+  DEFAULT_SYNC_FETCH_TIMEOUT_SECONDS: 60,
+}));
+
+// Only the catalog-id constant is consumed by the router; mock the handler
+// module so its (heavier) install-pipeline import graph stays out of this test.
+mock.module("@atlas/api/lib/integrations/install/bundle-sync-form-handler", () => ({
+  BUNDLE_SYNC_SLUG: "bundle-sync",
+  BUNDLE_SYNC_CATALOG_ID: "catalog:bundle-sync",
+  BUNDLE_SYNC_AUTH_SCHEMES: ["none", "bearer", "basic"],
+  BUNDLE_SYNC_INSTALL_UPSERT_SQL: "",
+  BundleSyncFormInstallHandler: class {},
 }));
 
 mock.module("@atlas/api/lib/content-mode", () => ({
@@ -134,15 +178,27 @@ beforeEach(() => {
   MAX_DOCS = 100;
   MAX_DOC_BYTES = 100_000;
   MAX_BUNDLE_BYTES = 200_000;
-  COLLECTION = { install_id: "runbooks", status: "published", config: {} };
+  COLLECTION = { install_id: "runbooks", catalog_id: "catalog:okf-upload", status: "published", config: {} };
   store = new Map();
   publishRan = false;
   archivedDocRows = 0;
   nextId = 1;
   DOCUMENTS = [];
+  SYNC_STATES = [];
   internalQuery.mockClear();
+  syncCollection.mockClear();
 });
 afterEach(() => internalQuery.mockClear());
+
+/** Switch the resolved collection to a bundle-sync install (#4211). */
+function useSyncedCollection(): void {
+  COLLECTION = {
+    install_id: "runbooks",
+    catalog_id: "catalog:bundle-sync",
+    status: "published",
+    config: { endpoint_url: "https://kb.example.com/bundle.zip", auth_scheme: "none" },
+  };
+}
 
 describe("POST /{collectionSlug}/ingest — guards", () => {
   it("404s when the collection does not exist", async () => {
@@ -152,7 +208,7 @@ describe("POST /{collectionSlug}/ingest — guards", () => {
   });
 
   it("404s when the collection is archived", async () => {
-    COLLECTION = { install_id: "runbooks", status: "archived", config: {} };
+    COLLECTION = { install_id: "runbooks", catalog_id: "catalog:okf-upload", status: "archived", config: {} };
     const res = await ingest("/runbooks/ingest", zipSync({ "a.md": strToU8("# A") }));
     expect(res.status).toBe(404);
   });
@@ -231,6 +287,66 @@ describe("POST /{collectionSlug}/ingest — happy path", () => {
     expect(((await res.json()) as { published: boolean }).published).toBe(true);
     expect(publishRan).toBe(true);
   });
+
+  it("400s an upload into a bundle-sync collection — synced trees are endpoint-owned (#4211)", async () => {
+    useSyncedCollection();
+    const res = await ingest("/runbooks/ingest", zipSync({ "a.md": strToU8("# A") }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("synced_collection");
+    // Definitely no publish backdoor through the guard.
+    expect(publishRan).toBe(false);
+  });
+});
+
+describe("POST /{collectionSlug}/sync — manual Sync now (#4211)", () => {
+  it("runs the sync for a bundle-sync collection and returns the outcome", async () => {
+    useSyncedCollection();
+    const res = await adminKnowledge.request("/runbooks/sync", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { collection: string; status: string; documents: { created: number } };
+    expect(body.collection).toBe("runbooks");
+    expect(body.status).toBe("success");
+    expect(body.documents.created).toBe(1);
+    expect(syncCollection).toHaveBeenCalledTimes(1);
+    expect(syncCollection.mock.calls[0]?.[0]).toMatchObject({
+      workspaceId: CURRENT_ORG,
+      collectionSlug: "runbooks",
+      config: { endpoint_url: "https://kb.example.com/bundle.zip" },
+    });
+  });
+
+  it("returns a failed attempt as 200 with status error (recorded, actionable)", async () => {
+    useSyncedCollection();
+    syncCollection.mockImplementationOnce(async (params: { collectionSlug: string }) => ({
+      collection: params.collectionSlug,
+      status: "error" as const,
+      syncedAt: "2026-07-02T01:00:00.000Z",
+      error: 'Bundle endpoint "kb.example.com" responded HTTP 403 — check the URL and auth configuration.',
+      format: null,
+      documents: null,
+      archivedAbsent: null,
+      linksWritten: null,
+      rejected: [],
+    }));
+    const res = await adminKnowledge.request("/runbooks/sync", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; error: string };
+    expect(body.status).toBe("error");
+    expect(body.error).toContain("403");
+  });
+
+  it("400s for an upload collection (nothing to sync)", async () => {
+    const res = await adminKnowledge.request("/runbooks/sync", { method: "POST" });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("not_synced_collection");
+    expect(syncCollection).not.toHaveBeenCalled();
+  });
+
+  it("404s when the collection does not exist", async () => {
+    COLLECTION = null;
+    const res = await adminKnowledge.request("/nope/sync", { method: "POST" });
+    expect(res.status).toBe(404);
+  });
 });
 
 describe("DELETE /{collectionSlug} — uninstall archives", () => {
@@ -250,11 +366,51 @@ describe("DELETE /{collectionSlug} — uninstall archives", () => {
 });
 
 describe("GET / — list collections", () => {
-  it("lists collections with per-status document counts", async () => {
+  it("lists upload collections with per-status counts and no sync surface", async () => {
     const res = await adminKnowledge.request("/");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { collections: { slug: string; documents: { published: number } }[] };
-    expect(body.collections[0]).toMatchObject({ slug: "runbooks", documents: { published: 3 } });
+    const body = (await res.json()) as {
+      collections: { slug: string; source: string; endpointUrl: string | null; sync: unknown; documents: { published: number } }[];
+    };
+    expect(body.collections[0]).toMatchObject({
+      slug: "runbooks",
+      source: "upload",
+      endpointUrl: null,
+      sync: null,
+      documents: { published: 3 },
+    });
+  });
+
+  it("surfaces source, endpoint, and last-sync status for bundle-sync collections (#4211)", async () => {
+    useSyncedCollection();
+    SYNC_STATES = [
+      {
+        collection_id: "runbooks",
+        last_sync_at: "2026-07-02T01:00:00.000Z",
+        status: "error",
+        error: "Bundle endpoint responded HTTP 403",
+      },
+    ];
+    const res = await adminKnowledge.request("/");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { collections: Array<Record<string, unknown>> };
+    expect(body.collections[0]).toMatchObject({
+      slug: "runbooks",
+      source: "bundle-sync",
+      endpointUrl: "https://kb.example.com/bundle.zip",
+      sync: {
+        lastSyncAt: "2026-07-02T01:00:00.000Z",
+        status: "error",
+        error: "Bundle endpoint responded HTTP 403",
+      },
+    });
+  });
+
+  it("returns sync: null for a synced collection that has never synced", async () => {
+    useSyncedCollection();
+    const res = await adminKnowledge.request("/");
+    const body = (await res.json()) as { collections: Array<{ sync: unknown; source: string }> };
+    expect(body.collections[0]).toMatchObject({ source: "bundle-sync", sync: null });
   });
 });
 
@@ -301,7 +457,7 @@ describe("GET /{slug}/documents — list documents", () => {
   });
 
   it("404s when the collection is archived", async () => {
-    COLLECTION = { install_id: "runbooks", status: "archived", config: {} };
+    COLLECTION = { install_id: "runbooks", catalog_id: "catalog:okf-upload", status: "archived", config: {} };
     const res = await adminKnowledge.request("/runbooks/documents");
     expect(res.status).toBe(404);
   });

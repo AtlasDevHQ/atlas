@@ -2169,6 +2169,30 @@ export function makeSchedulerLive(
         }),
       );
 
+      // Start knowledge bundle sync scheduler (#4211) — periodic pull of every
+      // enabled `bundle-sync` knowledge collection's endpoint, re-running the
+      // #4207 ingest (diff via upsert-by-path; synced changes land draft).
+      // Cadence via the ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS settings knob
+      // (nightly default). No-ops per-cycle when the internal DB is
+      // unavailable; safe to start unconditionally.
+      yield* Effect.tryPromise({
+        try: async () => {
+          const { startKnowledgeBundleSyncScheduler } = await import(
+            "@atlas/api/lib/scheduler/knowledge-bundle-sync"
+          );
+          startKnowledgeBundleSyncScheduler();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.error(
+            { err: errorMessage(err) },
+            "Knowledge bundle sync scheduler failed to start",
+          );
+          return Effect.void;
+        }),
+      );
+
       // ── Periodic fiber: OAuth state cleanup (#1273) — every 10 min ──
       yield* registerPeriodicFiber({
         name: "oauth_state_cleanup",

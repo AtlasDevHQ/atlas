@@ -582,11 +582,14 @@ export const ADMIN_ACTIONS = {
    * Knowledge Base pillar (#4207, ADR-0028). Collection install rides the shared
    * form-install audit (`integration.*`); this domain covers the lifecycle acts
    * on the `/admin/knowledge` surface: `ingest` (bundle upload → documents, with
-   * created/demoted/rejected counts in metadata) and `uninstall` (archive the
-   * collection's documents). `targetId` is the collection slug.
+   * created/demoted/rejected counts in metadata), `sync` (a manual "Sync now"
+   * pull of a bundle-sync collection's endpoint, #4211 — scheduled syncs are
+   * recorded in `knowledge_sync_state`, not audited per-run), and `uninstall`
+   * (archive the collection's documents). `targetId` is the collection slug.
    */
   knowledge: {
     ingest: "knowledge.ingest",
+    sync: "knowledge.sync",
     uninstall: "knowledge.uninstall",
   },
   /**

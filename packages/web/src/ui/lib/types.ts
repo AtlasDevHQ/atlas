@@ -147,12 +147,15 @@ export type { Percentage, Ratio } from "@useatlas/types";
 export type {
   KnowledgeCollection,
   KnowledgeCollectionListResponse,
+  KnowledgeCollectionSource,
+  KnowledgeCollectionSyncStatus,
   KnowledgeDocumentCounts,
   KnowledgeDocumentSummary,
   KnowledgeDocumentListResponse,
   KnowledgeIngestSummary,
   KnowledgeIngestDocumentCounts,
   KnowledgeRejectedFile,
+  KnowledgeSyncRunResponse,
   KnowledgeUninstallResponse,
 } from "@useatlas/types";
 export type {

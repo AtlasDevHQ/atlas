@@ -1834,6 +1834,59 @@ export const knowledgeLinks = pgTable(
   ],
 );
 
+// knowledge_sync_credentials (0164, #4211) — endpoint auth secrets for
+// bundle-sync knowledge collections, the first Knowledge Base credential.
+// One optional row per synced collection (no row = unauthenticated
+// endpoint); ciphertext via db/secret-encryption.ts, registered in
+// INTEGRATION_TABLES for F-47 rotation + F-42 residue audit. Mirrors
+// migration 0164.
+export const knowledgeSyncCredentials = pgTable(
+  "knowledge_sync_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // Better-Auth organization id (workspace-global, like knowledge_documents).
+    workspaceId: text("workspace_id").notNull(),
+    // The synced collection = `workspace_plugins.install_id` slug (no FK — see
+    // migration 0162's rationale for the install ref).
+    collectionId: text("collection_id").notNull(),
+    // NOT NULL — "no auth" is "no row", never a NULL credential row.
+    authSecretEncrypted: text("auth_secret_encrypted").notNull(),
+    authSecretKeyVersion: integer("auth_secret_key_version"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One credential per collection (the upsert conflict target).
+    uniqueIndex("uq_knowledge_sync_credentials_collection").on(
+      t.workspaceId,
+      t.collectionId,
+    ),
+  ],
+);
+
+// knowledge_sync_state (0164, #4211) — last-sync bookkeeping per bundle-sync
+// collection (time, outcome, error, compact ingest report), surfaced on
+// /admin/knowledge. Deliberately NOT in workspace_plugins.config (a re-install
+// upserts config = EXCLUDED.config, which would wipe it). Operational state,
+// not a content-mode participant. Mirrors migration 0164.
+export const knowledgeSyncState = pgTable(
+  "knowledge_sync_state",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    collectionId: text("collection_id").notNull(),
+    lastSyncAt: timestamp("last_sync_at", { withTimezone: true }).notNull(),
+    status: text("status").notNull(),
+    error: text("error"),
+    report: jsonb("report"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: "pk_knowledge_sync_state", columns: [t.workspaceId, t.collectionId] }),
+    check("chk_knowledge_sync_state_status", sql`status IN ('success', 'error')`),
+  ],
+);
+
 // integration_credentials (0089) — dedicated credential store for lazy
 // OAuth integrations (Salesforce, future Jira / etc.). The dual-store
 // teardown order is documented in ADR-0003: credentials first, install

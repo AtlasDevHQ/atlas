@@ -64,6 +64,13 @@ export const INTEGRATION_TABLES: ReadonlyArray<IntegrationTable> = [
   // 0098 — Twenty CRM per-workspace credentials. `workspace_id` is
   // unique on its own (one Twenty install per workspace).
   { table: "twenty_integrations",   pk: "id",              encrypted: "api_key_encrypted",           keyVersionColumn: "api_key_key_version" },
+  // 0164 (#4211) — bundle-sync knowledge collections' endpoint auth secrets,
+  // the first Knowledge Base credential. One optional row per synced
+  // collection (unique on (workspace_id, collection_id)); the table keys on a
+  // single uuid `id` so the rotation / audit scripts walk it generically
+  // (single-PK assumption preserved). "No auth" is "no row" — the encrypted
+  // column is NOT NULL, so this table participates in NON_NULL_ENCRYPTED_TABLES.
+  { table: "knowledge_sync_credentials", pk: "id", encrypted: "auth_secret_encrypted", keyVersionColumn: "auth_secret_key_version" },
   // 0140 (#3704) — OPERATOR-tier integration app credentials (Atlas's own
   // app registrations, set/rotated via Admin without a redeploy). One row
   // per `platform` slug; the table still keys on a single uuid `id` so the

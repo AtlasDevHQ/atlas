@@ -1,0 +1,515 @@
+/**
+ * Unit tests for the knowledge bundle sync engine (#4211).
+ *
+ * Exercises the fetch-hardening branches (SSRF block, redirect-to-internal,
+ * size caps, timeout, non-200), the ingest-computed diff wiring (source
+ * `bundle-sync`, archive-absent semantics, rejected files kept out of the
+ * absent set), the empty-bundle safety stop, and the sync-state bookkeeping —
+ * all against an in-memory fake internal DB and an injected `fetchImpl`
+ * (`guardedFetch` itself runs REAL, so the SSRF policy under test is the real
+ * one). The AC "no publish-on-sync path exists" is pinned twice: behaviorally
+ * (no SQL ever writes status='published') and structurally (the module never
+ * references the content-mode publish machinery).
+ */
+
+import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { zipSync, strToU8 } from "fflate";
+import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
+
+const ORG = "org-1";
+const COLLECTION = "docs";
+const ENDPOINT = "https://kb.example.com/bundle.zip";
+
+// ── Mutable caps (mock-all-exports for ingest-limits) ───────────────────────
+let MAX_DOCS = 100;
+let MAX_DOC_BYTES = 100_000;
+let MAX_BUNDLE_BYTES = 200_000;
+
+mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
+  DEFAULT_INGEST_MAX_DOCS: 1000,
+  DEFAULT_INGEST_MAX_DOC_BYTES: 1_000_000,
+  DEFAULT_INGEST_MAX_BUNDLE_BYTES: 25_000_000,
+  getIngestMaxDocs: () => MAX_DOCS,
+  getIngestMaxDocBytes: () => MAX_DOC_BYTES,
+  getIngestMaxBundleBytes: () => MAX_BUNDLE_BYTES,
+  positiveIntSetting: (_key: string, raw: string | undefined, fallback: number) => {
+    if (raw === undefined) return fallback;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  },
+}));
+
+// ── Credential store ─────────────────────────────────────────────────────────
+let CREDENTIAL: string | null = null;
+let CREDENTIAL_THROWS = false;
+const readSyncCredential = mock(async () => {
+  if (CREDENTIAL_THROWS) throw new Error("decrypt boom");
+  return CREDENTIAL;
+});
+mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
+  readSyncCredential,
+  saveSyncCredential: async () => {},
+  deleteSyncCredential: async () => {},
+}));
+
+// ── In-memory knowledge store + fake transactional client ───────────────────
+interface StoredDoc {
+  id: string;
+  status: string;
+  body: string;
+  type: string | null;
+  title: string | null;
+  description: string | null;
+  resource: string | null;
+  tags: unknown;
+  timestamp: string | null;
+}
+let store: Map<string, StoredDoc>;
+let nextId = 1;
+const txSql: { sql: string; params: unknown[] }[] = [];
+let INSTALL_ROWS: Array<{ workspace_id: string; install_id: string; config: unknown }> = [];
+const stateWrites: { params: unknown[] }[] = [];
+
+function fakeTxClient() {
+  return {
+    async query(sql: string, params: unknown[] = []): Promise<{ rows: Record<string, unknown>[] }> {
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+      txSql.push({ sql, params });
+      if (sql.includes("SELECT id, status, body")) {
+        const existing = store.get(params[2] as string);
+        return { rows: existing ? [existing as unknown as Record<string, unknown>] : [] };
+      }
+      if (sql.includes("INSERT INTO knowledge_documents")) {
+        const id = `doc-${nextId++}`;
+        store.set(params[2] as string, {
+          id,
+          status: "draft",
+          body: params[9] as string,
+          type: params[3] as string,
+          title: params[4] as string,
+          description: params[5] as string | null,
+          resource: params[8] as string | null,
+          tags: JSON.parse(params[6] as string),
+          timestamp: params[7] as string | null,
+        });
+        return { rows: [{ id }] };
+      }
+      if (sql.includes("SET status = 'archived'")) {
+        const present = new Set(params[2] as string[]);
+        const archived: Record<string, unknown>[] = [];
+        for (const [path, doc] of store) {
+          if (doc.status !== "archived" && !present.has(path)) {
+            doc.status = "archived";
+            archived.push({ id: doc.id });
+          }
+        }
+        return { rows: archived };
+      }
+      if (sql.includes("UPDATE knowledge_documents")) {
+        for (const doc of store.values()) {
+          if (doc.id === params[0]) {
+            doc.status = "draft";
+            doc.body = params[7] as string;
+          }
+        }
+        return { rows: [] };
+      }
+      if (sql.includes("knowledge_links")) return { rows: [] };
+      throw new Error(`unexpected tx SQL: ${sql.slice(0, 60)}`);
+    },
+    release() {},
+  };
+}
+
+let HAS_INTERNAL_DB = true;
+const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<unknown[]> => {
+  if (sql.includes("INSERT INTO knowledge_sync_state")) {
+    stateWrites.push({ params });
+    return [];
+  }
+  if (sql.includes("FROM workspace_plugins")) return INSTALL_ROWS;
+  throw new Error(`unexpected internalQuery SQL: ${sql.slice(0, 60)}`);
+});
+
+mock.module("@atlas/api/lib/db/internal", () => ({
+  ...buildInternalDbMockDefaults({ internalQuery }),
+  hasInternalDB: () => HAS_INTERNAL_DB,
+  getInternalDB: () => ({ connect: async () => fakeTxClient() }),
+}));
+
+mock.module("@atlas/api/lib/logger", () => {
+  const noop = () => {};
+  const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
+  return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
+});
+
+const { syncCollection, runKnowledgeSyncCycle } = await import("@atlas/api/lib/knowledge/sync");
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function zipBundle(files: Record<string, string>): Uint8Array {
+  const entries: Record<string, Uint8Array> = {};
+  for (const [path, content] of Object.entries(files)) entries[path] = strToU8(content);
+  return zipSync(entries);
+}
+
+/** A minimal Response-alike accepted by guardedFetch + the body reader. */
+function fakeResponse(opts: {
+  status?: number;
+  headers?: Record<string, string>;
+  bytes?: Uint8Array;
+}): Response {
+  const bytes = opts.bytes ?? new Uint8Array(0);
+  return {
+    ok: (opts.status ?? 200) >= 200 && (opts.status ?? 200) < 300,
+    status: opts.status ?? 200,
+    headers: new Headers(opts.headers ?? {}),
+    body: new Blob([bytes as BlobPart]).stream(),
+  } as unknown as Response;
+}
+
+function fetchReturning(response: Response | (() => Response)) {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const impl = (async (url: unknown, init?: unknown) => {
+    calls.push({ url: String(url), init: (init ?? {}) as RequestInit });
+    return typeof response === "function" ? response() : response;
+  }) as typeof globalThis.fetch;
+  return { impl, calls };
+}
+
+function baseConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { endpoint_url: ENDPOINT, auth_scheme: "none", ...overrides };
+}
+
+function seedDoc(path: string, status: string, body: string): void {
+  store.set(path, {
+    id: `seed-${path}`,
+    status,
+    body,
+    type: "Document",
+    title: path,
+    description: null,
+    resource: null,
+    tags: [],
+    timestamp: null,
+  });
+}
+
+beforeEach(() => {
+  MAX_DOCS = 100;
+  MAX_DOC_BYTES = 100_000;
+  MAX_BUNDLE_BYTES = 200_000;
+  CREDENTIAL = null;
+  CREDENTIAL_THROWS = false;
+  HAS_INTERNAL_DB = true;
+  store = new Map();
+  nextId = 1;
+  txSql.length = 0;
+  stateWrites.length = 0;
+  INSTALL_ROWS = [];
+  internalQuery.mockClear();
+  readSyncCredential.mockClear();
+});
+
+// ── The diff + archive semantics ─────────────────────────────────────────────
+
+describe("syncCollection — ingest-computed diff", () => {
+  it("creates new docs as draft, demotes changed published docs, archives absent paths — and never publishes", async () => {
+    seedDoc("changed.md", "published", "old body");
+    seedDoc("gone.md", "published", "was here");
+
+    const bundle = zipBundle({
+      "changed.md": "# changed\nnew body",
+      "new.md": "# new\nhello",
+    });
+    const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
+
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+
+    expect(outcome.status).toBe("success");
+    expect(outcome.format).toBe("zip");
+    expect(outcome.documents).toEqual({
+      created: 1,
+      updated: 0,
+      demoted: 1,
+      resurrected: 0,
+      unchanged: 0,
+      total: 2,
+    });
+    expect(outcome.archivedAbsent).toBe(1);
+    expect(store.get("gone.md")?.status).toBe("archived");
+    expect(store.get("changed.md")?.status).toBe("draft");
+    expect(store.get("new.md")?.status).toBe("draft");
+
+    // The review gate holds: nothing on the sync path ever writes 'published'.
+    for (const { sql } of txSql) {
+      expect(sql).not.toMatch(/status\s*=\s*'published'/);
+    }
+    // Docs land with the bundle-sync provenance source.
+    const insert = txSql.find((q) => q.sql.includes("INSERT INTO knowledge_documents"));
+    expect(insert?.params[10]).toBe("bundle-sync");
+
+    // Sync state recorded as success.
+    expect(stateWrites).toHaveLength(1);
+    expect(stateWrites[0].params[2]).toBe("success");
+  });
+
+  it("keeps rejected files OUT of the absent set — a broken file must not archive its reviewed doc", async () => {
+    MAX_DOC_BYTES = 10; // force an oversize rejection
+    seedDoc("big.md", "published", "reviewed body");
+
+    const bundle = zipBundle({
+      "big.md": "# way over the ten byte per-doc cap",
+      "ok.md": "# ok",
+    });
+    const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
+
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+
+    expect(outcome.status).toBe("success");
+    expect(outcome.rejected).toHaveLength(1);
+    expect(outcome.rejected[0].path).toBe("big.md");
+    // Present-but-rejected → NOT archived.
+    expect(store.get("big.md")?.status).toBe("published");
+    expect(outcome.archivedAbsent).toBe(0);
+  });
+
+  it("refuses a doc-less bundle outright — a bad endpoint response must not archive the collection", async () => {
+    seedDoc("keep.md", "published", "body");
+    const bundle = zipBundle({ "asset.png": "not markdown" });
+    const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
+
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/Nothing was changed/);
+    expect(store.get("keep.md")?.status).toBe("published");
+    expect(txSql).toHaveLength(0); // no transaction was opened
+    expect(stateWrites[0].params[2]).toBe("error");
+  });
+
+  it("enforces the document-count cap", async () => {
+    MAX_DOCS = 1;
+    const bundle = zipBundle({ "a.md": "# a", "b.md": "# b" });
+    const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/document limit/);
+  });
+});
+
+// ── Fetch hardening ──────────────────────────────────────────────────────────
+
+describe("syncCollection — fetch hardening", () => {
+  it("blocks a private-address endpoint (SSRF) without ever fetching", async () => {
+    const { impl, calls } = fetchReturning(fakeResponse({}));
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig({ endpoint_url: "https://169.254.169.254/latest/meta-data" }),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/Refusing to fetch/);
+    expect(calls).toHaveLength(0);
+    expect(stateWrites[0].params[2]).toBe("error");
+  });
+
+  it("blocks a redirect to an internal host (TOCTOU) — the hop is re-validated", async () => {
+    const redirect = fakeResponse({
+      status: 302,
+      headers: { location: "https://127.0.0.1/internal.tar.gz" },
+    });
+    const { impl, calls } = fetchReturning(redirect);
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/Refusing to fetch/);
+    expect(calls).toHaveLength(1); // first hop only; the internal hop never left
+  });
+
+  it("surfaces a non-2xx endpoint response with the host, never the full URL", async () => {
+    const { impl } = fetchReturning(fakeResponse({ status: 403 }));
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig({ endpoint_url: `${ENDPOINT}?token=SECRET` }),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toContain("403");
+    expect(outcome.error).not.toContain("SECRET");
+  });
+
+  it("rejects on a too-large declared Content-Length before reading the body", async () => {
+    const { impl } = fetchReturning(
+      fakeResponse({ headers: { "content-length": String(MAX_BUNDLE_BYTES + 1) } }),
+    );
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/byte limit/);
+  });
+
+  it("aborts a streamed body that exceeds the cap (lying/chunked endpoint)", async () => {
+    MAX_BUNDLE_BYTES = 1000;
+    const { impl } = fetchReturning(fakeResponse({ bytes: new Uint8Array(5000) }));
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/download aborted/);
+  });
+
+  it("maps a fetch timeout to the time-budget error", async () => {
+    const impl = (async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    }) as typeof globalThis.fetch;
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/time budget/);
+  });
+
+  it("errors on an unconfigured endpoint", async () => {
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: {},
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/endpoint_url/);
+  });
+});
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+
+describe("syncCollection — endpoint auth", () => {
+  it("sends Bearer for the bearer scheme", async () => {
+    CREDENTIAL = "tok-123";
+    const bundle = zipBundle({ "a.md": "# a" });
+    const { impl, calls } = fetchReturning(fakeResponse({ bytes: bundle }));
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig({ auth_scheme: "bearer" }),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("success");
+    const headers = new Headers(calls[0].init.headers);
+    expect(headers.get("authorization")).toBe("Bearer tok-123");
+  });
+
+  it("sends base64 Basic for the basic scheme", async () => {
+    CREDENTIAL = "user:pass";
+    const bundle = zipBundle({ "a.md": "# a" });
+    const { impl, calls } = fetchReturning(fakeResponse({ bytes: bundle }));
+    await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig({ auth_scheme: "basic" }),
+      fetchImpl: impl,
+    });
+    const headers = new Headers(calls[0].init.headers);
+    expect(headers.get("authorization")).toBe(`Basic ${Buffer.from("user:pass").toString("base64")}`);
+  });
+
+  it("fails loud when the scheme needs a secret but none is stored — never fetches unauthenticated", async () => {
+    CREDENTIAL = null;
+    const { impl, calls } = fetchReturning(fakeResponse({}));
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig({ auth_scheme: "bearer" }),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/no stored secret/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("fails loud on an undecryptable secret", async () => {
+    CREDENTIAL_THROWS = true;
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig({ auth_scheme: "bearer" }),
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/could not be decrypted/);
+  });
+});
+
+// ── Cycle ────────────────────────────────────────────────────────────────────
+
+describe("runKnowledgeSyncCycle", () => {
+  it("walks every enabled install, isolating per-collection failures", async () => {
+    INSTALL_ROWS = [
+      { workspace_id: ORG, install_id: "good", config: baseConfig() },
+      { workspace_id: ORG, install_id: "bad", config: { endpoint_url: "" } },
+    ];
+    const bundle = zipBundle({ "a.md": "# a" });
+    const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
+
+    const result = await runKnowledgeSyncCycle({ fetchImpl: impl });
+    expect(result).toEqual({ inspected: 2, succeeded: 1, failed: 1 });
+    // Both attempts recorded state (success + error).
+    expect(stateWrites).toHaveLength(2);
+  });
+
+  it("no-ops without an internal DB", async () => {
+    HAS_INTERNAL_DB = false;
+    const result = await runKnowledgeSyncCycle();
+    expect(result).toEqual({ inspected: 0, succeeded: 0, failed: 0 });
+  });
+});
+
+// ── AC: no publish-on-sync path exists (structural pin) ─────────────────────
+
+describe("review gate — no publish path on sync (ADR-0028 §4)", () => {
+  it("the sync module never references the content-mode publish machinery", async () => {
+    const source = await Bun.file(
+      new URL("../sync.ts", import.meta.url).pathname,
+    ).text();
+    expect(source).not.toContain("runPublishPhases");
+    // No import of the content-mode registry (the only door to promotion).
+    expect(source).not.toMatch(/from\s+"@atlas\/api\/lib\/content-mode/);
+    // The only status literal the sync path may write is 'archived'.
+    expect(source).not.toMatch(/SET\s+status\s*=\s*'published'/i);
+  });
+});

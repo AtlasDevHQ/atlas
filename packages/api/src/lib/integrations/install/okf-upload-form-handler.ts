@@ -142,6 +142,10 @@ export class OkfUploadFormInstallHandler implements FormBasedInstallHandler {
     }
     const catalogId = catalogRows[0].id;
 
+    // A slug taken by another knowledge catalog (bundle-sync) would merge
+    // document trees — reject before the upsert (#4211).
+    await assertCollectionSlugAvailable(workspaceId, collectionSlug, catalogId);
+
     const candidateId = this.newId();
     let persistedId: string;
     try {
@@ -183,6 +187,44 @@ export class OkfUploadFormInstallHandler implements FormBasedInstallHandler {
       installRecord: { id: persistedId, workspaceId, catalogId: OKF_UPLOAD_SLUG },
       credentialWritten: false,
     };
+  }
+}
+
+/**
+ * Reject a collection slug already used by a DIFFERENT knowledge catalog in
+ * this workspace (#4211 — the guard became necessary the moment a second
+ * knowledge catalog row, `bundle-sync`, existed). `knowledge_documents` keys
+ * on `(workspace_id, collection_id, path)` with NO catalog dimension, so two
+ * catalogs sharing an `install_id` would silently merge their document trees
+ * — and a bundle-sync's archive-absent pass would archive the other
+ * collection's docs. Archived installs count too: their documents still live
+ * under the slug and an explicit re-ingest may resurrect them (ADR-0028 §5).
+ *
+ * Shared by both knowledge form handlers ({@link OkfUploadFormInstallHandler}
+ * and `BundleSyncFormInstallHandler`); each passes its own catalog id.
+ */
+export async function assertCollectionSlugAvailable(
+  workspaceId: WorkspaceId,
+  collectionSlug: string,
+  ownCatalogId: string,
+): Promise<void> {
+  const rows = await internalQuery<{ catalog_id: string }>(
+    `SELECT catalog_id
+       FROM workspace_plugins
+      WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'knowledge'
+        AND catalog_id <> $3
+      LIMIT 1`,
+    [workspaceId, collectionSlug, ownCatalogId],
+  );
+  if (rows.length > 0) {
+    throw new FormInstallValidationError({
+      fieldErrors: {
+        [KNOWLEDGE_INSTALL_ID_FIELD]: [
+          `Collection id "${collectionSlug}" is already used by another Knowledge Base integration in this workspace.`,
+        ],
+      },
+      formErrors: [],
+    });
   }
 }
 

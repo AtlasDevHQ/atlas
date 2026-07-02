@@ -56440,7 +56440,7 @@
           "Admin — Knowledge"
         ],
         "summary": "List knowledge collections",
-        "description": "List the workspace's Knowledge Base collections (excluding archived) with per-status document counts.",
+        "description": "List the workspace's Knowledge Base collections (excluding archived) with per-status document counts. `source` distinguishes upload collections (`okf-upload`) from synced collections (`bundle-sync`); synced collections also carry their non-secret `endpointUrl` and last-sync bookkeeping (`sync` — null until the first sync attempt).",
         "responses": {
           "200": {
             "description": "Collection list",
@@ -56457,6 +56457,13 @@
                           "slug": {
                             "type": "string"
                           },
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "upload",
+                              "bundle-sync"
+                            ]
+                          },
                           "description": {
                             "type": [
                               "string",
@@ -56467,6 +56474,41 @@
                             "type": [
                               "string",
                               "null"
+                            ]
+                          },
+                          "endpointUrl": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sync": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "lastSyncAt": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "success",
+                                  "error"
+                                ]
+                              },
+                              "error": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "lastSyncAt",
+                              "status",
+                              "error"
                             ]
                           },
                           "documents": {
@@ -56494,8 +56536,11 @@
                         },
                         "required": [
                           "slug",
+                          "source",
                           "description",
                           "installedAt",
+                          "endpointUrl",
+                          "sync",
                           "documents"
                         ]
                       }
@@ -56976,6 +57021,241 @@
           }
         },
         "operationId": "postAdminKnowledgeByCollectionSlugIngest"
+      }
+    },
+    "/api/v1/admin/knowledge/{collectionSlug}/sync": {
+      "post": {
+        "tags": [
+          "Admin — Knowledge"
+        ],
+        "summary": "Sync a bundle-sync collection now",
+        "description": "Manually pull a synced collection's bundle endpoint and apply the diff immediately (the same run the nightly scheduler performs). Changed and new documents land as `draft` for review — synced content has no publish shortcut; paths absent from the fetched bundle are archived, never hard-deleted. Returns the attempt's outcome; a failed fetch/ingest is reported as `status: \"error\"` with an actionable message (also recorded on the collection's sync status).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "collectionSlug",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sync attempt outcome (success or error — see `status`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "collection": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "success",
+                        "error"
+                      ]
+                    },
+                    "syncedAt": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "format": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "tar",
+                        "tar.gz",
+                        "zip",
+                        null
+                      ]
+                    },
+                    "documents": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "created": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "updated": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "demoted": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "resurrected": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "unchanged": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "total": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "created",
+                        "updated",
+                        "demoted",
+                        "resurrected",
+                        "unchanged",
+                        "total"
+                      ]
+                    },
+                    "archivedAbsent": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "linksWritten": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "rejected": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "reason"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "collection",
+                    "status",
+                    "syncedAt",
+                    "error",
+                    "format",
+                    "documents",
+                    "archivedAbsent",
+                    "linksWritten",
+                    "rejected"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a synced collection (upload collections have no endpoint to sync)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found or no internal database",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminKnowledgeByCollectionSlugSync"
       }
     },
     "/api/v1/admin/knowledge/{collectionSlug}": {

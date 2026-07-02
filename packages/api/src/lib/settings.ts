@@ -1418,6 +1418,22 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "platform",
     saasVisible: false,
   },
+  {
+    // OKF-native serving (#4208, ADR-0028 §3) — cap on the collection table-of-
+    // contents compressed into the agent's system prompt, read by
+    // `lib/knowledge/mirror.ts::getKnowledgeTocMaxBytes`. Registry-backed so an
+    // operator resizes the prompt budget without a redeploy.
+    key: "ATLAS_KNOWLEDGE_TOC_MAX_BYTES",
+    section: "Knowledge Base",
+    label: "Collection ToC Max Size (bytes)",
+    description:
+      "Maximum size of the Knowledge Base collection table-of-contents injected into the agent's system prompt (default 12000 ≈ 3k tokens); collections beyond the cap are omitted from the prompt and remain browsable via the explore tool. Non-positive values fall back to the default.",
+    type: "number",
+    default: "12000",
+    envVar: "ATLAS_KNOWLEDGE_TOC_MAX_BYTES",
+    scope: "platform",
+    saasVisible: false,
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -96,12 +96,12 @@ function applyMaskingViaTag(
 }
 
 /**
- * Resolve the `ApprovalGate` Tag against `EnterpriseLayer`. Each sql.ts
- * approval call site (live path + cache path) reads three methods on
- * the gate (`checkApprovalRequired` → `hasApprovedRequest` →
- * `createApprovalRequest`); resolving the shape once + reading methods
- * keeps the existing try/catch fail-closed semantics intact and avoids
- * paying for three separate `Effect.runPromise` round-trips (#2567).
+ * Resolve the `ApprovalGate` Tag against `EnterpriseLayer` once per
+ * pipeline run. The single approval region in `runSqlPipelineEffect`
+ * reads three methods on the gate (`checkApprovalRequired` →
+ * `hasApprovedRequest` → `createApprovalRequest`); resolving the shape
+ * once avoids re-entering the enterprise runtime per method (#2567,
+ * #3764).
  *
  * #2593 — consumer-side fail-closed: on SaaS where EE didn't bind, the
  * no-op's `checkApprovalRequired` reports `required: false` — bypassing
@@ -1393,18 +1393,536 @@ function pipelineErrorToResponse(error: PipelineError): Record<string, unknown> 
   }
 }
 
-// ── Shared user-query pipeline ──────────────────────────────────────
+// ── Unified SQL execution pipeline (#4185, ADR-0027) ────────────────
 //
-// Mirrors the executeSQL pipeline (validation → org-scoped connection →
-// approval → source-slot → plugin beforeQuery → RLS → auto-LIMIT →
-// execute + audit + mask + plugin afterQuery) but returns a discriminated
-// outcome instead of the agent-flavored success/error envelope. Used by
-// the dashboard canvas preview, single-card refresh, and bulk refresh —
-// every site that runs user-authored SQL but isn't the agent tool itself.
+// ONE core effect owns the full choreography for every path that runs
+// user- or agent-authored SQL:
 //
-// executeSQL keeps its own copy of the pipeline for now to avoid churn
-// against its ~3,000-line test surface; collapsing both onto this helper
-// is a planned architecture-wins follow-up.
+//   resolve connection → validate (+ fail audit) → fail-closed approval
+//   gate → source slot → plugin beforeQuery / re-validate → RLS →
+//   row limit → execute + audit (+ mask + afterQuery)
+//
+// `runUserQueryPipeline` (the raw-query path: dashboards, metrics,
+// validate-proposal, executeSQL-over-REST) and `executeSqlForConnection`
+// (the agent `executeSQL` leaf, called directly and via
+// `executeSqlFanout`) are THIN wrappers over this core: each contributes
+// only its pre-step (dashboard parameter binding vs result-cache check),
+// input adornments (fanout audit linkage, routing span attributes), and
+// a result adapter (the
+// `UserQueryOutcome` union vs the tool's `{success}` record). ADR-0027's
+// invariant — "raw-SQL reach ≡ agent-loop reach for the same member" — is
+// therefore structural: a governance fix to the pipeline cannot apply to
+// one path and silently skip the other, because there is only one
+// pipeline.
+
+/** Fail-closed approval-gate messages — surfaced verbatim by both wrappers. */
+const APPROVAL_UNAVAILABLE_MESSAGE =
+  "Approval system unavailable — query blocked. Contact your administrator.";
+const APPROVAL_IDENTITY_MISSING_MESSAGE =
+  "This query requires approval but the requester identity could not be determined. Please sign in and try again.";
+
+/**
+ * Optional pipeline pre-step, discriminated so a caller can't accidentally
+ * enable both: the raw path binds dashboard `:key` placeholders (#2267)
+ * BEFORE validation; the agent path consults the result cache AFTER the
+ * approval gate (a cache hit must never bypass governance or masking).
+ */
+type SqlPipelinePreStep =
+  | {
+      readonly kind: "bind-dashboard-parameters";
+      /**
+       * Resolved parameter values keyed by parameter key. A placeholder
+       * without a value is rejected (fail closed), never interpolated.
+       */
+      readonly values: Record<string, string | number | null>;
+    }
+  | { readonly kind: "check-cache" };
+
+export interface SqlPipelineOptions {
+  readonly sql: string;
+  /** Approval-request + response-surface description (e.g. "Dashboard preview: Weekly signups"). */
+  readonly explanation: string;
+  readonly connId: string;
+  /**
+   * Optional pre-step (see {@link SqlPipelinePreStep}). Direct callers
+   * must pick the pre-step matching their surface: SQL carrying `:key`
+   * placeholders REQUIRES `bind-dashboard-parameters` — without it the
+   * explicit fail-closed placeholder rejection is skipped and the query
+   * only fails later at AST validation with a less actionable parse
+   * error.
+   */
+  readonly preStep?: SqlPipelinePreStep;
+  /**
+   * Parent audit row id when this execution is one leg of a cross-environment
+   * fanout. Threaded through every `logQueryAudit` call so each audit row
+   * carries the linkage. Undefined for single-env executions.
+   */
+  readonly parentAuditId?: string;
+  /**
+   * Routing mode for the parent `executeSQL` call. Stamped on the OTel
+   * span so traces can attribute fanout behavior without joining audit
+   * rows. Defaults to "auto" when not threaded.
+   */
+  readonly routingMode?: RoutingMode;
+  /**
+   * Planner reason that picked this connection (e.g. `agent-all`,
+   * `picker-pin`, `1x1-group`). Stamped on the OTel span as
+   * `atlas.routing_reason`.
+   */
+  readonly routingReason?: RoutingReason;
+}
+
+/**
+ * Discriminated pipeline outcome. `executed` carries the response record
+ * built by {@link executeAndAuditEffect} (or its cache-hit equivalent) —
+ * wrappers adapt it to their own result shape. The approval outcomes carry
+ * structured fields so each wrapper composes its own user-facing message
+ * without the core duplicating either format.
+ */
+export type SqlPipelineOutcome =
+  | { readonly kind: "executed"; readonly result: Record<string, unknown> }
+  | { readonly kind: "validation_failed"; readonly message: string }
+  | { readonly kind: "approval_unavailable"; readonly message: string }
+  | { readonly kind: "approval_identity_missing"; readonly message: string }
+  | {
+      readonly kind: "approval_required";
+      readonly approvalRequestId: string;
+      readonly ruleName: string;
+      readonly matchedRules: readonly string[];
+    };
+
+/**
+ * The unified SQL execution pipeline core. Exported so tests can exercise
+ * the shared seam directly (approval fail-closed, RLS injection, row
+ * limit) — the wrappers add only input adornments and result adapters.
+ *
+ * Tagged errors flow through the error channel; expected rejections
+ * (validation, approval) return as outcome values.
+ */
+export function runSqlPipelineEffect(
+  opts: SqlPipelineOptions,
+): Effect.Effect<SqlPipelineOutcome, PipelineError> {
+  const { sql, explanation, connId, preStep, parentAuditId, routingMode, routingReason } = opts;
+
+  return Effect.gen(function* () {
+    // Resolve org context for tenant-scoped pool isolation
+    const reqCtx = getRequestContext();
+    const orgId = connections.isOrgPoolingEnabled()
+      ? reqCtx?.user?.activeOrganizationId
+      : undefined;
+    // Mode visibility always uses the real auth orgId — draft/published
+    // isolation applies in self-hosted single-org deployments as well as
+    // SaaS, even when pool-level org isolation is disabled.
+    const authOrgId = reqCtx?.user?.activeOrganizationId;
+    // Fail-closed default for mode: missing atlasMode implies published.
+    const atlasMode = reqCtx?.atlasMode ?? "published";
+
+    // Resolve connection (tagged errors)
+    const { db, dbType, poolOrgId } = yield* resolveConnectionEffect(connId, orgId, atlasMode, authOrgId);
+
+    const targetHost = connections.getTargetHost(connId, authOrgId);
+    const customValidator = connections.getValidator(connId, authOrgId);
+    let normalizedSql = sql.trim().replace(/;\s*$/, "").trimEnd();
+
+    // Pre-step (raw path): dashboard parameters (#2267) — rewrite `:<key>`
+    // placeholders to the dialect's positional binds and resolve the aligned
+    // value array. The bound SQL (positional placeholders) is what gets
+    // validated, RLS-injected, and executed; the values reach the DB ONLY
+    // through the driver bind protocol. Any SQL carrying placeholders MUST
+    // arrive with resolved values — a missing value or a non-bindable
+    // dialect is rejected (fail closed), never sent to the DB with a raw
+    // `:name` or interpolated.
+    let bindParams: readonly unknown[] | undefined;
+    if (preStep?.kind === "bind-dashboard-parameters" && extractPlaceholderNames(normalizedSql).length > 0) {
+      if (!isBindableDbType(dbType)) {
+        return {
+          kind: "validation_failed" as const,
+          message: "Parameterized queries are supported on PostgreSQL and MySQL datasources only.",
+        };
+      }
+      try {
+        const bound = bindDashboardParameters(normalizedSql, preStep.values, dbType);
+        normalizedSql = bound.sql;
+        bindParams = bound.values;
+      } catch (err) {
+        return {
+          kind: "validation_failed" as const,
+          message:
+            err instanceof DashboardParameterError
+              ? err.message
+              : "Failed to bind query parameters.",
+        };
+      }
+    }
+
+    // Validate (custom validator or standard SQL validation)
+    const initial = yield* runQueryValidationEffect(normalizedSql, connId, dbType, customValidator, authOrgId);
+    if (!initial.ok) {
+      logQueryAudit({
+        sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+        error: initial.auditError, sourceId: connId, sourceType: dbType, targetHost,
+        parentAuditId,
+      });
+      return { kind: "validation_failed" as const, message: initial.error };
+    }
+    // Classification is only populated for standard SQL (validateSQL path).
+    // Custom validators (SOQL, GraphQL) bypass node-sql-parser so classification
+    // stays undefined — their audit entries store NULL for tables/columns_accessed.
+    const classification = initial.classification;
+
+    // Enterprise approval check — the fail-closed gate, exactly once.
+    // F-54 / F-55: this gate is fail-CLOSED. The previous behaviour
+    // (catch → log.warn → proceed without approvalMatch) silently
+    // bypassed governance whenever the EE module failed to import or
+    // `checkApprovalRequired` rejected — a "catch { return false } on a
+    // security check is a bug" pattern called out in CLAUDE.md. The gate
+    // surfaces a clear "approval system unavailable" outcome so the
+    // operator sees the failure instead of silently executing
+    // approval-gated queries.
+    //
+    // When the caller binds no user, `checkApprovalRequired` itself
+    // returns `required: true` with `identityMissing: true` if any
+    // rule exists in the database; the Phase 2 user-identity gate below
+    // routes that into the `approval_identity_missing` outcome
+    // (`APPROVAL_IDENTITY_MISSING_MESSAGE`).
+    if (classification) {
+      // #3764 — compose the gate's per-method Effects with `yield*` instead of
+      // dropping out to `async`/`Effect.runPromise` per call. `loadApprovalGate()`
+      // resolves the EE-bound gate via the shared enterprise runtime (a legit
+      // Promise→Effect boundary, NOT the re-entry smell), then the gate's
+      // already-resolved Effects thread onto the surrounding pipeline fiber.
+      //
+      // Two distinct fail-closed regions are preserved exactly:
+      //   1. CHECK (gate load + checkApprovalRequired) → on failure, surface
+      //      `approval_unavailable` (block the query, don't bypass governance).
+      //   2. CREATE (hasApprovedRequest + createApprovalRequest) → on failure,
+      //      surface `QueryExecutionError` ("Approval workflow failed: …") so a
+      //      governance-write failure blocks rather than silently executes.
+      const check = yield* Effect.gen(function* () {
+        const approvalGate = yield* Effect.tryPromise({
+          try: () => loadApprovalGate(),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        });
+        const checkReqCtx = getRequestContext();
+        const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
+        const checkUserId = checkReqCtx?.user?.id;
+        // #2072 — propagate the request's agent origin so
+        // origin-scoped rules only fire on the matching transport.
+        // Routes stamp this on `withRequestContext`; an unstamped
+        // route (or a legacy caller) reaches checkApprovalRequired
+        // with `origin: undefined` and only triggers `'any'`
+        // rules — scope isolation rather than governance bypass,
+        // since the `'any'` migration default still fires.
+        const checkOrigin = checkReqCtx?.agentOrigin;
+        // Pass requesterId so the defensive identity-missing check
+        // distinguishes "scheduler/Slack/MCP forgot to bind anything"
+        // (fail-closed) from "demo / single-user mode bound a user
+        // but no org" (pass-through, no rule can match anyway).
+        const approvalMatch = yield* approvalGate.checkApprovalRequired(
+          checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
+          {
+            ...(checkUserId ? { requesterId: checkUserId } : {}),
+            ...(checkOrigin ? { origin: checkOrigin } : {}),
+          },
+        );
+        return { approvalGate, approvalMatch } as const;
+      }).pipe(
+        // `catchAllCause` (not `catchAll`): `checkApprovalRequired`'s typed
+        // error channel is `never`, so its only failure mode is a SYNCHRONOUS
+        // throw (a packaging glitch / unexpected DB schema inside the EE
+        // helper), which surfaces as a DEFECT — invisible to `catchAll`. The
+        // pre-#3764 `async`/`try-catch` body caught both; we must too, or a
+        // sync throw would escape the fail-closed gate as a 500.
+        Effect.catchAllCause((cause) => {
+          // Log the squashed Error object (a `FiberFailure` for a defect — an
+          // Error subclass) so pino's `err` serializer keeps the stack, matching
+          // the CREATE handler below + the P4 normalization (don't strip via
+          // `.message`).
+          log.error(
+            { err: Cause.squash(cause), connectionId: connId },
+            "Approval check failed — blocking query (fail-closed)",
+          );
+          return Effect.succeed({
+            kind: "approval_unavailable" as const,
+            message: APPROVAL_UNAVAILABLE_MESSAGE,
+          });
+        }),
+      );
+      // The catch branch returns the failure outcome with no `approvalGate`;
+      // discriminate on its presence to know the check succeeded.
+      if (!("approvalGate" in check)) return check;
+      const { approvalGate, approvalMatch } = check;
+
+      // Phase 2: create request (hard fail — governance bypass is worse than a failed query)
+      if (approvalMatch?.required) {
+        const reqCtxForApproval = getRequestContext();
+        const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
+        const userId = reqCtxForApproval?.user?.id;
+        const userEmail = reqCtxForApproval?.user?.label ?? null;
+
+        if (!userId || !approvalOrgId) {
+          log.warn(
+            { connectionId: connId, orgId: approvalOrgId, identityMissing: approvalMatch.identityMissing === true },
+            "Approval required but user identity unavailable — blocking query",
+          );
+          return {
+            kind: "approval_identity_missing" as const,
+            message: APPROVAL_IDENTITY_MISSING_MESSAGE,
+          };
+        }
+
+        const createOutcome = yield* Effect.gen(function* () {
+          const alreadyApproved = yield* approvalGate.hasApprovedRequest(approvalOrgId, userId, normalizedSql, connId);
+          if (alreadyApproved) return null;
+          const firstRule = approvalMatch.matchedRules[0];
+          const approvalReq = yield* approvalGate.createApprovalRequest({
+            orgId: approvalOrgId,
+            ruleId: firstRule.id,
+            ruleName: firstRule.name,
+            requesterId: userId,
+            requesterEmail: userEmail,
+            querySql: normalizedSql,
+            explanation,
+            connectionId: connId,
+            tablesAccessed: classification.tablesAccessed,
+            columnsAccessed: classification.columnsAccessed,
+            // #2072 — stamp the agent origin on the queue row
+            // for the audit dimension (queryable via direct SQL
+            // until an origin filter ships in /admin/audit).
+            origin: reqCtxForApproval?.agentOrigin ?? null,
+          });
+          logQueryAudit({
+            sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+            error: `Approval required: ${firstRule.name}`,
+            sourceId: connId, sourceType: dbType, targetHost,
+            parentAuditId,
+          });
+          return {
+            kind: "approval_required" as const,
+            approvalRequestId: approvalReq.id,
+            ruleName: firstRule.name,
+            matchedRules: approvalMatch.matchedRules.map((r) => r.name),
+          };
+        }).pipe(
+          // `catchAllCause`, like the check region: map BOTH typed failures
+          // (createApprovalRequest's ApprovalError | EnterpriseError | Error)
+          // AND defects (a sync throw inside the gate) to a typed
+          // `QueryExecutionError` so a governance-write failure blocks the
+          // query rather than escaping — the pre-#3764 outer `catch` did both.
+          Effect.catchAllCause((cause) => {
+            const err = Cause.squash(cause);
+            const message = err instanceof Error ? err.message : String(err);
+            log.error({ err, connectionId: connId }, "Approval workflow failed — blocking query");
+            return Effect.fail(new QueryExecutionError({ message: `Approval workflow failed: ${message}` }));
+          }),
+        );
+        if (createOutcome !== null) return createOutcome;
+      }
+    }
+
+    // Pre-step (agent path): result-cache check (short-circuit on hit).
+    // Deliberately AFTER the approval gate so a cache hit can never bypass
+    // governance, and masking + the CURRENT row limit apply before serving.
+    let cacheKey: string | null = null;
+    if (preStep?.kind === "check-cache" && cacheEnabled()) {
+      try {
+        const ctx = getRequestContext();
+        const cacheOrgId = ctx?.user?.activeOrganizationId;
+        const claims = ctx?.user?.claims;
+        cacheKey = buildCacheKey(normalizedSql, connId, cacheOrgId, claims);
+        const cached = getCache().get(cacheKey);
+        if (cached) {
+          // Wrapped locally (mirrors the live-path audit in
+          // `executeAndAuditEffect`) so an audit-write failure on a hit
+          // doesn't fall through to the outer catch — that catch mislabels
+          // any throw here as "Cache read failed" and needlessly re-executes
+          // the query, silently defeating the cache. A failed audit log
+          // should not cost us the cache hit.
+          try {
+            logQueryAudit({
+              // #3616 — replay the original execution duration persisted on
+              // the cache entry so this hit carries the query's real cost,
+              // not duration_ms=0. Falls back to 0 only for legacy/external
+              // entries written before executionMs was stamped.
+              sql: normalizedSql.slice(0, 2000), durationMs: cached.executionMs ?? 0,
+              rowCount: cached.rows.length,
+              success: true, sourceId: connId, sourceType: dbType, targetHost,
+              parentAuditId,
+            });
+          } catch (auditErr) {
+            log.warn(
+              { err: auditErr instanceof Error ? auditErr.message : String(auditErr), connectionId: connId },
+              "Failed to write cache-hit query audit log",
+            );
+          }
+          // Apply PII masking to cached results (same as live query path)
+          const cacheResponse = yield* Effect.tryPromise({
+            try: async () => {
+              // #3406 — enforce the CURRENT row limit (workspace tier
+              // included) on cache hits, not just the limit that applied
+              // when the entry was written: an admin lowering the cap (or
+              // adding a workspace override) must bound cached responses
+              // too, matching the fresh-query path where the limit rides
+              // the SQL itself. Slice before masking so dropped rows are
+              // never masked.
+              const cacheRowLimit = getRowLimit(authOrgId);
+              let cachedRows = cached.rows.length > cacheRowLimit
+                ? cached.rows.slice(0, cacheRowLimit)
+                : cached.rows;
+              const cachedTruncated = cached.rows.length >= cacheRowLimit;
+              let cachedMaskingApplied = false;
+              if (classification?.tablesAccessed.length && orgId) {
+                const preMaskRows = cachedRows;
+                try {
+                  cachedRows = await applyMaskingViaTag({
+                    columns: cached.columns, rows: preMaskRows,
+                    tablesAccessed: classification.tablesAccessed,
+                    orgId, userRole: ctx?.user?.role,
+                    connectionId: connId,
+                  });
+                  cachedMaskingApplied = cachedRows !== preMaskRows;
+                } catch (err) {
+                  // #2593 — `EnterpriseUnavailableError` (EE failed to bind
+                  // on SaaS) is fail-CLOSED; any other masking failure
+                  // deliberately fails OPEN (warn + serve unmasked), the
+                  // same scope as the live path in `executeAndAuditEffect`.
+                  if (err instanceof EnterpriseUnavailableError) throw err;
+                  log.warn(
+                    { err: err instanceof Error ? err.message : String(err), connectionId: connId },
+                    "PII masking failed on cached results — returning unmasked results",
+                  );
+                }
+              }
+              return {
+                success: true, explanation, row_count: cachedRows.length,
+                columns: cached.columns, rows: cachedRows,
+                truncated: cachedTruncated, cached: true,
+                maskingApplied: cachedMaskingApplied,
+                // Cost of *serving this hit* (~0, no DB round-trip) — NOT the
+                // original execution cost. The query's real duration is
+                // replayed onto the audit row above via `cached.executionMs`;
+                // this response field intentionally reports the cache-serve
+                // cost (#3616 naming: two distinct "executionMs" meanings).
+                executionMs: 0,
+              } as Record<string, unknown>;
+            },
+            catch: (err) => {
+              // #2593 — preserve fail-closed signal through the cache path.
+              if (err instanceof EnterpriseUnavailableError) return err;
+              const message = err instanceof Error ? err.message : String(err);
+              log.error({ err, connectionId: connId }, "Cache response processing failed");
+              return new QueryExecutionError({ message: `Cache response processing failed: ${message}` });
+            },
+          });
+          return { kind: "executed" as const, result: cacheResponse };
+        }
+      } catch (cacheErr) {
+        log.error({ err: cacheErr, connectionId: connId }, "Cache read failed — executing query against database");
+        cacheKey = null;
+      }
+    }
+
+    // Execute inside a rate-limit slot (concurrency release is automatic):
+    // plugin beforeQuery → re-validate → RLS → auto-LIMIT → execute + audit.
+    return yield* withSourceSlot(connId,
+      Effect.gen(function* () {
+        // Plugin beforeQuery hook (may rewrite SQL)
+        const { dispatchHook, dispatchMutableHook } = yield* Effect.tryPromise({
+          try: () => import("@atlas/api/lib/plugins/hooks"),
+          catch: (err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            log.error({ err, connectionId: connId }, "Failed to load plugin hooks module");
+            return new PluginRejectedError({ message: `Plugin system unavailable: ${message}`, connectionId: connId });
+          },
+        });
+        const hookMetadata: Record<string, unknown> = {};
+        // Which SQL string the hook receives is derived from the pre-step
+        // (keeping it a free option would let a caller desync the hook
+        // input from the bind array): the agent path (`check-cache`)
+        // historically hands plugins the ORIGINAL (untrimmed, possibly
+        // `;`-suffixed) SQL; the raw path hands the normalized/bound SQL
+        // so the hook, re-validation, RLS, and execution all operate on
+        // the same string the bind array aligns to (#2267). Plugins that
+        // rewrite SQL must preserve placeholder order for parameterized
+        // cards.
+        const hookInputSql = preStep?.kind === "check-cache" ? sql : normalizedSql;
+        const hookCtx = { sql: hookInputSql, connectionId: connId, metadata: hookMetadata };
+        const mutatedSql = yield* Effect.tryPromise({
+          try: () => dispatchMutableHook("beforeQuery", hookCtx, "sql"),
+          catch: (err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            return new PluginRejectedError({
+              message: `Query rejected by plugin: ${message}`,
+              connectionId: connId,
+            });
+          },
+        }).pipe(
+          Effect.tapError((error) =>
+            Effect.sync(() =>
+              logQueryAudit({
+                sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+                error: `Plugin rejected: ${error.message}`,
+                sourceId: connId, sourceType: dbType, targetHost,
+                parentAuditId,
+              }),
+            ),
+          ),
+        );
+
+        // Re-validate if plugin rewrote the SQL
+        let normalizedMutated = mutatedSql.trim().replace(/;\s*$/, "").trimEnd();
+        if (normalizedMutated !== normalizedSql) {
+          const revalidation = yield* runQueryValidationEffect(normalizedMutated, connId, dbType, customValidator, authOrgId);
+          if (!revalidation.ok) {
+            logQueryAudit({
+              sql: normalizedMutated.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+              error: `Plugin-rewritten SQL failed validation: ${revalidation.auditError}`,
+              sourceId: connId, sourceType: dbType, targetHost,
+              parentAuditId,
+            });
+            return { kind: "validation_failed" as const, message: `Plugin-rewritten SQL failed validation: ${revalidation.error}` };
+          }
+        }
+
+        // RLS: inject WHERE conditions (skipped for custom validators / non-SQL languages)
+        if (!customValidator) {
+          normalizedMutated = yield* applyRLSEffect(normalizedMutated, connId, dbType, targetHost);
+        }
+
+        // Auto-append LIMIT if not present
+        const rowLimit = getRowLimit(authOrgId);
+        const queryTimeout = getQueryTimeout(authOrgId);
+        let querySql = normalizedMutated;
+        if (!customValidator && !hasLimitClause(querySql, { backslashEscapes: dbType === "mysql" })) {
+          querySql = appendRowLimit(querySql, rowLimit);
+        }
+
+        // Execute the query
+        const result = yield* executeAndAuditEffect({
+          db, dbType, connId, orgId, poolOrgId, targetHost, querySql, queryTimeout,
+          rowLimit, explanation, classification, cacheKey,
+          hookMetadata, dispatchHook, bindParams, parentAuditId, routingMode, routingReason,
+        });
+        return { kind: "executed" as const, result };
+      }),
+    ).pipe(
+      // Audit log rate-limit rejections (inner errors have their own audit handling)
+      Effect.tapError((error) => {
+        if (error._tag === "RateLimitExceededError" || error._tag === "ConcurrencyLimitError") {
+          return Effect.sync(() =>
+            logQueryAudit({
+              sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+              error: `Rate limited: ${error.message}`,
+              sourceId: connId, sourceType: dbType, targetHost,
+              parentAuditId,
+            }),
+          );
+        }
+        return Effect.void;
+      }),
+    );
+  });
+}
 
 export type UserQueryOutcome =
   | {
@@ -1438,7 +1956,7 @@ export type UserQueryOutcome =
 export interface RunUserQueryOpts {
   readonly sql: string;
   readonly connectionId?: string;
-  /** Audit + approval surface description (e.g. "Dashboard preview: Weekly signups"). */
+  /** Approval-request + response-surface description (e.g. "Dashboard preview: Weekly signups"). */
   readonly explanation: string;
   /**
    * Resolved dashboard parameter values keyed by parameter key (#2267). When
@@ -1453,283 +1971,56 @@ export interface RunUserQueryOpts {
 
 /**
  * Run user-authored SQL through the production pipeline and return a
- * discriminated outcome. See the comment block above for which steps run.
+ * discriminated outcome. Thin wrapper over {@link runSqlPipelineEffect}:
+ * contributes the dashboard-parameter pre-step (#2267) and adapts the
+ * shared outcome onto the {@link UserQueryOutcome} union. Used by the
+ * dashboard canvas preview, single-card refresh, bulk refresh, metrics,
+ * validate-proposal, and executeSQL-over-REST — every site that runs
+ * user-authored SQL but isn't the agent tool itself.
  */
 export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryOutcome> {
-  const { sql, explanation } = opts;
   const connId = opts.connectionId ?? "default";
 
-  const pipeline: Effect.Effect<UserQueryOutcome, PipelineError> = Effect.gen(function* () {
-    const reqCtx = getRequestContext();
-    const orgId = connections.isOrgPoolingEnabled()
-      ? reqCtx?.user?.activeOrganizationId
-      : undefined;
-    const authOrgId = reqCtx?.user?.activeOrganizationId;
-    const atlasMode = reqCtx?.atlasMode ?? "published";
-
-    const { db, dbType, poolOrgId } = yield* resolveConnectionEffect(connId, orgId, atlasMode, authOrgId);
-
-    const targetHost = connections.getTargetHost(connId, authOrgId);
-    const customValidator = connections.getValidator(connId, authOrgId);
-    let normalizedSql = sql.trim().replace(/;\s*$/, "").trimEnd();
-
-    // Dashboard parameters (#2267): rewrite `:<key>` placeholders to the
-    // dialect's positional binds and resolve the aligned value array. The
-    // bound SQL (positional placeholders) is what gets validated, RLS-injected,
-    // and executed; the values reach the DB ONLY through the driver bind
-    // protocol. Any SQL carrying placeholders MUST arrive with resolved values
-    // — a missing value or a non-bindable dialect is rejected (fail closed),
-    // never sent to the DB with a raw `:name` or interpolated.
-    let bindParams: readonly unknown[] | undefined;
-    if (extractPlaceholderNames(normalizedSql).length > 0) {
-      if (!isBindableDbType(dbType)) {
-        return {
-          kind: "validation_failed" as const,
-          message: "Parameterized queries are supported on PostgreSQL and MySQL datasources only.",
-        };
-      }
-      try {
-        const bound = bindDashboardParameters(normalizedSql, opts.parameters ?? {}, dbType);
-        normalizedSql = bound.sql;
-        bindParams = bound.values;
-      } catch (err) {
-        return {
-          kind: "validation_failed" as const,
-          message:
-            err instanceof DashboardParameterError
-              ? err.message
-              : "Failed to bind query parameters.",
-        };
-      }
-    }
-
-    const initial = yield* runQueryValidationEffect(normalizedSql, connId, dbType, customValidator, authOrgId);
-    if (!initial.ok) {
-      logQueryAudit({
-        sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-        error: initial.auditError, sourceId: connId, sourceType: dbType,
-      });
-      return { kind: "validation_failed" as const, message: initial.error };
-    }
-    const classification = initial.classification;
-
-    // Approval gate — fail closed.
-    if (classification) {
-      // #3764 — compose the gate's per-method Effects with `yield*` instead of
-      // dropping out to `async`/`Effect.runPromise` per call. `loadApprovalGate()`
-      // resolves the EE-bound gate via the shared enterprise runtime (a legit
-      // Promise→Effect boundary, NOT the re-entry smell), then the gate's
-      // already-resolved Effects thread onto the surrounding pipeline fiber.
-      //
-      // Two distinct fail-closed regions are preserved exactly:
-      //   1. CHECK (gate load + checkApprovalRequired) → on failure, surface
-      //      `approval_unavailable` (block the query, don't bypass governance).
-      //   2. CREATE (hasApprovedRequest + createApprovalRequest) → on failure,
-      //      surface `QueryExecutionError` ("Approval workflow failed: …") so a
-      //      governance-write failure blocks rather than silently executes.
-      const check = yield* Effect.gen(function* () {
-        const approvalGate = yield* Effect.tryPromise({
-          try: () => loadApprovalGate(),
-          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-        });
-        const checkReqCtx = getRequestContext();
-        const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
-        const checkUserId = checkReqCtx?.user?.id;
-        const checkOrigin = checkReqCtx?.agentOrigin;
-        const approvalMatch = yield* approvalGate.checkApprovalRequired(
-          checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
-          {
-            ...(checkUserId ? { requesterId: checkUserId } : {}),
-            ...(checkOrigin ? { origin: checkOrigin } : {}),
-          },
-        );
-        return { approvalGate, approvalMatch } as const;
-      }).pipe(
-        // `catchAllCause` (not `catchAll`): `checkApprovalRequired`'s typed
-        // error channel is `never`, so its only failure mode is a SYNCHRONOUS
-        // throw (a packaging glitch / unexpected DB schema inside the EE
-        // helper), which surfaces as a DEFECT — invisible to `catchAll`. The
-        // pre-#3764 `async`/`try-catch` body caught both; we must too, or a
-        // sync throw would escape the fail-closed gate as a 500.
-        Effect.catchAllCause((cause) => {
-          // Log the squashed Error object (a `FiberFailure` for a defect — an
-          // Error subclass) so pino's `err` serializer keeps the stack, matching
-          // the CREATE handler below + the P4 normalization (don't strip via
-          // `.message`).
-          log.error(
-            { err: Cause.squash(cause), connectionId: connId },
-            "Approval check failed — blocking query (fail-closed)",
-          );
-          return Effect.succeed({
-            kind: "approval_unavailable" as const,
-            message: "Approval system unavailable — query blocked. Contact your administrator.",
-          });
-        }),
-      );
-      // The catch branch returns the failure outcome with no `approvalGate`;
-      // discriminate on its presence to know the check succeeded.
-      if (!("approvalGate" in check)) return check;
-      const { approvalGate, approvalMatch } = check;
-
-      if (approvalMatch?.required) {
-        const reqCtxForApproval = getRequestContext();
-        const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
-        const userId = reqCtxForApproval?.user?.id;
-        const userEmail = reqCtxForApproval?.user?.label ?? null;
-
-        if (!userId || !approvalOrgId) {
-          log.warn(
-            { connectionId: connId, orgId: approvalOrgId, identityMissing: approvalMatch.identityMissing === true },
-            "Approval required but user identity unavailable — blocking query",
-          );
+  const pipeline: Effect.Effect<UserQueryOutcome, PipelineError> = runSqlPipelineEffect({
+    sql: opts.sql,
+    explanation: opts.explanation,
+    connId,
+    preStep: { kind: "bind-dashboard-parameters", values: opts.parameters ?? {} },
+  }).pipe(
+    Effect.map((outcome): UserQueryOutcome => {
+      switch (outcome.kind) {
+        case "executed": {
+          const result = outcome.result;
           return {
-            kind: "approval_identity_missing" as const,
-            message: "This query requires approval but the requester identity could not be determined. Please sign in and try again.",
+            kind: "ok",
+            columns: result.columns as string[],
+            rows: result.rows as Record<string, unknown>[],
+            rowCount: result.row_count as number,
+            executionMs: result.executionMs as number,
+            truncated: result.truncated as boolean,
+            maskingApplied: result.maskingApplied as boolean,
           };
         }
-
-        const createOutcome = yield* Effect.gen(function* () {
-          const alreadyApproved = yield* approvalGate.hasApprovedRequest(approvalOrgId, userId, normalizedSql, connId);
-          if (alreadyApproved) return null;
-          const firstRule = approvalMatch.matchedRules[0];
-          const approvalReq = yield* approvalGate.createApprovalRequest({
-            orgId: approvalOrgId,
-            ruleId: firstRule.id,
-            ruleName: firstRule.name,
-            requesterId: userId,
-            requesterEmail: userEmail,
-            querySql: normalizedSql,
-            explanation,
-            connectionId: connId,
-            tablesAccessed: classification.tablesAccessed,
-            columnsAccessed: classification.columnsAccessed,
-            origin: reqCtxForApproval?.agentOrigin ?? null,
-          });
-          logQueryAudit({
-            sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-            error: `Approval required: ${firstRule.name}`,
-            sourceId: connId, sourceType: dbType, targetHost,
-          });
+        case "validation_failed":
+        case "approval_unavailable":
+        case "approval_identity_missing":
+          return outcome;
+        case "approval_required":
           return {
-            kind: "approval_required" as const,
-            approvalRequestId: approvalReq.id,
-            matchedRules: approvalMatch.matchedRules.map((r) => r.name),
+            kind: "approval_required",
+            approvalRequestId: outcome.approvalRequestId,
+            matchedRules: [...outcome.matchedRules],
             message:
-              `This query requires approval before execution. Rule: "${firstRule.name}". ` +
-              `An approval request has been submitted (ID: ${approvalReq.id}).`,
-          } satisfies UserQueryOutcome;
-        }).pipe(
-          // `catchAllCause`, like the check region: map BOTH typed failures
-          // (createApprovalRequest's ApprovalError | EnterpriseError | Error)
-          // AND defects (a sync throw inside the gate) to a typed
-          // `QueryExecutionError` so a governance-write failure blocks the
-          // query rather than escaping — the pre-#3764 outer `catch` did both.
-          Effect.catchAllCause((cause) => {
-            const err = Cause.squash(cause);
-            const message = err instanceof Error ? err.message : String(err);
-            log.error({ err, connectionId: connId }, "Approval workflow failed — blocking query");
-            return Effect.fail(new QueryExecutionError({ message: `Approval workflow failed: ${message}` }));
-          }),
-        );
-        if (createOutcome !== null) return createOutcome;
+              `This query requires approval before execution. Rule: "${outcome.ruleName}". ` +
+              `An approval request has been submitted (ID: ${outcome.approvalRequestId}).`,
+          };
+        default: {
+          const _exhaustive: never = outcome;
+          return _exhaustive;
+        }
       }
-    }
-
-    // Source-slot wrapper: plugin beforeQuery → re-validate → RLS → LIMIT → execute.
-    const slotResult = yield* withSourceSlot(
-      connId,
-      Effect.gen(function* () {
-        const { dispatchHook, dispatchMutableHook } = yield* Effect.tryPromise({
-          try: () => import("@atlas/api/lib/plugins/hooks"),
-          catch: (err) => {
-            const message = err instanceof Error ? err.message : String(err);
-            log.error({ err, connectionId: connId }, "Failed to load plugin hooks module");
-            return new PluginRejectedError({ message: `Plugin system unavailable: ${message}`, connectionId: connId });
-          },
-        });
-        const hookMetadata: Record<string, unknown> = {};
-        // Use the bound SQL (positional placeholders) so the beforeQuery hook,
-        // re-validation, RLS, and execution all operate on the same string the
-        // bind array aligns to (#2267). Plugins that rewrite SQL must preserve
-        // placeholder order for parameterized cards.
-        const hookCtx = { sql: normalizedSql, connectionId: connId, metadata: hookMetadata };
-        const mutatedSql = yield* Effect.tryPromise({
-          try: () => dispatchMutableHook("beforeQuery", hookCtx, "sql"),
-          catch: (err) => {
-            const message = err instanceof Error ? err.message : String(err);
-            return new PluginRejectedError({
-              message: `Query rejected by plugin: ${message}`,
-              connectionId: connId,
-            });
-          },
-        }).pipe(
-          Effect.tapError((error) =>
-            Effect.sync(() =>
-              logQueryAudit({
-                sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-                error: `Plugin rejected: ${error.message}`,
-                sourceId: connId, sourceType: dbType, targetHost,
-              }),
-            ),
-          ),
-        );
-
-        let normalizedMutated = mutatedSql.trim().replace(/;\s*$/, "").trimEnd();
-        if (normalizedMutated !== normalizedSql) {
-          const revalidation = yield* runQueryValidationEffect(normalizedMutated, connId, dbType, customValidator, authOrgId);
-          if (!revalidation.ok) {
-            logQueryAudit({
-              sql: normalizedMutated.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-              error: `Plugin-rewritten SQL failed validation: ${revalidation.auditError}`,
-              sourceId: connId, sourceType: dbType, targetHost,
-            });
-            return { kind: "validation_failed" as const, message: `Plugin-rewritten SQL failed validation: ${revalidation.error}` };
-          }
-        }
-
-        if (!customValidator) {
-          normalizedMutated = yield* applyRLSEffect(normalizedMutated, connId, dbType, targetHost);
-        }
-
-        const rowLimit = getRowLimit(authOrgId);
-        const queryTimeout = getQueryTimeout(authOrgId);
-        let querySql = normalizedMutated;
-        if (!customValidator && !hasLimitClause(querySql, { backslashEscapes: dbType === "mysql" })) {
-          querySql = appendRowLimit(querySql, rowLimit);
-        }
-
-        const result = yield* executeAndAuditEffect({
-          db, dbType, connId, orgId, poolOrgId, targetHost, querySql, queryTimeout,
-          rowLimit, explanation, classification, cacheKey: null,
-          hookMetadata, dispatchHook, bindParams,
-        });
-        return {
-          kind: "ok" as const,
-          columns: result.columns as string[],
-          rows: result.rows as Record<string, unknown>[],
-          rowCount: result.row_count as number,
-          executionMs: result.executionMs as number,
-          truncated: result.truncated as boolean,
-          maskingApplied: result.maskingApplied as boolean,
-        };
-      }),
-    ).pipe(
-      Effect.tapError((error) => {
-        if (error._tag === "RateLimitExceededError" || error._tag === "ConcurrencyLimitError") {
-          return Effect.sync(() =>
-            logQueryAudit({
-              sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-              error: `Rate limited: ${error.message}`,
-              sourceId: connId, sourceType: dbType, targetHost,
-            }),
-          );
-        }
-        return Effect.void;
-      }),
-    );
-
-    return slotResult;
-  });
+    }),
+  );
 
   return Effect.runPromise(
     pipeline.pipe(
@@ -1779,13 +2070,12 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
 /**
  * Single-environment SQL execution leaf used by both the back-compat path
  * (no `scope`) and the agent-decided fanout path (`scope: "all"` or a
- * named member id, PRD #2515 / slice 1 #2516). The body is the original
- * `executeSQL.execute` pipeline; the dispatch lives in the tool wrapper
- * below so existing callers see zero behaviour change.
- *
- * Returns the tool's `{success: true | false, ...}` response shape as an
- * opaque record — the merger then reads `columns` / `rows` / `error` from
- * each per-member outcome to compose the fanned-out result.
+ * named member id, PRD #2515 / slice 1 #2516). Thin wrapper over
+ * {@link runSqlPipelineEffect}: contributes the result-cache pre-step +
+ * fanout/routing adornments, and adapts the shared outcome onto the
+ * tool's `{success: true | false, ...}` response shape as an opaque
+ * record — the merger then reads `columns` / `rows` / `error` from each
+ * per-member outcome to compose the fanned-out result.
  */
 async function executeSqlForConnection({
   sql,
@@ -1798,400 +2088,57 @@ async function executeSqlForConnection({
   readonly sql: string;
   readonly explanation: string;
   readonly connId: string;
-  /**
-   * Parent audit row id when this execution is one leg of a cross-environment
-   * fanout. Threaded through every `logQueryAudit` call below so each audit
-   * row carries the linkage. Undefined for single-env executions.
-   */
+  /** See {@link SqlPipelineOptions.parentAuditId}. */
   readonly parentAuditId?: string;
-  /**
-   * Routing mode for the parent `executeSQL` call. Stamped on the OTel
-   * span so traces can attribute fanout behavior without joining audit
-   * rows. Defaults to "auto" when not threaded.
-   */
+  /** See {@link SqlPipelineOptions.routingMode}. */
   readonly routingMode?: RoutingMode;
-  /**
-   * Planner reason that picked this connection (e.g. `agent-all`,
-   * `picker-pin`, `1x1-group`). Stamped on the OTel span as
-   * `atlas.routing_reason` so observers can distinguish fanout-by-agent
-   * from fanout-by-picker without joining audit rows.
-   */
+  /** See {@link SqlPipelineOptions.routingReason}. */
   readonly routingReason?: RoutingReason;
 }): Promise<Record<string, unknown>> {
-    // The full pipeline runs as an Effect.gen program. Tagged errors flow through
-    // the error channel; expected rejections (validation, approval, cache) return
-    // as {success: false} values. At the boundary, catchAll maps errors to responses.
-    const pipeline = Effect.gen(function* () {
-      // Resolve org context for tenant-scoped pool isolation
-      const reqCtx = getRequestContext();
-      const orgId = connections.isOrgPoolingEnabled()
-        ? reqCtx?.user?.activeOrganizationId
-        : undefined;
-      // Mode visibility always uses the real auth orgId — draft/published
-      // isolation applies in self-hosted single-org deployments as well as
-      // SaaS, even when pool-level org isolation is disabled.
-      const authOrgId = reqCtx?.user?.activeOrganizationId;
-      // Fail-closed default for mode: missing atlasMode implies published.
-      const atlasMode = reqCtx?.atlasMode ?? "published";
-
-      // Step 1: Resolve connection (tagged errors)
-      const { db, dbType, poolOrgId } = yield* resolveConnectionEffect(connId, orgId, atlasMode, authOrgId);
-
-      const targetHost = connections.getTargetHost(connId, authOrgId);
-      const customValidator = connections.getValidator(connId, authOrgId);
-      const normalizedSql = sql.trim().replace(/;\s*$/, "").trimEnd();
-
-      // Step 2: Validate (custom validator or standard SQL validation)
-      const initial = yield* runQueryValidationEffect(normalizedSql, connId, dbType, customValidator, authOrgId);
-      if (!initial.ok) {
-        logQueryAudit({
-          sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-          error: initial.auditError, sourceId: connId, sourceType: dbType,
-          parentAuditId,
-        });
-        return { success: false, error: initial.error, executionMs: 0 };
-      }
-      // Classification is only populated for standard SQL (validateSQL path).
-      // Custom validators (SOQL, GraphQL) bypass node-sql-parser so classification
-      // stays undefined — their audit entries store NULL for tables/columns_accessed.
-      const classification = initial.classification;
-
-      // Step 3: Enterprise approval check.
-      // F-54 / F-55: this gate is fail-CLOSED. The previous behaviour
-      // (catch → log.warn → proceed without approvalMatch) silently
-      // bypassed governance whenever the EE module failed to import or
-      // `checkApprovalRequired` rejected — a "catch { return false } on a
-      // security check is a bug" pattern called out in CLAUDE.md. The new
-      // shape returns a clear "approval system unavailable" error to the
-      // agent so the operator sees the failure instead of silently
-      // executing approval-gated queries.
-      //
-      // When the caller binds no user, `checkApprovalRequired` itself
-      // now returns `required: true` with `identityMissing: true` if any
-      // rule exists in the database; the Phase 2 user-identity gate
-      // below routes that into the "approve via the Atlas web app" error.
-      if (classification) {
-        // #3764 — same `yield*` composition as the live path above: resolve the
-        // EE-bound gate via `loadApprovalGate()` (Promise→Effect boundary) and
-        // thread its already-resolved Effects onto the pipeline fiber rather
-        // than re-entering via `Effect.runPromise` per call. The two
-        // fail-closed regions are preserved: a CHECK failure (gate load /
-        // checkApprovalRequired) → `approval system unavailable`; a CREATE
-        // failure → `QueryExecutionError` (governance bypass is worse than a
-        // failed query). `identityMissing` is a value branch, not a failure.
-        const check = yield* Effect.gen(function* () {
-          const approvalGate = yield* Effect.tryPromise({
-            try: () => loadApprovalGate(),
-            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-          });
-          const checkReqCtx = getRequestContext();
-          const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
-          const checkUserId = checkReqCtx?.user?.id;
-          // #2072 — propagate the request's agent origin so
-          // origin-scoped rules only fire on the matching transport.
-          // Routes stamp this on `withRequestContext`; an unstamped
-          // route (or a legacy caller) reaches checkApprovalRequired
-          // with `origin: undefined` and only triggers `'any'`
-          // rules — scope isolation rather than governance bypass,
-          // since the `'any'` migration default still fires.
-          const checkOrigin = checkReqCtx?.agentOrigin;
-          // Pass requesterId so the defensive identity-missing check
-          // distinguishes "scheduler/Slack/MCP forgot to bind anything"
-          // (fail-closed) from "demo / single-user mode bound a user
-          // but no org" (pass-through, no rule can match anyway).
-          const approvalMatch = yield* approvalGate.checkApprovalRequired(
-            checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
-            {
-              ...(checkUserId ? { requesterId: checkUserId } : {}),
-              ...(checkOrigin ? { origin: checkOrigin } : {}),
-            },
-          );
-          return { approvalGate, approvalMatch } as const;
-        }).pipe(
-          // `catchAllCause`: a sync throw from the gate surfaces as a defect,
-          // which `catchAll` would miss — block fail-closed on both (see the
-          // live-path region above for the full rationale).
-          Effect.catchAllCause((cause) => {
-            // Log the squashed Error object (stack-preserving) to match the
-            // live-path CHECK handler + the CREATE handler below (#3764 P4).
-            log.error(
-              { err: Cause.squash(cause), connectionId: connId },
-              "Approval check failed — blocking query (fail-closed)",
-            );
-            return Effect.succeed({
-              success: false as const,
-              error: "Approval system unavailable — query blocked. Contact your administrator.",
-              executionMs: 0,
-            });
-          }),
-        );
-        if (!("approvalGate" in check)) return check;
-        const { approvalGate, approvalMatch } = check;
-
-        // Phase 2: create request (hard fail — governance bypass is worse than a failed query)
-        if (approvalMatch?.required) {
-          const reqCtxForApproval = getRequestContext();
-          const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
-          const userId = reqCtxForApproval?.user?.id;
-          const userEmail = reqCtxForApproval?.user?.label ?? null;
-
-          if (!userId || !approvalOrgId) {
-            log.warn(
-              { connectionId: connId, orgId: approvalOrgId, identityMissing: approvalMatch.identityMissing === true },
-              "Approval required but user identity unavailable — blocking query",
-            );
-            return {
-              success: false,
-              error: "This query requires approval but the requester identity could not be determined. Please sign in and try again.",
-              executionMs: 0,
-            };
-          }
-
-          const createResult = yield* Effect.gen(function* () {
-            const alreadyApproved = yield* approvalGate.hasApprovedRequest(approvalOrgId, userId, normalizedSql, connId);
-            if (alreadyApproved) return null;
-            const firstRule = approvalMatch.matchedRules[0];
-            const approvalReq = yield* approvalGate.createApprovalRequest({
-              orgId: approvalOrgId,
-              ruleId: firstRule.id,
-              ruleName: firstRule.name,
-              requesterId: userId,
-              requesterEmail: userEmail,
-              querySql: normalizedSql,
-              explanation,
-              connectionId: connId,
-              tablesAccessed: classification.tablesAccessed,
-              columnsAccessed: classification.columnsAccessed,
-              // #2072 — stamp the agent origin on the queue row
-              // for the audit dimension (queryable via direct SQL
-              // until an origin filter ships in /admin/audit).
-              origin: reqCtxForApproval?.agentOrigin ?? null,
-            });
-            logQueryAudit({
-              sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-              error: `Approval required: ${firstRule.name}`,
-              sourceId: connId, sourceType: dbType, targetHost,
-              parentAuditId,
-            });
-            return {
-              success: false,
-              approval_required: true,
-              approval_request_id: approvalReq.id,
-              matched_rules: approvalMatch.matchedRules.map((r: { name: string }) => r.name),
-              message: `This query requires approval before execution. Rule: "${firstRule.name}". ` +
-                `An approval request has been submitted (ID: ${approvalReq.id}). ` +
-                `An admin must approve it before the query can run.`,
-              executionMs: 0,
-            };
-          }).pipe(
-            // Phase 2 failure — governance bypass is worse than a failed query.
-            // `catchAllCause` so a sync throw (defect) from the gate is mapped
-            // too, not just typed failures. Surface as a typed error so it
-            // reaches the agent as {success: false}.
-            Effect.catchAllCause((cause) => {
-              const err = Cause.squash(cause);
-              const message = err instanceof Error ? err.message : String(err);
-              log.error({ err, connectionId: connId }, "Approval request creation failed — blocking query");
-              return Effect.fail(new QueryExecutionError({ message: `Approval workflow failed: ${message}` }));
-            }),
-          );
-          if (createResult !== null) return createResult;
+  const pipeline = runSqlPipelineEffect({
+    sql,
+    explanation,
+    connId,
+    preStep: { kind: "check-cache" },
+    parentAuditId,
+    routingMode,
+    routingReason,
+  }).pipe(
+    Effect.map((outcome): Record<string, unknown> => {
+      switch (outcome.kind) {
+        case "executed":
+          return outcome.result;
+        case "validation_failed":
+        case "approval_unavailable":
+        case "approval_identity_missing":
+          return { success: false, error: outcome.message, executionMs: 0 };
+        case "approval_required":
+          return {
+            success: false,
+            approval_required: true,
+            approval_request_id: outcome.approvalRequestId,
+            matched_rules: [...outcome.matchedRules],
+            message: `This query requires approval before execution. Rule: "${outcome.ruleName}". ` +
+              `An approval request has been submitted (ID: ${outcome.approvalRequestId}). ` +
+              `An admin must approve it before the query can run.`,
+            executionMs: 0,
+          };
+        default: {
+          const _exhaustive: never = outcome;
+          return _exhaustive;
         }
       }
+    }),
+  );
 
-      // Step 4: Cache check (short-circuit on hit)
-      let cacheKey: string | null = null;
-      if (cacheEnabled()) {
-        try {
-          const ctx = getRequestContext();
-          const cacheOrgId = ctx?.user?.activeOrganizationId;
-          const claims = ctx?.user?.claims;
-          cacheKey = buildCacheKey(normalizedSql, connId, cacheOrgId, claims);
-          const cached = getCache().get(cacheKey);
-          if (cached) {
-            // Wrapped locally (mirrors the live-path audit at ~1248) so an
-            // audit-write failure on a hit doesn't fall through to the outer
-            // catch — that catch mislabels any throw here as "Cache read
-            // failed" and needlessly re-executes the query, silently defeating
-            // the cache. A failed audit log should not cost us the cache hit.
-            try {
-              logQueryAudit({
-                // #3616 — replay the original execution duration persisted on
-                // the cache entry so this hit carries the query's real cost,
-                // not duration_ms=0. Falls back to 0 only for legacy/external
-                // entries written before executionMs was stamped.
-                sql: normalizedSql.slice(0, 2000), durationMs: cached.executionMs ?? 0,
-                rowCount: cached.rows.length,
-                success: true, sourceId: connId, sourceType: dbType, targetHost,
-                parentAuditId,
-              });
-            } catch (auditErr) {
-              log.warn(
-                { err: auditErr instanceof Error ? auditErr.message : String(auditErr), connectionId: connId },
-                "Failed to write cache-hit query audit log",
-              );
-            }
-            // Apply PII masking to cached results (same as live query path)
-            const cacheResponse = yield* Effect.tryPromise({
-              try: async () => {
-                // #3406 — enforce the CURRENT row limit (workspace tier
-                // included) on cache hits, not just the limit that applied
-                // when the entry was written: an admin lowering the cap (or
-                // adding a workspace override) must bound cached responses
-                // too, matching the fresh-query path where the limit rides
-                // the SQL itself. Slice before masking so dropped rows are
-                // never masked.
-                const cacheRowLimit = getRowLimit(authOrgId);
-                let cachedRows = cached.rows.length > cacheRowLimit
-                  ? cached.rows.slice(0, cacheRowLimit)
-                  : cached.rows;
-                const cachedTruncated = cached.rows.length >= cacheRowLimit;
-                let cachedMaskingApplied = false;
-                if (classification?.tablesAccessed.length && orgId) {
-                  const preMaskRows = cachedRows;
-                  try {
-                    cachedRows = await applyMaskingViaTag({
-                      columns: cached.columns, rows: preMaskRows,
-                      tablesAccessed: classification.tablesAccessed,
-                      orgId, userRole: ctx?.user?.role,
-                      connectionId: connId,
-                    });
-                    cachedMaskingApplied = cachedRows !== preMaskRows;
-                  } catch (err) {
-                    // #2593 — fail-closed (same rationale as the live path).
-                    if (err instanceof EnterpriseUnavailableError) throw err;
-                    log.warn(
-                      { err: err instanceof Error ? err.message : String(err), connectionId: connId },
-                      "PII masking failed on cached results — returning unmasked results",
-                    );
-                  }
-                }
-                return {
-                  success: true, explanation, row_count: cachedRows.length,
-                  columns: cached.columns, rows: cachedRows,
-                  truncated: cachedTruncated, cached: true,
-                  maskingApplied: cachedMaskingApplied,
-                  // Cost of *serving this hit* (~0, no DB round-trip) — NOT the
-                  // original execution cost. The query's real duration is
-                  // replayed onto the audit row above via `cached.executionMs`;
-                  // this response field intentionally reports the cache-serve
-                  // cost (#3616 naming: two distinct "executionMs" meanings).
-                  executionMs: 0,
-                };
-              },
-              catch: (err) => {
-                // #2593 — preserve fail-closed signal through the cache path.
-                if (err instanceof EnterpriseUnavailableError) return err;
-                const message = err instanceof Error ? err.message : String(err);
-                log.error({ err, connectionId: connId }, "Cache response processing failed");
-                return new QueryExecutionError({ message: `Cache response processing failed: ${message}` });
-              },
-            });
-            return cacheResponse;
-          }
-        } catch (cacheErr) {
-          log.error({ err: cacheErr, connectionId: connId }, "Cache read failed — executing query against database");
-          cacheKey = null;
-        }
-      }
-
-      // Step 5: Execute inside a rate-limit slot (concurrency release is automatic)
-      return yield* withSourceSlot(connId,
-        Effect.gen(function* () {
-          // Plugin beforeQuery hook (may rewrite SQL)
-          const { dispatchHook, dispatchMutableHook } = yield* Effect.tryPromise({
-            try: () => import("@atlas/api/lib/plugins/hooks"),
-            catch: (err) => {
-              const message = err instanceof Error ? err.message : String(err);
-              log.error({ err, connectionId: connId }, "Failed to load plugin hooks module");
-              return new PluginRejectedError({ message: `Plugin system unavailable: ${message}`, connectionId: connId });
-            },
-          });
-          const hookMetadata: Record<string, unknown> = {};
-          const hookCtx = { sql, connectionId: connId, metadata: hookMetadata };
-          const mutatedSql = yield* Effect.tryPromise({
-            try: () => dispatchMutableHook("beforeQuery", hookCtx, "sql"),
-            catch: (err) => {
-              const message = err instanceof Error ? err.message : String(err);
-              return new PluginRejectedError({
-                message: `Query rejected by plugin: ${message}`,
-                connectionId: connId,
-              });
-            },
-          }).pipe(
-            Effect.tapError((error) =>
-              Effect.sync(() =>
-                logQueryAudit({
-                  sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-                  error: `Plugin rejected: ${error.message}`,
-                  sourceId: connId, sourceType: dbType, targetHost,
-                  parentAuditId,
-                }),
-              ),
-            ),
-          );
-
-          // Re-validate if plugin rewrote the SQL
-          let normalizedMutated = mutatedSql.trim().replace(/;\s*$/, "").trimEnd();
-          if (normalizedMutated !== normalizedSql) {
-            const revalidation = yield* runQueryValidationEffect(normalizedMutated, connId, dbType, customValidator, authOrgId);
-            if (!revalidation.ok) {
-              logQueryAudit({
-                sql: normalizedMutated.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-                error: `Plugin-rewritten SQL failed validation: ${revalidation.auditError}`,
-                sourceId: connId, sourceType: dbType, targetHost,
-                parentAuditId,
-              });
-              return { success: false, error: `Plugin-rewritten SQL failed validation: ${revalidation.error}`, executionMs: 0 };
-            }
-          }
-
-          // RLS: inject WHERE conditions (skipped for custom validators / non-SQL languages)
-          if (!customValidator) {
-            normalizedMutated = yield* applyRLSEffect(normalizedMutated, connId, dbType, targetHost);
-          }
-
-          // Auto-append LIMIT if not present
-          const rowLimit = getRowLimit(authOrgId);
-          const queryTimeout = getQueryTimeout(authOrgId);
-          let querySql = normalizedMutated;
-          if (!customValidator && !hasLimitClause(querySql, { backslashEscapes: dbType === "mysql" })) {
-            querySql = appendRowLimit(querySql, rowLimit);
-          }
-
-          // Execute the query
-          return yield* executeAndAuditEffect({
-            db, dbType, connId, orgId, poolOrgId, targetHost, querySql, queryTimeout,
-            rowLimit, explanation, classification, cacheKey: cacheKey ?? null,
-            hookMetadata, dispatchHook, parentAuditId, routingMode, routingReason,
-          });
-        }),
-      ).pipe(
-        // Audit log rate-limit rejections (inner errors have their own audit handling)
-        Effect.tapError((error) => {
-          if (error._tag === "RateLimitExceededError" || error._tag === "ConcurrencyLimitError") {
-            return Effect.sync(() =>
-              logQueryAudit({
-                sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-                error: `Rate limited: ${error.message}`,
-                sourceId: connId, sourceType: dbType, targetHost,
-                parentAuditId,
-              }),
-            );
-          }
-          return Effect.void;
-        }),
-      );
-    });
-
-    // Run the pipeline, mapping tagged errors to {success: false} tool responses
-    return Effect.runPromise(
-      pipeline.pipe(
-        Effect.catchAll((error: PipelineError) =>
-          Effect.succeed(pipelineErrorToResponse(error)),
-        ),
+  // Run the pipeline, mapping tagged errors to {success: false} tool responses
+  return Effect.runPromise(
+    pipeline.pipe(
+      Effect.catchAll((error: PipelineError) =>
+        Effect.succeed(pipelineErrorToResponse(error)),
       ),
-    );
+    ),
+  );
 }
 
 /**

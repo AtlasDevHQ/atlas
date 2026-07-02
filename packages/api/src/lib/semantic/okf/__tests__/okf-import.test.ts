@@ -327,7 +327,10 @@ title: Orders
     const glossary = yaml.load(files.find((f) => f.path === "glossary.yml")?.content ?? "") as {
       terms: Record<string, Record<string, unknown>>;
     };
-    expect(glossary.terms.constructor.status).toBe("defined");
+    // Map-based lookup: `.constructor` property access would resolve to the
+    // Object.prototype member in TS, which is the very trap under test.
+    const entry = new Map(Object.entries(glossary.terms)).get("constructor");
+    expect(entry?.status).toBe("defined");
     expect(report.unmapped.some((u) => u.includes("duplicate"))).toBe(false);
   });
 

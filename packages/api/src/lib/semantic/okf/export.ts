@@ -106,7 +106,14 @@ interface ParsedLayer {
 }
 
 function parseLayer(files: InteropFile[], report: MappingReport): ParsedLayer {
-  const layer: ParsedLayer = { entities: [], metrics: [], terms: {}, catalog: undefined };
+  const layer: ParsedLayer = {
+    entities: [],
+    metrics: [],
+    // Null prototype for the same reason as the importer: term names are
+    // arbitrary user vocabulary ("constructor" is a plausible business term).
+    terms: Object.create(null) as ParsedLayer["terms"],
+    catalog: undefined,
+  };
   for (const file of files) {
     if (!/\.ya?ml$/.test(file.path)) continue;
     let doc: unknown;
@@ -143,17 +150,26 @@ function parseLayer(files: InteropFile[], report: MappingReport): ParsedLayer {
     } else if (base === "glossary.yml" || base === "glossary.yaml") {
       if (isRecord(doc.terms)) {
         for (const [name, entry] of Object.entries(doc.terms)) {
-          if (isRecord(entry)) {
-            layer.terms[name] = entry;
-          } else {
+          if (!isRecord(entry)) {
             report.unmapped.push(`${file.path}: glossary term "${name}" is not a mapping — skipped`);
+          } else if (Object.hasOwn(layer.terms, name)) {
+            // Multi-source layers can carry several glossary.yml files.
+            report.unmapped.push(
+              `${file.path}: glossary term "${name}" already defined by an earlier file — skipped`,
+            );
+          } else {
+            layer.terms[name] = entry;
           }
         }
       } else {
         report.unmapped.push(`${file.path}: glossary file without a \`terms\` mapping`);
       }
     } else if (base === "catalog.yml" || base === "catalog.yaml") {
-      layer.catalog = doc;
+      if (layer.catalog !== undefined) {
+        report.unmapped.push(`${file.path}: a catalog file was already read — this one ignored`);
+      } else {
+        layer.catalog = doc;
+      }
     } else {
       report.notes.push(`${file.path}: not an entity/glossary/metric/catalog file — skipped`);
     }
@@ -415,7 +431,7 @@ export function exportToOkf(
   const entityDocs = layer.entities.map((entity) =>
     renderEntityDoc(
       entity,
-      metricLinksByEntity.get(asString(entity.name) ?? String(entity.table)) ?? [],
+      metricLinksByEntity.get(asString(entity.name) ?? entity.table) ?? [],
       options,
       report,
     ),
@@ -436,7 +452,7 @@ export function exportToOkf(
         "Tables",
         layer.entities.map((e, i) => ({
           href: entityDocs[i].path.replace(/^tables\//, ""),
-          label: asString(e.name) ?? String(e.table),
+          label: asString(e.name) ?? e.table,
           description: asString(e.description),
         })),
       ),

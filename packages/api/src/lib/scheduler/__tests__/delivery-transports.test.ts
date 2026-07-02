@@ -10,9 +10,11 @@
  *   - webhook: blocked URL (pre-flight + egress guard) and HTTP 4xx
  */
 import { describe, it, expect, mock } from "bun:test";
+import { Effect } from "effect";
 import { EgressBlockedError } from "@atlas/api/lib/openapi/egress-guard";
 import type { FormattedResult } from "../shape-result";
 import {
+  deliverVia,
   emailTransport,
   slackTransport,
   webhookTransport,
@@ -139,5 +141,45 @@ describe("isHttpPermanent", () => {
     expect(isHttpPermanent(400)).toBe(true);
     expect(isHttpPermanent(499)).toBe(true);
     expect(isHttpPermanent(500)).toBe(false);
+  });
+});
+
+describe("deliverVia wrapper failure policy (#4198)", () => {
+  // A minimal stub transport; individual cases override load/inspect to fail.
+  const baseStub = {
+    channel: "webhook" as const,
+    recipient: "https://example.com/hook",
+    send: async () => ({ ok: true }),
+    inspect: () => null,
+    success: () => ({ fields: {}, message: "delivered" }),
+  };
+
+  // `Effect.flip` turns the DeliveryError channel into the success channel so
+  // runPromise resolves with the error for inspection.
+  const failureOf = (transport: Parameters<typeof deliverVia>[0]) =>
+    Effect.runPromise(Effect.flip(deliverVia(transport, shaped)));
+
+  it("maps a rejecting load to a transient DeliveryError (retryable)", async () => {
+    const err = await failureOf({
+      ...baseStub,
+      load: async () => {
+        throw new Error("dynamic import blew up");
+      },
+    });
+    expect(err.permanent).toBe(false);
+    expect(err.message).toContain("dynamic import blew up");
+    expect(err.channel).toBe("webhook");
+  });
+
+  it("maps a rejecting inspect to a transient DeliveryError, not a batch-killing defect", async () => {
+    const err = await failureOf({
+      ...baseStub,
+      load: async () => ({}),
+      inspect: async () => {
+        throw new Error("response read failed");
+      },
+    });
+    expect(err.permanent).toBe(false);
+    expect(err.message).toContain("response read failed");
   });
 });

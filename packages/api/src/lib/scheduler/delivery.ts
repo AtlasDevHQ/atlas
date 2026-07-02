@@ -125,8 +125,9 @@ export function isHttpPermanent(status: number): boolean {
 /**
  * A classified delivery failure: the `DeliveryError` fields plus the log line
  * that should accompany it. `permanent` is the channel's permanence policy —
- * it decides whether the executor retries (transient) or records
- * `failed_permanent` (misconfiguration; see {@link DeliverySummary}).
+ * it decides whether `deliverResult`'s retry loop retries it (transient) or
+ * the run is recorded as `failed_permanent` (misconfiguration; see
+ * {@link DeliverySummary}).
  */
 export interface DeliveryFailure {
   readonly message: string;
@@ -142,7 +143,7 @@ export interface DeliveryFailure {
 /**
  * Channel descriptor consumed by {@link deliverVia}. The shared wrapper owns
  * the skeleton (dynamic import → transport call → response inspection →
- * logging → `DeliveryError` construction); a channel supplies only:
+ * logging → `DeliveryError` construction); a channel supplies:
  *
  * - `load` — backend acquisition (dynamic import + credential resolution).
  *   A rejection is always a **transient** failure; contextualize the message
@@ -152,7 +153,9 @@ export interface DeliveryFailure {
  * - `classifyThrown` — the permanence policy for errors thrown by `send`.
  *   Returning `null` falls back to the default: transient, raw message.
  * - `inspect` — the permanence policy for a resolved response. Returning
- *   `null` means the delivery succeeded.
+ *   `null` means the delivery succeeded. Must be total (never reject): the
+ *   wrapper maps a rejection to a transient failure, not a defect.
+ * - `success` — the fields + message for the success log line.
  */
 interface ChannelTransport<Backend, Resp> {
   readonly channel: Recipient["type"];
@@ -181,8 +184,11 @@ const rethrowWith =
 /**
  * The single transport wrapper: load → send → classify → log → DeliveryError.
  * Every `DeliveryError` a channel can produce is constructed here.
+ *
+ * Exported for wrapper-policy unit tests (#4198) — the load/inspect
+ * failure-to-transient mapping is exercised via a stub transport.
  */
-function deliverVia<Backend, Resp>(
+export function deliverVia<Backend, Resp>(
   transport: ChannelTransport<Backend, Resp>,
   shaped: FormattedResult,
 ): Effect.Effect<void, DeliveryError> {
@@ -197,7 +203,7 @@ function deliverVia<Backend, Resp>(
   /** Emit the failure's log line (once per attempt) and build its error. */
   const failWith = (failure: DeliveryFailure): DeliveryError => {
     if (failure.log) {
-      const fields = { taskId: shaped.taskId, ...failure.log.fields };
+      const fields = { ...failure.log.fields, taskId: shaped.taskId };
       if (failure.log.level === "warn") log.warn(fields, failure.log.message);
       else log.error(fields, failure.log.message);
     }
@@ -218,13 +224,20 @@ function deliverVia<Backend, Resp>(
       },
     });
 
-    const failure = yield* Effect.promise(async () => transport.inspect(resp));
+    const failure = yield* Effect.tryPromise({
+      try: async () => transport.inspect(resp),
+      // A rejecting `inspect` degrades to a transient failure for THIS
+      // recipient — consistent with the load/send catches. Using Effect.promise
+      // here would turn a rejection into a defect (die) that escapes the
+      // per-recipient catchTag and aborts the whole batch (see #4198 review).
+      catch: (err) => toError({ message: errMsg(err), permanent: false }),
+    });
     if (failure) {
       return yield* Effect.fail(failWith(failure));
     }
 
     const success = transport.success(resp);
-    log.info({ taskId: shaped.taskId, ...success.fields }, success.message);
+    log.info({ ...success.fields, taskId: shaped.taskId }, success.message);
   });
 }
 

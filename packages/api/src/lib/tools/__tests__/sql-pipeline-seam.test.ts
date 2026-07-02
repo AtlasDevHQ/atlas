@@ -68,8 +68,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
 }));
 
 mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Effect type complex to express
-  withSourceSlot: (_sourceId: string, effect: any) => effect,
+  withSourceSlot: <A, E>(_sourceId: string, effect: Effect.Effect<A, E>) => effect,
 }));
 
 // Result cache — the agent-path pre-step. Mutable knobs let the ordering

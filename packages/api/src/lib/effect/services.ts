@@ -1585,10 +1585,12 @@ export const NoopComplianceReportsLayer: Layer.Layer<ComplianceReports> =
 // ── ApprovalGate (#2567 — slice 5/11 of #2017) ───────────────────────
 //
 // Inverts every `@atlas/ee/governance/approval` reference in
-// `packages/api/src/`: the four dynamic imports in `lib/tools/sql.ts`
-// (checkApprovalRequired + createApprovalRequest + hasApprovedRequest,
-// fired twice — once on the live path, once on the cached path) and
-// the static admin-route imports in `api/routes/admin-approval.ts`.
+// `packages/api/src/`: at the time, the four dynamic imports in
+// `lib/tools/sql.ts` (checkApprovalRequired + createApprovalRequest +
+// hasApprovedRequest, fired twice — once per hand-mirrored pipeline
+// copy; since #4185 sql.ts has ONE approval region resolving the gate
+// through its `loadApprovalGate` seam) and the static admin-route
+// imports in `api/routes/admin-approval.ts`.
 // EE overlays the real implementation; the no-op default returns
 // `{ required: false }` so self-hosted bypasses the gate, matching the
 // pre-#2567 behavior when the EE module wasn't installed.

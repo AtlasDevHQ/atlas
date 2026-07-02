@@ -58,6 +58,7 @@ export const CONTENT_MODE_TABLES = [
   {
     kind: "exotic",
     key: "semantic_entities",
+    promotedKey: "entities",
     countSegments: [
       {
         key: "entities",

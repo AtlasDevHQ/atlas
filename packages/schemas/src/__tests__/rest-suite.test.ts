@@ -65,7 +65,7 @@ describe("RunMetricRestResponseSchema (#4111)", () => {
 
 describe("PublishResultSchema (#4156)", () => {
   const ok = {
-    promoted: { connections: 1, entities: 12, prompts: 0, starterPrompts: 2 },
+    promoted: { connections: 1, entities: 12, prompts: 0, starterPrompts: 2, knowledgeDocuments: 0 },
     deleted: { entities: 3 },
   };
 

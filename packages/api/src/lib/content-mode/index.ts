@@ -31,4 +31,5 @@ export {
 } from "./port";
 
 export { CONTENT_MODE_TABLES } from "./tables";
-export type { InferDraftCounts } from "./infer";
+export type { InferDraftCounts, InferPromotedCounts } from "./infer";
+export { promotedCountsFromReports } from "./promoted";

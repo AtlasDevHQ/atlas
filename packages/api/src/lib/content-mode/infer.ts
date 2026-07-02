@@ -70,3 +70,30 @@ export type InferDraftCounts<
 > = UnionToIntersection<EntryToRecord<T[number]>> extends infer R
   ? { readonly [K in keyof R]: R[K] }
   : never;
+
+/**
+ * Map a single entry to its contribution to `PublishPromotedCounts`: a simple
+ * entry reports under its own `key`; an exotic adapter reports under its
+ * declared `promotedKey` (e.g. `semantic_entities` → `entities`).
+ */
+type EntryToPromotedRecord<E extends ContentModeEntry> = E extends {
+  kind: "simple";
+  key: infer K extends string;
+}
+  ? { readonly [P in K]: number }
+  : E extends { kind: "exotic"; promotedKey: infer K extends string }
+    ? { readonly [P in K]: number }
+    : never;
+
+/**
+ * The derived shape of `PublishPromotedCounts` for a given registry tuple —
+ * one promoted count per registered entry. The equality assertion against the
+ * wire type in `__tests__/registry.test.ts` makes "added a surface to the
+ * registry but forgot the publish result" a compile error instead of a silent
+ * under-report (the exact bug knowledge shipped with in milestone #81).
+ */
+export type InferPromotedCounts<
+  T extends ReadonlyArray<ContentModeEntry>,
+> = UnionToIntersection<EntryToPromotedRecord<T[number]>> extends infer R
+  ? { readonly [K in keyof R]: R[K] }
+  : never;

@@ -28,7 +28,11 @@
 import { Cause, Effect, ManagedRuntime } from "effect";
 import type { AtlasMode } from "@useatlas/types/auth";
 import type { PublishResult, WorkspaceId } from "@useatlas/types";
-import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
+import {
+  CONTENT_MODE_TABLES,
+  makeService,
+  promotedCountsFromReports,
+} from "@atlas/api/lib/content-mode";
 import { connections } from "@atlas/api/lib/db/connection";
 import type { HealthCheckResult, DBType } from "@atlas/api/lib/db/connection";
 import { getInternalDB, hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -284,17 +288,12 @@ export async function publishWorkspaceDrafts(orgId: string): Promise<PublishWork
     );
     await client.query("COMMIT");
 
-    const find = (table: string) => reports.find((r) => r.table === table);
-    const entitiesReport = find("semantic_entities");
+    // One promoted count per registry entry — derived, so a newly-registered
+    // surface can never be silently dropped from this result (the fan-out this
+    // replaces omitted `knowledge_documents` when it registered).
+    const entitiesReport = reports.find((r) => r.table === "semantic_entities");
     const result: PublishWorkspaceDraftsResult = {
-      promoted: {
-        // #2744 — the `connections` segment key points at the physical
-        // `workspace_plugins` table; mirrors `admin-publish.ts`.
-        connections: find("workspace_plugins")?.promoted ?? 0,
-        entities: entitiesReport?.promoted ?? 0,
-        prompts: find("prompt_collections")?.promoted ?? 0,
-        starterPrompts: find("query_suggestions")?.promoted ?? 0,
-      },
+      promoted: promotedCountsFromReports(CONTENT_MODE_TABLES, reports),
       // #4156 — `deleted.entities` (shared shape), NOT the old flat
       // `deletedEntities`; mirrors the REST route's `deleted: { entities }`.
       deleted: { entities: entitiesReport?.tombstonesApplied ?? 0 },

@@ -1,7 +1,7 @@
 {
   "name": "@useatlas/schemas",
-  "version": "0.0.7",
-  "description": "Shared Zod schemas for Atlas wire format — single source of truth for API route validation and web response parsing",
+  "version": "0.0.8",
+  "description": "Shared Zod schemas for Atlas wire format \u2014 single source of truth for API route validation and web response parsing",
   "type": "module",
   "private": true,
   "license": "AGPL-3.0-or-later",

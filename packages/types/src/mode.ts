@@ -75,10 +75,12 @@ export interface ModeStatusResponse {
 
 /**
  * Per-content-type promotion counts returned by the atomic publish operation
- * (#4126) — one number per promotable content surface. These are the four
- * surfaces the publish flow promotes, a subset of {@link ModeDraftCounts}: that
- * type's `entityEdits` fold into `entities`, and its `entityDeletes` become the
- * separate {@link PublishResult.deleted} `entities` count.
+ * (#4126) — one number per promotable content surface, i.e. one per
+ * content-mode registry entry (the API derives this shape from the registry
+ * via `InferPromotedCounts` and drift-checks it at compile time). A subset of
+ * {@link ModeDraftCounts}: that type's `entityEdits` fold into `entities`, and
+ * its `entityDeletes` become the separate {@link PublishResult.deleted}
+ * `entities` count.
  */
 export interface PublishPromotedCounts {
   /** Datasource connections promoted `draft` → `published`. */
@@ -89,6 +91,8 @@ export interface PublishPromotedCounts {
   readonly prompts: number;
   /** Starter-prompt suggestions promoted. */
   readonly starterPrompts: number;
+  /** Hosted-OKF knowledge documents promoted (#4206 / ADR-0028). */
+  readonly knowledgeDocuments: number;
 }
 
 /**

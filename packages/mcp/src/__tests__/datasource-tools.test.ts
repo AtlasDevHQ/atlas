@@ -199,7 +199,7 @@ const mockProfileLive = mock<(...a: unknown[]) => Promise<unknown>>(async (...a:
 // #4126 — publish_datasources' lib call. Default: nothing pending. The lib
 // returns the shared PublishResult core (#4156 — `deleted: { entities }`).
 let publishResult: unknown = {
-  promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0 },
+  promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0, knowledgeDocuments: 0 },
   deleted: { entities: 0 },
 };
 const mockPublishWorkspaceDrafts = mock<(...a: unknown[]) => Promise<unknown>>(
@@ -324,7 +324,7 @@ beforeEach(() => {
   mockElicit.mockClear();
   mockPublishWorkspaceDrafts.mockClear();
   publishResult = {
-    promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0 },
+    promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0, knowledgeDocuments: 0 },
     deleted: { entities: 0 },
   };
   gateCalls = [];
@@ -842,7 +842,7 @@ describe("restore_datasource", () => {
 describe("publish_datasources (#4126)", () => {
   it("calls the lib seam with the bound org and shapes the promoted/deleted counts", async () => {
     publishResult = {
-      promoted: { connections: 1, entities: 3, prompts: 0, starterPrompts: 0 },
+      promoted: { connections: 1, entities: 3, prompts: 0, starterPrompts: 0, knowledgeDocuments: 0 },
       deleted: { entities: 1 },
     };
     const client = await createTestClient();
@@ -853,7 +853,7 @@ describe("publish_datasources (#4126)", () => {
     // `deleted_entities`.
     const expected = {
       published: true,
-      promoted: { connections: 1, entities: 3, prompts: 0, starterPrompts: 0 },
+      promoted: { connections: 1, entities: 3, prompts: 0, starterPrompts: 0, knowledgeDocuments: 0 },
       deleted: { entities: 1 },
     };
     const body = JSON.parse(getContentText(res.content));
@@ -868,7 +868,7 @@ describe("publish_datasources (#4126)", () => {
     const client = await createTestClient();
     const res = await client.callTool({ name: "publish_datasources", arguments: {} });
     const body = JSON.parse(getContentText(res.content));
-    expect(body.promoted).toEqual({ connections: 0, entities: 0, prompts: 0, starterPrompts: 0 });
+    expect(body.promoted).toEqual({ connections: 0, entities: 0, prompts: 0, starterPrompts: 0, knowledgeDocuments: 0 });
     expect(body.deleted).toEqual({ entities: 0 });
   });
 

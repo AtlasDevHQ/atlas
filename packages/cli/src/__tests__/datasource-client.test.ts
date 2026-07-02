@@ -143,7 +143,7 @@ describe("datasource-client route mapping (#4044)", () => {
 
   it("publish → POST /api/v1/admin/publish with no archiveConnections (#4126)", async () => {
     const { fetchImpl, calls } = stubFetch(200, {
-      promoted: { connections: 1, entities: 2, prompts: 0, starterPrompts: 0 },
+      promoted: { connections: 1, entities: 2, prompts: 0, starterPrompts: 0, knowledgeDocuments: 0 },
       deleted: { entities: 0 },
       archived: { connections: 0, entities: 0, prompts: 0 },
     });
@@ -151,7 +151,7 @@ describe("datasource-client route mapping (#4044)", () => {
     expect(calls[0].method).toBe("POST");
     expect(calls[0].url).toBe(`${BASE}/api/v1/admin/publish`);
     expect(JSON.parse(calls[0].body!)).toEqual({});
-    expect(out.promoted).toEqual({ connections: 1, entities: 2, prompts: 0, starterPrompts: 0 });
+    expect(out.promoted).toEqual({ connections: 1, entities: 2, prompts: 0, starterPrompts: 0, knowledgeDocuments: 0 });
     // Lock the delete-count pass-through at the client boundary too (#4156).
     expect(out.deleted).toEqual({ entities: 0 });
   });

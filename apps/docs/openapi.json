@@ -58263,13 +58263,18 @@
                         "starterPrompts": {
                           "type": "integer",
                           "minimum": 0
+                        },
+                        "knowledgeDocuments": {
+                          "type": "integer",
+                          "minimum": 0
                         }
                       },
                       "required": [
                         "connections",
                         "entities",
                         "prompts",
-                        "starterPrompts"
+                        "starterPrompts",
+                        "knowledgeDocuments"
                       ]
                     },
                     "deleted": {

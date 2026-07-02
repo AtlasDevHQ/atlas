@@ -64,6 +64,16 @@ export type SimpleModeTable = {
 export type ExoticModeAdapter = {
   readonly kind: "exotic";
   readonly key: string;
+  /**
+   * The `PublishPromotedCounts` wire key this adapter's promotion count
+   * reports under (e.g. `semantic_entities` → `"entities"`). Simple entries
+   * report under their own `key`; exotic adapters must name theirs because
+   * the physical key and the wire vocabulary can diverge. Drives
+   * `InferPromotedCounts` + `promotedCountsFromReports`, so a registry entry
+   * can never be silently dropped from the publish result again (#81 arch
+   * review — knowledge published but was omitted from `promoted`).
+   */
+  readonly promotedKey: string;
   readonly countSegments: ReadonlyArray<{
     readonly key: string;
     readonly sql: (orgParam: string) => string;

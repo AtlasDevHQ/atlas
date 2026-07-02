@@ -449,6 +449,12 @@ describe("migrateAuthTables", () => {
             // (ADR-0027 §6, #4046); ALTERs the Atlas-internal audit_log, no FK to
             // a Better Auth table, so it runs in every auth mode — must be listed.
             { name: "0160_audit_log_actor_kind_api_key.sql" },
+            // 0161–0163 (#4206, ADR-0028) — pillar CHECK widen +
+            // knowledge_documents / knowledge_links. Atlas-internal tables, no
+            // FK to a Better Auth table, so they run in every auth mode.
+            { name: "0161_knowledge_pillar_check.sql" },
+            { name: "0162_knowledge_documents.sql" },
+            { name: "0163_knowledge_links.sql" },
           ],
         };
       }

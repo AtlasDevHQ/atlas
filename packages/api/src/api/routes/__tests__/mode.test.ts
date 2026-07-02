@@ -454,6 +454,24 @@ describe("GET /api/v1/mode — draft counts", () => {
     expect(unionCall).toContain("status = 'draft'");
   });
 
+  it("scopes the knowledge_documents activity segment by workspace_id, not org_id (#4206)", async () => {
+    // DRAFT_ACTIVITY_SQL is a hand-written route constant. The knowledge
+    // segment is the ONLY one keyed on `workspace_id` (every sibling uses
+    // `org_id`), so a copy-paste typo to `org_id` would 500 the endpoint at
+    // runtime (`column "org_id" does not exist`) while passing every
+    // registry-driven count assertion. Pin the segment's table + scope column.
+    await request("/api/v1/mode");
+    const calls = mockInternalQuery.mock.calls.map(([sql]) => String(sql));
+    // The activity query is the UNION that reports MAX(updated_at) per surface.
+    const activityCall = calls.find(
+      (sql) =>
+        sql.includes("MAX(updated_at)") && sql.includes("'knowledgeDocuments'"),
+    );
+    expect(activityCall).toBeDefined();
+    expect(activityCall).toContain("FROM knowledge_documents");
+    expect(activityCall).toContain("workspace_id = $1");
+  });
+
   it("returns draftCounts=null when no orgId is available", async () => {
     authenticated = true;
     currentAuthMode = "managed";

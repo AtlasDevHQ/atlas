@@ -13055,6 +13055,10 @@
                         "starterPrompts": {
                           "type": "integer",
                           "minimum": 0
+                        },
+                        "knowledgeDocuments": {
+                          "type": "integer",
+                          "minimum": 0
                         }
                       },
                       "required": [
@@ -13063,7 +13067,8 @@
                         "entityEdits",
                         "entityDeletes",
                         "prompts",
-                        "starterPrompts"
+                        "starterPrompts",
+                        "knowledgeDocuments"
                       ]
                     },
                     "draftActivity": {
@@ -13161,6 +13166,21 @@
                           "required": [
                             "lastEditedAt"
                           ]
+                        },
+                        "knowledgeDocuments": {
+                          "type": "object",
+                          "properties": {
+                            "lastEditedAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date-time"
+                            }
+                          },
+                          "required": [
+                            "lastEditedAt"
+                          ]
                         }
                       },
                       "required": [
@@ -13169,7 +13189,8 @@
                         "entityEdits",
                         "entityDeletes",
                         "prompts",
-                        "starterPrompts"
+                        "starterPrompts",
+                        "knowledgeDocuments"
                       ]
                     }
                   },

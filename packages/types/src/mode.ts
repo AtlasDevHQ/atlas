@@ -24,6 +24,8 @@ export interface ModeDraftCounts {
   readonly prompts: number;
   /** Draft starter-prompt suggestions (status = 'draft'). */
   readonly starterPrompts: number;
+  /** Draft hosted-OKF knowledge documents (status = 'draft'), #4206 / ADR-0028. */
+  readonly knowledgeDocuments: number;
 }
 
 /**
@@ -44,6 +46,7 @@ export interface ModeDraftActivity {
   readonly entityDeletes: { readonly lastEditedAt: string | null };
   readonly prompts: { readonly lastEditedAt: string | null };
   readonly starterPrompts: { readonly lastEditedAt: string | null };
+  readonly knowledgeDocuments: { readonly lastEditedAt: string | null };
 }
 
 /**

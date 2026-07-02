@@ -1631,7 +1631,9 @@ export const pluginCatalog = pgTable(
       .where(sql`enabled = true`),
     check("chk_plugin_catalog_type", sql`type IN ('datasource', 'context', 'interaction', 'action', 'sandbox', 'chat', 'integration')`),
     check("chk_plugin_catalog_install_model", sql`install_model IN ('oauth', 'form', 'static-bot', 'oauth-datasource')`),
-    check("chk_plugin_catalog_pillar", sql`pillar IN ('datasource', 'chat', 'action')`),
+    // 0161 / #4206 / ADR-0028 — widened to admit the fourth pillar `knowledge`
+    // (hosted OKF collections). Kept in lockstep with migration 0161.
+    check("chk_plugin_catalog_pillar", sql`pillar IN ('datasource', 'chat', 'action', 'knowledge')`),
     check("chk_plugin_catalog_implementation_status", sql`implementation_status IN ('available', 'coming_soon')`),
   ],
 );
@@ -1732,8 +1734,103 @@ export const workspacePlugins = pgTable(
     index("idx_workspace_plugins_workspace").on(t.workspaceId),
     index("idx_workspace_plugins_catalog").on(t.catalogId),
     index("idx_workspace_plugins_status").on(t.workspaceId, t.status),
-    check("chk_workspace_plugins_pillar", sql`pillar IN ('datasource', 'chat', 'action')`),
+    // 0161 / #4206 / ADR-0028 — widened to admit the fourth pillar `knowledge`.
+    // The `workspace_plugins_singleton` partial unique above stays
+    // `WHERE pillar IN ('chat', 'action')`, so knowledge (like datasource) is
+    // multi-instance per (workspace, catalog) — that exclusion is what makes
+    // collections possible.
+    check("chk_workspace_plugins_pillar", sql`pillar IN ('datasource', 'chat', 'action', 'knowledge')`),
     check("chk_workspace_plugins_status", sql`status IN ('published', 'draft', 'archived')`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Knowledge Base pillar (0162 / 0163 — #4206, ADR-0028)
+// ---------------------------------------------------------------------------
+
+// knowledge_documents — hosted OKF documents, one row per file in a
+// collection's bundle tree. A collection is a `workspace_plugins` install
+// (pillar `knowledge`, `install_id` = collection slug). Workspace-global,
+// never group-scoped; owned by exactly one collection via `collectionId`.
+// OKF frontmatter is stored as real columns; the body byte-identical.
+// Content-mode participant — every ingest lands `draft` (the ADR-0028 §4
+// review gate), promoted only via the atomic publish endpoint. Mirrors
+// migration 0162.
+export const knowledgeDocuments = pgTable(
+  "knowledge_documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // Better-Auth organization id. Workspace-global (no group FK), TEXT/no-FK
+    // like the other org-scoped Atlas tables.
+    workspaceId: text("workspace_id").notNull(),
+    // The owning collection = `workspace_plugins.install_id` slug. No composite
+    // FK (see migration 0162); referential integrity is the ingest slice's job.
+    collectionId: text("collection_id").notNull(),
+    // Bundle path within the collection tree, unique PER COLLECTION.
+    path: text("path").notNull(),
+    // OKF frontmatter, stored verbatim.
+    type: text("type"),
+    title: text("title"),
+    description: text("description"),
+    tags: jsonb("tags").notNull().default(sql`'[]'::jsonb`),
+    // OKF `timestamp` frontmatter field (the document's own timestamp),
+    // distinct from Atlas ingest bookkeeping. Column is `"timestamp"` (a
+    // Postgres type keyword) — JS field renamed to avoid shadowing the
+    // imported `timestamp` column helper.
+    docTimestamp: timestamp("timestamp", { withTimezone: true }),
+    resource: text("resource"),
+    // Markdown body, byte-identical to what was reviewed (ADR-0028 §3).
+    body: text("body").notNull(),
+    // `atlas:` frontmatter provenance extension.
+    atlasSource: text("atlas_source"),
+    atlasIngestedAt: timestamp("atlas_ingested_at", { withTimezone: true }),
+    // Content-mode lifecycle — defaults `draft` (the review gate).
+    status: text("status").notNull().default("draft"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Per-collection tree walks and per-tenant scans.
+    index("idx_knowledge_documents_collection").on(t.workspaceId, t.collectionId),
+    // Content-mode status filter (published-only read + developer overlay).
+    index("idx_knowledge_documents_status").on(t.workspaceId, t.status),
+    // GIN over the OKF `tags` array for the frontmatter-filter search tier.
+    index("idx_knowledge_documents_tags").using("gin", t.tags),
+    // `path` unique per collection, not per workspace (ADR-0028 §2).
+    uniqueIndex("uq_knowledge_documents_collection_path").on(
+      t.workspaceId,
+      t.collectionId,
+      t.path,
+    ),
+    check(
+      "chk_knowledge_documents_status",
+      sql`status IN ('draft', 'published', 'archived')`,
+    ),
+  ],
+);
+
+// knowledge_links — the intra-collection link graph extracted at ingest.
+// One row per markdown link: (source document, target path, anchor text).
+// Content-mode-exempt (derived data whose visibility follows its source
+// document — see migration 0163). `targetPath` is a lazily-resolved path
+// string, not a FK. Mirrors migration 0163.
+export const knowledgeLinks = pgTable(
+  "knowledge_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // The document the link was found in. Cascade so a document's edges vanish
+    // with it (re-ingest deletes the document, its links follow).
+    sourceDocumentId: uuid("source_document_id")
+      .notNull()
+      .references(() => knowledgeDocuments.id, { onDelete: "cascade" }),
+    // The bundle path the link points at — resolved lazily, not a FK.
+    targetPath: text("target_path").notNull(),
+    anchorText: text("anchor_text"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_knowledge_links_source").on(t.sourceDocumentId),
+    index("idx_knowledge_links_target").on(t.targetPath),
   ],
 );
 

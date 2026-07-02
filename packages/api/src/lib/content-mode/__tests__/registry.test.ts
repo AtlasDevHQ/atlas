@@ -276,6 +276,7 @@ describe("ContentModeRegistry.countAllDrafts", () => {
       entities: 0,
       entityEdits: 0,
       entityDeletes: 0,
+      knowledgeDocuments: 0,
     });
     // Every `$N` token in the query must be `$1` — the registry passes a
     // single orgId param; a future exotic segment that introduces `$2`
@@ -410,14 +411,16 @@ describe("ContentModeRegistry.countAllDrafts", () => {
 describe("ContentModeRegistry.runPublishPhases", () => {
   it("invokes simple adapters in tuple order followed by semantic_entities tombstone+promote", async () => {
     // Production tuple flow (phase 2d of #1515):
-    // 1. connections       → UPDATE (1 SQL)
-    // 2. prompt_collections → UPDATE (1 SQL)
-    // 3. query_suggestions  → UPDATE (1 SQL)
-    // 4. semantic_entities  → applyTombstones (2 SQL) + promoteDraftEntities (2 SQL)
+    // 1. connections         → UPDATE (1 SQL)
+    // 2. prompt_collections  → UPDATE (1 SQL)
+    // 3. query_suggestions   → UPDATE (1 SQL)
+    // 4. knowledge_documents → UPDATE (1 SQL)  [#4206]
+    // 5. semantic_entities   → applyTombstones (2 SQL) + promoteDraftEntities (2 SQL)
     const { client, calls } = makeMockPoolClient([
       { rowCount: 3 }, // connections
       { rowCount: 2 }, // prompt_collections
       { rowCount: 1 }, // query_suggestions
+      { rowCount: 0 }, // knowledge_documents (#4206 — no ingest yet, promotes 0)
       // semantic_entities.applyTombstones:
       { rows: [{ id: "e1" }, { id: "e2" }], rowCount: 2 }, //   DELETE published via tombstone join
       { rowCount: 2 }, //                                        DELETE tombstones
@@ -443,24 +446,27 @@ describe("ContentModeRegistry.runPublishPhases", () => {
       "workspace_plugins",
       "prompt_collections",
       "query_suggestions",
+      "knowledge_documents",
       "semantic_entities",
     ]);
     expect(reports[0].promoted).toBe(3);
     expect(reports[1].promoted).toBe(2);
     expect(reports[2].promoted).toBe(1);
+    expect(reports[3].promoted).toBe(0); // knowledge_documents (#4206)
     // semantic_entities report composes both phases' counts.
-    expect(reports[3].promoted).toBe(3);
-    expect(reports[3].tombstonesApplied).toBe(2);
+    expect(reports[4].promoted).toBe(3);
+    expect(reports[4].tombstonesApplied).toBe(2);
 
-    expect(calls).toHaveLength(7);
+    expect(calls).toHaveLength(8);
     expect(calls[0].sql).toContain("UPDATE workspace_plugins");
     expect(calls[1].sql).toContain("UPDATE prompt_collections");
     expect(calls[2].sql).toContain("UPDATE query_suggestions");
+    expect(calls[3].sql).toContain("UPDATE knowledge_documents");
     // Tombstones before promote.
-    expect(calls[3].sql).toContain("draft_delete");
     expect(calls[4].sql).toContain("draft_delete");
-    expect(calls[5].sql).toMatch(/DELETE FROM semantic_entities/);
-    expect(calls[6].sql).toContain("UPDATE semantic_entities");
+    expect(calls[5].sql).toContain("draft_delete");
+    expect(calls[6].sql).toMatch(/DELETE FROM semantic_entities/);
+    expect(calls[7].sql).toContain("UPDATE semantic_entities");
     for (const c of calls) expect(c.params).toEqual(["org-1"]);
   });
 

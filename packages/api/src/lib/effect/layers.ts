@@ -916,6 +916,107 @@ export const BuiltinDatasourceCatalogSeedLive: Layer.Layer<
 );
 
 // ══════════════════════════════════════════════════════════════════════
+// ██  Built-in Knowledge Base Catalog Seed Layer (#4206 — ADR-0028)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Discriminated outcome of the boot-time built-in Knowledge Base catalog
+ * seed (the single `okf-upload` row, ADR-0028 §5). Mirrors
+ * {@link BuiltinDatasourceCatalogSeedOutcome}.
+ *
+ * - `skipped-gate`  — InternalDB or Migration upstream not satisfied
+ * - `seeded`        — seed ran (`inserted` false on re-boot with the row present)
+ * - `error`         — the boot wrapper or its dynamic import threw;
+ *                     the pre-existing row answers admin-UI reads
+ */
+export type BuiltinKnowledgeCatalogSeedOutcome =
+  | "skipped-gate"
+  | "seeded"
+  | "error";
+
+export interface BuiltinKnowledgeCatalogSeedShape {
+  /** True when the `okf-upload` row was newly inserted this boot. */
+  readonly inserted: boolean;
+  readonly outcome: BuiltinKnowledgeCatalogSeedOutcome;
+  /** Scrubbed error message when `outcome === "error"`. */
+  readonly error?: string;
+}
+
+export class BuiltinKnowledgeCatalogSeed extends Context.Tag(
+  "BuiltinKnowledgeCatalogSeed",
+)<BuiltinKnowledgeCatalogSeed, BuiltinKnowledgeCatalogSeedShape>() {}
+
+/**
+ * Idempotent boot-time seed of the built-in `okf-upload` Knowledge Base
+ * catalog row (#4206, ADR-0028). Code-seeded through the operator-curated
+ * seam and re-asserted on every boot via `ON CONFLICT DO NOTHING`.
+ *
+ * Depends on `Migration` so migration 0161's widened pillar CHECK (which
+ * admits `pillar = 'knowledge'`) is guaranteed before the INSERT; depends on
+ * `InternalDB` for the pool. Non-fatal: the boot wrapper swallows errors and
+ * logs at error so a failed seed leaves the pre-existing row authoritative.
+ */
+export const BuiltinKnowledgeCatalogSeedLive: Layer.Layer<
+  BuiltinKnowledgeCatalogSeed,
+  never,
+  InternalDB | Migration
+> = Layer.effect(
+  BuiltinKnowledgeCatalogSeed,
+  Effect.gen(function* () {
+    const db = yield* InternalDB;
+    const migration = yield* Migration;
+
+    if (!db.available || !migration.migrated) {
+      log.info(
+        { available: db.available, migrated: migration.migrated },
+        "Built-in Knowledge Base catalog seed skipped — upstream gate not satisfied",
+      );
+      return {
+        inserted: false,
+        outcome: "skipped-gate",
+      } satisfies BuiltinKnowledgeCatalogSeedShape;
+    }
+
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const { runBuiltinKnowledgeCatalogSeedBoot } = await import(
+          "@atlas/api/lib/db/seed-builtin-knowledge-catalog"
+        );
+        const result = await runBuiltinKnowledgeCatalogSeedBoot();
+        switch (result.kind) {
+          case "skipped":
+            return {
+              inserted: false,
+              outcome: "skipped-gate",
+            } satisfies BuiltinKnowledgeCatalogSeedShape;
+          case "seeded":
+            return {
+              inserted: result.inserted,
+              outcome: "seeded",
+            } satisfies BuiltinKnowledgeCatalogSeedShape;
+          case "error":
+            return {
+              inserted: false,
+              outcome: "error",
+              error: result.message,
+            } satisfies BuiltinKnowledgeCatalogSeedShape;
+        }
+      },
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(
+      Effect.catchAll((err) => {
+        log.error({ err }, "Built-in Knowledge Base catalog seed boot wrapper threw");
+        return Effect.succeed({
+          inserted: false,
+          outcome: "error",
+          error: errorMessage(err),
+        } satisfies BuiltinKnowledgeCatalogSeedShape);
+      }),
+    );
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
 // ██  OpenAPI Generic Datasource Catalog Seed (#2926 — v0.0.2 slice 2)
 // ══════════════════════════════════════════════════════════════════════
 
@@ -3301,6 +3402,15 @@ export function buildAppLayer(
     Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
   );
 
+  // BuiltinKnowledgeCatalogSeedLive (#4206, ADR-0028) — the built-in
+  // `okf-upload` Knowledge Base row, code-seeded through the operator-curated
+  // seam. Depends on Migration so 0161's widened pillar CHECK (admitting
+  // `pillar='knowledge'`) is guaranteed before the INSERT. Independent peer of
+  // the other seeds; disjoint slug so ordering doesn't matter.
+  const builtinKnowledgeCatalogSeedLayer = BuiltinKnowledgeCatalogSeedLive.pipe(
+    Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
+  );
+
   // OpenApiDatasourceCatalogSeedLive (#2926, slice 2) — the built-in
   // `openapi-generic` REST datasource row, code-seeded per ADR-0007.
   // Independent peer of the two seeds above; disjoint slug so ordering
@@ -3496,6 +3606,7 @@ export function buildAppLayer(
     backfillSaasTrialLayer,
     catalogSeedLayer,
     builtinDatasourceCatalogSeedLayer,
+    builtinKnowledgeCatalogSeedLayer,
     openApiDatasourceCatalogSeedLayer,
     implementationStatusOverrideLayer,
     connectionsHydrateLayer,

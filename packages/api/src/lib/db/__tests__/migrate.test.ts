@@ -196,7 +196,13 @@ describe("runMigrations", () => {
     //   phase-2 two-phase drop, #4013) = 160.
     //   Plus 0160 (audit_log.actor_kind CHECK gains 'api_key' for the
     //   workspace-scoped API key, ADR-0027 §6, #4046) = 161.
-    expect(count).toBe(161);
+    //   Plus 0161 (widen plugin_catalog + workspace_plugins pillar CHECKs to
+    //   admit the fourth pillar 'knowledge', ADR-0028, #4206) = 162.
+    //   Plus 0162 (knowledge_documents hosted-OKF document store, ADR-0028,
+    //   #4206) = 163.
+    //   Plus 0163 (knowledge_links intra-collection link graph, ADR-0028,
+    //   #4206) = 164.
+    expect(count).toBe(164);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -386,6 +392,9 @@ describe("runMigrations", () => {
         "0158_session_origin_column.sql",
         "0159_drop_user_stripe_customer_id.sql",
         "0160_audit_log_actor_kind_api_key.sql",
+        "0161_knowledge_pillar_check.sql",
+        "0162_knowledge_documents.sql",
+        "0163_knowledge_links.sql",
       ],
     });
 

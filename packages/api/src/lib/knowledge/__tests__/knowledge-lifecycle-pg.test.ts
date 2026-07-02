@@ -140,6 +140,54 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     expect(links.rows).toEqual([{ target_path: "glossary/replica.md", anchor_text: "glossary" }]);
   }, PG_TEST_TIMEOUT_MS);
 
+  it("serves the admin documents-list + publish-preview projections against the live schema (#4209)", async () => {
+    // These two SELECTs mirror the exact projections the admin surface runs
+    // (`GET /api/v1/admin/knowledge/{slug}/documents` and the knowledge slice
+    // of `/api/v1/admin/publish-preview`). Exercising them here pins every
+    // referenced column name (description, type, tags, to_char(updated_at),
+    // the COALESCE label) against real Postgres — the mocked route tests can't.
+    const list = await pool.query<{
+      id: string;
+      path: string;
+      title: string | null;
+      description: string | null;
+      type: string | null;
+      tags: unknown;
+      status: string;
+      updated_at: string | null;
+    }>(
+      `SELECT id,
+              path,
+              title,
+              description,
+              type,
+              tags,
+              status,
+              to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at
+         FROM knowledge_documents
+        WHERE workspace_id = $1 AND collection_id = 'runbooks' AND status <> 'archived'
+        ORDER BY path ASC`,
+      [ws],
+    );
+    // Both freshly-ingested docs are draft, ordered by path.
+    expect(list.rows.map((r) => r.path)).toEqual(["glossary/replica.md", "runbooks/eu.md"]);
+    expect(list.rows.every((r) => r.status === "draft")).toBe(true);
+    expect(list.rows.every((r) => typeof r.updated_at === "string")).toBe(true);
+    expect(Array.isArray(list.rows[1]?.tags)).toBe(true);
+
+    const preview = await pool.query<{ id: string; label: string; updated_at: unknown }>(
+      `SELECT id::text AS id, COALESCE(NULLIF(title, ''), path) AS label, updated_at
+         FROM knowledge_documents
+        WHERE workspace_id = $1 AND status = 'draft'
+        ORDER BY updated_at DESC`,
+      [ws],
+    );
+    expect(preview.rows).toHaveLength(2);
+    // Label falls back to path when there is no frontmatter title; every draft
+    // row must carry a non-empty label.
+    expect(preview.rows.every((r) => typeof r.label === "string" && r.label.length > 0)).toBe(true);
+  }, PG_TEST_TIMEOUT_MS);
+
   it("keeps unchanged published docs published, demotes changed ones, and upserts by path (no dup)", async () => {
     // Publish the EU doc.
     await pool.query(

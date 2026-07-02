@@ -37,6 +37,7 @@ function counts(partial: Partial<ModeDraftCounts> = {}): ModeDraftCounts {
     entityDeletes: 0,
     prompts: 0,
     starterPrompts: 0,
+    knowledgeDocuments: 0,
     ...partial,
   };
 }
@@ -68,6 +69,22 @@ describe("formatDraftSegments", () => {
     expect(formatDraftSegments(counts({ starterPrompts: 4 }))).toEqual([
       "4 starter prompts",
     ]);
+  });
+
+  test("pluralizes knowledge document correctly", () => {
+    expect(formatDraftSegments(counts({ knowledgeDocuments: 1 }))).toEqual([
+      "1 knowledge document",
+    ]);
+    expect(formatDraftSegments(counts({ knowledgeDocuments: 2 }))).toEqual([
+      "2 knowledge documents",
+    ]);
+  });
+
+  test("appends knowledge documents last in the segment order", () => {
+    const segments = formatDraftSegments(
+      counts({ connections: 1, entities: 2, knowledgeDocuments: 3 }),
+    );
+    expect(segments).toEqual(["1 connection", "2 entities", "3 knowledge documents"]);
   });
 
   test("folds entities + entityEdits + entityDeletes into a single entity total", () => {

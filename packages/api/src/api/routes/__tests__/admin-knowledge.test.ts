@@ -62,10 +62,14 @@ function fakeTxClient() {
   };
 }
 
+// Documents returned by the GET /{slug}/documents SELECT (mutable per test).
+let DOCUMENTS: Array<Record<string, unknown>> = [];
+
 const internalQuery = mock(async (sql: string, _params: unknown[] = []): Promise<unknown[]> => {
   if (sql.includes("SELECT install_id, status, config")) return COLLECTION ? [COLLECTION] : [];
   if (sql.includes("ORDER BY installed_at")) return COLLECTION ? [{ install_id: COLLECTION.install_id, config: COLLECTION.config, installed_at: "2026-07-02T00:00:00.000Z" }] : [];
   if (sql.includes("GROUP BY collection_id")) return [{ collection_id: "runbooks", status: "published", n: 3 }];
+  if (sql.includes("FROM knowledge_documents") && sql.includes("ORDER BY path")) return DOCUMENTS;
   throw new Error(`unexpected internalQuery SQL: ${sql.slice(0, 60)}`);
 });
 
@@ -135,6 +139,7 @@ beforeEach(() => {
   publishRan = false;
   archivedDocRows = 0;
   nextId = 1;
+  DOCUMENTS = [];
   internalQuery.mockClear();
 });
 afterEach(() => internalQuery.mockClear());
@@ -250,5 +255,54 @@ describe("GET / — list collections", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { collections: { slug: string; documents: { published: number } }[] };
     expect(body.collections[0]).toMatchObject({ slug: "runbooks", documents: { published: 3 } });
+  });
+});
+
+describe("GET /{slug}/documents — list documents", () => {
+  it("lists a collection's documents with status, coercing tags + timestamps", async () => {
+    DOCUMENTS = [
+      {
+        id: "d1",
+        path: "index.md",
+        title: "Home",
+        description: null,
+        type: "guide",
+        tags: ["a", 5, "b"], // non-string members dropped
+        status: "published",
+        updated_at: "2026-07-02T00:00:00.000Z",
+      },
+      {
+        id: "d2",
+        path: "runbook.md",
+        title: null,
+        description: "How to",
+        type: null,
+        tags: null, // malformed → []
+        status: "draft",
+        updated_at: null,
+      },
+    ];
+    const res = await adminKnowledge.request("/runbooks/documents");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      collection: string;
+      documents: Array<{ id: string; path: string; tags: string[]; status: string }>;
+    };
+    expect(body.collection).toBe("runbooks");
+    expect(body.documents).toHaveLength(2);
+    expect(body.documents[0]).toMatchObject({ id: "d1", path: "index.md", status: "published", tags: ["a", "b"] });
+    expect(body.documents[1]).toMatchObject({ id: "d2", status: "draft", tags: [] });
+  });
+
+  it("404s when the collection does not exist", async () => {
+    COLLECTION = null;
+    const res = await adminKnowledge.request("/nope/documents");
+    expect(res.status).toBe(404);
+  });
+
+  it("404s when the collection is archived", async () => {
+    COLLECTION = { install_id: "runbooks", status: "archived", config: {} };
+    const res = await adminKnowledge.request("/runbooks/documents");
+    expect(res.status).toBe(404);
   });
 });

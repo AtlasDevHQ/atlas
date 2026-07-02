@@ -8,9 +8,10 @@
  * pipeline (`POST /api/v1/integrations/okf-upload/install-form` →
  * `OkfUploadFormInstallHandler`); this router owns the post-install lifecycle:
  *
- *   - `GET  /`                        — list the workspace's collections + doc counts
- *   - `POST /{collectionSlug}/ingest` — upload an OKF bundle into a collection
- *   - `DELETE /{collectionSlug}`      — uninstall (archive docs, never delete)
+ *   - `GET  /`                          — list the workspace's collections + doc counts
+ *   - `GET  /{collectionSlug}/documents` — list a collection's documents + status
+ *   - `POST /{collectionSlug}/ingest`   — upload an OKF bundle into a collection
+ *   - `DELETE /{collectionSlug}`        — uninstall (archive docs, never delete)
  *
  * Ingest is the heart of the slice. The uploaded `.tar` / `.tar.gz` / `.zip`
  * bundle is UNTRUSTED third-party input: it is walked in memory (no fs), each
@@ -143,6 +144,49 @@ const listRoute = createRoute({
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "No internal database", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const KnowledgeDocumentSchema = z.object({
+  id: z.string(),
+  path: z.string(),
+  title: z.string().nullable(),
+  description: z.string().nullable(),
+  type: z.string().nullable(),
+  tags: z.array(z.string()),
+  status: z.enum(["draft", "published"]),
+  updatedAt: z.string().nullable(),
+});
+
+const documentsRoute = createRoute({
+  method: "get",
+  path: "/{collectionSlug}/documents",
+  tags: ["Admin — Knowledge"],
+  summary: "List a knowledge collection's documents",
+  description:
+    "List the documents in one collection with their content-mode status (`draft` / `published`), " +
+    "ordered by bundle path. Archived documents (from a prior uninstall) are excluded. Admins use " +
+    "this to review what a bundle ingested and which documents are still pending publish.",
+  request: {
+    params: z.object({
+      collectionSlug: z.string().min(1).openapi({ param: { name: "collectionSlug", in: "path" } }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Document list",
+      content: {
+        "application/json": {
+          schema: z.object({
+            collection: z.string(),
+            documents: z.array(KnowledgeDocumentSchema),
+          }),
+        },
+      },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Collection not found or no internal database", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -291,6 +335,65 @@ adminKnowledge.openapi(listRoute, async (c) =>
             documents: countsBySlug.get(r.install_id) ?? { draft: 0, published: 0, archived: 0 },
           };
         }),
+      },
+      200,
+    );
+  }),
+);
+
+adminKnowledge.openapi(documentsRoute, async (c) =>
+  runHandler(c, "list knowledge documents", async () => {
+    const { orgId, requestId } = c.get("orgContext");
+    const { collectionSlug } = c.req.valid("param");
+
+    const collection = await loadCollection(orgId, collectionSlug);
+    if (!collection || collection.status === "archived") {
+      return c.json(
+        { error: "not_found", message: `No knowledge collection "${collectionSlug}".`, requestId },
+        404,
+      );
+    }
+
+    const rows = await internalQuery<{
+      id: string;
+      path: string;
+      title: string | null;
+      description: string | null;
+      type: string | null;
+      tags: unknown;
+      status: string;
+      updated_at: string | null;
+    }>(
+      `SELECT id,
+              path,
+              title,
+              description,
+              type,
+              tags,
+              status,
+              to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at
+         FROM knowledge_documents
+        WHERE workspace_id = $1 AND collection_id = $2 AND status <> 'archived'
+        ORDER BY path ASC`,
+      [orgId, collectionSlug],
+    );
+
+    return c.json(
+      {
+        collection: collectionSlug,
+        documents: rows.map((r) => ({
+          id: r.id,
+          path: r.path,
+          title: r.title,
+          description: r.description,
+          type: r.type,
+          // `tags` is a jsonb array; keep only string members so a
+          // malformed frontmatter array never breaks the wire contract.
+          tags: Array.isArray(r.tags) ? r.tags.filter((t): t is string => typeof t === "string") : [],
+          // The archived filter above guarantees draft | published only.
+          status: r.status === "published" ? ("published" as const) : ("draft" as const),
+          updatedAt: r.updated_at,
+        })),
       },
       200,
     );

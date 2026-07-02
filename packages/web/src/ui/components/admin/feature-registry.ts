@@ -46,6 +46,7 @@ export const FEATURE_NAMES = [
   "Environments",
   "Integrations",
   "IP Allowlist",
+  "Knowledge Base",
   "Learned Patterns",
   "MCP Action Policy",
   "MCP Settings",

@@ -46,6 +46,7 @@ export const navGroups: NavGroup[] = [
       // the page hosts a `?groupBy=type|environment` toggle and the legacy
       // `/admin/connections/groups` URL server-side-redirects in.
       { href: "/admin/connections", label: "Connections" },
+      { href: "/admin/knowledge", label: "Knowledge Base", prefixMatch: true },
       { href: "/admin/cache", label: "Cache" },
     ],
   },

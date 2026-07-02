@@ -95,3 +95,35 @@ export function resolveCredential(
   if (session) return { token: session.token };
   return null;
 }
+
+/**
+ * The "log in or set ATLAS_API_KEY" message every REST-backed subcommand
+ * surfaces when neither credential is present. Single-sourced so the copy can't
+ * drift across `sql`/`metric`/`query`/`explore`/`datasource` (#4196).
+ */
+export const NOT_LOGGED_IN_MESSAGE =
+  "Not logged in. Run `atlas login` first, or set ATLAS_API_KEY for unattended use.";
+
+/**
+ * Resolve the workspace credential for a command that doesn't rebind the active
+ * workspace (`metric`/`query`/`datasource` — `sql` interleaves the `--workspace`
+ * rebind and stays inline; `explore` pre-parses its key out of the command
+ * string). A `--api-key` flag or `ATLAS_API_KEY` (already collapsed into
+ * `deps.apiKey`) wins over the stored `atlas login` session. When neither is
+ * present, emits the shared {@link NOT_LOGGED_IN_MESSAGE} to `io.err` and returns
+ * `null` so the caller exits 1 — the login/exit-code shape is defined once here,
+ * not re-tested per client.
+ */
+export function resolveWorkspaceCredential(
+  args: string[],
+  deps: { readonly apiKey?: string; readonly session: { readonly token: string } | null },
+  io: { readonly err: (line: string) => void },
+): CliCredential | null {
+  const apiKey = readApiKeyFlag(args) ?? deps.apiKey;
+  const credential = resolveCredential(apiKey, deps.session);
+  if (!credential) {
+    io.err(NOT_LOGGED_IN_MESSAGE);
+    return null;
+  }
+  return credential;
+}

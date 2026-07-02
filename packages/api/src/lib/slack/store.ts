@@ -42,16 +42,17 @@
  * @see installation-encryption.ts — encrypt/decrypt helpers.
  */
 
-import {
-  hasInternalDB,
-  internalQuery,
-  getInternalDB,
-} from "@atlas/api/lib/db/internal";
+import { internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   SlackInstallation,
   SlackInstallationWithSecret,
 } from "@atlas/api/lib/integrations/types";
+import {
+  PlatformInstallationStore,
+  decryptOrHide,
+  type InstallationBackend,
+} from "@atlas/api/lib/integrations/platform-installation-store";
 import {
   encryptSlackInstallationToken,
   decryptSlackInstallationToken,
@@ -138,10 +139,6 @@ export interface StoredInstallation {
   installedAt?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Read operations
-// ---------------------------------------------------------------------------
-
 /**
  * Parse a chat_cache row → SlackInstallationWithSecret. Returns null
  * (and logs a warning) for any structurally invalid value.
@@ -160,16 +157,16 @@ function parseStoredInstallation(
     log.warn({ teamId }, "chat_cache slack installation missing botToken field");
     return null;
   }
-  let plaintext: string;
-  try {
-    plaintext = decryptSlackInstallationToken(v.botToken as StoredSlackBotToken);
-  } catch (err) {
-    log.error(
-      { teamId, err: err instanceof Error ? err.message : String(err) },
-      "Failed to decrypt chat_cache slack bot token",
-    );
-    return null;
-  }
+  // decrypt-or-hide-row: an undecryptable token hides the whole row
+  // (shared policy — see platform-installation-store.decryptOrHide).
+  const decrypted = decryptOrHide(
+    v.botToken as StoredSlackBotToken,
+    decryptSlackInstallationToken,
+    (message) =>
+      log.error({ teamId, err: message }, "Failed to decrypt chat_cache slack bot token"),
+  );
+  if (!decrypted.ok) return null;
+  const plaintext = decrypted.value;
   // Prefer the row's persisted `installedAt` (when present), fall back
   // to the cache row's stored timestamp. A fresh `Date.now()` would
   // mask reads of legacy entries written before this field existed.
@@ -193,69 +190,58 @@ function parseStoredInstallation(
   };
 }
 
-/**
- * Get the bot token for a team. Checks internal DB (chat_cache) first,
- * then falls back to `SLACK_BOT_TOKEN` env var.
- */
-export async function getInstallation(
-  teamId: string,
-): Promise<SlackInstallationWithSecret | null> {
-  if (hasInternalDB()) {
-    try {
-      const rows = await internalQuery<{
-        value: unknown;
-        installed_at: string | null;
-      }>(
-        `SELECT value, to_char((value->>'${FIELD.installedAt}')::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS installed_at
-           FROM ${INSTALL_TABLE}
-          WHERE key = $1
-            AND (expires_at IS NULL OR expires_at > NOW())`,
-        [keyFor(teamId)],
-      );
-      if (rows.length === 0) return null;
-      return parseStoredInstallation(teamId, rows[0].value, rows[0].installed_at);
-    } catch (err) {
-      log.error(
-        { teamId, err: err instanceof Error ? err.message : String(err) },
-        "Failed to query chat_cache for Slack installation",
-      );
-      throw err;
-    }
-  }
+// ---------------------------------------------------------------------------
+// Backend adapter + seam
+// ---------------------------------------------------------------------------
 
-  // Single-workspace mode: no internal DB configured, use env var.
-  const envToken = process.env.SLACK_BOT_TOKEN;
-  if (envToken) {
-    return {
-      team_id: teamId,
-      bot_token: envToken,
-      org_id: null,
-      workspace_name: null,
-      installed_at: new Date().toISOString(),
-    };
-  }
-  return null;
+/** Save payload for a Slack installation (OAuth flow). */
+interface SlackSaveInput {
+  botToken: string;
+  orgId?: string;
+  workspaceName?: string;
 }
 
 /**
- * Get the Slack installation for an org. Returns null if not found or
- * if no internal database is configured (org-scoped lookups require a
- * DB). Backed by the partial expression index on
- * `chat_cache.value->>'orgId'` filtered by the `slack:installation:`
- * key prefix.
+ * The `chat_cache`-backed adapter. Owns the JSONB SQL + the
+ * chat-adapter-compatible cipher; the {@link PlatformInstallationStore}
+ * seam owns the control flow and the shared invariants. The SQL is
+ * carried over unchanged from the pre-seam store; its exact literals are
+ * load-bearing — the partial expression index and `@chat-adapter/slack`
+ * interop depend on them.
  */
-export async function getInstallationByOrg(
-  orgId: string,
-): Promise<SlackInstallation | null> {
-  if (!hasInternalDB()) return null;
+const slackBackend: InstallationBackend<
+  SlackInstallationWithSecret,
+  SlackInstallation,
+  SlackSaveInput
+> = {
+  name: "Slack",
+  routingNoun: "Slack workspace",
+  // Slack's delete is best-effort without a DB — warn + no-op (a
+  // single-workspace deploy has nothing to delete).
+  deleteRequiresInternalDb: false,
 
-  try {
+  async selectByRouting(teamId) {
+    const rows = await internalQuery<{
+      value: unknown;
+      installed_at: string | null;
+    }>(
+      `SELECT value, to_char((value->>'${FIELD.installedAt}')::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS installed_at
+         FROM ${INSTALL_TABLE}
+        WHERE key = $1
+          AND (expires_at IS NULL OR expires_at > NOW())`,
+      [keyFor(teamId)],
+    );
+    if (rows.length === 0) return null;
+    return parseStoredInstallation(teamId, rows[0].value, rows[0].installed_at);
+  },
+
+  async selectByOrg(orgId) {
     // NOTE: the `key LIKE 'slack:installation:%'` predicate is a LITERAL
     // (not a `$1` parameter) so the planner can match it against the
     // partial expression index `idx_chat_cache_slack_org_id`'s WHERE
     // clause. A parameterized LIKE blocks the index match because
     // Postgres can't prove `$1 = 'slack:installation:%'` statically.
-    // Same pattern in `deleteInstallationByOrg` and the org-purge
+    // Same pattern in this backend's `deleteByOrg` and the org-purge
     // DELETE in `lib/db/internal.ts`.
     const rows = await internalQuery<{
       key: string;
@@ -272,53 +258,27 @@ export async function getInstallationByOrg(
     );
     if (rows.length === 0) return null;
     const teamId = rows[0].key.slice(KEY_PREFIX.length);
-    const full = parseStoredInstallation(teamId, rows[0].value, rows[0].installed_at);
-    if (!full) return null;
-    const { bot_token: _drop, ...pub } = full;
-    return pub;
-  } catch (err) {
-    log.error(
-      { orgId, err: err instanceof Error ? err.message : String(err) },
-      "Failed to query chat_cache for Slack installation by org",
-    );
-    throw err;
-  }
-}
+    return parseStoredInstallation(teamId, rows[0].value, rows[0].installed_at);
+  },
 
-// ---------------------------------------------------------------------------
-// Write operations
-// ---------------------------------------------------------------------------
+  async upsert(teamId, input) {
+    const orgId = input.orgId ?? null;
+    const workspaceName = input.workspaceName ?? null;
 
-/**
- * Save or update a Slack installation (OAuth flow). Single atomic
- * upsert. Throws if the database write fails or if the team is
- * already bound to a different org.
- */
-export async function saveInstallation(
-  teamId: string,
-  botToken: string,
-  opts?: { orgId?: string; workspaceName?: string },
-): Promise<void> {
-  if (!hasInternalDB()) {
-    throw new Error("Cannot save Slack installation — no internal database configured");
-  }
-  const orgId = opts?.orgId ?? null;
-  const workspaceName = opts?.workspaceName ?? null;
+    const value: StoredInstallation = {
+      botToken: encryptSlackInstallationToken(input.botToken),
+      ...(workspaceName ? { teamName: workspaceName, workspaceName } : {}),
+      ...(orgId ? { orgId } : {}),
+      installedAt: new Date().toISOString(),
+    };
 
-  const value: StoredInstallation = {
-    botToken: encryptSlackInstallationToken(botToken),
-    ...(workspaceName ? { teamName: workspaceName, workspaceName } : {}),
-    ...(orgId ? { orgId } : {}),
-    installedAt: new Date().toISOString(),
-  };
-
-  const pool = getInternalDB();
-  // Atomic upsert with hijack protection — the WHERE clause rejects
-  // a row already bound to a different org in one statement (no TOCTOU
-  // race). Merges `value` so the chat-adapter's own writes (e.g.
-  // `botUserId` set by a future `auth.test` round-trip) aren't clobbered.
-  const result = await pool.query(
-    `INSERT INTO ${INSTALL_TABLE} (key, value, expires_at)
+    const pool = getInternalDB();
+    // Atomic upsert with hijack protection — the WHERE clause rejects
+    // a row already bound to a different org in one statement (no TOCTOU
+    // race). Merges `value` so the chat-adapter's own writes (e.g.
+    // `botUserId` set by a future `auth.test` round-trip) aren't clobbered.
+    const result = await pool.query(
+      `INSERT INTO ${INSTALL_TABLE} (key, value, expires_at)
      VALUES ($1, $2::jsonb, NULL)
      ON CONFLICT (key) DO UPDATE
        SET value = chat_cache.value || EXCLUDED.value,
@@ -326,43 +286,20 @@ export async function saveInstallation(
        WHERE chat_cache.value->>'${FIELD.orgId}' IS NULL
           OR chat_cache.value->>'${FIELD.orgId}' = $3
      RETURNING key`,
-    [keyFor(teamId), JSON.stringify(value), orgId],
-  );
-
-  if (result.rows.length === 0) {
-    throw new Error(
-      `Slack workspace ${teamId} is already bound to a different organization. ` +
-        "Disconnect the existing installation first.",
+      [keyFor(teamId), JSON.stringify(value), orgId],
     );
-  }
-}
+    return result.rows.length > 0;
+  },
 
-/**
- * Remove a Slack installation by team ID. No-op (with warning) when no
- * internal DB is configured.
- */
-export async function deleteInstallation(teamId: string): Promise<void> {
-  if (!hasInternalDB()) {
-    log.warn({ teamId }, "Cannot delete Slack installation — no internal database configured");
-    return;
-  }
-  const pool = getInternalDB();
-  await pool.query(`DELETE FROM ${INSTALL_TABLE} WHERE key = $1`, [keyFor(teamId)]);
-}
-
-/**
- * Remove the Slack installation for an org. Returns true if a row was
- * deleted, false if no matching row found. Throws if no internal DB
- * or if the query fails.
- */
-export async function deleteInstallationByOrg(orgId: string): Promise<boolean> {
-  if (!hasInternalDB()) {
-    throw new Error("Cannot delete Slack installation — no internal database configured");
-  }
-  try {
+  async deleteByRouting(teamId) {
     const pool = getInternalDB();
-    // Literal LIKE for partial-index match — see `getInstallationByOrg`
-    // for the planner-rationale comment.
+    await pool.query(`DELETE FROM ${INSTALL_TABLE} WHERE key = $1`, [keyFor(teamId)]);
+  },
+
+  async deleteByOrg(orgId) {
+    const pool = getInternalDB();
+    // Literal LIKE for partial-index match — see this backend's
+    // `selectByOrg` for the planner-rationale comment.
     const result = await pool.query(
       `DELETE FROM ${INSTALL_TABLE}
         WHERE key LIKE 'slack:installation:%'
@@ -371,13 +308,90 @@ export async function deleteInstallationByOrg(orgId: string): Promise<boolean> {
       [orgId],
     );
     return result.rows.length > 0;
-  } catch (err) {
-    log.error(
-      { orgId, err: err instanceof Error ? err.message : String(err) },
-      "Failed to delete chat_cache Slack installation by org",
-    );
-    throw err;
-  }
+  },
+
+  envFallback(teamId) {
+    // Single-workspace mode: no internal DB configured, use env var.
+    const envToken = process.env.SLACK_BOT_TOKEN;
+    if (envToken) {
+      return {
+        team_id: teamId,
+        bot_token: envToken,
+        org_id: null,
+        workspace_name: null,
+        installed_at: new Date().toISOString(),
+      };
+    }
+    return null;
+  },
+
+  toPublic(full) {
+    const { bot_token: _drop, ...pub } = full;
+    return pub;
+  },
+};
+
+const store = new PlatformInstallationStore(slackBackend, log);
+
+// ---------------------------------------------------------------------------
+// Public API — thin wrappers over the seam (signatures unchanged)
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the bot token for a team. Checks internal DB (chat_cache) first,
+ * then falls back to `SLACK_BOT_TOKEN` env var.
+ */
+export function getInstallation(
+  teamId: string,
+): Promise<SlackInstallationWithSecret | null> {
+  return store.get(teamId);
+}
+
+/**
+ * Get the Slack installation for an org. Returns null if not found or
+ * if no internal database is configured (org-scoped lookups require a
+ * DB). Backed by the partial expression index on
+ * `chat_cache.value->>'orgId'` filtered by the `slack:installation:`
+ * key prefix.
+ */
+export function getInstallationByOrg(
+  orgId: string,
+): Promise<SlackInstallation | null> {
+  return store.getByOrg(orgId);
+}
+
+/**
+ * Save or update a Slack installation (OAuth flow). Single atomic
+ * upsert. Throws if the database write fails or if the team is
+ * already bound to a different org.
+ */
+export function saveInstallation(
+  teamId: string,
+  botToken: string,
+  opts?: { orgId?: string; workspaceName?: string },
+): Promise<void> {
+  return store.save(teamId, {
+    botToken,
+    orgId: opts?.orgId,
+    workspaceName: opts?.workspaceName,
+  });
+}
+
+/**
+ * Remove a Slack installation by team ID. No-op (with warning) when no
+ * internal DB is configured.
+ */
+export function deleteInstallation(teamId: string): Promise<void> {
+  return store.delete(teamId);
+}
+
+/**
+ * Remove the Slack installation for an org. Returns true if a row was
+ * deleted, false if no matching row found. Throws if no internal DB
+ * or if the query fails.
+ */
+export function deleteInstallationByOrg(orgId: string): Promise<boolean> {
+  return store.deleteByOrg(orgId);
 }
 
 /** Get the bot token for a team — convenience wrapper. */

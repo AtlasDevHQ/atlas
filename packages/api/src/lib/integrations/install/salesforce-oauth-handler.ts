@@ -63,14 +63,12 @@ import { Data } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
-import { saveCredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import type { CredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import { persistInstallRecord } from "./persist-form-install";
 import type { WorkspaceId } from "@useatlas/types";
-import {
-  mintOAuthStateToken,
-  verifyOAuthStateToken,
-} from "./oauth-state-token";
+import { mintOAuthStateToken } from "./oauth-state-token";
+import { verifyCallbackState } from "./oauth-callback-verify";
+import { writeCredentialWithReconnectFallback } from "./oauth-reconnect";
 import type {
   CatalogId,
   CredentialResult,
@@ -388,17 +386,15 @@ export class SalesforceOAuthInstallHandler implements OAuthPlatformInstallHandle
     readonly installRecord: InstallRecord;
     readonly credentialResult: CredentialResult;
   } | null> {
-    // ── 1. Verify state — null on every failure mode ─────────────
-    const verified = verifyOAuthStateToken(stateToken);
+    // ── 1. Verify state + catalog binding (shared seam) ──────────
+    const verified = verifyCallbackState(
+      stateToken,
+      SALESFORCE_SLUG,
+      log,
+      "Salesforce OAuth callback received state bound to a different catalog — rejecting",
+    );
     if (!verified) return null;
-    const workspaceId = verified.workspaceId as WorkspaceId;
-    if (verified.catalogId !== SALESFORCE_SLUG) {
-      log.warn(
-        { expected: SALESFORCE_SLUG, got: verified.catalogId },
-        "Salesforce OAuth callback received state bound to a different catalog — rejecting",
-      );
-      return null;
-    }
+    const { workspaceId } = verified;
 
     // ── 2. Exchange code for tokens ───────────────────────────────
     const tokens = await exchangeAuthCodeForTokens({
@@ -466,57 +462,22 @@ export class SalesforceOAuthInstallHandler implements OAuthPlatformInstallHandle
       ...(tokens.id_token ? { extra: { id_token: tokens.id_token } } : {}),
     };
 
-    try {
-      await saveCredentialBundle(workspaceId, SALESFORCE_CATALOG_ID, bundle);
-      log.info(
-        { workspaceId, instanceUrl: tokens.instance_url },
-        "Salesforce install completed (both stores written)",
-      );
-      return {
-        workspaceId,
-        catalogId: SALESFORCE_SLUG,
-        installRecord,
-        credentialResult: { written: true },
-      };
-    } catch (err) {
-      const errMessage = err instanceof Error ? err.message : String(err);
-      log.warn(
-        { workspaceId, instanceUrl: tokens.instance_url, err: errMessage },
-        "Salesforce install record written but integration_credentials write failed — Reconnect required",
-      );
-      // Codex P1 — flip status to `reconnect_needed` so the admin card
-      // surfaces a persistent Reconnect CTA. Without this, the OAuth
-      // callback's `?reconnect=salesforce` query param shows once and
-      // then disappears on the next admin-page reload, leaving the card
-      // in the "Installed" state with no credentials behind it.
-      // Best-effort UPDATE — if it fails the install record is still
-      // present and the user lands on `?reconnect=` via the callback's
-      // partial-failure redirect; the warn log captures the divergence.
-      try {
-        await internalQuery(
-          `UPDATE workspace_plugins
-              SET config = config || jsonb_build_object('status', 'reconnect_needed')
-            WHERE workspace_id = $1 AND catalog_id = $2`,
-          [workspaceId, SALESFORCE_CATALOG_ID],
-        );
-      } catch (statusErr) {
-        log.warn(
-          {
-            workspaceId,
-            err: statusErr instanceof Error ? statusErr.message : String(statusErr),
-          },
-          "Failed to mark Salesforce install as reconnect_needed after credential write failure",
-        );
-      }
-      return {
-        workspaceId,
-        catalogId: SALESFORCE_SLUG,
-        installRecord,
-        credentialResult: {
-          written: false,
-          reason: "Credential persist failed — admin should retry via Reconnect",
-        },
-      };
-    }
+    // Persist the credential bundle (ADR-0003 SECOND write) with the
+    // shared fail-closed Reconnect fallback: a credential-write failure
+    // flips `status: "reconnect_needed"` so the admin card surfaces a
+    // persistent Reconnect CTA (without it the callback's
+    // `?reconnect=salesforce` query param shows once then vanishes on the
+    // next page load, leaving an "Installed" card with no credential).
+    return writeCredentialWithReconnectFallback({
+      workspaceId,
+      catalogId: SALESFORCE_CATALOG_ID,
+      slug: SALESFORCE_SLUG,
+      bundle,
+      installRecord,
+      log,
+      displayName: "Salesforce",
+      successLogFields: { instanceUrl: tokens.instance_url },
+      failureLogFields: { instanceUrl: tokens.instance_url },
+    });
   }
 }

@@ -663,6 +663,34 @@ describe("Platform Plugin Catalog", () => {
       expect(res.status).toBe(201);
       const body = await json(res);
       expect(body.slug).toBe("bigquery");
+
+      // #4232 — pillar is NOT NULL with no default and the deriving
+      // trigger was dropped by 0096: the INSERT must name it explicitly,
+      // derived from type (datasource→datasource). Positions pinned by
+      // the builder: $5 = type, $6 = pillar.
+      const insert = findCapturedQuery("INSERT INTO plugin_catalog");
+      expect(insert?.sql).toContain("pillar");
+      expect(insert?.params[4]).toBe("datasource");
+      expect(insert?.params[5]).toBe("datasource");
+    });
+
+    it("derives the action pillar for non-datasource types (#4232)", async () => {
+      setQueryResult("SELECT id FROM plugin_catalog WHERE slug", []);
+      setQueryResult("INSERT INTO plugin_catalog", [
+        { ...sampleCatalogRow, type: "sandbox", pillar: "action" },
+      ]);
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Sandbox", slug: "sandbox-x", type: "sandbox" }),
+      });
+      expect(res.status).toBe(201);
+
+      const insert = findCapturedQuery("INSERT INTO plugin_catalog");
+      expect(insert?.params[4]).toBe("sandbox");
+      expect(insert?.params[5]).toBe("action");
     });
 
     it("returns 409 on duplicate slug", async () => {
@@ -695,6 +723,31 @@ describe("Platform Plugin Catalog", () => {
       expect(res.status).toBe(200);
       const body = await json(res);
       expect(body.name).toBe("BigQuery v2");
+
+      // A type-less update must not touch pillar (#4232).
+      const update = findCapturedQuery("UPDATE plugin_catalog");
+      expect(update?.sql).not.toContain("pillar");
+    });
+
+    it("re-derives pillar when the update changes type (#4232)", async () => {
+      setQueryResult("UPDATE plugin_catalog", [
+        { ...sampleCatalogRow, type: "action", pillar: "action" },
+      ]);
+
+      const app = buildPlatformApp();
+      const res = await app.request("/catalog/cat-1", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "action" }),
+      });
+      expect(res.status).toBe(200);
+
+      // The 0092 sync trigger's semantics (dropped by 0096), now in the
+      // statement: re-derive only when type ACTUALLY changes (bare `type`
+      // in an UPDATE's SET reads the OLD row).
+      const update = findCapturedQuery("UPDATE plugin_catalog");
+      expect(update?.sql).toContain("pillar = CASE WHEN type IS DISTINCT FROM");
+      expect(update?.params).toEqual(["action", "action", "cat-1"]);
     });
 
     it("returns 404 for non-existent entry", async () => {
@@ -717,6 +770,9 @@ describe("Platform Plugin Catalog", () => {
         body: JSON.stringify({}),
       });
       expect(res.status).toBe(400);
+      // #4232 — this is the buildCatalogUpdateSql(...) === null seam.
+      const body = await json(res);
+      expect(body.error).toBe("bad_request");
     });
   });
 

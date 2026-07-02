@@ -30,12 +30,13 @@ import {
 import {
   ChatEnvPicker,
   shouldRenderEnvPicker,
-  resolveConversationScope,
-  resolveEnvSelection,
   useChatEnvGroups,
-  type ConversationRoutingMode,
-  type EnvSelectionProvenance,
 } from "./chat/env-picker";
+import {
+  useConversationScope,
+  INITIAL_CONVERSATION_SCOPE,
+  type ConversationScope,
+} from "../hooks/use-conversation-scope";
 import { useMode } from "@/ui/hooks/use-mode";
 import type { QuerySuggestion } from "@/ui/lib/types";
 import { ShareDialog } from "./chat/share-dialog";
@@ -55,7 +56,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { parseSuggestions } from "../lib/helpers";
 import { ErrorBoundary } from "./error-boundary";
 import { useUiStore } from "@/lib/stores/ui-store";
-import { useChatRoutingPreferenceStore } from "@/lib/stores/chat-routing-preference-store";
 import { chatSearchParams, resolveConversationUrlAction } from "./search-params";
 
 /* Static SVG icons — hoisted to avoid recreation on every render */
@@ -210,64 +210,17 @@ export function AtlasChat({
   // the second 409s after a visible success toast.
   const [pinningText, setPinningText] = useState<string | null>(null);
   const [relatedSuggestions, setRelatedSuggestions] = useState<QuerySuggestion[]>([]);
-  // #2345 — chat-header env/member picker state. The connection-group
-  // is the *content scope* (sticky to the conversation row across
-  // turns); the connection id is the *execution target* (a per-turn
-  // override that the agent honours for one turn only). Both default
-  // to `null` so the legacy single-connection flow continues to render
-  // without a picker.
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-  const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
-  // #2518 — three-state Auto/Pin/All cross-environment routing picker.
-  const [selectedRoutingMode, setSelectedRoutingMode] =
-    useState<ConversationRoutingMode | null>(null);
-  // #3066 — per-conversation REST datasource exclude-set (excluded
-  // `install_id`s). Empty = all in scope. Seeded from the sticky preference on
-  // a fresh chat, restored from the row when a conversation is opened.
-  const [selectedRestExcluded, setSelectedRestExcluded] = useState<string[]>([]);
-  // #3067 — per-conversation REST-only focus (a single `install_id`, or null =
-  // not focused). When set, the conversation targets only that datasource and
-  // SQL is suspended. Seeded from the sticky preference on a fresh chat,
-  // restored from the row when a conversation is opened.
-  const [selectedRestFocus, setSelectedRestFocus] = useState<string | null>(null);
-  // #3895 (ADR-0022) — per-conversation Group reach. `null` = All sources (every
-  // visible group reachable — the new default); a group id = Focus → that group.
-  // The cross-group axis ABOVE member routing. Seeded from the sticky preference
-  // on a fresh chat, restored from the row when a conversation is opened.
-  const [selectedGroupReach, setSelectedGroupReach] = useState<string | null>(null);
-  // #3044 — persisted env-picker preference so a reload restores the user's
-  // last selection instead of re-seeding from the first group. Select fields
-  // individually so the store object identity doesn't churn effect deps.
-  const prefWorkspaceId = useChatRoutingPreferenceStore((s) => s.workspaceId);
-  const prefGroupId = useChatRoutingPreferenceStore((s) => s.groupId);
-  const prefConnectionId = useChatRoutingPreferenceStore((s) => s.connectionId);
-  const prefRoutingMode = useChatRoutingPreferenceStore((s) => s.routingMode);
-  const prefRestExcluded = useChatRoutingPreferenceStore((s) => s.restExcludedDatasourceIds);
-  const prefRestFocus = useChatRoutingPreferenceStore((s) => s.restFocusDatasourceId);
-  const prefGroupReach = useChatRoutingPreferenceStore((s) => s.groupReach);
-  const prefHasHydrated = useChatRoutingPreferenceStore((s) => s._hasHydrated);
-  const setRoutingPreference = useChatRoutingPreferenceStore((s) => s.setPreference);
-  // #3064 — how the current picker SQL scope (group / member / mode) was set, so
-  // the seed/restore effect knows whether it may replace it. A ref (not state)
-  // because it must update synchronously alongside a setSelected* call without
-  // re-triggering the effect itself.
-  const selectionProvenanceRef = useRef<EnvSelectionProvenance>("unset");
-  // #3078 — the REST scope (exclude-set + focus) has its OWN provenance,
-  // decoupled from the SQL `selectionProvenanceRef`. Opening a conversation
-  // makes the row's REST scope authoritative ("explicit") even when its SQL
-  // scope must be seeded (an all-null row), and a REST toggle marks it explicit
-  // too. While it's explicit, `resolveEnvSelection` passes the current REST scope
-  // through any SQL seed/restore instead of clobbering it — the seam that fixes
-  // the all-null-SQL exclude-set data loss. `handleNewChat` resets it to "unset".
-  const restScopeProvenanceRef = useRef<EnvSelectionProvenance>("unset");
-  // #3895 — the Group reach has its OWN provenance, decoupled from the SQL
-  // member-routing (`selectionProvenanceRef`) and REST (`restScopeProvenanceRef`)
-  // provenances (the #3078 decoupling, applied to the reach axis). Opening a
-  // conversation makes the row's reach authoritative ("explicit") regardless of
-  // the SQL decision; a reach pick marks it explicit too. While explicit,
-  // `resolveEnvSelection` passes the current reach through any SQL seed/restore
-  // instead of clobbering it. `handleNewChat` resets it to "unset".
-  const groupReachProvenanceRef = useRef<EnvSelectionProvenance>("unset");
+  // #2345 / #4189 — the conversation's env/member/REST/reach scope lives in the
+  // `useConversationScope` hook (one owning module for the three (value,
+  // provenance) axes + sticky preference). Its inputs only settle below the
+  // transport: `sessionResolved` (via `authResolved`) and `envGroupsQuery` (whose
+  // fetch is gated on `authResolved`), plus the session-derived `activeWorkspaceId`
+  // — so the hook is called below them. But the transport's chat-request getters
+  // need to read the LATEST scope. This mirror ref bridges that: the getters read
+  // `scopeRef.current` (lazy, at fetch time), and the hook's `scope` is synced
+  // into it on every render right after the hook call (the same latest-value ref
+  // pattern as `refreshConvosRef`).
+  const scopeRef = useRef<ConversationScope>(INITIAL_CONVERSATION_SCOPE);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -311,17 +264,17 @@ export function AtlasChat({
     // Refs inside `useAtlasTransport` snapshot these at fetch time so
     // a picker change mid-conversation reaches the agent on the very
     // next turn without rebuilding the transport.
-    getConnectionId: () => selectedConnectionId,
-    getConnectionGroupId: () => selectedGroupId,
-    getRoutingMode: () => selectedRoutingMode,
+    getConnectionId: () => scopeRef.current.connectionId,
+    getConnectionGroupId: () => scopeRef.current.groupId,
+    getRoutingMode: () => scopeRef.current.routingMode,
     // #3066 — forward the REST exclude-set on every turn (always, even []).
-    getRestExcludedDatasourceIds: () => selectedRestExcluded,
+    getRestExcludedDatasourceIds: () => scopeRef.current.restExcludedDatasourceIds,
     // #3067 — forward the REST-only focus on every turn (always, even null) so
     // a clear actually nulls the row instead of inheriting the stale focus.
-    getRestFocusDatasourceId: () => selectedRestFocus,
+    getRestFocusDatasourceId: () => scopeRef.current.restFocusDatasourceId,
     // #3895 — forward the Group reach on every turn (always, even null) so a
     // widen back to All sources nulls the row instead of inheriting stale Focus.
-    getGroupReach: () => selectedGroupReach,
+    getGroupReach: () => scopeRef.current.groupReach,
     // #3749 — onRunId: capture the active run id for correlation/telemetry only
     // (not used to target a resume). getResumeConversationId: a resume targets the
     // bound CONVERSATION (not the run id); the affordance only shows once a
@@ -388,126 +341,29 @@ export function AtlasChat({
   // draft-count and showed a misleading "No connection configured" prompt.
   const showDevChatEmpty = shouldShowDevChatEmpty({ mode, ...envGroupsQuery });
 
-  // Seed / restore the env-picker selection on a fresh chat. #3064 — the
-  // decision is centralized in `resolveEnvSelection`: it waits until groups,
-  // the persisted preference, and the workspace id are all ready (so a
-  // default seed never pre-empts a restorable preference — the reset-on-reload
-  // bug), restores a workspace-matching sticky preference over the default
-  // seed, and never clobbers an explicit pick. Provenance is tracked in a ref
-  // so a default-seeded value can still yield to a later-arriving match.
-  useEffect(() => {
-    const decision = resolveEnvSelection({
-      groups: envGroupsQuery.groups,
-      current: {
-        groupId: selectedGroupId,
-        connectionId: selectedConnectionId,
-        routingMode: selectedRoutingMode,
-        restExcludedDatasourceIds: selectedRestExcluded,
-        restFocusDatasourceId: selectedRestFocus,
-        groupReach: selectedGroupReach,
-      },
-      provenance: selectionProvenanceRef.current,
-      // #3078 — REST scope provenance is independent of the SQL provenance. When
-      // it's "explicit" (a conversation-open restore or a user toggle), the
-      // resolver passes the current REST scope through instead of clobbering it
-      // with the default seed / sticky preference while SQL seeds or restores.
-      restProvenance: restScopeProvenanceRef.current,
-      // #3895 — Group reach provenance, independent of both (same seam as REST).
-      groupReachProvenance: groupReachProvenanceRef.current,
-      preference: {
-        workspaceId: prefWorkspaceId,
-        groupId: prefGroupId,
-        connectionId: prefConnectionId,
-        routingMode: prefRoutingMode,
-        restExcludedDatasourceIds: prefRestExcluded,
-        restFocusDatasourceId: prefRestFocus,
-        groupReach: prefGroupReach,
-      },
-      activeWorkspaceId,
-      preferenceHydrated: prefHasHydrated,
-      sessionResolved,
-      // #3078 — a settled fetch means an empty `groups` is a real zero-group
-      // (REST-only) workspace, not a cold start; lets the resolver seed the
-      // sticky REST preference there instead of waiting forever.
-      groupsLoaded: envGroupsQuery.hasLoaded,
-    });
-
-    switch (decision.kind) {
-      case "restore":
-        setSelectedGroupId(decision.groupId);
-        setSelectedConnectionId(decision.connectionId);
-        // Apply the stored mode faithfully, including an explicit null
-        // (pre-#2518 back-compat → "pin"); a truthy guard here would drop it.
-        setSelectedRoutingMode(decision.routingMode);
-        // #3066 — seed the sticky preference's exclude-set onto this fresh chat.
-        setSelectedRestExcluded(decision.restExcludedDatasourceIds);
-        // #3067 — seed the sticky preference's REST-only focus too.
-        setSelectedRestFocus(decision.restFocusDatasourceId);
-        // #3895 — seed the sticky preference's Group reach too.
-        setSelectedGroupReach(decision.groupReach);
-        // A restored sticky preference is the user's deliberate prior choice —
-        // mark it explicit so a later effect run can't seed over it. The reach
-        // has its own provenance but settles together with the SQL scope here.
-        selectionProvenanceRef.current = "explicit";
-        groupReachProvenanceRef.current = "explicit";
-        break;
-      case "seed":
-        setSelectedGroupId(decision.groupId);
-        setSelectedConnectionId(decision.connectionId);
-        // #3066 — a default seed excludes nothing.
-        setSelectedRestExcluded(decision.restExcludedDatasourceIds);
-        // #3067 — a default seed is not focused (SQL active).
-        setSelectedRestFocus(decision.restFocusDatasourceId);
-        // #3895 — a default seed is All sources (null), unless the reach was
-        // explicit and passed through.
-        setSelectedGroupReach(decision.groupReach);
-        // Record that this was auto-seeded: a workspace-matching preference
-        // arriving later is still restored over it (the resolver re-runs), but
-        // a second default seed is suppressed.
-        selectionProvenanceRef.current = "default";
-        groupReachProvenanceRef.current = "default";
-        break;
-      case "wait":
-      case "noop":
-        // Inputs not ready yet, or the selection is already settled — do
-        // nothing and let the effect re-run when a dependency changes.
-        break;
-      default: {
-        // Exhaustiveness guard — a new EnvSelectionDecision variant (e.g. the
-        // v0.0.4 REST-scope work on this branch's milestone) must add a branch.
-        const _exhaustive: never = decision;
-        void _exhaustive;
-      }
-    }
-  }, [
-    envGroupsQuery.groups,
-    // #3078 — re-evaluate once the fetch settles, so the zero-group REST-only
-    // path can seed the sticky preference instead of staying in `wait`.
-    envGroupsQuery.hasLoaded,
-    selectedGroupId,
-    selectedConnectionId,
-    // routingMode is part of `current` the resolver reads — keep it in deps so a
-    // mode-only change re-evaluates restore-vs-noop rather than going stale.
-    selectedRoutingMode,
-    // #3066 — exclude-set is part of `current`; keep it in deps so a pref-only
-    // exclude change re-evaluates restore-vs-noop rather than going stale.
-    selectedRestExcluded,
-    // #3067 — focus is part of `current` too; keep it in deps for the same reason.
-    selectedRestFocus,
-    // #3895 — reach is part of `current` too; keep it in deps so a pref-only reach
-    // change re-evaluates restore-vs-noop rather than going stale.
-    selectedGroupReach,
-    prefWorkspaceId,
-    prefGroupId,
-    prefConnectionId,
-    prefRoutingMode,
-    prefRestExcluded,
-    prefRestFocus,
-    prefGroupReach,
-    prefHasHydrated,
+  // #4189 — the conversation's scope (SQL group/member/mode + REST exclude/focus
+  // + Group reach) and its sticky-preference seeding live in one owning hook. It
+  // runs the fresh-chat seed/restore effect internally (the #3064 precedence:
+  // wait for groups + preference + workspace id, restore a matching sticky
+  // preference over the default seed, never clobber an explicit pick), owns the
+  // three (value, provenance) axes, and persists picks back to the preference.
+  const {
+    scope,
+    restore: restoreConversationScope,
+    applySelection: applyScopeSelection,
+    applyRestExcluded: applyScopeRestExcluded,
+    applyRestFocus: applyScopeRestFocus,
+    resetForNewChat: resetScopeForNewChat,
+  } = useConversationScope({
+    groups: envGroupsQuery.groups,
+    groupsLoaded: envGroupsQuery.hasLoaded,
     activeWorkspaceId,
     sessionResolved,
-  ]);
+  });
+  // Mirror the latest scope into the ref the transport getters read at fetch
+  // time (declared above the transport; see `scopeRef`). Assigning during render
+  // is the same latest-value pattern as `refreshConvosRef` below.
+  scopeRef.current = scope;
 
   const convos = useConversations({
     apiUrl,
@@ -890,45 +746,12 @@ export function AtlasChat({
       boundConversationIdRef.current = id;
       convos.setSelectedId(id);
       // Restore the conversation's persisted scope, validated against the
-      // currently-visible env groups. The SQL scope and the REST scope are
-      // restored INDEPENDENTLY (#3078):
-      //
-      //   - REST scope (exclude-set + focus) is always restored from the row and
-      //     marked `restProvenance: "explicit"` regardless of the SQL decision —
-      //     it is not tied to SQL routing. Marking it explicit (before the
-      //     setState calls, so the re-running seed/restore effect already sees
-      //     it) is what stops that effect from clobbering a restored exclude-set
-      //     when the SQL scope must be seeded. Before #3078 a `seed` cleared the
-      //     exclude-set and the always-sent transport array then wiped it on the
-      //     next turn (the data-loss bug).
-      //   - SQL scope: a `restore` is authoritative (precedence row > sticky
-      //     preference > default seed) — mark it `explicit` so the effect can't
-      //     replace it. A `seed` means the row carried no usable SQL scope
-      //     (all-null legacy row, or a group since archived): reset to `unset` so
-      //     the effect seeds the default / restores the sticky preference,
-      //     never sending stale-or-null routing the chip would misrepresent.
-      const decision = resolveConversationScope(data, envGroupsQuery.groups);
-      // REST scope — restored on BOTH decision kinds, made authoritative.
-      restScopeProvenanceRef.current = "explicit";
-      setSelectedRestExcluded(decision.restExcludedDatasourceIds);
-      setSelectedRestFocus(decision.restFocusDatasourceId);
-      // #3895 — Group reach — restored on BOTH decision kinds (read straight from
-      // the row's `group_reach`, independent of the SQL member-routing decision),
-      // made authoritative so the seed/restore effect can't clobber it.
-      groupReachProvenanceRef.current = "explicit";
-      setSelectedGroupReach(decision.groupReach);
-      // SQL scope — restore vs defer-to-seed.
-      if (decision.kind === "restore") {
-        selectionProvenanceRef.current = "explicit";
-        setSelectedGroupId(decision.groupId);
-        setSelectedConnectionId(decision.connectionId);
-        setSelectedRoutingMode(decision.routingMode);
-      } else {
-        selectionProvenanceRef.current = "unset";
-        setSelectedGroupId(null);
-        setSelectedConnectionId(null);
-        setSelectedRoutingMode(null);
-      }
+      // currently-visible env groups (#3065 / #3078 / #3895). The hook owns the
+      // per-axis restore-vs-seed precedence (row > sticky preference > default
+      // seed) and the (value, provenance) bookkeeping — REST scope + Group reach
+      // are always restored from the row and made authoritative regardless of the
+      // SQL decision, while an all-null SQL scope defers to the seed effect.
+      restoreConversationScope(data, envGroupsQuery.groups);
       setMobileSidebarOpen(false);
       // Loaded turns predate this session — no warning frames replay over
       // the wire, so any prior in-memory bucket is stale relative to the
@@ -972,31 +795,12 @@ export function AtlasChat({
     setMobileSidebarOpen(false);
     setPythonProgress(new Map());
     warningCtl.reset();
-    // #3065 — a new chat is not bound to any conversation's scope. Reset the
-    // selection provenance and clear the picker so the seed/restore effect
-    // re-runs from scratch — seeding from the sticky preference (or the
-    // default), exactly as on a fresh page load. Without this, a
-    // just-opened conversation's `explicit` scope would carry into the new
-    // chat and the effect would no-op on it.
-    selectionProvenanceRef.current = "unset";
-    // #3078 — reset the REST scope provenance too, so a just-opened
-    // conversation's `explicit` REST scope doesn't carry into the new chat and
-    // block the seed/restore effect from seeding the sticky preference / default.
-    restScopeProvenanceRef.current = "unset";
-    // #3895 — reset the Group reach provenance + value too, so a just-opened
-    // conversation's `explicit` reach doesn't carry into the new chat. The new
-    // chat re-seeds reach from the sticky preference (or the All-sources default).
-    groupReachProvenanceRef.current = "unset";
-    setSelectedGroupReach(null);
-    setSelectedGroupId(null);
-    setSelectedConnectionId(null);
-    setSelectedRoutingMode(null);
-    // #3066 — clear the exclude-set so the new chat re-seeds from the sticky
-    // preference (or the empty default), matching the env reset above.
-    setSelectedRestExcluded([]);
-    // #3067 — clear focus too; the new chat re-seeds focus from the sticky
-    // preference (or the not-focused default).
-    setSelectedRestFocus(null);
+    // #3065 — a new chat is not bound to any conversation's scope. Reset every
+    // axis (value + provenance) to `unset` so the hook's seed/restore effect
+    // re-runs from scratch — seeding from the sticky preference (or the default),
+    // exactly as on a fresh page load. Without this, a just-opened conversation's
+    // `explicit` scope would carry into the new chat and the effect would no-op.
+    resetScopeForNewChat();
   }
 
   // #3068 — the single bridge from URL → conversation state. A deep link / page
@@ -1039,7 +843,7 @@ export function AtlasChat({
         break;
       default: {
         // Exhaustiveness guard — a new ConversationUrlAction variant must add a
-        // branch (mirrors the EnvSelectionDecision consumer above).
+        // branch (same `never`-checked pattern as the scope hook's decision consumers).
         const _exhaustive: never = action;
         void _exhaustive;
       }
@@ -1153,85 +957,24 @@ export function AtlasChat({
                     groups={envGroupsQuery.groups}
                     emptyReason={envGroupsQuery.reason}
                     transportError={envGroupsQuery.error}
-                    activeGroupId={selectedGroupId}
-                    activeConnectionId={selectedConnectionId}
-                    activeRoutingMode={selectedRoutingMode}
-                    activeGroupReach={selectedGroupReach}
+                    activeGroupId={scope.groupId}
+                    activeConnectionId={scope.connectionId}
+                    activeRoutingMode={scope.routingMode}
+                    activeGroupReach={scope.groupReach}
                     restDatasources={envGroupsQuery.restDatasources}
-                    restExcludedDatasourceIds={selectedRestExcluded}
-                    onRestExcludedChange={(next) => {
-                      // #3066 — a scope toggle is a deliberate pick: mark the
-                      // selection explicit (so the seed/restore effect can't
-                      // re-seed over it) and remember it in the sticky
-                      // preference so new chats inherit it. The full next set
-                      // (incl. []) is forwarded verbatim. #3078 — mark the REST
-                      // scope's own provenance explicit too (keeping the SQL
-                      // provenance explicit avoids a stray pref-restore of SQL as
-                      // a side effect of a REST toggle).
-                      selectionProvenanceRef.current = "explicit";
-                      restScopeProvenanceRef.current = "explicit";
-                      setSelectedRestExcluded(next);
-                      setRoutingPreference({
-                        workspaceId: activeWorkspaceId,
-                        groupId: selectedGroupId,
-                        connectionId: selectedConnectionId,
-                        routingMode: selectedRoutingMode,
-                        restExcludedDatasourceIds: next,
-                        restFocusDatasourceId: selectedRestFocus,
-                        // #3895 — carry the current reach so a REST toggle doesn't
-                        // drop it from the sticky preference.
-                        groupReach: selectedGroupReach,
-                      });
-                    }}
-                    restFocusDatasourceId={selectedRestFocus}
-                    onRestFocusChange={(next) => {
-                      // #3067 — focusing / clearing is a deliberate pick: mark
-                      // explicit and remember it in the sticky preference so new
-                      // chats inherit it. `null` clears focus (re-enables SQL).
-                      // #3078 — mark the REST scope's own provenance explicit too.
-                      selectionProvenanceRef.current = "explicit";
-                      restScopeProvenanceRef.current = "explicit";
-                      setSelectedRestFocus(next);
-                      setRoutingPreference({
-                        workspaceId: activeWorkspaceId,
-                        groupId: selectedGroupId,
-                        connectionId: selectedConnectionId,
-                        routingMode: selectedRoutingMode,
-                        restExcludedDatasourceIds: selectedRestExcluded,
-                        restFocusDatasourceId: next,
-                        // #3895 — carry the current reach so a focus toggle doesn't
-                        // drop it from the sticky preference.
-                        groupReach: selectedGroupReach,
-                      });
-                    }}
-                    onSelect={({ groupReach, groupId, connectionId, routingMode }) => {
-                      // #3064 — a user pick is authoritative; mark it explicit
-                      // so the seed/restore effect never replaces it. #3895 — a
-                      // reach pick (All sources / Focus → group) sets the reach +
-                      // member routing together, so mark BOTH provenances explicit.
-                      selectionProvenanceRef.current = "explicit";
-                      groupReachProvenanceRef.current = "explicit";
-                      setSelectedGroupReach(groupReach);
-                      setSelectedGroupId(groupId);
-                      setSelectedConnectionId(connectionId);
-                      setSelectedRoutingMode(routingMode);
-                      // #3044 — remember this pick (scoped to the active
-                      // workspace) so a reload restores it. #3066 — carry the
-                      // current exclude-set so an env change doesn't drop it.
-                      setRoutingPreference({
-                        workspaceId: activeWorkspaceId,
-                        groupId,
-                        connectionId,
-                        routingMode,
-                        restExcludedDatasourceIds: selectedRestExcluded,
-                        // #3067 — carry the current focus so an env change
-                        // doesn't drop it from the sticky preference.
-                        restFocusDatasourceId: selectedRestFocus,
-                        // #3895 — persist the picked Group reach so new chats
-                        // inherit it (mirrors the REST scope's sticky seeding).
-                        groupReach,
-                      });
-                    }}
+                    restExcludedDatasourceIds={scope.restExcludedDatasourceIds}
+                    // #3066 — a scope toggle is a deliberate pick: the hook marks
+                    // it explicit (so the seed/restore effect can't re-seed over
+                    // it) and persists it back to the sticky preference so new
+                    // chats inherit it. The full next set (incl. []) is verbatim.
+                    onRestExcludedChange={applyScopeRestExcluded}
+                    restFocusDatasourceId={scope.restFocusDatasourceId}
+                    // #3067 — focusing / clearing is a deliberate pick; `null`
+                    // clears focus (re-enables SQL). The hook persists it.
+                    onRestFocusChange={applyScopeRestFocus}
+                    // #3064 / #3895 — a user pick (group / member / mode / reach)
+                    // is authoritative; the hook marks it explicit and persists it.
+                    onSelect={applyScopeSelection}
                   />
                   {!embedded && (
                   <>

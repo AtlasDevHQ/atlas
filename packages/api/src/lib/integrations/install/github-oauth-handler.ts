@@ -61,10 +61,8 @@ import { encryptSecretFields } from "@atlas/api/lib/plugins/secrets";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import { persistInstallRecord } from "./persist-form-install";
 import type { WorkspaceId } from "@useatlas/types";
-import {
-  mintOAuthStateToken,
-  verifyOAuthStateToken,
-} from "./oauth-state-token";
+import { mintOAuthStateToken } from "./oauth-state-token";
+import { verifyCallbackState } from "./oauth-callback-verify";
 import {
   exchangeUserCodeForToken,
   findUserInstallation,
@@ -164,17 +162,15 @@ export class GitHubOAuthInstallHandler implements OAuthPlatformInstallHandler {
     readonly installRecord: InstallRecord;
     readonly credentialResult: CredentialResult;
   } | null> {
-    // ── 1. Verify state — null on every failure mode ─────────────
-    const verified = verifyOAuthStateToken(stateToken);
+    // ── 1. Verify state + catalog binding (shared seam) ──────────
+    const verified = verifyCallbackState(
+      stateToken,
+      GITHUB_SLUG,
+      log,
+      "GitHub OAuth callback received state bound to a different catalog — rejecting",
+    );
     if (!verified) return null;
-    if (verified.catalogId !== GITHUB_SLUG) {
-      log.warn(
-        { expected: GITHUB_SLUG, got: verified.catalogId },
-        "GitHub OAuth callback received state bound to a different catalog — rejecting",
-      );
-      return null;
-    }
-    const workspaceId = verified.workspaceId as WorkspaceId;
+    const { workspaceId } = verified;
 
     // ── 2. Require both code and installation_id ─────────────────
     // The App's user-OAuth-during-install option MUST be enabled — we

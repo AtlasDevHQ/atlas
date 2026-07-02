@@ -26,8 +26,13 @@
 
 import type { CliRestErrorCode, ExecuteSqlRestResponse } from "@useatlas/types";
 import { ExecuteSqlRestResponseSchema } from "@useatlas/schemas";
-import { credentialHeaders, type CliCredential } from "./credential";
-import { asRecord, isAbortOrTimeout, serverMessage, unreachableMessage, type FetchImpl } from "./http";
+import { type CliCredential } from "./credential";
+import {
+  defaultWorkspaceErrorInfo,
+  serverMessage,
+  workspaceRequest,
+  type FetchImpl,
+} from "./http";
 
 /**
  * The server `error`-field discriminators this client branches on, pinned to the
@@ -93,95 +98,76 @@ export interface RunSqlArgs {
 }
 
 /**
- * Execute one validated SELECT against the bound workspace via
- * `POST /api/v1/execute-sql`, mapping every documented failure status onto a
- * typed {@link SqlCliError} with an actionable message.
+ * Map a non-2xx raw-SQL `(status, body)` onto a typed {@link SqlCliError}. Only
+ * the statuses that diverge from the shared default are spelled out; 401
+ * (re-login), 400 `bad_request` (no-workspace), and any other status fall
+ * through to {@link defaultWorkspaceErrorInfo} so the byte-identical copy is
+ * defined once (#4196).
  */
-export async function runSql(opts: SqlClientOptions, args: RunSqlArgs): Promise<SqlRunResult> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? 60_000;
-
-  let res: Response;
-  try {
-    res = await fetchImpl(`${opts.baseUrl}/api/v1/execute-sql`, {
-      method: "POST",
-      headers: {
-        ...credentialHeaders(opts.credential),
-        "Content-Type": "application/json",
-      },
-      // ONLY sql (+ optional connectionId) — never an org/workspace field. The
-      // server derives the workspace from the credential (ADR-0027 §5).
-      body: JSON.stringify(
-        args.connectionId ? { sql: args.sql, connectionId: args.connectionId } : { sql: args.sql },
-      ),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (err) {
-    if (isAbortOrTimeout(err)) {
-      throw new SqlCliError(
-        "network",
-        `Timed out after ${Math.round(timeoutMs / 1000)}s running the query.`,
-      );
-    }
-    throw new SqlCliError("network", unreachableMessage(opts.baseUrl, err));
-  }
-
-  if (res.ok) {
-    // intentionally ignored: a non-JSON 2xx body becomes `undefined` and fails
-    // the schema parse below — surfaced as a typed error, never silent garbage.
-    const raw = await res.json().catch(() => undefined);
-    // Validate the 200 against the shared wire schema (the SSOT). A shape
-    // mismatch is a server bug / version skew — surface it rather than returning
-    // a half-filled result the renderer would silently mangle.
-    const parsed = ExecuteSqlRestResponseSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw new SqlCliError(
-        "request_failed",
-        "The Atlas API returned an unexpected response shape for the query result. Update the CLI, or check the server logs.",
-      );
-    }
-    return parsed.data;
-  }
-
-  // intentionally ignored: an error body that isn't JSON falls back to the
-  // HTTP-status message below via the empty record.
-  const body = asRecord(await res.json().catch(() => ({})));
-
-  switch (res.status) {
-    case 401:
-      throw new SqlCliError(
-        "unauthorized",
-        "Your session is no longer valid. Run `atlas login` again.",
-      );
+function toSqlError(status: number, body: Record<string, unknown>): SqlCliError {
+  switch (status) {
     case 403:
       // Billing block, RLS-denied, or raw SQL disabled for the workspace by an
       // admin (#4095) — surface the server's message (it carries the actionable
       // remedy, e.g. trial-expired guidance, the RLS reason, or "use `atlas
       // query`").
-      throw new SqlCliError("forbidden", serverMessage(body, res.status));
+      return new SqlCliError("forbidden", serverMessage(body, status));
     case 404:
       // The ONLY 404 this route emits is a billing-gate block for a deleted
       // workspace (`workspace_deleted`). Distinct from a 403 billing/RLS block:
       // the remedy is "this workspace no longer exists", not "fix billing".
-      // Surface the gate's verbatim message.
-      throw new SqlCliError("workspace_not_found", serverMessage(body, res.status));
+      return new SqlCliError("workspace_not_found", serverMessage(body, status));
     case 409:
-      throw new SqlCliError("approval_required", serverMessage(body, res.status));
+      return new SqlCliError("approval_required", serverMessage(body, status));
     case 429:
-      throw new SqlCliError("rate_limited", serverMessage(body, res.status));
-    case 400:
-      if (body.error === ERR.badRequest) {
-        throw new SqlCliError(
-          "no_workspace",
-          "Your login is not bound to a workspace. Single-workspace accounts bind automatically; in-flow workspace selection for multi-workspace accounts is coming soon (ADR-0026).",
-        );
-      }
-      // invalid_sql / plugin_rejected / query_failed — the validation pipeline
-      // (or the datasource) rejected the SQL. The server message names the cause.
-      throw new SqlCliError("invalid_sql", serverMessage(body, res.status));
+      return new SqlCliError("rate_limited", serverMessage(body, status));
     case 503:
-      throw new SqlCliError("unavailable", serverMessage(body, res.status));
-    default:
-      throw new SqlCliError("request_failed", serverMessage(body, res.status));
+      return new SqlCliError("unavailable", serverMessage(body, status));
+    case 400:
+      // A `bad_request` (no bound workspace) falls through to the shared
+      // no-workspace default; every other 400 is the validation pipeline (or the
+      // datasource) rejecting the SQL — the server message names the cause.
+      if (body.error !== ERR.badRequest) {
+        return new SqlCliError("invalid_sql", serverMessage(body, status));
+      }
   }
+  const info = defaultWorkspaceErrorInfo(status, body);
+  return new SqlCliError(info.kind, info.message);
+}
+
+/**
+ * Execute one validated SELECT against the bound workspace via
+ * `POST /api/v1/execute-sql`, mapping every documented failure status onto a
+ * typed {@link SqlCliError} with an actionable message. Rides the shared
+ * {@link workspaceRequest} transport (#4196); only the route, the response
+ * schema, and the SQL-specific status copy live here.
+ */
+export async function runSql(opts: SqlClientOptions, args: RunSqlArgs): Promise<SqlRunResult> {
+  const raw = await workspaceRequest(
+    { ...opts, timeoutMs: opts.timeoutMs ?? 60_000 },
+    {
+      method: "POST",
+      path: "/api/v1/execute-sql",
+      // ONLY sql (+ optional connectionId) — never an org/workspace field. The
+      // server derives the workspace from the credential (ADR-0027 §5).
+      body: args.connectionId ? { sql: args.sql, connectionId: args.connectionId } : { sql: args.sql },
+    },
+    {
+      toError: toSqlError,
+      toNetworkError: (message) => new SqlCliError("network", message),
+      timeoutMessage: (seconds) => `Timed out after ${seconds}s running the query.`,
+    },
+  );
+
+  // Validate the 200 against the shared wire schema (the SSOT). A shape mismatch
+  // is a server bug / version skew — surface it rather than returning a
+  // half-filled result the renderer would silently mangle.
+  const parsed = ExecuteSqlRestResponseSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new SqlCliError(
+      "request_failed",
+      "The Atlas API returned an unexpected response shape for the query result. Update the CLI, or check the server logs.",
+    );
+  }
+  return parsed.data;
 }

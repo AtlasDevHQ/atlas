@@ -4,6 +4,7 @@ import { DropInSurfaces } from "../components/landing/drop-in-surfaces";
 import { EndCta } from "../components/landing/end-cta";
 import { Hero } from "../components/landing/hero";
 import { HowItWorks } from "../components/landing/how-it-works";
+import { KnowledgeBase } from "../components/landing/knowledge-base";
 import { Footer } from "../components/footer";
 import { Nav } from "../components/nav";
 import { StickyNav } from "../components/sticky-nav";
@@ -25,6 +26,7 @@ export default function Home() {
         <Hero />
         <BigStat />
         <HowItWorks />
+        <KnowledgeBase />
         <DropInSurfaces />
         <Deploy />
         <EndCta />

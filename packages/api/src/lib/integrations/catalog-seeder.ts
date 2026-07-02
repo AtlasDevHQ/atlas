@@ -47,6 +47,7 @@ import {
   type ImplementationStatus,
 } from "@useatlas/types";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
+import { pillarFromCatalogType } from "@atlas/api/lib/integrations/catalog-crud";
 
 const log = createLogger("integrations.catalog-seeder");
 
@@ -549,12 +550,15 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
       : JSON.stringify(entry.configSchema);
 
   // Derived per the three-pillar taxonomy (ADR-0006 / migration 0092).
-  // Migration 0097 (#2744 hotfix) dropped the BEFORE-INSERT trigger that
-  // used to default this from `type`, so every writer must name pillar
-  // explicitly. Datasource rows are seeded by
-  // `seed-builtin-datasource-catalog.ts` (pillar='datasource'); this
-  // seeder only handles 'chat' + 'integration' rows.
-  const pillar = pillarFromType(entry.type);
+  // Migration 0096 dropped the BEFORE-INSERT trigger that used to default
+  // this from `type`, so every writer must name pillar explicitly.
+  // Datasource rows are seeded by `seed-builtin-datasource-catalog.ts`
+  // (pillar='datasource'); this seeder only handles 'chat' +
+  // 'integration' rows. Shared mapping (#4232): catalog-crud.ts is the
+  // one statement of the type→pillar DERIVATION — used by the CRUD
+  // routes and this seeder; the built-in datasource/knowledge/OpenAPI
+  // seeds name pillar as SQL literals and don't derive.
+  const pillar = pillarFromCatalogType(entry.type);
 
   // Operator-curated-only gate (#4174/#4099): rows here come from the
   // operator's own atlas.config.ts declaration.
@@ -594,17 +598,6 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
       configSchemaJson,
     ],
   );
-}
-
-/**
- * Map `CatalogEntry.type` to `plugin_catalog.pillar`. Mirrors the
- * mapping enforced by the 0092 BEFORE-INSERT trigger (dropped by 0097):
- * chat→chat, integration→action. `'datasource'` is handled by a
- * separate seeder so it isn't represented here — the type union doesn't
- * admit it.
- */
-function pillarFromType(type: CatalogEntryType): "chat" | "action" {
-  return type === "chat" ? "chat" : "action";
 }
 
 /**

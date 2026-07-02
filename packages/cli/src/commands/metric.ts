@@ -19,16 +19,21 @@
  * server or `process.exit`. `handleMetric` is the thin shell main() calls.
  */
 
+import { getFlag } from "../../lib/cli-utils";
 import { renderTable } from "../../lib/output";
-import { resolveApiBaseUrl } from "../lib/api-base";
-import { readApiKeyFlag, resolveCredential } from "../lib/credential";
-import { readSession, type StoredSession } from "../lib/credentials";
+import { resolveWorkspaceCredential } from "../lib/credential";
 import {
   MetricCliError,
   runMetric,
   type MetricClientOptions,
   type MetricRunResult,
 } from "../lib/metric-client";
+import {
+  defaultCliIO,
+  runWorkspaceCommand,
+  type CliIO,
+  type WorkspaceCommandDeps,
+} from "../lib/workspace-command";
 
 const USAGE = `Run a canonical metric against your logged-in workspace.
 
@@ -50,36 +55,11 @@ Authentication: \`atlas login\` for interactive use (ambient session reuse — n
 key needed), OR a workspace API key via --api-key / ATLAS_API_KEY for unattended
 CI. Set ATLAS_API_URL to target a non-local API.`;
 
-/** stdout/stderr sink — injected so tests can capture output. */
-export interface MetricIO {
-  readonly out: (line: string) => void;
-  readonly err: (line: string) => void;
-}
+/** stdout/stderr sink — the shared {@link CliIO}, injected so tests can capture output. */
+export type MetricIO = CliIO;
 
-const defaultIO: MetricIO = {
-  out: (line) => console.log(line),
-  err: (line) => console.error(line),
-};
-
-/** Everything `runMetricCommand` needs, injected so it stays server-free in tests. */
-export interface MetricRunDeps {
-  readonly baseUrl: string;
-  readonly session: StoredSession | null;
-  /**
-   * A workspace-scoped API key for unattended CI (#4046), resolved from the
-   * `--api-key` flag or the `ATLAS_API_KEY` env var. When present it takes
-   * precedence over the stored session — CI never goes through `atlas login`.
-   */
-  readonly apiKey?: string;
-  readonly fetchImpl?: typeof fetch;
-}
-
-/** Read a `--flag value` option from argv, or undefined when absent. */
-function getFlagValue(args: string[], flag: string): string | undefined {
-  const idx = args.indexOf(flag);
-  if (idx === -1 || idx === args.length - 1) return undefined;
-  return args[idx + 1];
-}
+/** Everything `runMetricCommand` needs — the shared {@link WorkspaceCommandDeps}. */
+export type MetricRunDeps = WorkspaceCommandDeps;
 
 /** Flags whose following token is a value, not the metric id positional. */
 const METRIC_VALUE_FLAGS = new Set(["--connection", "--api-key"]);
@@ -136,7 +116,7 @@ function renderResult(io: MetricIO, result: MetricRunResult): void {
 export async function runMetricCommand(
   args: string[],
   deps: MetricRunDeps,
-  io: MetricIO = defaultIO,
+  io: MetricIO = defaultCliIO,
 ): Promise<number> {
   const subcommand = args[1];
   if (!subcommand || subcommand === "--help" || subcommand === "-h") {
@@ -161,16 +141,13 @@ export async function runMetricCommand(
   // A workspace API key (#4046, unattended CI) takes precedence over a stored
   // login; the flag (either `--api-key key` or `--api-key=key`) wins over the env
   // var (deps.apiKey) so an interactive override is possible. Keys are
-  // workspace-pinned, so no rebind is needed.
-  const apiKey = readApiKeyFlag(args) ?? deps.apiKey;
-  const credential = resolveCredential(apiKey, deps.session);
-  if (!credential) {
-    io.err("Not logged in. Run `atlas login` first, or set ATLAS_API_KEY for unattended use.");
-    return 1;
-  }
+  // workspace-pinned, so no rebind is needed. The shared resolver emits the
+  // "log in or set ATLAS_API_KEY" copy on `io.err` when neither is present.
+  const credential = resolveWorkspaceCredential(args, deps, io);
+  if (!credential) return 1;
 
   const json = args.includes("--json");
-  const connectionId = getFlagValue(args, "--connection");
+  const connectionId = getFlag(args, "--connection");
 
   const opts: MetricClientOptions = {
     baseUrl: deps.baseUrl,
@@ -200,14 +177,7 @@ export async function runMetricCommand(
   }
 }
 
-/** Thin shell main() invokes: resolve the credential + base URL, then dispatch. */
+/** Thin shell main() invokes: the shared workspace-command shell dispatches the core. */
 export async function handleMetric(args: string[]): Promise<void> {
-  const baseUrl = resolveApiBaseUrl();
-  const session = readSession(baseUrl);
-  // ATLAS_API_KEY (#4046) is the unattended-CI credential — it is NOT persisted
-  // to ~/.atlas/credentials (a CI secret managed by the CI system, not an
-  // interactive login). `--api-key` (parsed in runMetricCommand) overrides it.
-  const apiKey = process.env.ATLAS_API_KEY?.trim() || undefined;
-  const code = await runMetricCommand(args, { baseUrl, session, ...(apiKey ? { apiKey } : {}) });
-  if (code !== 0) process.exit(code);
+  return runWorkspaceCommand(args, runMetricCommand);
 }

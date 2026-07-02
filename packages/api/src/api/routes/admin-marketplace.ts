@@ -45,7 +45,10 @@ import {
   MARKETPLACE_INSTALL_READBACK_SQL,
 } from "@atlas/api/lib/integrations/install/persist-form-install";
 import type { WorkspaceId } from "@useatlas/types";
-import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
+import {
+  buildCatalogCreateSql,
+  buildCatalogUpdateSql,
+} from "@atlas/api/lib/integrations/catalog-crud";
 import {
   ErrorSchema,
   AuthErrorSchema,
@@ -367,26 +370,10 @@ platformCatalog.openapi(createCatalogRoute, async (c) => {
         return c.json({ error: "conflict", message: `A catalog entry with slug "${body.slug}" already exists.`, requestId }, 409);
       }
 
-      // Operator-curated-only gate (#4174/#4099): the one interactive path
-      // that creates catalog rows; platform_admin-gated.
-      assertOperatorCatalogWrite("platform-admin-crud");
-      const rows = yield* queryEffect<CatalogRow>(
-        `INSERT INTO plugin_catalog (id, name, slug, description, type, npm_package, icon_url, config_schema, min_plan, enabled)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         RETURNING *`,
-        [
-          id,
-          body.name,
-          body.slug,
-          body.description ?? null,
-          body.type,
-          body.npmPackage ?? null,
-          body.iconUrl ?? null,
-          body.configSchema ? JSON.stringify(body.configSchema) : null,
-          body.minPlan,
-          body.enabled,
-        ],
-      ).pipe(Effect.tapError((err) => Effect.sync(() => {
+      // Operator-curated-only gate (#4174/#4099) lives inside the builder,
+      // next to the SQL (catalog-crud.ts).
+      const create = buildCatalogCreateSql(id, body);
+      const rows = yield* queryEffect<CatalogRow>(create.sql, create.params).pipe(Effect.tapError((err) => Effect.sync(() => {
         logAdminAction({
           actionType: ADMIN_ACTIONS.plugin.catalogCreate,
           targetType: "plugin",
@@ -429,26 +416,10 @@ platformCatalog.openapi(updateCatalogRoute, async (c) => {
       const { id } = c.req.valid("param");
       const body = c.req.valid("json");
 
-      // Build dynamic SET clause
-      const setClauses: string[] = [];
-      const params: unknown[] = [];
-      let paramIdx = 1;
-
-      if (body.name !== undefined) { setClauses.push(`name = $${paramIdx++}`); params.push(body.name); }
-      if (body.description !== undefined) { setClauses.push(`description = $${paramIdx++}`); params.push(body.description); }
-      if (body.type !== undefined) { setClauses.push(`type = $${paramIdx++}`); params.push(body.type); }
-      if (body.npmPackage !== undefined) { setClauses.push(`npm_package = $${paramIdx++}`); params.push(body.npmPackage); }
-      if (body.iconUrl !== undefined) { setClauses.push(`icon_url = $${paramIdx++}`); params.push(body.iconUrl); }
-      if (body.configSchema !== undefined) { setClauses.push(`config_schema = $${paramIdx++}`); params.push(JSON.stringify(body.configSchema)); }
-      if (body.minPlan !== undefined) { setClauses.push(`min_plan = $${paramIdx++}`); params.push(body.minPlan); }
-      if (body.enabled !== undefined) { setClauses.push(`enabled = $${paramIdx++}`); params.push(body.enabled); }
-
-      if (setClauses.length === 0) {
+      const update = buildCatalogUpdateSql(id, body);
+      if (update === null) {
         return c.json({ error: "bad_request", message: "No fields to update.", requestId }, 400);
       }
-
-      setClauses.push(`updated_at = now()`);
-      params.push(id);
 
       // Keys only — see ADMIN_ACTIONS.plugin JSDoc. configSchema may hint at
       // secret shapes and `enabled: false` carries forensic signal that the
@@ -473,13 +444,9 @@ platformCatalog.openapi(updateCatalogRoute, async (c) => {
         priorLookup = { slug: null, failed: true };
       }
 
-      // Operator-curated-only gate (#4174/#4099): this UPDATE can repoint
-      // trust-carrying fields (npm_package, config_schema); platform_admin-gated.
-      assertOperatorCatalogWrite("platform-admin-crud");
-      const rows = yield* queryEffect<CatalogRow>(
-        `UPDATE plugin_catalog SET ${setClauses.join(", ")} WHERE id = $${paramIdx} RETURNING *`,
-        params,
-      ).pipe(Effect.tapError((err) => Effect.sync(() => {
+      // Operator-curated-only gate (#4174/#4099) lives inside the builder,
+      // next to the SQL (catalog-crud.ts).
+      const rows = yield* queryEffect<CatalogRow>(update.sql, update.params).pipe(Effect.tapError((err) => Effect.sync(() => {
         logAdminAction({
           actionType: ADMIN_ACTIONS.plugin.catalogUpdate,
           targetType: "plugin",

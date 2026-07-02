@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-07-01
-**Context milestone:** v0.0.41 — Knowledge Base Pillar
+**Context milestone:** v0.0.40 — Knowledge Base Pillar (#81; shipped as tag `v0.0.40` — the milestone was titled v0.0.41 until the tag train overtook it)
 **Depends on:** [ADR-0006](./0006-three-pillar-integration-taxonomy.md), [ADR-0007](./0007-unified-install-pipeline.md)
 **Issues:** #4182 (design), #4140 (OKF interop spike, findings in [docs/research/okf-interop-spike.md](../research/okf-interop-spike.md))
 

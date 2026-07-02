@@ -35,10 +35,8 @@ import { encryptSecretFields } from "@atlas/api/lib/plugins/secrets";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import { persistInstallRecord } from "./persist-form-install";
 import type { WorkspaceId } from "@useatlas/types";
-import {
-  mintOAuthStateToken,
-  verifyOAuthStateToken,
-} from "./oauth-state-token";
+import { mintOAuthStateToken } from "./oauth-state-token";
+import { verifyCallbackState } from "./oauth-callback-verify";
 import {
   GITHUB_APP_SECRET_FIELDS_SCHEMA,
   GITHUB_SINGLE_TENANT_CATALOG_ID,
@@ -124,16 +122,14 @@ export class GitHubSingleTenantOAuthInstallHandler implements OAuthPlatformInsta
     readonly installRecord: InstallRecord;
     readonly credentialResult: CredentialResult;
   } | null> {
-    const verified = verifyOAuthStateToken(stateToken);
+    const verified = verifyCallbackState(
+      stateToken,
+      GITHUB_SINGLE_TENANT_SLUG,
+      log,
+      "GitHub single-tenant callback received state bound to a different catalog — rejecting",
+    );
     if (!verified) return null;
-    if (verified.catalogId !== GITHUB_SINGLE_TENANT_SLUG) {
-      log.warn(
-        { expected: GITHUB_SINGLE_TENANT_SLUG, got: verified.catalogId },
-        "GitHub single-tenant callback received state bound to a different catalog — rejecting",
-      );
-      return null;
-    }
-    const workspaceId = verified.workspaceId as WorkspaceId;
+    const { workspaceId } = verified;
 
     // Single-tenant accepts the supplied identifier from EITHER:
     //   - `extras.installationId` (route passes the query-param branch

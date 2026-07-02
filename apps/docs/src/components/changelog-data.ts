@@ -20,6 +20,22 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.40",
+    title: "Knowledge Base Pillar",
+    date: "2026-07-02",
+    summary:
+      "Atlas gains its fourth pillar: a hosted Knowledge Base. Workspaces can now upload Open Knowledge Format (OKF) collections — runbooks, definitions, domain docs — review them in a new admin surface, and publish them so the agent reads them alongside the semantic layer when answering questions. Knowledge is served natively to the agent through the explore tool and a new searchKnowledge tool with full-text search and link-graph expansion, and collections can stay fresh via scheduled bundle sync. The release also carries the first wave of the ongoing architecture-deepening work, including marketplace install-path fixes and sandbox hardening.",
+    highlights: [
+      "Knowledge Base pillar — hosted per-workspace OKF collections with a document + link schema (ADR-0028, #4212)",
+      "Ingest + publish lifecycle: bundle upload, upsert-by-path, archive-on-uninstall (#4213)",
+      "OKF-native serving through the explore tool, with provenance and a prompt table of contents (#4220)",
+      "/admin/knowledge — manage collections, upload bundles, review and publish (#4219)",
+      "searchKnowledge tool — frontmatter filters, Postgres full-text search, and 1-hop link-graph expansion (#4221)",
+      "Scheduled bundle sync — pull a bundle endpoint on a schedule with ingest-computed diffs (#4225)",
+      "Marketplace install-path fixes and sandbox explore hardening from the Architecture Deepening II wave (#4224, #4231, #4233)",
+    ],
+  },
+  {
     version: "v0.0.39",
     title: "Architecture Deepening Rollup",
     date: "2026-07-02",

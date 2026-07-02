@@ -174,6 +174,19 @@ describe("store (chat_cache-backed)", () => {
       const result = await getInstallation("T123");
       expect(result).toBeNull();
     });
+
+    it("hides the row when the stored botToken cannot be decrypted (decrypt-or-hide-row)", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      // A legacy Atlas-ciphertext string (enc:v…) is rejected by
+      // decryptSlackInstallationToken — the whole row is hidden rather
+      // than surfaced as a connected-but-broken install.
+      mockInternalQuery.mockResolvedValue([
+        { value: { botToken: "enc:v1:legacy:blob" }, installed_at: "2025-01-01T00:00:00.000Z" },
+      ]);
+
+      const result = await getInstallation("T123");
+      expect(result).toBeNull();
+    });
   });
 
   describe("getInstallationByOrg", () => {

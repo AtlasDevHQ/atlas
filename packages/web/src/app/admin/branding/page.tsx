@@ -1,8 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useForm, useWatch } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
   AlertCircle,
@@ -16,8 +14,11 @@ import {
   ShieldOff,
   Type,
 } from "lucide-react";
-import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import {
+  useConfigForm,
+  type ConfigFormFields,
+} from "@/ui/hooks/use-config-form";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -31,35 +32,34 @@ import {
 } from "@/ui/components/admin/compact";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import {
-  Form,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormControl,
-  FormDescription,
-  FormMessage,
-} from "@/components/ui/form";
 import { WorkspaceBrandingSchema } from "@/ui/lib/admin-schemas";
 
-const BrandingResponseSchema = z
-  .object({ branding: WorkspaceBrandingSchema.nullable() })
-  .transform((r) => r.branding);
+// The nullable `branding` stays wrapped (no `.transform` unwrap): useConfigForm
+// re-baselines only when the fetched object changes, and a bare `null` data
+// value would read as "not loaded" — the wrapper keeps "loaded, but no
+// branding row" representable so a reset-to-defaults refetch still
+// re-baselines the form to EMPTY.
+const BrandingResponseSchema = z.object({
+  branding: WorkspaceBrandingSchema.nullable(),
+});
+
+type BrandingResponse = z.infer<typeof BrandingResponseSchema>;
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
-const brandingSchema = z.object({
-  logoUrl: z.string(),
-  logoText: z.string(),
-  primaryColor: z.string().refine((v) => !v || HEX_RE.test(v), {
-    message: "Must be a 6-digit hex color (e.g. #FF5500)",
-  }),
-  faviconUrl: z.string(),
-  hideAtlasBranding: z.boolean(),
-});
+/** Editable field set — `toForm` below is its single statement (#4204). */
+type BrandingValues = {
+  logoUrl: string;
+  logoText: string;
+  primaryColor: string;
+  faviconUrl: string;
+  hideAtlasBranding: boolean;
+};
 
-type BrandingValues = z.infer<typeof brandingSchema>;
+type BrandingField<K extends keyof BrandingValues> =
+  ConfigFormFields<BrandingValues>[K];
 
 const EMPTY: BrandingValues = {
   logoUrl: "",
@@ -103,66 +103,53 @@ function countCustomized(v: BrandingValues): number {
 // ── Page ──────────────────────────────────────────────────────────
 
 export default function BrandingPage() {
-  const { data, loading, error, refetch } = useAdminFetch(
-    "/api/v1/admin/branding",
-    { schema: BrandingResponseSchema },
-  );
-  const save = useAdminMutation({
+  // Load → edit → dirty-gated save → re-baseline ride `useConfigForm` — the
+  // former react-hook-form wiring hand-rolled its own reset-on-refetch
+  // effect; here the re-baseline derives from `toForm` (#4204).
+  const form = useConfigForm<BrandingResponse, BrandingValues>({
     path: "/api/v1/admin/branding",
-    invalidates: refetch,
+    schema: BrandingResponseSchema,
+    saveMethod: "PUT",
+    toForm: (d) => ({
+      logoUrl: d.branding?.logoUrl ?? "",
+      logoText: d.branding?.logoText ?? "",
+      primaryColor: d.branding?.primaryColor ?? "",
+      faviconUrl: d.branding?.faviconUrl ?? "",
+      hideAtlasBranding: d.branding?.hideAtlasBranding ?? false,
+    }),
+    toPayload: (v) => ({
+      logoUrl: v.logoUrl || null,
+      logoText: v.logoText || null,
+      primaryColor: v.primaryColor || null,
+      faviconUrl: v.faviconUrl || null,
+      hideAtlasBranding: v.hideAtlasBranding,
+    }),
   });
   const reset = useAdminMutation({
     path: "/api/v1/admin/branding",
-    invalidates: refetch,
+    method: "DELETE",
   });
 
-  const form = useForm<BrandingValues>({
-    resolver: zodResolver(brandingSchema),
-    defaultValues: EMPTY,
-  });
-
-  // Reset form to server state whenever the fetched `data` changes — e.g.
-  // after save/reset refetches. `form.reset` has a stable identity per RHF,
-  // so it's omitted from deps deliberately; adding it would loop.
-  useEffect(() => {
-    if (loading) return;
-    if (data) {
-      form.reset({
-        logoUrl: data.logoUrl ?? "",
-        logoText: data.logoText ?? "",
-        primaryColor: data.primaryColor ?? "",
-        faviconUrl: data.faviconUrl ?? "",
-        hideAtlasBranding: data.hideAtlasBranding,
-      });
-    } else {
-      form.reset(EMPTY);
-    }
-  }, [data, loading]);
-
-  const values = form.watch();
+  // Hero + preview render from EMPTY until the first load lands — same as the
+  // old react-hook-form defaultValues.
+  const values = form.values ?? EMPTY;
   const customized = countCustomized(values);
   const colorValid = !values.primaryColor || HEX_RE.test(values.primaryColor);
-  const isDirty = form.formState.isDirty;
-  const busy = save.saving || reset.saving;
+  const busy = form.saving || reset.saving;
 
-  async function handleSave(v: BrandingValues) {
-    // saveError is surfaced by <MutationErrorSurface> below — no throw
-    // needed; react-hook-form's handleSubmit would swallow it anyway.
-    await save.mutate({
-      method: "PUT",
-      body: {
-        logoUrl: v.logoUrl || null,
-        logoText: v.logoText || null,
-        primaryColor: v.primaryColor || null,
-        faviconUrl: v.faviconUrl || null,
-        hideAtlasBranding: v.hideAtlasBranding,
-      },
-    });
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    // Save error is surfaced by <MutationErrorSurface> below; the invalid-hex
+    // case is gated here AND on the button so an Enter-key submit can't
+    // slip an invalid color past a disabled button.
+    if (!colorValid) return;
+    await form.save();
   }
 
   async function handleReset() {
-    const result = await reset.mutate({ method: "DELETE" });
-    if (result.ok) form.reset(EMPTY);
+    // No manual field reset: the DELETE's invalidation refetch returns
+    // `{ branding: null }`, and `toForm` re-baselines the form to EMPTY.
+    await reset.mutate();
   }
 
   return (
@@ -171,27 +158,24 @@ export default function BrandingPage() {
         <Hero customized={customized} />
 
         <AdminContentWrapper
-          loading={loading}
-          error={error}
+          loading={form.loading}
+          error={form.loadError}
           feature="Branding"
-          onRetry={refetch}
+          onRetry={form.refetch}
           loadingMessage="Loading branding settings..."
         >
-          <Form {...form}>
-            <form
-              onSubmit={form.handleSubmit(handleSave)}
-              className="space-y-10"
-            >
+          {form.fields && (
+            <form onSubmit={handleSave} className="space-y-10">
               <section>
                 <SectionHeading
                   title="Identity"
                   description="Replace Atlas defaults with your own logo, type, and color"
                 />
                 <div className="space-y-2">
-                  <LogoUrlRow />
-                  <LogoTextRow />
-                  <PrimaryColorRow />
-                  <FaviconRow />
+                  <LogoUrlRow field={form.fields.logoUrl} />
+                  <LogoTextRow field={form.fields.logoText} />
+                  <PrimaryColorRow field={form.fields.primaryColor} />
+                  <FaviconRow field={form.fields.faviconUrl} />
                 </div>
               </section>
 
@@ -200,7 +184,7 @@ export default function BrandingPage() {
                   title="Attribution"
                   description="Control how Atlas is credited across the UI"
                 />
-                <AttributionRow />
+                <AttributionRow field={form.fields.hideAtlasBranding} />
               </section>
 
               <section>
@@ -212,7 +196,7 @@ export default function BrandingPage() {
               </section>
 
               <MutationErrorSurface
-                error={save.error}
+                error={form.error}
                 feature="Branding"
                 variant="inline"
                 inlinePrefix="Save failed."
@@ -233,15 +217,15 @@ export default function BrandingPage() {
               <footer className="flex items-center gap-2 border-t border-border/50 pt-5">
                 <Button
                   type="submit"
-                  disabled={busy || !colorValid || !isDirty}
+                  disabled={busy || !colorValid || !form.dirty}
                   size="sm"
                 >
-                  {save.saving && (
+                  {form.saving && (
                     <Loader2 className="mr-1.5 size-3 animate-spin" />
                   )}
-                  {isDirty ? "Save changes" : "Saved"}
+                  {form.dirty ? "Save changes" : "Saved"}
                 </Button>
-                {data && (
+                {form.data?.branding && (
                   <Button
                     type="button"
                     variant="outline"
@@ -264,7 +248,7 @@ export default function BrandingPage() {
                 </span>
               </footer>
             </form>
-          </Form>
+          )}
         </AdminContentWrapper>
       </div>
     </ErrorBoundary>
@@ -297,18 +281,17 @@ function Hero({ customized }: { customized: number }) {
 
 // ── Rows ──────────────────────────────────────────────────────────
 
-function LogoUrlRow() {
+function LogoUrlRow({ field }: { field: BrandingField<"logoUrl"> }) {
   const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
     useDisclosure();
-  const value = useWatchField("logoUrl");
-  const status: StatusKind = value ? "connected" : "disconnected";
+  const status: StatusKind = field.value ? "connected" : "disconnected";
 
   if (!expanded) {
     return (
       <CompactRow
         icon={ImageIcon}
         title="Logo image"
-        description={value || "Replace the Atlas logo with your own image"}
+        description={field.value || "Replace the Atlas logo with your own image"}
         status={status}
         statusLabel={BRANDING_STATUS_LABEL[status]}
         action={
@@ -320,7 +303,7 @@ function LogoUrlRow() {
             aria-expanded={false}
             onClick={() => setExpanded(true)}
           >
-            {value ? (
+            {field.value ? (
               "Edit"
             ) : (
               <>
@@ -344,38 +327,33 @@ function LogoUrlRow() {
       status="disconnected"
       onCollapse={collapse}
     >
-      <FormField
-        name="logoUrl"
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel className="sr-only">Logo URL</FormLabel>
-            <FormControl>
-              <Input
-                placeholder="https://example.com/logo.png"
-                className="font-mono text-sm"
-                {...field}
-              />
-            </FormControl>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
+      <div className="space-y-1">
+        <Label htmlFor="branding-logo-url" className="sr-only">
+          Logo URL
+        </Label>
+        <Input
+          id="branding-logo-url"
+          placeholder="https://example.com/logo.png"
+          className="font-mono text-sm"
+          value={field.value}
+          onChange={(e) => field.set(e.target.value)}
+        />
+      </div>
     </Shell>
   );
 }
 
-function LogoTextRow() {
+function LogoTextRow({ field }: { field: BrandingField<"logoText"> }) {
   const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
     useDisclosure();
-  const value = useWatchField("logoText");
-  const status: StatusKind = value ? "connected" : "disconnected";
+  const status: StatusKind = field.value ? "connected" : "disconnected";
 
   if (!expanded) {
     return (
       <CompactRow
         icon={Type}
         title="Logo text"
-        description={value || "Displayed next to or instead of the logo"}
+        description={field.value || "Displayed next to or instead of the logo"}
         status={status}
         statusLabel={BRANDING_STATUS_LABEL[status]}
         action={
@@ -387,7 +365,7 @@ function LogoTextRow() {
             aria-expanded={false}
             onClick={() => setExpanded(true)}
           >
-            {value ? (
+            {field.value ? (
               "Edit"
             ) : (
               <>
@@ -411,26 +389,25 @@ function LogoTextRow() {
       status="disconnected"
       onCollapse={collapse}
     >
-      <FormField
-        name="logoText"
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel className="sr-only">Logo text</FormLabel>
-            <FormControl>
-              <Input placeholder="Acme Corp" {...field} />
-            </FormControl>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
+      <div className="space-y-1">
+        <Label htmlFor="branding-logo-text" className="sr-only">
+          Logo text
+        </Label>
+        <Input
+          id="branding-logo-text"
+          placeholder="Acme Corp"
+          value={field.value}
+          onChange={(e) => field.set(e.target.value)}
+        />
+      </div>
     </Shell>
   );
 }
 
-function PrimaryColorRow() {
+function PrimaryColorRow({ field }: { field: BrandingField<"primaryColor"> }) {
   const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
     useDisclosure();
-  const value = useWatchField("primaryColor");
+  const value = field.value;
   const valid = !value || HEX_RE.test(value);
   const swatchColor = valid && value ? value : null;
   const invalid = Boolean(value) && !valid;
@@ -505,47 +482,49 @@ function PrimaryColorRow() {
       status="disconnected"
       onCollapse={collapse}
     >
-      <FormField
-        name="primaryColor"
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel className="sr-only">Primary color</FormLabel>
-            <div className="flex items-center gap-3">
-              <span
-                aria-hidden
-                className="size-10 shrink-0 rounded-md border"
-                style={{
-                  backgroundColor: swatchColor ?? "var(--muted)",
-                }}
-              />
-              <FormControl>
-                <Input
-                  placeholder="#FF5500"
-                  className="font-mono text-sm"
-                  {...field}
-                />
-              </FormControl>
-            </div>
-            <FormMessage />
-          </FormItem>
+      <div className="space-y-1">
+        <Label htmlFor="branding-primary-color" className="sr-only">
+          Primary color
+        </Label>
+        <div className="flex items-center gap-3">
+          <span
+            aria-hidden
+            className="size-10 shrink-0 rounded-md border"
+            style={{
+              backgroundColor: swatchColor ?? "var(--muted)",
+            }}
+          />
+          <Input
+            id="branding-primary-color"
+            placeholder="#FF5500"
+            className="font-mono text-sm"
+            value={value}
+            onChange={(e) => field.set(e.target.value)}
+          />
+        </div>
+        {invalid && (
+          <InlineError>
+            Must be a 6-digit hex color (e.g. #FF5500)
+          </InlineError>
         )}
-      />
+      </div>
     </Shell>
   );
 }
 
-function FaviconRow() {
+function FaviconRow({ field }: { field: BrandingField<"faviconUrl"> }) {
   const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
     useDisclosure();
-  const value = useWatchField("faviconUrl");
-  const status: StatusKind = value ? "connected" : "disconnected";
+  const status: StatusKind = field.value ? "connected" : "disconnected";
 
   if (!expanded) {
     return (
       <CompactRow
         icon={Globe}
         title="Favicon"
-        description={value ? truncateUrl(value) : "Shown in browser tabs and bookmarks"}
+        description={
+          field.value ? truncateUrl(field.value) : "Shown in browser tabs and bookmarks"
+        }
         status={status}
         statusLabel={BRANDING_STATUS_LABEL[status]}
         action={
@@ -557,7 +536,7 @@ function FaviconRow() {
             aria-expanded={false}
             onClick={() => setExpanded(true)}
           >
-            {value ? (
+            {field.value ? (
               "Edit"
             ) : (
               <>
@@ -581,60 +560,49 @@ function FaviconRow() {
       status="disconnected"
       onCollapse={collapse}
     >
-      <FormField
-        name="faviconUrl"
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel className="sr-only">Favicon URL</FormLabel>
-            <FormControl>
-              <Input
-                placeholder="https://example.com/favicon.ico"
-                className="font-mono text-sm"
-                {...field}
-              />
-            </FormControl>
-            <FormDescription className="text-[11px]">
-              Browsers cache favicons aggressively; clear site data to verify.
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
+      <div className="space-y-1">
+        <Label htmlFor="branding-favicon-url" className="sr-only">
+          Favicon URL
+        </Label>
+        <Input
+          id="branding-favicon-url"
+          placeholder="https://example.com/favicon.ico"
+          className="font-mono text-sm"
+          value={field.value}
+          onChange={(e) => field.set(e.target.value)}
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Browsers cache favicons aggressively; clear site data to verify.
+        </p>
+      </div>
     </Shell>
   );
 }
 
-function AttributionRow() {
+function AttributionRow({
+  field,
+}: {
+  field: BrandingField<"hideAtlasBranding">;
+}) {
+  const status: StatusKind = field.value ? "connected" : "disconnected";
   return (
-    <FormField
-      name="hideAtlasBranding"
-      render={({ field }) => {
-        const status: StatusKind = field.value ? "connected" : "disconnected";
-        return (
-          <FormItem className="space-y-0">
-            <CompactRow
-              icon={ShieldOff}
-              title="Hide Atlas branding"
-              description={
-                field.value
-                  ? "“Atlas” and “Powered by Atlas” text are hidden"
-                  : "Default — Atlas attribution remains visible"
-              }
-              status={status}
-              statusLabel={BRANDING_STATUS_LABEL[status]}
-              action={
-                <FormControl>
-                  <Switch
-                    checked={field.value}
-                    onCheckedChange={field.onChange}
-                    aria-label="Hide Atlas branding"
-                  />
-                </FormControl>
-              }
-            />
-          </FormItem>
-        );
-      }}
+    <CompactRow
+      icon={ShieldOff}
+      title="Hide Atlas branding"
+      description={
+        field.value
+          ? "“Atlas” and “Powered by Atlas” text are hidden"
+          : "Default — Atlas attribution remains visible"
+      }
+      status={status}
+      statusLabel={BRANDING_STATUS_LABEL[status]}
+      action={
+        <Switch
+          checked={field.value}
+          onCheckedChange={field.set}
+          aria-label="Hide Atlas branding"
+        />
+      }
     />
   );
 }
@@ -731,12 +699,4 @@ function PreviewShell({
       )}
     </Shell>
   );
-}
-
-// ── Internal hook ─────────────────────────────────────────────────
-
-function useWatchField<K extends keyof BrandingValues>(
-  name: K,
-): BrandingValues[K] {
-  return useWatch({ name }) as BrandingValues[K];
 }

@@ -51,10 +51,15 @@ function makeStatus(overrides: Partial<SandboxStatus> = {}): SandboxStatus {
 
 // The sandbox-status fetch always succeeds in these tests — the point is
 // that a healthy status payload alone must NOT be enough to render a view
-// while the deploy mode is still a guess.
+// while the deploy mode is still a guess. The payload is hoisted to a stable
+// reference to match the real hook's contract: TanStack Query returns a
+// referentially stable `data` across renders (structural sharing), and
+// `useConfigForm`'s render-time re-baseline relies on that — a fresh object
+// per render would re-baseline forever.
+const stableStatus = makeStatus();
 mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({
-    data: makeStatus(),
+    data: stableStatus,
     loading: false,
     error: null,
     setError: () => {},

@@ -37,6 +37,7 @@ import {
 } from "@/ui/components/admin/compact";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useConfigForm } from "@/ui/hooks/use-config-form";
 // Provider-key vocabulary and status wire schemas are shared with the
 // API route layer via `@useatlas/schemas` (#3371).
 import {
@@ -251,7 +252,6 @@ export default function SandboxPage() {
                 />
               ) : (
                 <SelfHostedSandboxView
-                  status={data}
                   onSelectBackend={(backendId) =>
                     saveMutation.mutate({ body: { value: backendId } })
                   }
@@ -692,31 +692,52 @@ function ProviderRow({
 
 // ── Self-hosted view ──────────────────────────────────────────────
 
+/** Editable field set for the self-hosted backend form (#4204). */
+type SelfHostedFormValues = {
+  backend: string;
+  sidecarUrl: string;
+};
+
 function SelfHostedSandboxView({
-  status,
   onSelectBackend,
   onSetSidecarUrl,
   onReset,
   saving,
 }: {
-  status: SandboxStatus;
   onSelectBackend: (backendId: string) => Promise<unknown>;
   onSetSidecarUrl: (url: string) => Promise<unknown>;
   onReset: () => Promise<void>;
   saving: boolean;
 }) {
-  const [selectedBackend, setSelectedBackend] = useState(
-    status.workspaceOverride ?? "",
-  );
-  const [sidecarUrl, setSidecarUrl] = useState(status.workspaceSidecarUrl ?? "");
+  // Load / dirty gate / reset-on-refetch ride `useConfigForm` on the same
+  // status query the page already fetches (TanStack dedupes on the path key),
+  // replacing the hand-rolled useState pair + `hasChanges` compare (#4204).
+  // The save itself deliberately does NOT go through `form.save()`: it fans
+  // out to two settings endpoints (ATLAS_SANDBOX_BACKEND / ATLAS_SANDBOX_URL,
+  // PUT or DELETE depending on the value) via the parent's mutations, and
+  // multi-endpoint saves are out of useConfigForm's scope by design (see the
+  // hook docs). The mutations' invalidation refetch still drives the
+  // re-baseline, so a successful save flips `dirty` back to false.
+  const form = useConfigForm<SandboxStatus, SelfHostedFormValues>({
+    path: "/api/v1/admin/sandbox/status",
+    schema: SandboxStatusSchema,
+    toForm: (s) => ({
+      backend: s.workspaceOverride ?? "",
+      sidecarUrl: s.workspaceSidecarUrl ?? "",
+    }),
+  });
+
+  const status = form.data;
+  const fields = form.fields;
+  const values = form.values;
+  // The parent only renders this view once the status query has data, so
+  // this guard closes the single pre-baseline render pass, not a real state.
+  if (!status || !fields || !values) return null;
 
   const availableBackends = status.availableBackends.filter((b) => b.available);
   const showSidecarUrl =
-    selectedBackend === "sidecar" ||
-    (!selectedBackend && status.activeBackend === "sidecar");
-  const hasChanges =
-    (selectedBackend && selectedBackend !== (status.workspaceOverride ?? "")) ||
-    sidecarUrl !== (status.workspaceSidecarUrl ?? "");
+    values.backend === "sidecar" ||
+    (!values.backend && status.activeBackend === "sidecar");
   const hasOverride = Boolean(status.workspaceOverride);
   const shellStatus: StatusKind = hasOverride ? "connected" : "ready";
 
@@ -749,9 +770,9 @@ function SelfHostedSandboxView({
                 size="sm"
                 className="text-muted-foreground"
                 onClick={async () => {
+                  // The DELETEs' invalidation refetch re-baselines the form
+                  // to the cleared override — no manual field reset needed.
                   await onReset();
-                  setSelectedBackend("");
-                  setSidecarUrl("");
                 }}
                 disabled={saving}
               >
@@ -765,17 +786,17 @@ function SelfHostedSandboxView({
                 // `"__default__"` is a Select sentinel: picking it clears the
                 // workspace override so the platform default takes over.
                 const effectiveBackend =
-                  selectedBackend === "__default__" ? "" : selectedBackend;
+                  values.backend === "__default__" ? "" : values.backend;
                 if (effectiveBackend) {
                   await onSelectBackend(effectiveBackend);
                 } else {
                   await onReset();
                 }
-                if (sidecarUrl && showSidecarUrl && effectiveBackend) {
-                  await onSetSidecarUrl(sidecarUrl);
+                if (values.sidecarUrl && showSidecarUrl && effectiveBackend) {
+                  await onSetSidecarUrl(values.sidecarUrl);
                 }
               }}
-              disabled={saving || !hasChanges}
+              disabled={saving || !form.dirty}
             >
               {saving ? (
                 <Loader2 className="mr-1.5 size-3.5 animate-spin" />
@@ -801,7 +822,7 @@ function SelfHostedSandboxView({
 
         <div className="space-y-1.5">
           <Label htmlFor="sandbox-backend">Backend</Label>
-          <Select value={selectedBackend} onValueChange={setSelectedBackend}>
+          <Select value={values.backend} onValueChange={fields.backend.set}>
             <SelectTrigger id="sandbox-backend" aria-label="Sandbox backend">
               <SelectValue placeholder="Use platform default" />
             </SelectTrigger>
@@ -832,8 +853,8 @@ function SelfHostedSandboxView({
               type="url"
               placeholder="https://sandbox.example.com"
               className="font-mono text-sm"
-              value={sidecarUrl}
-              onChange={(e) => setSidecarUrl(e.target.value)}
+              value={values.sidecarUrl}
+              onChange={(e) => fields.sidecarUrl.set(e.target.value)}
             />
             <p className="text-[11px] text-muted-foreground">
               Override the sidecar service URL. Leave empty to use the platform default.

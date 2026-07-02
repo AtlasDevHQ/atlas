@@ -8,9 +8,8 @@
  */
 
 import * as yaml from "js-yaml";
+import { splitFrontmatterBlock } from "./md-utils";
 import type { OkfFrontmatter, ParsedFrontmatter } from "./types";
-
-const FRONTMATTER_OPEN = /^---\r?\n/;
 
 export interface ParsedDocument {
   frontmatter: ParsedFrontmatter;
@@ -22,36 +21,27 @@ export type FrontmatterResult =
   | { ok: false; reason: string };
 
 /**
- * Split a markdown document into YAML frontmatter + body.
+ * Split a markdown document into YAML frontmatter + body — the STRICT
+ * (conformance) policy over the shared mechanical splitter (`./md-utils`):
+ * a missing block, an empty block, and a missing `type` are all failures.
  *
- * Returns a typed failure (not a throw) for missing/unparseable frontmatter
- * or a missing `type` — importers collect these into the mapping report.
+ * Returns a typed failure (not a throw) — importers collect these into the
+ * mapping report.
  */
 export function parseFrontmatter(content: string): FrontmatterResult {
-  if (!FRONTMATTER_OPEN.test(content)) {
+  const split = splitFrontmatterBlock(content);
+  if (split.kind === "none") {
     return { ok: false, reason: "no YAML frontmatter block" };
   }
-  const afterOpen = content.replace(FRONTMATTER_OPEN, "");
-  const closeMatch = afterOpen.match(/^---\s*$/m);
-  if (!closeMatch || closeMatch.index === undefined) {
-    return { ok: false, reason: "unterminated frontmatter block" };
+  if (split.kind === "error") {
+    return { ok: false, reason: split.reason };
   }
-  const rawYaml = afterOpen.slice(0, closeMatch.index);
-  const body = afterOpen
-    .slice(closeMatch.index + closeMatch[0].length)
-    .replace(/^\r?\n/, "");
-
-  let data: unknown;
-  try {
-    data = yaml.load(rawYaml);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: `frontmatter YAML parse error: ${msg}` };
-  }
-  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+  // An empty block carries no `type` — same conformance failure as any other
+  // non-mapping frontmatter.
+  if (split.data === null) {
     return { ok: false, reason: "frontmatter is not a YAML mapping" };
   }
-  const record = data as Record<string, unknown>;
+  const record = split.data;
   const type = record.type;
   if (typeof type !== "string" || type.trim() === "") {
     // OKF conformance: `type` is the one required key.
@@ -59,7 +49,7 @@ export function parseFrontmatter(content: string): FrontmatterResult {
   }
   return {
     ok: true,
-    doc: { frontmatter: { ...record, type }, body },
+    doc: { frontmatter: { ...record, type }, body: split.body },
   };
 }
 

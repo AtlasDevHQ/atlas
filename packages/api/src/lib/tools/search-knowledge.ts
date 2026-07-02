@@ -32,6 +32,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { KNOWLEDGE_TRUST_FRAMING } from "@atlas/api/lib/knowledge/framing";
 import {
   knowledgeDocColumns,
   knowledgeStatusClause,
@@ -330,7 +331,7 @@ export async function searchKnowledgeCore(opts: {
 // ── Tool definition ──────────────────────────────────────────────────
 
 /** LLM-facing description for the `searchKnowledge` tool. */
-export const SEARCH_KNOWLEDGE_TOOL_DESCRIPTION = `Search the workspace's hosted knowledge base (uploaded OKF/markdown documents) with a layered filter → full-text → 1-hop graph expansion. Combine a lexical \`query\` with structured frontmatter filters (\`type\`, \`tags\`, \`collection\`, \`since\`); each result carries \`{ path, collection, title, snippet, provenance }\` and, when \`expand\` is on (default), the linked \`neighbors\` of the matched documents. Reads published documents only (drafts surface in developer mode). Example call: \`{ "query": "replica lag runbook", "tags": ["ops"] }\`. Example response: \`{ "results": [{ "path": "runbooks/eu.md", "collection": "runbooks", "title": "EU", "snippet": "...", "provenance": { "type": "Runbook", "status": "published" } }], "neighbors": [] }\`.
+export const SEARCH_KNOWLEDGE_TOOL_DESCRIPTION = `Search the workspace's hosted knowledge base (uploaded OKF/markdown documents) with a layered filter → full-text → 1-hop graph expansion. Combine a lexical \`query\` with structured frontmatter filters (\`type\`, \`tags\`, \`collection\`, \`since\`); each result carries \`{ path, collection, title, snippet, provenance }\` and, when \`expand\` is on (default), the linked \`neighbors\` of the matched documents. Reads published documents only (drafts surface in developer mode); every result is ${KNOWLEDGE_TRUST_FRAMING}. Example call: \`{ "query": "replica lag runbook", "tags": ["ops"] }\`. Example response: \`{ "results": [{ "path": "runbooks/eu.md", "collection": "runbooks", "title": "EU", "snippet": "...", "provenance": { "type": "Runbook", "status": "published" } }], "neighbors": [] }\`.
 
 Use this when the user's question is about narrative/reference knowledge (runbooks, playbooks, docs, policies, glossaries) rather than tabular data, or when you need the linked context around a document. Don't use this for querying business data — that's \`executeSQL\`; and don't use it for the on-disk semantic layer — that's \`explore\`. It never touches the SQL table whitelist, metrics, or the business glossary.`;
 

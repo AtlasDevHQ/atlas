@@ -11,6 +11,7 @@
  */
 
 import { parseFrontmatter } from "./frontmatter";
+import { mdBasename as basename, RESERVED_BASENAMES, topLevelHeading } from "./md-utils";
 import type {
   AtlasDimensionType,
   MappingReport,
@@ -19,14 +20,6 @@ import type {
   OkfParsedColumn,
   InteropFile,
 } from "./types";
-
-/** Reserved OKF filenames — navigation/history, never concepts. */
-const RESERVED_BASENAMES = new Set(["index.md", "log.md"]);
-
-function basename(p: string): string {
-  const idx = p.lastIndexOf("/");
-  return idx === -1 ? p : p.slice(idx + 1);
-}
 
 /** Parse every concept doc in a bundle; malformed files land in `report.unmapped`. */
 export function parseBundle(
@@ -104,19 +97,6 @@ export function classifyConcept(concept: OkfConcept): OkfConceptKind {
 // ---------------------------------------------------------------------------
 // Body-section helpers
 // ---------------------------------------------------------------------------
-
-/**
- * A top-level `# Heading` line's text, or null. String ops instead of a
- * regex: `/^#\s+(.+?)\s*$/` backtracks polynomially on hostile whitespace
- * runs, and this runs on untrusted bundle content (CodeQL js/polynomial-redos).
- */
-function topLevelHeading(line: string): string | null {
-  if (line.charAt(0) !== "#") return null;
-  const second = line.charAt(1);
-  if (second !== " " && second !== "\t") return null;
-  const text = line.slice(2).trim();
-  return text === "" ? null : text;
-}
 
 /**
  * Split a markdown body into `# Heading` → section-text pairs (top-level

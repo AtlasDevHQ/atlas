@@ -38,6 +38,7 @@ import {
   type BuiltinDatasourceCatalogSlug,
 } from "@atlas/api/lib/db/datasource-pool-resolver";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
+import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
 const log = createLogger("db.seed-builtin-datasource-catalog");
 
@@ -480,6 +481,8 @@ export async function seedBuiltinDatasourceCatalog(
     );
   }
 
+  // Operator-curated-only gate (#4174/#4099): rows here ship inside Atlas.
+  assertOperatorCatalogWrite("builtin-datasource-seed");
   const { rows } = await db.query<{ slug: BuiltinDatasourceCatalogSlug }>(
     `INSERT INTO plugin_catalog
        (id, name, slug, description, type, install_model, pillar,

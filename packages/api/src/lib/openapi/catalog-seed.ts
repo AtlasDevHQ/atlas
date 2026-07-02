@@ -31,6 +31,7 @@ import {
   OPENAPI_GENERIC_CONFIG_SCHEMA,
 } from "./catalog";
 import { seedDataCandidateCatalog } from "./data-candidate-seed";
+import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
 const log = createLogger("openapi.catalog-seed");
 
@@ -53,6 +54,8 @@ export interface OpenApiDatasourceCatalogSeedResult {
 export async function seedOpenApiDatasourceCatalog(
   db: OpenApiDatasourceCatalogSeedDb,
 ): Promise<OpenApiDatasourceCatalogSeedResult> {
+  // Operator-curated-only gate (#4174/#4099): this row ships inside Atlas.
+  assertOperatorCatalogWrite("openapi-generic-seed");
   const { rows } = await db.query<{ slug: string }>(
     `INSERT INTO plugin_catalog
        (id, name, slug, description, type, install_model, pillar,

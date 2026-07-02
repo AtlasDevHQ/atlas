@@ -46,6 +46,7 @@ import {
   IMPLEMENTATION_STATUSES,
   type ImplementationStatus,
 } from "@useatlas/types";
+import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
 const log = createLogger("integrations.catalog-seeder");
 
@@ -555,6 +556,9 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
   // seeder only handles 'chat' + 'integration' rows.
   const pillar = pillarFromType(entry.type);
 
+  // Operator-curated-only gate (#4174/#4099): rows here come from the
+  // operator's own atlas.config.ts declaration.
+  assertOperatorCatalogWrite("config-catalog-seed");
   await db.query(
     `INSERT INTO plugin_catalog
        (id, name, slug, description, type, pillar, icon_url, min_plan, enabled,

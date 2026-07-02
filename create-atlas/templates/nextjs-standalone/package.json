@@ -49,6 +49,7 @@
     "@effect/sql-pg": "^0.52.1",
     "effect": "^3.21.4",
     "exceljs": "^4.4.0",
+    "fflate": "^0.8.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",

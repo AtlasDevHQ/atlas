@@ -56434,6 +56434,497 @@
         "operationId": "postAdminOpenapiDatasourcesByInstallIdAcknowledgeDrift"
       }
     },
+    "/api/v1/admin/knowledge": {
+      "get": {
+        "tags": [
+          "Admin — Knowledge"
+        ],
+        "summary": "List knowledge collections",
+        "description": "List the workspace's Knowledge Base collections (excluding archived) with per-status document counts.",
+        "responses": {
+          "200": {
+            "description": "Collection list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "collections": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "slug": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "installedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "documents": {
+                            "type": "object",
+                            "properties": {
+                              "draft": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "published": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "archived": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            },
+                            "required": [
+                              "draft",
+                              "published",
+                              "archived"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "slug",
+                          "description",
+                          "installedAt",
+                          "documents"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "collections"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No internal database",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminKnowledge"
+      }
+    },
+    "/api/v1/admin/knowledge/{collectionSlug}/ingest": {
+      "post": {
+        "tags": [
+          "Admin — Knowledge"
+        ],
+        "summary": "Ingest an OKF bundle into a collection",
+        "description": "Upload a `.tar`, `.tar.gz`, or `.zip` OKF bundle into a collection. Documents are parsed leniently (plain markdown works — missing OKF frontmatter is stamped) and upserted by path at `status='draft'`. Unparseable / oversized / unsafe-path files are rejected with per-file errors. Pass `?publish=true` to atomically run the workspace publish in the same action — this promotes ALL pending drafts in the workspace (matching the atomic publish endpoint), not only the just-ingested documents.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "collectionSlug",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Set to 'true' to run 'upload & publish' — atomically run the workspace publish (promotes all pending workspace drafts, per the atomic publish endpoint)."
+            },
+            "required": false,
+            "description": "Set to 'true' to run 'upload & publish' — atomically run the workspace publish (promotes all pending workspace drafts, per the atomic publish endpoint).",
+            "name": "publish",
+            "in": "query"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ingest summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "collection": {
+                      "type": "string"
+                    },
+                    "format": {
+                      "type": "string",
+                      "enum": [
+                        "tar",
+                        "tar.gz",
+                        "zip"
+                      ]
+                    },
+                    "documents": {
+                      "type": "object",
+                      "properties": {
+                        "created": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "updated": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "demoted": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "resurrected": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "unchanged": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "total": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "created",
+                        "updated",
+                        "demoted",
+                        "resurrected",
+                        "unchanged",
+                        "total"
+                      ]
+                    },
+                    "linksWritten": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "published": {
+                      "type": "boolean"
+                    },
+                    "rejected": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "reason"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "collection",
+                    "format",
+                    "documents",
+                    "linksWritten",
+                    "published",
+                    "rejected"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad bundle (empty, too large, unrecognized format, over doc cap, or all files rejected)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "rejected": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "reason"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found or no internal database",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminKnowledgeByCollectionSlugIngest"
+      }
+    },
+    "/api/v1/admin/knowledge/{collectionSlug}": {
+      "delete": {
+        "tags": [
+          "Admin — Knowledge"
+        ],
+        "summary": "Uninstall a knowledge collection",
+        "description": "Uninstall a collection: its documents are ARCHIVED (status='archived'), never hard-deleted, and the collection install is archived. A later re-install does not resurrect the archived documents.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "collectionSlug",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Collection uninstalled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "archived": {
+                      "type": "boolean"
+                    },
+                    "collection": {
+                      "type": "string"
+                    },
+                    "archivedDocuments": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "archived",
+                    "collection",
+                    "archivedDocuments"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found or no internal database",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminKnowledgeByCollectionSlug"
+      }
+    },
     "/api/v1/admin/proactive/workspace": {
       "get": {
         "tags": [
@@ -81817,6 +82308,9 @@
     },
     {
       "name": "Admin — Integrations"
+    },
+    {
+      "name": "Admin — Knowledge"
     },
     {
       "name": "Admin — Learned Patterns"

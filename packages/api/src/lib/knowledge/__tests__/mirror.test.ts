@@ -55,6 +55,7 @@ const {
   buildKnowledgeToc,
   exportCollectionBundle,
   getKnowledgeTocMaxBytes,
+  rowToDoc,
   DEFAULT_KNOWLEDGE_TOC_MAX_BYTES,
   KNOWLEDGE_SUBTREE,
 } = await import("../mirror");
@@ -142,6 +143,28 @@ describe("serializeMirrorDocument", () => {
     expect("description" in fm).toBe(false);
     expect("tags" in fm).toBe(false);
     expect(fm.atlas).toEqual({ collection: "c" });
+  });
+});
+
+describe("rowToDoc conformance defense-in-depth", () => {
+  it("stamps a conformant type/title and sanitizes tags/timestamp on a malformed row", () => {
+    const doc = rowToDoc({
+      collection_id: "c",
+      path: "corp/x.md",
+      type: null,
+      title: "  ",
+      description: null,
+      tags: [1, "ok", null, "keep"],
+      doc_timestamp: "not-a-date",
+      resource: null,
+      body: "b",
+      atlas_source: null,
+      atlas_ingested_at: null,
+    });
+    expect(doc.type).toBe("Document");
+    expect(doc.title).toBe("corp/x.md"); // falls back to the path
+    expect(doc.tags).toEqual(["ok", "keep"]); // non-strings dropped
+    expect(doc.timestamp).toBeNull(); // unparseable → null, not a throw
   });
 });
 
@@ -253,6 +276,20 @@ describe("mirrorKnowledgeToDisk", () => {
     const root = tmpRoot();
     const result = await mirrorKnowledgeToDisk("org-1", "published", root);
     expect(result).toEqual({ collections: 0, documents: 0, failed: 0 });
+  });
+
+  it("wipes the whole subtree when a rebuild returns no visible docs (uninstall/archive)", async () => {
+    const root = tmpRoot();
+    queryRows = [docRow({ collection_id: "runbooks", path: "deploy.md" })];
+    await mirrorKnowledgeToDisk("org-1", "published", root);
+    expect(fs.existsSync(path.join(root, KNOWLEDGE_SUBTREE, "runbooks"))).toBe(true);
+
+    // Everything archived/uninstalled → the read returns nothing → the entire
+    // knowledge subtree must be gone (not just individual files).
+    queryRows = [];
+    const result = await mirrorKnowledgeToDisk("org-1", "published", root);
+    expect(result).toEqual({ collections: 0, documents: 0, failed: 0 });
+    expect(fs.existsSync(path.join(root, KNOWLEDGE_SUBTREE))).toBe(false);
   });
 
   it("preserves the existing subtree when the DB read fails (loads before wiping)", async () => {

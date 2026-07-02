@@ -177,6 +177,7 @@ describe("defaultRegistry", () => {
     expect(defaultRegistry.get("explore")).toBeDefined();
     expect(defaultRegistry.get("executeSQL")).toBeDefined();
     expect(defaultRegistry.get("createDashboard")).toBeDefined();
+    expect(defaultRegistry.get("searchKnowledge")).toBeDefined();
   });
 
   it("getAll returns exactly the core tools", () => {
@@ -186,6 +187,7 @@ describe("defaultRegistry", () => {
       "createLinearIssue",
       "executeSQL",
       "explore",
+      "searchKnowledge",
       "sendEmail",
     ]);
   });
@@ -195,6 +197,7 @@ describe("defaultRegistry", () => {
     expect(text).toContain("### 2. Explore the Semantic Layer");
     expect(text).toContain("### 3. Write and Execute SQL");
     expect(text).toContain("### Create a Dashboard");
+    expect(text).toContain("### Search the Knowledge Base");
   });
 
   it("is frozen — cannot register additional tools", () => {
@@ -238,6 +241,7 @@ describe("buildRegistry", () => {
         "executePython",
         "executeSQL",
         "explore",
+        "searchKnowledge",
         "sendEmail",
       ]);
       expect(registry.describe()).toContain("### 4. Analyze Data with Python");
@@ -257,6 +261,7 @@ describe("buildRegistry", () => {
       "createLinearIssue",
       "executeSQL",
       "explore",
+      "searchKnowledge",
       "sendEmail",
     ]);
   });
@@ -270,6 +275,7 @@ describe("buildRegistry", () => {
       "createLinearIssue",
       "executeSQL",
       "explore",
+      "searchKnowledge",
       "sendEmail",
       "sendEmailReport",
     ]);

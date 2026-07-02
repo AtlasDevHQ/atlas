@@ -1,0 +1,122 @@
+---
+title: Knowledge Base
+description: Host your business knowledge — runbooks, product definitions, business rules — as review-gated OKF collections the agent reads alongside the semantic layer.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Knowledge Base is Atlas's fourth integration pillar (alongside datasources, chat platforms, and action targets, shipped in `v0.0.40`): a place to host the knowledge that informs data answers but isn't schema — business rules, runbooks, product definitions, deprecation notices. You upload it as plain markdown, review it, publish it, and the agent reads it alongside your semantic layer when answering questions.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- An internal database configured (`DATABASE_URL`)
+- A user with the `admin` role
+</Callout>
+
+---
+
+## Concepts
+
+**Descriptive, never authoritative.** Knowledge Base content *informs* the agent's answers; it never *governs* them. Nothing in a knowledge document ever runs as SQL, extends the table whitelist, overrides a pinned metric, or gates the agent — the [semantic layer](/semantic-layer) remains the sole authoritative context surface. This boundary is structural (separate tables, separate agent-visible subtree, enforced by tests), not a convention.
+
+**Collections.** A collection is the unit of knowledge organization: a named, independently searchable document tree. Each collection is one Knowledge Base install — like datasources, you can install many, and the typical split is one collection per product or corpus so the agent needn't wade through unrelated knowledge. Documents belong to exactly one collection, and uploads upsert into the tree by path. Collections are workspace-global; if a document concerns one environment or region ("this runbook covers the EU replica"), express that with tags, not separate scoping.
+
+**Open Knowledge Format.** Atlas hosts collections in [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog) — plain markdown files with YAML frontmatter, navigable through `index.md` hierarchies. Document **bodies** are stored and served byte-identical to what you uploaded; frontmatter is normalized at ingest (missing `type`/`title` stamped, unknown keys not preserved), and Atlas adds a provenance block under the `atlas:` key (collection, ingest time, source). Your knowledge stays portable: collections are stored as plain OKF markdown — no proprietary at-rest format to escape from.
+
+<Callout type="info" title="Knowledge Base or REST datasource?">
+The same system can back either pillar. Connecting Notion or Confluence as a **REST datasource** gives the agent live vendor-API queries — always current, but slow and shaped by the vendor's API. Ingesting the same content as a **Knowledge Base** gives indexed, searchable, review-gated context — faster and better for informing answers. They're independent installs; you can do both.
+</Callout>
+
+---
+
+## Creating a collection
+
+Navigate to **Admin → Knowledge Base** (`/admin/knowledge`) and choose **New collection**. Pick the collection's source:
+
+- **Upload** — you push bundles by hand. No credentials; just a slug and an optional description.
+- **Sync from endpoint** — Atlas pulls a bundle from a URL on a schedule. Provide the endpoint URL and an auth scheme (`none`, `bearer`, or `basic`); the secret is encrypted at rest and never shown again. Credentials embedded in the URL itself (`user:pass@`) are rejected — use the auth fields.
+
+The endpoint can be anything that serves a tarball or zip, including git-forge repository-archive URLs (e.g. a GitHub `archive/refs/heads/main.tar.gz` link), so "sync my docs repo" needs no dedicated connector. Prefer a **branch** archive URL: tag and commit archives change their top-level folder name on every release, which makes every document path look new on each pull. Creating a synced collection in the admin console kicks off the first sync immediately; collections installed through the API wait for the schedule or a manual sync trigger.
+
+---
+
+## Uploading a bundle
+
+Upload collections accept `.tar`, `.tar.gz`/`.tgz`, and `.zip` bundles. A plain folder of markdown files works — ingest is deliberately lenient:
+
+- Documents missing OKF `type` or `title` frontmatter have them stamped at ingest, so stored documents are always conformant OKF.
+- Documents with *malformed* frontmatter are rejected per-file, not silently repaired.
+- Rejections (malformed frontmatter, oversized files, unsafe paths) are surfaced individually in the upload result — a partially accepted bundle tells you exactly which files failed and why.
+- `index.md` and `log.md` are reserved OKF navigation/history basenames (matched case-insensitively): Atlas regenerates directory navigation itself, so bundled ones are skipped.
+
+Re-uploading upserts by path: new paths are added, changed documents are updated, and everything else is left alone. Ingest caps (document count, per-document size, bundle size) are operator-tunable — see [Settings](#settings).
+
+---
+
+## Review and publish
+
+**Every ingest lands as a draft.** The draft → published review gate is the Knowledge Base's prompt-injection defense: a human sees third-party content before the agent's non-admin path ever can. Until published, a document is invisible to the agent outside [developer mode](/guides/developer-mode).
+
+- Knowledge drafts appear in the pending-changes indicator and the publish modal alongside your other draft content; publishing promotes them atomically.
+- The upload dialog has an **Upload & publish** toggle (off by default) for content you've already reviewed — it runs the *workspace* publish in the same action, promoting **every** pending draft in the workspace (including unrelated ones, like entity or prompt drafts), not just this bundle. Synced collections deliberately have no such option; pulled content always queues for review.
+- If a re-ingest changes a previously published document, that document **demotes to draft** — the published version disappears from the agent's view until someone re-approves the new content. Unchanged published documents stay published.
+- In developer mode, the agent sees drafts overlaid on published content, so you can preview exactly how new knowledge will behave before publishing it.
+
+---
+
+## Keeping a synced collection fresh
+
+Synced collections pull their endpoint nightly by default (tunable via `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS`); each collection's card also has a **Sync now** button. A sync is "fetch, then ingest" — the diff comes from the same upsert-by-path ingest as uploads:
+
+| In the fetched bundle | Result |
+|-----------------------|--------|
+| New path | Added as a draft |
+| Changed document | Updated; if it was published, it demotes to draft for re-review |
+| Unchanged document | Left alone (published stays published) |
+| Path absent from the bundle | **Archived** — never hard-deleted |
+| File present but rejected (e.g. malformed) | Rejected per-file; **not** treated as absent |
+
+A bundle that yields no documents at all fails the whole sync with no writes — a misbehaving endpoint can't archive your collection. Each sync attempt (success or failure) records its status, surfaced on the collection card with a host-redacted error summary; per-file rejection details are returned by the manual [sync API endpoint](/api-reference/admin-knowledge/postAdminKnowledgeByCollectionSlugSync).
+
+Endpoint fetches are hardened like other Atlas egress: private-address blocking with per-redirect re-validation, credential stripping on cross-origin redirects, and size and time budgets.
+
+---
+
+## How the agent reads knowledge
+
+Published knowledge is served to the agent **OKF-native** — no translation layer:
+
+- **Browsing.** Published documents are mirrored per-workspace into the agent's sandboxed, read-only filesystem under a `knowledge/<collection>/…` subtree. The agent walks them with the same explore tools it uses for the semantic layer (`ls`, `cat`, `grep`), following `index.md` navigation — the document body you uploaded, verbatim, under the normalized frontmatter described above.
+- **Orientation.** A size-capped table of contents for your collections rides in the agent's system prompt, so it knows what knowledge exists without searching for it. Collections past the cap are omitted from the prompt but stay fully browsable.
+- **Search at scale.** The `searchKnowledge` tool layers three tiers over the same documents: structured frontmatter filters (`type`, `tags`, `collection`, recency), full-text search with highlighted snippets, and one-hop expansion along the links between documents. Results carry provenance (path, collection, title).
+
+Knowledge content is framed to the agent as third-party descriptive material — context to draw on, never instructions to follow — and the hard boundaries above mean even a malicious document cannot reach the SQL whitelist, pinned metrics, or glossary gating.
+
+---
+
+## Uninstalling a collection
+
+Uninstalling a collection **archives** its documents — they leave the agent's view but are never hard-deleted. Sync credentials and sync state are deleted outright. Re-installing a collection with the same slug does not *by itself* resurrect archived documents — but any subsequent ingest that sees an archived path brings it back as a **draft** for re-review: re-uploading a bundle with the same paths, or, for a synced collection, the first sync after re-install (which the admin console triggers immediately).
+
+---
+
+## Settings
+
+All Knowledge Base knobs live in the settings registry — platform-scoped, adjustable from the admin console without a redeploy (self-hosted deployments can also set them as environment variables):
+
+| Setting | Default | What it does |
+|---------|---------|--------------|
+| `ATLAS_KNOWLEDGE_INGEST_MAX_DOCS` | `1000` | Max documents per ingested bundle |
+| `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` | `1000000` (1 MB) | Max decoded size per document (oversized files rejected per-file) |
+| `ATLAS_KNOWLEDGE_INGEST_MAX_BUNDLE_BYTES` | `25000000` (25 MB) | Max bundle upload size; also bounds decompression |
+| `ATLAS_KNOWLEDGE_TOC_MAX_BYTES` | `12000` | Cap on the collection table of contents injected into the agent's system prompt |
+| `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` | `24` | How often synced collections pull their endpoint (read at scheduler start — requires a restart) |
+| `ATLAS_KNOWLEDGE_SYNC_FETCH_TIMEOUT_SECONDS` | `60` | Per-sync download time budget |
+
+See the [environment variables reference](/reference/environment-variables#knowledge-base) for details.
+
+---
+
+## API
+
+Everything above is also available programmatically — see the [admin knowledge API reference](/api-reference/admin-knowledge/getAdminKnowledge): list collections, list a collection's documents, ingest a bundle, trigger a sync, and uninstall.

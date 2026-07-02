@@ -29,6 +29,7 @@ export function StickyNav() {
           </a>
           <div className="hidden items-center gap-4 sm:flex">
             <a href="#how-it-works" className="text-xs text-fg-muted transition-colors hover:text-fg">How it works</a>
+            <a href="#knowledge" className="text-xs text-fg-muted transition-colors hover:text-fg">Knowledge</a>
             <a href="#surfaces" className="text-xs text-fg-muted transition-colors hover:text-fg">Surfaces</a>
             <a href="#deploy" className="text-xs text-fg-muted transition-colors hover:text-fg">Deploy</a>
             <a href="/why-atlas" className="text-xs text-fg-muted transition-colors hover:text-fg">Why Atlas</a>

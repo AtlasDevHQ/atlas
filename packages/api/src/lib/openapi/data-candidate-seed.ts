@@ -29,6 +29,7 @@ import {
   candidateInstallModel,
 } from "./data-candidates";
 import type { OpenApiDatasourceCatalogSeedDb } from "./catalog-seed";
+import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
 const log = createLogger("openapi.data-candidate-seed");
 
@@ -51,6 +52,9 @@ export interface DataCandidateCatalogSeedResult {
 export async function seedDataCandidateCatalog(
   db: OpenApiDatasourceCatalogSeedDb,
 ): Promise<DataCandidateCatalogSeedResult> {
+  // Operator-curated-only gate (#4174/#4099): candidate rows ship inside
+  // Atlas (`data-candidates.ts`), one gate call covers the whole batch.
+  assertOperatorCatalogWrite("openapi-data-candidate-seed");
   const insertedSlugs: string[] = [];
 
   for (const candidate of DATA_CANDIDATES) {

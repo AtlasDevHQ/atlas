@@ -20,6 +20,12 @@
  * only place `deployMode === "saas"` is ever true — so the gate is correctly
  * absent without EE. Mirrors the keyset gate in
  * `lib/integrations/install/github-pat-form-handler.ts`.
+ *
+ * This veneer presumes the catalog it filters is **operator-curated only** —
+ * that invariant is enforced at the catalog write seam by
+ * `@atlas/api/lib/plugins/catalog-provenance.ts` (#4174). Third-party plugin
+ * authorship is gated on #4099 (plugin-execution isolation) and must not be
+ * added here or anywhere else before that lands.
  */
 
 import { Layer } from "effect";

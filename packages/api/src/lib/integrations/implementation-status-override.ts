@@ -29,6 +29,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { type ImplementationStatus } from "@useatlas/types";
+import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 
 const log = createLogger("integrations.implementation-status-override");
 
@@ -168,6 +169,9 @@ export async function applyImplementationStatusOverride(
   const plan = planImplementationStatusOverride(override, narrowed);
 
   if (plan.actions.length > 0) {
+    // Operator-curated-only gate (#4174/#4099): overrides come from the
+    // operator's own atlas.config.ts declaration; one call covers the txn.
+    assertOperatorCatalogWrite("implementation-status-override");
     await db.query("BEGIN");
     try {
       for (const action of plan.actions) {

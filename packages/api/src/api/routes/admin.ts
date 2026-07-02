@@ -101,6 +101,7 @@ import { adminRoles } from "./admin-roles";
 import { adminModelConfig } from "./admin-model-config";
 import { adminEmailProvider } from "./admin-email-provider";
 import { adminAuthPreamble, authErrorCode, requireAdminAuth } from "./admin-auth";
+import { mountBoth } from "./mount";
 import { enforcePermission } from "./admin-router";
 import type { Permission } from "@atlas/api/lib/auth/permissions";
 import { adminUsage } from "./admin-usage";
@@ -390,74 +391,44 @@ admin.onError(eeOnError);
 
 admin.use(withRequestId);
 
-// Mount organization management sub-router
-admin.route("/organizations", adminOrgs);
-admin.route("/learned-patterns", adminLearnedPatterns);
-admin.route("/learned-patterns/", adminLearnedPatterns);
-admin.route("/sessions", adminSessions);
-admin.route("/sessions/", adminSessions);
-admin.route("/audit", adminAudit);
-admin.route("/audit/", adminAudit);
-admin.route("/prompts", adminPrompts);
-admin.route("/prompts/", adminPrompts);
-admin.route("/suggestions", adminSuggestions);
-admin.route("/suggestions/", adminSuggestions);
-admin.route("/starter-prompts", adminStarterPrompts);
-admin.route("/starter-prompts/", adminStarterPrompts);
-admin.route("/usage", adminUsage);
-admin.route("/usage/", adminUsage);
-admin.route("/sso", adminSso);
-admin.route("/sso/", adminSso);
-admin.route("/scim", adminScim);
-admin.route("/scim/", adminScim);
-admin.route("/ip-allowlist", adminIPAllowlist);
-admin.route("/ip-allowlist/", adminIPAllowlist);
-admin.route("/roles", adminRoles);
-admin.route("/roles/", adminRoles);
-admin.route("/audit/retention", adminAuditRetention);
-admin.route("/audit/retention/", adminAuditRetention);
-admin.route("/mcp/action-policy", adminMcpActionPolicy);
-admin.route("/mcp/action-policy/", adminMcpActionPolicy);
-admin.route("/audit/admin-action-retention", adminActionRetention);
-admin.route("/audit/admin-action-retention/", adminActionRetention);
-admin.route("/audit/erase-user", adminEraseUser);
-admin.route("/audit/erase-user/", adminEraseUser);
-admin.route("/model-config", adminModelConfig);
-admin.route("/model-config/", adminModelConfig);
-admin.route("/email-provider", adminEmailProvider);
-admin.route("/email-provider/", adminEmailProvider);
-admin.route("/approval", adminApproval);
-admin.route("/approval/", adminApproval);
-admin.route("/session-memory", adminSessionMemory);
-admin.route("/session-memory/", adminSessionMemory);
-admin.route("/compliance", adminCompliance);
-admin.route("/compliance/", adminCompliance);
-admin.route("/branding", adminBranding);
-admin.route("/branding/", adminBranding);
-admin.route("/domain", adminDomains);
-admin.route("/domain/", adminDomains);
-admin.route("/proactive/analytics", adminProactiveAnalytics);
-admin.route("/proactive/analytics/", adminProactiveAnalytics);
-admin.route("/onboarding-emails", adminOnboardingEmails);
-admin.route("/onboarding-emails/", adminOnboardingEmails);
-admin.route("/abuse", adminAbuse);
-admin.route("/abuse/", adminAbuse);
-admin.route("/integrations", adminIntegrations);
-admin.route("/integrations/", adminIntegrations);
-admin.route("/sandbox", adminSandbox);
-admin.route("/sandbox/", adminSandbox);
-admin.route("/scheduler", adminScheduler);
-admin.route("/scheduler/", adminScheduler);
-admin.route("/residency", adminResidency);
-admin.route("/residency/", adminResidency);
-admin.route("/migrate", adminMigrate);
-admin.route("/migrate/", adminMigrate);
-admin.route("/tokens", adminTokens);
-admin.route("/tokens/", adminTokens);
-admin.route("/oauth-clients", adminOauthClients);
-admin.route("/oauth-clients/", adminOauthClients);
-admin.route("/workspace-keys", adminWorkspaceKeys);
-admin.route("/workspace-keys/", adminWorkspaceKeys);
+// Mount domain sub-routers. mountBoth registers each at both the bare path
+// and its trailing-slash variant (#4202) — Hono matches trailing slashes
+// strictly, so a single .route() call would leave the child's root routes
+// 404ing on `GET <path>/`. See ./mount.ts.
+mountBoth(admin, "/organizations", adminOrgs);
+mountBoth(admin, "/learned-patterns", adminLearnedPatterns);
+mountBoth(admin, "/sessions", adminSessions);
+mountBoth(admin, "/audit", adminAudit);
+mountBoth(admin, "/prompts", adminPrompts);
+mountBoth(admin, "/suggestions", adminSuggestions);
+mountBoth(admin, "/starter-prompts", adminStarterPrompts);
+mountBoth(admin, "/usage", adminUsage);
+mountBoth(admin, "/sso", adminSso);
+mountBoth(admin, "/scim", adminScim);
+mountBoth(admin, "/ip-allowlist", adminIPAllowlist);
+mountBoth(admin, "/roles", adminRoles);
+mountBoth(admin, "/audit/retention", adminAuditRetention);
+mountBoth(admin, "/mcp/action-policy", adminMcpActionPolicy);
+mountBoth(admin, "/audit/admin-action-retention", adminActionRetention);
+mountBoth(admin, "/audit/erase-user", adminEraseUser);
+mountBoth(admin, "/model-config", adminModelConfig);
+mountBoth(admin, "/email-provider", adminEmailProvider);
+mountBoth(admin, "/approval", adminApproval);
+mountBoth(admin, "/session-memory", adminSessionMemory);
+mountBoth(admin, "/compliance", adminCompliance);
+mountBoth(admin, "/branding", adminBranding);
+mountBoth(admin, "/domain", adminDomains);
+mountBoth(admin, "/proactive/analytics", adminProactiveAnalytics);
+mountBoth(admin, "/onboarding-emails", adminOnboardingEmails);
+mountBoth(admin, "/abuse", adminAbuse);
+mountBoth(admin, "/integrations", adminIntegrations);
+mountBoth(admin, "/sandbox", adminSandbox);
+mountBoth(admin, "/scheduler", adminScheduler);
+mountBoth(admin, "/residency", adminResidency);
+mountBoth(admin, "/migrate", adminMigrate);
+mountBoth(admin, "/tokens", adminTokens);
+mountBoth(admin, "/oauth-clients", adminOauthClients);
+mountBoth(admin, "/workspace-keys", adminWorkspaceKeys);
 // Per-user trusted-browsers — see me-trusted-devices.ts header.
 import { registerTrustedDeviceRoutes } from "./me-trusted-devices";
 registerTrustedDeviceRoutes(admin, reqId);
@@ -471,47 +442,30 @@ registerRevokeRoutes(admin, adminAuthAndContext, verifyOrgMembership);
 // the same module — that route uses light auth (no adminAuthAndContext gate).
 import { registerMfaResetRoutes } from "./admin-mfa-reset";
 registerMfaResetRoutes(admin, adminAuthAndContext, verifyOrgMembership, reqId);
-admin.route("/connections", adminConnections);
-admin.route("/connections/", adminConnections);
+mountBoth(admin, "/connections", adminConnections);
 // #3894 — per-Connection-group Source-catalog descriptions (ADR-0022 §4).
-admin.route("/connection-groups", adminConnectionGroupDescriptions);
-admin.route("/connection-groups/", adminConnectionGroupDescriptions);
-admin.route("/openapi-datasources", adminOpenApiDatasources);
-admin.route("/openapi-datasources/", adminOpenApiDatasources);
-admin.route("/knowledge", adminKnowledge);
-admin.route("/knowledge/", adminKnowledge);
-admin.route("/proactive", adminProactive);
-admin.route("/proactive/", adminProactive);
-admin.route("/publish", adminPublish);
-admin.route("/publish/", adminPublish);
-admin.route("/publish-preview", adminPublishPreview);
-admin.route("/publish-preview/", adminPublishPreview);
-admin.route("/archive-connection", adminArchive);
-admin.route("/archive-connection/", adminArchive);
-admin.route("/restore-connection", adminRestore);
-admin.route("/restore-connection/", adminRestore);
-admin.route("/plugins", adminPlugins);
-admin.route("/plugins/", adminPlugins);
-admin.route("/cache", adminCache);
-admin.route("/cache/", adminCache);
-admin.route("/proactive/pause", adminProactivePauses);
-admin.route("/proactive/pause/", adminProactivePauses);
-admin.route("/proactive/public-dataset", adminProactivePublicDataset);
-admin.route("/proactive/public-dataset/", adminProactivePublicDataset);
-admin.route("/proactive/events", adminProactiveEvents);
-admin.route("/proactive/events/", adminProactiveEvents);
-admin.route("/admin-actions", adminActions);
-admin.route("/admin-actions/", adminActions);
-admin.route("/security", adminSecurityMetrics);
-admin.route("/security/", adminSecurityMetrics);
+mountBoth(admin, "/connection-groups", adminConnectionGroupDescriptions);
+mountBoth(admin, "/openapi-datasources", adminOpenApiDatasources);
+mountBoth(admin, "/knowledge", adminKnowledge);
+mountBoth(admin, "/proactive", adminProactive);
+mountBoth(admin, "/publish", adminPublish);
+mountBoth(admin, "/publish-preview", adminPublishPreview);
+mountBoth(admin, "/archive-connection", adminArchive);
+mountBoth(admin, "/restore-connection", adminRestore);
+mountBoth(admin, "/plugins", adminPlugins);
+mountBoth(admin, "/cache", adminCache);
+mountBoth(admin, "/proactive/pause", adminProactivePauses);
+mountBoth(admin, "/proactive/public-dataset", adminProactivePublicDataset);
+mountBoth(admin, "/proactive/events", adminProactiveEvents);
+mountBoth(admin, "/admin-actions", adminActions);
+mountBoth(admin, "/security", adminSecurityMetrics);
 // Plugin marketplace — dynamic import defers loading the marketplace module
 // (and its dependency graph) until admin routes register. Import failure is a
 // build/test bug, not a runtime-recoverable condition: log then re-throw so it
 // fails loudly instead of serving silent 404s on marketplace endpoints.
 try {
   const { workspaceMarketplace } = await import("./admin-marketplace");
-  admin.route("/plugins/marketplace", workspaceMarketplace);
-  admin.route("/plugins/marketplace/", workspaceMarketplace);
+  mountBoth(admin, "/plugins/marketplace", workspaceMarketplace);
 } catch (err) {
   log.error(
     { err: err instanceof Error ? err : new Error(String(err)) },
@@ -525,8 +479,7 @@ try {
 // reason as the marketplace import above.
 try {
   const { adminSemanticImprove } = await import("./admin-semantic-improve");
-  admin.route("/semantic-improve", adminSemanticImprove);
-  admin.route("/semantic-improve/", adminSemanticImprove);
+  mountBoth(admin, "/semantic-improve", adminSemanticImprove);
 } catch (err) {
   log.error(
     { err: err instanceof Error ? err : new Error(String(err)) },

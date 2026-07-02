@@ -13,6 +13,7 @@ import {
   QUERY_SALESFORCE_DESCRIPTION,
   isSalesforceOAuthConfigured,
 } from "@atlas/api/lib/integrations/salesforce-tool";
+import { searchKnowledge, SEARCH_KNOWLEDGE_DESCRIPTION } from "./search-knowledge";
 
 export type { AtlasAction };
 export { isAction };
@@ -198,6 +199,19 @@ defaultRegistry.register({
   tool: createDashboard,
 });
 
+// #4210 — layered knowledge-base search (frontmatter filter + Postgres FTS +
+// 1-hop graph expansion). Registered globally like the other execute-time-gated
+// tools: it reads the workspace + mode from request context inside execute — so
+// it stays discoverable everywhere without a boot-time gate. The two degraded
+// paths have deliberately different shapes: no active workspace returns an empty
+// result set (`{ results: [], neighbors: [] }`), while a deployment with no
+// internal DB returns a user-facing `{ error }`.
+defaultRegistry.register({
+  name: "searchKnowledge",
+  description: SEARCH_KNOWLEDGE_DESCRIPTION,
+  tool: searchKnowledge,
+});
+
 // First per-Workspace lazy-plugin tool (#2698). Registered globally
 // because the workspace + install check happens at execute time inside
 // the tool — keeping the tool discoverable across all Workspaces while
@@ -312,6 +326,12 @@ export async function buildRegistry(options?: {
     name: "createDashboard",
     description: CREATE_DASHBOARD_DESCRIPTION,
     tool: createDashboard,
+  });
+
+  registry.register({
+    name: "searchKnowledge",
+    description: SEARCH_KNOWLEDGE_DESCRIPTION,
+    tool: searchKnowledge,
   });
 
   registry.register({

@@ -74,8 +74,11 @@ export async function runKnowledgeBundleSyncCycle(): Promise<KnowledgeSyncCycleR
       const result = await runKnowledgeSyncCycle();
       // `runKnowledgeSyncCycle` logs a detailed completion line when the
       // working set is non-empty; emit the heartbeat for the empty set too so
-      // the cadence is observable on quiet deploys.
-      if (result.inspected === 0) {
+      // the cadence is observable on quiet deploys. A failed installs query
+      // (`queryFailed`) must NOT emit the idle heartbeat — its zero counts
+      // mean "couldn't look", not "nothing to sync" (the cycle already logged
+      // the query error).
+      if (result.inspected === 0 && !result.queryFailed) {
         log.info("Knowledge bundle sync cycle complete — no enabled bundle-sync collections");
       }
       return result;
@@ -84,6 +87,7 @@ export async function runKnowledgeBundleSyncCycle(): Promise<KnowledgeSyncCycleR
       "atlas.knowledge_sync.inspected": result.inspected,
       "atlas.knowledge_sync.succeeded": result.succeeded,
       "atlas.knowledge_sync.failed": result.failed,
+      "atlas.knowledge_sync.query_failed": result.queryFailed,
     }),
   );
 }

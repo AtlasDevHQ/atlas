@@ -82,6 +82,7 @@ const PublishResponseSchema = z.object({
     entities: z.number().int().nonnegative(),
     prompts: z.number().int().nonnegative(),
     starterPrompts: z.number().int().nonnegative(),
+    knowledgeDocuments: z.number().int().nonnegative(),
   }),
   deleted: z.object({
     entities: z.number().int().nonnegative(),
@@ -240,6 +241,7 @@ adminPublish.openapi(publishRoute, async (c) =>
     let promotedConnectionCount: number;
     let promotedPromptCount: number;
     let promotedStarterPromptCount: number;
+    let promotedKnowledgeDocumentCount: number;
     let archivedConnectionCount: number;
     let archivedEntityCount: number;
     let archivedPromptCount: number;
@@ -274,6 +276,8 @@ adminPublish.openapi(publishRoute, async (c) =>
       promotedPromptCount = findReport(reports, "prompt_collections")?.promoted ?? 0;
       promotedStarterPromptCount =
         findReport(reports, "query_suggestions")?.promoted ?? 0;
+      promotedKnowledgeDocumentCount =
+        findReport(reports, "knowledge_documents")?.promoted ?? 0;
 
       const entitiesReport = findReport(reports, "semantic_entities");
       promotedEntityCount = entitiesReport?.promoted ?? 0;
@@ -382,6 +386,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         promotedEntities: promotedEntityCount,
         promotedPrompts: promotedPromptCount,
         promotedStarterPrompts: promotedStarterPromptCount,
+        promotedKnowledgeDocuments: promotedKnowledgeDocumentCount,
         deletedEntities: deletedEntityCount,
         archivedConnections: archivedConnectionCount,
         archivedEntities: archivedEntityCount,
@@ -400,6 +405,7 @@ adminPublish.openapi(publishRoute, async (c) =>
           entities: promotedEntityCount,
           prompts: promotedPromptCount,
           starterPrompts: promotedStarterPromptCount,
+          knowledgeDocuments: promotedKnowledgeDocumentCount,
         },
         deleted: { entities: deletedEntityCount },
         archived: {
@@ -524,6 +530,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         entities: promotedEntityCount,
         prompts: promotedPromptCount,
         starterPrompts: promotedStarterPromptCount,
+        knowledgeDocuments: promotedKnowledgeDocumentCount,
       },
       deleted: { entities: deletedEntityCount },
       archived: {

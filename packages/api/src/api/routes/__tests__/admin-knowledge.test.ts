@@ -13,6 +13,9 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { zipSync, strToU8 } from "fflate";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
+// Type-only import — erased at compile time, so it coexists with the
+// mock.module() of the same path below.
+import type { KnowledgeSyncOutcome } from "@atlas/api/lib/knowledge/sync";
 
 const CURRENT_ORG = "org-1";
 
@@ -114,28 +117,11 @@ mock.module("@atlas/api/lib/audit", () => ({
 }));
 
 // The sync engine is pinned in lib/knowledge/__tests__/sync.test.ts — here it
-// is a spy so the route tests assert dispatch + gating only. Typed to the
-// outcome UNION so per-test overrides can return the error shape.
-interface OutcomeLike {
-  collection: string;
-  status: "success" | "error";
-  syncedAt: string;
-  error: string | null;
-  format: "tar" | "tar.gz" | "zip" | null;
-  documents: {
-    created: number;
-    updated: number;
-    demoted: number;
-    resurrected: number;
-    unchanged: number;
-    total: number;
-  } | null;
-  archivedAbsent: number | null;
-  linksWritten: number | null;
-  rejected: { path: string; reason: string }[];
-}
+// is a spy so the route tests assert dispatch + gating only. Typed to the REAL
+// `KnowledgeSyncOutcome` (type-only import above) so a contract reshape in
+// sync.ts is a compile error here, not a green test against a stale shape.
 const syncCollection = mock(
-  async (params: { collectionSlug: string }): Promise<OutcomeLike> => ({
+  async (params: { collectionSlug: string }): Promise<KnowledgeSyncOutcome> => ({
     collection: params.collectionSlug,
     status: "success",
     syncedAt: "2026-07-02T01:00:00.000Z",
@@ -149,11 +135,24 @@ const syncCollection = mock(
 );
 mock.module("@atlas/api/lib/knowledge/sync", () => ({
   syncCollection,
-  runKnowledgeSyncCycle: async () => ({ inspected: 0, succeeded: 0, failed: 0 }),
+  runKnowledgeSyncCycle: async () => ({ inspected: 0, succeeded: 0, failed: 0, queryFailed: false }),
   getKnowledgeSyncFetchTimeoutMs: () => 60_000,
   DEFAULT_SYNC_FETCH_TIMEOUT_SECONDS: 60,
   ARCHIVE_ABSENT_SQL: "",
   SYNC_STATE_UPSERT_SQL: "",
+  SYNC_INSTALL_RECHECK_SQL: "",
+  SYNC_CYCLE_INSTALLS_SQL: "",
+}));
+
+// Partial mock, justified: the router lazy-imports EXACTLY ONE symbol from
+// `semantic/sync` (`invalidateOrgModeRoots`) and nothing else in this file
+// imports the module. Captures calls so the tests can assert the mirror
+// invalidation contract (#4208) on the ingest and uninstall paths.
+const invalidateCalls: string[] = [];
+mock.module("@atlas/api/lib/semantic/sync", () => ({
+  invalidateOrgModeRoots: (orgId: string) => {
+    invalidateCalls.push(orgId);
+  },
 }));
 
 // Only the catalog-id constant is consumed by the router; mock the handler
@@ -214,6 +213,7 @@ beforeEach(() => {
   DOCUMENTS = [];
   SYNC_STATES = [];
   txSql.length = 0;
+  invalidateCalls.length = 0;
   internalQuery.mockClear();
   syncCollection.mockClear();
 });
@@ -281,15 +281,26 @@ describe("POST /{collectionSlug}/ingest — guards", () => {
 });
 
 describe("POST /{collectionSlug}/ingest — happy path", () => {
-  it("ingests documents at draft and reports counts + rejects", async () => {
+  it("ingests documents at draft and reports counts + rejects + skipped assets", async () => {
     const res = await ingest(
       "/runbooks/ingest",
-      zipSync({ "a.md": strToU8("# A"), "b.md": strToU8("# B"), "index.md": strToU8("# nav") }),
+      zipSync({
+        "a.md": strToU8("# A"),
+        "b.md": strToU8("# B"),
+        "index.md": strToU8("# nav"),
+        "logo.png": strToU8("not markdown"),
+      }),
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { documents: { created: number; total: number }; published: boolean };
+    const body = (await res.json()) as {
+      documents: { created: number; total: number };
+      published: boolean;
+      skippedNonMarkdown: number;
+    };
     expect(body.documents.created).toBe(2); // index.md is reserved → skipped
     expect(body.published).toBe(false);
+    // The asset drop is counted, not silent.
+    expect(body.skippedNonMarkdown).toBe(1);
     expect(publishRan).toBe(false);
     expect(store.get("a.md")?.status).toBe("draft");
   });
@@ -375,6 +386,38 @@ describe("POST /{collectionSlug}/sync — manual Sync now (#4211)", () => {
     COLLECTION = null;
     const res = await adminKnowledge.request("/nope/sync", { method: "POST" });
     expect(res.status).toBe(404);
+  });
+
+  it("404s when the collection is archived — 'Sync now' must never touch an uninstalled tree", async () => {
+    COLLECTION = {
+      install_id: "runbooks",
+      catalog_id: "catalog:bundle-sync",
+      status: "archived",
+      config: { endpoint_url: "https://kb.example.com/bundle.zip", auth_scheme: "none" },
+    };
+    const res = await adminKnowledge.request("/runbooks/sync", { method: "POST" });
+    expect(res.status).toBe(404);
+    expect(syncCollection).not.toHaveBeenCalled();
+  });
+});
+
+describe("knowledge mirror invalidation (#4208)", () => {
+  it("busts the org's mode roots after a successful ingest", async () => {
+    const res = await ingest("/runbooks/ingest", zipSync({ "a.md": strToU8("# A") }));
+    expect(res.status).toBe(200);
+    expect(invalidateCalls).toEqual([CURRENT_ORG]);
+  });
+
+  it("does not bust the mirror when the ingest is rejected", async () => {
+    const res = await ingest("/runbooks/ingest", new Uint8Array(0));
+    expect(res.status).toBe(400);
+    expect(invalidateCalls).toHaveLength(0);
+  });
+
+  it("busts the org's mode roots after an uninstall", async () => {
+    const res = await adminKnowledge.request("/runbooks", { method: "DELETE" });
+    expect(res.status).toBe(200);
+    expect(invalidateCalls).toEqual([CURRENT_ORG]);
   });
 });
 

@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { InlineError } from "@/ui/components/admin/compact";
 import { getApiUrl } from "@/lib/api-url";
+import type { KnowledgeCollectionSource } from "@/ui/lib/types";
 
 /* ────────────────────────────────────────────────────────────────────────
  *  Create collection — the explicit "install" flow for the Knowledge Base
@@ -34,15 +35,22 @@ import { getApiUrl } from "@/lib/api-url";
  *    - Upload (`okf-upload`): no credentials; ingest is a separate upload act.
  *    - Sync from endpoint (`bundle-sync`, #4211): config carries the bundle
  *      endpoint URL + auth scheme; the optional secret is encrypted at rest
- *      server-side (never echoed back). Atlas pulls the endpoint nightly and
- *      queues changes for review; "Sync now" runs a pull on demand.
+ *      server-side (never echoed back). Atlas pulls the endpoint on a schedule
+ *      (daily by default, operator-tunable) and queues changes for review;
+ *      "Sync now" runs a pull on demand.
  * ──────────────────────────────────────────────────────────────────────── */
 
 /** Mirror of the server-side collection-slug rule (okf-upload-form-handler). */
 const SLUG_PATTERN = /^[A-Za-z0-9._-]+$/;
 const SLUG_MAX = 128;
 
-type SourceKind = "upload" | "bundle-sync";
+/** The wire source discriminator (`@useatlas/types`) — no local re-declaration. */
+type SourceKind = KnowledgeCollectionSource;
+/**
+ * Mirrors the server's `BUNDLE_SYNC_AUTH_SCHEMES` tuple (bundle-sync-form-handler)
+ * and the seed's `config_schema` options — the web is a pure HTTP client, so
+ * the trio stays in sync by convention, not import.
+ */
 type AuthScheme = "none" | "bearer" | "basic";
 
 export function CreateCollectionDialog({
@@ -157,7 +165,7 @@ export function CreateCollectionDialog({
           <DialogDescription>
             A collection is a named knowledge corpus — one hosted OKF tree the agent can read as
             descriptive context. Upload bundles yourself, or point it at an endpoint Atlas syncs
-            nightly.
+            on a schedule (daily by default).
           </DialogDescription>
         </DialogHeader>
 

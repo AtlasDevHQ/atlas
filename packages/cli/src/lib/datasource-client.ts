@@ -433,16 +433,19 @@ export async function publishDatasources(
   // publish (or a 200 from a misrouted proxy / captive portal) as a clean
   // "Nothing to publish" no-op — the worst failure mode for a mutation command.
   // Surface it as a typed error instead, like the sibling `atlas sql` /
-  // `atlas metric` clients. VALIDATE only: return the RAW body (NOT
-  // `parsed.data`, which would strip the REST-only `archived` / `warnings`
-  // blocks `--json` surfaces); the command layer reads only the validated core.
-  if (!PublishResultSchema.safeParse(raw).success) {
+  // `atlas metric` clients.
+  const parsed = PublishResultSchema.safeParse(raw);
+  if (!parsed.success) {
     throw new DatasourceCliError(
       "request_failed",
       "The Atlas API returned an unexpected response shape for publish datasources. Update the CLI, or check the server logs.",
     );
   }
-  return raw as PublishResult;
+  // Overlay the VALIDATED core on the raw body: the schema's defaults fill
+  // fields an older API omits (e.g. `promoted.knowledgeDocuments`, v0.0.41),
+  // while the REST-only `archived` / `warnings` extras — which `parsed.data`
+  // alone would strip — still pass through for `--json` consumers.
+  return { ...(raw as Record<string, unknown>), ...parsed.data } as PublishResult;
 }
 
 // ---------------------------------------------------------------------------

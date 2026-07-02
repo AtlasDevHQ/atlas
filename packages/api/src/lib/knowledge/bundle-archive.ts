@@ -25,6 +25,7 @@
  */
 
 import { Gunzip, Unzip, UnzipInflate, strFromU8 } from "fflate";
+import type { KnowledgeBundleFormat } from "@useatlas/types";
 import type { InteropFile } from "@atlas/api/lib/semantic/okf";
 
 /** A per-entry extraction failure — surfaced to the admin, never swallowed. */
@@ -38,7 +39,7 @@ export interface ExtractedBundle {
   /** Per-entry rejections (traversal, oversize). The bundle still yields its good files. */
   readonly errors: readonly BundleEntryError[];
   /** Detected container format, for logging / audit breadcrumbs. */
-  readonly format: "tar" | "tar.gz" | "zip";
+  readonly format: KnowledgeBundleFormat;
 }
 
 export interface ExtractBundleOptions {

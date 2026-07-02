@@ -9,6 +9,9 @@
  * client — it never imports `@atlas/api`).
  */
 
+/** Supported OKF bundle archive formats — the one place this union is named. */
+export type KnowledgeBundleFormat = "tar" | "tar.gz" | "zip";
+
 /** Per-status document counts for one collection. */
 export interface KnowledgeDocumentCounts {
   readonly draft: number;
@@ -106,11 +109,13 @@ export interface KnowledgeIngestDocumentCounts {
  */
 export interface KnowledgeIngestSummary {
   readonly collection: string;
-  readonly format: "tar" | "tar.gz" | "zip";
+  readonly format: KnowledgeBundleFormat;
   readonly documents: KnowledgeIngestDocumentCounts;
   readonly linksWritten: number;
   readonly published: boolean;
   readonly rejected: ReadonlyArray<KnowledgeRejectedFile>;
+  /** Non-markdown / asset files skipped by design (only `.md` ingests). */
+  readonly skippedNonMarkdown: number;
 }
 
 /** `DELETE /api/v1/admin/knowledge/{slug}` response. */
@@ -133,7 +138,7 @@ export interface KnowledgeSyncRunResponse {
   /** ISO-8601 completion time of this attempt. */
   readonly syncedAt: string;
   readonly error: string | null;
-  readonly format: "tar" | "tar.gz" | "zip" | null;
+  readonly format: KnowledgeBundleFormat | null;
   readonly documents: KnowledgeIngestDocumentCounts | null;
   /** Previously-ingested docs archived because their path left the bundle. */
   readonly archivedAbsent: number | null;

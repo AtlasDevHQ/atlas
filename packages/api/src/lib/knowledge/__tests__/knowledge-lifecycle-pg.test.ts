@@ -29,9 +29,20 @@ import {
   rowToDoc,
   type KnowledgeDocRow,
 } from "@atlas/api/lib/knowledge/mirror";
-import { BUNDLE_SYNC_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
-import { ARCHIVE_ABSENT_SQL, SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
+import {
+  BUNDLE_SYNC_CATALOG_ID,
+  BUNDLE_SYNC_INSTALL_UPSERT_SQL,
+} from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
+import {
+  ARCHIVE_ABSENT_SQL,
+  SYNC_CYCLE_INSTALLS_SQL,
+  SYNC_INSTALL_RECHECK_SQL,
+  SYNC_STATE_UPSERT_SQL,
+} from "@atlas/api/lib/knowledge/sync";
 import { SYNC_CREDENTIAL_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync-credentials";
+import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
+import { Effect } from "effect";
+import type { PoolClient } from "pg";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -436,6 +447,127 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     expect(projection.rows).toHaveLength(1);
     expect(projection.rows[0]?.collection_id).toBe("synced-docs");
     expect(projection.rows[0]?.last_sync_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("the cycle's install listing returns ONLY enabled, non-archived bundle-sync installs (#4211)", async () => {
+    // Alongside the enabled 'synced-docs' install from the test above, seed a
+    // disabled and an archived bundle-sync install. The okf-upload installs
+    // (runbooks/product/serving) are already present — the catalog_id filter
+    // must exclude them too.
+    await pool.query(BUNDLE_SYNC_INSTALL_UPSERT_SQL, [
+      "row-sync-disabled",
+      ws,
+      "catalog:bundle-sync",
+      "disabled-docs",
+      JSON.stringify({ endpoint_url: "https://kb.example.com/d.zip", auth_scheme: "none" }),
+    ]);
+    await pool.query(
+      `UPDATE workspace_plugins SET enabled = false WHERE workspace_id = $1 AND install_id = 'disabled-docs'`,
+      [ws],
+    );
+    await pool.query(BUNDLE_SYNC_INSTALL_UPSERT_SQL, [
+      "row-sync-archived",
+      ws,
+      "catalog:bundle-sync",
+      "archived-docs",
+      JSON.stringify({ endpoint_url: "https://kb.example.com/a.zip", auth_scheme: "none" }),
+    ]);
+    await pool.query(
+      `UPDATE workspace_plugins SET status = 'archived', enabled = false
+        WHERE workspace_id = $1 AND install_id = 'archived-docs'`,
+      [ws],
+    );
+
+    const installs = await pool.query<{ install_id: string; config: unknown }>(
+      SYNC_CYCLE_INSTALLS_SQL,
+      [BUNDLE_SYNC_CATALOG_ID],
+    );
+    expect(installs.rows.map((r) => r.install_id)).toEqual(["synced-docs"]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("the uninstall × sync race guards hold against the live schema", async () => {
+    // The in-transaction re-check sees the live install…
+    const live = await pool.query<{ status: string }>(SYNC_INSTALL_RECHECK_SQL, [
+      ws,
+      "synced-docs",
+    ]);
+    expect(live.rows[0]?.status).toBe("published");
+
+    // …and the guarded state upsert refuses to write a row for an archived
+    // install (the uninstall just hard-deleted its sync state; a racing sync
+    // must not re-create it).
+    await pool.query(BUNDLE_SYNC_INSTALL_UPSERT_SQL, [
+      "row-sync-ghost",
+      ws,
+      "catalog:bundle-sync",
+      "ghost-docs",
+      JSON.stringify({ endpoint_url: "https://kb.example.com/g.zip", auth_scheme: "none" }),
+    ]);
+    await pool.query(
+      `UPDATE workspace_plugins SET status = 'archived', enabled = false
+        WHERE workspace_id = $1 AND install_id = 'ghost-docs'`,
+      [ws],
+    );
+    const gone = await pool.query<{ status: string }>(SYNC_INSTALL_RECHECK_SQL, [ws, "ghost-docs"]);
+    expect(gone.rows[0]?.status).toBe("archived");
+    await pool.query(SYNC_STATE_UPSERT_SQL, [ws, "ghost-docs", "success", null, null]);
+    const state = await pool.query<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM knowledge_sync_state
+        WHERE workspace_id = $1 AND collection_id = 'ghost-docs'`,
+      [ws],
+    );
+    expect(state.rows[0]?.n).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("the REAL publish phases promote knowledge drafts against the live schema (#4206)", async () => {
+    // Publish is workspace-wide, so use a dedicated workspace — the shared `ws`
+    // carries leftover drafts from the lifecycle tests above and would skew the
+    // promoted count.
+    const wsPromote = `${ws}-promote`;
+    await pool.query(KNOWLEDGE_INSTALL_UPSERT_SQL, [
+      "row-promote",
+      wsPromote,
+      "catalog:okf-upload",
+      "promote-docs",
+      JSON.stringify({}),
+    ]);
+    await ingestBundleIntoCollection({
+      client,
+      workspaceId: wsPromote,
+      collectionId: "promote-docs",
+      source: "upload",
+      docs: docsFrom({ "a.md": "# A", "b.md": "# B" }),
+    });
+
+    // Run the SAME registry promote the atomic publish endpoint runs, inside a
+    // real transaction — this executes the derived
+    // `UPDATE knowledge_documents … SET status='published'` against Postgres,
+    // which no mocked route test can pin.
+    const registry = makeService(CONTENT_MODE_TABLES);
+    const txClient = await pool.connect();
+    let reports: ReadonlyArray<{ table: string; promoted: number }>;
+    try {
+      await txClient.query("BEGIN");
+      reports = await Effect.runPromise(
+        registry.runPublishPhases(txClient as unknown as PoolClient, wsPromote),
+      );
+      await txClient.query("COMMIT");
+    } catch (err) {
+      await txClient.query("ROLLBACK");
+      throw err;
+    } finally {
+      txClient.release();
+    }
+
+    const knowledgeReport = reports.find((r) => r.table === "knowledge_documents");
+    expect(knowledgeReport?.promoted).toBe(2);
+    const statuses = await pool.query<{ status: string }>(
+      `SELECT status FROM knowledge_documents
+        WHERE workspace_id = $1 AND collection_id = 'promote-docs'`,
+      [wsPromote],
+    );
+    expect(statuses.rows).toHaveLength(2);
+    expect(statuses.rows.every((r) => r.status === "published")).toBe(true);
   }, PG_TEST_TIMEOUT_MS);
 
   it("archives absent paths via ARCHIVE_ABSENT_SQL without touching present or rejected paths", async () => {

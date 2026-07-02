@@ -395,9 +395,11 @@ describe("runDatasource — publish (#4126)", () => {
     expect(text).toContain("Pruned 2 stale entities");
   });
 
-  it("--json emits the raw publish response", async () => {
-    // A realistic REST response — always includes the `deleted` core (the client
-    // validates the shape before emitting); `--json` echoes it verbatim.
+  it("--json emits the publish response with the validated core normalized", async () => {
+    // A realistic REST response from an OLDER API (no `knowledgeDocuments`) —
+    // the client validates + overlays the parsed core, so `--json` emits the
+    // body with schema defaults filled (deploy-overlap normalization) while
+    // any REST-only extras still pass through.
     const body = {
       promoted: { connections: 1, entities: 0, prompts: 0, starterPrompts: 0 },
       deleted: { entities: 0 },
@@ -406,7 +408,10 @@ describe("runDatasource — publish (#4126)", () => {
     const { io, out } = capture();
     const code = await runDatasource(["datasource", "publish", "--json"], deps(fetchImpl), io);
     expect(code).toBe(0);
-    expect(JSON.parse(out.join("\n"))).toEqual(body);
+    expect(JSON.parse(out.join("\n"))).toEqual({
+      ...body,
+      promoted: { ...body.promoted, knowledgeDocuments: 0 },
+    });
   });
 
   it("a non-admin member is denied with an actionable message", async () => {

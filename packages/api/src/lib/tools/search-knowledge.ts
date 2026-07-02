@@ -33,6 +33,10 @@ import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
+import {
+  narrowKnowledgeStatus,
+  type KnowledgeDocumentStatus,
+} from "@atlas/api/lib/knowledge/status";
 import type { AtlasMode } from "@useatlas/types/auth";
 
 const log = createLogger("search-knowledge");
@@ -40,9 +44,11 @@ const log = createLogger("search-knowledge");
 /** Content-mode segment key for `knowledge_documents` (see content-mode/tables.ts). */
 const KNOWLEDGE_TABLE_KEY = "knowledgeDocuments";
 
-/** The content-mode lifecycle states a knowledge document can carry (DB CHECK). */
-export const KNOWLEDGE_DOCUMENT_STATUSES = ["draft", "published", "archived"] as const;
-export type KnowledgeDocumentStatus = (typeof KNOWLEDGE_DOCUMENT_STATUSES)[number];
+export {
+  KNOWLEDGE_DOCUMENT_STATUSES,
+  type KnowledgeDocumentStatus,
+} from "@atlas/api/lib/knowledge/status";
+
 
 /** Default page size when the caller omits `limit`. */
 const DEFAULT_LIMIT = 10;
@@ -72,7 +78,7 @@ export interface KnowledgeProvenance {
   readonly type: string | null;
   readonly tags: readonly string[];
   readonly resource: string | null;
-  /** `atlas_source` — how the document arrived (`upload`, future connectors). */
+  /** `atlas_source` — how the document arrived (`upload`, `bundle-sync` #4211, future connectors). */
   readonly source: string | null;
   readonly ingestedAt: string | null;
   readonly timestamp: string | null;
@@ -180,9 +186,10 @@ function toResult(row: DocRow): KnowledgeSearchResult {
       source: row.atlas_source,
       ingestedAt: toIso(row.atlas_ingested_at),
       timestamp: toIso(row.timestamp),
-      // `status` is CHECK-constrained in `knowledge_documents` to exactly these
-      // three values, so this DB-boundary narrowing cannot represent an illegal state.
-      status: row.status as KnowledgeDocumentStatus,
+      // `status` is CHECK-constrained in `knowledge_documents` to exactly the
+      // tuple's values; narrow via the vocabulary anyway (fail toward `draft` —
+      // never label an unrecognized state as trusted published content).
+      status: narrowKnowledgeStatus(row.status, "draft"),
     },
   };
 }
@@ -435,7 +442,13 @@ export const searchKnowledge = tool({
     if (!workspaceId) {
       // The knowledge base is workspace-scoped; without a workspace there are no
       // documents to search. Return an empty result set (not an error) so the
-      // agent moves on rather than retrying.
+      // agent moves on rather than retrying — but leave a log trail, since a
+      // misconfigured deployment losing workspace context would otherwise be
+      // indistinguishable from "no documents match".
+      log.debug(
+        { hasRequestContext: Boolean(reqCtx) },
+        "searchKnowledge: no active workspace in request context — returning empty results",
+      );
       return { results: [], neighbors: [] } satisfies KnowledgeSearchResponse;
     }
 

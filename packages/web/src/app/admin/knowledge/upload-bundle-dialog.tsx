@@ -30,6 +30,19 @@ import type { KnowledgeIngestSummary } from "@/ui/lib/types";
 
 const ACCEPT = ".tar,.tar.gz,.tgz,.zip,application/zip,application/x-tar,application/gzip";
 
+/**
+ * What the summary panel renders: a successful ingest's counts, or a
+ * rejected-files-only view synthesized from a whole-bundle 400 (`documents`
+ * null). A dedicated view type — not `KnowledgeIngestSummary` — so the error
+ * branch never has to fabricate wire fields (a made-up `format` would leak
+ * into any future panel change).
+ */
+interface IngestSummaryView {
+  readonly documents: KnowledgeIngestSummary["documents"] | null;
+  readonly rejected: ReadonlyArray<{ path: string; reason: string }>;
+  readonly skippedNonMarkdown: number;
+}
+
 export function UploadBundleDialog({
   collectionSlug,
   open,
@@ -45,7 +58,7 @@ export function UploadBundleDialog({
   const [publish, setPublish] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [summary, setSummary] = useState<KnowledgeIngestSummary | null>(null);
+  const [summary, setSummary] = useState<IngestSummaryView | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -94,14 +107,7 @@ export function UploadBundleDialog({
         // per-file reasons — surface them in a synthetic summary so the admin
         // sees exactly which files were refused.
         if (b.rejected && b.rejected.length > 0) {
-          setSummary({
-            collection: collectionSlug,
-            format: "zip",
-            documents: { created: 0, updated: 0, demoted: 0, resurrected: 0, unchanged: 0, total: 0 },
-            linksWritten: 0,
-            published: false,
-            rejected: b.rejected,
-          });
+          setSummary({ documents: null, rejected: b.rejected, skippedNonMarkdown: 0 });
         }
         setError(message);
         return;
@@ -113,7 +119,11 @@ export function UploadBundleDialog({
         return;
       }
       const data: KnowledgeIngestSummary = parsed.data;
-      setSummary(data);
+      setSummary({
+        documents: data.documents,
+        rejected: data.rejected,
+        skippedNonMarkdown: data.skippedNonMarkdown,
+      });
       const { created, updated, demoted } = data.documents;
       toast.success(
         data.published
@@ -203,10 +213,10 @@ export function UploadBundleDialog({
 }
 
 /** Post-ingest summary — document counts plus per-file rejections (AC #2). */
-function IngestSummaryPanel({ summary }: { summary: KnowledgeIngestSummary }) {
+function IngestSummaryPanel({ summary }: { summary: IngestSummaryView }) {
   return (
     <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
-      {summary.documents.total > 0 ? (
+      {summary.documents && summary.documents.total > 0 ? (
         <div className="flex items-center gap-2 text-foreground">
           <CheckCircle2 className="size-4 text-emerald-600 dark:text-emerald-400" />
           <span>
@@ -215,6 +225,13 @@ function IngestSummaryPanel({ summary }: { summary: KnowledgeIngestSummary }) {
             {summary.documents.demoted > 0 ? ` · ${summary.documents.demoted} demoted` : ""}
           </span>
         </div>
+      ) : null}
+      {summary.skippedNonMarkdown > 0 ? (
+        <p className="text-xs text-muted-foreground">
+          {summary.skippedNonMarkdown} non-markdown file
+          {summary.skippedNonMarkdown === 1 ? "" : "s"} skipped — only <code>.md</code> documents
+          ingest.
+        </p>
       ) : null}
       {summary.rejected.length > 0 ? (
         <div className="space-y-1">

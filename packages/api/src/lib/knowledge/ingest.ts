@@ -13,21 +13,30 @@
  *     published (no needless churn, no draft-count noise);
  *   - an existing DRAFT doc → updated in place, stays draft;
  *   - an ARCHIVED doc (a prior uninstall archived it) → resurrected to `draft`
- *     on an EXPLICIT re-upload. This is not the "silent resurrect on re-install"
- *     the ADR forbids — re-install only recreates the collection row and never
- *     calls ingest; only an admin deliberately re-uploading a bundle lands here.
+ *     whenever an ingest sees its path again: an admin re-uploading a bundle
+ *     (upload collections), or a sync pulling the endpoint (`bundle-sync`
+ *     collections — a re-installed synced collection re-syncs, so its archived
+ *     tree returns as drafts; the endpoint is the source of truth, #4211).
+ *     ADR-0028 §5 mandates archive-over-hard-delete; resurrection always lands
+ *     at `draft`, so the review gate applies again before the content can
+ *     reach the non-admin agent path.
  *
  * Links are derived data (content-mode exempt, migration 0163): whenever a
  * document's row is (re)written, its outbound edges are deleted and re-inserted
  * from the freshly-parsed body, so the graph never drifts from the text.
  */
 
+import type { InternalPoolClient } from "@atlas/api/lib/db/internal";
 import type { LenientDoc } from "./parse-lenient";
 
-/** Minimal transactional client shape (satisfied by `pg.PoolClient`). */
-export interface IngestClient {
-  query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
-}
+/**
+ * Minimal transactional client shape — exactly the internal-DB client's
+ * non-generic `query` (also structurally satisfied by `pg.PoolClient`), so
+ * callers pass their transaction client straight through without casts. Row
+ * shapes are asserted at the read sites inside this module — the one place
+ * that knows which SELECTs it issued.
+ */
+export type IngestClient = Pick<InternalPoolClient, "query">;
 
 /**
  * How the documents arrived: `upload` is the explicit admin bundle upload;
@@ -85,20 +94,51 @@ function normTimestamp(value: Date | string | null): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+/**
+ * The change-comparison projection: one normalized `string | null` per
+ * frontmatter-mirrored field, keyed on `LenientDoc` (minus the identity `path`
+ * and the derived `links`) via a mapped type. This makes the comparison
+ * EXHAUSTIVE by construction — adding a field to `LenientDoc` (and the SQL)
+ * without teaching both projections is a compile error. A field silently
+ * missing here would let a changed published doc compare "unchanged" and skip
+ * the re-review demotion (ADR-0028 §4).
+ */
+type ComparableField = Exclude<keyof LenientDoc, "path" | "links">;
+type ComparableDoc = Record<ComparableField, string | null>;
+
+function comparableFromDoc(next: LenientDoc): ComparableDoc {
+  return {
+    type: next.type,
+    title: next.title,
+    description: next.description,
+    resource: next.resource,
+    tags: JSON.stringify(next.tags),
+    timestamp: next.timestamp,
+    body: next.body,
+  };
+}
+
+function comparableFromRow(existing: ExistingRow): ComparableDoc {
+  return {
+    type: existing.type ?? "",
+    title: existing.title ?? "",
+    description: existing.description ?? null,
+    resource: existing.resource ?? null,
+    tags: JSON.stringify(
+      Array.isArray(existing.tags)
+        ? existing.tags.filter((t): t is string => typeof t === "string")
+        : [],
+    ),
+    timestamp: normTimestamp(existing.timestamp),
+    body: existing.body,
+  };
+}
+
 /** True when the freshly-parsed doc differs from the stored row (any mirrored field). */
 export function docChanged(existing: ExistingRow, next: LenientDoc): boolean {
-  const existingTags = Array.isArray(existing.tags)
-    ? existing.tags.filter((t): t is string => typeof t === "string")
-    : [];
-  return (
-    existing.body !== next.body ||
-    (existing.type ?? "") !== next.type ||
-    (existing.title ?? "") !== next.title ||
-    (existing.description ?? null) !== next.description ||
-    (existing.resource ?? null) !== next.resource ||
-    normTimestamp(existing.timestamp) !== next.timestamp ||
-    JSON.stringify(existingTags) !== JSON.stringify(next.tags)
-  );
+  const stored = comparableFromRow(existing);
+  const incoming = comparableFromDoc(next);
+  return (Object.keys(incoming) as ComparableField[]).some((k) => stored[k] !== incoming[k]);
 }
 
 /** Delete + re-insert a document's outbound link edges. Returns the count written. */
@@ -133,17 +173,19 @@ export async function ingestBundleIntoCollection(params: IngestParams): Promise<
   let linksWritten = 0;
 
   for (const doc of docs) {
-    const existingResult = await client.query<ExistingRow>(
+    const existingResult = await client.query(
       `SELECT id, status, body, type, title, description, resource, tags, "timestamp"
          FROM knowledge_documents
         WHERE workspace_id = $1 AND collection_id = $2 AND path = $3
         LIMIT 1`,
       [workspaceId, collectionId, doc.path],
     );
-    const existing = existingResult.rows[0];
+    // Unchecked-DB-row seam: the SELECT above is the one statement that
+    // defines this shape, so the assertion lives next to it.
+    const existing = existingResult.rows[0] as unknown as ExistingRow | undefined;
 
     if (!existing) {
-      const inserted = await client.query<{ id: string }>(
+      const inserted = await client.query(
         `INSERT INTO knowledge_documents
            (workspace_id, collection_id, path, type, title, description, tags,
             "timestamp", resource, body, atlas_source, atlas_ingested_at, status)
@@ -164,7 +206,7 @@ export async function ingestBundleIntoCollection(params: IngestParams): Promise<
         ],
       );
       created++;
-      linksWritten += await rewriteLinks(client, inserted.rows[0].id, doc.links);
+      linksWritten += await rewriteLinks(client, inserted.rows[0].id as string, doc.links);
       continue;
     }
 

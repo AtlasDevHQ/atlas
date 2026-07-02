@@ -814,7 +814,7 @@ describe("publishWorkspaceDrafts (#4126)", () => {
     // #4156 — shared PublishResult core: nested `deleted: { entities }`, not the
     // old flat `deletedEntities`.
     expect(result).toEqual({
-      promoted: { connections: 1, entities: 2, prompts: 0, starterPrompts: 3 },
+      promoted: { connections: 1, entities: 2, prompts: 0, starterPrompts: 3, knowledgeDocuments: 0 },
       deleted: { entities: 1 },
     });
     const sqlLog = publishClientQueries.map((q) => q.sql.trim().toUpperCase());
@@ -847,6 +847,12 @@ describe("publishWorkspaceDrafts (#4126)", () => {
       throw new Error("registry busy");
     };
     const result = await publishWorkspaceDrafts("org_1");
-    expect(result.promoted).toEqual({ connections: 0, entities: 0, prompts: 0, starterPrompts: 0 });
+    expect(result.promoted).toEqual({
+      connections: 0,
+      entities: 0,
+      prompts: 0,
+      starterPrompts: 0,
+      knowledgeDocuments: 0,
+    });
   });
 });

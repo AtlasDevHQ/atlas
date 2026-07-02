@@ -82,6 +82,9 @@ let TX_INSERT_THROWS = false;
 let STATE_WRITE_THROWS = false;
 let INSTALL_ROWS: Array<{ workspace_id: string; install_id: string; config: unknown }> = [];
 const stateWrites: { params: unknown[] }[] = [];
+// What the in-transaction install re-check (FOR UPDATE) sees. `null` = the row
+// is gone; "archived" = an uninstall landed mid-sync (the race under test).
+let TX_INSTALL_STATUS: string | null = "published";
 
 function fakeTxClient() {
   return {
@@ -91,6 +94,9 @@ function fakeTxClient() {
         return { rows: [] };
       }
       txSql.push({ sql, params });
+      if (sql.includes("FROM workspace_plugins")) {
+        return { rows: TX_INSTALL_STATUS === null ? [] : [{ status: TX_INSTALL_STATUS }] };
+      }
       if (sql.includes("SELECT id, status, body")) {
         const existing = store.get(params[2] as string);
         return { rows: existing ? [existing as unknown as Record<string, unknown>] : [] };
@@ -160,6 +166,19 @@ mock.module("@atlas/api/lib/logger", () => {
   const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
 });
+
+// Partial mock, justified: `sync.ts` lazy-imports EXACTLY ONE symbol from
+// `semantic/sync` (`invalidateOrgModeRoots`, the post-sync mirror bust) and
+// nothing else in this file imports the module. Mocking it (a) lets the tests
+// assert the invalidation contract and (b) stops the previous behavior of
+// running the REAL module's fire-and-forget explore import as an untracked
+// side effect of every successful sync.
+const invalidateCalls: string[] = [];
+mock.module("@atlas/api/lib/semantic/sync", () => ({
+  invalidateOrgModeRoots: (orgId: string) => {
+    invalidateCalls.push(orgId);
+  },
+}));
 
 const { syncCollection, runKnowledgeSyncCycle } = await import("@atlas/api/lib/knowledge/sync");
 
@@ -234,6 +253,8 @@ beforeEach(() => {
   txControl.length = 0;
   stateWrites.length = 0;
   INSTALL_ROWS = [];
+  TX_INSTALL_STATUS = "published";
+  invalidateCalls.length = 0;
   internalQuery.mockClear();
   readSyncCredential.mockClear();
 });
@@ -410,6 +431,114 @@ describe("syncCollection — ingest-computed diff", () => {
     // showing a stale "success".
     expect(stateWrites).toHaveLength(1);
     expect(stateWrites[0].params[2]).toBe("error");
+  });
+});
+
+// ── Uninstall × in-flight sync race ─────────────────────────────────────────
+
+describe("syncCollection — uninstall × in-flight sync race", () => {
+  it("aborts the transaction with no writes when the install was archived mid-sync", async () => {
+    seedDoc("was-archived.md", "archived", "old body");
+    // The pre-fetch check saw a live install; the uninstall lands during the
+    // fetch window, so the in-transaction FOR UPDATE re-check sees 'archived'.
+    TX_INSTALL_STATUS = "archived";
+
+    const bundle = zipBundle({ "was-archived.md": "# back\nnew body", "new.md": "# new" });
+    const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
+
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/uninstalled while the sync was running/);
+    expect(txControl).toContain("ROLLBACK");
+    expect(txControl).not.toContain("COMMIT");
+    // The race guard fired BEFORE any document write: nothing resurrected,
+    // nothing inserted.
+    expect(txSql.some((q) => q.sql.includes("INSERT INTO knowledge_documents"))).toBe(false);
+    expect(txSql.some((q) => q.sql.includes("UPDATE knowledge_documents"))).toBe(false);
+    expect(store.get("was-archived.md")?.status).toBe("archived");
+    expect(store.has("new.md")).toBe(false);
+    // No mirror churn for an aborted sync.
+    expect(invalidateCalls).toHaveLength(0);
+  });
+
+  it("aborts identically when the install row is gone entirely", async () => {
+    TX_INSTALL_STATUS = null;
+    const bundle = zipBundle({ "a.md": "# a" });
+    const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/uninstalled while the sync was running/);
+    expect(store.size).toBe(0);
+  });
+});
+
+// ── Mirror invalidation contract (#4208) ────────────────────────────────────
+
+describe("syncCollection — knowledge mirror invalidation", () => {
+  it("busts the org's mode roots after a sync that changed documents", async () => {
+    const bundle = zipBundle({ "new.md": "# new\nhello" });
+    const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("success");
+    expect(invalidateCalls).toEqual([ORG]);
+  });
+
+  it("skips the mirror bust for an all-unchanged sync (no churn)", async () => {
+    // Seed a doc IDENTICAL to what the bundle parses to: no frontmatter, so the
+    // whole content is the body, title = first heading, type stamped Document.
+    store.set("same.md", {
+      id: "seed-same",
+      status: "published",
+      body: "# same\nbody",
+      type: "Document",
+      title: "same",
+      description: null,
+      resource: null,
+      tags: [],
+      timestamp: null,
+    });
+    const bundle = zipBundle({ "same.md": "# same\nbody" });
+    const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("success");
+    expect(outcome.documents?.unchanged).toBe(1);
+    expect(outcome.archivedAbsent).toBe(0);
+    expect(invalidateCalls).toHaveLength(0);
+  });
+
+  it("does not bust the mirror on a failed sync", async () => {
+    TX_INSERT_THROWS = true;
+    const bundle = zipBundle({ "a.md": "# a" });
+    const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(invalidateCalls).toHaveLength(0);
   });
 });
 
@@ -602,7 +731,7 @@ describe("runKnowledgeSyncCycle", () => {
     const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
 
     const result = await runKnowledgeSyncCycle({ fetchImpl: impl });
-    expect(result).toEqual({ inspected: 2, succeeded: 1, failed: 1 });
+    expect(result).toEqual({ inspected: 2, succeeded: 1, failed: 1, queryFailed: false });
     // Both attempts recorded state (success + error).
     expect(stateWrites).toHaveLength(2);
   });
@@ -610,7 +739,7 @@ describe("runKnowledgeSyncCycle", () => {
   it("no-ops without an internal DB", async () => {
     HAS_INTERNAL_DB = false;
     const result = await runKnowledgeSyncCycle();
-    expect(result).toEqual({ inspected: 0, succeeded: 0, failed: 0 });
+    expect(result).toEqual({ inspected: 0, succeeded: 0, failed: 0, queryFailed: false });
   });
 });
 

@@ -1129,6 +1129,38 @@ export function buildSqlExecuteSpanAttrs(opts: {
   return attrs;
 }
 
+/**
+ * The response record produced by a successful SQL execution — the payload
+ * carried by {@link SqlPipelineOutcome}'s `executed` outcome. Built at TWO
+ * sites: {@link executeAndAuditEffect}'s live-query success path and the
+ * cache-hit constructor inside the `check-cache` pre-step. Both `satisfies`
+ * this interface so a field rename in one constructor is caught at compile
+ * time (previously the record was an untyped `Record<string, unknown>` and a
+ * rename could silently desync the `runUserQueryPipeline` adapter's field
+ * reads).
+ *
+ * `success` is always `true` here — the failure record shape lives in
+ * {@link pipelineErrorToResponse} and the wrappers' `{ success: false }`
+ * branches. `metadata` is present only when a plugin `beforeQuery` hook wrote
+ * into the mutable `hookMetadata` bag (the only hook whose dispatch context
+ * carries it). The agent wrapper widens this back to `Record<string, unknown>`
+ * at its single return seam, since the downstream consumers — the fanout
+ * merger and the single-env contribution wrapper — read the tool response by
+ * key as an opaque record.
+ */
+interface ExecutedSqlResult {
+  readonly success: true;
+  readonly explanation: string;
+  readonly row_count: number;
+  readonly columns: string[];
+  readonly rows: Record<string, unknown>[];
+  readonly truncated: boolean;
+  readonly cached: boolean;
+  readonly maskingApplied: boolean;
+  readonly executionMs: number;
+  readonly metadata?: Record<string, unknown>;
+}
+
 function executeAndAuditEffect(opts: {
   db: DBConnection;
   dbType: DBType;
@@ -1158,7 +1190,7 @@ function executeAndAuditEffect(opts: {
   connectionGroupId?: string;
   /** Planner reason that picked this connection (for the OTel `atlas.routing_reason` attribute). */
   routingReason?: RoutingReason;
-}): Effect.Effect<Record<string, unknown>, QueryExecutionError | EnterpriseUnavailableError> {
+}): Effect.Effect<ExecutedSqlResult, QueryExecutionError | EnterpriseUnavailableError> {
   const {
     db, dbType, connId, orgId, poolOrgId, targetHost, querySql, queryTimeout,
     rowLimit, explanation, classification, cacheKey, hookMetadata, dispatchHook,
@@ -1350,7 +1382,7 @@ function executeAndAuditEffect(opts: {
             maskingApplied,
             executionMs: durationMs,
             ...(hasHookMeta && { metadata: hookMetadata }),
-          } as Record<string, unknown>;
+          } satisfies ExecutedSqlResult;
         },
         catch: (err) => {
           // #2593 — preserve the `enterprise_load_failed` signal end-to-end
@@ -1480,7 +1512,7 @@ export interface SqlPipelineOptions {
  * without the core duplicating either format.
  */
 export type SqlPipelineOutcome =
-  | { readonly kind: "executed"; readonly result: Record<string, unknown> }
+  | { readonly kind: "executed"; readonly result: ExecutedSqlResult }
   | { readonly kind: "validation_failed"; readonly message: string }
   | { readonly kind: "approval_unavailable"; readonly message: string }
   | { readonly kind: "approval_identity_missing"; readonly message: string }
@@ -1545,6 +1577,18 @@ export function runSqlPipelineEffect(
         normalizedSql = bound.sql;
         bindParams = bound.values;
       } catch (err) {
+        // `DashboardParameterError` is the expected fail-closed rejection
+        // (missing value / bad placeholder) and carries an actionable
+        // message. Anything else is an unexpected binder fault (e.g. a
+        // `TypeError`) whose message we deliberately don't surface — log it
+        // so it stays diagnosable instead of vanishing behind the generic
+        // "Failed to bind query parameters." response.
+        if (!(err instanceof DashboardParameterError)) {
+          log.warn(
+            { err: err instanceof Error ? err : new Error(String(err)), connectionId: connId },
+            "Unexpected error binding dashboard parameters — returning generic bind-failure message",
+          );
+        }
         return {
           kind: "validation_failed" as const,
           message:
@@ -1804,7 +1848,7 @@ export function runSqlPipelineEffect(
                 // this response field intentionally reports the cache-serve
                 // cost (#3616 naming: two distinct "executionMs" meanings).
                 executionMs: 0,
-              } as Record<string, unknown>;
+              } satisfies ExecutedSqlResult;
             },
             catch: (err) => {
               // #2593 — preserve fail-closed signal through the cache path.
@@ -1993,12 +2037,12 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
           const result = outcome.result;
           return {
             kind: "ok",
-            columns: result.columns as string[],
-            rows: result.rows as Record<string, unknown>[],
-            rowCount: result.row_count as number,
-            executionMs: result.executionMs as number,
-            truncated: result.truncated as boolean,
-            maskingApplied: result.maskingApplied as boolean,
+            columns: result.columns,
+            rows: result.rows,
+            rowCount: result.row_count,
+            executionMs: result.executionMs,
+            truncated: result.truncated,
+            maskingApplied: result.maskingApplied,
           };
         }
         case "validation_failed":
@@ -2107,7 +2151,12 @@ async function executeSqlForConnection({
     Effect.map((outcome): Record<string, unknown> => {
       switch (outcome.kind) {
         case "executed":
-          return outcome.result;
+          // Widen the typed result to the opaque tool-response record the
+          // downstream consumers read by key — the fanout merger and the
+          // single-env contribution wrapper (`success`/`columns`/`rows`/
+          // `executionMs`/`error`). The spread is load-bearing: an interface
+          // is not assignable to `Record<string, unknown>`, but its spread is.
+          return { ...outcome.result };
         case "validation_failed":
         case "approval_unavailable":
         case "approval_identity_missing":

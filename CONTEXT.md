@@ -6,7 +6,7 @@ When you find yourself reaching for one of these words, use the canonical form. 
 
 ## Pillars
 
-Atlas reaches the outside world in three distinct ways. A given **catalog row** fits in exactly one pillar; the split matters because the install lifecycle, credential storage, and admin UX differ across them. Some third-party *systems* span pillars by carrying multiple catalog rows — see "Multi-pillar systems" below.
+Atlas reaches the outside world in four distinct ways. A given **catalog row** fits in exactly one pillar; the split matters because the install lifecycle, credential storage, and admin UX differ across them. Some third-party *systems* span pillars by carrying multiple catalog rows — see "Multi-pillar systems" below.
 
 - **Datasource** — a third-party system Atlas *reads* tabular data from to answer questions. Configured in `/admin/connections`, queried by the agent via the `executeSQL` tool, backed by `semantic/entities/*.yml`. Examples: Postgres, MySQL, Snowflake, ClickHouse, BigQuery, DuckDB, Salesforce (SOQL).
   _Avoid_: Connector, "data source" (two words), "DB connection" (means the pool, not the third-party system).
@@ -17,6 +17,9 @@ Atlas reaches the outside world in three distinct ways. A given **catalog row** 
 - **Action Target** — a third-party system Atlas *writes to or acts on* (creates issues, sends emails, fires webhooks). The customer doesn't talk to Atlas through these; Atlas reaches out. Examples: GitHub, Linear, Email (SMTP), Webhooks.
   _Avoid_: "Outbound integration", "Action Integration". Bare "Integration" is ambiguous — it can mean a Chat Platform, an Action Target, or the umbrella over the latter two.
 
+- **Knowledge Base** — a third-party knowledge corpus Atlas *ingests descriptive context* from (business rules, runbooks, product definitions) to inform its answers. Content lands per-Workspace as **knowledge documents**, each owned by exactly one Knowledge Base install; it is descriptive only — never queried as data, never authoritative (see anti-confusions below). Knowledge documents scope to the Workspace, never to a Connection group — an entity describes a group's *schema*, a knowledge document describes the *business*. Examples: OKF bundle upload, Notion, Confluence.
+  _Avoid_: "knowledge connection" ("connection" is overloaded — see anti-confusions), "context source" ("source" is a deprecated alias for Connection group), "docs integration"; group-scoping knowledge documents (affinity is a `tags` concern).
+
 ### One user-facing surface per pillar
 
 A given third-party system appears on **exactly one** admin page, determined by its pillar:
@@ -24,6 +27,7 @@ A given third-party system appears on **exactly one** admin page, determined by 
 - Datasource → `/admin/connections`
 - Chat Platform → `/admin/integrations` (chat section)
 - Action Target → `/admin/integrations` (actions section)
+- Knowledge Base → `/admin/knowledge`
 
 The install **handler** it uses (OAuth, Form, Static-bot per "Install models" below) is orthogonal to the pillar. A Datasource can use OAuth (Salesforce), a Chat Platform can use Static-bot (Telegram), an Action Target can use Form (Webhook). Pillar determines *where it appears*; install handler determines *how credentials are obtained*. Conflating the two would put OAuth-installed Datasources on the integrations page just because OAuth is "where catalog cards live today" — that's an install-mechanism leak into user-facing taxonomy.
 
@@ -32,6 +36,8 @@ The install **handler** it uses (OAuth, Form, Static-bot per "Install models" be
 - "Salesforce integration" is ambiguous — Salesforce is a **Datasource** (read via SOQL), not an Action Target, even though it has an OAuth install dance that looks superficially like GitHub's. Its UI home is `/admin/connections`.
 - "GitHub integration" is ambiguous — GitHub is an **Action Target** (Atlas creates issues, comments). It is *not* a Chat Platform, even though CONTEXT.md historically lumped it in alongside Slack.
 - "Connection" is overloaded — say **Datasource** (the third-party system) or **Workspace Connection** (the chat OAuth handshake, defined below). Never just "connection" in glossary-relevant prose.
+- The **Knowledge Base** pillar is *descriptive*; the **semantic layer** is *authoritative*. Both are "context the agent reads," but a knowledge document never runs verbatim, never extends the table whitelist, and never gates the agent — the semantic layer (pinned metrics, glossary gating, whitelist) stays the sole authoritative context surface. This moat boundary is a property of the taxonomy, not a discipline of any one implementation.
+- "Notion/Confluence integration" is ambiguous and genuinely dual — the same system can be a **REST Datasource** (live `executeRestOperation` calls against the vendor API: always-current, but slow, rate-limited, and shaped by the vendor's API) or a **Knowledge Base** (content ingested as knowledge documents: indexed, searchable, review-gated — faster and more accurate for informing answers). Per the multi-pillar rule, that's one catalog row per (system, pillar); a customer can install both.
 
 ## Chat Platform mechanics
 
@@ -52,6 +58,16 @@ These four terms are distinct and frequently confused. Pin them.
 
 - "Slack integration" is ambiguous — disambiguate to App Registration (operator-side), Adapter (code), or Workspace Connection (customer-side).
 - "Adapter is enabled" is ambiguous — say either "Adapter has credentials wired" (deploy-level, operator-controlled) or "Workspace Connection exists" (workspace-level, customer-controlled).
+
+## Knowledge Base mechanics
+
+- **Collection** — the customer-facing unit of knowledge organization: a named, independently-searchable **hosted OKF bundle** (one tree, one root `index.md`). Realized as one Knowledge Base **Workspace Install** — the install id is the collection's slug (the datasource pillar's multi-instance pattern, not the chat/action singleton). A **knowledge document** belongs to exactly one collection; uploads upsert into the collection's tree by path. Typical split: one collection per product or corpus, so search can scope to one without wading through the others.
+  _Avoid_: "bundle" for the hosted thing (a bundle is the *interchange artifact* uploaded or exported; the collection is what Atlas hosts); conflating with **Connection group** (a SQL-only concept — collections never route queries).
+
+### Cardinality
+
+- Collections: `(Workspace, Knowledge Base catalog row) → many` (multi-instance, like datasource installs)
+- Knowledge documents: `document → 1 collection`
 
 ## Plugin lifecycle
 

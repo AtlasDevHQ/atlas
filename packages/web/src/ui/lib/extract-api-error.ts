@@ -6,20 +6,34 @@
  * status-only message.
  */
 export async function extractApiError(res: Response, fallback: string): Promise<string> {
-  let message = `${fallback} (${res.status}).`;
+  let body: unknown = null;
   try {
-    const body = (await res.json()) as {
+    body = await res.json();
+  } catch {
+    // intentionally ignored: non-JSON body → keep the status-only message.
+  }
+  return apiErrorFromBody(body, res.status, fallback);
+}
+
+/**
+ * Same extraction for callers that already consumed the response body (e.g. a
+ * dialog that needs other fields from the same JSON).
+ */
+export function apiErrorFromBody(body: unknown, status: number, fallback: string): string {
+  let message = `${fallback} (${status}).`;
+  if (body !== null && typeof body === "object") {
+    const b = body as {
       message?: string;
       fieldErrors?: Record<string, string[] | undefined>;
       requestId?: string;
     };
-    const firstField = body.fieldErrors ? Object.keys(body.fieldErrors)[0] : undefined;
-    const firstErr = firstField ? body.fieldErrors?.[firstField]?.[0] : undefined;
+    const firstField = b.fieldErrors ? Object.keys(b.fieldErrors)[0] : undefined;
+    const firstErr = firstField ? b.fieldErrors?.[firstField]?.[0] : undefined;
     if (firstErr) message = firstErr;
-    else if (body.message) message = body.message;
-    if (body.requestId) message = `${message} (ref: ${body.requestId.slice(0, 8)})`;
-  } catch {
-    // intentionally ignored: non-JSON body → keep the status-only message.
+    else if (typeof b.message === "string" && b.message !== "") message = b.message;
+    if (typeof b.requestId === "string" && b.requestId !== "") {
+      message = `${message} (ref: ${b.requestId.slice(0, 8)})`;
+    }
   }
   return message;
 }

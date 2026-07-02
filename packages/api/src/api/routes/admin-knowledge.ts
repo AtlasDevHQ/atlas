@@ -27,6 +27,13 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
+import type {
+  KnowledgeCollectionListResponse,
+  KnowledgeDocumentListResponse,
+  KnowledgeIngestSummary,
+  KnowledgeSyncRunResponse,
+  KnowledgeUninstallResponse,
+} from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { internalQuery } from "@atlas/api/lib/db/internal";
@@ -115,6 +122,25 @@ const CollectionSyncStatusSchema = z.object({
   error: z.string().nullable(),
 });
 
+const CollectionListResponseSchema = z.object({
+  collections: z.array(
+    z.object({
+      slug: z.string(),
+      source: z.enum(["upload", "bundle-sync"]),
+      description: z.string().nullable(),
+      installedAt: z.string().nullable(),
+      endpointUrl: z.string().nullable(),
+      authScheme: z.enum(["none", "bearer", "basic"]).nullable(),
+      sync: CollectionSyncStatusSchema.nullable(),
+      documents: z.object({
+        draft: z.number().int().nonnegative(),
+        published: z.number().int().nonnegative(),
+        archived: z.number().int().nonnegative(),
+      }),
+    }),
+  ),
+});
+
 const listRoute = createRoute({
   method: "get",
   path: "/",
@@ -130,24 +156,7 @@ const listRoute = createRoute({
       description: "Collection list",
       content: {
         "application/json": {
-          schema: z.object({
-            collections: z.array(
-              z.object({
-                slug: z.string(),
-                source: z.enum(["upload", "bundle-sync"]),
-                description: z.string().nullable(),
-                installedAt: z.string().nullable(),
-                endpointUrl: z.string().nullable(),
-                authScheme: z.enum(["none", "bearer", "basic"]).nullable(),
-                sync: CollectionSyncStatusSchema.nullable(),
-                documents: z.object({
-                  draft: z.number().int().nonnegative(),
-                  published: z.number().int().nonnegative(),
-                  archived: z.number().int().nonnegative(),
-                }),
-              }),
-            ),
-          }),
+          schema: CollectionListResponseSchema,
         },
       },
     },
@@ -168,6 +177,11 @@ const KnowledgeDocumentSchema = z.object({
   updatedAt: z.string().nullable(),
 });
 
+const DocumentListResponseSchema = z.object({
+  collection: z.string(),
+  documents: z.array(KnowledgeDocumentSchema),
+});
+
 const documentsRoute = createRoute({
   method: "get",
   path: "/{collectionSlug}/documents",
@@ -186,18 +200,29 @@ const documentsRoute = createRoute({
     200: {
       description: "Document list",
       content: {
-        "application/json": {
-          schema: z.object({
-            collection: z.string(),
-            documents: z.array(KnowledgeDocumentSchema),
-          }),
-        },
+        "application/json": { schema: DocumentListResponseSchema },
       },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Collection not found or no internal database", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
+});
+
+const IngestResponseSchema = z.object({
+  collection: z.string(),
+  format: z.enum(["tar", "tar.gz", "zip"]),
+  documents: z.object({
+    created: z.number().int().nonnegative(),
+    updated: z.number().int().nonnegative(),
+    demoted: z.number().int().nonnegative(),
+    resurrected: z.number().int().nonnegative(),
+    unchanged: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+  }),
+  linksWritten: z.number().int().nonnegative(),
+  published: z.boolean(),
+  rejected: z.array(RejectedFileSchema),
 });
 
 const ingestRoute = createRoute({
@@ -233,23 +258,7 @@ const ingestRoute = createRoute({
     200: {
       description: "Ingest summary",
       content: {
-        "application/json": {
-          schema: z.object({
-            collection: z.string(),
-            format: z.enum(["tar", "tar.gz", "zip"]),
-            documents: z.object({
-              created: z.number().int().nonnegative(),
-              updated: z.number().int().nonnegative(),
-              demoted: z.number().int().nonnegative(),
-              resurrected: z.number().int().nonnegative(),
-              unchanged: z.number().int().nonnegative(),
-              total: z.number().int().nonnegative(),
-            }),
-            linksWritten: z.number().int().nonnegative(),
-            published: z.boolean(),
-            rejected: z.array(RejectedFileSchema),
-          }),
-        },
+        "application/json": { schema: IngestResponseSchema },
       },
     },
     400: {
@@ -315,6 +324,12 @@ const syncRoute = createRoute({
   },
 });
 
+const UninstallResponseSchema = z.object({
+  archived: z.boolean(),
+  collection: z.string(),
+  archivedDocuments: z.number().int().nonnegative(),
+});
+
 const deleteRoute = createRoute({
   method: "delete",
   path: "/{collectionSlug}",
@@ -332,13 +347,7 @@ const deleteRoute = createRoute({
     200: {
       description: "Collection uninstalled",
       content: {
-        "application/json": {
-          schema: z.object({
-            archived: z.boolean(),
-            collection: z.string(),
-            archivedDocuments: z.number().int().nonnegative(),
-          }),
-        },
+        "application/json": { schema: UninstallResponseSchema },
       },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -416,37 +425,47 @@ adminKnowledge.openapi(listRoute, async (c) =>
 
     return c.json(
       {
-        collections: installs.map((r) => {
+        collections: installs.flatMap((r) => {
           const description = r.config?.description;
           const source = sourceOf(r.catalog_id);
+          // An install from an unrecognized knowledge catalog (unreachable
+          // today — only the two built-in catalogs can create knowledge
+          // installs) has no admin affordances: painting it as an "upload"
+          // collection would offer actions its route gates reject. Skip it
+          // loudly instead of mislabeling it.
+          if (source === "unknown") {
+            log.warn(
+              { orgId, installId: r.install_id, catalogId: r.catalog_id },
+              "Skipping knowledge install with unrecognized catalog from the admin list",
+            );
+            return [];
+          }
           const endpointUrl = r.config?.endpoint_url;
           const rawAuthScheme = r.config?.auth_scheme;
-          return {
-            slug: r.install_id,
-            // Wire enum is two-valued; an unknown catalog (unreachable today —
-            // only the two built-in catalogs can create knowledge installs)
-            // renders as "upload" but NEVER gains upload privileges: both
-            // gated routes check `sourceOf` directly and reject "unknown".
-            source: source === "bundle-sync" ? ("bundle-sync" as const) : ("upload" as const),
-            description: typeof description === "string" ? description : null,
-            installedAt: r.installed_at,
-            // Non-secret by construction — the auth secret lives only in
-            // knowledge_sync_credentials, never in config.
-            endpointUrl:
-              source === "bundle-sync" && typeof endpointUrl === "string" ? endpointUrl : null,
-            // The scheme (not the secret) pre-fills the edit-sync-settings
-            // dialog. An unrecognized stored value renders as "none" — the
-            // sync engine itself rejects it with an actionable error.
-            authScheme:
-              source === "bundle-sync"
-                ? typeof rawAuthScheme === "string" &&
-                  (BUNDLE_SYNC_AUTH_SCHEMES as readonly string[]).includes(rawAuthScheme)
-                  ? (rawAuthScheme as (typeof BUNDLE_SYNC_AUTH_SCHEMES)[number])
-                  : ("none" as const)
-                : null,
-            sync: source === "bundle-sync" ? syncBySlug.get(r.install_id) ?? null : null,
-            documents: countsBySlug.get(r.install_id) ?? { draft: 0, published: 0, archived: 0 },
-          };
+          return [
+            {
+              slug: r.install_id,
+              source,
+              description: typeof description === "string" ? description : null,
+              installedAt: r.installed_at,
+              // Non-secret by construction — the auth secret lives only in
+              // knowledge_sync_credentials, never in config.
+              endpointUrl:
+                source === "bundle-sync" && typeof endpointUrl === "string" ? endpointUrl : null,
+              // The scheme (not the secret) pre-fills the edit-sync-settings
+              // dialog. An unrecognized stored value renders as "none" — the
+              // sync engine itself rejects it with an actionable error.
+              authScheme:
+                source === "bundle-sync"
+                  ? typeof rawAuthScheme === "string" &&
+                    (BUNDLE_SYNC_AUTH_SCHEMES as readonly string[]).includes(rawAuthScheme)
+                    ? (rawAuthScheme as (typeof BUNDLE_SYNC_AUTH_SCHEMES)[number])
+                    : ("none" as const)
+                  : null,
+              sync: source === "bundle-sync" ? syncBySlug.get(r.install_id) ?? null : null,
+              documents: countsBySlug.get(r.install_id) ?? { draft: 0, published: 0, archived: 0 },
+            },
+          ];
         }),
       },
       200,
@@ -751,5 +770,32 @@ adminKnowledge.openapi(deleteRoute, async (c) =>
     return c.json({ archived: true, collection: collectionSlug, archivedDocuments }, 200);
   }),
 );
+
+// ---------------------------------------------------------------------------
+// Producer↔wire drift guards (#81 arch review, inverted-SSOT fix). The web
+// mirrors in `admin-schemas.ts` are drift-checked against `@useatlas/types` —
+// but the PRODUCER (these hono-`z` response schemas) previously had no tie to
+// the wire types at all, so the types could silently lie about what the server
+// returns. Each check asserts the schema's inferred output stays assignable to
+// its canonical wire interface; a dropped/renamed field fails to type-check.
+// ---------------------------------------------------------------------------
+type _Expect<T extends true> = T;
+export type _CollectionListProducerDrift = _Expect<
+  z.infer<typeof CollectionListResponseSchema> extends KnowledgeCollectionListResponse
+    ? true
+    : false
+>;
+export type _DocumentListProducerDrift = _Expect<
+  z.infer<typeof DocumentListResponseSchema> extends KnowledgeDocumentListResponse ? true : false
+>;
+export type _IngestProducerDrift = _Expect<
+  z.infer<typeof IngestResponseSchema> extends KnowledgeIngestSummary ? true : false
+>;
+export type _SyncRunProducerDrift = _Expect<
+  z.infer<typeof SyncRunResponseSchema> extends KnowledgeSyncRunResponse ? true : false
+>;
+export type _UninstallProducerDrift = _Expect<
+  z.infer<typeof UninstallResponseSchema> extends KnowledgeUninstallResponse ? true : false
+>;
 
 export { adminKnowledge };

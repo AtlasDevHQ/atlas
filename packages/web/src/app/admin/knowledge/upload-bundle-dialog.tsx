@@ -17,6 +17,7 @@ import { Switch } from "@/components/ui/switch";
 import { InlineError } from "@/ui/components/admin/compact";
 import { getApiUrl } from "@/lib/api-url";
 import { KnowledgeIngestSummarySchema } from "@/ui/lib/admin-schemas";
+import { apiErrorFromBody } from "@/ui/lib/extract-api-error";
 import type { KnowledgeIngestSummary } from "@/ui/lib/types";
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -45,7 +46,7 @@ export function UploadBundleDialog({
   const [publish, setPublish] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [summary, setSummary] = useState<KnowledgeIngestSummary | null>(null);
+  const [summary, setSummary] = useState<IngestPanelData | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -84,26 +85,17 @@ export function UploadBundleDialog({
 
       if (!res.ok) {
         const b = (json ?? {}) as {
-          message?: string;
-          requestId?: string;
           rejected?: ReadonlyArray<{ path: string; reason: string }>;
         };
-        let message = b.message ?? `Ingest failed (${res.status}).`;
-        if (b.requestId) message = `${message} (ref: ${b.requestId.slice(0, 8)})`;
         // A whole-bundle rejection (e.g. every file unsafe) can still carry
-        // per-file reasons — surface them in a synthetic summary so the admin
-        // sees exactly which files were refused.
+        // per-file reasons — surface them so the admin sees exactly which
+        // files were refused. No document counts exist on this path (nothing
+        // ingested), so the panel gets only the rejection list — never a
+        // fabricated wire summary.
         if (b.rejected && b.rejected.length > 0) {
-          setSummary({
-            collection: collectionSlug,
-            format: "zip",
-            documents: { created: 0, updated: 0, demoted: 0, resurrected: 0, unchanged: 0, total: 0 },
-            linksWritten: 0,
-            published: false,
-            rejected: b.rejected,
-          });
+          setSummary({ documents: null, rejected: b.rejected });
         }
-        setError(message);
+        setError(apiErrorFromBody(json, res.status, "Ingest failed"));
         return;
       }
 
@@ -113,7 +105,7 @@ export function UploadBundleDialog({
         return;
       }
       const data: KnowledgeIngestSummary = parsed.data;
-      setSummary(data);
+      setSummary({ documents: data.documents, rejected: data.rejected });
       const { created, updated, demoted } = data.documents;
       toast.success(
         data.published
@@ -202,11 +194,20 @@ export function UploadBundleDialog({
   );
 }
 
+/** What the post-ingest panel actually renders: counts when an ingest ran
+ *  (null on a whole-bundle rejection) plus per-file rejections. Deliberately
+ *  NOT the wire `KnowledgeIngestSummary` — the error path has no real
+ *  `format`/`collection` to report and must not fabricate them. */
+interface IngestPanelData {
+  readonly documents: KnowledgeIngestSummary["documents"] | null;
+  readonly rejected: ReadonlyArray<{ path: string; reason: string }>;
+}
+
 /** Post-ingest summary — document counts plus per-file rejections (AC #2). */
-function IngestSummaryPanel({ summary }: { summary: KnowledgeIngestSummary }) {
+function IngestSummaryPanel({ summary }: { summary: IngestPanelData }) {
   return (
     <div className="space-y-2 rounded-md border bg-muted/30 p-3 text-sm">
-      {summary.documents.total > 0 ? (
+      {summary.documents && summary.documents.total > 0 ? (
         <div className="flex items-center gap-2 text-foreground">
           <CheckCircle2 className="size-4 text-emerald-600 dark:text-emerald-400" />
           <span>

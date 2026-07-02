@@ -14,11 +14,25 @@ import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("knowledge-mirror-invalidation");
 
-/** Bust the per-mode knowledge disk mirror for an org (all modes). */
-export async function invalidateKnowledgeMirror(orgId: string): Promise<void> {
+/**
+ * Bust the per-mode knowledge disk mirror for an org (all modes).
+ *
+ * Default scope is `"knowledge"`: only the `knowledge/` subtree re-mirrors on
+ * the next explore call — the entity mode-root cache stays intact, so a
+ * runbook upload doesn't pay an entity-root rebuild (explore backends are
+ * still evicted; snapshot sandboxes hold the knowledge files too). Pass
+ * `scope: "full"` when the write also changed non-knowledge content — the
+ * "upload & publish" convenience is the canonical case, since the workspace
+ * publish promotes entity/prompt/connection drafts too.
+ */
+export async function invalidateKnowledgeMirror(
+  orgId: string,
+  opts?: { scope?: "knowledge" | "full" },
+): Promise<void> {
   try {
-    const { invalidateOrgModeRoots } = await import("@atlas/api/lib/semantic/sync");
-    invalidateOrgModeRoots(orgId);
+    const sync = await import("@atlas/api/lib/semantic/sync");
+    if (opts?.scope === "full") sync.invalidateOrgModeRoots(orgId);
+    else sync.invalidateOrgKnowledgeSubtree(orgId);
   } catch (err) {
     log.warn(
       { orgId, err: err instanceof Error ? err.message : String(err) },

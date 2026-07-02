@@ -37,6 +37,7 @@ import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getSettingAuto } from "@atlas/api/lib/settings";
+import { atomicWriteFile, isSafePathSegment } from "@atlas/api/lib/semantic/mirror-fs";
 import {
   buildCollectionsQuery,
   normTags,
@@ -90,20 +91,9 @@ export interface CollectionBundle {
 }
 
 // ---------------------------------------------------------------------------
-// Path safety (explore path-traversal protection — AC "mirror respects …")
+// Path safety (explore path-traversal protection — AC "mirror respects …").
+// The segment predicate is the shared mirror leaf helper (semantic/mirror-fs).
 // ---------------------------------------------------------------------------
-
-/** True when `seg` is safe as a single path segment — no separators or traversal. */
-function isSafeSegment(seg: string): boolean {
-  return (
-    seg !== "" &&
-    seg !== "." &&
-    seg !== ".." &&
-    !seg.includes("/") &&
-    !seg.includes("\\") &&
-    seg === path.basename(seg)
-  );
-}
 
 /**
  * Validate a bundle-relative document path segment-by-segment. Returns the safe
@@ -114,7 +104,7 @@ function isSafeSegment(seg: string): boolean {
  */
 function safePathSegments(p: string): string[] | null {
   const segs = p.split("/");
-  return segs.every(isSafeSegment) ? segs : null;
+  return segs.every(isSafePathSegment) ? segs : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,12 +276,12 @@ export interface KnowledgeMirrorResult {
   /** Concept documents written. */
   readonly documents: number;
   /**
-   * Rows/files skipped or failed. Logged for observability and consumed by this
-   * module's own callers/tests — the mode-root build (`_buildOrgModeRoot`)
-   * DELIBERATELY does NOT fold this into the entity build's `failed` counter (a
-   * knowledge-mirror failure must not gate `_modeBuilt` or force an entity
-   * rebuild on the explore hot path). A partial mirror self-heals on the next
-   * cache invalidation (any knowledge mutation busts it).
+   * Rows/files skipped or failed. The mode-root build DELIBERATELY does NOT
+   * fold this into the entity build's `failed` counter (a knowledge-mirror
+   * failure must not gate `_modeBuilt` or force an entity rebuild on the
+   * explore hot path); it gates the knowledge-stale flag instead, so a partial
+   * mirror RETRIES on the next `ensureOrgModeSemanticRoot` call via the
+   * knowledge-only refresh path.
    */
   readonly failed: number;
 }
@@ -324,7 +314,7 @@ export async function mirrorKnowledgeToDisk(
   let mirroredCollections = 0;
 
   for (const { collectionId, docs } of collections) {
-    if (!isSafeSegment(collectionId)) {
+    if (!isSafePathSegment(collectionId)) {
       failed++;
       log.error({ orgId, mode, collectionId }, "Skipping knowledge collection — unsafe collection id");
       continue;
@@ -345,8 +335,10 @@ export async function mirrorKnowledgeToDisk(
     for (const file of files) {
       const dest = path.join(collectionRoot, ...file.path.split("/"));
       try {
-        await fs.promises.mkdir(path.dirname(dest), { recursive: true });
-        await fs.promises.writeFile(dest, file.content, "utf-8");
+        // Atomic temp+rename (shared mirror leaf helper) — parity with the
+        // entity mode-root writer, so a concurrent explore can never observe a
+        // half-written document even outside the build lock.
+        await atomicWriteFile(dest, file.content);
         wroteAny = true;
         if (path.basename(file.path) !== INDEX_BASENAME) documents++;
       } catch (err) {

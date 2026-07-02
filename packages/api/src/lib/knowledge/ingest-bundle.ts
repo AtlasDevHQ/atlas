@@ -193,11 +193,13 @@ export async function ingestBundle(params: IngestBundleParams): Promise<IngestBu
 
   // Invalidate exactly when the committed write changed something visible:
   // draft churn surfaces in developer mode, a publish surfaces in published
-  // mode too. An all-unchanged ingest skips the (entity-root-wide) rebuild.
+  // mode too. Plain ingest touches only the knowledge subtree; a publish is
+  // workspace-wide (it promotes entity/prompt/connection drafts too), so it
+  // busts the full mode roots.
   const churn =
     report.created + report.updated + report.demoted + report.resurrected + (archivedAbsent ?? 0);
   if (churn > 0 || publish) {
-    await invalidateKnowledgeMirror(workspaceId);
+    await invalidateKnowledgeMirror(workspaceId, { scope: publish ? "full" : "knowledge" });
   }
 
   log.info(

@@ -108,10 +108,10 @@ mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
 
 // The mirror-invalidation seam lazy-imports semantic/sync; only the
 // invalidation entrypoint is reachable from this module's graph.
-let invalidations: string[] = [];
+let invalidations: Array<{ orgId: string; scope: string }> = [];
 mock.module("@atlas/api/lib/knowledge/mirror-invalidation", () => ({
-  invalidateKnowledgeMirror: async (orgId: string) => {
-    invalidations.push(orgId);
+  invalidateKnowledgeMirror: async (orgId: string, opts?: { scope?: string }) => {
+    invalidations.push({ orgId, scope: opts?.scope ?? "knowledge" });
   },
 }));
 
@@ -198,7 +198,8 @@ describe("the committed write", () => {
     });
     expect(store.get("a.md")?.status).toBe("draft");
     expect(publishRan).toBe(false);
-    expect(invalidations).toEqual([WS]);
+    // Plain ingest touches only the knowledge subtree — never a full-root bust.
+    expect(invalidations).toEqual([{ orgId: WS, scope: "knowledge" }]);
   });
 
   it("archiveAbsent archives inside the SAME transaction, excepting present + rejected paths", async () => {
@@ -218,7 +219,8 @@ describe("the committed write", () => {
     expect(outcome).toMatchObject({ kind: "ok", published: true });
     expect(publishRan).toBe(true);
     expect(publishRanInTx).toBe(true);
-    expect(invalidations).toEqual([WS]);
+    // Publish is workspace-wide (entities/prompts promote too) → full-root bust.
+    expect(invalidations).toEqual([{ orgId: WS, scope: "full" }]);
   });
 
   it("rejects publish for a non-upload source — ADR-0028 §4 as a property of the seam", async () => {

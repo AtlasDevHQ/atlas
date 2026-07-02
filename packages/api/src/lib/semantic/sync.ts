@@ -20,6 +20,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { loadYaml } from "./yaml";
 import { getSemanticRoot as getBaseSemanticRoot } from "./files";
+import { atomicWriteFile, isSafePathSegment } from "./mirror-fs";
 import { GROUPS_DIR } from "./scanner";
 
 const log = createLogger("semantic-sync");
@@ -59,33 +60,6 @@ export function getSemanticRoot(
 }
 
 // ---------------------------------------------------------------------------
-// Atomic file operations
-// ---------------------------------------------------------------------------
-
-/**
- * Write a file atomically: write to a temp file in the same directory,
- * then rename (atomic on POSIX — same filesystem). Prevents partial reads
- * by concurrent explore commands.
- */
-async function atomicWriteFile(filePath: string, content: string): Promise<void> {
-  const dir = path.dirname(filePath);
-  await fs.promises.mkdir(dir, { recursive: true });
-  const tmp = `${filePath}.${Date.now()}.${process.pid}.tmp`;
-  try {
-    await fs.promises.writeFile(tmp, content, "utf-8");
-    await fs.promises.rename(tmp, filePath);
-  } catch (err) {
-    // Clean up temp file on failure
-    try {
-      await fs.promises.unlink(tmp);
-    } catch {
-      // Temp file may not exist if writeFile failed
-    }
-    throw err;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Entity type → directory mapping
 // ---------------------------------------------------------------------------
 
@@ -104,23 +78,6 @@ function entityTypeDir(type: SemanticEntityType): string {
 /** Sanitize a name for safe use in file paths (strip traversal chars). */
 function safeName(name: string): string {
   return path.basename(name).replace(/[^a-zA-Z0-9_.-]/g, "_");
-}
-
-/**
- * True when `value` is safe as a single path segment — no separators or `..`
- * traversal that could escape the semantic root. Mirrors the generator's
- * `assertSafePathSegment` (profiler.ts) but returns a boolean so the
- * best-effort DB→disk writers can skip an unsafe row rather than aborting the
- * whole rebuild.
- */
-function isSafePathSegment(value: string): boolean {
-  return (
-    value === path.basename(value) &&
-    value !== "." &&
-    value !== ".." &&
-    !value.includes("/") &&
-    !value.includes("\\")
-  );
 }
 
 /**
@@ -422,8 +379,43 @@ const _modeBuilt = new Set<string>();
  */
 const _modeInvalidationStamp = new Map<string, number>();
 
+/**
+ * Per-(orgId, mode) knowledge-subtree staleness. A key is stale when a
+ * knowledge write landed after the last successful knowledge mirror, OR the
+ * last mirror pass partially failed — either way the next
+ * `ensureOrgModeSemanticRoot` re-runs ONLY the knowledge mirror (under the
+ * shared build lock) instead of rewriting every entity YAML. This is what
+ * makes a runbook upload cheaper than an entity CRUD: the entity mode-root
+ * stays cached (`_modeBuilt`), the knowledge subtree refreshes.
+ */
+const _knowledgeStale = new Set<string>();
+
+/** Monotonic per-(orgId, mode) knowledge-write counter — the stale-flag's
+ *  race guard, symmetric with `_modeInvalidationStamp`. */
+const _knowledgeStamp = new Map<string, number>();
+
 function modeKey(orgId: string, mode: import("@useatlas/types/auth").AtlasMode): string {
   return `${orgId}:${mode}`;
+}
+
+/**
+ * Drop the org's cached explore backends. Rebuilding mode roots isn't enough
+ * for file-snapshot backends (Vercel/BYOC microVMs): they copy semantic files
+ * in at creation and never re-read host disk, so a pooled sandbox would serve
+ * stale files until an infra error forced a rebuild. Dynamic import breaks the
+ * tools/explore → semantic/sync module cycle; fire-and-forget is safe because
+ * the eviction only has to land before the next agent turn, and the microtask
+ * resolves long before that.
+ */
+function _evictOrgExploreBackends(orgId: string): void {
+  void import("@atlas/api/lib/tools/explore")
+    .then(({ invalidateOrgExploreBackends }) => invalidateOrgExploreBackends(orgId))
+    .catch((err) => {
+      log.warn(
+        { orgId, err: errorMessage(err) },
+        "Failed to invalidate explore backends after semantic change",
+      );
+    });
 }
 
 /**
@@ -440,21 +432,27 @@ export function invalidateOrgModeRoots(orgId: string): void {
     _modeBuilt.delete(key);
     _modeInvalidationStamp.set(key, (_modeInvalidationStamp.get(key) ?? 0) + 1);
   }
-  // Rebuilding the mode roots isn't enough for file-snapshot explore backends
-  // (Vercel/BYOC microVMs): they copy semantic files in at creation and never
-  // re-read host disk, so a pooled sandbox would serve stale YAMLs until an
-  // infra error forced a rebuild. Drop the org's cached backends too.
-  // Dynamic import breaks the tools/explore → semantic/sync module cycle;
-  // fire-and-forget is safe because the eviction only has to land before the
-  // next agent turn, and the microtask resolves long before that.
-  void import("@atlas/api/lib/tools/explore")
-    .then(({ invalidateOrgExploreBackends }) => invalidateOrgExploreBackends(orgId))
-    .catch((err) => {
-      log.warn(
-        { orgId, err: errorMessage(err) },
-        "Failed to invalidate explore backends after semantic change",
-      );
-    });
+  _evictOrgExploreBackends(orgId);
+}
+
+/**
+ * Invalidate ONLY the `knowledge/` subtree of an org's mode roots — the
+ * knowledge write paths' invalidation (see `knowledge/mirror-invalidation.ts`).
+ * Unlike `invalidateOrgModeRoots`, this keeps the entity mode-root cache
+ * (`_modeBuilt`) intact, so the next explore call re-mirrors the knowledge
+ * subtree without re-listing and rewriting every entity YAML.
+ *
+ * The explore-backend eviction still applies in full: snapshot backends hold
+ * the knowledge files too, and there is no partial-refresh channel into a
+ * remote sandbox — that teardown is inherent, not an artifact of this seam.
+ */
+export function invalidateOrgKnowledgeSubtree(orgId: string): void {
+  for (const mode of ["published", "developer"] as const) {
+    const key = modeKey(orgId, mode);
+    _knowledgeStale.add(key);
+    _knowledgeStamp.set(key, (_knowledgeStamp.get(key) ?? 0) + 1);
+  }
+  _evictOrgExploreBackends(orgId);
 }
 
 /**
@@ -476,16 +474,16 @@ export async function ensureOrgModeSemanticRoot(
 ): Promise<string> {
   const root = getSemanticRoot(orgId, mode);
   const key = modeKey(orgId, mode);
-  if (_modeBuilt.has(key)) return root;
+  if (_modeBuilt.has(key) && !_knowledgeStale.has(key)) return root;
 
   // Coalesce concurrent builds. If another caller is already building, wait
-  // and then re-check `_modeBuilt` — the in-flight build may have been
-  // invalidated mid-flight or failed per-file writes, in which case the
-  // waiter must itself rebuild instead of returning a stale root.
+  // and then re-check — the in-flight build may have been invalidated
+  // mid-flight or failed per-file writes, in which case the waiter must
+  // itself rebuild instead of returning a stale root.
   const existing = _modeBuildLocks.get(key);
   if (existing) {
     await existing;
-    if (_modeBuilt.has(key)) return root;
+    if (_modeBuilt.has(key) && !_knowledgeStale.has(key)) return root;
     return ensureOrgModeSemanticRoot(orgId, mode);
   }
 
@@ -493,23 +491,43 @@ export async function ensureOrgModeSemanticRoot(
   const lock = new Promise<void>((r) => { resolve = r; });
   _modeBuildLocks.set(key, lock);
 
-  // Capture the invalidation stamp before building. If it advances during the
-  // build, an entity CRUD happened mid-build — the content we just wrote is
-  // stale. Leave _modeBuilt unset so the next call rebuilds.
+  // Capture the invalidation stamps before building. If one advances during
+  // the build, a write raced it — the content we just wrote is stale. Leave
+  // the corresponding cache flag unset so the next call rebuilds/refreshes.
   const stampBefore = _modeInvalidationStamp.get(key) ?? 0;
+  const kStampBefore = _knowledgeStamp.get(key) ?? 0;
   try {
-    const result = await _buildOrgModeRoot(orgId, mode, root);
-    const stampAfter = _modeInvalidationStamp.get(key) ?? 0;
-    // Mark as built only if BOTH: (a) stamp did not advance (no CRUD raced),
-    // and (b) every entity wrote successfully. Partial writes leave the
-    // directory in an undefined state that must not be trusted.
-    if (stampAfter === stampBefore && result.failed === 0) {
-      _modeBuilt.add(key);
+    if (_modeBuilt.has(key)) {
+      // Entities are fresh; only the knowledge subtree is stale (a knowledge
+      // write, or a previously-failed mirror pass) — refresh just that, under
+      // the same lock, without touching the entity YAMLs.
+      const knowledgeFailed = await _mirrorKnowledgeSubtree(orgId, mode, root);
+      if ((_knowledgeStamp.get(key) ?? 0) === kStampBefore && knowledgeFailed === 0) {
+        _knowledgeStale.delete(key);
+      }
     } else {
-      log.debug(
-        { orgId, mode, stampBefore, stampAfter, failed: result.failed },
-        "Mode-specific semantic root build incomplete — next call will rebuild",
-      );
+      const result = await _buildOrgModeRoot(orgId, mode, root);
+      const stampAfter = _modeInvalidationStamp.get(key) ?? 0;
+      // Mark as built only if BOTH: (a) stamp did not advance (no CRUD raced),
+      // and (b) every entity wrote successfully. Partial writes leave the
+      // directory in an undefined state that must not be trusted.
+      if (stampAfter === stampBefore && result.failed === 0) {
+        _modeBuilt.add(key);
+      } else {
+        log.debug(
+          { orgId, mode, stampBefore, stampAfter, failed: result.failed },
+          "Mode-specific semantic root build incomplete — next call will rebuild",
+        );
+      }
+      // The knowledge subtree tracks its own staleness: a partially-failed
+      // mirror (or a knowledge write racing the build) RETRIES on the next
+      // ensure call via the knowledge-only path above, instead of stranding
+      // until some future unrelated invalidation.
+      if ((_knowledgeStamp.get(key) ?? 0) === kStampBefore && result.knowledgeFailed === 0) {
+        _knowledgeStale.delete(key);
+      } else {
+        _knowledgeStale.add(key);
+      }
     }
   } finally {
     resolve!();
@@ -519,12 +537,37 @@ export async function ensureOrgModeSemanticRoot(
   return root;
 }
 
+/**
+ * Mirror the knowledge subtree into `root`, best-effort. Returns the number of
+ * failed rows/files (a throw counts as 1) — never throws. warn, not error:
+ * knowledge is descriptive-only and non-blocking, and the stale-flag retry
+ * self-heals — it must not trip error-rate alerting the way an entity-serving
+ * failure should.
+ */
+async function _mirrorKnowledgeSubtree(
+  orgId: string,
+  mode: import("@useatlas/types/auth").AtlasMode,
+  root: string,
+): Promise<number> {
+  try {
+    const { mirrorKnowledgeToDisk } = await import("@atlas/api/lib/knowledge/mirror");
+    const result = await mirrorKnowledgeToDisk(orgId, mode, root);
+    return result.failed;
+  } catch (err) {
+    log.warn(
+      { orgId, mode, err: errorMessage(err) },
+      "Failed to mirror knowledge collections — entity serving unaffected, knowledge subtree retries on the next explore call",
+    );
+    return 1;
+  }
+}
+
 /** Rebuild the mode-specific directory from DB using the mode-appropriate loader. */
 async function _buildOrgModeRoot(
   orgId: string,
   mode: import("@useatlas/types/auth").AtlasMode,
   root: string,
-): Promise<{ written: number; failed: number }> {
+): Promise<{ written: number; failed: number; knowledgeFailed: number }> {
   const { listEntityRows, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
 
   const rows = mode === "published"
@@ -572,35 +615,21 @@ async function _buildOrgModeRoot(
   // Knowledge Base OKF-native serving (#4208, ADR-0028 §3): mirror hosted
   // knowledge collections into `{root}/knowledge/` as a sibling of the entity
   // subtrees, using the SAME mode→status visibility. Folded into this build so
-  // the shared lazy-build + invalidation machinery (`ensureOrgModeSemanticRoot`
-  // / `invalidateOrgModeRoots`) covers knowledge too. Deliberately does NOT feed
-  // the `failed` counter that gates `_modeBuilt`: knowledge is a separate,
-  // descriptive-only subtree, so a knowledge-mirror failure must not force the
-  // ENTITY mode-root to rebuild on every explore call (that would break the
-  // build-coalescing the entity hot path relies on). A transient knowledge
-  // failure is logged and self-heals on the next invalidation (any knowledge
-  // mutation busts the cache). Dynamic import keeps the internal-DB + knowledge
-  // graph out of this module's static load path (same posture as the loaders
-  // above).
-  try {
-    const { mirrorKnowledgeToDisk } = await import("@atlas/api/lib/knowledge/mirror");
-    await mirrorKnowledgeToDisk(orgId, mode, root);
-  } catch (err) {
-    // warn, not error: knowledge is descriptive-only and non-blocking, and this
-    // degradation self-heals on the next invalidation — it must not trip
-    // error-rate alerting the way an entity-serving failure should.
-    log.warn(
-      { orgId, mode, err: errorMessage(err) },
-      "Failed to mirror knowledge collections — entity serving unaffected, knowledge subtree may be stale until the next rebuild",
-    );
-  }
+  // the shared lazy-build + invalidation machinery covers knowledge too.
+  // `knowledgeFailed` deliberately does NOT feed the `failed` counter that
+  // gates `_modeBuilt`: knowledge is a separate, descriptive-only subtree, so
+  // a knowledge-mirror failure must not force the ENTITY mode-root to rebuild
+  // on every explore call (that would break the build-coalescing the entity
+  // hot path relies on). It gates the knowledge-stale flag instead — the
+  // caller retries just the knowledge subtree on the next ensure.
+  const knowledgeFailed = await _mirrorKnowledgeSubtree(orgId, mode, root);
 
   log.info(
-    { orgId, mode, entityCount: rows.length, written, failed, path: root },
+    { orgId, mode, entityCount: rows.length, written, failed, knowledgeFailed, path: root },
     "Built mode-specific semantic root",
   );
 
-  return { written, failed };
+  return { written, failed, knowledgeFailed };
 }
 
 /** @internal Clear the mode-built cache — for testing only. */
@@ -608,6 +637,8 @@ export function _resetModeBuildCache(): void {
   _modeBuilt.clear();
   _modeBuildLocks.clear();
   _modeInvalidationStamp.clear();
+  _knowledgeStale.clear();
+  _knowledgeStamp.clear();
 }
 
 // ---------------------------------------------------------------------------

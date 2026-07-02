@@ -47,8 +47,10 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
 // failure never breaks the entity build. `mirrorKnowledgeToDisk` is the only
 // export `sync.ts` reaches.
 let knowledgeMirrorShouldThrow = false;
+let knowledgeMirrorCalls = 0;
 mock.module("@atlas/api/lib/knowledge/mirror", () => ({
   mirrorKnowledgeToDisk: async () => {
+    knowledgeMirrorCalls++;
     if (knowledgeMirrorShouldThrow) throw new Error("knowledge mirror boom");
     return { collections: 0, documents: 0, failed: 0 };
   },
@@ -78,6 +80,7 @@ const mod = await import("../sync");
 const {
   ensureOrgModeSemanticRoot,
   invalidateOrgModeRoots,
+  invalidateOrgKnowledgeSubtree,
   _resetModeBuildCache,
 } = mod;
 
@@ -107,6 +110,7 @@ beforeEach(() => {
   process.env.ATLAS_SEMANTIC_ROOT = tmpRoot;
   _resetModeBuildCache();
   knowledgeMirrorShouldThrow = false;
+  knowledgeMirrorCalls = 0;
   publishedRows = [];
   overlayRows = [];
   mockListEntities.mockClear();
@@ -166,6 +170,42 @@ describe("ensureOrgModeSemanticRoot", () => {
     // path would rebuild from DB on every explore call. A second call is a no-op.
     await ensureOrgModeSemanticRoot("org-1", "published");
     expect(mockListEntities).toHaveBeenCalledTimes(1);
+  });
+
+  it("a failed knowledge mirror RETRIES just the knowledge subtree on the next ensure — no entity rebuild", async () => {
+    publishedRows = [row("users")];
+    knowledgeMirrorShouldThrow = true;
+
+    await ensureOrgModeSemanticRoot("org-1", "published");
+    expect(knowledgeMirrorCalls).toBe(1);
+
+    // Mirror healthy again: the next ensure re-runs ONLY the knowledge mirror.
+    knowledgeMirrorShouldThrow = false;
+    await ensureOrgModeSemanticRoot("org-1", "published");
+    expect(knowledgeMirrorCalls).toBe(2);
+    expect(mockListEntities).toHaveBeenCalledTimes(1); // entities never rebuilt
+
+    // Stale flag cleared by the successful pass — the third ensure is a full no-op.
+    await ensureOrgModeSemanticRoot("org-1", "published");
+    expect(knowledgeMirrorCalls).toBe(2);
+    expect(mockListEntities).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidateOrgKnowledgeSubtree re-mirrors knowledge without an entity rebuild, and still evicts backends", async () => {
+    publishedRows = [row("users")];
+    await ensureOrgModeSemanticRoot("org-1", "published");
+    expect(knowledgeMirrorCalls).toBe(1);
+    mockInvalidateOrgExploreBackends.mockClear();
+
+    // A knowledge write (ingest/sync/uninstall) invalidates only the subtree.
+    invalidateOrgKnowledgeSubtree("org-1");
+    await new Promise((r) => setTimeout(r, 0));
+    // Snapshot backends hold knowledge files too — eviction applies in full.
+    expect(mockInvalidateOrgExploreBackends).toHaveBeenCalledWith("org-1");
+
+    await ensureOrgModeSemanticRoot("org-1", "published");
+    expect(knowledgeMirrorCalls).toBe(2); // knowledge re-mirrored
+    expect(mockListEntities).toHaveBeenCalledTimes(1); // entity YAMLs untouched
   });
 
   it("rebuilds after invalidateOrgModeRoots", async () => {

@@ -44,7 +44,7 @@ import {
   toEnvelopeResult,
 } from "./error-envelope.js";
 import { createMcpDispatch } from "./mcp-dispatch.js";
-import { executeSqlOutputShape } from "./structured-output.js";
+import { approvalRequiredResult, executeSqlOutputShape } from "./structured-output.js";
 import { withProgressAndCancellation } from "./progress.js";
 
 export interface RegisterToolsOptions {
@@ -284,40 +284,17 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
             // + user see the full payload.
             if (obj.approval_required === true) {
               // Non-error governance branch — still carries structuredContent
-              // (#3498) since the declared outputSchema makes the SDK require it
-              // on every non-error result. #3584 — narrow each field against the
-              // declared outputSchema types before assigning to structuredContent
-              // so SDK output-schema validation can't throw on a malformed
-              // internal payload (e.g. non-string approval_request_id).
-              const { executeSqlOutputSchema: schema, withResumeHint } = await import(
-                "./structured-output.js"
-              );
-              const raw = {
-                approval_required: true,
-                approval_request_id: obj.approval_request_id,
-                matched_rules: obj.matched_rules,
-                // #3750 — tell the MCP client how to resume: re-call the
-                // identical tool once approved (the executeSQL gate's
-                // hasApprovedRequest dedup lets the re-call through).
-                message: withResumeHint(obj.message),
-              };
-              const parsed = schema.safeParse(raw);
-              const approval = parsed.success ? parsed.data : {
-                approval_required: true as const,
-                ...(typeof obj.approval_request_id === "string"
-                  ? { approval_request_id: obj.approval_request_id }
-                  : {}),
-                // Resume hint is always present (withResumeHint tolerates a
-                // missing upstream message) so even the fallback shape tells
-                // the client how to continue.
-                message: withResumeHint(obj.message),
-              };
-              return {
-                content: [
-                  { type: "text" as const, text: JSON.stringify(approval, null, 2) },
-                ],
-                structuredContent: approval,
-              };
+              // (#3498) since the declared outputSchema makes the SDK require
+              // it on every non-error result. #4199 — the shared builder folds
+              // in the #3584 safeParse guard (malformed internal fields are
+              // stripped, never thrown) and the #3750 resume hint (re-call the
+              // identical tool once approved; the executeSQL gate's
+              // hasApprovedRequest dedup lets the re-call through).
+              return approvalRequiredResult({
+                approvalRequestId: obj.approval_request_id,
+                matchedRules: obj.matched_rules,
+                message: obj.message,
+              });
             }
 
             const rawError = String(obj.error ?? obj.message ?? "");

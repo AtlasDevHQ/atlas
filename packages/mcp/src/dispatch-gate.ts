@@ -71,6 +71,7 @@ import {
 import { writeScopeOrNull } from "./tools.js";
 import { billingGateOrNull } from "./billing-gate.js";
 import { envelope, toEnvelopeResult } from "./error-envelope.js";
+import { approvalRequiredResult } from "./structured-output.js";
 import { getLiveActor } from "./live-actor-store.js";
 
 // Re-export the gate CONTRACT shapes (#3599) so existing consumers that
@@ -354,25 +355,20 @@ async function runApprovalGate(
       }),
     );
 
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(
-            {
-              approval_required: true,
-              approval_request_id: req.id,
-              matched_rules: match.matchedRules.map((r) => r.name),
-              message:
-                `This action requires approval before execution. Rule: "${firstRule.name}". ` +
-                `An approval request has been submitted (ID: ${req.id}).`,
-            },
-            null,
-            2,
-          ),
-        },
-      ],
-    };
+    // #4199 — shared validated builder (one contract with the executeSQL /
+    // runMetric / query approval branches, so agents/SDK parse one shape).
+    // The #3750 resume hint applies here too: re-calling the identical tool
+    // once approved passes gate-4 via the hasApprovedRequest dedup above.
+    // `structured: false` — the destructive tools this gate guards declare no
+    // outputSchema, and the MCP SDK rejects structuredContent without one.
+    return approvalRequiredResult({
+      approvalRequestId: req.id,
+      matchedRules: match.matchedRules.map((r) => r.name),
+      message:
+        `This action requires approval before execution. Rule: "${firstRule.name}". ` +
+        `An approval request has been submitted (ID: ${req.id}).`,
+      structured: false,
+    });
   } catch (err) {
     log.error(
       {

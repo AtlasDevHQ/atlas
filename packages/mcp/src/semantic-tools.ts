@@ -56,7 +56,7 @@ import {
   toStructuredContent,
 } from "./error-envelope.js";
 import { createMcpDispatch } from "./mcp-dispatch.js";
-import { runMetricOutputShape, withResumeHint } from "./structured-output.js";
+import { approvalRequiredResult, runMetricOutputShape } from "./structured-output.js";
 import { withProgressAndCancellation } from "./progress.js";
 
 // Modest input bounds — MCP clients (including hostile ones in BYOC
@@ -520,14 +520,13 @@ export function registerSemanticTools(
             // doesn't retry and silently duplicate the request. Mirrors the
             // same branch in tools.ts:executeSQL.
             if (result.approval_required === true) {
-              return toStructuredContent({
-                id: metric.id,
-                approval_required: true,
-                approval_request_id: result.approval_request_id,
-                matched_rules: result.matched_rules,
-                // #3750 — resume hint: re-run this exact runMetric call once
-                // approved (parity with executeSQL's approval branch).
-                message: withResumeHint(result.message),
+              // #4199 — shared validated builder (parity with executeSQL's
+              // approval branch): #3584 safeParse guard + #3750 resume hint.
+              return approvalRequiredResult({
+                approvalRequestId: result.approval_request_id,
+                matchedRules: result.matched_rules,
+                message: result.message,
+                extra: { id: metric.id },
               });
             }
 

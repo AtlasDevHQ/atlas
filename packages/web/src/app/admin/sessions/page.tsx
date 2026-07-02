@@ -5,16 +5,12 @@ import { useQueryStates } from "nuqs";
 import { sessionsSearchParams } from "./search-params";
 import { getSessionColumns, type SessionActions } from "./columns";
 import type { SessionRow } from "@/ui/lib/admin-schemas";
-import { DataTable } from "@/components/data-table/data-table";
-import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
-import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
-import { useDataTable } from "@/hooks/use-data-table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
-import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { ServerDataTable } from "@/ui/components/admin/server-data-table";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Monitor, Search, X, Users, Activity, Trash2 } from "lucide-react";
 import { useState } from "react";
@@ -82,27 +78,27 @@ export default function SessionsPage() {
     isRevoking: (id: string) => isMutating(id),
   };
   const columns = getSessionColumns(sessionActions);
-  const columnIds = new Set(
-    columns.map((c) => c.id).filter(Boolean) as string[],
-  );
 
   const { data: stats } = useAdminFetch("/api/v1/admin/sessions/stats", {
     schema: SessionStatsSchema,
   });
 
-  // URL-state↔server-fetch binding (page/perPage → offset → fetch URL) lives
-  // in `useServerDataTable`; the sessions list doesn't sort server-side, so
-  // only pagination + the `search` filter feed the request URL.
+  // The server-data-table module owns pagination, the fetch, pageCount, and the
+  // table instance; the sessions list doesn't sort server-side, so only
+  // pagination + the `search` filter feed the request URL.
   const {
-    data: listData,
+    table,
+    rows,
     loading,
     error,
     refetch,
-    perPage,
   } = useServerDataTable<SessionRow, z.infer<typeof SessionsListSchema>>({
+    columns,
+    getRowId: (row) => row.id,
     defaultPerPage: LIMIT,
-    sortColumnIds: columnIds,
+    defaultSorting: [{ id: "updatedAt", desc: true }],
     schema: SessionsListSchema,
+    select: (r) => ({ rows: r.sessions, total: r.total }),
     buildPath: ({ offset, perPage }) => {
       const qs = new URLSearchParams({
         limit: String(perPage),
@@ -111,21 +107,6 @@ export default function SessionsPage() {
       if (search) qs.set("search", search);
       return `/api/v1/admin/sessions?${qs}`;
     },
-  });
-
-  const rows = listData?.sessions ?? [];
-  const total = listData?.total ?? 0;
-  const pageCount = Math.max(1, Math.ceil(total / perPage));
-
-  const { table } = useDataTable({
-    data: rows,
-    columns,
-    pageCount,
-    initialState: {
-      sorting: [{ id: "updatedAt", desc: true }],
-      pagination: { pageIndex: 0, pageSize: perPage },
-    },
-    getRowId: (row) => row.id,
   });
 
   async function revokeSelected() {
@@ -218,28 +199,25 @@ export default function SessionsPage() {
 
             {bulkError && <ErrorBanner message={bulkError} />}
             {!bulkError && <MutationErrorSurface error={revokeError} feature="Sessions" />}
-            <AdminContentWrapper
+            <ServerDataTable
+              table={table}
               loading={loading}
               error={error}
-              feature="Sessions"
+              isEmpty={rows.length === 0}
               onRetry={refetch}
+              feature="Sessions"
               loadingMessage="Loading sessions..."
-              emptyIcon={Monitor}
-              emptyTitle="No active sessions"
-              emptyDescription="Sessions will appear here when users sign in."
+              emptyState={{
+                icon: Monitor,
+                title: "No active sessions",
+                description: "Sessions will appear here when users sign in.",
+              }}
               hasFilters={hasFilters}
               onClearFilters={() => {
                 table.setPageIndex(0);
                 setParams({ search: "" });
               }}
-              isEmpty={rows.length === 0}
-            >
-              <DataTable table={table}>
-                <DataTableToolbar table={table}>
-                  <DataTableSortList table={table} />
-                </DataTableToolbar>
-              </DataTable>
-            </AdminContentWrapper>
+            />
           </div>
         </ErrorBoundary>
       </div>

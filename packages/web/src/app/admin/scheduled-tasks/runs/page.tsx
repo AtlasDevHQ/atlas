@@ -16,18 +16,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { ServerDataTable } from "@/ui/components/admin/server-data-table";
 import {
   History,
   ExternalLink,
   ArrowLeft,
 } from "lucide-react";
-import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { ExpandableDataTable } from "@/components/data-table/data-table-expandable";
-import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
-import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
-import { useDataTable } from "@/hooks/use-data-table";
+import { useServerDataTable } from "@/ui/hooks/use-server-data-table";
 import { getRunHistoryColumns, formatTimestamp, formatDuration } from "./columns";
 import type { ScheduledTask, ScheduledTaskRunWithTaskName } from "@/ui/lib/types";
 
@@ -39,19 +35,11 @@ export default function RunHistoryPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  const [runs, setRuns] = useState<ScheduledTaskRunWithTaskName[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<FetchError | null>(null);
-
   // For task filter dropdown
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
 
-  const [refetchKey, setRefetchKey] = useState(0);
-
-  const [{ page, task: taskFilter, status: statusFilter, dateFrom, dateTo, expandedRun }, setParams] =
+  const [{ task: taskFilter, status: statusFilter, dateFrom, dateTo, expandedRun }, setParams] =
     useQueryStates(runHistorySearchParams);
-  const offset = (page - 1) * PAGE_SIZE;
 
   // ── Fetch task list for filter dropdown ─────────────────────────
   useEffect(() => {
@@ -68,68 +56,38 @@ export default function RunHistoryPage() {
     fetchTasks();
   }, [apiUrl, credentials]);
 
-  // ── Fetch runs ──────────────────────────────────────────────────
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchRuns() {
-      setLoading(true);
-      setError(null);
-      try {
-        const qs = new URLSearchParams({
-          limit: String(PAGE_SIZE),
-          offset: String(offset),
-        });
-        if (taskFilter) qs.set("task_id", taskFilter);
-        if (statusFilter && statusFilter !== "all") qs.set("status", statusFilter);
-        if (dateFrom) qs.set("date_from", dateFrom);
-        if (dateTo) qs.set("date_to", dateTo);
-
-        const res = await fetch(
-          `${apiUrl}/api/v1/scheduled-tasks/runs?${qs}`,
-          { credentials },
-        );
-        if (!res.ok) {
-          if (!cancelled) {
-            setError({ message: `HTTP ${res.status}`, status: res.status });
-            setRuns([]);
-            setTotal(0);
-          }
-          return;
-        }
-        const data = await res.json();
-        if (!cancelled) {
-          setRuns(data.runs ?? []);
-          setTotal(data.total ?? 0);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError({
-            message: err instanceof Error ? err.message : "Failed to load run history",
-          });
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    fetchRuns();
-    return () => {
-      cancelled = true;
-    };
-  }, [apiUrl, offset, taskFilter, statusFilter, dateFrom, dateTo, credentials, refetchKey]);
-
   // ── Data table ──────────────────────────────────────────────────
   const runColumns = getRunHistoryColumns({ expandedId: expandedRun });
 
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const { table: runsTable } = useDataTable({
-    data: runs,
+  // The server-data-table module owns pagination, the runs fetch, pageCount,
+  // and the table instance; the page keeps only its filters + expanded-row UI.
+  const {
+    table: runsTable,
+    rows: runs,
+    total,
+    loading,
+    error,
+    refetch,
+  } = useServerDataTable<ScheduledTaskRunWithTaskName>({
     columns: runColumns,
-    pageCount,
-    initialState: {
-      sorting: [{ id: "startedAt", desc: true }],
-      pagination: { pageIndex: 0, pageSize: PAGE_SIZE },
-    },
     getRowId: (row) => row.id,
+    defaultPerPage: PAGE_SIZE,
+    defaultSorting: [{ id: "startedAt", desc: true }],
+    select: (r) => {
+      const d = r as { runs?: ScheduledTaskRunWithTaskName[]; total?: number };
+      return { rows: d.runs ?? [], total: d.total ?? 0 };
+    },
+    buildPath: ({ offset, perPage }) => {
+      const qs = new URLSearchParams({
+        limit: String(perPage),
+        offset: String(offset),
+      });
+      if (taskFilter) qs.set("task_id", taskFilter);
+      if (statusFilter && statusFilter !== "all") qs.set("status", statusFilter);
+      if (dateFrom) qs.set("date_from", dateFrom);
+      if (dateTo) qs.set("date_to", dateTo);
+      return `/api/v1/scheduled-tasks/runs?${qs}`;
+    },
   });
 
   const handleRunRowClick = (row: Row<ScheduledTaskRunWithTaskName>) =>
@@ -283,29 +241,23 @@ export default function RunHistoryPage() {
 
       <ErrorBoundary>
       <div className="space-y-6">
-        <AdminContentWrapper
+        <ServerDataTable
+          table={runsTable}
           loading={loading}
           error={error}
-          feature="Scheduled Tasks"
-          onRetry={() => setRefetchKey((k) => k + 1)}
-          loadingMessage="Loading run history..."
-          emptyIcon={History}
-          emptyTitle="No runs found"
           isEmpty={runs.length === 0}
+          onRetry={refetch}
+          feature="Scheduled Tasks"
+          loadingMessage="Loading run history..."
+          emptyState={{ icon: History, title: "No runs found" }}
           hasFilters={!!hasFilters}
           onClearFilters={resetFilters}
-        >
-          <ExpandableDataTable
-            table={runsTable}
-            onRowClick={handleRunRowClick}
-            isRowExpanded={isRunExpanded}
-            renderExpandedRow={renderRunExpandedRow}
-          >
-            <DataTableToolbar table={runsTable}>
-              <DataTableSortList table={runsTable} />
-            </DataTableToolbar>
-          </ExpandableDataTable>
-        </AdminContentWrapper>
+          expandable={{
+            onRowClick: handleRunRowClick,
+            isRowExpanded: isRunExpanded,
+            renderExpandedRow: renderRunExpandedRow,
+          }}
+        />
       </div>
       </ErrorBoundary>
     </div>

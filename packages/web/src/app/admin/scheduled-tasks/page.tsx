@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { ColumnDef, Row } from "@tanstack/react-table";
 import Link from "next/link";
 import { useQueryStates } from "nuqs";
@@ -34,7 +34,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
-import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { ServerDataTable } from "@/ui/components/admin/server-data-table";
 import {
   CalendarClock,
   Play,
@@ -45,14 +45,10 @@ import {
   History,
   Eye,
 } from "lucide-react";
-import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useServerDataTable } from "@/ui/hooks/use-server-data-table";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { DeliveryStatusBadge } from "@/ui/components/admin/delivery-status-badge";
-import { ExpandableDataTable } from "@/components/data-table/data-table-expandable";
-import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
-import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
-import { useDataTable } from "@/hooks/use-data-table";
 import { getScheduledTaskColumns, formatRelativeDate } from "./columns";
 import { TaskFormDialog } from "./task-form-dialog";
 import type {
@@ -70,13 +66,7 @@ export default function ScheduledTasksPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  const [tasks, setTasks] = useState<ScheduledTask[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<FetchError | null>(null);
-
-  const [{ page, enabled: enabledFilter, expanded: expandedId }, setParams] = useQueryStates(scheduledTasksSearchParams);
-  const offset = (page - 1) * PAGE_SIZE;
+  const [{ enabled: enabledFilter, expanded: expandedId }, setParams] = useQueryStates(scheduledTasksSearchParams);
 
   const [selectedTask, setSelectedTask] = useState<ScheduledTaskWithRuns | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -95,7 +85,6 @@ export default function ScheduledTasksPage() {
   // ── Form dialog state ──────────────────────────────────────────
   const [formOpen, setFormOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<ScheduledTask | null>(null);
-  const [refetchKey, setRefetchKey] = useState(0);
 
   // ── Delete confirmation state ──────────────────────────────────
   const [deleteTarget, setDeleteTarget] = useState<ScheduledTask | null>(null);
@@ -116,7 +105,7 @@ export default function ScheduledTasksPage() {
   }
 
   function handleFormSuccess() {
-    setRefetchKey((k) => k + 1);
+    refetch();
   }
 
   // ── Preview delivery ──────────────────────────────────────────
@@ -133,48 +122,6 @@ export default function ScheduledTasksPage() {
       },
     });
   }
-
-  // ── Fetch task list ──────────────────────────────────────────────
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchTasks() {
-      setLoading(true);
-      setError(null);
-      try {
-        const qs = new URLSearchParams({
-          limit: String(PAGE_SIZE),
-          offset: String(offset),
-        });
-        if (enabledFilter !== "all") qs.set("enabled", enabledFilter);
-
-        const res = await fetch(
-          `${apiUrl}/api/v1/scheduled-tasks?${qs}`,
-          { credentials },
-        );
-        if (!res.ok) {
-          if (!cancelled) setError({ message: `HTTP ${res.status}`, status: res.status });
-          return;
-        }
-        const data = await res.json();
-        if (!cancelled) {
-          setTasks(data.tasks ?? []);
-          setTotal(data.total ?? 0);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError({
-            message: err instanceof Error ? err.message : "Failed to load scheduled tasks",
-          });
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    fetchTasks();
-    return () => {
-      cancelled = true;
-    };
-  }, [apiUrl, offset, enabledFilter, credentials, refetchKey]);
 
   // ── Fetch detail (with recent runs) ─────────────────────────────
   async function handleRowClick(taskId: string) {
@@ -209,16 +156,12 @@ export default function ScheduledTasksPage() {
   async function handleToggle(task: ScheduledTask, e: React.MouseEvent) {
     e.stopPropagation();
     if (toggleMutation.isMutating(task.id)) return;
+    // On success `useAdminMutation` invalidates admin-fetch queries, so the
+    // module-owned task list refetches with the new `enabled` state.
     await toggleMutation.mutate({
       path: `/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`,
       body: { enabled: !task.enabled },
       itemId: task.id,
-      onSuccess: (updated) => {
-        if (!updated) return;
-        setTasks((prev) =>
-          prev.map((t) => (t.id === updated.id ? updated : t)),
-        );
-      },
     });
   }
 
@@ -236,12 +179,10 @@ export default function ScheduledTasksPage() {
   // ── Delete task ──────────────────────────────────────────────────
   async function handleDelete(task: ScheduledTask) {
     if (deleteMutation.isMutating(task.id)) return;
+    // Delete auto-invalidates admin-fetch queries → the list refetches.
     await deleteMutation.mutate({
       path: `/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`,
       itemId: task.id,
-      onSuccess: () => {
-        setRefetchKey((k) => k + 1);
-      },
     });
     setDeleteTarget(null);
   }
@@ -318,13 +259,32 @@ export default function ScheduledTasksPage() {
     return [...base, enabledCol, actionsCol];
   })();
 
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const { table: tasksTable } = useDataTable({
-    data: tasks,
+  // The server-data-table module owns pagination, the task-list fetch,
+  // pageCount, and the table instance; the page keeps its filter, row actions,
+  // and the expanded-row detail fetch.
+  const {
+    table: tasksTable,
+    rows: tasks,
+    total,
+    loading,
+    error,
+    refetch,
+  } = useServerDataTable<ScheduledTask>({
     columns: taskColumns,
-    pageCount,
-    initialState: { pagination: { pageIndex: 0, pageSize: PAGE_SIZE } },
     getRowId: (row) => row.id,
+    defaultPerPage: PAGE_SIZE,
+    select: (r) => {
+      const d = r as { tasks?: ScheduledTask[]; total?: number };
+      return { rows: d.tasks ?? [], total: d.total ?? 0 };
+    },
+    buildPath: ({ offset, perPage }) => {
+      const qs = new URLSearchParams({
+        limit: String(perPage),
+        offset: String(offset),
+      });
+      if (enabledFilter !== "all") qs.set("enabled", enabledFilter);
+      return `/api/v1/scheduled-tasks?${qs}`;
+    },
   });
 
   const handleTaskRowClick = (row: Row<ScheduledTask>) => handleRowClick(row.original.id);
@@ -456,29 +416,26 @@ export default function ScheduledTasksPage() {
           onRetry={deleteMutation.clearError}
         />
 
-        <AdminContentWrapper
+        <ServerDataTable
+          table={tasksTable}
           loading={loading}
           error={error}
-          feature="Scheduled Tasks"
-          onRetry={() => setError(null)}
-          loadingMessage="Loading scheduled tasks..."
-          emptyIcon={CalendarClock}
-          emptyTitle="No scheduled tasks"
-          emptyDescription="Create a task to automate recurring queries and reports"
-          emptyAction={{ label: "Create task", onClick: openCreate }}
           isEmpty={tasks.length === 0}
-        >
-          <ExpandableDataTable
-            table={tasksTable}
-            onRowClick={handleTaskRowClick}
-            isRowExpanded={isTaskExpanded}
-            renderExpandedRow={renderTaskExpandedRow}
-          >
-            <DataTableToolbar table={tasksTable}>
-              <DataTableSortList table={tasksTable} />
-            </DataTableToolbar>
-          </ExpandableDataTable>
-        </AdminContentWrapper>
+          onRetry={refetch}
+          feature="Scheduled Tasks"
+          loadingMessage="Loading scheduled tasks..."
+          emptyState={{
+            icon: CalendarClock,
+            title: "No scheduled tasks",
+            description: "Create a task to automate recurring queries and reports",
+            action: { label: "Create task", onClick: openCreate },
+          }}
+          expandable={{
+            onRowClick: handleTaskRowClick,
+            isRowExpanded: isTaskExpanded,
+            renderExpandedRow: renderTaskExpandedRow,
+          }}
+        />
       </div>
       </ErrorBoundary>
 

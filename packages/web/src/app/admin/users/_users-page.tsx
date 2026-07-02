@@ -11,9 +11,9 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { useAtlasConfig } from "@/ui/context";
 import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/data-table/data-table";
-import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
-import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
 import { useDataTable } from "@/hooks/use-data-table";
+import { ServerDataTable } from "@/ui/components/admin/server-data-table";
+import { useServerDataTable } from "@/ui/hooks/use-server-data-table";
 import {
   getUserColumns,
   getInvitationColumns,
@@ -57,7 +57,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { StatCard } from "@/ui/components/admin/stat-card";
-import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
@@ -68,10 +67,7 @@ import {
   FormControl,
   FormMessage,
 } from "@/components/form-dialog";
-import {
-  useAdminFetch,
-  type FetchError,
-} from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { authClient } from "@/lib/auth/client";
 import { UserStatsSchema } from "@/ui/lib/admin-schemas";
@@ -153,10 +149,6 @@ export function UsersPage({ scope }: UsersPageProps) {
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const isPlatformScope = scope === "platform";
 
-  const [users, setUsers] = useState<User[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<FetchError | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
 
   // #3157 — when a platform admin changes the role of a user who belongs to
@@ -171,15 +163,14 @@ export function UsersPage({ scope }: UsersPageProps) {
   const [pickedOrgId, setPickedOrgId] = useState<string | undefined>(undefined);
 
   const [params, setParams] = useQueryStates(usersSearchParams);
-  const offset = (params.page - 1) * LIMIT;
 
   // Local search input — pushed to URL on Enter/Apply
   const [searchInput, setSearchInput] = useState(params.search);
 
-  // Admin action mutation (role change, ban, unban, revoke, delete)
-  const adminAction = useAdminMutation({
-    invalidates: () => setParams((p) => ({ ...p })),
-  });
+  // Admin action mutation (role change, ban, unban, revoke, delete).
+  // On success `useAdminMutation` invalidates all admin-fetch queries, so the
+  // module-owned users list + stats refetch without manual coordination.
+  const adminAction = useAdminMutation();
 
   // -- Invite dialog state --
   // The dialog runs the Better Auth org client directly — the legacy
@@ -294,16 +285,32 @@ export function UsersPage({ scope }: UsersPageProps) {
     return [...base, actionsCol];
   })();
 
-  const pageCount = Math.max(1, Math.ceil(total / LIMIT));
-  const { table: usersTable } = useDataTable({
-    data: users,
+  // The server-data-table module owns pagination, the users fetch, pageCount,
+  // and the table instance; the page keeps its filters, stats, and row actions.
+  const {
+    table: usersTable,
+    rows: users,
+    loading,
+    error,
+    refetch: refetchUsers,
+  } = useServerDataTable<User>({
     columns: userColumns,
-    pageCount,
-    initialState: {
-      sorting: [{ id: "createdAt", desc: true }],
-      pagination: { pageIndex: 0, pageSize: LIMIT },
-    },
     getRowId: (row) => row.id,
+    defaultPerPage: LIMIT,
+    defaultSorting: [{ id: "createdAt", desc: true }],
+    select: (r) => {
+      const d = r as { users?: User[]; total?: number };
+      return { rows: d.users ?? [], total: d.total ?? 0 };
+    },
+    buildPath: ({ offset, perPage }) => {
+      const qs = new URLSearchParams({
+        limit: String(perPage),
+        offset: String(offset),
+      });
+      if (params.search) qs.set("search", params.search);
+      if (params.role) qs.set("role", params.role);
+      return `/api/v1/admin/users?${qs}`;
+    },
   });
 
   // Invitations table
@@ -345,42 +352,6 @@ export function UsersPage({ scope }: UsersPageProps) {
     getRowId: (row) => row.id,
     queryKeys: { page: "invPage", perPage: "invPerPage", sort: "invSort", filters: "invFilters", joinOperator: "invJoin" },
   });
-
-  // Fetch users
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchUsers() {
-      setLoading(true);
-      setError(null);
-      try {
-        const qs = new URLSearchParams({
-          limit: String(LIMIT),
-          offset: String(offset),
-        });
-        if (params.search) qs.set("search", params.search);
-        if (params.role) qs.set("role", params.role);
-
-        const res = await fetch(`${apiUrl}/api/v1/admin/users?${qs}`, { credentials });
-        if (!res.ok) {
-          if (!cancelled) setError({ message: `HTTP ${res.status}`, status: res.status });
-          return;
-        }
-        const data = await res.json();
-        if (!cancelled) {
-          setUsers(data.users ?? []);
-          setTotal(data.total ?? 0);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError({ message: err instanceof Error ? err.message : "Failed to load users" });
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    fetchUsers();
-    return () => { cancelled = true; };
-  }, [apiUrl, offset, params.search, params.role, credentials]);
 
   // Fetch invitations via Better Auth's `listInvitations` (the
   // legacy /api/v1/admin/users/invitations endpoint was removed). Scoped
@@ -763,26 +734,23 @@ export function UsersPage({ scope }: UsersPageProps) {
           onRetry={() => setRevokeError(null)}
         />
 
-        <AdminContentWrapper
+        <ServerDataTable
+          table={usersTable}
           loading={loading}
           error={error}
-          feature="Users"
-          onRetry={() => setParams({ page: 1 })}
-          loadingMessage="Loading users..."
-          emptyIcon={Users}
-          emptyTitle="No users yet"
-          emptyDescription="Invite your first team member to get started"
-          emptyAction={{ label: "Invite user", onClick: () => { resetInviteDialog(); setInviteOpen(true); } }}
           isEmpty={users.length === 0}
+          onRetry={refetchUsers}
+          feature="Users"
+          loadingMessage="Loading users..."
+          emptyState={{
+            icon: Users,
+            title: "No users yet",
+            description: "Invite your first team member to get started",
+            action: { label: "Invite user", onClick: () => { resetInviteDialog(); setInviteOpen(true); } },
+          }}
           hasFilters={!!(params.search || params.role)}
           onClearFilters={() => setParams({ search: "", role: "", page: 1 })}
-        >
-          <DataTable table={usersTable}>
-            <DataTableToolbar table={usersTable}>
-              <DataTableSortList table={usersTable} />
-            </DataTableToolbar>
-          </DataTable>
-        </AdminContentWrapper>
+        />
 
         {/* Pending Invitations */}
         {!invitationsLoading && invitationsError && (

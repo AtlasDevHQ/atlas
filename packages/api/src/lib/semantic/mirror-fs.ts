@@ -24,7 +24,6 @@ export async function atomicWriteFile(filePath: string, content: string): Promis
     await fs.promises.writeFile(tmp, content, "utf-8");
     await fs.promises.rename(tmp, filePath);
   } catch (err) {
-    // Clean up temp file on failure
     try {
       await fs.promises.unlink(tmp);
     } catch {

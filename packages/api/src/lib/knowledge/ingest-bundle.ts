@@ -16,7 +16,7 @@
  *   - every ingest lands `draft` (via the ingest core's review gate);
  *   - promotion happens ONLY through the content-mode publish phases, in the
  *     same transaction (`publish: true` — the "upload & publish" convenience;
- *     callers enforce ADR-0028 §4's upload-only pairing);
+ *     the seam itself rejects `publish` for non-upload sources, ADR-0028 §4);
  *   - the subtractive diff (`archiveAbsent: true` — sync semantics) shares the
  *     ingest transaction, so a sync is all-or-nothing;
  *   - the knowledge mirror is invalidated exactly when the committed write
@@ -50,7 +50,7 @@ import { invalidateKnowledgeMirror } from "./mirror-invalidation";
 
 const log = createLogger("knowledge-ingest-bundle");
 
-/** Module-level content-mode registry — reused for "upload & publish" promotion. */
+/** Module-level content-mode registry — used only for "upload & publish" promotion. */
 const contentModeRegistry = makeService(CONTENT_MODE_TABLES);
 
 export type BundleFormat = ExtractedBundle["format"];
@@ -64,8 +64,8 @@ export interface IngestBundleParams {
   readonly bytes: Uint8Array;
   /**
    * Run the workspace-wide content-mode publish phases in the SAME transaction
-   * ("upload & publish", ADR-0028 §4). Callers enforce the upload-only pairing —
-   * the sync engine never sets this.
+   * ("upload & publish", ADR-0028 §4). The seam rejects this for non-upload
+   * sources (guard below) — the sync engine never sets it.
    */
   readonly publish?: boolean;
   /**
@@ -80,8 +80,7 @@ export interface IngestBundleParams {
 /**
  * The install row vanished (uninstalled/archived) between the caller's
  * pre-check and the write phase — the uninstall × in-flight-ingest race
- * (#4229). The transaction rolled back before any write; `rejected` carries
- * the parse-stage per-file errors observed before the abort.
+ * (#4229). Thrown inside the transaction so it rolls back before any write.
  */
 class InstallGoneError extends Error {
   constructor() {
@@ -92,6 +91,9 @@ class InstallGoneError extends Error {
 
 /** A failed ingest — each `kind` is one caller-facing disposition. */
 export type IngestBundleFailure =
+  /** The uninstall × in-flight-ingest race fired: the transaction rolled back
+   *  before any write. `rejected` carries the parse-stage per-file errors
+   *  observed before the abort. */
   | { readonly kind: "install_gone"; readonly rejected: readonly BundleEntryError[] }
   | { readonly kind: "empty_bundle" }
   | { readonly kind: "bundle_too_large"; readonly bytes: number; readonly maxBundleBytes: number }

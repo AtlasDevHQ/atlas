@@ -104,8 +104,9 @@ export function normTags(value: unknown): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * The shared `knowledge_documents` projection. Every reader selects the same
- * columns in the same order so one row type ({@link KnowledgeDocRow}) fits all;
+ * The shared `knowledge_documents` projection. Every agent-facing reader
+ * (mirror/ToC, search) selects the same columns in the same order so one row
+ * type ({@link KnowledgeDocRow}) fits all;
  * `body` is opt-in (the mirror/export path needs it, search results don't).
  * `alias` is a fixed code-supplied table alias, never user input.
  */

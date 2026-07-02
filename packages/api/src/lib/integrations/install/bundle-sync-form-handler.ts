@@ -35,7 +35,7 @@
 import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
-import type { WorkspaceId } from "@useatlas/types";
+import type { KnowledgeSyncAuthScheme, WorkspaceId } from "@useatlas/types";
 import {
   assertBaseUrlAllowed,
   EgressBlockedError,
@@ -60,8 +60,13 @@ import type { FormBasedInstallHandler, InstallRecord } from "./types";
 export const BUNDLE_SYNC_SLUG = "bundle-sync";
 export const BUNDLE_SYNC_CATALOG_ID = "catalog:bundle-sync";
 
-/** Endpoint auth schemes. `none` = public endpoint, no credential row. */
-export const BUNDLE_SYNC_AUTH_SCHEMES = ["none", "bearer", "basic"] as const;
+/** Endpoint auth schemes — pinned to the wire union (`@useatlas/types`).
+ *  `none` = public endpoint, no credential row. */
+export const BUNDLE_SYNC_AUTH_SCHEMES = [
+  "none",
+  "bearer",
+  "basic",
+] as const satisfies readonly KnowledgeSyncAuthScheme[];
 export type BundleSyncAuthScheme = (typeof BUNDLE_SYNC_AUTH_SCHEMES)[number];
 
 /** Defensive upper bounds — guard against pathological pastes. */

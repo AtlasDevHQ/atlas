@@ -289,8 +289,8 @@ export async function publishWorkspaceDrafts(orgId: string): Promise<PublishWork
     await client.query("COMMIT");
 
     // One promoted count per registry entry — derived, so a newly-registered
-    // surface can never be silently dropped from this result (the fan-out this
-    // replaces omitted `knowledge_documents` when it registered).
+    // surface can never be silently dropped from this result (the hand-listed
+    // fan-out layout this replaces is what let knowledge ship under-reported).
     const entitiesReport = reports.find((r) => r.table === "semantic_entities");
     const result: PublishWorkspaceDraftsResult = {
       promoted: promotedCountsFromReports(CONTENT_MODE_TABLES, reports),

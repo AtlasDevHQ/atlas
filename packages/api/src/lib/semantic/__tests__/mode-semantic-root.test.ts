@@ -48,9 +48,13 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
 // export `sync.ts` reaches.
 let knowledgeMirrorShouldThrow = false;
 let knowledgeMirrorCalls = 0;
+// When set, the mirror parks on this promise — lets a test interleave an
+// invalidation into an in-flight knowledge-only refresh (the stamp race).
+let knowledgeMirrorGate: Promise<void> | null = null;
 mock.module("@atlas/api/lib/knowledge/mirror", () => ({
   mirrorKnowledgeToDisk: async () => {
     knowledgeMirrorCalls++;
+    if (knowledgeMirrorGate) await knowledgeMirrorGate;
     if (knowledgeMirrorShouldThrow) throw new Error("knowledge mirror boom");
     return { collections: 0, documents: 0, failed: 0 };
   },
@@ -111,6 +115,7 @@ beforeEach(() => {
   _resetModeBuildCache();
   knowledgeMirrorShouldThrow = false;
   knowledgeMirrorCalls = 0;
+  knowledgeMirrorGate = null;
   publishedRows = [];
   overlayRows = [];
   mockListEntities.mockClear();
@@ -206,6 +211,29 @@ describe("ensureOrgModeSemanticRoot", () => {
     await ensureOrgModeSemanticRoot("org-1", "published");
     expect(knowledgeMirrorCalls).toBe(2); // knowledge re-mirrored
     expect(mockListEntities).toHaveBeenCalledTimes(1); // entity YAMLs untouched
+  });
+
+  it("a knowledge invalidation firing DURING a knowledge-only refresh keeps the subtree stale", async () => {
+    publishedRows = [row("users")];
+    await ensureOrgModeSemanticRoot("org-1", "published");
+    invalidateOrgKnowledgeSubtree("org-1");
+
+    // Park the refresh mid-mirror, fire another knowledge write, then let it
+    // finish: the stamp advanced, so the raced pass must NOT clear the stale
+    // flag — the next ensure re-mirrors with the post-write rows.
+    let release: () => void;
+    knowledgeMirrorGate = new Promise<void>((r) => { release = r; });
+    const refresh = ensureOrgModeSemanticRoot("org-1", "published");
+    await new Promise((r) => setTimeout(r, 0));
+    invalidateOrgKnowledgeSubtree("org-1");
+    release!();
+    knowledgeMirrorGate = null;
+    await refresh;
+    expect(knowledgeMirrorCalls).toBe(2);
+
+    await ensureOrgModeSemanticRoot("org-1", "published");
+    expect(knowledgeMirrorCalls).toBe(3); // stale survived the raced pass
+    expect(mockListEntities).toHaveBeenCalledTimes(1); // entities never rebuilt
   });
 
   it("rebuilds after invalidateOrgModeRoots", async () => {

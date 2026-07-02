@@ -27,6 +27,8 @@ import { KNOWLEDGE_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/instal
 import { rowToDoc } from "@atlas/api/lib/knowledge/mirror";
 import {
   buildCollectionsQuery,
+  buildCollectionDocumentsQuery,
+  buildDocumentStatusCountsQuery,
   type KnowledgeDocRowWithBody,
 } from "@atlas/api/lib/knowledge/queries";
 import {
@@ -158,12 +160,15 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     expect(links.rows).toEqual([{ target_path: "glossary/replica.md", anchor_text: "glossary" }]);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("serves the admin documents-list + publish-preview projections against the live schema (#4209)", async () => {
-    // These two SELECTs mirror the exact projections the admin surface runs
-    // (`GET /api/v1/admin/knowledge/{slug}/documents` and the knowledge slice
-    // of `/api/v1/admin/publish-preview`). Exercising them here pins every
-    // referenced column name (description, type, tags, to_char(updated_at),
-    // the COALESCE label) against real Postgres — the mocked route tests can't.
+  it("serves the admin documents-list, status-counts, and publish-preview projections against the live schema (#4209)", async () => {
+    // The documents-list + status-counts reads execute the EXACT exported
+    // builders the route runs (`buildCollectionDocumentsQuery` /
+    // `buildDocumentStatusCountsQuery` — the reason they're exported); the
+    // publish-preview SELECT mirrors the knowledge slice of
+    // `/api/v1/admin/publish-preview`. This pins every referenced column name
+    // (description, type, tags, to_char(updated_at), the COALESCE label)
+    // against real Postgres — the mocked route tests can't.
+    const docsQuery = buildCollectionDocumentsQuery(ws, "runbooks");
     const list = await pool.query<{
       id: string;
       path: string;
@@ -173,25 +178,22 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
       tags: unknown;
       status: string;
       updated_at: string | null;
-    }>(
-      `SELECT id,
-              path,
-              title,
-              description,
-              type,
-              tags,
-              status,
-              to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at
-         FROM knowledge_documents
-        WHERE workspace_id = $1 AND collection_id = 'runbooks' AND status <> 'archived'
-        ORDER BY path ASC`,
-      [ws],
-    );
+    }>(docsQuery.text, docsQuery.params);
     // Both freshly-ingested docs are draft, ordered by path.
     expect(list.rows.map((r) => r.path)).toEqual(["glossary/replica.md", "runbooks/eu.md"]);
     expect(list.rows.every((r) => r.status === "draft")).toBe(true);
     expect(list.rows.every((r) => typeof r.updated_at === "string")).toBe(true);
     expect(Array.isArray(list.rows[1]?.tags)).toBe(true);
+
+    const countsQuery = buildDocumentStatusCountsQuery(ws);
+    const counts = await pool.query<{ collection_id: string; status: string; n: number }>(
+      countsQuery.text,
+      countsQuery.params,
+    );
+    const runbookDrafts = counts.rows.find(
+      (r) => r.collection_id === "runbooks" && r.status === "draft",
+    );
+    expect(runbookDrafts?.n).toBe(2);
 
     const preview = await pool.query<{ id: string; label: string; updated_at: unknown }>(
       `SELECT id::text AS id, COALESCE(NULLIF(title, ''), path) AS label, updated_at

@@ -23,6 +23,7 @@ import {
   makeService,
   type ContentModeRegistryService,
 } from "../registry";
+import { promotedCountsFromReports } from "../promoted";
 import type { ContentModeEntry, PromotionReport } from "../port";
 import {
   ExoticReadFilterUnavailableError,
@@ -123,6 +124,25 @@ const _assertPromotedEqualsWire: Equal<
   InferPromotedCounts<typeof CONTENT_MODE_TABLES>
 > = true;
 void _assertPromotedEqualsWire;
+
+describe("promotedCountsFromReports over the REAL registry tuple", () => {
+  it("projects physical-table reports onto the wire keys (incl. the table-alias and promotedKey mappings)", () => {
+    const counts = promotedCountsFromReports(CONTENT_MODE_TABLES, [
+      { table: "workspace_plugins", promoted: 1 },
+      { table: "semantic_entities", promoted: 2, tombstonesApplied: 9 },
+      { table: "prompt_collections", promoted: 3 },
+      { table: "query_suggestions", promoted: 4 },
+      { table: "knowledge_documents", promoted: 5 },
+    ]);
+    expect(counts).toEqual({
+      connections: 1,
+      entities: 2,
+      prompts: 3,
+      starterPrompts: 4,
+      knowledgeDocuments: 5,
+    });
+  });
+});
 
 // Compile-time assertion: makeService returns the right shape.
 const _assertMakeServiceShape: ContentModeRegistryService =

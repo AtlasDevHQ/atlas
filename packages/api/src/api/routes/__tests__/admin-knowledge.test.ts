@@ -49,6 +49,9 @@ let nextId = 1;
 // Transaction SQL captured per test (uninstall cleanup assertions).
 const txSql: string[] = [];
 
+// What the seam's in-transaction install re-check sees. `null` = row gone.
+let TX_INSTALL_STATUS: string | null = "published";
+
 function fakeTxClient() {
   return {
     async query(sql: string, params: unknown[] = []): Promise<{ rows: Record<string, unknown>[] }> {
@@ -70,9 +73,9 @@ function fakeTxClient() {
       }
       if (sql.includes("UPDATE knowledge_documents")) return { rows: [] };
       if (sql.includes("SELECT status") && sql.includes("FROM workspace_plugins")) {
-        // The ingestBundle seam's uninstall × in-flight-ingest re-check (FOR
-        // UPDATE): the route tests run against a live install.
-        return { rows: [{ status: "published" }] };
+        // The ingestBundle seam's uninstall × in-flight-ingest re-check
+        // (FOR UPDATE) — mutable so the race disposition is testable.
+        return { rows: TX_INSTALL_STATUS === null ? [] : [{ status: TX_INSTALL_STATUS }] };
       }
       if (sql.includes("UPDATE workspace_plugins")) return { rows: [] };
       if (sql.includes("DELETE FROM knowledge_links")) return { rows: [] };
@@ -144,7 +147,6 @@ mock.module("@atlas/api/lib/knowledge/sync", () => ({
   getKnowledgeSyncFetchTimeoutMs: () => 60_000,
   DEFAULT_SYNC_FETCH_TIMEOUT_SECONDS: 60,
   SYNC_STATE_UPSERT_SQL: "",
-  SYNC_INSTALL_RECHECK_SQL: "",
   SYNC_CYCLE_INSTALLS_SQL: "",
 }));
 
@@ -177,6 +179,9 @@ mock.module("@atlas/api/lib/integrations/install/bundle-sync-form-handler", () =
   parseBundleSyncConfig: () => ({ ok: true, endpointUrl: "https://kb.example.com/bundle.zip", authScheme: "none" }),
 }));
 
+// Partial mock, justified: this file's import graph reaches only the exports
+// stubbed below; the isolated per-file runner prevents cross-file leaks, and an
+// unmocked export reached later fails loudly as `undefined is not a function`.
 mock.module("@atlas/api/lib/content-mode", () => ({
   CONTENT_MODE_TABLES: [],
   makeService: () => ({
@@ -213,6 +218,7 @@ function ingest(path: string, body: Uint8Array) {
 }
 
 beforeEach(() => {
+  TX_INSTALL_STATUS = "published";
   MAX_DOCS = 100;
   MAX_DOC_BYTES = 100_000;
   MAX_BUNDLE_BYTES = 200_000;
@@ -302,6 +308,17 @@ describe("POST /{collectionSlug}/ingest — guards", () => {
     );
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe("too_many_documents");
+  });
+
+  it("404s (not a bundle error) when the collection was uninstalled mid-upload — the seam's race guard", async () => {
+    // The pre-check sees a live collection; the uninstall lands while the
+    // body streams/parses, and the seam's in-transaction FOR UPDATE re-check
+    // aborts before any write.
+    TX_INSTALL_STATUS = "archived";
+    const res = await ingest("/runbooks/ingest", zipSync({ "a.md": strToU8("# A") }));
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toBe("not_found");
+    expect(store.size).toBe(0);
   });
 
   it("400s with per-file reasons when every file is rejected", async () => {

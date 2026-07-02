@@ -26,7 +26,7 @@ import {
 import { InlineError } from "@/ui/components/admin/compact";
 import { getApiUrl } from "@/lib/api-url";
 import { extractApiError } from "@/ui/lib/extract-api-error";
-import type { KnowledgeCollectionSource } from "@/ui/lib/types";
+import type { KnowledgeCollectionSource, KnowledgeSyncAuthScheme } from "@/ui/lib/types";
 
 /* ────────────────────────────────────────────────────────────────────────
  *  Create / edit collection — the explicit "install" flow for the Knowledge
@@ -54,12 +54,8 @@ const SLUG_MAX = 128;
 
 /** The wire source discriminator (`@useatlas/types`) — no local re-declaration. */
 type SourceKind = KnowledgeCollectionSource;
-/**
- * Mirrors the server's `BUNDLE_SYNC_AUTH_SCHEMES` tuple (bundle-sync-form-handler)
- * and the seed's `config_schema` options — the web is a pure HTTP client, so
- * the trio stays in sync by convention, not import.
- */
-type AuthScheme = "none" | "bearer" | "basic";
+/** The wire auth-scheme union (`@useatlas/types`) — no local re-declaration. */
+type AuthScheme = KnowledgeSyncAuthScheme;
 
 /** Pre-fill for edit mode — the non-secret sync settings of an existing
  *  bundle-sync collection (the secret is never echoed, so it starts blank). */

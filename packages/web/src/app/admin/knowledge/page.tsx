@@ -188,8 +188,8 @@ export default function KnowledgePage() {
 
       {/* Edit sync settings — re-drives the install pipeline with the existing
           slug: the container config upserts in place and the credential rotates
-          without touching the collection's documents (the pre-edit alternative
-          was uninstall-and-recreate, which archives and un-publishes them all). */}
+          without touching the collection's documents (the only other path is
+          uninstall-and-recreate, which archives and un-publishes them all). */}
       <CreateCollectionDialog
         open={editTarget !== null}
         onOpenChange={(next) => !next && setEditTarget(null)}
@@ -366,15 +366,20 @@ function CollectionCard({
                 <RefreshCw className={`mr-1 size-3.5 ${syncing ? "animate-spin" : ""}`} />
                 {syncing ? "Syncing…" : "Sync now"}
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={onEdit}
-                aria-label={`Edit sync settings for ${collection.slug}`}
-                data-testid={`edit-${collection.slug}`}
-              >
-                <Pencil className="size-3.5" />
-              </Button>
+              {collection.authScheme !== undefined ? (
+                // Hidden during a web-before-API deploy-overlap window (an
+                // older API omits authScheme): pre-filling "None" there would
+                // delete the stored credential on a routine save.
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={onEdit}
+                  aria-label={`Edit sync settings for ${collection.slug}`}
+                  data-testid={`edit-${collection.slug}`}
+                >
+                  <Pencil className="size-3.5" />
+                </Button>
+              ) : null}
             </>
           ) : (
             <Button variant="outline" size="sm" onClick={onUpload} data-testid={`upload-${collection.slug}`}>

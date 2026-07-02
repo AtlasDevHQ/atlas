@@ -23,7 +23,7 @@ import { Button } from "@/components/ui/button";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
-import { contentSurface } from "@/ui/lib/content-surfaces";
+import { contentSurface, type ContentSurfaceKey } from "@/ui/lib/content-surfaces";
 import type { ProfileError } from "@/ui/lib/types";
 import { relativeOrNull } from "./pending-changes-pill";
 
@@ -346,7 +346,7 @@ function totalRows(data: PublishPreviewData): number {
 }
 
 /** Build one section from a display-surface descriptor, skipping empty. */
-function surfaceSection(key: string, rows: ReadonlyArray<SectionRow>): Section | null {
+function surfaceSection(key: ContentSurfaceKey, rows: ReadonlyArray<SectionRow>): Section | null {
   if (rows.length === 0) return null;
   const surface = contentSurface(key);
   return { key: surface.key, title: surface.title, icon: surface.icon, rows };

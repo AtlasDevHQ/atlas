@@ -304,7 +304,7 @@ adminPublish.openapi(publishRoute, async (c) =>
 
       // One promoted count per registry entry — derived, so a newly-registered
       // surface is reported here without a hand-edit (#81 arch review: the
-      // pre-derivation fan-out silently omitted knowledge documents).
+      // hand-listed fan-out layout is what let knowledge ship under-reported).
       promoted = promotedCountsFromReports(CONTENT_MODE_TABLES, tx.reports);
       deletedEntityCount =
         tx.reports.find((r) => r.table === "semantic_entities")?.tombstonesApplied ?? 0;

@@ -23,6 +23,7 @@ let MAX_BUNDLE_BYTES = 200_000;
 let store: Map<string, Record<string, unknown>>;
 let publishRan = false;
 let txActive = false;
+let lastTxVerb: string | null = null;
 let publishRanInTx = false;
 let archiveRanInTx = false;
 let archivedPathsParam: unknown = null;
@@ -43,6 +44,7 @@ function fakeTxClient() {
       }
       if (sql === "COMMIT" || sql === "ROLLBACK") {
         txActive = false;
+        lastTxVerb = sql;
         return { rows: [] };
       }
       if (sql.includes("SELECT id, status, body") && sql.includes("knowledge_documents")) {
@@ -94,6 +96,9 @@ mock.module("@atlas/api/lib/logger", () => {
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
 });
 
+// Partial mock, justified: this file's import graph reaches only the exports
+// stubbed below; the isolated per-file runner prevents cross-file leaks, and an
+// unmocked export reached later fails loudly as `undefined is not a function`.
 mock.module("@atlas/api/lib/content-mode", () => ({
   CONTENT_MODE_TABLES: [],
   makeService: () => ({
@@ -147,6 +152,7 @@ beforeEach(() => {
   store = new Map();
   publishRan = false;
   txActive = false;
+  lastTxVerb = null;
   publishRanInTx = false;
   archiveRanInTx = false;
   archivedPathsParam = null;
@@ -244,7 +250,7 @@ describe("the committed write", () => {
     expect(outcome.kind).toBe("install_gone");
     expect(store.size).toBe(0);
     expect(invalidations).toEqual([]);
-    expect(txActive).toBe(false); // ROLLBACK ran — the tx never committed a write
+    expect(lastTxVerb).toBe("ROLLBACK"); // the abort rolled back — never committed
   });
 
   it("an all-unchanged ingest skips mirror invalidation (no churn, no publish)", async () => {

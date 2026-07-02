@@ -13,7 +13,7 @@
  * The diff:
  *
  *   - unchanged docs no-op, changed published docs demote to `draft`, new docs
- *     insert as `draft` (`ingestBundleIntoCollection`, source `bundle-sync`);
+ *     insert as `draft` (`ingestBundle` → `ingestBundleIntoCollection`, source `bundle-sync`);
  *   - paths ABSENT from the fetched bundle are ARCHIVED — never hard-deleted
  *     (the same posture as uninstall, ADR-0028 §5). Files the bundle DID carry
  *     but that failed extraction/parsing (oversize, malformed frontmatter)
@@ -380,7 +380,7 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
       return {
         kind: "error",
         error: "The collection was uninstalled while the sync was running — no changes were applied.",
-        rejected: [],
+        rejected: outcome.rejected,
       };
     case "empty_bundle":
       return {

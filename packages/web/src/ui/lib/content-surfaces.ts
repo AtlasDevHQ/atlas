@@ -94,17 +94,22 @@ export const CONTENT_SURFACES = [
 ] as const satisfies ReadonlyArray<ContentSurfaceDescriptor>;
 
 // ---------------------------------------------------------------------------
-// Compile-time claim check: every ModeDraftCounts key belongs to exactly one
-// display surface. A new wire key that no descriptor claims fails the first
-// assertion; a typo'd countKey fails the descriptor's `satisfies` above.
+// Compile-time claim check: every ModeDraftCounts key is claimed by AT LEAST
+// one display surface (a new wire key no descriptor claims fails the
+// assertion; a typo'd countKey fails the descriptor's `satisfies` above).
+// Uniqueness of the claim is by convention — a double-claimed key would
+// double-display its count.
 // ---------------------------------------------------------------------------
 type ClaimedKey = (typeof CONTENT_SURFACES)[number]["countKeys"][number];
 type _AllCountKeysClaimed = [keyof ModeDraftCounts] extends [ClaimedKey] ? true : never;
 const _allCountKeysClaimed: _AllCountKeysClaimed = true;
 void _allCountKeysClaimed;
 
+/** Display-surface key union — makes lookups total at compile time. */
+export type ContentSurfaceKey = (typeof CONTENT_SURFACES)[number]["key"];
+
 /** Look up a display surface by key (publish-modal section metadata). */
-export function contentSurface(key: string): ContentSurfaceDescriptor {
+export function contentSurface(key: ContentSurfaceKey): ContentSurfaceDescriptor {
   const found = (CONTENT_SURFACES as ReadonlyArray<ContentSurfaceDescriptor>).find(
     (s) => s.key === key,
   );

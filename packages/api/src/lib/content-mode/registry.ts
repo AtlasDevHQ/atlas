@@ -165,6 +165,10 @@ export function makeService(
   const byLookup = new Map<string, ContentModeEntry>();
   const segmentKeys: string[] = [];
   const seenSegments = new Set<string>();
+  // Promoted wire keys must be unique too: the `Equal<>` type gate can't catch
+  // a collision ({a: number} & {a: number} collapses), and the failure mode in
+  // `promotedCountsFromReports` would be silent last-write-wins.
+  const seenPromotedKeys = new Set<string>();
 
   for (const entry of tables) {
     // Registration lookup: entries are findable by their `key`, and
@@ -183,6 +187,14 @@ export function makeService(
       }
       byLookup.set(entry.table, entry);
     }
+
+    const promotedKey = entry.kind === "simple" ? entry.key : entry.promotedKey;
+    if (seenPromotedKeys.has(promotedKey)) {
+      throw new Error(
+        `ContentModeRegistry: duplicate promoted wire key "${promotedKey}" in tables tuple`,
+      );
+    }
+    seenPromotedKeys.add(promotedKey);
 
     // Segment-key collection: simple entries contribute their `key`;
     // exotic entries contribute every `countSegments[].key`.

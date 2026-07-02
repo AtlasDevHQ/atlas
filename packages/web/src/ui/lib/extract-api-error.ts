@@ -23,13 +23,18 @@ export function apiErrorFromBody(body: unknown, status: number, fallback: string
   let message = `${fallback} (${status}).`;
   if (body !== null && typeof body === "object") {
     const b = body as {
-      message?: string;
-      fieldErrors?: Record<string, string[] | undefined>;
-      requestId?: string;
+      message?: unknown;
+      fieldErrors?: unknown;
+      requestId?: unknown;
     };
-    const firstField = b.fieldErrors ? Object.keys(b.fieldErrors)[0] : undefined;
-    const firstErr = firstField ? b.fieldErrors?.[firstField]?.[0] : undefined;
-    if (firstErr) message = firstErr;
+    const fieldErrors =
+      b.fieldErrors !== null && typeof b.fieldErrors === "object" && !Array.isArray(b.fieldErrors)
+        ? (b.fieldErrors as Record<string, unknown>)
+        : undefined;
+    const firstField = fieldErrors ? Object.keys(fieldErrors)[0] : undefined;
+    const firstFieldErrs = firstField !== undefined ? fieldErrors?.[firstField] : undefined;
+    const firstErr = Array.isArray(firstFieldErrs) ? firstFieldErrs[0] : undefined;
+    if (typeof firstErr === "string" && firstErr !== "") message = firstErr;
     else if (typeof b.message === "string" && b.message !== "") message = b.message;
     if (typeof b.requestId === "string" && b.requestId !== "") {
       message = `${message} (ref: ${b.requestId.slice(0, 8)})`;

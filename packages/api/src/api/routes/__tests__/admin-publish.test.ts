@@ -73,7 +73,9 @@ mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: { mode: { publish: "mode.publish" } },
 }));
 
-// The route projects reports → wire counts via the REAL
+// Partial mock, justified: this file's import graph reaches only the exports
+// stubbed below (isolated runner; an unmocked export reached later fails
+// loudly). The route projects reports → wire counts via the REAL
 // `promotedCountsFromReports` (deep-path import stays unmocked) over a mini
 // registry tuple that mirrors the production key↔table mapping — so these
 // tests pin the actual projection, not a re-implementation of it.

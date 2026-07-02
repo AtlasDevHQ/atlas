@@ -2,9 +2,9 @@
  * Shared internal-DB transaction helper — the one home for the
  * BEGIN/COMMIT/ROLLBACK + `release(err)` discipline that was previously
  * copy-pasted into `admin-knowledge.ts`, `knowledge/sync.ts`, and
- * `admin-publish.ts` (each carrying a "local copy because lib/ must not import
- * from api/routes/" comment — the seam belongs in `lib/db`, importable from
- * both sides).
+ * `admin-publish.ts` (one of which carried a "local copy because lib/ must not
+ * import from api/routes/" comment — the seam belongs in `lib/db`, importable
+ * from both sides).
  *
  * A failed ROLLBACK destroys the client (`release(err)`) so a dirty connection
  * can never poison the next borrower.

@@ -3,8 +3,7 @@
  *
  * Three agent-facing surfaces declare it — the explore tool description, the
  * system-prompt collection ToC preamble, and the searchKnowledge description —
- * previously with three hand-written variants (one of which claimed the
- * framing lived in exactly one place). The WORDING is now one exported
+ * previously with three hand-written variants. The WORDING is one exported
  * constant; each surface adds its own surrounding grammar. Zero-dependency
  * leaf module so the tools layer can import it without pulling the knowledge
  * graph.

@@ -37,6 +37,12 @@ import {
   parsePlanTier,
 } from "@atlas/api/lib/integrations/install/plan-rank";
 import { isRoutingIdUniqueViolation } from "@atlas/api/lib/integrations/install/routing-id-conflict";
+import {
+  assertSaasEncryptionKeyset,
+  deriveSecretLabel,
+  persistInstallRecord,
+} from "@atlas/api/lib/integrations/install/persist-form-install";
+import type { WorkspaceId } from "@useatlas/types";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
 import {
   ErrorSchema,
@@ -165,6 +171,12 @@ interface CatalogRow extends Record<string, unknown> {
   config_schema: unknown;
   min_plan: string;
   enabled: boolean;
+  // 0092 / #2739 — three-pillar taxonomy, NOT NULL in the DB. Typed here
+  // because the install route narrows it (`chat`/`action` only) before
+  // handing the persist to the form-install spine (#4186). This is still
+  // an unvalidated `SELECT *` cast, so the narrow fails closed on any
+  // unexpected value rather than trusting the type.
+  pillar: string;
   // #3301 — false rows are hidden from the marketplace on SaaS deploys
   // (e.g. DuckDB, which is file-path based and not multi-tenant safe).
   // `NOT NULL DEFAULT true` in the DB; the filter still treats only an
@@ -956,6 +968,40 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
         }, 400);
       }
 
+      // #4186 — same routing decision, second axis: the marketplace persists
+      // through the form-install spine, whose singleton upsert serves ONLY the
+      // chat/action pillars (the `workspace_plugins_singleton` partial unique
+      // index). `form`-model rows on other pillars are differently shaped
+      // installs — datasource rows are multi-instance drafts owned by the
+      // ADR-0013 bridge under /admin/connections, knowledge rows are ingested
+      // via their own admin flow — so refuse them here exactly like the
+      // install-model gate above. Fail-closed: an unexpected/missing pillar
+      // (drifted row) is refused, never coerced to 'action'.
+      const catalogPillar =
+        catalogEntry.pillar === "chat" || catalogEntry.pillar === "action"
+          ? catalogEntry.pillar
+          : null;
+      if (catalogPillar === null) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.install,
+          targetType: "plugin",
+          targetId: body.catalogId,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: body.catalogId,
+            pluginSlug: catalogEntry.slug,
+            orgId,
+            pillarRejected: catalogEntry.pillar ?? "unknown",
+          },
+        });
+        return c.json({
+          error: "pillar_unsupported",
+          message: `"${catalogEntry.slug}" is a ${catalogEntry.pillar ?? "unknown"}-pillar plugin and cannot be installed through the marketplace — use its dedicated flow (datasources connect under Admin → Connections).`,
+          requestId,
+        }, 400);
+      }
+
       // #3301 / #4001 defense-in-depth — the /available listing hides
       // `saas_eligible = false` rows on SaaS, but the install path must also
       // refuse them server-side: a workspace admin who already knows the
@@ -1055,6 +1101,36 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
           requestId,
         }, 422);
       }
+      // #4186 — spine step 1: the SaaS fail-closed keyset gate.
+      // `encryptSecretFields` degrades to plaintext passthrough when no
+      // keyset is configured (dev convenience); on SaaS that would persist
+      // the customer's credential in the clear. Same per-call refusal every
+      // form-install handler runs via `persistFormInstall`. Sync throw, so a
+      // plain try/catch keeps the audit + response shaping here in the route.
+      try {
+        assertSaasEncryptionKeyset(log, orgId as WorkspaceId, deriveSecretLabel(installSchema));
+      } catch (err) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.install,
+          targetType: "plugin",
+          targetId: id,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: body.catalogId,
+            pluginSlug: catalogEntry.slug,
+            orgId,
+            keysetUnavailable: true,
+          },
+        });
+        return c.json({
+          error: "encryption_unavailable",
+          message: err instanceof Error
+            ? err.message
+            : "Encryption keyset unavailable — refusing to persist plaintext credentials.",
+          requestId,
+        }, 500);
+      }
       let encryptedConfig: Record<string, unknown>;
       try {
         encryptedConfig = encryptSecretFields(body.config ?? {}, installSchema);
@@ -1089,15 +1165,34 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
           requestId,
         }, 500);
       }
-      const rows = yield* queryEffect<WorkspacePluginRow>(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, installed_by)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING *, (SELECT name FROM plugin_catalog WHERE id = $3) AS name,
-                     (SELECT slug FROM plugin_catalog WHERE id = $3) AS slug,
-                     (SELECT type FROM plugin_catalog WHERE id = $3) AS type,
-                     (SELECT description FROM plugin_catalog WHERE id = $3) AS description`,
-        [id, orgId, body.catalogId, JSON.stringify(encryptedConfig), userId],
-      ).pipe(Effect.tapError((err) => Effect.sync(() => {
+      // #4186 — spine steps 3+4: the canonical post-0092 singleton upsert
+      // (explicit `install_id` + `pillar`, partial-index conflict target,
+      // returned-id invariant) + the unconditional lazy-loader evict, via
+      // `persistInstallRecord` — the same tested artifact every form/OAuth
+      // install handler persists through. The pre-#4186 hand-rolled INSERT
+      // here omitted `install_id`/`pillar` (both NOT NULL post-0096) and
+      // skipped the evict, so a re-install kept serving a stale cached
+      // PluginLike. Entered at `persistInstallRecord` rather than
+      // `persistFormInstall` because platform-admin-CRUD catalog rows carry
+      // a bare-UUID id, not the seeder's `catalog:<slug>` (so the slug-
+      // derived FK would miss); encryption ran above with the route's own
+      // F-42 audit shaping. On a conflict (TOCTOU race past the 409 check)
+      // the upsert returns the EXISTING row's id, which is what we audit
+      // and respond with.
+      const persistedId = yield* Effect.tryPromise({
+        try: () =>
+          persistInstallRecord({
+            workspaceId: orgId as WorkspaceId,
+            catalogId: body.catalogId,
+            displayName: catalogEntry.name,
+            log,
+            config: encryptedConfig,
+            newId: () => id,
+            pillar: catalogPillar,
+            installedBy: userId,
+          }),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(Effect.tapError((err) => Effect.sync(() => {
         logAdminAction({
           actionType: ADMIN_ACTIONS.plugin.install,
           targetType: "plugin",
@@ -1113,13 +1208,23 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
         });
       })));
 
+      // Fetch the persisted row + joined catalog fields for the response —
+      // the spine's upsert only RETURNs the id.
+      const rows = yield* queryEffect<WorkspacePluginRow>(
+        `SELECT wp.*, pc.name, pc.slug, pc.type, pc.description
+           FROM workspace_plugins wp
+           JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+          WHERE wp.id = $1 AND wp.workspace_id = $2`,
+        [persistedId, orgId],
+      );
+
       if (rows.length === 0) {
         return c.json({ error: "internal_error", message: "Failed to install plugin — no row returned.", requestId }, 500);
       }
       logAdminAction({
         actionType: ADMIN_ACTIONS.plugin.install,
         targetType: "plugin",
-        targetId: id,
+        targetId: persistedId,
         scope: "workspace",
         metadata: {
           pluginId: body.catalogId,
@@ -1127,8 +1232,8 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
           orgId,
         },
       });
-      log.info({ orgId, catalogId: body.catalogId, installationId: id }, "Plugin installed in workspace");
-      // F-42: the RETURNING clause echoes back the encrypted `config` blob.
+      log.info({ orgId, catalogId: body.catalogId, installationId: persistedId }, "Plugin installed in workspace");
+      // F-42: the row fetch echoes back the encrypted `config` blob.
       // Mask before returning — consistent with GET /available behavior and
       // prevents a round-tripping UI from re-submitting raw ciphertext.
       const installResponse = installRowToJson(rows[0]!);

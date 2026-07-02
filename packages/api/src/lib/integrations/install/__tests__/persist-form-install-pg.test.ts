@@ -57,7 +57,11 @@ describeIfPg("form-install spine: workspace_plugins upsert against the live sche
       `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
        VALUES
          ('catalog:spine-email', 'Email', 'spine-email', 'integration', 'action', 'form'),
-         ('catalog:spine-chat',  'Chat',  'spine-chat',  'chat',        'chat',   'static-bot')
+         ('catalog:spine-chat',  'Chat',  'spine-chat',  'chat',        'chat',   'static-bot'),
+         -- #4186 marketplace shape: platform-admin CRUD rows carry a bare
+         -- UUID id, NOT the seeder's catalog:<slug> convention.
+         ('5f0f4be2-8a68-4c5e-9f0f-4be28a684c5e', 'Marketplace Form', 'spine-marketplace',
+          'integration', 'action', 'form')
        ON CONFLICT (id) DO NOTHING`,
     );
   }, PG_TEST_TIMEOUT_MS * 2);
@@ -75,21 +79,25 @@ describeIfPg("form-install spine: workspace_plugins upsert against the live sche
     const ws = `ws-spine-${stamp}`;
 
     // Fresh INSERT (config-updating variant) — returns the candidate id.
+    // installed_by ($5) attributes the first installer (#4186).
     const fresh = await pool.query<{ id: string }>(buildFormInstallUpsertSql(true), [
       `spine-a-${stamp}`,
       ws,
       "catalog:spine-email",
       JSON.stringify({ host: "smtp.example.com" }),
+      "admin-first",
     ]);
     expect(fresh.rows[0]?.id).toBe(`spine-a-${stamp}`);
 
     // Re-install (conflict path) — config updates, id stays the
     // existing row's (the returned-id invariant the handlers rely on).
+    // A different acting user must NOT overwrite installed_by.
     const conflict = await pool.query<{ id: string }>(buildFormInstallUpsertSql(true), [
       `spine-b-${stamp}`,
       ws,
       "catalog:spine-email",
       JSON.stringify({ host: "smtp2.example.com" }),
+      "admin-second",
     ]);
     expect(conflict.rows[0]?.id).toBe(`spine-a-${stamp}`);
 
@@ -99,6 +107,7 @@ describeIfPg("form-install spine: workspace_plugins upsert against the live sche
       ws,
       "catalog:spine-email",
       JSON.stringify({}),
+      null,
     ]);
     expect(stub.rows[0]?.id).toBe(`spine-a-${stamp}`);
 
@@ -108,8 +117,9 @@ describeIfPg("form-install spine: workspace_plugins upsert against the live sche
       config: { host?: string };
       enabled: boolean;
       status: string;
+      installed_by: string | null;
     }>(
-      `SELECT install_id, pillar, config, enabled, status
+      `SELECT install_id, pillar, config, enabled, status, installed_by
          FROM workspace_plugins WHERE workspace_id = $1`,
       [ws],
     );
@@ -120,6 +130,54 @@ describeIfPg("form-install spine: workspace_plugins upsert against the live sche
     expect(rows[0]?.config.host).toBe("smtp2.example.com");
     expect(rows[0]?.enabled).toBe(true);
     expect(rows[0]?.status).toBe("published");
+    // installed_by tracks the FIRST installer — never rewritten on conflict.
+    expect(rows[0]?.installed_by).toBe("admin-first");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("marketplace path (#4186): bare-UUID catalog id + installed_by attribution against the live schema", async () => {
+    // The marketplace POST /install persists through this exact builder via
+    // persistInstallRecord — with the FULL plugin_catalog.id (bare UUID for
+    // CRUD-created rows) and the authenticated admin as installed_by. The
+    // pre-#4186 route hand-rolled an INSERT without install_id/pillar, which
+    // 23502s against the post-0096 schema (both NOT NULL, filler trigger
+    // dropped) — this pins the replacement shape end-to-end.
+    const stamp = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-mp-${stamp}`;
+    const catalogId = "5f0f4be2-8a68-4c5e-9f0f-4be28a684c5e";
+
+    const fresh = await pool.query<{ id: string }>(buildFormInstallUpsertSql(true), [
+      `mp-a-${stamp}`,
+      ws,
+      catalogId,
+      JSON.stringify({ apiKey: "enc:v1:aaaa:bbbb:cccc" }),
+      "admin-mp-1",
+    ]);
+    expect(fresh.rows[0]?.id).toBe(`mp-a-${stamp}`);
+
+    // Race-path re-install (a second admin slipping past the route's 409
+    // pre-check): existing id returned, installed_by attribution preserved.
+    const conflict = await pool.query<{ id: string }>(buildFormInstallUpsertSql(true), [
+      `mp-b-${stamp}`,
+      ws,
+      catalogId,
+      JSON.stringify({ apiKey: "enc:v1:dddd:eeee:ffff" }),
+      "admin-mp-2",
+    ]);
+    expect(conflict.rows[0]?.id).toBe(`mp-a-${stamp}`);
+
+    const { rows } = await pool.query<{
+      install_id: string;
+      pillar: string;
+      installed_by: string | null;
+    }>(
+      `SELECT install_id, pillar, installed_by
+         FROM workspace_plugins WHERE workspace_id = $1 AND catalog_id = $2`,
+      [ws, catalogId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.install_id).toBe(`mp-a-${stamp}`);
+    expect(rows[0]?.pillar).toBe("action");
+    expect(rows[0]?.installed_by).toBe("admin-mp-1");
   }, PG_TEST_TIMEOUT_MS);
 
   it("chat pillar variant plans + executes with the same singleton semantics", async () => {
@@ -135,6 +193,7 @@ describeIfPg("form-install spine: workspace_plugins upsert against the live sche
       ws,
       "catalog:spine-chat",
       JSON.stringify({ chat_id: stamp }),
+      null,
     ]);
     expect(fresh.rows[0]?.id).toBe(`chat-a-${stamp}`);
 
@@ -143,6 +202,7 @@ describeIfPg("form-install spine: workspace_plugins upsert against the live sche
       ws,
       "catalog:spine-chat",
       JSON.stringify({ chat_id: `${stamp}-rotated` }),
+      null,
     ]);
     expect(conflict.rows[0]?.id).toBe(`chat-a-${stamp}`);
 
@@ -184,6 +244,7 @@ describeIfPg("form-install spine: workspace_plugins upsert against the live sche
       ws,
       SALESFORCE_CATALOG_ID,
       JSON.stringify({ instance_url: "https://new.my.salesforce.com" }),
+      null,
     ]);
     expect(upsert.rows[0]?.id).toBe(legacyId);
 

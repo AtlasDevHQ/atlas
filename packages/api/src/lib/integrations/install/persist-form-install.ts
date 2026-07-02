@@ -72,7 +72,11 @@ type InstallLogger = Pick<ReturnType<typeof createLogger>, "error" | "warn">;
  *
  * `installed_at` is NOT bumped on conflict (matches the Slack OAuth
  * handler) — the column tracks the first install, not the most recent
- * edit.
+ * edit. `installed_by` ($5, nullable) follows the same rule: it
+ * attributes the FIRST installer and is never rewritten on a
+ * re-install. The form handlers have no acting-user id at their seam
+ * and pass null; the marketplace `/install` route (#4186) passes the
+ * authenticated admin's id.
  *
  * Exported so the real-Postgres smoke executes this exact string
  * against the live schema — the drift class that broke the pre-spine
@@ -90,8 +94,8 @@ export function buildFormInstallUpsertSql(
                enabled = true`
     : `SET enabled = true`;
   return `INSERT INTO workspace_plugins
-           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $1, '${pillar}', $4::jsonb, true, NOW())
+           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at, installed_by)
+         VALUES ($1, $2, $3, $1, '${pillar}', $4::jsonb, true, NOW(), $5)
          ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
          DO UPDATE
            ${conflictSet}
@@ -192,6 +196,14 @@ export interface PersistInstallRecordParams {
   readonly updateConfigOnConflict?: boolean;
   /** Default `'action'` — see {@link buildFormInstallUpsertSql}. */
   readonly pillar?: "chat" | "action";
+  /**
+   * Acting user attributed as `installed_by` (first install only —
+   * never rewritten on conflict, mirroring `installed_at`). Default
+   * `null`: the form/OAuth handlers run below the auth seam and have
+   * no user id; the marketplace `/install` route passes the
+   * authenticated admin's id (#4186).
+   */
+  readonly installedBy?: string | null;
   /** Override for the persist-failure log line. */
   readonly persistFailureMessage?: string;
   /**
@@ -213,7 +225,11 @@ export interface PersistInstallRecordParams {
  * Extracted from {@link persistFormInstall} (#3362 review) so the four
  * OAuth handlers (GitHub App, GitHub single-tenant, Salesforce, Jira)
  * stop carrying their own copies of the upsert + invariant — the drift
- * class that produced #3357 in the first place.
+ * class that produced #3357 in the first place. The marketplace
+ * `POST /install` route (#4186) is the third consumer: it takes the
+ * full `plugin_catalog.id` (which for platform-admin-CRUD rows is a
+ * bare UUID, NOT `catalog:<slug>`), so it enters here rather than
+ * through {@link persistFormInstall}'s slug-derived FK.
  *
  * The evict is unconditional: a re-install that rotates credentials
  * must never keep serving a stale cached PluginLike built from the
@@ -231,6 +247,7 @@ export async function persistInstallRecord(params: PersistInstallRecordParams): 
     newId = () => crypto.randomUUID(),
     updateConfigOnConflict = true,
     pillar = "action",
+    installedBy = null,
     persistFailureMessage = `Failed to persist ${displayName} install record — aborting install`,
     failureLogFields = {},
   } = params;
@@ -240,7 +257,7 @@ export async function persistInstallRecord(params: PersistInstallRecordParams): 
   try {
     const rows = await internalQuery<{ id: string }>(
       buildFormInstallUpsertSql(updateConfigOnConflict, pillar),
-      [candidateId, workspaceId, catalogId, JSON.stringify(config)],
+      [candidateId, workspaceId, catalogId, JSON.stringify(config), installedBy],
     );
     const returned = rows[0]?.id;
     if (typeof returned !== "string" || returned.length === 0) {
@@ -394,8 +411,14 @@ export async function persistFormInstall(
   return { id: persistedId, workspaceId, catalogId: catalogSlug };
 }
 
-/** The `secret: true` field keys of a parsed schema — the gate-log breadcrumb. */
-function deriveSecretLabel(schema: ConfigSchema | undefined): string {
+/**
+ * The `secret: true` field keys of a parsed schema — the gate-log
+ * breadcrumb for {@link assertSaasEncryptionKeyset}. Exported for
+ * callers that run the keyset gate themselves because their persist
+ * enters at {@link persistInstallRecord} (the marketplace `/install`
+ * route, #4186).
+ */
+export function deriveSecretLabel(schema: ConfigSchema | undefined): string {
   if (schema?.state === "parsed") {
     const keys = schema.fields.filter((f) => f.secret === true).map((f) => f.key);
     if (keys.length > 0) return keys.join("/");

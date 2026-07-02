@@ -7,7 +7,9 @@
  * it rides in the pane chrome, not the file body.
  */
 
-const DOC_LINES: ReadonlyArray<{ text: string; cls?: string }> = [
+type DocLine = { readonly text: string; readonly cls?: string };
+
+const DOC_LINES: ReadonlyArray<DocLine> = [
   { text: "---", cls: "text-zinc-500" },
   { text: "type: concept", cls: "text-zinc-300" },
   { text: "title: What counts as churn", cls: "text-zinc-300" },

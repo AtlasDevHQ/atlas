@@ -41,6 +41,8 @@ import {
   assertSaasEncryptionKeyset,
   deriveSecretLabel,
   persistInstallRecord,
+  EncryptionKeysetUnavailableError,
+  MARKETPLACE_INSTALL_READBACK_SQL,
 } from "@atlas/api/lib/integrations/install/persist-form-install";
 import type { WorkspaceId } from "@useatlas/types";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
@@ -173,10 +175,12 @@ interface CatalogRow extends Record<string, unknown> {
   enabled: boolean;
   // 0092 / #2739 — three-pillar taxonomy, NOT NULL in the DB. Typed here
   // because the install route narrows it (`chat`/`action` only) before
-  // handing the persist to the form-install spine (#4186). This is still
-  // an unvalidated `SELECT *` cast, so the narrow fails closed on any
-  // unexpected value rather than trusting the type.
-  pillar: string;
+  // handing the persist to the form-install spine (#4186). Declared
+  // optional+nullable ON PURPOSE: this is an unvalidated `SELECT *` cast,
+  // so the type must not promise more than the driver does — the install
+  // route's narrow fails closed on any missing/unexpected value rather
+  // than trusting the type (a drifted row is refused, never coerced).
+  pillar?: string | null;
   // #3301 — false rows are hidden from the marketplace on SaaS deploys
   // (e.g. DuckDB, which is file-path based and not multi-tenant safe).
   // `NOT NULL DEFAULT true` in the DB; the filter still treats only an
@@ -1110,6 +1114,11 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
       try {
         assertSaasEncryptionKeyset(log, orgId as WorkspaceId, deriveSecretLabel(installSchema));
       } catch (err) {
+        // Only the gate's own refusal is shaped here; anything else (e.g.
+        // a malformed-keyset parse error out of getEncryptionKeyset)
+        // rethrows to runEffect's generic 500 mapper rather than being
+        // mislabeled "keyset unavailable" with its raw message echoed.
+        if (!(err instanceof EncryptionKeysetUnavailableError)) throw err;
         logAdminAction({
           actionType: ADMIN_ACTIONS.plugin.install,
           targetType: "plugin",
@@ -1125,9 +1134,7 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
         });
         return c.json({
           error: "encryption_unavailable",
-          message: err instanceof Error
-            ? err.message
-            : "Encryption keyset unavailable — refusing to persist plaintext credentials.",
+          message: err.message,
           requestId,
         }, 500);
       }
@@ -1170,9 +1177,11 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
       // returned-id invariant) + the unconditional lazy-loader evict, via
       // `persistInstallRecord` — the same tested artifact every form/OAuth
       // install handler persists through. The pre-#4186 hand-rolled INSERT
-      // here omitted `install_id`/`pillar` (both NOT NULL post-0096) and
-      // skipped the evict, so a re-install kept serving a stale cached
-      // PluginLike. Entered at `persistInstallRecord` rather than
+      // here omitted `install_id`/`pillar` (both NOT NULL since 0092; the
+      // filler trigger that papered over the omission was dropped by 0096,
+      // so every marketplace install 23502'd against the live schema) and
+      // skipped the evict, so a re-install would keep serving a stale
+      // cached PluginLike. Entered at `persistInstallRecord` rather than
       // `persistFormInstall` because platform-admin-CRUD catalog rows carry
       // a bare-UUID id, not the seeder's `catalog:<slug>` (so the slug-
       // derived FK would miss); encryption ran above with the route's own
@@ -1208,19 +1217,10 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
         });
       })));
 
-      // Fetch the persisted row + joined catalog fields for the response —
-      // the spine's upsert only RETURNs the id.
-      const rows = yield* queryEffect<WorkspacePluginRow>(
-        `SELECT wp.*, pc.name, pc.slug, pc.type, pc.description
-           FROM workspace_plugins wp
-           JOIN plugin_catalog pc ON pc.id = wp.catalog_id
-          WHERE wp.id = $1 AND wp.workspace_id = $2`,
-        [persistedId, orgId],
-      );
-
-      if (rows.length === 0) {
-        return c.json({ error: "internal_error", message: "Failed to install plugin — no row returned.", requestId }, 500);
-      }
+      // The state change is complete here (row persisted, cache evicted) —
+      // audit success NOW, before the response read-back, so a read-back
+      // failure can never leave a completed credential write unaudited
+      // (#4186 review).
       logAdminAction({
         actionType: ADMIN_ACTIONS.plugin.install,
         targetType: "plugin",
@@ -1233,6 +1233,38 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
         },
       });
       log.info({ orgId, catalogId: body.catalogId, installationId: persistedId }, "Plugin installed in workspace");
+
+      // Fetch the persisted row + joined catalog fields for the response —
+      // the spine's upsert only RETURNs the id. Failures past this point
+      // are response-shaping failures of a SUCCEEDED install: log them as
+      // such so the operator doesn't misread the 500 as "nothing happened".
+      const rows = yield* queryEffect<WorkspacePluginRow>(
+        MARKETPLACE_INSTALL_READBACK_SQL,
+        [persistedId, orgId],
+      ).pipe(Effect.tapError((err) => Effect.sync(() => {
+        log.error(
+          {
+            orgId,
+            catalogId: body.catalogId,
+            installationId: persistedId,
+            err: err instanceof Error ? err.message : String(err),
+            requestId,
+          },
+          "Plugin install persisted but the response read-back failed — install is live despite the 500",
+        );
+      })));
+
+      if (rows.length === 0) {
+        log.error(
+          { orgId, catalogId: body.catalogId, installationId: persistedId, requestId },
+          "Plugin install persisted but the read-back found no row — removed concurrently (uninstall or catalog delete)?",
+        );
+        return c.json({
+          error: "internal_error",
+          message: "The plugin was installed, but confirming it failed — it may have been removed concurrently. Refresh the installed-plugins list to verify before retrying.",
+          requestId,
+        }, 500);
+      }
       // F-42: the row fetch echoes back the encrypted `config` blob.
       // Mask before returning — consistent with GET /available behavior and
       // prevents a round-tripping UI from re-submitting raw ciphertext.

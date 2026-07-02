@@ -24,7 +24,10 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
-import { buildFormInstallUpsertSql } from "../persist-form-install";
+import {
+  buildFormInstallUpsertSql,
+  MARKETPLACE_INSTALL_READBACK_SQL,
+} from "../persist-form-install";
 import {
   SALESFORCE_CATALOG_ID,
   SALESFORCE_LEGACY_PILLAR_CONVERGE_SQL,
@@ -178,6 +181,16 @@ describeIfPg("form-install spine: workspace_plugins upsert against the live sche
     expect(rows[0]?.install_id).toBe(`mp-a-${stamp}`);
     expect(rows[0]?.pillar).toBe("action");
     expect(rows[0]?.installed_by).toBe("admin-mp-1");
+
+    // The route's response read-back executes VERBATIM too — same
+    // plan-time-drift class the upsert smoke exists for.
+    const readback = await pool.query<{ id: string; name: string; slug: string }>(
+      MARKETPLACE_INSTALL_READBACK_SQL,
+      [`mp-a-${stamp}`, ws],
+    );
+    expect(readback.rows).toHaveLength(1);
+    expect(readback.rows[0]?.name).toBe("Marketplace Form");
+    expect(readback.rows[0]?.slug).toBe("spine-marketplace");
   }, PG_TEST_TIMEOUT_MS);
 
   it("chat pillar variant plans + executes with the same singleton semantics", async () => {

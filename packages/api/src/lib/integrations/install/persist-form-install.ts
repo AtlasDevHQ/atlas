@@ -103,6 +103,41 @@ export function buildFormInstallUpsertSql(
 }
 
 /**
+ * Read-back for the marketplace install response (#4186): the spine's
+ * upsert only RETURNs the id, and the route's 201 body needs the full
+ * `workspace_plugins` row plus the joined catalog display fields. Lives
+ * next to {@link buildFormInstallUpsertSql} for the same reason that
+ * builder is exported: the real-Postgres smoke executes this exact
+ * string against the live schema, closing the plan-time-SQL-drift class
+ * that broke the pre-spine hand-rolled INSERT.
+ */
+export const MARKETPLACE_INSTALL_READBACK_SQL = `SELECT wp.*, pc.name, pc.slug, pc.type, pc.description
+           FROM workspace_plugins wp
+           JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+          WHERE wp.id = $1 AND wp.workspace_id = $2`;
+
+/**
+ * The keyset gate's refusal, as an identifiable class so route-level
+ * catches can narrow to exactly this failure (`instanceof`) and rethrow
+ * anything else — a broad `catch` around the gate would otherwise
+ * mislabel unrelated throws (e.g. `getEncryptionKeyset`'s malformed-
+ * config parse errors) as "keyset unavailable" and echo their raw
+ * messages to the client (#4186 review). Tagged class rather than
+ * `Data.TaggedError` for the same reason as
+ * {@link FormInstallValidationError}: it throws synchronously out
+ * through legacy Hono handlers that catch via `instanceof`.
+ */
+export class EncryptionKeysetUnavailableError extends Error {
+  readonly _tag = "EncryptionKeysetUnavailableError" as const;
+  constructor() {
+    super(
+      "Encryption keyset unavailable in SaaS mode — refusing to persist plaintext credentials. Set ATLAS_ENCRYPTION_KEYS and retry.",
+    );
+    this.name = "EncryptionKeysetUnavailableError";
+  }
+}
+
+/**
  * SaaS keyset gate. `encryptSecret` falls back to plaintext when no key
  * is configured (dev convenience). Boot logs a one-shot warning, but a
  * missed log in SaaS would leak the credential plaintext. Refuse the
@@ -135,9 +170,7 @@ export function assertSaasEncryptionKeyset(
       { workspaceId, ...extraLogFields },
       `Refusing form install: SaaS mode + no encryption keyset (would persist plaintext ${label})`,
     );
-    throw new Error(
-      "Encryption keyset unavailable in SaaS mode — refusing to persist plaintext credentials. Set ATLAS_ENCRYPTION_KEYS and retry.",
-    );
+    throw new EncryptionKeysetUnavailableError();
   }
 }
 
@@ -226,10 +259,10 @@ export interface PersistInstallRecordParams {
  * OAuth handlers (GitHub App, GitHub single-tenant, Salesforce, Jira)
  * stop carrying their own copies of the upsert + invariant — the drift
  * class that produced #3357 in the first place. The marketplace
- * `POST /install` route (#4186) is the third consumer: it takes the
- * full `plugin_catalog.id` (which for platform-admin-CRUD rows is a
- * bare UUID, NOT `catalog:<slug>`), so it enters here rather than
- * through {@link persistFormInstall}'s slug-derived FK.
+ * `POST /install` route (#4186) also persists through here: it takes
+ * the full `plugin_catalog.id` (which for platform-admin-CRUD rows is
+ * a bare UUID, NOT `catalog:<slug>`), so it enters at this seam rather
+ * than through {@link persistFormInstall}'s slug-derived FK.
  *
  * The evict is unconditional: a re-install that rotates credentials
  * must never keep serving a stale cached PluginLike built from the

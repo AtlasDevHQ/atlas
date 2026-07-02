@@ -396,9 +396,12 @@ describe("buildFormInstallUpsertSql", () => {
         );
         expect(sql).toContain("RETURNING id");
         expect(sql).toContain(`'${pillar}'`);
-        // #4186 — installed_by ($5) is part of the canonical shape.
+        // #4186 — installed_by ($5) is part of the canonical shape, and
+        // in EVERY variant it attributes the first install only: the
+        // conflict SET must never rewrite it on a re-install.
         expect(sql).toContain("installed_by");
         expect(sql).toContain("$5");
+        expect(sql).not.toMatch(/DO UPDATE[\s\S]*installed_by/);
       }
     }
   });

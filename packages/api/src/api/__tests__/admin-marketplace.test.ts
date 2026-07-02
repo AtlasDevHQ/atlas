@@ -441,6 +441,20 @@ function findCapturedQuery(pattern: string): { sql: string; params: unknown[] } 
 // confirm the `enc:v1:` prefix; tests that only care about the semantic
 // restore/passthrough behavior assert the decrypted plaintext.
 const testEncryptionKey = Buffer.alloc(32, 0x42);
+// #4186 — the SaaS keyset-gate test flips this off to simulate a SaaS deploy
+// with no encryption keys configured; every other test runs with keys.
+// Declared before BOTH keyset-bearing mocks so the two module views can
+// never split-brain (db/internal keyed on, encryption-keys keyed off).
+let mockKeysetAvailable = true;
+const mockKeyset = () =>
+  mockKeysetAvailable
+    ? {
+        active: { version: 1, key: testEncryptionKey },
+        byVersion: new Map([[1, testEncryptionKey]]),
+        decrypt: [{ version: 1, key: testEncryptionKey }],
+        source: "ATLAS_ENCRYPTION_KEY",
+      }
+    : null;
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getInternalDB: () => ({
@@ -461,13 +475,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   setWorkspaceRegion: mock(async () => {}),
   insertSemanticAmendment: mock(async () => "mock-amendment-id"),
   getPendingAmendmentCount: mock(async () => 0),
-  getEncryptionKey: () => testEncryptionKey,
-  getEncryptionKeyset: () => ({
-    active: { version: 1, key: testEncryptionKey },
-    byVersion: new Map([[1, testEncryptionKey]]),
-    decrypt: [{ version: 1, key: testEncryptionKey }],
-    source: "ATLAS_ENCRYPTION_KEY",
-  }),
+  getEncryptionKey: () => (mockKeysetAvailable ? testEncryptionKey : null),
+  getEncryptionKeyset: mockKeyset,
   _resetEncryptionKeyCache: () => {},
 }));
 
@@ -477,20 +486,9 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // needs a mock. Without this, `getEncryptionKeyset()` returns null, the
 // encrypt helpers degrade to plaintext passthrough, and the F-42
 // "encrypted at rest" assertions fail.
-// #4186 — the SaaS keyset-gate test flips this off to simulate a SaaS deploy
-// with no encryption keys configured; every other test runs with keys.
-let mockKeysetAvailable = true;
 mock.module("@atlas/api/lib/db/encryption-keys", () => ({
   getEncryptionKey: () => (mockKeysetAvailable ? testEncryptionKey : null),
-  getEncryptionKeyset: () =>
-    mockKeysetAvailable
-      ? {
-          active: { version: 1, key: testEncryptionKey },
-          byVersion: new Map([[1, testEncryptionKey]]),
-          decrypt: [{ version: 1, key: testEncryptionKey }],
-          source: "ATLAS_ENCRYPTION_KEY",
-        }
-      : null,
+  getEncryptionKeyset: mockKeyset,
   activeKeyVersion: () => 1,
   _resetEncryptionKeyCache: () => {},
 }));
@@ -1129,6 +1127,74 @@ describe("Workspace Plugin Marketplace", () => {
       expect(insertCall!.params[1]).toBe("org-1");
       expect(insertCall!.params[2]).toBe("cat-1");
       expect(insertCall!.params[4]).toBe("admin-1");
+
+      // The PERSISTED id (the upsert's RETURNING, not the candidate UUID)
+      // threads through the read-back, the success audit, and the response.
+      const readback = findCapturedQuery("FROM workspace_plugins wp");
+      expect(readback).toBeDefined();
+      expect(readback!.params[0]).toBe("inst-1");
+      expect(readback!.params[1]).toBe("org-1");
+      const success = mockLogAdminAction.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.actionType === "plugin.install" && e.status !== "failure");
+      expect(success?.targetId).toBe("inst-1");
+      const body = await json(res);
+      expect(body.id).toBe("inst-1");
+    });
+
+    it("threads the catalog row's chat pillar into the spine SQL (#4186)", async () => {
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [
+        { ...sampleCatalogRow, pillar: "chat" },
+      ]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+      setInstallPersistResults({
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "BigQuery",
+        slug: "bigquery",
+        type: "datasource",
+        description: null,
+      });
+
+      const res = await buildWorkspaceApp().request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(201);
+      const insertCall = findCapturedQuery("INSERT INTO workspace_plugins");
+      expect(insertCall!.sql).toBe(buildFormInstallUpsertSql(true, "chat"));
+    });
+
+    it("500s truthfully when the read-back finds no row — install already audited as success (#4186)", async () => {
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [sampleCatalogRow]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+      setQueryResult("INSERT INTO workspace_plugins", [{ id: "inst-1" }]);
+      // Concurrent uninstall between the upsert and the read-back.
+      setQueryResult("FROM workspace_plugins wp", []);
+
+      const res = await buildWorkspaceApp().request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(500);
+      const body = await json(res);
+      expect(body.error).toBe("internal_error");
+      // The install DID complete — the success audit fires before the
+      // read-back so a response-shaping failure never hides the write.
+      const success = mockLogAdminAction.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.actionType === "plugin.install" && e.status !== "failure");
+      expect(success?.targetId).toBe("inst-1");
+      expect(evictCalls).toEqual([{ workspaceId: "org-1", catalogId: "cat-1" }]);
     });
 
     it("evicts the lazy plugin cache after the persist — spine step 4 (#4186)", async () => {
@@ -1162,7 +1228,7 @@ describe("Workspace Plugin Marketplace", () => {
     // datasource (multi-instance drafts via /admin/connections) and knowledge
     // (ingest flow) rows must be refused even when their install_model is
     // `form`, mirroring the #3681 install-model gate.
-    it.each(["datasource", "knowledge"])(
+    it.each(["datasource", "knowledge", null])(
       "rejects a form-model row on the %s pillar and persists nothing (#4186)",
       async (pillar) => {
         setQueryResult("SELECT * FROM plugin_catalog WHERE id", [
@@ -1183,7 +1249,11 @@ describe("Workspace Plugin Marketplace", () => {
         const failure = mockLogAdminAction.mock.calls
           .map((c) => c[0])
           .find((e) => e.actionType === "plugin.install" && e.status === "failure");
-        expect(failure?.metadata).toMatchObject({ pillarRejected: pillar, orgId: "org-1" });
+        // A drifted row with no pillar fails closed and audits "unknown".
+        expect(failure?.metadata).toMatchObject({
+          pillarRejected: pillar ?? "unknown",
+          orgId: "org-1",
+        });
       },
     );
 

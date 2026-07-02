@@ -12,7 +12,7 @@ import { Effect, Layer } from "effect";
 import { generateVerificationToken, verifyDnsTxt } from "../lib/domain-verification";
 import { requireEnterpriseEffect } from "../index";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
-import { requireInternalDBEffect } from "../lib/db-guard";
+import { eeRead, eeWrite } from "../lib/ee-query";
 import {
   hasInternalDB,
   internalQuery,
@@ -225,10 +225,7 @@ export const verifyDomain = (
   providerId: string,
   orgId: string,
 ): Effect.Effect<{ status: string; message: string }, SSOError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("sso");
-    yield* requireInternalDBEffect("SSO domain verification");
-
+  eeWrite("sso", "SSO domain verification", Effect.gen(function* () {
     const rows = yield* Effect.tryPromise({
       try: () => internalQuery<SSOProviderRow>(
         `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status
@@ -290,7 +287,7 @@ export const verifyDomain = (
 
     log.info({ providerId, domain: provider.domain }, "SSO domain verified via DNS TXT record");
     return { status: "verified", message: "Domain verified successfully." };
-  });
+  }));
 
 /**
  * Check if a domain is available for SSO registration.
@@ -337,10 +334,7 @@ export const checkDomainAvailability = (
  * List SSO providers for an organization.
  */
 export const listSSOProviders = (orgId: string): Effect.Effect<SSOProvider[], EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("sso");
-    if (!hasInternalDB()) return [];
-
+  eeRead("sso", [], Effect.gen(function* () {
     const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
       `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status
        FROM sso_providers
@@ -349,16 +343,13 @@ export const listSSOProviders = (orgId: string): Effect.Effect<SSOProvider[], En
       [orgId],
     ));
     return rows.map(rowToProvider);
-  });
+  }));
 
 /**
  * Get a single SSO provider by ID, scoped to org.
  */
 export const getSSOProvider = (orgId: string, providerId: string): Effect.Effect<SSOProvider | null, EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("sso");
-    if (!hasInternalDB()) return null;
-
+  eeRead("sso", null, Effect.gen(function* () {
     const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
       `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status
        FROM sso_providers
@@ -366,7 +357,7 @@ export const getSSOProvider = (orgId: string, providerId: string): Effect.Effect
       [providerId, orgId],
     ));
     return rows[0] ? rowToProvider(rows[0]) : null;
-  });
+  }));
 
 /**
  * Create a new SSO provider for an organization.
@@ -376,10 +367,7 @@ export const createSSOProvider = (
   orgId: string,
   input: CreateSSOProviderRequest,
 ): Effect.Effect<SSOProvider, SSOError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("sso");
-    yield* requireInternalDBEffect("SSO provider management");
-
+  eeWrite("sso", "SSO provider management", Effect.gen(function* () {
     // Validate type
     if (!isValidSSOProviderType(input.type)) {
       return yield* Effect.fail(new SSOError({ message: `Invalid SSO provider type: ${input.type}. Must be one of: ${SSO_PROVIDER_TYPES.join(", ")}`, code: "validation" }));
@@ -445,7 +433,7 @@ export const createSSOProvider = (
 
     log.info({ orgId, type: input.type, domain, issuer: input.issuer, autoVerified }, "SSO provider created");
     return rowToProvider(rows[0]);
-  });
+  }));
 
 /**
  * Update an existing SSO provider.
@@ -455,10 +443,7 @@ export const updateSSOProvider = (
   providerId: string,
   input: UpdateSSOProviderRequest,
 ): Effect.Effect<SSOProvider, SSOError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("sso");
-    yield* requireInternalDBEffect("SSO provider management");
-
+  eeWrite("sso", "SSO provider management", Effect.gen(function* () {
     // Fetch existing
     const existing = yield* getSSOProvider(orgId, providerId);
     if (!existing) return yield* Effect.fail(new SSOError({ message: "SSO provider not found.", code: "not_found" }));
@@ -543,16 +528,13 @@ export const updateSSOProvider = (
 
     log.info({ orgId, providerId }, "SSO provider updated");
     return rowToProvider(rows[0]);
-  });
+  }));
 
 /**
  * Delete an SSO provider.
  */
 export const deleteSSOProvider = (orgId: string, providerId: string): Effect.Effect<boolean, EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("sso");
-    if (!hasInternalDB()) return false;
-
+  eeRead("sso", false, Effect.gen(function* () {
     const pool = getInternalDB();
     const result = yield* Effect.promise(() =>
       pool.query(
@@ -566,7 +548,7 @@ export const deleteSSOProvider = (orgId: string, providerId: string): Effect.Eff
       log.info({ orgId, providerId }, "SSO provider deleted");
     }
     return deleted;
-  });
+  }));
 
 // ── Domain matching ─────────────────────────────────────────────────
 
@@ -925,10 +907,7 @@ export const isSSOEnforcedForDomain = (emailDomain: string): Effect.Effect<{
  * Requires enterprise license and at least one active (enabled) SSO provider.
  */
 export const setSSOEnforcement = (orgId: string, enforced: boolean): Effect.Effect<{ enforced: boolean; orgId: string }, SSOEnforcementError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("sso");
-    yield* requireInternalDBEffect("SSO enforcement");
-
+  eeWrite("sso", "SSO enforcement", Effect.gen(function* () {
     if (enforced) {
       // Verify at least one active SSO provider exists for this org
       const active = yield* Effect.promise(() => internalQuery<{ id: string }>(
@@ -952,7 +931,7 @@ export const setSSOEnforcement = (orgId: string, enforced: boolean): Effect.Effe
 
     log.info({ orgId, enforced }, "SSO enforcement %s", enforced ? "enabled" : "disabled");
     return { enforced, orgId };
-  });
+  }));
 
 // ── Tag wiring (#2570 — slice 8/11 of #2017) ─────────────────────────
 

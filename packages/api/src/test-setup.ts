@@ -18,6 +18,14 @@ const exactVars = [
   "AWS_ACCESS_KEY_ID",
   "AWS_SECRET_ACCESS_KEY",
   "AWS_SESSION_TOKEN",
+  // Vercel deploy credentials: their presence alone makes the vercel-sandbox
+  // backend eligible (vercelSandboxAccess), flipping sandbox backend-selection
+  // tests to vercel-sandbox in any shell that carries them. The bare VERCEL
+  // platform flag is deliberately NOT stripped — it's a platform marker, not a
+  // secret, and suites that care scrub it themselves.
+  "VERCEL_TEAM_ID",
+  "VERCEL_PROJECT_ID",
+  "VERCEL_TOKEN",
 ];
 
 // Snapshot current values so we can restore them after the entire suite

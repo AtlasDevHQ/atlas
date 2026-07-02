@@ -291,9 +291,10 @@ describe("executePython tool", () => {
   }
 
   beforeEach(() => {
-    // Ambient deploy credentials make vercel-sandbox eligible
-    // (vercelSandboxAccess), routing execution at a real Vercel sandbox
-    // instead of the local rejection/sidecar paths under test.
+    // Ambient Vercel state makes useVercelSandbox() true — via explicit deploy
+    // credentials (vercelSandboxAccess) or platform detection (VERCEL /
+    // ATLAS_RUNTIME) — routing execution to a real Vercel sandbox instead of
+    // the local rejection/sidecar paths under test.
     saveAndSetEnv("VERCEL_TEAM_ID", undefined);
     saveAndSetEnv("VERCEL_PROJECT_ID", undefined);
     saveAndSetEnv("VERCEL_TOKEN", undefined);

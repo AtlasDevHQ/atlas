@@ -27,14 +27,17 @@ import {
   quoteCsvField,
   renderTable,
 } from "../../lib/output";
-import { resolveApiBaseUrl } from "../lib/api-base";
 import {
-  readApiKeyFlag,
-  resolveCredential,
   credentialHeaders,
+  resolveWorkspaceCredential,
   type CliCredential,
 } from "../lib/credential";
-import { readSession, type StoredSession } from "../lib/credentials";
+import {
+  defaultCliIO,
+  runWorkspaceCommand,
+  type CliIO,
+  type WorkspaceCommandDeps,
+} from "../lib/workspace-command";
 
 // --- Types ---
 
@@ -61,29 +64,11 @@ interface QueryAPIError {
   message: string;
 }
 
-/** stdout/stderr sink — injected so tests can capture output (mirrors `sql.ts`). */
-export interface QueryIO {
-  readonly out: (line: string) => void;
-  readonly err: (line: string) => void;
-}
+/** stdout/stderr sink — the shared {@link CliIO}, injected so tests can capture output. */
+export type QueryIO = CliIO;
 
-const defaultIO: QueryIO = {
-  out: (line) => console.log(line),
-  err: (line) => console.error(line),
-};
-
-/** Everything `runQueryCommand` needs, injected so it stays server-free in tests. */
-export interface QueryRunDeps {
-  readonly baseUrl: string;
-  readonly session: StoredSession | null;
-  /**
-   * A workspace-scoped API key for unattended CI (#4046), resolved from the
-   * `--api-key` flag or the `ATLAS_API_KEY` env var. When present it takes
-   * precedence over the stored session — CI never goes through `atlas login`.
-   */
-  readonly apiKey?: string;
-  readonly fetchImpl?: typeof fetch;
-}
+/** Everything `runQueryCommand` needs — the shared {@link WorkspaceCommandDeps}. */
+export type QueryRunDeps = WorkspaceCommandDeps;
 
 // --- Action approval ---
 
@@ -152,7 +137,7 @@ export async function handleActionApproval(
 export async function runQueryCommand(
   args: string[],
   deps: QueryRunDeps,
-  io: QueryIO = defaultIO,
+  io: QueryIO = defaultCliIO,
 ): Promise<number> {
   // The question is the first positional after "query" that isn't a flag and
   // isn't the value consumed by a value-taking flag (`--connection <id>`,
@@ -204,14 +189,9 @@ export async function runQueryCommand(
   // Resolve the workspace credential exactly like `sql`/`datasource`: a key
   // (the `--api-key` flag, else `ATLAS_API_KEY`) wins over the stored login.
   // A key rides `x-api-key`; a session bearer rides `Authorization: Bearer`.
-  const apiKey = readApiKeyFlag(args) ?? deps.apiKey;
-  const credential = resolveCredential(apiKey, deps.session);
-  if (!credential) {
-    io.err(
-      "Not logged in. Run `atlas login` first, or set ATLAS_API_KEY for unattended use.",
-    );
-    return 1;
-  }
+  // The shared resolver emits the "log in or set ATLAS_API_KEY" copy on `io.err`.
+  const credential = resolveWorkspaceCredential(args, deps, io);
+  if (!credential) return 1;
 
   const apiUrl = deps.baseUrl.replace(/\/$/, "");
   const fetchImpl = deps.fetchImpl ?? fetch;
@@ -427,17 +407,7 @@ export async function runQueryCommand(
 
 // --- Main handler ---
 
-/** Thin shell main() invokes: resolve the credential inputs + base URL, dispatch. */
+/** Thin shell main() invokes: the shared workspace-command shell dispatches the core. */
 export async function handleQuery(args: string[]): Promise<void> {
-  const baseUrl = resolveApiBaseUrl();
-  const session = readSession(baseUrl);
-  // ATLAS_API_KEY (#4046) is the unattended-CI credential — NOT persisted to
-  // ~/.atlas/credentials. `--api-key` (parsed in runQueryCommand) overrides it.
-  const apiKey = process.env.ATLAS_API_KEY?.trim() || undefined;
-  const code = await runQueryCommand(args, {
-    baseUrl,
-    session,
-    ...(apiKey ? { apiKey } : {}),
-  });
-  if (code !== 0) process.exit(code);
+  return runWorkspaceCommand(args, runQueryCommand);
 }

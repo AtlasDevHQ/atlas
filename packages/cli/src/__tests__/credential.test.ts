@@ -12,8 +12,10 @@ import { describe, it, expect } from "bun:test";
 
 import {
   credentialHeaders,
+  NOT_LOGGED_IN_MESSAGE,
   readApiKeyFlag,
   resolveCredential,
+  resolveWorkspaceCredential,
   type CliCredential,
 } from "../lib/credential";
 
@@ -82,6 +84,50 @@ describe("readApiKeyFlag — both flag forms (#4112)", () => {
 
   it("does not consume a following flag as the key value", () => {
     expect(readApiKeyFlag(["sql", "SELECT 1", "--api-key", "--json"])).toBeUndefined();
+  });
+});
+
+describe("resolveWorkspaceCredential — the shared login/exit shape (#4196)", () => {
+  const session = { token: "sess_abc" };
+  function capture(): { io: { err: (l: string) => void }; err: string[] } {
+    const err: string[] = [];
+    return { io: { err: (l) => err.push(l) }, err };
+  }
+
+  it("prefers the `--api-key` flag over both ATLAS_API_KEY and the session", () => {
+    const { io, err } = capture();
+    const cred = resolveWorkspaceCredential(
+      ["metric", "run", "gmv", "--api-key", "flag_key"],
+      { apiKey: "env_key", session },
+      io,
+    );
+    expect(cred).toEqual({ apiKey: "flag_key" });
+    expect(err).toHaveLength(0);
+  });
+
+  it("falls back to deps.apiKey (ATLAS_API_KEY) over the session", () => {
+    const { io } = capture();
+    expect(resolveWorkspaceCredential(["metric", "run", "gmv"], { apiKey: "env_key", session }, io)).toEqual({
+      apiKey: "env_key",
+    });
+  });
+
+  it("uses the stored session when no key is present", () => {
+    const { io } = capture();
+    expect(resolveWorkspaceCredential(["metric", "run", "gmv"], { session }, io)).toEqual({
+      token: "sess_abc",
+    });
+  });
+
+  it("returns null and emits the shared not-logged-in copy when neither is present", () => {
+    const { io, err } = capture();
+    const cred = resolveWorkspaceCredential(["metric", "run", "gmv"], { session: null }, io);
+    expect(cred).toBeNull();
+    // The copy names BOTH remedies (login + the unattended key) — what the
+    // command suites assert via `.toContain("atlas login")` / `"ATLAS_API_KEY"`.
+    expect(err).toEqual([NOT_LOGGED_IN_MESSAGE]);
+    expect(NOT_LOGGED_IN_MESSAGE).toContain("atlas login");
+    expect(NOT_LOGGED_IN_MESSAGE).toContain("ATLAS_API_KEY");
   });
 });
 

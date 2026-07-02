@@ -24,10 +24,9 @@
  * server or `process.exit`. `handleSql` is the thin shell main() calls.
  */
 
+import { getFlag } from "../../lib/cli-utils";
 import { formatCsvValue, quoteCsvField, renderTable } from "../../lib/output";
-import { resolveApiBaseUrl } from "../lib/api-base";
-import { readApiKeyFlag } from "../lib/credential";
-import { readSession, type StoredSession } from "../lib/credentials";
+import { readApiKeyFlag, NOT_LOGGED_IN_MESSAGE } from "../lib/credential";
 import { resolveActiveWorkspace, formatWorkspaceError } from "../lib/workspaces";
 import {
   SqlCliError,
@@ -35,6 +34,12 @@ import {
   type SqlClientOptions,
   type SqlRunResult,
 } from "../lib/sql-client";
+import {
+  defaultCliIO,
+  runWorkspaceCommand,
+  type CliIO,
+  type WorkspaceCommandDeps,
+} from "../lib/workspace-command";
 
 const USAGE = `Run a single validated SELECT against your logged-in workspace.
 
@@ -63,36 +68,11 @@ Authentication: \`atlas login\` for interactive use (ambient session reuse — n
 key needed), OR a workspace API key via --api-key / ATLAS_API_KEY for unattended
 CI. Set ATLAS_API_URL to target a non-local API.`;
 
-/** stdout/stderr sink — injected so tests can capture output. */
-export interface SqlIO {
-  readonly out: (line: string) => void;
-  readonly err: (line: string) => void;
-}
+/** stdout/stderr sink — the shared {@link CliIO}, injected so tests can capture output. */
+export type SqlIO = CliIO;
 
-const defaultIO: SqlIO = {
-  out: (line) => console.log(line),
-  err: (line) => console.error(line),
-};
-
-/** Everything `runSqlCommand` needs, injected so it stays server-free in tests. */
-export interface SqlRunDeps {
-  readonly baseUrl: string;
-  readonly session: StoredSession | null;
-  /**
-   * A workspace-scoped API key for unattended CI (#4046), resolved from the
-   * `--api-key` flag or the `ATLAS_API_KEY` env var. When present it takes
-   * precedence over the stored session — CI never goes through `atlas login`.
-   */
-  readonly apiKey?: string;
-  readonly fetchImpl?: typeof fetch;
-}
-
-/** Read a `--flag value` option from argv, or undefined when absent. */
-function getFlagValue(args: string[], flag: string): string | undefined {
-  const idx = args.indexOf(flag);
-  if (idx === -1 || idx === args.length - 1) return undefined;
-  return args[idx + 1];
-}
+/** Everything `runSqlCommand` needs — the shared {@link WorkspaceCommandDeps}. */
+export type SqlRunDeps = WorkspaceCommandDeps;
 
 /** Render a result as CSV (headers + rows), pipe-friendly. */
 function renderCsv(io: SqlIO, result: SqlRunResult): void {
@@ -124,7 +104,7 @@ function renderResult(io: SqlIO, result: SqlRunResult): void {
 export async function runSqlCommand(
   args: string[],
   deps: SqlRunDeps,
-  io: SqlIO = defaultIO,
+  io: SqlIO = defaultCliIO,
 ): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
     io.out(USAGE);
@@ -138,7 +118,7 @@ export async function runSqlCommand(
     return 1;
   }
 
-  const connectionId = getFlagValue(args, "--connection");
+  const connectionId = getFlag(args, "--connection");
 
   // The SQL is the first positional after `sql` that isn't a flag and isn't the
   // value consumed by a value-taking flag (`--connection <id>`, `--workspace <id>`,
@@ -189,7 +169,7 @@ export async function runSqlCommand(
   }
 
   if (!deps.session) {
-    io.err("Not logged in. Run `atlas login` first, or set ATLAS_API_KEY for unattended use.");
+    io.err(NOT_LOGGED_IN_MESSAGE);
     return 1;
   }
 
@@ -252,14 +232,7 @@ async function runAndRender(
   }
 }
 
-/** Thin shell main() invokes: resolve the credential + base URL, then dispatch. */
+/** Thin shell main() invokes: the shared workspace-command shell dispatches the core. */
 export async function handleSql(args: string[]): Promise<void> {
-  const baseUrl = resolveApiBaseUrl();
-  const session = readSession(baseUrl);
-  // ATLAS_API_KEY (#4046) is the unattended-CI credential — it is NOT persisted
-  // to ~/.atlas/credentials (a CI secret managed by the CI system, not an
-  // interactive login). `--api-key` (parsed in runSqlCommand) overrides it.
-  const apiKey = process.env.ATLAS_API_KEY?.trim() || undefined;
-  const code = await runSqlCommand(args, { baseUrl, session, ...(apiKey ? { apiKey } : {}) });
-  if (code !== 0) process.exit(code);
+  return runWorkspaceCommand(args, runSqlCommand);
 }

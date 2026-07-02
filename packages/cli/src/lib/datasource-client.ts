@@ -44,7 +44,16 @@ import {
   parseDatasourceProfileStreamEvent,
 } from "@useatlas/schemas";
 import { credentialHeaders, type CliCredential } from "./credential";
-import { asRecord, isAbortOrTimeout, serverMessage, unreachableMessage, type FetchImpl } from "./http";
+import {
+  asRecord,
+  defaultWorkspaceErrorInfo,
+  NO_WORKSPACE_MESSAGE,
+  serverMessage,
+  SESSION_INVALID_MESSAGE,
+  unreachableMessage,
+  workspaceRequest,
+  type FetchImpl,
+} from "./http";
 
 /**
  * The server `error`-field discriminators this client branches on, pinned to the
@@ -128,108 +137,88 @@ interface RequestSpec {
 }
 
 /**
- * Issue one request against an admin-connection route and return its parsed
- * JSON body, mapping every documented failure status onto a typed
- * {@link DatasourceCliError} with an actionable message. The 403 branch
- * distinguishes the admin-role denial (the admin-role gate this surface is built
- * around — it fires for the read ops too, not just mutations) from the
- * admin-MFA-enrollment gate, since the remedies differ.
+ * Map a non-2xx admin-connection `(status, body)` onto a typed
+ * {@link DatasourceCliError}. Only the statuses that diverge from the shared
+ * default are spelled out; 401 (re-login), 400 `bad_request` (no-workspace), and
+ * any other status fall through to {@link defaultWorkspaceErrorInfo} so the
+ * byte-identical copy is defined once (#4196). The 403 branch distinguishes the
+ * admin-role denial (the admin-role gate this surface is built around — it fires
+ * for the read ops too, not just mutations) from the admin-MFA-enrollment gate,
+ * since the remedies differ; it closes over the operation label for that copy.
  */
-async function request(
-  opts: DatasourceClientOptions,
-  spec: RequestSpec,
-): Promise<unknown> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? 30_000;
-
-  let res: Response;
-  try {
-    res = await fetchImpl(`${opts.baseUrl}${spec.path}`, {
-      method: spec.method,
-      headers: {
-        ...credentialHeaders(opts.credential),
-        ...(spec.body !== undefined ? { "Content-Type": "application/json" } : {}),
-      },
-      ...(spec.body !== undefined ? { body: JSON.stringify(spec.body) } : {}),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (err) {
-    if (isAbortOrTimeout(err)) {
-      throw new DatasourceCliError(
-        "network",
-        `Timed out after ${Math.round(timeoutMs / 1000)}s trying to ${spec.operation}.`,
-      );
-    }
-    throw new DatasourceCliError("network", unreachableMessage(opts.baseUrl, err));
-  }
-
-  if (res.ok) {
-    // intentionally ignored: a 2xx with an empty/non-JSON body degrades to {} —
-    // callers tolerate missing optional fields rather than crashing on parse.
-    return await res.json().catch(() => ({}));
-  }
-
-  // intentionally ignored: an error body that isn't JSON falls back to the
-  // HTTP-status message below via the empty record.
-  const body = asRecord(await res.json().catch(() => ({})));
-
-  switch (res.status) {
-    case 401:
-      throw new DatasourceCliError(
-        "unauthorized",
-        "Your session is no longer valid. Run `atlas login` again.",
-      );
+function toDatasourceError(
+  operation: string,
+  status: number,
+  body: Record<string, unknown>,
+): DatasourceCliError {
+  switch (status) {
     case 403: {
       if (body.error === ERR.mfaEnrollmentRequired) {
-        throw new DatasourceCliError("mfa_required", MFA_ENROLLMENT_MESSAGE);
+        return new DatasourceCliError("mfa_required", MFA_ENROLLMENT_MESSAGE);
       }
-      throw new DatasourceCliError(
+      return new DatasourceCliError(
         "forbidden",
-        `Cannot ${spec.operation}: the workspace admin role is required. Your login does not carry it — ask a workspace admin to run this, or sign in with an admin account (\`atlas login\`).`,
+        `Cannot ${operation}: the workspace admin role is required. Your login does not carry it — ask a workspace admin to run this, or sign in with an admin account (\`atlas login\`).`,
       );
     }
     case 400:
-      // requireOrgContext returns 400 bad_request when the credential has no
-      // bound workspace (a multi-workspace login pending the picker slice).
-      if (body.error === ERR.badRequest) {
-        throw new DatasourceCliError(
-          "no_workspace",
-          "Your login is not bound to a workspace. Single-workspace accounts bind automatically; in-flow workspace selection for multi-workspace accounts is coming soon (ADR-0026).",
-        );
-      }
-      // The create route's pre-flight test runs server-side and returns
-      // `connection_failed` with the upstream driver error scrubbed of any DSN.
-      // Surface it as a distinct kind so `create` exits with a fix-the-URL hint
-      // rather than a generic request failure.
+      // A `bad_request` (no bound workspace) falls through to the shared
+      // no-workspace default. The create route's pre-flight test runs
+      // server-side and returns `connection_failed` with the upstream driver
+      // error scrubbed of any DSN — surface it as a distinct kind so `create`
+      // exits with a fix-the-URL hint rather than a generic request failure.
       if (body.error === ERR.connectionFailed) {
-        throw new DatasourceCliError("connection_failed", serverMessage(body, res.status));
+        return new DatasourceCliError("connection_failed", serverMessage(body, status));
       }
-      throw new DatasourceCliError("request_failed", serverMessage(body, res.status));
+      if (body.error !== ERR.badRequest) {
+        return new DatasourceCliError("request_failed", serverMessage(body, status));
+      }
+      break;
     case 404:
       // The create route 404s with `not_available` when the deployment has no
       // internal DB (DATABASE_URL) — datasource provisioning isn't possible
       // there. Distinct from the id-not-found 404 the lifecycle ops surface.
       if (body.error === ERR.notAvailable) {
-        throw new DatasourceCliError("not_available", serverMessage(body, res.status));
+        return new DatasourceCliError("not_available", serverMessage(body, status));
       }
-      throw new DatasourceCliError("not_found", serverMessage(body, res.status));
+      return new DatasourceCliError("not_found", serverMessage(body, status));
     case 409:
-      throw new DatasourceCliError("conflict", serverMessage(body, res.status));
+      return new DatasourceCliError("conflict", serverMessage(body, status));
     case 429:
       // The plan-limit denial (`plan_limit_exceeded`) shares the 429 status with
       // rate limiting. Distinguish it so the message points at the plan cap, not
       // "slow down". A bare 429 (rate limit) falls through to request_failed.
       if (body.error === ERR.planLimitExceeded) {
-        throw new DatasourceCliError("plan_limit", serverMessage(body, res.status));
+        return new DatasourceCliError("plan_limit", serverMessage(body, status));
       }
-      throw new DatasourceCliError("request_failed", serverMessage(body, res.status));
+      return new DatasourceCliError("request_failed", serverMessage(body, status));
     case 503:
       // Fail-closed billing/plan-limit check fault (#3433): a transient infra
       // problem verifying the cap, not an upgrade prompt — tell the user to retry.
-      throw new DatasourceCliError("billing_unavailable", serverMessage(body, res.status));
-    default:
-      throw new DatasourceCliError("request_failed", serverMessage(body, res.status));
+      return new DatasourceCliError("billing_unavailable", serverMessage(body, status));
   }
+  const info = defaultWorkspaceErrorInfo(status, body);
+  return new DatasourceCliError(info.kind, info.message);
+}
+
+/**
+ * Issue one request against an admin-connection route and return its parsed JSON
+ * body, mapping every documented failure status onto a typed
+ * {@link DatasourceCliError} with an actionable message. A thin wrapper over the
+ * shared {@link workspaceRequest} transport (#4196) — this client's `request()`
+ * was the original of that abstraction; only the operation-labelled error copy
+ * and timeout subject stay local.
+ */
+async function request(opts: DatasourceClientOptions, spec: RequestSpec): Promise<unknown> {
+  return workspaceRequest(
+    opts,
+    { method: spec.method, path: spec.path, ...(spec.body !== undefined ? { body: spec.body } : {}) },
+    {
+      toError: (status, body) => toDatasourceError(spec.operation, status, body),
+      toNetworkError: (message) => new DatasourceCliError("network", message),
+      timeoutMessage: (seconds) => `Timed out after ${seconds}s trying to ${spec.operation}.`,
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -550,10 +539,7 @@ export async function profileDatasource(
     const body = asRecord(await res.json().catch(() => ({})));
     switch (res.status) {
       case 401:
-        throw new DatasourceCliError(
-          "unauthorized",
-          "Your session is no longer valid. Run `atlas login` again.",
-        );
+        throw new DatasourceCliError("unauthorized", SESSION_INVALID_MESSAGE);
       case 403:
         if (body.error === ERR.mfaEnrollmentRequired) {
           throw new DatasourceCliError("mfa_required", MFA_ENROLLMENT_MESSAGE);
@@ -570,10 +556,7 @@ export async function profileDatasource(
         throw new DatasourceCliError("forbidden", serverMessage(body, res.status));
       case 400:
         if (body.error === ERR.badRequest) {
-          throw new DatasourceCliError(
-            "no_workspace",
-            "Your login is not bound to a workspace. Single-workspace accounts bind automatically; in-flow workspace selection for multi-workspace accounts is coming soon (ADR-0026).",
-          );
+          throw new DatasourceCliError("no_workspace", NO_WORKSPACE_MESSAGE);
         }
         throw new DatasourceCliError("request_failed", serverMessage(body, res.status));
       case 404:

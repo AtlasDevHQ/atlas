@@ -48,6 +48,7 @@ import { subProcessorSubscriptions } from "./routes/sub-processor-subscriptions"
 import { contact } from "./routes/contact";
 import { wellKnown } from "./routes/well-known";
 import { authMd } from "./routes/auth-md";
+import { mountBoth } from "./routes/mount";
 
 const log = createLogger("api");
 const tracer = trace.getTracer("atlas");
@@ -267,9 +268,9 @@ try {
 // Suggestions routes — user-facing query suggestions.
 try {
   const { suggestions } = await import("./routes/suggestions");
-  app.route("/api/v1/suggestions", suggestions);
-  // Also register trailing-slash variant so ?table=orders and GET / both match.
-  app.route("/api/v1/suggestions/", suggestions);
+  // mountBoth registers the trailing-slash variant too, so ?table=orders and
+  // GET / both match (#4202).
+  mountBoth(app, "/api/v1/suggestions", suggestions);
 } catch (err) {
   log.error(
     { err: err instanceof Error ? err : new Error(String(err)) },

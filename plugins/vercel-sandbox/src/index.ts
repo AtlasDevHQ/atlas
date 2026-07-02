@@ -97,6 +97,18 @@ const SANDBOX_SEMANTIC_REL = "semantic";
 // Must match the absolute resolution of SANDBOX_SEMANTIC_REL (used as runCommand cwd).
 const SANDBOX_SEMANTIC_CWD = "/vercel/sandbox/semantic";
 
+/**
+ * Attribution tags for sandboxes this plugin creates (Vercel allows max 5).
+ * Standalone package — mirrors the api's `atlasSandboxTags` shape (app/source/
+ * env) without importing `@atlas/api`; the raw `ATLAS_DEPLOY_ENV` read matches
+ * the api's `resolveDeployEnv` default of "production" when unset.
+ */
+function sandboxTags(source: string): Record<string, string> {
+  const raw = process.env.ATLAS_DEPLOY_ENV?.trim().toLowerCase();
+  const env = raw === "development" || raw === "staging" ? raw : "production";
+  return { app: "atlas", source, env };
+}
+
 // ---------------------------------------------------------------------------
 // Lazy import helper
 // ---------------------------------------------------------------------------
@@ -193,6 +205,9 @@ async function createVercelExploreBackend(
     // v2 persists (snapshots) by default — force ephemeral so semantic files
     // never linger in Vercel snapshot storage after stop().
     persistent: false,
+    // Attribution tags (max 5 per the API) so sandbox listings — including on
+    // a BYOC org's own Vercel account — can be traced back to Atlas.
+    tags: sandboxTags("explore-plugin"),
   };
   if (config.accessToken) {
     createOpts.accessToken = config.accessToken;
@@ -394,6 +409,7 @@ export function buildVercelSandboxPlugin(
             networkPolicy: "deny-all",
             // v2 persists by default — keep the health-check sandbox ephemeral.
             persistent: false,
+            tags: sandboxTags("health-check"),
           };
           if (config.accessToken) {
             createOpts.accessToken = config.accessToken;

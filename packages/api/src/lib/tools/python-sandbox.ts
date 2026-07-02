@@ -28,7 +28,7 @@ import type { PythonBackend, PythonResult } from "./python";
 import type { SandboxNetworkPolicy } from "./backends/network-allowlist";
 import type { VercelSandboxAccessOverride } from "./explore-sandbox";
 import { PYTHON_SECURITY_AND_SETUP } from "./python-wrapper";
-import { sandboxErrorDetail, safeError, MAX_OUTPUT } from "./backends/shared";
+import { sandboxErrorDetail, safeError, MAX_OUTPUT, atlasSandboxTags } from "./backends/shared";
 import { vercelSandboxAccess } from "./backends/detect";
 import { randomUUID } from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -265,6 +265,7 @@ export function createPythonSandboxBackend(
             // per-request code/data/chart files never land in Vercel
             // snapshot storage after the sandbox is stopped.
             persistent: false,
+            tags: atlasSandboxTags("python"),
             ...(explicitAccess ?? {}),
           }),
         catch: (err) => {

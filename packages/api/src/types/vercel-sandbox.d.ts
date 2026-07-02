@@ -55,6 +55,13 @@ declare module "@vercel/sandbox" {
     persistent?: boolean;
     ports?: number[];
     timeout?: number;
+    /**
+     * Key-value attribution tags (max 5, per the API). Atlas always passes
+     * `atlasSandboxTags()` (`app`/`source`/`env`) so sandbox listings can be
+     * attributed to a code path + deploy env instead of reading as a wall of
+     * random-named entries.
+     */
+    tags?: Record<string, string>;
   }
 
   interface WriteFileEntry {

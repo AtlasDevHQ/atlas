@@ -10,7 +10,7 @@
  */
 
 import type { ExploreBackend, ExecResult } from "./backends/types";
-import { sandboxErrorDetail, safeError } from "./backends/shared";
+import { sandboxErrorDetail, safeError, atlasSandboxTags } from "./backends/shared";
 import { vercelSandboxAccess, type RedactedSecret } from "./backends/detect";
 import * as path from "path";
 import * as fs from "fs";
@@ -152,6 +152,7 @@ export async function createSandboxBackend(
       // v2 persists (snapshots) by default — force ephemeral so semantic
       // files never linger in Vercel snapshot storage after stop().
       persistent: false,
+      tags: atlasSandboxTags("explore"),
       ...(explicitAccess ?? {}),
     });
   } catch (err) {

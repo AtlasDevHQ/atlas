@@ -45,13 +45,11 @@ import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
-import { saveCredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import type { CredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import type { WorkspaceId } from "@useatlas/types";
-import {
-  mintOAuthStateToken,
-  verifyOAuthStateToken,
-} from "./oauth-state-token";
+import { mintOAuthStateToken } from "./oauth-state-token";
+import { verifyCallbackState } from "./oauth-callback-verify";
+import { writeCredentialWithReconnectFallback } from "./oauth-reconnect";
 import type {
   CatalogId,
   CredentialResult,
@@ -419,17 +417,15 @@ export class LinearOAuthInstallHandler implements OAuthPlatformInstallHandler {
     readonly installRecord: InstallRecord;
     readonly credentialResult: CredentialResult;
   } | null> {
-    // ── 1. Verify state — null on every failure mode ─────────────
-    const verified = verifyOAuthStateToken(stateToken);
+    // ── 1. Verify state + catalog binding (shared seam) ──────────
+    const verified = verifyCallbackState(
+      stateToken,
+      LINEAR_SLUG,
+      log,
+      "Linear OAuth callback received state bound to a different catalog — rejecting",
+    );
     if (!verified) return null;
-    const workspaceId = verified.workspaceId as WorkspaceId;
-    if (verified.catalogId !== LINEAR_SLUG) {
-      log.warn(
-        { expected: LINEAR_SLUG, got: verified.catalogId },
-        "Linear OAuth callback received state bound to a different catalog — rejecting",
-      );
-      return null;
-    }
+    const { workspaceId } = verified;
 
     // ── 2. Exchange code for tokens ───────────────────────────────
     const tokens = await exchangeAuthCodeForTokens({
@@ -519,57 +515,23 @@ export class LinearOAuthInstallHandler implements OAuthPlatformInstallHandler {
       instanceUrl: GRAPHQL_URL,
     };
 
-    try {
-      await saveCredentialBundle(workspaceId, LINEAR_CATALOG_ID, bundle);
-      log.info(
-        {
-          workspaceId,
-          organizationId: viewer.organizationId,
-          organizationName: viewer.organizationName,
-        },
-        "Linear install completed (both stores written)",
-      );
-      return {
-        workspaceId,
-        catalogId: LINEAR_SLUG,
-        installRecord,
-        credentialResult: { written: true },
-      };
-    } catch (err) {
-      const errMessage = err instanceof Error ? err.message : String(err);
-      log.warn(
-        { workspaceId, err: errMessage },
-        "Linear install record written but integration_credentials write failed — Reconnect required",
-      );
-      // Flip `status: "reconnect_needed"` so the admin card surfaces a
-      // persistent Reconnect CTA. Mirror Jira / Salesforce behaviour —
-      // without this the `?reconnect=linear` callback query param shows
-      // once and then disappears on the next admin-page reload.
-      try {
-        await internalQuery(
-          `UPDATE workspace_plugins
-              SET config = config || jsonb_build_object('status', 'reconnect_needed')
-            WHERE workspace_id = $1 AND catalog_id = $2`,
-          [workspaceId, LINEAR_CATALOG_ID],
-        );
-      } catch (statusErr) {
-        log.warn(
-          {
-            workspaceId,
-            err: statusErr instanceof Error ? statusErr.message : String(statusErr),
-          },
-          "Failed to mark Linear install as reconnect_needed after credential write failure",
-        );
-      }
-      return {
-        workspaceId,
-        catalogId: LINEAR_SLUG,
-        installRecord,
-        credentialResult: {
-          written: false,
-          reason: "Credential persist failed — admin should retry via Reconnect",
-        },
-      };
-    }
+    // Persist the credential bundle (ADR-0003 SECOND write) with the
+    // shared fail-closed Reconnect fallback: a credential-write failure
+    // flips `status: "reconnect_needed"` so the admin card surfaces a
+    // persistent Reconnect CTA (without it the callback's `?reconnect=linear`
+    // query param shows once then vanishes on the next page load).
+    return writeCredentialWithReconnectFallback({
+      workspaceId,
+      catalogId: LINEAR_CATALOG_ID,
+      slug: LINEAR_SLUG,
+      bundle,
+      installRecord,
+      log,
+      displayName: "Linear",
+      successLogFields: {
+        organizationId: viewer.organizationId,
+        organizationName: viewer.organizationName,
+      },
+    });
   }
 }

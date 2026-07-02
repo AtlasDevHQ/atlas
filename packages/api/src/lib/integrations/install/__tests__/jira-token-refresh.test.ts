@@ -245,6 +245,35 @@ describe("refreshJiraToken — transient failure", () => {
     expect(markUpdate).toBeUndefined();
   });
 
+  it("on HTTP 200 missing the rotated refresh_token: throws a plain Error, does NOT mark reconnect_needed or persist", async () => {
+    // Jira/Linear require the rotated refresh_token in the success body
+    // (`requiresRefreshTokenInResponse`). A 200 that omits it fails the
+    // success guard and — because 200 is not a permanent-failure status —
+    // degrades to a TRANSIENT retry, never a Reconnect and never a
+    // persisted bundle with a stale refresh token. Pin the rotation-
+    // required guard's 2xx-classification branch (the one the Salesforce
+    // suite structurally can't cover).
+    mockReadCredentialBundle.mockResolvedValueOnce(STORED_BUNDLE);
+    mockFetch.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ access_token: "new-access-token", expires_in: 3600 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    await expect(refreshMod.refreshJiraToken(JIRA_ARGS)).rejects.toThrow(/HTTP 200/);
+
+    const markUpdate = mockInternalQuery.mock.calls.find(
+      (c) =>
+        (c[0] as string).includes("UPDATE workspace_plugins") &&
+        (c[0] as string).includes("'reconnect_needed'"),
+    );
+    expect(markUpdate).toBeUndefined();
+    expect(mockSaveCredentialBundle).not.toHaveBeenCalled();
+  });
+
   it("on HTTP 400 with an unknown error code (e.g. invalid_request): throws plain Error, does NOT mark reconnect_needed", async () => {
     // PERMANENT_REFRESH_FAILURE_CODES is intentionally narrow. An
     // unknown 400 shouldn't strand every workspace on the assumption

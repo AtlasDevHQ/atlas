@@ -50,16 +50,13 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { internalQuery } from "@atlas/api/lib/db/internal";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
-import { saveCredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import type { CredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import { persistInstallRecord } from "./persist-form-install";
 import type { WorkspaceId } from "@useatlas/types";
-import {
-  mintOAuthStateToken,
-  verifyOAuthStateToken,
-} from "./oauth-state-token";
+import { mintOAuthStateToken } from "./oauth-state-token";
+import { verifyCallbackState } from "./oauth-callback-verify";
+import { writeCredentialWithReconnectFallback } from "./oauth-reconnect";
 import type {
   CatalogId,
   CredentialResult,
@@ -381,17 +378,15 @@ export class JiraOAuthInstallHandler implements OAuthPlatformInstallHandler {
     readonly installRecord: InstallRecord;
     readonly credentialResult: CredentialResult;
   } | null> {
-    // ── 1. Verify state — null on every failure mode ─────────────
-    const verified = verifyOAuthStateToken(stateToken);
+    // ── 1. Verify state + catalog binding (shared seam) ──────────
+    const verified = verifyCallbackState(
+      stateToken,
+      JIRA_SLUG,
+      log,
+      "Jira OAuth callback received state bound to a different catalog — rejecting",
+    );
     if (!verified) return null;
-    const workspaceId = verified.workspaceId as WorkspaceId;
-    if (verified.catalogId !== JIRA_SLUG) {
-      log.warn(
-        { expected: JIRA_SLUG, got: verified.catalogId },
-        "Jira OAuth callback received state bound to a different catalog — rejecting",
-      );
-      return null;
-    }
+    const { workspaceId } = verified;
 
     // ── 2. Exchange code for tokens ───────────────────────────────
     const tokens = await exchangeAuthCodeForTokens({
@@ -498,53 +493,21 @@ export class JiraOAuthInstallHandler implements OAuthPlatformInstallHandler {
       instanceUrl: `https://api.atlassian.com/ex/jira/${cloudid}`,
     };
 
-    try {
-      await saveCredentialBundle(workspaceId, JIRA_CATALOG_ID, bundle);
-      log.info(
-        { workspaceId, cloudid, siteUrl: primaryResource.url },
-        "Jira install completed (both stores written)",
-      );
-      return {
-        workspaceId,
-        catalogId: JIRA_SLUG,
-        installRecord,
-        credentialResult: { written: true },
-      };
-    } catch (err) {
-      const errMessage = err instanceof Error ? err.message : String(err);
-      log.warn(
-        { workspaceId, cloudid, err: errMessage },
-        "Jira install record written but integration_credentials write failed — Reconnect required",
-      );
-      // Mirror Salesforce: flip `status: "reconnect_needed"` so the
-      // admin card surfaces a persistent Reconnect CTA. Without this,
-      // the OAuth callback's `?reconnect=jira` query param shows once
-      // and then disappears on the next admin-page reload.
-      try {
-        await internalQuery(
-          `UPDATE workspace_plugins
-              SET config = config || jsonb_build_object('status', 'reconnect_needed')
-            WHERE workspace_id = $1 AND catalog_id = $2`,
-          [workspaceId, JIRA_CATALOG_ID],
-        );
-      } catch (statusErr) {
-        log.warn(
-          {
-            workspaceId,
-            err: statusErr instanceof Error ? statusErr.message : String(statusErr),
-          },
-          "Failed to mark Jira install as reconnect_needed after credential write failure",
-        );
-      }
-      return {
-        workspaceId,
-        catalogId: JIRA_SLUG,
-        installRecord,
-        credentialResult: {
-          written: false,
-          reason: "Credential persist failed — admin should retry via Reconnect",
-        },
-      };
-    }
+    // Persist the credential bundle (ADR-0003 SECOND write) with the
+    // shared fail-closed Reconnect fallback: a credential-write failure
+    // flips `status: "reconnect_needed"` so the admin card surfaces a
+    // persistent Reconnect CTA (without it the callback's `?reconnect=jira`
+    // query param shows once then vanishes on the next page load).
+    return writeCredentialWithReconnectFallback({
+      workspaceId,
+      catalogId: JIRA_CATALOG_ID,
+      slug: JIRA_SLUG,
+      bundle,
+      installRecord,
+      log,
+      displayName: "Jira",
+      successLogFields: { cloudid, siteUrl: primaryResource.url },
+      failureLogFields: { cloudid },
+    });
   }
 }

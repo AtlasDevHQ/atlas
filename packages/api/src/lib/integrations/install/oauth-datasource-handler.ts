@@ -55,10 +55,8 @@ import { baselineSpecDiffRecord } from "@atlas/api/lib/openapi/diff";
 import { DEFAULT_REPRESENTATION_MODE } from "@atlas/api/lib/openapi/catalog";
 import { getGitHubInstallationToken } from "@atlas/api/lib/github/installation-token";
 import type { WorkspaceId } from "@useatlas/types";
-import {
-  mintOAuthStateToken,
-  verifyOAuthStateToken,
-} from "./oauth-state-token";
+import { mintOAuthStateToken } from "./oauth-state-token";
+import { verifyCallbackState } from "./oauth-callback-verify";
 import { exchangeUserCodeForToken, findUserInstallation } from "./github-app-oauth";
 import {
   GITHUB_APP_SECRET_FIELDS_SCHEMA,
@@ -152,17 +150,15 @@ export class OAuthDatasourceInstallHandler implements OAuthDatasourceInstallHand
     readonly installRecord: InstallRecord;
     readonly credentialResult: CredentialResult;
   } | null> {
-    // ── 1. Verify state — null on every failure mode ─────────────
-    const verified = verifyOAuthStateToken(stateToken);
+    // ── 1. Verify state + catalog binding (shared seam) ──────────
+    const verified = verifyCallbackState(
+      stateToken,
+      this.config.slug,
+      log,
+      "OAuth-datasource callback received state bound to a different catalog — rejecting",
+    );
     if (!verified) return null;
-    if (verified.catalogId !== this.config.slug) {
-      log.warn(
-        { expected: this.config.slug, got: verified.catalogId },
-        "OAuth-datasource callback received state bound to a different catalog — rejecting",
-      );
-      return null;
-    }
-    const workspaceId = verified.workspaceId as WorkspaceId;
+    const { workspaceId } = verified;
 
     // ── 2. Require both installation_id and the user-OAuth code ──
     const installationIdRaw = extras?.installationId;

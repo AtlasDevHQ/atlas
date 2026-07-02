@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { useModeStatus } from "@/ui/hooks/use-mode-status";
 import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
 import { ADMIN_ROLES } from "@/ui/lib/types";
-import { totalDraftCount } from "@/ui/lib/draft-counts";
+import { draftSurfaceSegments, totalDrafts } from "@/ui/lib/content-surfaces";
 import { PublishModal } from "./publish-modal";
 import type { ModeDraftCounts, ModeDraftActivity } from "@useatlas/types/mode";
 
@@ -38,7 +38,7 @@ export function PendingChangesPill() {
   if (!isAdmin) return null;
   const counts = data?.draftCounts;
   if (!counts) return null;
-  const total = totalDraftCount(counts);
+  const total = totalDrafts(counts);
   if (total === 0) return null;
 
   const segments = perSurfaceSegments(counts, data?.draftActivity ?? null);
@@ -135,10 +135,10 @@ interface SurfaceSegment {
 /**
  * Build per-surface popover rows from the mode endpoint counts + activity.
  *
- * Order (connections → entities → prompts → starter prompts) matches the
- * publish dependency chain so the admin reads the list top-down. Entity
- * edits and tombstoned deletes fold under the `entities` row; the
- * {@link PublishModal} surfaces the precise breakdown.
+ * Ordering, labels, and the entity fold come from the shared content-surface
+ * descriptors (`@/ui/lib/content-surfaces`), claim-checked against
+ * `ModeDraftCounts` at compile time; the {@link PublishModal} surfaces the
+ * precise entity-slice breakdown.
  *
  * Exported for tests so we can assert ordering / pluralization without
  * rendering a popover.
@@ -147,77 +147,12 @@ export function perSurfaceSegments(
   counts: ModeDraftCounts,
   activity: ModeDraftActivity | null,
 ): SurfaceSegment[] {
-  const out: SurfaceSegment[] = [];
-  const entityTotal = counts.entities + counts.entityEdits + counts.entityDeletes;
-  // The most-recent edit across the three entity slices wins — the popover
-  // shows one "Last edit" line per surface, not per slice.
-  const entityActivity = mostRecent([
-    activity?.entities.lastEditedAt ?? null,
-    activity?.entityEdits.lastEditedAt ?? null,
-    activity?.entityDeletes.lastEditedAt ?? null,
-  ]);
-
-  if (counts.connections > 0) {
-    out.push({
-      key: "connections",
-      label: pluralize(counts.connections, "Connection", "Connections"),
-      count: counts.connections,
-      lastEditedRelative: relativeOrNull(activity?.connections.lastEditedAt ?? null),
-    });
-  }
-  if (entityTotal > 0) {
-    out.push({
-      key: "entities",
-      label: pluralize(entityTotal, "Semantic entity", "Semantic entities"),
-      count: entityTotal,
-      lastEditedRelative: relativeOrNull(entityActivity),
-    });
-  }
-  if (counts.prompts > 0) {
-    out.push({
-      key: "prompts",
-      label: pluralize(counts.prompts, "Prompt collection", "Prompt collections"),
-      count: counts.prompts,
-      lastEditedRelative: relativeOrNull(activity?.prompts.lastEditedAt ?? null),
-    });
-  }
-  if (counts.starterPrompts > 0) {
-    out.push({
-      key: "starterPrompts",
-      label: pluralize(counts.starterPrompts, "Starter prompt", "Starter prompts"),
-      count: counts.starterPrompts,
-      lastEditedRelative: relativeOrNull(activity?.starterPrompts.lastEditedAt ?? null),
-    });
-  }
-  if (counts.knowledgeDocuments > 0) {
-    out.push({
-      key: "knowledgeDocuments",
-      label: pluralize(counts.knowledgeDocuments, "Knowledge document", "Knowledge documents"),
-      count: counts.knowledgeDocuments,
-      lastEditedRelative: relativeOrNull(activity?.knowledgeDocuments?.lastEditedAt ?? null),
-    });
-  }
-  return out;
-}
-
-function pluralize(n: number, singular: string, plural: string): string {
-  return n === 1 ? singular : plural;
-}
-
-/** Pick the most recent ISO timestamp from a list, ignoring nulls. */
-function mostRecent(values: ReadonlyArray<string | null>): string | null {
-  let best: number | null = null;
-  let bestIso: string | null = null;
-  for (const v of values) {
-    if (!v) continue;
-    const t = Date.parse(v);
-    if (!Number.isFinite(t)) continue;
-    if (best === null || t > best) {
-      best = t;
-      bestIso = v;
-    }
-  }
-  return bestIso;
+  return draftSurfaceSegments(counts, activity).map((s) => ({
+    key: s.key,
+    label: s.label,
+    count: s.count,
+    lastEditedRelative: relativeOrNull(s.lastEditedAt),
+  }));
 }
 
 /**

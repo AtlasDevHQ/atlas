@@ -184,6 +184,13 @@ mock.module("@atlas/api/lib/logger", () => {
 // side effect of every successful sync.
 const invalidateCalls: string[] = [];
 mock.module("@atlas/api/lib/semantic/sync", () => ({
+  // The ingestBundle seam busts only the knowledge subtree for plain syncs;
+  // a full-root bust would come through invalidateOrgModeRoots. Both feed the
+  // same counter — these tests assert THAT invalidation happened, not scope
+  // (scope is pinned in ingest-bundle.test.ts / mode-semantic-root.test.ts).
+  invalidateOrgKnowledgeSubtree: (orgId: string) => {
+    invalidateCalls.push(orgId);
+  },
   invalidateOrgModeRoots: (orgId: string) => {
     invalidateCalls.push(orgId);
   },

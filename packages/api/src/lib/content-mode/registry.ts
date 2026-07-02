@@ -14,7 +14,6 @@
  */
 
 import { Context, Effect, Layer } from "effect";
-import type { PoolClient } from "pg";
 import type { AtlasMode } from "@useatlas/types/auth";
 import type { ModeDraftCounts } from "@useatlas/types/mode";
 import { InternalDB } from "@atlas/api/lib/db/internal";
@@ -25,6 +24,7 @@ import type {
   SimpleModeTable,
 } from "./port";
 import {
+  type ModeTxClient,
   ExoticReadFilterUnavailableError,
   PublishPhaseError,
   resolveStatusClause,
@@ -79,13 +79,13 @@ export interface ContentModeRegistryService {
 
   /**
    * Promote drafts for every registered table using the caller's
-   * transactional `PoolClient`. Runs adapters in tuple order; stops
+   * transactional client. Runs adapters in tuple order; stops
    * on the first failure and surfaces a `PublishPhaseError` tagged
    * with the offending table and phase. The registry never opens or
    * commits its own transaction — caller owns `BEGIN`/`COMMIT`.
    */
   readonly runPublishPhases: (
-    tx: PoolClient,
+    tx: ModeTxClient,
     orgId: string,
   ) => Effect.Effect<ReadonlyArray<PromotionReport>, PublishPhaseError, never>;
 }
@@ -128,7 +128,7 @@ function simplePromoteSql(entry: SimpleModeTable): string {
 /** Promote a single simple table inside the caller's tx, wrapping errors. */
 function promoteSimpleTable(
   entry: SimpleModeTable,
-  tx: PoolClient,
+  tx: ModeTxClient,
   orgId: string,
 ): Effect.Effect<PromotionReport, PublishPhaseError, never> {
   const { table } = resolveSimple(entry);
@@ -165,6 +165,10 @@ export function makeService(
   const byLookup = new Map<string, ContentModeEntry>();
   const segmentKeys: string[] = [];
   const seenSegments = new Set<string>();
+  // Promoted wire keys must be unique too: the `Equal<>` type gate can't catch
+  // a collision ({a: number} & {a: number} collapses), and the failure mode in
+  // `promotedCountsFromReports` would be silent last-write-wins.
+  const seenPromotedKeys = new Set<string>();
 
   for (const entry of tables) {
     // Registration lookup: entries are findable by their `key`, and
@@ -183,6 +187,14 @@ export function makeService(
       }
       byLookup.set(entry.table, entry);
     }
+
+    const promotedKey = entry.kind === "simple" ? entry.key : entry.promotedKey;
+    if (seenPromotedKeys.has(promotedKey)) {
+      throw new Error(
+        `ContentModeRegistry: duplicate promoted wire key "${promotedKey}" in tables tuple`,
+      );
+    }
+    seenPromotedKeys.add(promotedKey);
 
     // Segment-key collection: simple entries contribute their `key`;
     // exotic entries contribute every `countSegments[].key`.

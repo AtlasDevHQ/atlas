@@ -27,21 +27,6 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import type { PoolClient } from "pg";
-import { createLogger } from "@atlas/api/lib/logger";
-import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import {
-  getInternalDB,
-  internalQuery,
-  type InternalPoolClient,
-} from "@atlas/api/lib/db/internal";
-import { runHandler } from "@atlas/api/lib/effect/hono";
-import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
-import { Effect } from "effect";
-import { extractBundle, BundleFormatError } from "@atlas/api/lib/knowledge/bundle-archive";
-import { parseLenientBundle } from "@atlas/api/lib/knowledge/parse-lenient";
-import { readBodyWithCap, BodyCapExceededError } from "@atlas/api/lib/knowledge/read-body-cap";
-import { ingestBundleIntoCollection } from "@atlas/api/lib/knowledge/ingest";
 import type {
   KnowledgeCollectionListResponse,
   KnowledgeDocumentListResponse,
@@ -49,47 +34,34 @@ import type {
   KnowledgeSyncRunResponse,
   KnowledgeUninstallResponse,
 } from "@useatlas/types";
+import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { internalQuery } from "@atlas/api/lib/db/internal";
+import { runHandler } from "@atlas/api/lib/effect/hono";
+import { ingestBundle } from "@atlas/api/lib/knowledge/ingest-bundle";
+import { uninstallCollection } from "@atlas/api/lib/knowledge/collection-lifecycle";
+import { readBodyWithCap, BodyCapExceededError } from "@atlas/api/lib/knowledge/read-body-cap";
+import { getIngestMaxBundleBytes } from "@atlas/api/lib/knowledge/ingest-limits";
 import {
-  getIngestMaxDocs,
-  getIngestMaxDocBytes,
-  getIngestMaxBundleBytes,
-} from "@atlas/api/lib/knowledge/ingest-limits";
+  buildCollectionDocumentsQuery,
+  buildDocumentStatusCountsQuery,
+  normTags,
+  type AdminDocumentRow,
+} from "@atlas/api/lib/knowledge/queries";
 import { OKF_UPLOAD_CATALOG_ID } from "@atlas/api/lib/integrations/install/okf-upload-form-handler";
-import { BUNDLE_SYNC_CATALOG_ID } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
+import {
+  BUNDLE_SYNC_AUTH_SCHEMES,
+  BUNDLE_SYNC_CATALOG_ID,
+} from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
 import { syncCollection } from "@atlas/api/lib/knowledge/sync";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin.knowledge");
 
-/** Module-level content-mode registry — reused for "upload & publish" promotion. */
-const contentModeRegistry = makeService(CONTENT_MODE_TABLES);
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Bust the per-mode knowledge disk mirror (#4208, ADR-0028 §3) so the next
- * `explore` call rebuilds the `knowledge/` subtree from the DB. Reuses the
- * semantic layer's mode-root invalidation — `invalidateOrgModeRoots` busts every
- * mode for the org — the same lazy-rebuild machinery that backs entity serving.
- * Lazy-imported (not a top-level import) so the admin
- * router's static graph doesn't require `semantic/sync` at load time, matching
- * the reconcile posture in `admin-publish.ts`; best-effort, since the DB write has
- * already committed and a stale in-process cache self-heals on the next boot.
- */
-async function invalidateKnowledgeMirror(orgId: string): Promise<void> {
-  try {
-    const { invalidateOrgModeRoots } = await import("@atlas/api/lib/semantic/sync");
-    invalidateOrgModeRoots(orgId);
-  } catch (err) {
-    log.warn(
-      { orgId, err: err instanceof Error ? err.message : String(err) },
-      "Failed to invalidate knowledge mirror — the agent may serve a stale knowledge/ subtree until the next rebuild",
-    );
-  }
-}
 
 /**
  * Load one collection install scoped to the workspace, or null. Matches ANY
@@ -138,35 +110,6 @@ function sourceOf(catalogId: string): "upload" | "bundle-sync" | "unknown" {
   return "unknown";
 }
 
-/**
- * Run `fn` inside a transaction on a dedicated internal-DB client. Mirrors the
- * BEGIN/COMMIT/ROLLBACK + `release(err)` discipline in `admin-publish.ts`: a
- * failed ROLLBACK destroys the client so a dirty connection can't poison the
- * next borrower.
- */
-async function withTransaction<T>(fn: (client: InternalPoolClient) => Promise<T>): Promise<T> {
-  const pool = getInternalDB();
-  const client = await pool.connect();
-  let rollbackErr: Error | null = null;
-  try {
-    await client.query("BEGIN");
-    const result = await fn(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (err) {
-    await client.query("ROLLBACK").catch((rbErr: unknown) => {
-      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
-      log.warn(
-        { err: rollbackErr.message },
-        "ROLLBACK failed after knowledge transaction error — client will be destroyed",
-      );
-    });
-    throw err;
-  } finally {
-    client.release(rollbackErr ?? undefined);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
@@ -178,6 +121,25 @@ const CollectionSyncStatusSchema = z.object({
   lastSyncAt: z.string(),
   status: z.enum(["success", "error"]),
   error: z.string().nullable(),
+});
+
+const CollectionListResponseSchema = z.object({
+  collections: z.array(
+    z.object({
+      slug: z.string(),
+      source: z.enum(["upload", "bundle-sync"]),
+      description: z.string().nullable(),
+      installedAt: z.string().nullable(),
+      endpointUrl: z.string().nullable(),
+      authScheme: z.enum(["none", "bearer", "basic"]).nullable(),
+      sync: CollectionSyncStatusSchema.nullable(),
+      documents: z.object({
+        draft: z.number().int().nonnegative(),
+        published: z.number().int().nonnegative(),
+        archived: z.number().int().nonnegative(),
+      }),
+    }),
+  ),
 });
 
 const listRoute = createRoute({
@@ -195,23 +157,7 @@ const listRoute = createRoute({
       description: "Collection list",
       content: {
         "application/json": {
-          schema: z.object({
-            collections: z.array(
-              z.object({
-                slug: z.string(),
-                source: z.enum(["upload", "bundle-sync"]),
-                description: z.string().nullable(),
-                installedAt: z.string().nullable(),
-                endpointUrl: z.string().nullable(),
-                sync: CollectionSyncStatusSchema.nullable(),
-                documents: z.object({
-                  draft: z.number().int().nonnegative(),
-                  published: z.number().int().nonnegative(),
-                  archived: z.number().int().nonnegative(),
-                }),
-              }),
-            ),
-          }),
+          schema: CollectionListResponseSchema,
         },
       },
     },
@@ -232,6 +178,11 @@ const KnowledgeDocumentSchema = z.object({
   updatedAt: z.string().nullable(),
 });
 
+const DocumentListResponseSchema = z.object({
+  collection: z.string(),
+  documents: z.array(KnowledgeDocumentSchema),
+});
+
 const documentsRoute = createRoute({
   method: "get",
   path: "/{collectionSlug}/documents",
@@ -250,18 +201,30 @@ const documentsRoute = createRoute({
     200: {
       description: "Document list",
       content: {
-        "application/json": {
-          schema: z.object({
-            collection: z.string(),
-            documents: z.array(KnowledgeDocumentSchema),
-          }),
-        },
+        "application/json": { schema: DocumentListResponseSchema },
       },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Collection not found or no internal database", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
+});
+
+const IngestResponseSchema = z.object({
+  collection: z.string(),
+  format: z.enum(["tar", "tar.gz", "zip"]),
+  documents: z.object({
+    created: z.number().int().nonnegative(),
+    updated: z.number().int().nonnegative(),
+    demoted: z.number().int().nonnegative(),
+    resurrected: z.number().int().nonnegative(),
+    unchanged: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+  }),
+  linksWritten: z.number().int().nonnegative(),
+  published: z.boolean(),
+  rejected: z.array(RejectedFileSchema),
+  skippedNonMarkdown: z.number().int().nonnegative(),
 });
 
 const ingestRoute = createRoute({
@@ -297,24 +260,7 @@ const ingestRoute = createRoute({
     200: {
       description: "Ingest summary",
       content: {
-        "application/json": {
-          schema: z.object({
-            collection: z.string(),
-            format: z.enum(["tar", "tar.gz", "zip"]),
-            documents: z.object({
-              created: z.number().int().nonnegative(),
-              updated: z.number().int().nonnegative(),
-              demoted: z.number().int().nonnegative(),
-              resurrected: z.number().int().nonnegative(),
-              unchanged: z.number().int().nonnegative(),
-              total: z.number().int().nonnegative(),
-            }),
-            linksWritten: z.number().int().nonnegative(),
-            published: z.boolean(),
-            rejected: z.array(RejectedFileSchema),
-            skippedNonMarkdown: z.number().int().nonnegative(),
-          }),
-        },
+        "application/json": { schema: IngestResponseSchema },
       },
     },
     400: {
@@ -380,6 +326,12 @@ const syncRoute = createRoute({
   },
 });
 
+const UninstallResponseSchema = z.object({
+  archived: z.boolean(),
+  collection: z.string(),
+  archivedDocuments: z.number().int().nonnegative(),
+});
+
 const deleteRoute = createRoute({
   method: "delete",
   path: "/{collectionSlug}",
@@ -400,13 +352,7 @@ const deleteRoute = createRoute({
     200: {
       description: "Collection uninstalled",
       content: {
-        "application/json": {
-          schema: z.object({
-            archived: z.boolean(),
-            collection: z.string(),
-            archivedDocuments: z.number().int().nonnegative(),
-          }),
-        },
+        "application/json": { schema: UninstallResponseSchema },
       },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -425,6 +371,7 @@ adminKnowledge.use(requireOrgContext());
 adminKnowledge.openapi(listRoute, async (c) =>
   runHandler(c, "list knowledge collections", async () => {
     const { orgId } = c.get("orgContext");
+    const countsQuery = buildDocumentStatusCountsQuery(orgId);
     const [installs, counts, syncStates] = await Promise.all([
       internalQuery<{
         install_id: string;
@@ -443,11 +390,8 @@ adminKnowledge.openapi(listRoute, async (c) =>
         [orgId],
       ),
       internalQuery<{ collection_id: string; status: string; n: number }>(
-        `SELECT collection_id, status, COUNT(*)::int AS n
-           FROM knowledge_documents
-          WHERE workspace_id = $1
-          GROUP BY collection_id, status`,
-        [orgId],
+        countsQuery.text,
+        countsQuery.params,
       ),
       internalQuery<{ collection_id: string; last_sync_at: string; status: string; error: string | null }>(
         `SELECT collection_id,
@@ -486,26 +430,47 @@ adminKnowledge.openapi(listRoute, async (c) =>
 
     return c.json(
       {
-        collections: installs.map((r) => {
+        collections: installs.flatMap((r) => {
           const description = r.config?.description;
           const source = sourceOf(r.catalog_id);
+          // An install from an unrecognized knowledge catalog (unreachable
+          // today — only the two built-in catalogs can create knowledge
+          // installs) has no admin affordances: painting it as an "upload"
+          // collection would offer actions its route gates reject. Skip it
+          // loudly instead of mislabeling it.
+          if (source === "unknown") {
+            log.warn(
+              { orgId, installId: r.install_id, catalogId: r.catalog_id },
+              "Skipping knowledge install with unrecognized catalog from the admin list",
+            );
+            return [];
+          }
           const endpointUrl = r.config?.endpoint_url;
-          return {
-            slug: r.install_id,
-            // Wire enum is two-valued; an unknown catalog (unreachable today —
-            // only the two built-in catalogs can create knowledge installs)
-            // renders as "upload" but NEVER gains upload privileges: both
-            // gated routes check `sourceOf` directly and reject "unknown".
-            source: source === "bundle-sync" ? ("bundle-sync" as const) : ("upload" as const),
-            description: typeof description === "string" ? description : null,
-            installedAt: r.installed_at,
-            // Non-secret by construction — the auth secret lives only in
-            // knowledge_sync_credentials, never in config.
-            endpointUrl:
-              source === "bundle-sync" && typeof endpointUrl === "string" ? endpointUrl : null,
-            sync: source === "bundle-sync" ? syncBySlug.get(r.install_id) ?? null : null,
-            documents: countsBySlug.get(r.install_id) ?? { draft: 0, published: 0, archived: 0 },
-          };
+          const rawAuthScheme = r.config?.auth_scheme;
+          return [
+            {
+              slug: r.install_id,
+              source,
+              description: typeof description === "string" ? description : null,
+              installedAt: r.installed_at,
+              // Non-secret by construction — the auth secret lives only in
+              // knowledge_sync_credentials, never in config.
+              endpointUrl:
+                source === "bundle-sync" && typeof endpointUrl === "string" ? endpointUrl : null,
+              // The scheme (not the secret) pre-fills the edit-sync-settings
+              // dialog. An unrecognized stored value renders as "none" — the
+              // sync engine itself rejects it with an actionable error.
+              authScheme:
+                source === "bundle-sync"
+                  ? typeof rawAuthScheme === "string" &&
+                    (BUNDLE_SYNC_AUTH_SCHEMES as readonly string[]).includes(rawAuthScheme)
+                    ? (rawAuthScheme as (typeof BUNDLE_SYNC_AUTH_SCHEMES)[number])
+                    : ("none" as const)
+                  : null,
+              sync: source === "bundle-sync" ? syncBySlug.get(r.install_id) ?? null : null,
+              documents: countsBySlug.get(r.install_id) ?? { draft: 0, published: 0, archived: 0 },
+            },
+          ];
         }),
         // `satisfies` ties the route payload to the published wire type — a
         // schema/handler rename that drifts from `@useatlas/types` is a compile
@@ -529,29 +494,8 @@ adminKnowledge.openapi(documentsRoute, async (c) =>
       );
     }
 
-    const rows = await internalQuery<{
-      id: string;
-      path: string;
-      title: string | null;
-      description: string | null;
-      type: string | null;
-      tags: unknown;
-      status: string;
-      updated_at: string | null;
-    }>(
-      `SELECT id,
-              path,
-              title,
-              description,
-              type,
-              tags,
-              status,
-              to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at
-         FROM knowledge_documents
-        WHERE workspace_id = $1 AND collection_id = $2 AND status <> 'archived'
-        ORDER BY path ASC`,
-      [orgId, collectionSlug],
-    );
+    const docsQuery = buildCollectionDocumentsQuery(orgId, collectionSlug);
+    const rows = await internalQuery<AdminDocumentRow>(docsQuery.text, docsQuery.params);
 
     return c.json(
       {
@@ -564,8 +508,8 @@ adminKnowledge.openapi(documentsRoute, async (c) =>
           type: r.type,
           // `tags` is a jsonb array; keep only string members so a
           // malformed frontmatter array never breaks the wire contract.
-          tags: Array.isArray(r.tags) ? r.tags.filter((t): t is string => typeof t === "string") : [],
-          // The archived filter above guarantees draft | published only.
+          tags: normTags(r.tags),
+          // The query's archived filter guarantees draft | published only.
           status: r.status === "published" ? ("published" as const) : ("draft" as const),
           updatedAt: r.updated_at,
         })),
@@ -606,14 +550,13 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
       );
     }
 
-    // Read the raw bundle bytes. The total-size cap is the first line of defense
-    // against a decompression bomb (the streaming extractor enforces the decoded
-    // cap too). Reject on the declared Content-Length BEFORE reading the body,
-    // so an obviously-oversized upload fails immediately; the client-supplied
-    // header is advisory, so the body is then STREAMED with a cumulative cap
-    // (the same `readBodyWithCap` guard the sync fetch uses) — a chunked or
-    // lying upload aborts the moment it crosses the limit instead of fully
-    // materializing in memory first.
+    // Read the raw bundle bytes. Reject on the declared Content-Length BEFORE
+    // reading the body, so an obviously-oversized upload fails immediately; the
+    // client-supplied header is advisory, so the body is then STREAMED with a
+    // cumulative cap (the same `readBodyWithCap` guard the sync fetch uses) — a
+    // chunked or lying upload aborts the moment it crosses the limit instead of
+    // fully materializing in memory first. The remaining caps (decompression
+    // bomb, doc count/bytes) live inside `ingestBundle` (the shared seam).
     const maxBundleBytes = getIngestMaxBundleBytes();
     const declaredLength = Number(c.req.header("content-length"));
     if (Number.isFinite(declaredLength) && declaredLength > maxBundleBytes) {
@@ -642,90 +585,73 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
       }
       throw err;
     }
-    if (bytes.length === 0) {
-      return c.json({ error: "empty_bundle", message: "The uploaded bundle is empty.", requestId }, 400);
-    }
 
-    // ── Extract (in memory) → parse leniently ───────────────────────────────
-    let extracted: ReturnType<typeof extractBundle>;
-    try {
-      extracted = extractBundle(bytes, {
-        maxDocBytes: getIngestMaxDocBytes(),
-        maxTotalBytes: maxBundleBytes,
-      });
-    } catch (err) {
-      if (err instanceof BundleFormatError) {
-        return c.json({ error: "invalid_bundle", message: err.message, requestId }, 400);
-      }
-      throw err;
-    }
-
-    const parsed = parseLenientBundle(extracted.files);
-    // Per-file rejections from BOTH stages, surfaced together — never silently
-    // dropped (AC #2).
-    const rejected = [...extracted.errors, ...parsed.errors];
-
-    const maxDocs = getIngestMaxDocs();
-    if (parsed.docs.length > maxDocs) {
-      return c.json(
-        {
-          error: "too_many_documents",
-          message: `Bundle has ${parsed.docs.length} documents, over the ${maxDocs}-document limit.`,
-          requestId,
-        },
-        400,
-      );
-    }
-    if (parsed.docs.length === 0) {
-      return c.json(
-        {
-          error: "no_documents",
-          message:
-            rejected.length > 0
-              ? "No ingestable documents — every file was rejected. See `rejected` for per-file reasons."
-              : "No ingestable markdown documents found in the bundle.",
-          requestId,
-          rejected,
-        },
-        400,
-      );
-    }
-
-    // ── Ingest (+ optional atomic publish) in one transaction ───────────────
-    const report = await withTransaction(async (client) => {
-      const ingestReport = await ingestBundleIntoCollection({
-        client,
-        workspaceId: orgId,
-        collectionId: collectionSlug,
-        // v0 has only the explicit upload source; connector syncs (later) never
-        // reach this route and never get the publish option (ADR-0028 §4).
-        source: "upload",
-        docs: parsed.docs,
-      });
-
-      if (shouldPublish) {
-        // "Upload & publish" — promote through the SAME content-mode phases the
-        // atomic publish endpoint uses, inside this transaction, so the ingested
-        // drafts go live atomically with the upload (ADR-0028 §4; content-mode.md
-        // "promoted inside the existing transaction"). Never a bespoke status
-        // stamp outside the publish mechanism. NOTE: `runPublishPhases` is
-        // workspace-wide (ADR-0028 §4 "runs that same endpoint") — it promotes
-        // EVERY pending draft in the workspace across all content-mode tables
-        // (other knowledge collections, entities, prompts, connections), not just
-        // this bundle's docs, exactly as clicking Publish would. The registry's
-        // adapters only call `.query()` — the same minimal-client cast
-        // admin-publish.ts uses.
-        await Effect.runPromise(
-          contentModeRegistry.runPublishPhases(client as unknown as PoolClient, orgId),
-        );
-      }
-
-      return ingestReport;
+    // The shared seam owns extract → parse → caps → transaction (+ the atomic
+    // "upload & publish" promotion, ADR-0028 §4 — upload collections only, the
+    // source gate above; and the uninstall × in-flight-ingest race guard) →
+    // mirror invalidation. This route is the HTTP disposition adapter: every
+    // failure kind maps to a 4xx.
+    const outcome = await ingestBundle({
+      workspaceId: orgId,
+      collectionId: collectionSlug,
+      source: "upload",
+      bytes,
+      publish: shouldPublish,
     });
 
-    // Rebuild the knowledge mirror: new/updated drafts appear in developer mode
-    // immediately, and an "upload & publish" surfaces in published mode too.
-    await invalidateKnowledgeMirror(orgId);
+    if (outcome.kind !== "ok") {
+      switch (outcome.kind) {
+        case "install_gone":
+          // Uninstall × in-flight-upload race: the pre-check above saw a live
+          // collection, an uninstall landed while the body streamed/parsed, and
+          // the seam's in-transaction re-check aborted before any write. Same
+          // disposition as the pre-check: the collection is gone.
+          return c.json(
+            { error: "not_found", message: `No knowledge collection "${collectionSlug}".`, requestId },
+            404,
+          );
+        case "empty_bundle":
+          return c.json(
+            { error: "empty_bundle", message: "The uploaded bundle is empty.", requestId },
+            400,
+          );
+        case "bundle_too_large":
+          return c.json(
+            {
+              error: "bundle_too_large",
+              message: `Bundle is ${outcome.bytes} bytes, over the ${outcome.maxBundleBytes}-byte limit.`,
+              requestId,
+            },
+            400,
+          );
+        case "invalid_bundle":
+          return c.json({ error: "invalid_bundle", message: outcome.message, requestId }, 400);
+        case "too_many_documents":
+          return c.json(
+            {
+              error: "too_many_documents",
+              message: `Bundle has ${outcome.count} documents, over the ${outcome.maxDocs}-document limit.`,
+              requestId,
+            },
+            400,
+          );
+        case "no_documents":
+          return c.json(
+            {
+              error: "no_documents",
+              message:
+                outcome.rejected.length > 0
+                  ? "No ingestable documents — every file was rejected. See `rejected` for per-file reasons."
+                  : "No ingestable markdown documents found in the bundle.",
+              requestId,
+              rejected: [...outcome.rejected],
+            },
+            400,
+          );
+      }
+    }
+
+    const { report, rejected } = outcome;
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.knowledge.ingest,
@@ -735,7 +661,7 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
       metadata: {
         collectionSlug,
-        format: extracted.format,
+        format: outcome.format,
         created: report.created,
         updated: report.updated,
         demoted: report.demoted,
@@ -748,14 +674,14 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
     });
 
     log.info(
-      { requestId, orgId, collectionSlug, format: extracted.format, ...report, published: shouldPublish, rejected: rejected.length },
+      { requestId, orgId, collectionSlug, format: outcome.format, ...report, published: shouldPublish, rejected: rejected.length },
       "Knowledge bundle ingested",
     );
 
     return c.json(
       {
         collection: collectionSlug,
-        format: extracted.format,
+        format: outcome.format,
         documents: {
           created: report.created,
           updated: report.updated,
@@ -766,8 +692,8 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
         },
         linksWritten: report.linksWritten,
         published: shouldPublish,
-        rejected,
-        skippedNonMarkdown: parsed.skippedNonMarkdown,
+        rejected: [...rejected],
+        skippedNonMarkdown: outcome.skippedNonMarkdown,
       } satisfies KnowledgeIngestSummary,
       200,
     );
@@ -859,43 +785,13 @@ adminKnowledge.openapi(deleteRoute, async (c) =>
       );
     }
 
-    // Archive the collection container + its documents in one transaction.
-    // Documents are ARCHIVED, never hard-deleted (ADR-0028 §5); `knowledge_links`
-    // cascade only on document DELETE, so archiving leaves the graph intact
-    // (link visibility follows its source document's status). Sync bookkeeping
-    // and the endpoint credential (bundle-sync collections, #4211) are
-    // hard-DELETED — secrets never outlive their install, and both are no-op
-    // for upload collections.
-    const archivedDocuments = await withTransaction(async (client) => {
-      await client.query(
-        `UPDATE workspace_plugins
-            SET status = 'archived', enabled = false, updated_at = NOW()
-          WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'knowledge'`,
-        [orgId, collectionSlug],
-      );
-      const docs = await client.query(
-        `UPDATE knowledge_documents
-            SET status = 'archived', updated_at = NOW()
-          WHERE workspace_id = $1 AND collection_id = $2 AND status <> 'archived'
-          RETURNING id`,
-        [orgId, collectionSlug],
-      );
-      await client.query(
-        `DELETE FROM knowledge_sync_credentials
-          WHERE workspace_id = $1 AND collection_id = $2`,
-        [orgId, collectionSlug],
-      );
-      await client.query(
-        `DELETE FROM knowledge_sync_state
-          WHERE workspace_id = $1 AND collection_id = $2`,
-        [orgId, collectionSlug],
-      );
-      return docs.rows.length;
+    // The shared lifecycle seam owns the archive-on-uninstall transaction
+    // (ADR-0028 §5 — documents archived, never hard-deleted; sync bookkeeping
+    // + endpoint credential hard-deleted) and the mirror invalidation.
+    const { archivedDocuments } = await uninstallCollection({
+      workspaceId: orgId,
+      collectionSlug,
     });
-
-    // Archived documents must drop out of both the published and developer
-    // mirrors on the next explore call.
-    await invalidateKnowledgeMirror(orgId);
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.knowledge.uninstall,
@@ -914,5 +810,32 @@ adminKnowledge.openapi(deleteRoute, async (c) =>
     );
   }),
 );
+
+// ---------------------------------------------------------------------------
+// Producer↔wire drift guards (#81 arch review, inverted-SSOT fix). The web
+// mirrors in `admin-schemas.ts` are drift-checked against `@useatlas/types` —
+// but the PRODUCER (these hono-`z` response schemas) previously had no tie to
+// the wire types at all, so the types could silently lie about what the server
+// returns. Each check asserts the schema's inferred output stays assignable to
+// its canonical wire interface; a dropped/renamed field fails to type-check.
+// ---------------------------------------------------------------------------
+type _Expect<T extends true> = T;
+export type _CollectionListProducerDrift = _Expect<
+  z.infer<typeof CollectionListResponseSchema> extends KnowledgeCollectionListResponse
+    ? true
+    : false
+>;
+export type _DocumentListProducerDrift = _Expect<
+  z.infer<typeof DocumentListResponseSchema> extends KnowledgeDocumentListResponse ? true : false
+>;
+export type _IngestProducerDrift = _Expect<
+  z.infer<typeof IngestResponseSchema> extends KnowledgeIngestSummary ? true : false
+>;
+export type _SyncRunProducerDrift = _Expect<
+  z.infer<typeof SyncRunResponseSchema> extends KnowledgeSyncRunResponse ? true : false
+>;
+export type _UninstallProducerDrift = _Expect<
+  z.infer<typeof UninstallResponseSchema> extends KnowledgeUninstallResponse ? true : false
+>;
 
 export { adminKnowledge };

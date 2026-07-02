@@ -43,6 +43,13 @@ function counts(partial: Partial<ModeDraftCounts> = {}): ModeDraftCounts {
 }
 
 describe("formatDraftSegments", () => {
+  test("a partial counts object (older-API deploy overlap) yields clean segments, never NaN", () => {
+    // An older API omits newer segments entirely; the per-key guard must read
+    // the missing fields as 0 instead of poisoning sums to NaN.
+    const partial = { connections: 1 } as unknown as Parameters<typeof formatDraftSegments>[0];
+    expect(formatDraftSegments(partial)).toEqual(["1 connection"]);
+  });
+
   test("returns empty array when all counts are zero", () => {
     expect(formatDraftSegments(counts())).toEqual([]);
   });

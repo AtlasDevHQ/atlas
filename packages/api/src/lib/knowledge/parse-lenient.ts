@@ -30,17 +30,17 @@
  * documents' `path` (ADR-0028 §5 / migration 0163).
  */
 
-import * as yaml from "js-yaml";
 import type { InteropFile } from "@atlas/api/lib/semantic/okf";
+import {
+  mdBasename,
+  RESERVED_BASENAMES,
+  splitFrontmatterBlock,
+  topLevelHeading,
+} from "@atlas/api/lib/semantic/okf/md-utils";
 import type { BundleEntryError } from "./bundle-archive";
 
 /** Default OKF `type` stamped on a document that arrived without one. */
 export const DEFAULT_OKF_TYPE = "Document";
-
-/** Reserved OKF filenames — navigation/history, never concept documents. */
-const RESERVED_BASENAMES = new Set(["index.md", "log.md"]);
-
-const FRONTMATTER_OPEN = /^---\r?\n/;
 
 /** One extracted intra-bundle markdown link. */
 export interface LenientLink {
@@ -80,11 +80,6 @@ export interface LenientParseResult {
   readonly skippedNonMarkdown: number;
 }
 
-function basename(p: string): string {
-  const idx = p.lastIndexOf("/");
-  return idx === -1 ? p : p.slice(idx + 1);
-}
-
 function dirname(p: string): string {
   const idx = p.lastIndexOf("/");
   return idx === -1 ? "" : p.slice(0, idx);
@@ -92,7 +87,7 @@ function dirname(p: string): string {
 
 /** Filename stem without the `.md` extension — the title fallback of last resort. */
 function stem(path: string): string {
-  return basename(path).replace(/\.md$/i, "");
+  return mdBasename(path).replace(/\.md$/i, "");
 }
 
 type FrontmatterSplit =
@@ -100,49 +95,23 @@ type FrontmatterSplit =
   | { readonly ok: false; readonly reason: string };
 
 /**
- * Split a document into frontmatter + body, leniently. A file with no `---`
- * opener is treated as pure markdown (empty frontmatter, whole content is the
- * body) — NOT an error. Only a file that opens a frontmatter block and then
- * fails to close/parse it (or parses to a non-mapping) is an error. A parsed
- * mapping WITHOUT `type` is intentionally NOT an error here — `type` is stamped
- * by the caller.
+ * Split a document into frontmatter + body, leniently — the FORGIVING policy
+ * over the shared mechanical splitter (`semantic/okf/md-utils`). A file with
+ * no `---` opener is treated as pure markdown (empty frontmatter, whole
+ * content is the body) — NOT an error; so is an empty block. Only a file that
+ * opens a frontmatter block and then fails to close/parse it (or parses to a
+ * non-mapping) is an error. A parsed mapping WITHOUT `type` is intentionally
+ * NOT an error here — `type` is stamped by the caller.
  */
 export function splitLenientFrontmatter(content: string): FrontmatterSplit {
-  if (!FRONTMATTER_OPEN.test(content)) {
+  const split = splitFrontmatterBlock(content);
+  if (split.kind === "none") {
     return { ok: true, frontmatter: {}, body: content };
   }
-  const afterOpen = content.replace(FRONTMATTER_OPEN, "");
-  const closeMatch = afterOpen.match(/^---\s*$/m);
-  if (!closeMatch || closeMatch.index === undefined) {
-    return { ok: false, reason: "unterminated frontmatter block" };
+  if (split.kind === "error") {
+    return { ok: false, reason: split.reason };
   }
-  const rawYaml = afterOpen.slice(0, closeMatch.index);
-  const body = afterOpen.slice(closeMatch.index + closeMatch[0].length).replace(/^\r?\n/, "");
-
-  // An empty frontmatter block (`---\n---`) is "no fields", not malformed. Guard
-  // before `yaml.load` — js-yaml throws "input is empty" on a blank document.
-  if (rawYaml.trim() === "") {
-    return { ok: true, frontmatter: {}, body };
-  }
-
-  let data: unknown;
-  try {
-    data = yaml.load(rawYaml);
-  } catch (err) {
-    return {
-      ok: false,
-      reason: `frontmatter YAML parse error: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  // An empty frontmatter block (`---\n---`) parses to null/undefined — treat as
-  // "no fields", not a malformed mapping.
-  if (data === null || data === undefined) {
-    return { ok: true, frontmatter: {}, body };
-  }
-  if (typeof data !== "object" || Array.isArray(data)) {
-    return { ok: false, reason: "frontmatter is not a YAML mapping" };
-  }
-  return { ok: true, frontmatter: data as Record<string, unknown>, body };
+  return { ok: true, frontmatter: split.data ?? {}, body: split.body };
 }
 
 /** Narrow an unknown frontmatter value to a non-empty trimmed string, else null. */
@@ -175,19 +144,12 @@ function timestampField(value: unknown): string | null {
   return null;
 }
 
-/**
- * First top-level `# Heading` text, or null. Hand-scanned rather than a
- * `/^#\s+.../m` regex — the latter backtracks polynomially on hostile
- * whitespace runs and this walks untrusted bundle content (CodeQL
- * js/polynomial-redos, same posture as `okf/parse.ts::topLevelHeading`).
- */
+/** First top-level `# Heading` text, or null — the shared CodeQL-safe line
+ *  scanner (`semantic/okf/md-utils`) applied to a whole body. */
 function firstHeading(body: string): string | null {
   for (const line of body.split("\n")) {
-    if (line.charAt(0) !== "#") continue;
-    const second = line.charAt(1);
-    if (second !== " " && second !== "\t") continue;
-    const text = line.slice(2).trim();
-    if (text !== "") return text;
+    const text = topLevelHeading(line);
+    if (text !== null) return text;
   }
   return null;
 }
@@ -262,7 +224,7 @@ export function parseLenientBundle(files: readonly InteropFile[]): LenientParseR
       skippedNonMarkdown++;
       continue;
     }
-    if (RESERVED_BASENAMES.has(basename(file.path).toLowerCase())) continue;
+    if (RESERVED_BASENAMES.has(mdBasename(file.path).toLowerCase())) continue;
 
     const split = splitLenientFrontmatter(file.content);
     if (!split.ok) {

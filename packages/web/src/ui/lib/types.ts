@@ -149,6 +149,7 @@ export type {
   KnowledgeCollectionListResponse,
   KnowledgeCollectionSource,
   KnowledgeCollectionSyncStatus,
+  KnowledgeSyncAuthScheme,
   KnowledgeDocumentCounts,
   KnowledgeDocumentSummary,
   KnowledgeDocumentListResponse,

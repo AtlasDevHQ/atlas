@@ -13,6 +13,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { Effect } from "effect";
+import { promotedCountsFromReports } from "@atlas/api/lib/content-mode/promoted";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 
 const CURRENT_ORG = "org-1";
@@ -72,8 +73,21 @@ mock.module("@atlas/api/lib/audit", () => ({
   ADMIN_ACTIONS: { mode: { publish: "mode.publish" } },
 }));
 
+// Partial mock, justified: this file's import graph reaches only the exports
+// stubbed below (isolated runner; an unmocked export reached later fails
+// loudly). The route projects reports → wire counts via the REAL
+// `promotedCountsFromReports` (deep-path import stays unmocked) over a mini
+// registry tuple that mirrors the production key↔table mapping — so these
+// tests pin the actual projection, not a re-implementation of it.
 mock.module("@atlas/api/lib/content-mode", () => ({
-  CONTENT_MODE_TABLES: [],
+  CONTENT_MODE_TABLES: [
+    { kind: "simple", key: "connections", table: "workspace_plugins" },
+    { kind: "simple", key: "prompts", table: "prompt_collections" },
+    { kind: "simple", key: "starterPrompts", table: "query_suggestions" },
+    { kind: "simple", key: "knowledgeDocuments", table: "knowledge_documents" },
+    { kind: "exotic", key: "semantic_entities", promotedKey: "entities" },
+  ],
+  promotedCountsFromReports,
   makeService: () => ({
     runPublishPhases: () =>
       Effect.try({

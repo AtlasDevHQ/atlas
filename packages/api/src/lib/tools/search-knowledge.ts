@@ -32,22 +32,20 @@ import { tool } from "ai";
 import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
+import { KNOWLEDGE_TRUST_FRAMING } from "@atlas/api/lib/knowledge/framing";
+import { narrowKnowledgeStatus } from "@atlas/api/lib/knowledge/status";
 import {
-  narrowKnowledgeStatus,
+  knowledgeDocColumns,
+  knowledgeStatusClause,
+  normTags,
+  normTimestamp,
+  recencyExpr,
+  type KnowledgeDocRow,
   type KnowledgeDocumentStatus,
-} from "@atlas/api/lib/knowledge/status";
+} from "@atlas/api/lib/knowledge/queries";
 import type { AtlasMode } from "@useatlas/types/auth";
 
 const log = createLogger("search-knowledge");
-
-/** Content-mode segment key for `knowledge_documents` (see content-mode/tables.ts). */
-const KNOWLEDGE_TABLE_KEY = "knowledgeDocuments";
-
-export {
-  KNOWLEDGE_DOCUMENT_STATUSES,
-  type KnowledgeDocumentStatus,
-} from "@atlas/api/lib/knowledge/status";
 
 
 /** Default page size when the caller omits `limit`. */
@@ -116,21 +114,10 @@ export type KnowledgeQueryExec = <T extends Record<string, unknown>>(
   params: unknown[],
 ) => Promise<T[]>;
 
-// ── DB row shapes ────────────────────────────────────────────────────
+// ── DB row shapes (base row + normalizers come from the shared knowledge
+// read module — lib/knowledge/queries) ───────────────────────────────
 
-interface DocRow extends Record<string, unknown> {
-  id: string;
-  path: string;
-  collection_id: string;
-  title: string | null;
-  description: string | null;
-  type: string | null;
-  tags: unknown;
-  resource: string | null;
-  atlas_source: string | null;
-  atlas_ingested_at: Date | string | null;
-  timestamp: Date | string | null;
-  status: string;
+interface DocRow extends KnowledgeDocRow {
   snippet: string | null;
   rank: number | string | null;
 }
@@ -142,30 +129,6 @@ interface NeighborRow extends DocRow {
 }
 
 // ── Normalizers ──────────────────────────────────────────────────────
-
-/** timestamptz read-back (Date | ISO string | null) → ISO string | null. */
-function toIso(value: unknown): string | null {
-  if (value == null) return null;
-  const d = value instanceof Date ? value : new Date(String(value));
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-/** jsonb `tags` → clean `string[]` (pg may hand back a parsed array or raw string). */
-function toTags(value: unknown): string[] {
-  let arr: unknown = value;
-  if (typeof value === "string") {
-    try {
-      arr = JSON.parse(value);
-    } catch {
-      // intentionally ignored: pg normally returns already-parsed jsonb; a
-      // non-JSON string here is malformed provenance metadata, not query-fatal.
-      // Tags are display-only (never a gate), so degrade to none but surface it.
-      log.debug({ raw: value }, "toTags: unparseable jsonb tags — defaulting to []");
-      return [];
-    }
-  }
-  return Array.isArray(arr) ? arr.filter((t): t is string => typeof t === "string") : [];
-}
 
 /** Postgres text[] (or null) → `string[]`, dropping non-strings and nulls. */
 function toStringArray(value: unknown): string[] {
@@ -181,11 +144,11 @@ function toResult(row: DocRow): KnowledgeSearchResult {
     snippet: row.snippet ?? null,
     provenance: {
       type: row.type,
-      tags: toTags(row.tags),
+      tags: normTags(row.tags),
       resource: row.resource,
       source: row.atlas_source,
-      ingestedAt: toIso(row.atlas_ingested_at),
-      timestamp: toIso(row.timestamp),
+      ingestedAt: normTimestamp(row.atlas_ingested_at),
+      timestamp: normTimestamp(row.timestamp),
       // `status` is CHECK-constrained in `knowledge_documents` to exactly the
       // tuple's values; narrow via the vocabulary anyway (fail toward `draft` —
       // never label an unrecognized state as trusted published content).
@@ -196,10 +159,8 @@ function toResult(row: DocRow): KnowledgeSearchResult {
 
 // ── Query builders (pure, unit-tested) ───────────────────────────────
 
-/** Shared projection column list — same shape drives seed + neighbor mapping. */
-const DOC_COLUMNS = `kd.id, kd.path, kd.collection_id, kd.title, kd.description,
-  kd.type, kd.tags, kd.resource, kd.atlas_source, kd.atlas_ingested_at,
-  kd."timestamp", kd.status`;
+/** Shared projection (lib/knowledge/queries) — same shape drives seed + neighbor mapping. */
+const DOC_COLUMNS = knowledgeDocColumns("kd");
 
 // Full-text vector over the human-readable fields (title + description + body),
 // all terms equally weighted — no setweight()/A-B-C ranking, so ts_rank treats a
@@ -218,10 +179,7 @@ export function buildSearchQuery(
   filters: KnowledgeSearchFilters,
 ): { sql: string; params: unknown[] } {
   const params: unknown[] = [workspaceId];
-  const where: string[] = [
-    `kd.workspace_id = $1`,
-    resolveStatusClause(KNOWLEDGE_TABLE_KEY, mode, "kd"),
-  ];
+  const where: string[] = [`kd.workspace_id = $1`, knowledgeStatusClause(mode, "kd")];
 
   const trimmedQuery = filters.query?.trim();
   let tsQueryExpr: string | null = null;
@@ -244,7 +202,7 @@ export function buildSearchQuery(
   }
   if (filters.since) {
     params.push(filters.since);
-    where.push(`coalesce(kd."timestamp", kd.atlas_ingested_at) >= $${params.length}::timestamptz`);
+    where.push(`${recencyExpr("kd")} >= $${params.length}::timestamptz`);
   }
   if (tsQueryExpr) {
     where.push(`${TS_VECTOR} @@ ${tsQueryExpr}`);
@@ -258,8 +216,8 @@ export function buildSearchQuery(
   // Relevance first when there's a lexical query; recency is the tiebreaker
   // (and the sole order when the query is a pure structured filter).
   const orderBy = tsQueryExpr
-    ? `rank DESC NULLS LAST, coalesce(kd."timestamp", kd.atlas_ingested_at) DESC NULLS LAST`
-    : `coalesce(kd."timestamp", kd.atlas_ingested_at) DESC NULLS LAST`;
+    ? `rank DESC NULLS LAST, ${recencyExpr("kd")} DESC NULLS LAST`
+    : `${recencyExpr("kd")} DESC NULLS LAST`;
 
   params.push(filters.limit);
   const limitPlaceholder = `$${params.length}`;
@@ -289,7 +247,7 @@ export function buildNeighborQuery(
   mode: AtlasMode,
   seedIds: readonly string[],
 ): { sql: string; params: unknown[] } {
-  const statusClause = resolveStatusClause(KNOWLEDGE_TABLE_KEY, mode, "kd");
+  const statusClause = knowledgeStatusClause(mode, "kd");
   const sql = `
     WITH seeds AS (
       SELECT id, collection_id, path
@@ -376,7 +334,7 @@ export async function searchKnowledgeCore(opts: {
 // ── Tool definition ──────────────────────────────────────────────────
 
 /** LLM-facing description for the `searchKnowledge` tool. */
-export const SEARCH_KNOWLEDGE_TOOL_DESCRIPTION = `Search the workspace's hosted knowledge base (uploaded OKF/markdown documents) with a layered filter → full-text → 1-hop graph expansion. Combine a lexical \`query\` with structured frontmatter filters (\`type\`, \`tags\`, \`collection\`, \`since\`); each result carries \`{ path, collection, title, snippet, provenance }\` and, when \`expand\` is on (default), the linked \`neighbors\` of the matched documents. Reads published documents only (drafts surface in developer mode). Example call: \`{ "query": "replica lag runbook", "tags": ["ops"] }\`. Example response: \`{ "results": [{ "path": "runbooks/eu.md", "collection": "runbooks", "title": "EU", "snippet": "...", "provenance": { "type": "Runbook", "status": "published" } }], "neighbors": [] }\`.
+export const SEARCH_KNOWLEDGE_TOOL_DESCRIPTION = `Search the workspace's hosted knowledge base (uploaded OKF/markdown documents) with a layered filter → full-text → 1-hop graph expansion. Combine a lexical \`query\` with structured frontmatter filters (\`type\`, \`tags\`, \`collection\`, \`since\`); each result carries \`{ path, collection, title, snippet, provenance }\` and, when \`expand\` is on (default), the linked \`neighbors\` of the matched documents. Reads published documents only (drafts surface in developer mode); every result is ${KNOWLEDGE_TRUST_FRAMING}. Example call: \`{ "query": "replica lag runbook", "tags": ["ops"] }\`. Example response: \`{ "results": [{ "path": "runbooks/eu.md", "collection": "runbooks", "title": "EU", "snippet": "...", "provenance": { "type": "Runbook", "status": "published" } }], "neighbors": [] }\`.
 
 Use this when the user's question is about narrative/reference knowledge (runbooks, playbooks, docs, policies, glossaries) rather than tabular data, or when you need the linked context around a document. Don't use this for querying business data — that's \`executeSQL\`; and don't use it for the on-disk semantic layer — that's \`explore\`. It never touches the SQL table whitelist, metrics, or the business glossary.`;
 

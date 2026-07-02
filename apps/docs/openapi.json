@@ -56482,6 +56482,18 @@
                               "null"
                             ]
                           },
+                          "authScheme": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "enum": [
+                              "none",
+                              "bearer",
+                              "basic",
+                              null
+                            ]
+                          },
                           "sync": {
                             "type": [
                               "object",
@@ -56540,6 +56552,7 @@
                           "description",
                           "installedAt",
                           "endpointUrl",
+                          "authScheme",
                           "sync",
                           "documents"
                         ]

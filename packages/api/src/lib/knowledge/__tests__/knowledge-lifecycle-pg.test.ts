@@ -24,21 +24,22 @@ import { extractBundle } from "@atlas/api/lib/knowledge/bundle-archive";
 import { parseLenientBundle } from "@atlas/api/lib/knowledge/parse-lenient";
 import { ingestBundleIntoCollection, type IngestClient } from "@atlas/api/lib/knowledge/ingest";
 import { KNOWLEDGE_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/okf-upload-form-handler";
+import { rowToDoc } from "@atlas/api/lib/knowledge/mirror";
 import {
   buildCollectionsQuery,
-  rowToDoc,
-  type KnowledgeDocRow,
-} from "@atlas/api/lib/knowledge/mirror";
+  buildCollectionDocumentsQuery,
+  buildDocumentStatusCountsQuery,
+  type KnowledgeDocRowWithBody,
+} from "@atlas/api/lib/knowledge/queries";
 import {
   BUNDLE_SYNC_CATALOG_ID,
   BUNDLE_SYNC_INSTALL_UPSERT_SQL,
 } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
+import { SYNC_CYCLE_INSTALLS_SQL, SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
 import {
-  ARCHIVE_ABSENT_SQL,
-  SYNC_CYCLE_INSTALLS_SQL,
-  SYNC_INSTALL_RECHECK_SQL,
-  SYNC_STATE_UPSERT_SQL,
-} from "@atlas/api/lib/knowledge/sync";
+  ARCHIVE_COLLECTION_DOCS_SQL,
+  INSTALL_RECHECK_SQL,
+} from "@atlas/api/lib/knowledge/collection-lifecycle";
 import { SYNC_CREDENTIAL_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync-credentials";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
 import { Effect } from "effect";
@@ -159,12 +160,15 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     expect(links.rows).toEqual([{ target_path: "glossary/replica.md", anchor_text: "glossary" }]);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("serves the admin documents-list + publish-preview projections against the live schema (#4209)", async () => {
-    // These two SELECTs mirror the exact projections the admin surface runs
-    // (`GET /api/v1/admin/knowledge/{slug}/documents` and the knowledge slice
-    // of `/api/v1/admin/publish-preview`). Exercising them here pins every
-    // referenced column name (description, type, tags, to_char(updated_at),
-    // the COALESCE label) against real Postgres — the mocked route tests can't.
+  it("serves the admin documents-list, status-counts, and publish-preview projections against the live schema (#4209)", async () => {
+    // The documents-list + status-counts reads execute the EXACT exported
+    // builders the route runs (`buildCollectionDocumentsQuery` /
+    // `buildDocumentStatusCountsQuery` — the reason they're exported); the
+    // publish-preview SELECT mirrors the knowledge slice of
+    // `/api/v1/admin/publish-preview`. This pins every referenced column name
+    // (description, type, tags, to_char(updated_at), the COALESCE label)
+    // against real Postgres — the mocked route tests can't.
+    const docsQuery = buildCollectionDocumentsQuery(ws, "runbooks");
     const list = await pool.query<{
       id: string;
       path: string;
@@ -174,25 +178,22 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
       tags: unknown;
       status: string;
       updated_at: string | null;
-    }>(
-      `SELECT id,
-              path,
-              title,
-              description,
-              type,
-              tags,
-              status,
-              to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at
-         FROM knowledge_documents
-        WHERE workspace_id = $1 AND collection_id = 'runbooks' AND status <> 'archived'
-        ORDER BY path ASC`,
-      [ws],
-    );
+    }>(docsQuery.text, docsQuery.params);
     // Both freshly-ingested docs are draft, ordered by path.
     expect(list.rows.map((r) => r.path)).toEqual(["glossary/replica.md", "runbooks/eu.md"]);
     expect(list.rows.every((r) => r.status === "draft")).toBe(true);
     expect(list.rows.every((r) => typeof r.updated_at === "string")).toBe(true);
     expect(Array.isArray(list.rows[1]?.tags)).toBe(true);
+
+    const countsQuery = buildDocumentStatusCountsQuery(ws);
+    const counts = await pool.query<{ collection_id: string; status: string; n: number }>(
+      countsQuery.text,
+      countsQuery.params,
+    );
+    const runbookDrafts = counts.rows.find(
+      (r) => r.collection_id === "runbooks" && r.status === "draft",
+    );
+    expect(runbookDrafts?.n).toBe(2);
 
     const preview = await pool.query<{ id: string; label: string; updated_at: unknown }>(
       `SELECT id::text AS id, COALESCE(NULLIF(title, ''), path) AS label, updated_at
@@ -362,7 +363,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     // The REAL serving SELECT (quoted "timestamp" alias, atlas_* columns, status
     // clause) against the live schema — published mode sees only the published doc.
     const pub = buildCollectionsQuery(ws, "published", "serving");
-    const pubRows = (await pool.query<KnowledgeDocRow>(pub.text, pub.params)).rows;
+    const pubRows = (await pool.query<KnowledgeDocRowWithBody>(pub.text, pub.params)).rows;
     expect(pubRows.map((r) => r.path)).toEqual(["pub.md"]);
     // The read→map path produces a conformant MirrorDoc with provenance + timestamp.
     const doc = rowToDoc(pubRows[0]);
@@ -373,7 +374,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
 
     // Developer mode overlays the draft.
     const dev = buildCollectionsQuery(ws, "developer", "serving");
-    const devRows = (await pool.query<KnowledgeDocRow>(dev.text, dev.params)).rows;
+    const devRows = (await pool.query<KnowledgeDocRowWithBody>(dev.text, dev.params)).rows;
     expect(devRows.map((r) => r.path).sort()).toEqual(["draft.md", "pub.md"]);
   }, PG_TEST_TIMEOUT_MS);
 
@@ -487,7 +488,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
 
   it("the uninstall × sync race guards hold against the live schema", async () => {
     // The in-transaction re-check sees the live install…
-    const live = await pool.query<{ status: string }>(SYNC_INSTALL_RECHECK_SQL, [
+    const live = await pool.query<{ status: string }>(INSTALL_RECHECK_SQL, [
       ws,
       "synced-docs",
     ]);
@@ -508,7 +509,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
         WHERE workspace_id = $1 AND install_id = 'ghost-docs'`,
       [ws],
     );
-    const gone = await pool.query<{ status: string }>(SYNC_INSTALL_RECHECK_SQL, [ws, "ghost-docs"]);
+    const gone = await pool.query<{ status: string }>(INSTALL_RECHECK_SQL, [ws, "ghost-docs"]);
     expect(gone.rows[0]?.status).toBe("archived");
     await pool.query(SYNC_STATE_UPSERT_SQL, [ws, "ghost-docs", "success", null, null]);
     const state = await pool.query<{ n: number }>(
@@ -549,7 +550,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     try {
       await txClient.query("BEGIN");
       reports = await Effect.runPromise(
-        registry.runPublishPhases(txClient as unknown as PoolClient, wsPromote),
+        registry.runPublishPhases(txClient, wsPromote),
       );
       await txClient.query("COMMIT");
     } catch (err) {
@@ -570,7 +571,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     expect(statuses.rows.every((r) => r.status === "published")).toBe(true);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("archives absent paths via ARCHIVE_ABSENT_SQL without touching present or rejected paths", async () => {
+  it("archives absent paths via ARCHIVE_COLLECTION_DOCS_SQL without touching present or rejected paths", async () => {
     await ingestBundleIntoCollection({
       client,
       workspaceId: ws,
@@ -579,7 +580,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
       docs: docsFrom({ "keep.md": "# keep", "gone.md": "# gone", "broken.md": "# broken" }),
     });
     // Next pull: keep.md present, broken.md present-but-rejected, gone.md absent.
-    const archived = await pool.query<{ id: string }>(ARCHIVE_ABSENT_SQL, [
+    const archived = await pool.query<{ id: string }>(ARCHIVE_COLLECTION_DOCS_SQL, [
       ws,
       "synced-docs",
       ["keep.md", "broken.md"],

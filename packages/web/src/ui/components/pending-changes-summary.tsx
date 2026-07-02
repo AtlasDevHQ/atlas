@@ -2,7 +2,7 @@
 
 import { useModeStatus } from "@/ui/hooks/use-mode-status";
 import { cn } from "@/lib/utils";
-import { totalDraftCount } from "@/ui/lib/draft-counts";
+import { draftSurfaceSegments, totalDrafts } from "@/ui/lib/content-surfaces";
 import type { ModeDraftCounts } from "@useatlas/types/mode";
 
 /**
@@ -28,7 +28,7 @@ export function PendingChangesSummary({ className }: { className?: string }) {
   if (segments.length === 0) return null;
 
   const label = segments.join(" \u00b7 ");
-  const total = totalDraftCount(counts);
+  const total = totalDrafts(counts);
   const plural = total === 1 ? "change" : "changes";
 
   return (
@@ -53,40 +53,11 @@ export function PendingChangesSummary({ className }: { className?: string }) {
  * counts. Exposed for tests so we can assert ordering and singular/plural
  * without rendering React.
  *
- * Ordering (connections → entities → prompts → starter prompts →
- * knowledge documents) matches the user's mental model of the publish
- * dependency chain: connections define data sources, entities expose them,
- * prompts reference them, starter prompts are the empty-state surface, and
- * knowledge documents are descriptive context. `entityEdits` and
- * `entityDeletes` fold into `entities` so the chip stays compact — the
- * full breakdown lives in the Publish modal.
+ * Ordering, labels, and the entity fold all come from the shared
+ * content-surface descriptors (`@/ui/lib/content-surfaces`) — one home for
+ * every pending-changes surface, claim-checked against `ModeDraftCounts` at
+ * compile time.
  */
 export function formatDraftSegments(counts: ModeDraftCounts): string[] {
-  const segments: string[] = [];
-  const entityTotal = counts.entities + counts.entityEdits + counts.entityDeletes;
-
-  if (counts.connections > 0) {
-    segments.push(pluralize(counts.connections, "connection", "connections"));
-  }
-  if (entityTotal > 0) {
-    segments.push(pluralize(entityTotal, "entity", "entities"));
-  }
-  if (counts.prompts > 0) {
-    segments.push(pluralize(counts.prompts, "prompt", "prompts"));
-  }
-  if (counts.starterPrompts > 0) {
-    segments.push(
-      pluralize(counts.starterPrompts, "starter prompt", "starter prompts"),
-    );
-  }
-  if (counts.knowledgeDocuments > 0) {
-    segments.push(
-      pluralize(counts.knowledgeDocuments, "knowledge document", "knowledge documents"),
-    );
-  }
-  return segments;
-}
-
-function pluralize(count: number, singular: string, plural: string): string {
-  return `${count} ${count === 1 ? singular : plural}`;
+  return draftSurfaceSegments(counts, null).map((s) => s.chipLabel);
 }

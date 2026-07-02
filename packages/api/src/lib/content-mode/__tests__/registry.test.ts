@@ -14,15 +14,16 @@
 
 import { describe, it, expect } from "bun:test";
 import { Effect, Layer } from "effect";
-import type { ModeDraftCounts } from "@useatlas/types/mode";
+import type { ModeDraftCounts, PublishPromotedCounts } from "@useatlas/types/mode";
 import { CONTENT_MODE_TABLES } from "../tables";
-import type { InferDraftCounts } from "../infer";
+import type { InferDraftCounts, InferPromotedCounts } from "../infer";
 import {
   ContentModeRegistry,
   ContentModeRegistryLive,
   makeService,
   type ContentModeRegistryService,
 } from "../registry";
+import { promotedCountsFromReports } from "../promoted";
 import type { ContentModeEntry, PromotionReport } from "../port";
 import {
   ExoticReadFilterUnavailableError,
@@ -112,6 +113,36 @@ const _assertInferredEqualsWire: Equal<
   InferDraftCounts<typeof CONTENT_MODE_TABLES>
 > = true;
 void _assertInferredEqualsWire;
+
+// Compile-time assertion: InferPromotedCounts<CONTENT_MODE_TABLES> must equal
+// PublishPromotedCounts — one promoted count per registered entry. Registering
+// a surface without extending the wire type (or vice versa) fails here, so a
+// publish result can never silently under-report a surface again (#81 arch
+// review: knowledge documents published but were dropped from `promoted`).
+const _assertPromotedEqualsWire: Equal<
+  PublishPromotedCounts,
+  InferPromotedCounts<typeof CONTENT_MODE_TABLES>
+> = true;
+void _assertPromotedEqualsWire;
+
+describe("promotedCountsFromReports over the REAL registry tuple", () => {
+  it("projects physical-table reports onto the wire keys (incl. the table-alias and promotedKey mappings)", () => {
+    const counts = promotedCountsFromReports(CONTENT_MODE_TABLES, [
+      { table: "workspace_plugins", promoted: 1 },
+      { table: "semantic_entities", promoted: 2, tombstonesApplied: 9 },
+      { table: "prompt_collections", promoted: 3 },
+      { table: "query_suggestions", promoted: 4 },
+      { table: "knowledge_documents", promoted: 5 },
+    ]);
+    expect(counts).toEqual({
+      connections: 1,
+      entities: 2,
+      prompts: 3,
+      starterPrompts: 4,
+      knowledgeDocuments: 5,
+    });
+  });
+});
 
 // Compile-time assertion: makeService returns the right shape.
 const _assertMakeServiceShape: ContentModeRegistryService =
@@ -206,6 +237,7 @@ describe("ContentModeRegistry.readFilter — exotic tables with readFilter adapt
     {
       kind: "exotic",
       key: "fancy_entities",
+      promotedKey: "fancy_entities",
       countSegments: [
         {
           key: "fancy_entities",
@@ -477,6 +509,7 @@ describe("ContentModeRegistry.runPublishPhases", () => {
       {
         kind: "exotic",
         key: "beta",
+        promotedKey: "beta",
         countSegments: [
           { key: "beta", sql: (p) => `SELECT 'beta' AS key, 0::int AS n FROM (VALUES (${p})) v` },
         ],
@@ -528,6 +561,7 @@ describe("ContentModeRegistry.runPublishPhases", () => {
       {
         kind: "exotic",
         key: "beta",
+        promotedKey: "beta",
         countSegments: [
           { key: "beta", sql: (p) => `SELECT 'beta' AS key, 0::int AS n FROM (VALUES (${p})) v` },
         ],
@@ -649,6 +683,7 @@ describe("makeService startup guards", () => {
       {
         kind: "exotic",
         key: "first",
+        promotedKey: "first",
         countSegments: [
           { key: "shared", sql: (p) => `SELECT 'shared' AS key, 0 AS n FROM (VALUES (${p})) v` },
         ],
@@ -657,6 +692,7 @@ describe("makeService startup guards", () => {
       {
         kind: "exotic",
         key: "second",
+        promotedKey: "second",
         countSegments: [
           { key: "shared", sql: (p) => `SELECT 'shared' AS key, 0 AS n FROM (VALUES (${p})) v` },
         ],

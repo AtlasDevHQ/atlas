@@ -27,6 +27,13 @@ export interface KnowledgeDocumentCounts {
 export type KnowledgeCollectionSource = "upload" | "bundle-sync";
 
 /**
+ * Bundle-endpoint auth schemes for `bundle-sync` collections — the one wire
+ * home for this union (the server's `BUNDLE_SYNC_AUTH_SCHEMES` tuple and the
+ * web mirrors derive from it). `none` = public endpoint, no credential row.
+ */
+export type KnowledgeSyncAuthScheme = "none" | "bearer" | "basic";
+
+/**
  * Last-sync bookkeeping for a `bundle-sync` collection (#4211). Absent (null
  * on the collection) until the first sync attempt.
  */
@@ -52,6 +59,14 @@ export interface KnowledgeCollection {
   readonly installedAt: string | null;
   /** The configured bundle endpoint (non-secret) — `bundle-sync` only. */
   readonly endpointUrl: string | null;
+  /**
+   * Configured endpoint auth scheme (non-secret; the secret itself is never
+   * echoed) — `bundle-sync` only, null for upload collections. Pre-fills the
+   * edit-sync-settings dialog so a secret rotation doesn't require re-picking
+   * the scheme. Optional so a response from an older API during a
+   * deploy-overlap window still parses.
+   */
+  readonly authScheme?: KnowledgeSyncAuthScheme | null;
   /** Last-sync bookkeeping — `bundle-sync` only, null before the first sync. */
   readonly sync: KnowledgeCollectionSyncStatus | null;
   readonly documents: KnowledgeDocumentCounts;

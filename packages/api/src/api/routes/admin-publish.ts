@@ -22,10 +22,10 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
-import type { PublishResult } from "@useatlas/types";
+import type { PublishPromotedCounts, PublishResult } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import { getInternalDB } from "@atlas/api/lib/db/internal";
+import { withInternalTransaction } from "@atlas/api/lib/db/with-internal-transaction";
 import { readDemoIndustry } from "@atlas/api/lib/demo-industry";
 import {
   archiveSingleConnection,
@@ -36,7 +36,7 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   CONTENT_MODE_TABLES,
   makeService,
-  type PromotionReport,
+  promotedCountsFromReports,
 } from "@atlas/api/lib/content-mode";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -45,19 +45,12 @@ import { createAdminRouter, requireOrgContext } from "./admin-router";
  * Module-level content-mode registry (#1515 phase 2e).
  *
  * `runPublishPhases` iterates `CONTENT_MODE_TABLES` in tuple order inside
- * the caller's transaction — this route still owns BEGIN/COMMIT/ROLLBACK.
- * The registry's `PromotionReport[]` return gives per-table counts that
- * are projected back into the wire schema below.
+ * the caller's transaction. The registry's `PromotionReport[]` return is
+ * projected onto the wire shape by `promotedCountsFromReports` — one count
+ * per registered entry, so a newly-registered surface can never be silently
+ * dropped from the publish result.
  */
 const contentModeRegistry = makeService(CONTENT_MODE_TABLES);
-
-/** Look up the promotion report for a specific physical table name. */
-function findReport(
-  reports: ReadonlyArray<PromotionReport>,
-  table: string,
-): PromotionReport | undefined {
-  return reports.find((r) => r.table === table);
-}
 
 const log = createLogger("admin-publish");
 
@@ -227,130 +220,91 @@ adminPublish.openapi(publishRoute, async (c) =>
     }
 
     // ── Transaction ────────────────────────────────────────────────
-    const pool = getInternalDB();
-    const client = await pool.connect();
-    // pg destroys the socket when `release(err)` is called with a truthy
-    // arg. We need to destroy on a failed ROLLBACK so a dirty client
-    // doesn't poison the next borrower.
-    let rollbackErr: Error | null = null;
-    // Values are assigned inside the try block before either the 200
-    // response or a 500 (which doesn't read them) — start as numbers for
-    // type inference without seeding a read-before-write warning.
+    let promoted: PublishPromotedCounts;
     let deletedEntityCount: number;
-    let promotedEntityCount: number;
-    let promotedConnectionCount: number;
-    let promotedPromptCount: number;
-    let promotedStarterPromptCount: number;
-    let promotedKnowledgeDocumentCount: number;
     let archivedConnectionCount: number;
     let archivedEntityCount: number;
     let archivedPromptCount: number;
 
     try {
-      await client.query("BEGIN");
+      const tx = await withInternalTransaction("admin-publish", async (client) => {
+        // Phases 1–3 — delegate to the content-mode registry. It runs every
+        // registered adapter in tuple order inside this transaction: the
+        // simple UPDATEs (connections / prompts / starter prompts / knowledge
+        // documents), then the exotic semantic_entities adapter composes
+        // applyTombstones + promoteDraftEntities. A failure surfaces as
+        // `PublishPhaseError` tagged with `{ table, phase }`; `Effect.runPromise`
+        // throws on failure and `withInternalTransaction` rolls back.
+        const reports = await Effect.runPromise(
+          contentModeRegistry.runPublishPhases(client, orgId),
+        );
 
-      // Phases 1–3 — delegate to the content-mode registry. It runs every
-      // registered adapter in tuple order inside this transaction: the
-      // simple connections / prompt_collections / query_suggestions
-      // UPDATEs, then the exotic semantic_entities adapter composes
-      // applyTombstones + promoteDraftEntities. A failure surfaces as
-      // `PublishPhaseError` tagged with `{ table, phase }`; `Effect.runPromise`
-      // throws on failure and the outer catch rolls back.
-      // InternalPoolClient is the minimal `{ query, release }` shape the
-      // registry's adapters consume; the full `pg.PoolClient` extends it
-      // with EventEmitter methods the registry never touches. Cast is
-      // safe — both `applyTombstones`/`promoteDraftEntities` and the
-      // simple UPDATE adapters only call `.query()`.
-      const reports = await Effect.runPromise(
-        contentModeRegistry.runPublishPhases(
-          client as unknown as import("pg").PoolClient,
-          orgId,
-        ),
-      );
-
-      // #2744 — `connections` segment key now points at the `workspace_plugins`
-      // physical table per CONTENT_MODE_TABLES. PromotionReport.table reflects
-      // the physical name, so look up by `"workspace_plugins"` post-cutover.
-      // Wire-side `body.promoted.connections` stays unchanged.
-      promotedConnectionCount = findReport(reports, "workspace_plugins")?.promoted ?? 0;
-      promotedPromptCount = findReport(reports, "prompt_collections")?.promoted ?? 0;
-      promotedStarterPromptCount =
-        findReport(reports, "query_suggestions")?.promoted ?? 0;
-      promotedKnowledgeDocumentCount =
-        findReport(reports, "knowledge_documents")?.promoted ?? 0;
-
-      const entitiesReport = findReport(reports, "semantic_entities");
-      promotedEntityCount = entitiesReport?.promoted ?? 0;
-      deletedEntityCount = entitiesReport?.tombstonesApplied ?? 0;
-
-      // Phase 4: archive requested connections (+ cascade to their entities +
-      // demo prompt collections when the id is `__demo__`). Loops the shared
-      // single-connection helper so publish and the standalone archive
-      // endpoints stay in lockstep — see #1437.
-      archivedConnectionCount = 0;
-      archivedEntityCount = 0;
-      archivedPromptCount = 0;
-      for (const id of archiveIds) {
-        const archiveResult = await archiveSingleConnection(client, orgId, id, {
-          demoIndustry: id === DEMO_CONNECTION_ID ? demoIndustry : null,
-        });
-        // Exhaustive switch — matches the pattern in admin-archive.ts so a
-        // future ArchiveConnectionResult variant fails the `never` default
-        // at compile time instead of getting silently treated as
-        // `not_found`.
-        switch (archiveResult.status) {
-          case "archived":
-            archivedConnectionCount++;
-            archivedEntityCount += archiveResult.entities;
-            archivedPromptCount += archiveResult.prompts;
-            break;
-          case "already_archived":
-            // The connection row itself was already archived, but the
-            // helper's cascade still reconciled any straggler entities /
-            // demo prompts.
-            archivedEntityCount += archiveResult.entities;
-            archivedPromptCount += archiveResult.prompts;
-            log.warn(
-              {
-                requestId,
-                orgId,
-                connectionId: id,
-                cascadedEntities: archiveResult.entities,
-                cascadedPrompts: archiveResult.prompts,
-              },
-              "archiveConnection id already archived during publish — cascade reconciled",
-            );
-            break;
-          case "not_found":
-            // Admin passed a bogus id. Surface it in the log so ops can
-            // spot typos; publish itself still commits the rest.
-            log.warn(
-              { requestId, orgId, connectionId: id },
-              "archiveConnection id not found during publish — skipped",
-            );
-            break;
-          default: {
-            const _exhaustive: never = archiveResult;
-            throw new Error(
-              `Unhandled archive result in publish loop: ${JSON.stringify(_exhaustive)}`,
-            );
+        // Phase 4: archive requested connections (+ cascade to their entities +
+        // demo prompt collections when the id is `__demo__`). Loops the shared
+        // single-connection helper so publish and the standalone archive
+        // endpoints stay in lockstep — see #1437.
+        const archived = { connections: 0, entities: 0, prompts: 0 };
+        for (const id of archiveIds) {
+          const archiveResult = await archiveSingleConnection(client, orgId, id, {
+            demoIndustry: id === DEMO_CONNECTION_ID ? demoIndustry : null,
+          });
+          // Exhaustive switch — matches the pattern in admin-archive.ts so a
+          // future ArchiveConnectionResult variant fails the `never` default
+          // at compile time instead of getting silently treated as
+          // `not_found`.
+          switch (archiveResult.status) {
+            case "archived":
+              archived.connections++;
+              archived.entities += archiveResult.entities;
+              archived.prompts += archiveResult.prompts;
+              break;
+            case "already_archived":
+              // The connection row itself was already archived, but the
+              // helper's cascade still reconciled any straggler entities /
+              // demo prompts.
+              archived.entities += archiveResult.entities;
+              archived.prompts += archiveResult.prompts;
+              log.warn(
+                {
+                  requestId,
+                  orgId,
+                  connectionId: id,
+                  cascadedEntities: archiveResult.entities,
+                  cascadedPrompts: archiveResult.prompts,
+                },
+                "archiveConnection id already archived during publish — cascade reconciled",
+              );
+              break;
+            case "not_found":
+              // Admin passed a bogus id. Surface it in the log so ops can
+              // spot typos; publish itself still commits the rest.
+              log.warn(
+                { requestId, orgId, connectionId: id },
+                "archiveConnection id not found during publish — skipped",
+              );
+              break;
+            default: {
+              const _exhaustive: never = archiveResult;
+              throw new Error(
+                `Unhandled archive result in publish loop: ${JSON.stringify(_exhaustive)}`,
+              );
+            }
           }
         }
-      }
 
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK").catch((rbErr: unknown) => {
-        rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
-        log.warn(
-          {
-            err: rollbackErr.message,
-            orgId,
-            requestId,
-          },
-          "ROLLBACK failed after publish error — client will be destroyed",
-        );
+        return { reports, archived };
       });
+
+      // One promoted count per registry entry — derived, so a newly-registered
+      // surface is reported here without a hand-edit (#81 arch review: the
+      // hand-listed fan-out layout is what let knowledge ship under-reported).
+      promoted = promotedCountsFromReports(CONTENT_MODE_TABLES, tx.reports);
+      deletedEntityCount =
+        tx.reports.find((r) => r.table === "semantic_entities")?.tombstonesApplied ?? 0;
+      archivedConnectionCount = tx.archived.connections;
+      archivedEntityCount = tx.archived.entities;
+      archivedPromptCount = tx.archived.prompts;
+    } catch (err) {
       log.error(
         {
           err: err instanceof Error ? err : new Error(String(err)),
@@ -368,8 +322,6 @@ adminPublish.openapi(publishRoute, async (c) =>
         },
         500,
       );
-    } finally {
-      client.release(rollbackErr ?? undefined);
     }
 
     // ── Audit + response ────────────────────────────────────────────
@@ -382,11 +334,11 @@ adminPublish.openapi(publishRoute, async (c) =>
         c.req.header("x-real-ip") ??
         null,
       metadata: {
-        promotedConnections: promotedConnectionCount,
-        promotedEntities: promotedEntityCount,
-        promotedPrompts: promotedPromptCount,
-        promotedStarterPrompts: promotedStarterPromptCount,
-        promotedKnowledgeDocuments: promotedKnowledgeDocumentCount,
+        promotedConnections: promoted.connections,
+        promotedEntities: promoted.entities,
+        promotedPrompts: promoted.prompts,
+        promotedStarterPrompts: promoted.starterPrompts,
+        promotedKnowledgeDocuments: promoted.knowledgeDocuments,
         deletedEntities: deletedEntityCount,
         archivedConnections: archivedConnectionCount,
         archivedEntities: archivedEntityCount,
@@ -400,13 +352,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         requestId,
         orgId,
         actorId: authResult.user?.id,
-        promoted: {
-          connections: promotedConnectionCount,
-          entities: promotedEntityCount,
-          prompts: promotedPromptCount,
-          starterPrompts: promotedStarterPromptCount,
-          knowledgeDocuments: promotedKnowledgeDocumentCount,
-        },
+        promoted,
         deleted: { entities: deletedEntityCount },
         archived: {
           connections: archivedConnectionCount,
@@ -525,13 +471,7 @@ adminPublish.openapi(publishRoute, async (c) =>
     }
 
     const response: PublishResponse = {
-      promoted: {
-        connections: promotedConnectionCount,
-        entities: promotedEntityCount,
-        prompts: promotedPromptCount,
-        starterPrompts: promotedStarterPromptCount,
-        knowledgeDocuments: promotedKnowledgeDocumentCount,
-      },
+      promoted,
       deleted: { entities: deletedEntityCount },
       archived: {
         connections: archivedConnectionCount,

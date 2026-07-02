@@ -345,7 +345,7 @@ describe("runDatasource — mutations (#4044)", () => {
 describe("runDatasource — publish (#4126)", () => {
   it("publishes every pending draft and reports the counts", async () => {
     const { fetchImpl, calls } = stubFetch(200, {
-      promoted: { connections: 1, entities: 3, prompts: 0, starterPrompts: 0 },
+      promoted: { connections: 1, entities: 3, prompts: 0, starterPrompts: 0, knowledgeDocuments: 0 },
       deleted: { entities: 0 },
       archived: { connections: 0, entities: 0, prompts: 0 },
     });
@@ -361,7 +361,7 @@ describe("runDatasource — publish (#4126)", () => {
 
   it("does not require an id, but echoes it in the confirmation when given", async () => {
     const { fetchImpl } = stubFetch(200, {
-      promoted: { connections: 1, entities: 0, prompts: 0, starterPrompts: 0 },
+      promoted: { connections: 1, entities: 0, prompts: 0, starterPrompts: 0, knowledgeDocuments: 0 },
       deleted: { entities: 0 },
     });
     const { io, out } = capture();
@@ -372,7 +372,7 @@ describe("runDatasource — publish (#4126)", () => {
 
   it("reports a clean no-op when there is nothing to publish", async () => {
     const { fetchImpl } = stubFetch(200, {
-      promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0 },
+      promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0, knowledgeDocuments: 0 },
       deleted: { entities: 0 },
     });
     const { io, out } = capture();
@@ -384,7 +384,7 @@ describe("runDatasource — publish (#4126)", () => {
   it("a deletion-only publish reports the prune, not a clean no-op", async () => {
     // 0 promoted but >0 tombstoned entities is a real publish, not a no-op.
     const { fetchImpl } = stubFetch(200, {
-      promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0 },
+      promoted: { connections: 0, entities: 0, prompts: 0, starterPrompts: 0, knowledgeDocuments: 0 },
       deleted: { entities: 2 },
     });
     const { io, out } = capture();
@@ -416,7 +416,7 @@ describe("runDatasource — publish (#4126)", () => {
     // body with schema defaults filled (deploy-overlap normalization) while
     // any REST-only extras still pass through.
     const body = {
-      promoted: { connections: 1, entities: 0, prompts: 0, starterPrompts: 0 },
+      promoted: { connections: 1, entities: 0, prompts: 0, starterPrompts: 0, knowledgeDocuments: 0 },
       deleted: { entities: 0 },
     };
     const { fetchImpl } = stubFetch(200, body);

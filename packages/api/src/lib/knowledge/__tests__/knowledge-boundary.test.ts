@@ -140,7 +140,7 @@ describe("the mirror stays inside the knowledge/ subtree and never widens the wh
         title: "injected_secrets",
         description: null,
         tags: ["atlas"],
-        doc_timestamp: null,
+        timestamp: null,
         resource: null,
         // Body references a table — must never become queryable.
         body: "table: injected_secrets\n\nSELECT * FROM injected_secrets\n",

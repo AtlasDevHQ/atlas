@@ -101,3 +101,81 @@ describe("CreateCollectionDialog install payloads", () => {
     expect(submit.disabled).toBe(true);
   });
 });
+
+describe("CreateCollectionDialog edit mode (sync-settings rotation)", () => {
+  function renderEdit(onCreated = mock(() => {})) {
+    render(
+      <CreateCollectionDialog
+        open
+        onOpenChange={() => {}}
+        onCreated={onCreated}
+        existingSlugs={[]}
+        edit={{
+          slug: "synced-docs",
+          endpointUrl: "https://kb.example.com/bundle.tar.gz",
+          authScheme: "bearer",
+          description: "Docs mirror",
+        }}
+      />,
+    );
+    return onCreated;
+  }
+
+  test("re-drives the bundle-sync install with the EXISTING slug — rotating the secret in place", async () => {
+    const onCreated = renderEdit();
+    // Endpoint + scheme pre-filled from the collection; secret starts blank
+    // (never echoed) and is required for bearer.
+    const submit = screen.getByTestId("create-collection-submit") as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(screen.getByTestId("collection-secret"), {
+      target: { value: "new-rotated-token" },
+    });
+    fireEvent.click(screen.getByTestId("create-collection-submit"));
+
+    await waitFor(() => expect(fetchCalls).toHaveLength(1));
+    expect(fetchCalls[0].url).toContain("/api/v1/integrations/bundle-sync/install-form");
+    expect(fetchCalls[0].body).toEqual({
+      __install_id__: "synced-docs",
+      description: "Docs mirror",
+      endpoint_url: "https://kb.example.com/bundle.tar.gz",
+      auth_scheme: "bearer",
+      auth_secret: "new-rotated-token",
+    });
+    expect(onCreated).toHaveBeenCalledWith("synced-docs", "bundle-sync");
+  });
+
+  test("a none-scheme edit needs no secret and posts auth_scheme none (no stray auth_secret)", async () => {
+    const onCreated = mock(() => {});
+    render(
+      <CreateCollectionDialog
+        open
+        onOpenChange={() => {}}
+        onCreated={onCreated}
+        existingSlugs={[]}
+        edit={{
+          slug: "public-docs",
+          endpointUrl: "https://kb.example.com/public.zip",
+          authScheme: "none",
+          description: null,
+        }}
+      />,
+    );
+    const submit = screen.getByTestId("create-collection-submit") as HTMLButtonElement;
+    expect(submit.disabled).toBe(false); // no secret required for a public endpoint
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(fetchCalls).toHaveLength(1));
+    expect(fetchCalls[0].body).toEqual({
+      __install_id__: "public-docs",
+      endpoint_url: "https://kb.example.com/public.zip",
+      auth_scheme: "none",
+    });
+    expect(onCreated).toHaveBeenCalledWith("public-docs", "bundle-sync");
+  });
+
+  test("edit mode hides the slug/source pickers — the identity is fixed", () => {
+    renderEdit();
+    expect(screen.queryByTestId("collection-slug")).toBeNull();
+    expect(screen.queryByTestId("source-upload")).toBeNull();
+  });
+});

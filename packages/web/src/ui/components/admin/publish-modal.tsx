@@ -3,17 +3,13 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
-  BookText,
-  Database,
-  FileText,
-  Layers,
-  Lightbulb,
   Loader2,
   Pencil,
   Plus,
   Trash2,
   AlertCircle,
   AlertTriangle,
+  type LucideIcon,
 } from "lucide-react";
 import {
   Dialog,
@@ -27,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
+import { contentSurface, type ContentSurfaceKey } from "@/ui/lib/content-surfaces";
 import type { ProfileError } from "@/ui/lib/types";
 import { relativeOrNull } from "./pending-changes-pill";
 
@@ -290,7 +287,7 @@ interface SectionRow {
 interface Section {
   readonly key: string;
   readonly title: string;
-  readonly icon: typeof Database;
+  readonly icon: LucideIcon;
   readonly rows: ReadonlyArray<SectionRow>;
 }
 
@@ -348,18 +345,18 @@ function totalRows(data: PublishPreviewData): number {
   );
 }
 
+/** Build one section from a display-surface descriptor, skipping empty. */
+function surfaceSection(key: ContentSurfaceKey, rows: ReadonlyArray<SectionRow>): Section | null {
+  if (rows.length === 0) return null;
+  const surface = contentSurface(key);
+  return { key: surface.key, title: surface.title, icon: surface.icon, rows };
+}
+
 function buildSections(data: PublishPreviewData): Section[] {
-  const sections: Section[] = [];
-
-  if (data.connections.length > 0) {
-    sections.push({
-      key: "connections",
-      title: "Connections",
-      icon: Database,
-      rows: data.connections.map((r) => ({ ...r, intent: "create" as const })),
-    });
-  }
-
+  // The entity display surface folds three preview slices with per-slice
+  // intents (create / update / delete); everything else is a create list.
+  // Titles, icons, and ordering come from the shared content-surface
+  // descriptors so the modal can't drift from the pill/banner naming.
   const entityRows: SectionRow[] = [];
   for (const r of data.entities) entityRows.push({ ...r, intent: "create" });
   for (const r of data.entityEdits) {
@@ -372,41 +369,15 @@ function buildSections(data: PublishPreviewData): Section[] {
     });
   }
   for (const r of data.entityDeletes) entityRows.push({ ...r, intent: "delete" });
-  if (entityRows.length > 0) {
-    sections.push({
-      key: "entities",
-      title: "Semantic entities",
-      icon: Layers,
-      rows: entityRows,
-    });
-  }
 
-  if (data.prompts.length > 0) {
-    sections.push({
-      key: "prompts",
-      title: "Prompt collections",
-      icon: FileText,
-      rows: data.prompts.map((r) => ({ ...r, intent: "create" as const })),
-    });
-  }
+  const creates = (rows: ReadonlyArray<DraftRow> | undefined): SectionRow[] =>
+    (rows ?? []).map((r) => ({ ...r, intent: "create" as const }));
 
-  if (data.starterPrompts.length > 0) {
-    sections.push({
-      key: "starterPrompts",
-      title: "Starter prompts",
-      icon: Lightbulb,
-      rows: data.starterPrompts.map((r) => ({ ...r, intent: "create" as const })),
-    });
-  }
-
-  if (data.knowledgeDocuments && data.knowledgeDocuments.length > 0) {
-    sections.push({
-      key: "knowledgeDocuments",
-      title: "Knowledge documents",
-      icon: BookText,
-      rows: data.knowledgeDocuments.map((r) => ({ ...r, intent: "create" as const })),
-    });
-  }
-
-  return sections;
+  return [
+    surfaceSection("connections", creates(data.connections)),
+    surfaceSection("entities", entityRows),
+    surfaceSection("prompts", creates(data.prompts)),
+    surfaceSection("starterPrompts", creates(data.starterPrompts)),
+    surfaceSection("knowledgeDocuments", creates(data.knowledgeDocuments)),
+  ].filter((s): s is Section => s !== null);
 }

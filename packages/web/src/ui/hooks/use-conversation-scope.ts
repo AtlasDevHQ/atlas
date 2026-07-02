@@ -7,10 +7,11 @@
  * per-conversation, authoritative SQL routing + REST scope, seeded by a
  * workspace-sticky preference (ADR-0011). Before this module that state was
  * shattered across `atlas-chat.tsx` — six `useState`, three hand-synced
- * provenance refs, and seven field-by-field preference-store selectors — with
- * the seed/restore/new-chat/persist-back transitions fanned out to 6 `setState`
- * + 3 ref assignments at each of five call sites. Adding a scope axis (#3895 was
- * the last) meant duplicating the provenance-decoupling dance everywhere.
+ * provenance refs, and seven scope-field preference-store selectors (plus a
+ * hydration flag and a setter) — with the seed/restore/new-chat/persist-back
+ * transitions fanned out to as many as 6 `setState` + 3 ref assignments across
+ * six call sites. Adding a scope axis (#3895 was the last) meant duplicating the
+ * provenance-decoupling dance everywhere.
  *
  * This hook owns the three **(value, provenance) axes** plus the sticky
  * preference, and exposes one flat {@link ConversationScope} object plus intent
@@ -64,7 +65,10 @@ export interface ConversationScope {
   readonly groupId: string | null;
   readonly connectionId: string | null;
   readonly routingMode: ConversationRoutingMode | null;
-  readonly restExcludedDatasourceIds: string[];
+  // `ReadonlyArray`, not `string[]`, so the array handed out on `scope` (and
+  // aliased into the transport getter) can't be mutated out-of-band — matches
+  // `ResolveEnvSelectionInput.current.restExcludedDatasourceIds` in env-picker.
+  readonly restExcludedDatasourceIds: ReadonlyArray<string>;
   readonly restFocusDatasourceId: string | null;
   readonly groupReach: string | null;
 }
@@ -84,18 +88,23 @@ export interface ConversationScopeState extends ConversationScope {
   readonly reachProvenance: EnvSelectionProvenance;
 }
 
-/** A fresh chat: nothing selected, every axis `unset`. */
-export const INITIAL_CONVERSATION_SCOPE: ConversationScopeState = {
+/**
+ * A fresh chat: nothing selected, every axis `unset`. Frozen — it is shared as
+ * the reducer's initial value, the `resetForNewChat` return (by reference), and
+ * the transport mirror ref's seed, so freezing forbids any accidental in-place
+ * mutation of the shared constant.
+ */
+export const INITIAL_CONVERSATION_SCOPE: ConversationScopeState = Object.freeze({
   groupId: null,
   connectionId: null,
   routingMode: null,
-  restExcludedDatasourceIds: [],
+  restExcludedDatasourceIds: [] as ReadonlyArray<string>,
   restFocusDatasourceId: null,
   groupReach: null,
   sqlProvenance: "unset",
   restProvenance: "unset",
   reachProvenance: "unset",
-};
+});
 
 /**
  * A {@link resolveEnvSelection} decision that actually mutates the scope — the
@@ -109,7 +118,7 @@ export type AppliedEnvSelectionDecision = Extract<
 
 /**
  * The scope transitions, as a closed set of intents. Each mirrors exactly one
- * of the five fan-out sites the old component held:
+ * of the six fan-out sites the old component held:
  *
  *   - `seedResolved` — the fresh-chat seed/restore effect applied a
  *     {@link resolveEnvSelection} decision (seed the default / restore the
@@ -231,7 +240,7 @@ export function conversationScopeReducer(
     case "restExcludedApplied":
       // A REST exclude toggle. Mark REST `explicit`; keep SQL `explicit` too so
       // the toggle doesn't trigger a stray sticky-preference restore of the SQL
-      // scope as a side effect (the old handler's rationale, verbatim).
+      // scope as a side effect (the old handler's rationale, preserved).
       return {
         ...state,
         restExcludedDatasourceIds: action.next,
@@ -365,10 +374,23 @@ export function useConversationScope({
       sessionResolved,
       groupsLoaded,
     });
-    if (decision.kind === "seed" || decision.kind === "restore") {
-      dispatch({ type: "seedResolved", decision });
+    switch (decision.kind) {
+      case "seed":
+      case "restore":
+        dispatch({ type: "seedResolved", decision });
+        break;
+      case "wait":
+      case "noop":
+        // Inputs not ready or already settled — leave the state alone.
+        break;
+      default: {
+        // Exhaustiveness guard — a new `EnvSelectionDecision` variant must add a
+        // branch here (restores the compile-time net the old inline switch held,
+        // so a future kind can't be silently skipped by the `Extract` filter).
+        const _exhaustive: never = decision;
+        void _exhaustive;
+      }
     }
-    // wait / noop → inputs not ready or already settled; leave the state alone.
   }, [
     groups,
     groupsLoaded,

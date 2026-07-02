@@ -267,7 +267,42 @@ describe("useConversationScope — seed/restore effect + persist-back (#4189)", 
     expect(result.current.scope.groupId).toBeNull();
   });
 
-  test("applySelection persists the pick to the sticky preference", async () => {
+  test("stays unseeded until the session has resolved", async () => {
+    const { result } = renderHook(() =>
+      useConversationScope({
+        groups: SINGLE_GROUP,
+        groupsLoaded: true,
+        activeWorkspaceId: null,
+        sessionResolved: false, // the resolver returns `wait`
+      }),
+    );
+    await Promise.resolve();
+    expect(result.current.scope.groupId).toBeNull();
+  });
+
+  test("the seed settles — the effect does not loop after applying it", async () => {
+    // The effect now depends on the whole reducer `state` (not the old
+    // individual value fields). Guard the "re-runs the resolver, which then
+    // no-ops, rather than looping" claim: once seeded, renders must stop.
+    let renders = 0;
+    const { result } = renderHook(() => {
+      renders += 1;
+      return useConversationScope({
+        groups: SINGLE_GROUP,
+        groupsLoaded: true,
+        activeWorkspaceId: null,
+        sessionResolved: true,
+      });
+    });
+    await waitFor(() => expect(result.current.scope.groupId).toBe("g1"));
+    const afterSeed = renders;
+    // Let any further effect passes drain; a looping effect would keep bumping
+    // the count (or hang). It must be quiescent.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(renders).toBe(afterSeed);
+  });
+
+  test("applySelection persists the pick + carries the current REST scope forward", async () => {
     const { result } = renderHook(() =>
       useConversationScope({
         groups: MULTI_MEMBER_GROUP,
@@ -276,8 +311,12 @@ describe("useConversationScope — seed/restore effect + persist-back (#4189)", 
         sessionResolved: true,
       }),
     );
+    // Establish a REST scope first, so the selection below must carry it into the
+    // preference (the #3066/#3067 "an env change must not drop the REST scope"
+    // contract). A dropped carry would leave the pref REST fields empty.
+    act(() => result.current.applyRestExcluded(["d1"]));
     const selection: ChatEnvSelection = {
-      groupReach: null,
+      groupReach: "g1",
       groupId: "g1",
       connectionId: "c2",
       routingMode: "pin",
@@ -290,6 +329,9 @@ describe("useConversationScope — seed/restore effect + persist-back (#4189)", 
     expect(pref.groupId).toBe("g1");
     expect(pref.connectionId).toBe("c2");
     expect(pref.routingMode).toBe("pin");
+    expect(pref.groupReach).toBe("g1"); // the picked reach is persisted
+    expect(pref.restExcludedDatasourceIds).toEqual(["d1"]); // carried, not dropped
+    expect(pref.restFocusDatasourceId).toBeNull();
   });
 
   test("applyRestExcluded persists the exclude-set + keeps current SQL scope", async () => {
@@ -319,7 +361,7 @@ describe("useConversationScope — seed/restore effect + persist-back (#4189)", 
     expect(pref.connectionId).toBe("c1");
   });
 
-  test("applyRestFocus persists the focus", async () => {
+  test("applyRestFocus persists the focus + carries the current SQL scope forward", async () => {
     const { result } = renderHook(() =>
       useConversationScope({
         groups: MULTI_MEMBER_GROUP,
@@ -328,11 +370,23 @@ describe("useConversationScope — seed/restore effect + persist-back (#4189)", 
         sessionResolved: true,
       }),
     );
+    // Establish an SQL pick first; the focus below must carry it (the #3078
+    // "a focus toggle must not drop the SQL scope from the preference" contract).
+    act(() =>
+      result.current.applySelection({
+        groupReach: null,
+        groupId: "g1",
+        connectionId: "c2",
+        routingMode: "pin",
+      }),
+    );
     act(() => result.current.applyRestFocus("d7"));
     expect(result.current.scope.restFocusDatasourceId).toBe("d7");
-    expect(useChatRoutingPreferenceStore.getState().restFocusDatasourceId).toBe(
-      "d7",
-    );
+    const pref = useChatRoutingPreferenceStore.getState();
+    expect(pref.restFocusDatasourceId).toBe("d7");
+    expect(pref.groupId).toBe("g1"); // SQL scope carried
+    expect(pref.connectionId).toBe("c2");
+    expect(pref.routingMode).toBe("pin");
   });
 
   test("restore applies an opened conversation's persisted scope", async () => {

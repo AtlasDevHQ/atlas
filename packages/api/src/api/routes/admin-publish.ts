@@ -470,7 +470,9 @@ adminPublish.openapi(publishRoute, async (c) =>
     // keeps serving pre-publish content (notably newly-published knowledge
     // collections) until the next entity CRUD or boot. Best-effort + post-commit:
     // a cache-bust failure must not turn an already-committed publish into a 500.
-    // Lazy-imported for the same partial-mock reason as the reconcile above.
+    // Same lazy-import posture as the reconcile above (avoid static-graph coupling
+    // that partial-mock admin-route fixtures would break) — though a different
+    // module (`semantic/sync`, not `db/internal`).
     try {
       const { invalidateOrgModeRoots } = await import("@atlas/api/lib/semantic/sync");
       invalidateOrgModeRoots(orgId);

@@ -60,7 +60,7 @@ export const DEFAULT_KNOWLEDGE_TOC_MAX_BYTES = 12_000;
 // ---------------------------------------------------------------------------
 
 /** Raw `knowledge_documents` read-back — timestamptz columns come back Date|string. */
-interface KnowledgeDocRow extends Record<string, unknown> {
+export interface KnowledgeDocRow extends Record<string, unknown> {
   collection_id: string;
   path: string;
   type: string | null;
@@ -239,10 +239,18 @@ export function renderCollectionBundle(
 // DB read — content-mode-filtered documents grouped by collection
 // ---------------------------------------------------------------------------
 
-/** Normalize a timestamptz read-back (Date | ISO string | null) to ISO | null. */
-function normTimestamp(value: Date | string | null): string | null {
-  if (value === null) return null;
-  const d = value instanceof Date ? value : new Date(value);
+/**
+ * Normalize a timestamptz read-back to ISO | null. Takes `unknown` (symmetric
+ * with {@link normTags}) because the row is untrusted DB output: a `Date`, an ISO
+ * string, null, or — after a hypothetical schema drift — anything. Non-date
+ * inputs normalize to null rather than throwing.
+ */
+function normTimestamp(value: unknown): string | null {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
+  if (typeof value !== "string" || value.trim() === "") return null;
+  const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
@@ -251,7 +259,9 @@ function normTags(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((t): t is string => typeof t === "string") : [];
 }
 
-function rowToDoc(row: KnowledgeDocRow): MirrorDoc {
+/** Map one raw `knowledge_documents` row onto a conformant {@link MirrorDoc}.
+ *  Exported for the real-Postgres test to drive the full read→render path. */
+export function rowToDoc(row: KnowledgeDocRow): MirrorDoc {
   return {
     path: row.path,
     // Defense-in-depth: ingest always stamps a non-empty type/title, but a
@@ -269,12 +279,41 @@ function rowToDoc(row: KnowledgeDocRow): MirrorDoc {
 }
 
 /**
- * Load a workspace's knowledge documents for a mode, grouped by collection.
+ * Build the content-mode-filtered `knowledge_documents` read for a workspace.
  * Visibility follows content-mode exactly like entities: published mode returns
  * `status='published'`; developer mode adds `draft` (the draft-preview overlay).
  * The status clause is built from a fixed table + mode (no user input), so it is
- * safe to inline into the query.
+ * safe to inline into the query text.
  *
+ * Exported so the real-Postgres test can run the exact SELECT (quoted
+ * `"timestamp"` alias, `kd.` alias, `atlas_*` columns, the injected status
+ * clause) against the live schema — the drift class a mocked pool can't catch.
+ */
+export function buildCollectionsQuery(
+  orgId: string,
+  mode: AtlasMode,
+  collectionId?: string,
+): { text: string; params: unknown[] } {
+  const statusClause = resolveStatusClause("knowledgeDocuments", mode, "kd");
+  const params: unknown[] = [orgId];
+  let collectionFilter = "";
+  if (collectionId !== undefined) {
+    params.push(collectionId);
+    collectionFilter = ` AND kd.collection_id = $${params.length}`;
+  }
+  return {
+    text: `SELECT collection_id, path, type, title, description, tags,
+            "timestamp" AS doc_timestamp, resource, body,
+            atlas_source, atlas_ingested_at
+       FROM knowledge_documents kd
+      WHERE kd.workspace_id = $1 AND ${statusClause}${collectionFilter}
+      ORDER BY collection_id, path`,
+    params,
+  };
+}
+
+/**
+ * Load a workspace's knowledge documents for a mode, grouped by collection.
  * Returns `[]` (never throws for a missing DB) when there is no internal DB.
  * `collectionId` filters to a single collection (the export path).
  */
@@ -286,23 +325,8 @@ async function loadCollections(
   const { hasInternalDB, internalQuery } = await import("@atlas/api/lib/db/internal");
   if (!hasInternalDB()) return [];
 
-  const statusClause = resolveStatusClause("knowledgeDocuments", mode, "kd");
-  const params: unknown[] = [orgId];
-  let collectionFilter = "";
-  if (collectionId !== undefined) {
-    params.push(collectionId);
-    collectionFilter = ` AND kd.collection_id = $${params.length}`;
-  }
-
-  const rows = await internalQuery<KnowledgeDocRow>(
-    `SELECT collection_id, path, type, title, description, tags,
-            "timestamp" AS doc_timestamp, resource, body,
-            atlas_source, atlas_ingested_at
-       FROM knowledge_documents kd
-      WHERE kd.workspace_id = $1 AND ${statusClause}${collectionFilter}
-      ORDER BY collection_id, path`,
-    params,
-  );
+  const { text, params } = buildCollectionsQuery(orgId, mode, collectionId);
+  const rows = await internalQuery<KnowledgeDocRow>(text, params);
 
   const byCollection = new Map<string, MirrorDoc[]>();
   for (const row of rows) {
@@ -322,8 +346,14 @@ export interface KnowledgeMirrorResult {
   readonly collections: number;
   /** Concept documents written. */
   readonly documents: number;
-  /** Rows/files skipped or failed — folded into the mode-root build's `failed`
-   *  count so a partial mirror leaves `_modeBuilt` unset (rebuild next call). */
+  /**
+   * Rows/files skipped or failed. Logged for observability and consumed by this
+   * module's own callers/tests — the mode-root build (`_buildOrgModeRoot`)
+   * DELIBERATELY does NOT fold this into the entity build's `failed` counter (a
+   * knowledge-mirror failure must not gate `_modeBuilt` or force an entity
+   * rebuild on the explore hot path). A partial mirror self-heals on the next
+   * cache invalidation (any knowledge mutation busts it).
+   */
   readonly failed: number;
 }
 
@@ -340,10 +370,14 @@ export async function mirrorKnowledgeToDisk(
   mode: AtlasMode,
   modeRoot: string,
 ): Promise<KnowledgeMirrorResult> {
+  // Load from the DB BEFORE wiping the subtree: if the read throws (a transient
+  // internal-DB blip during rebuild), the throw propagates with the existing
+  // (stale-but-populated) mirror intact, rather than leaving an empty subtree.
+  // An empty result set is a legitimate "nothing to serve" and DOES wipe (a
+  // just-uninstalled/archived collection must vanish).
+  const collections = await loadCollections(orgId, mode);
   const knowledgeRoot = path.join(modeRoot, KNOWLEDGE_SUBTREE);
   await fs.promises.rm(knowledgeRoot, { recursive: true, force: true });
-
-  const collections = await loadCollections(orgId, mode);
   if (collections.length === 0) return { collections: 0, documents: 0, failed: 0 };
 
   let documents = 0;
@@ -464,14 +498,18 @@ export async function buildKnowledgeToc(orgId: string, mode: AtlasMode): Promise
 
   const cap = getKnowledgeTocMaxBytes();
   const blocks: string[] = [];
-  let used = KNOWLEDGE_TOC_PREAMBLE.length;
+  // The cap budgets the COLLECTION LISTING; the small fixed framing preamble is
+  // overhead on top of it (so a modest cap can't be entirely consumed by the
+  // preamble and drop every collection header).
+  let used = 0;
   let omitted = 0;
 
   for (const { collectionId, docs } of collections) {
     const tree = buildDirTree(docs);
     // Compress to the ROOT index only (progressive disclosure): the agent greps
     // deeper via explore. This is the "root index.md into the ToC" of the AC.
-    const rootIndex = renderIndex(collectionId, "", tree.get("") as DirNode).trimEnd();
+    // `buildDirTree` always seeds the "" root node, so the read is non-null.
+    const rootIndex = renderIndex(collectionId, "", tree.get("")!).trimEnd();
     const block = `### Collection: ${collectionId} (${docs.length} document${docs.length === 1 ? "" : "s"})\n${rootIndex}`;
 
     // Always keep at least the first collection; cap the rest. A single oversized

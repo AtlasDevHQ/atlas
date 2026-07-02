@@ -42,6 +42,18 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,
 }));
 
+// Stub the knowledge mirror (#4208) — `_buildOrgModeRoot` folds it in. Default is
+// a no-op; a test flips `knowledgeMirrorShouldThrow` to prove a knowledge-mirror
+// failure never breaks the entity build. `mirrorKnowledgeToDisk` is the only
+// export `sync.ts` reaches.
+let knowledgeMirrorShouldThrow = false;
+mock.module("@atlas/api/lib/knowledge/mirror", () => ({
+  mirrorKnowledgeToDisk: async () => {
+    if (knowledgeMirrorShouldThrow) throw new Error("knowledge mirror boom");
+    return { collections: 0, documents: 0, failed: 0 };
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // Imports under test
 // ---------------------------------------------------------------------------
@@ -78,6 +90,7 @@ beforeEach(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-mode-root-"));
   process.env.ATLAS_SEMANTIC_ROOT = tmpRoot;
   _resetModeBuildCache();
+  knowledgeMirrorShouldThrow = false;
   publishedRows = [];
   overlayRows = [];
   mockListEntities.mockClear();
@@ -120,6 +133,21 @@ describe("ensureOrgModeSemanticRoot", () => {
   it("is idempotent — second call does not rebuild from DB", async () => {
     publishedRows = [row("users")];
     await ensureOrgModeSemanticRoot("org-1", "published");
+    await ensureOrgModeSemanticRoot("org-1", "published");
+    expect(mockListEntities).toHaveBeenCalledTimes(1);
+  });
+
+  it("isolates knowledge-mirror failures — a throw leaves the entity build cached (#4208)", async () => {
+    publishedRows = [row("users")];
+    knowledgeMirrorShouldThrow = true;
+
+    const root = await ensureOrgModeSemanticRoot("org-1", "published");
+    // Entity serving is unaffected by the knowledge failure.
+    expect(fs.existsSync(path.join(root, "entities", "users.yml"))).toBe(true);
+
+    // Crucially, the mode-root is still marked built: a knowledge-mirror throw must
+    // NOT feed the `failed` counter that gates `_modeBuilt`, else the entity hot
+    // path would rebuild from DB on every explore call. A second call is a no-op.
     await ensureOrgModeSemanticRoot("org-1", "published");
     expect(mockListEntities).toHaveBeenCalledTimes(1);
   });

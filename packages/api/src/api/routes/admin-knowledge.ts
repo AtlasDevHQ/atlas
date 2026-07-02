@@ -60,8 +60,9 @@ const contentModeRegistry = makeService(CONTENT_MODE_TABLES);
 /**
  * Bust the per-mode knowledge disk mirror (#4208, ADR-0028 §3) so the next
  * `explore` call rebuilds the `knowledge/` subtree from the DB. Reuses the
- * semantic layer's per-(org,mode) invalidation — the same lazy-rebuild machinery
- * that backs entity serving. Lazy-imported (not a top-level import) so the admin
+ * semantic layer's mode-root invalidation — `invalidateOrgModeRoots` busts every
+ * mode for the org — the same lazy-rebuild machinery that backs entity serving.
+ * Lazy-imported (not a top-level import) so the admin
  * router's static graph doesn't require `semantic/sync` at load time, matching
  * the reconcile posture in `admin-publish.ts`; best-effort, since the DB write has
  * already committed and a stale in-process cache self-heals on the next boot.

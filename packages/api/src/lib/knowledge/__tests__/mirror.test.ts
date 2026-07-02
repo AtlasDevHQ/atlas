@@ -15,22 +15,30 @@ import type { MirrorDoc } from "../mirror";
 // --- Mock the internal DB the mirror reads through -------------------------
 let internalDBPresent = true;
 let queryRows: Record<string, unknown>[] = [];
+let queryError: Error | null = null;
 let lastSql = "";
 let lastParams: unknown[] = [];
 let SETTINGS: Record<string, string | undefined> = {};
 
+// Partial mocks are safe here: the isolated per-file runner resets module mocks
+// between files (no cross-file leak), and `mirror.ts` only ever calls the two DB
+// functions + `getSettingAuto` + the logger below. Any unstubbed export is
+// unreached in this module's code path (the internal-DB stubs cover the transitive
+// import graph); a real reach would surface as an obvious `undefined is not a
+// function` rather than a silent wrong answer.
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => internalDBPresent,
   internalQuery: (sql: string, params?: unknown[]) => {
     lastSql = sql;
     lastParams = params ?? [];
-    return Promise.resolve(queryRows);
+    return queryError ? Promise.reject(queryError) : Promise.resolve(queryRows);
   },
-  // Partial-mock stubs for exports the transitive import graph may touch.
   getInternalDB: () => null,
   internalExecute: () => {},
   closeInternalDB: async () => {},
 }));
+// `mirror.ts` reads exactly one setting (`ATLAS_KNOWLEDGE_TOC_MAX_BYTES`) via
+// `getSettingAuto` — the only export it imports from settings.
 mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string) => SETTINGS[key],
 }));
@@ -94,6 +102,7 @@ function tmpRoot(): string {
 beforeEach(() => {
   internalDBPresent = true;
   queryRows = [];
+  queryError = null;
   SETTINGS = {};
 });
 afterEach(() => {
@@ -245,6 +254,20 @@ describe("mirrorKnowledgeToDisk", () => {
     const result = await mirrorKnowledgeToDisk("org-1", "published", root);
     expect(result).toEqual({ collections: 0, documents: 0, failed: 0 });
   });
+
+  it("preserves the existing subtree when the DB read fails (loads before wiping)", async () => {
+    const root = tmpRoot();
+    // Seed a previously-good mirror.
+    queryRows = [docRow({ path: "deploy.md" })];
+    await mirrorKnowledgeToDisk("org-1", "published", root);
+    const existing = path.join(root, KNOWLEDGE_SUBTREE, "runbooks", "deploy.md");
+    expect(fs.existsSync(existing)).toBe(true);
+
+    // A transient DB blip on the next rebuild must NOT wipe the good subtree.
+    queryError = new Error("connection reset");
+    await expect(mirrorKnowledgeToDisk("org-1", "published", root)).rejects.toThrow("connection reset");
+    expect(fs.existsSync(existing)).toBe(true);
+  });
 });
 
 describe("buildKnowledgeToc", () => {
@@ -280,6 +303,24 @@ describe("buildKnowledgeToc", () => {
     const toc = await buildKnowledgeToc("org-1", "published");
     expect(toc).toContain("more collection");
     expect(toc).toContain("omitted");
+  });
+
+  it("truncates an oversized FIRST collection rather than dropping it whole", async () => {
+    queryRows = [docRow({ collection_id: "solo", path: "a.md", title: "T".repeat(600) })];
+    SETTINGS.ATLAS_KNOWLEDGE_TOC_MAX_BYTES = "200";
+    const toc = await buildKnowledgeToc("org-1", "published");
+    // The single collection is kept but its block is cut with the marker.
+    expect(toc).toContain("Collection: solo");
+    expect(toc).toContain("truncated");
+  });
+
+  it("falls back to the default cap on a non-positive / unparseable override", () => {
+    SETTINGS.ATLAS_KNOWLEDGE_TOC_MAX_BYTES = "0";
+    expect(getKnowledgeTocMaxBytes()).toBe(DEFAULT_KNOWLEDGE_TOC_MAX_BYTES);
+    SETTINGS.ATLAS_KNOWLEDGE_TOC_MAX_BYTES = "-5";
+    expect(getKnowledgeTocMaxBytes()).toBe(DEFAULT_KNOWLEDGE_TOC_MAX_BYTES);
+    SETTINGS.ATLAS_KNOWLEDGE_TOC_MAX_BYTES = "not-a-number";
+    expect(getKnowledgeTocMaxBytes()).toBe(DEFAULT_KNOWLEDGE_TOC_MAX_BYTES);
   });
 });
 

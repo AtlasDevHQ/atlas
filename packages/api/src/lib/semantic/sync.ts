@@ -571,7 +571,10 @@ async function _buildOrgModeRoot(
     const { mirrorKnowledgeToDisk } = await import("@atlas/api/lib/knowledge/mirror");
     await mirrorKnowledgeToDisk(orgId, mode, root);
   } catch (err) {
-    log.error(
+    // warn, not error: knowledge is descriptive-only and non-blocking, and this
+    // degradation self-heals on the next invalidation — it must not trip
+    // error-rate alerting the way an entity-serving failure should.
+    log.warn(
       { orgId, mode, err: errorMessage(err) },
       "Failed to mirror knowledge collections — entity serving unaffected, knowledge subtree may be stale until the next rebuild",
     );

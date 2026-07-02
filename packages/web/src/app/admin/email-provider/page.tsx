@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { useState, type ComponentType, type ReactNode } from "react";
 import { z } from "zod";
 import {
   buildProviderConfig,
@@ -26,8 +26,8 @@ import {
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
-import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useConfigForm } from "@/ui/hooks/use-config-form";
 import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -79,6 +79,20 @@ const EmailProviderConfigResponseSchema = z.object({
     override: OverrideSchema.nullable(),
   }),
 });
+
+type EmailProviderConfigResponse = z.infer<typeof EmailProviderConfigResponseSchema>;
+
+/**
+ * Editable field set for `useConfigForm` — the single statement of what this
+ * page edits (#4204). `creds` re-baselines to `INITIAL_FIELD_VALUES` on every
+ * refetch because secrets are write-only: the server never echoes them back,
+ * so "dirty" means "the admin typed something new since the last load".
+ */
+type EmailFormValues = {
+  provider: EmailProvider;
+  fromAddress: string;
+  creds: ProviderFieldValues;
+};
 
 interface TestResult {
   success: boolean;
@@ -440,28 +454,47 @@ function ProviderFields({ provider, values, onChange, showSecrets, onToggleSecre
 export default function EmailProviderPage() {
   const [expanded, setExpanded] = useState(false);
   const [showSecrets, setShowSecrets] = useState(false);
-  const [provider, setProvider] = useState<EmailProvider>("resend");
-  const [fromAddress, setFromAddress] = useState("");
   const [recipientEmail, setRecipientEmail] = useState("");
-  const [fields, setFields] = useState<ProviderFieldValues>(INITIAL_FIELD_VALUES);
   const [formError, setFormError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
-  const { data, loading, error, refetch } = useAdminFetch("/api/v1/admin/email-provider", {
+  // Load → edit → dirty-gated save → re-baseline ride `useConfigForm`
+  // (#4204). The dirty compare derives from `toForm`, so Save/Replace stays
+  // disabled on an unchanged form — the always-fires save this page used to
+  // hand-roll is structurally gone. The post-save invalidation refetch
+  // re-baselines the form (credentials back to empty, from-address to the
+  // saved override), replacing the old `lastSyncedKey` sync effect.
+  const form = useConfigForm<EmailProviderConfigResponse, EmailFormValues>({
+    path: "/api/v1/admin/email-provider",
     schema: EmailProviderConfigResponseSchema,
+    saveMethod: "PUT",
+    toForm: (d) => ({
+      provider: d.config.override?.provider ?? "resend",
+      fromAddress: d.config.override?.fromAddress ?? "",
+      creds: INITIAL_FIELD_VALUES,
+    }),
+    toPayload: (v) => {
+      // `handleSave` validates before calling `save()`, so `ok` holds here.
+      // The empty-config arm exists only to keep `toPayload` total; if a
+      // future caller skips that validation the server rejects the payload
+      // with a 400 rather than storing a half-built config.
+      const configResult = buildProviderConfig(v.provider, v.creds);
+      return {
+        provider: v.provider,
+        fromAddress: v.fromAddress.trim(),
+        config: configResult.ok ? configResult.config : {},
+      };
+    },
   });
 
-  const { mutate: saveMutate, saving, error: saveError, clearError: clearSaveError } =
-    useAdminMutation({
-      path: "/api/v1/admin/email-provider",
-      method: "PUT",
-      invalidates: refetch,
-    });
+  // Remove/test stay hand-wired mutations: DELETE and POST /test are actions,
+  // not part of the config-form save loop. No explicit `invalidates` —
+  // useAdminMutation's onSuccess already invalidates every admin-fetch query,
+  // which refetches the GET above and drives the re-baseline.
   const { mutate: deleteMutate, saving: deleting, error: deleteError, clearError: clearDeleteError } =
     useAdminMutation({
       path: "/api/v1/admin/email-provider",
       method: "DELETE",
-      invalidates: refetch,
     });
   const { mutate: testMutate, saving: testing, error: testError, clearError: clearTestError } =
     useAdminMutation<TestResult>({
@@ -469,42 +502,17 @@ export default function EmailProviderPage() {
       method: "POST",
     });
 
-  const structuredError = combineMutationErrors([saveError, deleteError, testError]);
-  const baseline = data?.config.baseline;
-  const override = data?.config.override ?? null;
+  const structuredError = combineMutationErrors([form.error, deleteError, testError]);
+  const baseline = form.data?.config.baseline;
+  const override = form.data?.config.override ?? null;
   const hasOverride = override !== null;
   const showEditor = hasOverride || expanded;
-
-  // Sync form state from the server only when the override's identity actually
-  // changes — not on every background refetch (window-focus, 30s stale revalidation,
-  // mutation invalidation). An unconditional reset clobbers in-flight edits and
-  // silently dismisses mutation errors the user hasn't seen yet.
-  //
-  // The `clear*Error` callbacks are stable references returned by `useAdminMutation`
-  // (see hook docs), so omitting them from the dep array is safe — otherwise the
-  // effect would re-run on every render and defeat the identity gate.
-  const lastSyncedKey = useRef<string | null>(null);
-  useEffect(() => {
-    if (loading) return;
-    const key = override
-      ? `${override.provider}|${override.fromAddress}|${override.installedAt}`
-      : "none";
-    if (lastSyncedKey.current === key) return;
-    lastSyncedKey.current = key;
-    setProvider(override?.provider ?? "resend");
-    setFromAddress(override?.fromAddress ?? "");
-    setFields(INITIAL_FIELD_VALUES);
-    setRecipientEmail("");
-    setTestResult(null);
-    setFormError(null);
-    clearSaveError();
-    clearDeleteError();
-    clearTestError();
-  }, [data, loading]);
+  const values = form.values;
+  const fields = form.fields;
 
   function clearAllErrors() {
     setFormError(null);
-    clearSaveError();
+    form.clearError();
     clearDeleteError();
     clearTestError();
   }
@@ -512,26 +520,24 @@ export default function EmailProviderPage() {
   async function handleSave() {
     setTestResult(null);
     clearAllErrors();
+    if (!values) return;
 
-    const configResult = buildProviderConfig(provider, fields);
+    const configResult = buildProviderConfig(values.provider, values.creds);
     if (!configResult.ok) {
       setFormError(configResult.error);
       return;
     }
-    if (!fromAddress.trim()) {
+    if (!values.fromAddress.trim()) {
       setFormError("From address is required.");
       return;
     }
 
-    const result = await saveMutate({
-      body: {
-        provider,
-        fromAddress: fromAddress.trim(),
-        config: configResult.config,
-      },
-    });
+    const result = await form.save();
     if (result.ok) {
-      setFields(INITIAL_FIELD_VALUES);
+      // Transient test-flow state isn't part of the form baseline, so the
+      // refetch re-baseline doesn't touch it — clear it here like the old
+      // sync effect did.
+      setRecipientEmail("");
     }
   }
 
@@ -540,16 +546,17 @@ export default function EmailProviderPage() {
     clearAllErrors();
     const result = await deleteMutate();
     if (result.ok) {
+      // The invalidation refetch re-baselines the form to the baseline-only
+      // state; only the transient UI state needs clearing by hand.
       setExpanded(false);
-      setProvider("resend");
-      setFromAddress("");
-      setFields(INITIAL_FIELD_VALUES);
+      setRecipientEmail("");
     }
   }
 
   async function handleTest() {
     setTestResult(null);
     clearAllErrors();
+    if (!values) return;
 
     if (!recipientEmail.trim()) {
       setFormError("Enter a recipient email to send a test.");
@@ -560,8 +567,8 @@ export default function EmailProviderPage() {
     // override" by checking whether any provider-specific field was touched.
     // If anything is typed we MUST test exactly that — otherwise we'd silently
     // fall through to the saved/platform config and mislead the admin.
-    const hasTypedCreds = hasAnyProviderFieldFilled(provider, fields);
-    const configResult = buildProviderConfig(provider, fields);
+    const hasTypedCreds = hasAnyProviderFieldFilled(values.provider, values.creds);
+    const configResult = buildProviderConfig(values.provider, values.creds);
 
     const body: Record<string, unknown> = { recipientEmail: recipientEmail.trim() };
 
@@ -570,8 +577,9 @@ export default function EmailProviderPage() {
         setFormError(configResult.error);
         return;
       }
-      body.provider = provider;
-      body.fromAddress = fromAddress.trim() || override?.fromAddress || baseline?.fromAddress;
+      body.provider = values.provider;
+      body.fromAddress =
+        values.fromAddress.trim() || override?.fromAddress || baseline?.fromAddress;
       body.config = configResult.config;
     } else if (!hasOverride) {
       setFormError("Enter credentials to test, or save an override first.");
@@ -586,10 +594,8 @@ export default function EmailProviderPage() {
   function handleCollapse() {
     setExpanded(false);
     setTestResult(null);
-    setProvider("resend");
-    setFromAddress("");
     setRecipientEmail("");
-    setFields(INITIAL_FIELD_VALUES);
+    form.reset();
     clearAllErrors();
   }
 
@@ -618,10 +624,10 @@ export default function EmailProviderPage() {
         )}
 
         <AdminContentWrapper
-          loading={loading}
-          error={error}
+          loading={form.loading}
+          error={form.loadError}
           feature="Email Provider"
-          onRetry={refetch}
+          onRetry={form.refetch}
           loadingMessage="Loading email configuration..."
         >
           <div className="mx-auto max-w-3xl space-y-8">
@@ -668,7 +674,7 @@ export default function EmailProviderPage() {
                 />
               )}
 
-              {showEditor && (
+              {showEditor && values && fields && (
                 <OverrideShell
                   status={hasOverride ? "connected" : "disconnected"}
                   title={
@@ -705,8 +711,12 @@ export default function EmailProviderPage() {
                           Remove override
                         </Button>
                       )}
-                      <Button type="button" onClick={handleSave} disabled={saving}>
-                        {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+                      <Button
+                        type="button"
+                        onClick={handleSave}
+                        disabled={form.saving || !form.dirty}
+                      >
+                        {form.saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
                         {hasOverride ? "Replace" : "Save"}
                       </Button>
                     </>
@@ -729,7 +739,10 @@ export default function EmailProviderPage() {
                   <div className="space-y-4">
                     <div className="space-y-1">
                       <Label htmlFor="providerSelect">Provider</Label>
-                      <Select value={provider} onValueChange={(v) => setProvider(v as EmailProvider)}>
+                      <Select
+                        value={values.provider}
+                        onValueChange={(v) => fields.provider.set(v as EmailProvider)}
+                      >
                         <SelectTrigger id="providerSelect">
                           <SelectValue />
                         </SelectTrigger>
@@ -752,9 +765,9 @@ export default function EmailProviderPage() {
                     </div>
 
                     <ProviderFields
-                      provider={provider}
-                      values={fields}
-                      onChange={setFields}
+                      provider={values.provider}
+                      values={values.creds}
+                      onChange={fields.creds.set}
                       showSecrets={showSecrets}
                       onToggleSecrets={() => setShowSecrets((v) => !v)}
                     />
@@ -765,8 +778,8 @@ export default function EmailProviderPage() {
                         id="fromAddress"
                         placeholder={override?.fromAddress ?? "Acme <noreply@acme.com>"}
                         className="font-mono text-sm"
-                        value={fromAddress}
-                        onChange={(e) => setFromAddress(e.target.value)}
+                        value={values.fromAddress}
+                        onChange={(e) => fields.fromAddress.set(e.target.value)}
                       />
                       <p className="text-xs text-muted-foreground">
                         Must be a sender verified with the chosen provider.

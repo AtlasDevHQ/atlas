@@ -1538,6 +1538,22 @@ describe("connection URL encryption", () => {
       _resetEncryptionKeyCache();
     });
 
+    // Synthesizes a pre-F-47 unversioned ciphertext (iv:authTag:ciphertext)
+    // by stripping `enc:v1:` from a real encryptSecret output. With ~1/5000
+    // probability the random IV/authTag pair yields `<alnum-iv>://…`, which
+    // matches decryptSecret's plaintext-URL passthrough and short-circuits
+    // the very fallback path under test (observed as a CI-only flake on PR
+    // #4177). Re-encrypt until the synthesized value is not URL-shaped —
+    // real pre-F-47 rows overwhelmingly aren't, and the passthrough has its
+    // own dedicated tests above.
+    const synthesizeUnversioned = (url: string): string => {
+      let legacy: string;
+      do {
+        legacy = encryptSecret(url).replace(/^enc:v1:/, "");
+      } while (isPlaintextUrl(legacy));
+      return legacy;
+    };
+
     it("writes are tagged with the active keyset version", () => {
       process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
       _resetEncryptionKeyCache();
@@ -1567,8 +1583,7 @@ describe("connection URL encryption", () => {
       // Synthesize a pre-F-47 ciphertext by re-encoding the output of
       // encryptSecret without the `enc:v1:` prefix — same key, same body.
       const url = "postgresql://user:pass@host/db";
-      const versioned = encryptSecret(url);
-      const legacy = versioned.replace(/^enc:v1:/, "");
+      const legacy = synthesizeUnversioned(url);
       const parts = legacy.split(":");
       expect(parts.length).toBe(3);
       expect(decryptSecret(legacy)).toBe(url);
@@ -1582,8 +1597,7 @@ describe("connection URL encryption", () => {
       process.env.ATLAS_ENCRYPTION_KEYS = "v1:original-key";
       _resetEncryptionKeyCache();
       const url = "postgresql://admin:pw@host/db";
-      const versioned = encryptSecret(url);
-      const unversioned = versioned.replace(/^enc:v1:/, "");
+      const unversioned = synthesizeUnversioned(url);
 
       process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-key,v1:original-key";
       _resetEncryptionKeyCache();
@@ -1601,7 +1615,7 @@ describe("connection URL encryption", () => {
       process.env.ATLAS_ENCRYPTION_KEYS = "v1:original-key";
       _resetEncryptionKeyCache();
       const url = "postgresql://admin:pw@host/db";
-      const unversioned = encryptSecret(url).replace(/^enc:v1:/, "");
+      const unversioned = synthesizeUnversioned(url);
 
       // v1 dropped — active is now a totally different raw value.
       process.env.ATLAS_ENCRYPTION_KEYS = "v2:never-used-to-encrypt-this";

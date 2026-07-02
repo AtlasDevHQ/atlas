@@ -3,13 +3,15 @@
  *
  * Two surfaces under test:
  *
- *  1. `seedBuiltinKnowledgeCatalog(db)` — the runtime seeder. Asserts the single
- *     `okf-upload` row is inserted with `ON CONFLICT DO NOTHING` semantics
- *     through the operator-curated seam, with the ADR-0028 §5 shape (type
- *     `context`, pillar `knowledge`, install_model `form`, no credentials).
+ *  1. `seedBuiltinKnowledgeCatalog(db)` — the runtime seeder. Asserts the
+ *     built-in rows (`okf-upload` #4206, `bundle-sync` #4211) are inserted with
+ *     `ON CONFLICT DO NOTHING` semantics through the operator-curated seam,
+ *     with the ADR-0028 §5 shape (type `context`, pillar `knowledge`,
+ *     install_model `form`).
  *
- *  2. `BUILTIN_KNOWLEDGE_CATALOG_ROW` — the in-process source of truth. Asserts
- *     content-level invariants.
+ *  2. `BUILTIN_KNOWLEDGE_CATALOG_ROW(S)` — the in-process source of truth.
+ *     Asserts content-level invariants (okf-upload credential-less; bundle-sync
+ *     endpoint config with exactly one secret field).
  *
  * The migration/CHECK interaction is checked end-to-end by `migrate-pg.test.ts`
  * against a real Postgres; here we exercise the boot-time seed against an
@@ -20,6 +22,8 @@ import { afterEach, describe, expect, it, mock } from "bun:test";
 import {
   seedBuiltinKnowledgeCatalog,
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
+  BUILTIN_BUNDLE_SYNC_CATALOG_ROW,
+  BUILTIN_KNOWLEDGE_CATALOG_ROWS,
   type BuiltinKnowledgeCatalogSeedDb,
 } from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
 
@@ -28,14 +32,19 @@ interface CapturedQuery {
   params: unknown[];
 }
 
+/**
+ * Mock pool: when `insert` is true every INSERT "succeeds" (RETURNING echoes
+ * the bound slug param); when false every row "already exists" (empty
+ * RETURNING — the ON CONFLICT DO NOTHING path).
+ */
 const captureDb = (
-  insertedSlugs: ReadonlyArray<string> = [BUILTIN_KNOWLEDGE_CATALOG_ROW.slug],
+  insert = true,
 ): { db: BuiltinKnowledgeCatalogSeedDb; captured: CapturedQuery[] } => {
   const captured: CapturedQuery[] = [];
   const db: BuiltinKnowledgeCatalogSeedDb = {
     async query<T = unknown>(sql: string, params?: unknown[]) {
       captured.push({ sql, params: params ?? [] });
-      return { rows: insertedSlugs.map((slug) => ({ slug })) as T[] };
+      return { rows: insert ? ([{ slug: params?.[2] }] as T[]) : [] };
     },
   };
   return { db, captured };
@@ -53,44 +62,72 @@ describe("BUILTIN_KNOWLEDGE_CATALOG_ROW", () => {
   });
 
   it("uses the `catalog:<slug>` id convention", () => {
-    expect(BUILTIN_KNOWLEDGE_CATALOG_ROW.id).toBe(
-      `catalog:${BUILTIN_KNOWLEDGE_CATALOG_ROW.slug}`,
-    );
+    for (const row of BUILTIN_KNOWLEDGE_CATALOG_ROWS) {
+      expect(row.id).toBe(`catalog:${row.slug}`);
+    }
+  });
+});
+
+describe("BUILTIN_BUNDLE_SYNC_CATALOG_ROW (#4211)", () => {
+  it("is the `bundle-sync` form install: endpoint + auth config, secret flagged", () => {
+    const row = BUILTIN_BUNDLE_SYNC_CATALOG_ROW;
+    expect(row.slug).toBe("bundle-sync");
+    expect(row.id).toBe("catalog:bundle-sync");
+    expect(row.installModel).toBe("form");
+    expect(row.autoInstall).toBe(false);
+    const keys = row.configSchema.map((f) => f.key);
+    expect(keys).toContain("endpoint_url");
+    expect(keys).toContain("auth_scheme");
+    expect(keys).toContain("auth_secret");
+    // Exactly one secret field: the auth secret (rendered as a password
+    // input, never echoed) — the endpoint URL itself is not secret.
+    expect(row.configSchema.filter((f) => f.secret === true).map((f) => f.key)).toEqual([
+      "auth_secret",
+    ]);
+    const endpoint = row.configSchema.find((f) => f.key === "endpoint_url");
+    expect(endpoint?.required).toBe(true);
   });
 });
 
 describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
-  it("issues a single INSERT with type 'context' and pillar 'knowledge'", async () => {
+  it("issues one INSERT per built-in row with type 'context' and pillar 'knowledge'", async () => {
     const { db, captured } = captureDb();
     await seedBuiltinKnowledgeCatalog(db);
-    expect(captured).toHaveLength(1);
-    expect(captured[0]!.sql).toContain("INSERT INTO plugin_catalog");
-    expect(captured[0]!.sql).toContain("'context'");
-    expect(captured[0]!.sql).toContain("'knowledge'");
-    // Unqualified ON CONFLICT DO NOTHING covers both the slug unique index
-    // AND the id PK (mirrors the datasource seed's edge-case handling).
-    expect(captured[0]!.sql).toContain("ON CONFLICT DO NOTHING");
-    expect(captured[0]!.sql).not.toContain("ON CONFLICT (slug)");
-    expect(captured[0]!.sql).toContain("RETURNING slug");
+    expect(captured).toHaveLength(BUILTIN_KNOWLEDGE_CATALOG_ROWS.length);
+    for (const q of captured) {
+      expect(q.sql).toContain("INSERT INTO plugin_catalog");
+      expect(q.sql).toContain("'context'");
+      expect(q.sql).toContain("'knowledge'");
+      // Unqualified ON CONFLICT DO NOTHING covers both the slug unique index
+      // AND the id PK (mirrors the datasource seed's edge-case handling).
+      expect(q.sql).toContain("ON CONFLICT DO NOTHING");
+      expect(q.sql).not.toContain("ON CONFLICT (slug)");
+      expect(q.sql).toContain("RETURNING slug");
+    }
+    expect(captured.map((q) => q.params[2])).toEqual(["okf-upload", "bundle-sync"]);
   });
 
-  it("binds the row's 8 params and serializes config_schema as JSON", async () => {
+  it("binds each row's 8 params and serializes config_schema as JSON", async () => {
     const { db, captured } = captureDb();
     await seedBuiltinKnowledgeCatalog(db);
-    expect(captured[0]!.params).toHaveLength(8);
-    const configParam = captured[0]!.params[7];
-    expect(typeof configParam).toBe("string");
-    expect(JSON.parse(configParam as string)).toEqual(
-      BUILTIN_KNOWLEDGE_CATALOG_ROW.configSchema,
-    );
+    captured.forEach((q, i) => {
+      expect(q.params).toHaveLength(8);
+      const configParam = q.params[7];
+      expect(typeof configParam).toBe("string");
+      expect(JSON.parse(configParam as string)).toEqual(
+        BUILTIN_KNOWLEDGE_CATALOG_ROWS[i]!.configSchema,
+      );
+    });
   });
 
-  it("reports inserted on a fresh catalog and preserved on a re-boot", async () => {
+  it("reports inserted slugs on a fresh catalog and none on a re-boot", async () => {
     const fresh = await seedBuiltinKnowledgeCatalog(captureDb().db);
     expect(fresh.inserted).toBe(true);
-    // Empty RETURNING = row already existed (ON CONFLICT DO NOTHING path).
-    const reboot = await seedBuiltinKnowledgeCatalog(captureDb([]).db);
+    expect(fresh.insertedSlugs).toEqual(["okf-upload", "bundle-sync"]);
+    // Empty RETURNING = rows already existed (ON CONFLICT DO NOTHING path).
+    const reboot = await seedBuiltinKnowledgeCatalog(captureDb(false).db);
     expect(reboot.inserted).toBe(false);
+    expect(reboot.insertedSlugs).toEqual([]);
   });
 
   it("propagates DB errors instead of swallowing them", async () => {

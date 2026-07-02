@@ -455,6 +455,10 @@ describe("migrateAuthTables", () => {
             { name: "0161_knowledge_pillar_check.sql" },
             { name: "0162_knowledge_documents.sql" },
             { name: "0163_knowledge_links.sql" },
+            // 0164 (#4211, ADR-0028 §5 follow-up) — knowledge_sync_credentials +
+            // knowledge_sync_state for bundle-sync collections. Atlas-internal
+            // tables, no FK to a Better Auth table, so it runs in every auth mode.
+            { name: "0164_knowledge_bundle_sync.sql" },
           ],
         };
       }

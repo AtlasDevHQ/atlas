@@ -30,13 +30,14 @@ export interface IngestClient {
 }
 
 /**
- * How the documents arrived. v0 has only `upload` (the explicit admin bundle
- * upload). Future connector syncs (Notion/Confluence) will add sources — and,
- * per ADR-0028 §4, connector-synced content NEVER gets an "upload & publish"
- * option; it always queues for review. The publish path keys off this: only
- * `upload` may be paired with an atomic publish (enforced in the route).
+ * How the documents arrived: `upload` is the explicit admin bundle upload;
+ * `bundle-sync` is the scheduled endpoint pull (#4211). Per ADR-0028 §4,
+ * connector-synced content NEVER gets an "upload & publish" option; it always
+ * queues for review. The publish path keys off this: only `upload` may be
+ * paired with an atomic publish (enforced in the route — the sync engine in
+ * `lib/knowledge/sync.ts` has no publish path at all).
  */
-export type IngestSource = "upload";
+export type IngestSource = "upload" | "bundle-sync";
 
 export interface IngestParams {
   readonly client: IngestClient;

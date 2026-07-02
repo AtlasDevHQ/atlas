@@ -17,16 +17,40 @@ export interface KnowledgeDocumentCounts {
 }
 
 /**
+ * How a collection's content arrives: `upload` (the `okf-upload` catalog row —
+ * explicit admin bundle uploads) or `bundle-sync` (the #4211 catalog row — a
+ * scheduled pull of a configured bundle endpoint).
+ */
+export type KnowledgeCollectionSource = "upload" | "bundle-sync";
+
+/**
+ * Last-sync bookkeeping for a `bundle-sync` collection (#4211). Absent (null
+ * on the collection) until the first sync attempt.
+ */
+export interface KnowledgeCollectionSyncStatus {
+  /** ISO-8601 completion time of the last sync attempt (success or error). */
+  readonly lastSyncAt: string;
+  readonly status: "success" | "error";
+  /** Actionable failure message when the last attempt errored. */
+  readonly error: string | null;
+}
+
+/**
  * One collection in the workspace's Knowledge Base, as returned by
  * `GET /api/v1/admin/knowledge`. Archived collections are excluded.
  */
 export interface KnowledgeCollection {
   /** Collection slug = `workspace_plugins.install_id`. */
   readonly slug: string;
+  readonly source: KnowledgeCollectionSource;
   /** Optional human description from the install config. */
   readonly description: string | null;
   /** ISO-8601 install timestamp, or null if unavailable. */
   readonly installedAt: string | null;
+  /** The configured bundle endpoint (non-secret) — `bundle-sync` only. */
+  readonly endpointUrl: string | null;
+  /** Last-sync bookkeeping — `bundle-sync` only, null before the first sync. */
+  readonly sync: KnowledgeCollectionSyncStatus | null;
   readonly documents: KnowledgeDocumentCounts;
 }
 
@@ -94,4 +118,25 @@ export interface KnowledgeUninstallResponse {
   readonly archived: boolean;
   readonly collection: string;
   readonly archivedDocuments: number;
+}
+
+/**
+ * `POST /api/v1/admin/knowledge/{slug}/sync` response (#4211) — the outcome of
+ * one manual "Sync now" pull. A failed fetch/ingest is still a 200 with
+ * `status: "error"` and an actionable message (the attempt itself completed
+ * and was recorded on the collection's sync status); the ingest fields are
+ * null in that case.
+ */
+export interface KnowledgeSyncRunResponse {
+  readonly collection: string;
+  readonly status: "success" | "error";
+  /** ISO-8601 completion time of this attempt. */
+  readonly syncedAt: string;
+  readonly error: string | null;
+  readonly format: "tar" | "tar.gz" | "zip" | null;
+  readonly documents: KnowledgeIngestDocumentCounts | null;
+  /** Previously-ingested docs archived because their path left the bundle. */
+  readonly archivedAbsent: number | null;
+  readonly linksWritten: number | null;
+  readonly rejected: ReadonlyArray<KnowledgeRejectedFile>;
 }

@@ -1,27 +1,29 @@
 /**
- * Boot-time idempotent seed pass for the single built-in Knowledge Base
- * catalog row, `okf-upload` (#4206, ADR-0028).
+ * Boot-time idempotent seed pass for the built-in Knowledge Base catalog
+ * rows: `okf-upload` (#4206, ADR-0028) and `bundle-sync` (#4211).
  *
- * The v0 Knowledge Base lifecycle (ADR-0028 §5) is one built-in catalog row:
- * an **explicit, degenerate form install** — no credentials, minimal
- * `config_schema`. Installing it creates a *collection* (a `workspace_plugins`
- * row, pillar `knowledge`); ingest is a separate admin act. Per ADR-0028 §5 the
- * row ships inside Atlas and is operator-curated — not declared in
- * `atlas.config.ts` — so it is seeded here at boot through the operator-curated
- * seam (`assertOperatorCatalogWrite`, `lib/plugins/catalog-provenance.ts`),
- * exactly mirroring the built-in Datasource catalog seed.
+ * The Knowledge Base lifecycle (ADR-0028 §5) started as one built-in catalog
+ * row — `okf-upload`, an **explicit, degenerate form install** with no
+ * credentials and minimal `config_schema`. #4211 adds the generic sync arm,
+ * `bundle-sync`: a form install whose config carries a bundle endpoint URL and
+ * whose optional auth secret is the first Knowledge Base credential (dedicated
+ * `knowledge_sync_credentials` table, an `INTEGRATION_TABLES` participant).
+ * Installing either creates a *collection* (a `workspace_plugins` row, pillar
+ * `knowledge`); ingest is a separate act (admin upload / scheduled pull). Per
+ * ADR-0028 §5 the rows ship inside Atlas and are operator-curated — not
+ * declared in `atlas.config.ts` — so they are seeded here at boot through the
+ * operator-curated seam (`assertOperatorCatalogWrite`,
+ * `lib/plugins/catalog-provenance.ts`), exactly mirroring the built-in
+ * Datasource catalog seed.
  *
- * Unlike the Datasource rows, `okf-upload` carries **no credentials and no
- * `INTEGRATION_TABLES` entry** — connectors (Notion/Confluence OAuth installs
- * with credentials + Scheduler sync) are deliberate follow-ups. The row's
- * `pillar = 'knowledge'` is admitted by migration 0161's widened CHECK, which
- * `Migration` guarantees has run before this seed (the Layer's `Migration`
- * dependency).
+ * The rows' `pillar = 'knowledge'` is admitted by migration 0161's widened
+ * CHECK, which `Migration` guarantees has run before this seed (the Layer's
+ * `Migration` dependency).
  *
  * Idempotency: unqualified `ON CONFLICT DO NOTHING` covers both the `slug`
  * unique index and the `id` primary key, so re-running on a populated catalog
  * is a no-op. A seed-time failure logs at error and the API keeps booting —
- * the row from a prior boot answers admin-UI reads.
+ * the rows from a prior boot answer admin-UI reads.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -49,7 +51,7 @@ export interface BuiltinKnowledgeCatalogRow {
 }
 
 /**
- * The single built-in Knowledge Base catalog row (ADR-0028 §5). A
+ * The v0 built-in Knowledge Base catalog row (ADR-0028 §5). A
  * credential-less form install: the only config field is an optional
  * human description of the collection. The collection's identity is the
  * install slug chosen at install time, not a config field.
@@ -74,6 +76,74 @@ export const BUILTIN_KNOWLEDGE_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
 };
 
 /**
+ * The generic bundle-sync Knowledge Base catalog row (#4211). A form install
+ * whose collection pulls a bundle endpoint (any URL serving a `.tar` /
+ * `.tar.gz` / `.zip` — including GitHub/GitLab repo-archive URLs) on the
+ * Scheduler cadence and re-runs the #4207 ingest, so the diff is computed by
+ * upsert-by-path and every synced change lands `draft` (ADR-0028 §4 — no
+ * upload-&-publish shortcut for connector-style ingest).
+ *
+ * The `auth_secret` field is `secret: true` but is NOT stored in
+ * `workspace_plugins.config` — the install handler routes it to the dedicated
+ * `knowledge_sync_credentials` table (encrypted via `db/secret-encryption.ts`,
+ * an `INTEGRATION_TABLES` participant). The flag still matters: it tells the
+ * admin form to render a password input and never echo the value back.
+ */
+export const BUILTIN_BUNDLE_SYNC_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
+  id: "catalog:bundle-sync",
+  slug: "bundle-sync",
+  name: "Knowledge Base (Bundle Sync)",
+  description:
+    "Point a knowledge collection at an endpoint serving your bundle (tarball/zip, incl. git-forge archive URLs); Atlas pulls it on a schedule and queues changes for review.",
+  installModel: "form",
+  autoInstall: false,
+  saasEligible: true,
+  configSchema: [
+    {
+      key: "endpoint_url",
+      type: "string",
+      label: "Endpoint URL",
+      required: true,
+      description:
+        "HTTPS URL serving the knowledge bundle as .tar, .tar.gz, or .zip — e.g. a GitHub repo archive URL.",
+    },
+    {
+      key: "auth_scheme",
+      type: "select",
+      label: "Authentication",
+      options: [
+        { value: "none", label: "None (public endpoint)" },
+        { value: "bearer", label: "Bearer token" },
+        { value: "basic", label: "Basic (user:password)" },
+      ],
+      default: "none",
+      description: "How Atlas authenticates to a private endpoint.",
+    },
+    {
+      key: "auth_secret",
+      type: "string",
+      secret: true,
+      label: "Auth secret",
+      description:
+        "Bearer token, or user:password for basic auth. Stored encrypted; never returned.",
+      showWhen: { field: "auth_scheme", equals: ["bearer", "basic"] },
+    },
+    {
+      key: "description",
+      type: "string",
+      label: "Description",
+      description: "Optional. A human description of this knowledge collection.",
+    },
+  ],
+};
+
+/** Every built-in Knowledge Base catalog row, in seed order. */
+export const BUILTIN_KNOWLEDGE_CATALOG_ROWS: ReadonlyArray<BuiltinKnowledgeCatalogRow> = [
+  BUILTIN_KNOWLEDGE_CATALOG_ROW,
+  BUILTIN_BUNDLE_SYNC_CATALOG_ROW,
+];
+
+/**
  * Narrow shape of the DB client the seeder needs. Mirrors
  * `BuiltinDatasourceCatalogSeedDb` so a single mock pool serves both
  * seeders in tests.
@@ -83,52 +153,58 @@ export interface BuiltinKnowledgeCatalogSeedDb {
 }
 
 export interface BuiltinKnowledgeCatalogSeedResult {
-  /** True when the `ON CONFLICT DO NOTHING` ran an insert (row didn't exist). */
+  /** True when any `ON CONFLICT DO NOTHING` ran an insert (a row didn't exist). */
   readonly inserted: boolean;
+  /** The slugs actually inserted this pass (empty on a fully-populated catalog). */
+  readonly insertedSlugs: ReadonlyArray<string>;
 }
 
 /**
- * Idempotently seed the built-in `okf-upload` Knowledge Base catalog row.
+ * Idempotently seed the built-in Knowledge Base catalog rows (`okf-upload`,
+ * `bundle-sync`).
  *
  * Column order matches the built-in Datasource seed's VALUES block so the two
  * seeds stay structurally recognizable; `type` and `pillar` differ (`context` /
- * `knowledge`). `RETURNING slug` reports whether the row was inserted vs
- * preserved.
+ * `knowledge`). `RETURNING slug` reports whether each row was inserted vs
+ * preserved. Rows seed sequentially: a pre-existing row never blocks the next,
+ * but a hard failure aborts the pass and propagates (the boot wrapper logs and continues booting).
  */
 export async function seedBuiltinKnowledgeCatalog(
   db: BuiltinKnowledgeCatalogSeedDb,
 ): Promise<BuiltinKnowledgeCatalogSeedResult> {
-  const row = BUILTIN_KNOWLEDGE_CATALOG_ROW;
-
-  // Operator-curated-only gate (#4174/#4099): this row ships inside Atlas.
+  // Operator-curated-only gate (#4174/#4099): these rows ship inside Atlas.
   assertOperatorCatalogWrite("builtin-knowledge-seed");
-  const { rows } = await db.query<{ slug: string }>(
-    `INSERT INTO plugin_catalog
-       (id, name, slug, description, type, install_model, pillar,
-        implementation_status, auto_install, min_plan, enabled, saas_eligible,
-        config_schema, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, 'context', $5, 'knowledge', 'available', $6,
-             'starter', true, $7, $8::jsonb, NOW(), NOW())
-     ON CONFLICT DO NOTHING
-     RETURNING slug`,
-    [
-      row.id,
-      row.name,
-      row.slug,
-      row.description,
-      row.installModel,
-      row.autoInstall,
-      row.saasEligible,
-      JSON.stringify(row.configSchema),
-    ],
-  );
 
-  const inserted = rows.length > 0;
+  const insertedSlugs: string[] = [];
+  for (const row of BUILTIN_KNOWLEDGE_CATALOG_ROWS) {
+    const { rows } = await db.query<{ slug: string }>(
+      `INSERT INTO plugin_catalog
+         (id, name, slug, description, type, install_model, pillar,
+          implementation_status, auto_install, min_plan, enabled, saas_eligible,
+          config_schema, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'context', $5, 'knowledge', 'available', $6,
+               'starter', true, $7, $8::jsonb, NOW(), NOW())
+       ON CONFLICT DO NOTHING
+       RETURNING slug`,
+      [
+        row.id,
+        row.name,
+        row.slug,
+        row.description,
+        row.installModel,
+        row.autoInstall,
+        row.saasEligible,
+        JSON.stringify(row.configSchema),
+      ],
+    );
+    if (rows.length > 0) insertedSlugs.push(row.slug);
+  }
+
   log.info(
-    { inserted, slug: row.slug },
+    { insertedSlugs, slugs: BUILTIN_KNOWLEDGE_CATALOG_ROWS.map((r) => r.slug) },
     "Built-in Knowledge Base catalog seed complete",
   );
-  return { inserted };
+  return { inserted: insertedSlugs.length > 0, insertedSlugs };
 }
 
 /**
@@ -173,7 +249,7 @@ export async function runBuiltinKnowledgeCatalogSeedBoot(): Promise<BuiltinKnowl
     const normalized = err instanceof Error ? err : new Error(String(err));
     log.error(
       { err: normalized },
-      "Built-in Knowledge Base catalog seed failed — okf-upload row from prior boot remains authoritative",
+      "Built-in Knowledge Base catalog seed failed — rows from a prior boot remain authoritative",
     );
     return { kind: "error", message: normalized.message };
   }

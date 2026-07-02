@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useQueryStates } from "nuqs";
 import { toast } from "sonner";
-import { BookText, FileUp, FolderPlus, Library, Trash2 } from "lucide-react";
+import { BookText, FileUp, FolderPlus, Library, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,7 +23,11 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { KnowledgeCollectionListResponseSchema } from "@/ui/lib/admin-schemas";
-import type { KnowledgeCollection, KnowledgeCollectionListResponse } from "@/ui/lib/types";
+import type {
+  KnowledgeCollection,
+  KnowledgeCollectionListResponse,
+  KnowledgeSyncRunResponse,
+} from "@/ui/lib/types";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { knowledgeSearchParams } from "./search-params";
 import { CreateCollectionDialog } from "./create-collection-dialog";
@@ -49,8 +53,42 @@ export default function KnowledgePage() {
   const [uninstallTarget, setUninstallTarget] = useState<KnowledgeCollection | null>(null);
 
   const uninstallMutation = useAdminMutation({ method: "DELETE" });
+  const syncMutation = useAdminMutation<KnowledgeSyncRunResponse>({ method: "POST" });
+  const [syncingSlug, setSyncingSlug] = useState<string | null>(null);
 
   const collections = data?.collections ?? [];
+
+  async function handleSyncNow(slug: string) {
+    setSyncingSlug(slug);
+    try {
+      const result = await syncMutation.mutate({
+        path: `/api/v1/admin/knowledge/${encodeURIComponent(slug)}/sync`,
+      });
+      if (result.ok && result.data) {
+        if (result.data.status === "success") {
+          const d = result.data.documents;
+          toast.success(
+            `Synced "${slug}" — ${d ? `${d.created} new, ${d.updated + d.demoted} changed, ${d.unchanged} unchanged` : "done"}${
+              result.data.archivedAbsent ? `, ${result.data.archivedAbsent} archived` : ""
+            }`,
+          );
+        } else {
+          // The attempt completed but the sync failed — surface the actionable
+          // message; the card's status line shows it too after refetch.
+          toast.error(result.data.error ?? `Sync of "${slug}" failed.`);
+        }
+        void refetch();
+      } else if (result.ok) {
+        // A 2xx with no parseable body shouldn't silently no-op — the sync may
+        // still have run, so refetch to pick up the recorded state.
+        toast.warning(`Sync of "${slug}" finished but returned no report — refreshing status.`);
+        void refetch();
+      }
+      // On a transport/HTTP failure the surface below the list renders the error.
+    } finally {
+      setSyncingSlug(null);
+    }
+  }
 
   async function handleUninstall() {
     if (!uninstallTarget) return;
@@ -93,6 +131,13 @@ export default function KnowledgePage() {
           variant="banner"
         />
       ) : null}
+      {syncMutation.error ? (
+        <MutationErrorSurface
+          feature="Knowledge Base"
+          error={syncMutation.error}
+          variant="banner"
+        />
+      ) : null}
 
       <AdminContentWrapper
         feature="Knowledge Base"
@@ -111,8 +156,10 @@ export default function KnowledgePage() {
               <CollectionCard
                 key={collection.slug}
                 collection={collection}
+                syncing={syncingSlug === collection.slug}
                 onView={() => void setParams({ collection: collection.slug })}
                 onUpload={() => setUploadTarget(collection.slug)}
+                onSync={() => void handleSyncNow(collection.slug)}
                 onUninstall={() => setUninstallTarget(collection)}
               />
             ))}
@@ -124,10 +171,16 @@ export default function KnowledgePage() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         existingSlugs={collections.map((c) => c.slug)}
-        onCreated={(slug) => {
+        onCreated={(slug, source) => {
           setCreateOpen(false);
           void refetch();
-          setUploadTarget(slug);
+          if (source === "bundle-sync") {
+            // Initial full ingest: kick the first pull right away rather than
+            // waiting for the nightly schedule.
+            void handleSyncNow(slug);
+          } else {
+            setUploadTarget(slug);
+          }
         }}
       />
 
@@ -191,18 +244,35 @@ export function describeArchive(collection: KnowledgeCollection): string {
   return `This will archive ${active} document${active === 1 ? "" : "s"} (${parts.join(", ")}).`;
 }
 
+/**
+ * Classify a synced collection's footer state (the card renders the actual
+ * line): `null` for upload collections, `"never-synced"` before the first
+ * attempt, else the last attempt's outcome. Exported for tests.
+ */
+export function describeSync(collection: KnowledgeCollection): "synced" | "sync-failed" | "never-synced" | null {
+  if (collection.source !== "bundle-sync") return null;
+  if (!collection.sync) return "never-synced";
+  return collection.sync.status === "success" ? "synced" : "sync-failed";
+}
+
 function CollectionCard({
   collection,
+  syncing,
   onView,
   onUpload,
+  onSync,
   onUninstall,
 }: {
   collection: KnowledgeCollection;
+  syncing: boolean;
   onView: () => void;
   onUpload: () => void;
+  onSync: () => void;
   onUninstall: () => void;
 }) {
   const { draft, published } = collection.documents;
+  const isSynced = collection.source === "bundle-sync";
+  const syncState = describeSync(collection);
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -211,6 +281,7 @@ function CollectionCard({
             {collection.slug}
           </CardTitle>
           <div className="flex shrink-0 gap-1.5">
+            {isSynced ? <Badge variant="outline">synced</Badge> : null}
             <Badge variant="default">{published} published</Badge>
             <Badge variant="secondary">{draft} draft</Badge>
           </div>
@@ -218,10 +289,28 @@ function CollectionCard({
         {collection.description ? (
           <p className="line-clamp-2 text-sm text-muted-foreground">{collection.description}</p>
         ) : null}
+        {isSynced && collection.endpointUrl ? (
+          <p className="truncate text-xs text-muted-foreground" title={collection.endpointUrl}>
+            {collection.endpointUrl}
+          </p>
+        ) : null}
       </CardHeader>
       <CardContent className="flex items-center justify-between gap-2">
-        <span className="text-xs text-muted-foreground">
-          {collection.installedAt ? (
+        <span className="min-w-0 truncate text-xs text-muted-foreground">
+          {syncState === "never-synced" ? (
+            "Never synced"
+          ) : syncState === "synced" && collection.sync ? (
+            <>
+              Synced <RelativeTimestamp iso={collection.sync.lastSyncAt} />
+            </>
+          ) : syncState === "sync-failed" && collection.sync ? (
+            <span
+              className="text-destructive"
+              title={collection.sync.error ?? "The last sync failed."}
+            >
+              Sync failed <RelativeTimestamp iso={collection.sync.lastSyncAt} />
+            </span>
+          ) : collection.installedAt ? (
             <>
               Created <RelativeTimestamp iso={collection.installedAt} />
             </>
@@ -232,10 +321,23 @@ function CollectionCard({
             <BookText className="mr-1 size-3.5" />
             Documents
           </Button>
-          <Button variant="outline" size="sm" onClick={onUpload} data-testid={`upload-${collection.slug}`}>
-            <FileUp className="mr-1 size-3.5" />
-            Upload
-          </Button>
+          {isSynced ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onSync}
+              disabled={syncing}
+              data-testid={`sync-${collection.slug}`}
+            >
+              <RefreshCw className={`mr-1 size-3.5 ${syncing ? "animate-spin" : ""}`} />
+              {syncing ? "Syncing…" : "Sync now"}
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={onUpload} data-testid={`upload-${collection.slug}`}>
+              <FileUp className="mr-1 size-3.5" />
+              Upload
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"

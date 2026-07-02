@@ -34,16 +34,29 @@ mock.module("@/ui/hooks/use-admin-mutation", () => ({
 mock.module("@/lib/api-url", () => ({ getApiUrl: () => "" }));
 
 const KnowledgePage = (await import("../page")).default;
-const { describeArchive } = await import("../page");
+const { describeArchive, describeSync } = await import("../page");
 
 function collection(partial: Partial<KnowledgeCollection> = {}): KnowledgeCollection {
   return {
     slug: "runbooks",
+    source: "upload",
     description: "On-call runbooks",
     installedAt: "2026-07-02T00:00:00.000Z",
+    endpointUrl: null,
+    sync: null,
     documents: { draft: 2, published: 3, archived: 0 },
     ...partial,
   };
+}
+
+function syncedCollection(partial: Partial<KnowledgeCollection> = {}): KnowledgeCollection {
+  return collection({
+    slug: "synced-docs",
+    source: "bundle-sync",
+    endpointUrl: "https://kb.example.com/bundle.tar.gz",
+    sync: { lastSyncAt: "2026-07-02T01:00:00.000Z", status: "success", error: null },
+    ...partial,
+  });
 }
 
 describe("describeArchive", () => {
@@ -90,5 +103,60 @@ describe("KnowledgePage", () => {
     fetchState = { data: { collections: [] }, loading: false, error: null };
     render(<KnowledgePage />);
     expect(screen.getByText("No collections yet")).toBeDefined();
+  });
+
+  test("a bundle-sync collection shows Sync now (not Upload), its endpoint, and the synced badge (#4211)", () => {
+    fetchState = { data: { collections: [syncedCollection()] }, loading: false, error: null };
+    render(<KnowledgePage />);
+    expect(screen.getByTestId("sync-synced-docs")).toBeDefined();
+    expect(screen.queryByTestId("upload-synced-docs")).toBeNull();
+    expect(screen.getByText("https://kb.example.com/bundle.tar.gz")).toBeDefined();
+    expect(screen.getByText("synced")).toBeDefined();
+  });
+
+  test("a failed last sync surfaces the error state on the card", () => {
+    fetchState = {
+      data: {
+        collections: [
+          syncedCollection({
+            sync: {
+              lastSyncAt: "2026-07-02T01:00:00.000Z",
+              status: "error",
+              error: 'Bundle endpoint "kb.example.com" responded HTTP 403',
+            },
+          }),
+        ],
+      },
+      loading: false,
+      error: null,
+    };
+    render(<KnowledgePage />);
+    expect(screen.getByText(/Sync failed/)).toBeDefined();
+  });
+
+  test("an upload collection keeps the Upload action and shows no sync affordance", () => {
+    fetchState = { data: { collections: [collection()] }, loading: false, error: null };
+    render(<KnowledgePage />);
+    expect(screen.getByTestId("upload-runbooks")).toBeDefined();
+    expect(screen.queryByTestId("sync-runbooks")).toBeNull();
+  });
+});
+
+describe("describeSync", () => {
+  test("null for upload collections", () => {
+    expect(describeSync(collection())).toBeNull();
+  });
+  test("never-synced before the first attempt", () => {
+    expect(describeSync(syncedCollection({ sync: null }))).toBe("never-synced");
+  });
+  test("tracks the last attempt's outcome", () => {
+    expect(describeSync(syncedCollection())).toBe("synced");
+    expect(
+      describeSync(
+        syncedCollection({
+          sync: { lastSyncAt: "2026-07-02T01:00:00.000Z", status: "error", error: "boom" },
+        }),
+      ),
+    ).toBe("sync-failed");
   });
 });

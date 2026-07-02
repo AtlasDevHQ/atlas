@@ -20,6 +20,7 @@ import type {
   KnowledgeCollectionListResponse,
   KnowledgeDocumentListResponse,
   KnowledgeIngestSummary,
+  KnowledgeSyncRunResponse,
   KnowledgeUninstallResponse,
 } from "@useatlas/types";
 import {
@@ -634,10 +635,19 @@ const KnowledgeDocumentCountsSchema = z.object({
   archived: z.number().int().nonnegative(),
 });
 
+const KnowledgeCollectionSyncStatusSchema = z.object({
+  lastSyncAt: z.string(),
+  status: z.enum(["success", "error"]),
+  error: z.string().nullable(),
+});
+
 export const KnowledgeCollectionSchema = z.object({
   slug: z.string(),
+  source: z.enum(["upload", "bundle-sync"]),
   description: z.string().nullable(),
   installedAt: z.string().nullable(),
+  endpointUrl: z.string().nullable(),
+  sync: KnowledgeCollectionSyncStatusSchema.nullable(),
   documents: KnowledgeDocumentCountsSchema,
 });
 
@@ -691,6 +701,29 @@ export const KnowledgeUninstallResponseSchema = z.object({
   archivedDocuments: z.number().int().nonnegative(),
 });
 
+// One manual "Sync now" attempt (#4211). A failed attempt is still a 200 with
+// `status: "error"` — the request completed; the sync itself didn't.
+export const KnowledgeSyncRunResponseSchema = z.object({
+  collection: z.string(),
+  status: z.enum(["success", "error"]),
+  syncedAt: z.string(),
+  error: z.string().nullable(),
+  format: z.enum(["tar", "tar.gz", "zip"]).nullable(),
+  documents: z
+    .object({
+      created: z.number().int().nonnegative(),
+      updated: z.number().int().nonnegative(),
+      demoted: z.number().int().nonnegative(),
+      resurrected: z.number().int().nonnegative(),
+      unchanged: z.number().int().nonnegative(),
+      total: z.number().int().nonnegative(),
+    })
+    .nullable(),
+  archivedAbsent: z.number().int().nonnegative().nullable(),
+  linksWritten: z.number().int().nonnegative().nullable(),
+  rejected: z.array(KnowledgeRejectedFileSchema),
+});
+
 // Compile-time drift guards. `_Expect<T extends true>` rejects any check that
 // resolves to `false`, so if a schema's inferred output stops being assignable
 // to its `@useatlas/types` wire interface (a dropped field, a widened enum),
@@ -713,4 +746,7 @@ export type _KnowledgeIngestSummaryDrift = _Expect<
 >;
 export type _KnowledgeUninstallDrift = _Expect<
   z.infer<typeof KnowledgeUninstallResponseSchema> extends KnowledgeUninstallResponse ? true : false
+>;
+export type _KnowledgeSyncRunDrift = _Expect<
+  z.infer<typeof KnowledgeSyncRunResponseSchema> extends KnowledgeSyncRunResponse ? true : false
 >;

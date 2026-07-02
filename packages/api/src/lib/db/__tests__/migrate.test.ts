@@ -202,7 +202,9 @@ describe("runMigrations", () => {
     //   #4206) = 163.
     //   Plus 0163 (knowledge_links intra-collection link graph, ADR-0028,
     //   #4206) = 164.
-    expect(count).toBe(164);
+    //   Plus 0164 (knowledge_sync_credentials + knowledge_sync_state for the
+    //   bundle-sync knowledge collections, ADR-0028 §5 follow-up, #4211) = 165.
+    expect(count).toBe(165);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -395,6 +397,7 @@ describe("runMigrations", () => {
         "0161_knowledge_pillar_check.sql",
         "0162_knowledge_documents.sql",
         "0163_knowledge_links.sql",
+        "0164_knowledge_bundle_sync.sql",
       ],
     });
 

@@ -29,6 +29,9 @@ import {
   rowToDoc,
   type KnowledgeDocRow,
 } from "@atlas/api/lib/knowledge/mirror";
+import { BUNDLE_SYNC_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
+import { ARCHIVE_ABSENT_SQL, SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
+import { SYNC_CREDENTIAL_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync-credentials";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -361,5 +364,111 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     const dev = buildCollectionsQuery(ws, "developer", "serving");
     const devRows = (await pool.query<KnowledgeDocRow>(dev.text, dev.params)).rows;
     expect(devRows.map((r) => r.path).sort()).toEqual(["draft.md", "pub.md"]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ── Bundle sync (#4211): the 0164 tables + the exported SQL strings ───────
+
+  it("installs a bundle-sync collection and upserts its credential + sync-state rows (0164)", async () => {
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+       VALUES ('catalog:bundle-sync', 'Knowledge Base (Bundle Sync)', 'bundle-sync', 'context', 'knowledge', 'form')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    const installed = await pool.query<{ id: string }>(BUNDLE_SYNC_INSTALL_UPSERT_SQL, [
+      "row-sync",
+      ws,
+      "catalog:bundle-sync",
+      "synced-docs",
+      JSON.stringify({ endpoint_url: "https://kb.example.com/bundle.tar.gz", auth_scheme: "bearer" }),
+    ]);
+    expect(installed.rows[0]?.id).toBe("row-sync");
+
+    // Credential upsert: second write for the same collection REPLACES (unique
+    // on (workspace_id, collection_id)), never duplicates.
+    await pool.query(SYNC_CREDENTIAL_UPSERT_SQL, [ws, "synced-docs", "enc:v1:aaa", 1]);
+    await pool.query(SYNC_CREDENTIAL_UPSERT_SQL, [ws, "synced-docs", "enc:v1:bbb", 1]);
+    const creds = await pool.query<{ auth_secret_encrypted: string }>(
+      `SELECT auth_secret_encrypted FROM knowledge_sync_credentials
+        WHERE workspace_id = $1 AND collection_id = 'synced-docs'`,
+      [ws],
+    );
+    expect(creds.rows).toHaveLength(1);
+    expect(creds.rows[0]?.auth_secret_encrypted).toBe("enc:v1:bbb");
+
+    // Sync-state upsert: error then success — one row, latest wins; the CHECK
+    // pins the status enum.
+    await pool.query(SYNC_STATE_UPSERT_SQL, [ws, "synced-docs", "error", "HTTP 403", null]);
+    await pool.query(SYNC_STATE_UPSERT_SQL, [
+      ws,
+      "synced-docs",
+      "success",
+      null,
+      JSON.stringify({ documents: { created: 2 } }),
+    ]);
+    const state = await pool.query<{ status: string; error: string | null }>(
+      `SELECT status, error FROM knowledge_sync_state
+        WHERE workspace_id = $1 AND collection_id = 'synced-docs'`,
+      [ws],
+    );
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0]).toMatchObject({ status: "success", error: null });
+    await expect(
+      pool.query(SYNC_STATE_UPSERT_SQL, [ws, "synced-docs", "bogus", null, null]),
+    ).rejects.toThrow(/chk_knowledge_sync_state_status/);
+
+    // The admin list route's sync-state projection (to_char / column names)
+    // against the live schema — the same drift class the documents-list
+    // projection test above exists for (#4209).
+    const projection = await pool.query<{
+      collection_id: string;
+      last_sync_at: string;
+      status: string;
+      error: string | null;
+    }>(
+      `SELECT collection_id,
+              to_char(last_sync_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_sync_at,
+              status,
+              error
+         FROM knowledge_sync_state
+        WHERE workspace_id = $1`,
+      [ws],
+    );
+    expect(projection.rows).toHaveLength(1);
+    expect(projection.rows[0]?.collection_id).toBe("synced-docs");
+    expect(projection.rows[0]?.last_sync_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("archives absent paths via ARCHIVE_ABSENT_SQL without touching present or rejected paths", async () => {
+    await ingestBundleIntoCollection({
+      client,
+      workspaceId: ws,
+      collectionId: "synced-docs",
+      source: "bundle-sync",
+      docs: docsFrom({ "keep.md": "# keep", "gone.md": "# gone", "broken.md": "# broken" }),
+    });
+    // Next pull: keep.md present, broken.md present-but-rejected, gone.md absent.
+    const archived = await pool.query<{ id: string }>(ARCHIVE_ABSENT_SQL, [
+      ws,
+      "synced-docs",
+      ["keep.md", "broken.md"],
+    ]);
+    expect(archived.rows).toHaveLength(1);
+    const statuses = await pool.query<{ path: string; status: string }>(
+      `SELECT path, status FROM knowledge_documents
+        WHERE workspace_id = $1 AND collection_id = 'synced-docs' ORDER BY path`,
+      [ws],
+    );
+    expect(statuses.rows).toEqual([
+      { path: "broken.md", status: "draft" },
+      { path: "gone.md", status: "archived" },
+      { path: "keep.md", status: "draft" },
+    ]);
+    // The provenance source landed as bundle-sync.
+    const src = await pool.query<{ atlas_source: string }>(
+      `SELECT atlas_source FROM knowledge_documents
+        WHERE workspace_id = $1 AND collection_id = 'synced-docs' AND path = 'keep.md'`,
+      [ws],
+    );
+    expect(src.rows[0]?.atlas_source).toBe("bundle-sync");
   }, PG_TEST_TIMEOUT_MS);
 });

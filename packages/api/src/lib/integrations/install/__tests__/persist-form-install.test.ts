@@ -73,6 +73,7 @@ const SECRET_SCHEMA: ConfigSchema = {
 
 type SpineModule = typeof import("../persist-form-install");
 let persistFormInstall!: SpineModule["persistFormInstall"];
+let persistInstallRecord!: SpineModule["persistInstallRecord"];
 let assertSaasEncryptionKeyset!: SpineModule["assertSaasEncryptionKeyset"];
 let buildFormInstallUpsertSql!: SpineModule["buildFormInstallUpsertSql"];
 let parseFormInstall!: SpineModule["parseFormInstall"];
@@ -81,6 +82,7 @@ let FormInstallValidationError!: SpineModule["FormInstallValidationError"];
 beforeAll(async () => {
   const mod = await import("../persist-form-install");
   persistFormInstall = mod.persistFormInstall;
+  persistInstallRecord = mod.persistInstallRecord;
   assertSaasEncryptionKeyset = mod.assertSaasEncryptionKeyset;
   buildFormInstallUpsertSql = mod.buildFormInstallUpsertSql;
   parseFormInstall = mod.parseFormInstall;
@@ -283,6 +285,31 @@ describe("persistFormInstall — workspace_plugins upsert", () => {
     // One param at the seam — the FK is derived, so a mismatched
     // catalogId/catalogSlug pair is unrepresentable.
     expect(p[2]).toBe("catalog:spine-test");
+    // #4186 — installed_by rides the canonical shape. The form spine has
+    // no acting user at its seam, so it always passes null.
+    expect(p[4]).toBeNull();
+  });
+
+  it("threads installedBy to the upsert when the caller attributes the install (#4186 marketplace)", async () => {
+    const { log } = makeLog();
+    const persistedId = await persistInstallRecord({
+      workspaceId: WSID,
+      catalogId: "bare-uuid-catalog-row", // platform-admin CRUD rows are NOT catalog:<slug>
+      displayName: "Marketplace Row",
+      log,
+      config: { host: "example.com" },
+      newId: () => "candidate-mp",
+      installedBy: "admin-7",
+    });
+    expect(persistedId).toBe("candidate-mp");
+    const [sql, params] = mockInternalQuery.mock.calls[0];
+    expect(sql).toContain("installed_by");
+    const p = params as unknown[];
+    expect(p[2]).toBe("bare-uuid-catalog-row");
+    expect(p[4]).toBe("admin-7");
+    // installed_by attributes the FIRST install only — the conflict SET
+    // must never rewrite it on a re-install.
+    expect(sql).not.toMatch(/DO UPDATE[\s\S]*installed_by/);
   });
 
   it("omits the config overwrite on conflict when updateConfigOnConflict is false", async () => {
@@ -369,6 +396,12 @@ describe("buildFormInstallUpsertSql", () => {
         );
         expect(sql).toContain("RETURNING id");
         expect(sql).toContain(`'${pillar}'`);
+        // #4186 — installed_by ($5) is part of the canonical shape, and
+        // in EVERY variant it attributes the first install only: the
+        // conflict SET must never rewrite it on a re-install.
+        expect(sql).toContain("installed_by");
+        expect(sql).toContain("$5");
+        expect(sql).not.toMatch(/DO UPDATE[\s\S]*installed_by/);
       }
     }
   });

@@ -184,6 +184,22 @@ mock.module("effect", () => {
       const effectValue: TestEffectPromise = { _tag: "EffectPromise", fn, errorTaps: [] };
       return makePipeable(effectValue);
     },
+    // #4186 — the install route wraps persistInstallRecord in
+    // Effect.tryPromise so persist failures surface in the error channel
+    // (audited via tapError, mapped to 500 by runEffect). The shim maps a
+    // rejection through the caller's `catch` normalizer, then rethrows so
+    // the runEffect shim below runs the error taps.
+    tryPromise: (opts: { try: () => Promise<unknown>; catch: (err: unknown) => unknown }) => {
+      const effectValue: TestEffectPromise = {
+        _tag: "EffectPromise",
+        fn: () =>
+          opts.try().catch((err) => {
+            throw opts.catch(err);
+          }),
+        errorTaps: [],
+      };
+      return makePipeable(effectValue);
+    },
     // Support Effect.runPromise for routes that unwrap Effect-returning EE functions
     runPromise: (value: unknown) => {
       return Promise.resolve(value);
@@ -365,6 +381,22 @@ mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   IPAllowlistError: class extends Error { constructor(message: string, public readonly code: string) { super(message); this.name = "IPAllowlistError"; } },
 }));
 
+// #4186 — the install route persists through the form-install spine
+// (persistInstallRecord), whose step 4 evicts the lazy plugin cache so a
+// re-install never keeps serving a stale cached PluginLike. Captured here so
+// tests can assert the evict; mock ALL value exports (CLAUDE.md rule).
+const evictCalls: Array<{ workspaceId: string; catalogId: string }> = [];
+const mockLazyEvict = mock(async (workspaceId: string, catalogId: string) => {
+  evictCalls.push({ workspaceId, catalogId });
+  return true;
+});
+mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
+  lazyPluginLoader: { evict: mockLazyEvict },
+  LazyPluginLoader: class {},
+  LazyPluginBuilderMissingError: class extends Error {},
+  LazyPluginInstallNotFoundError: class extends Error {},
+}));
+
 // --- Internal DB mock ---
 
 let mockHasInternalDB = true;
@@ -409,6 +441,20 @@ function findCapturedQuery(pattern: string): { sql: string; params: unknown[] } 
 // confirm the `enc:v1:` prefix; tests that only care about the semantic
 // restore/passthrough behavior assert the decrypted plaintext.
 const testEncryptionKey = Buffer.alloc(32, 0x42);
+// #4186 — the SaaS keyset-gate test flips this off to simulate a SaaS deploy
+// with no encryption keys configured; every other test runs with keys.
+// Declared before BOTH keyset-bearing mocks so the two module views can
+// never split-brain (db/internal keyed on, encryption-keys keyed off).
+let mockKeysetAvailable = true;
+const mockKeyset = () =>
+  mockKeysetAvailable
+    ? {
+        active: { version: 1, key: testEncryptionKey },
+        byVersion: new Map([[1, testEncryptionKey]]),
+        decrypt: [{ version: 1, key: testEncryptionKey }],
+        source: "ATLAS_ENCRYPTION_KEY",
+      }
+    : null;
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getInternalDB: () => ({
@@ -429,13 +475,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   setWorkspaceRegion: mock(async () => {}),
   insertSemanticAmendment: mock(async () => "mock-amendment-id"),
   getPendingAmendmentCount: mock(async () => 0),
-  getEncryptionKey: () => testEncryptionKey,
-  getEncryptionKeyset: () => ({
-    active: { version: 1, key: testEncryptionKey },
-    byVersion: new Map([[1, testEncryptionKey]]),
-    decrypt: [{ version: 1, key: testEncryptionKey }],
-    source: "ATLAS_ENCRYPTION_KEY",
-  }),
+  getEncryptionKey: () => (mockKeysetAvailable ? testEncryptionKey : null),
+  getEncryptionKeyset: mockKeyset,
   _resetEncryptionKeyCache: () => {},
 }));
 
@@ -446,13 +487,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // encrypt helpers degrade to plaintext passthrough, and the F-42
 // "encrypted at rest" assertions fail.
 mock.module("@atlas/api/lib/db/encryption-keys", () => ({
-  getEncryptionKey: () => testEncryptionKey,
-  getEncryptionKeyset: () => ({
-    active: { version: 1, key: testEncryptionKey },
-    byVersion: new Map([[1, testEncryptionKey]]),
-    decrypt: [{ version: 1, key: testEncryptionKey }],
-    source: "ATLAS_ENCRYPTION_KEY",
-  }),
+  getEncryptionKey: () => (mockKeysetAvailable ? testEncryptionKey : null),
+  getEncryptionKeyset: mockKeyset,
   activeKeyVersion: () => 1,
   _resetEncryptionKeyCache: () => {},
 }));
@@ -492,6 +528,12 @@ const { OpenAPIHono } = await import("@hono/zod-openapi");
 // the same key.
 const { decryptSecret } = await import("@atlas/api/lib/db/secret-encryption");
 const { isEncryptedSecret } = await import("@atlas/api/lib/plugins/secrets");
+// #4186: the install route must persist through the form-install spine —
+// the regression pin compares the captured INSERT byte-for-byte against
+// the spine's canonical builder output.
+const { buildFormInstallUpsertSql } = await import(
+  "@atlas/api/lib/integrations/install/persist-form-install"
+);
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -548,9 +590,23 @@ const sampleCatalogRow = {
   enabled: true,
   // #3681 — the marketplace install path is gated to the `form` install model.
   install_model: "form",
+  // #4186 — and to the chat/action pillars (the form-install spine's
+  // singleton upsert only arbitrates those).
+  pillar: "action",
   created_at: now,
   updated_at: now,
 };
+
+/**
+ * #4186 — the two query results every successful install now produces:
+ * the spine's upsert (`INSERT INTO workspace_plugins … RETURNING id`) and
+ * the route's follow-up row fetch (`SELECT wp.*, pc.name … JOIN`), replacing
+ * the pre-#4186 single hand-rolled `INSERT … RETURNING *`.
+ */
+function setInstallPersistResults(row: Record<string, unknown>) {
+  setQueryResult("INSERT INTO workspace_plugins", [{ id: row.id }]);
+  setQueryResult("FROM workspace_plugins wp", [row]);
+}
 
 // ---------------------------------------------------------------------------
 // Platform Catalog CRUD
@@ -793,6 +849,10 @@ describe("Workspace Plugin Marketplace", () => {
     // #3681 — reset dedicated-credential teardown capture.
     credStoreCalls.length = 0;
     mockDeleteDedicatedCredentialStore.mockClear();
+    // #4186 — reset spine-evict capture + keyset availability.
+    evictCalls.length = 0;
+    mockLazyEvict.mockClear();
+    mockKeysetAvailable = true;
   });
 
   describe("GET /marketplace/available", () => {
@@ -999,7 +1059,7 @@ describe("Workspace Plugin Marketplace", () => {
       setQueryResult("SELECT * FROM plugin_catalog WHERE id", [sampleCatalogRow]);
       setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
       setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
-      setQueryResult("INSERT INTO workspace_plugins", [{
+      setInstallPersistResults({
         id: "inst-1",
         workspace_id: "org-1",
         catalog_id: "cat-1",
@@ -1011,7 +1071,7 @@ describe("Workspace Plugin Marketplace", () => {
         slug: "bigquery",
         type: "datasource",
         description: "Google BigQuery datasource",
-      }]);
+      });
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/install", {
@@ -1023,6 +1083,232 @@ describe("Workspace Plugin Marketplace", () => {
       const body = await json(res);
       expect(body.catalogId).toBe("cat-1");
       expect(body.name).toBe("BigQuery");
+    });
+
+    // #4186 — the route must persist through the form-install spine's
+    // canonical upsert, not a hand-rolled INSERT. The pre-#4186 copy omitted
+    // `install_id` + `pillar` (both NOT NULL post-0096, filler trigger
+    // dropped) so every marketplace install 23502'd against the live schema,
+    // and it skipped the lazy-loader evict + SaaS keyset gate. Pinning the
+    // captured SQL to the builder's exact output means a re-hand-rolled copy
+    // can't drift back in unnoticed.
+    it("persists via the form-install spine SQL verbatim, attributing installed_by (#4186)", async () => {
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [sampleCatalogRow]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+      setInstallPersistResults({
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "BigQuery",
+        slug: "bigquery",
+        type: "datasource",
+        description: "Google BigQuery datasource",
+      });
+
+      const res = await buildWorkspaceApp().request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(201);
+
+      const insertCall = findCapturedQuery("INSERT INTO workspace_plugins");
+      expect(insertCall).toBeDefined();
+      // Byte-for-byte the spine's canonical singleton upsert — install_id +
+      // pillar named, partial-index conflict target, RETURNING id.
+      expect(insertCall!.sql).toBe(buildFormInstallUpsertSql(true, "action"));
+      // ($1 candidate id, $2 workspace, $3 FULL catalog id, $4 config,
+      //  $5 the authenticated admin as installed_by)
+      expect(insertCall!.params[1]).toBe("org-1");
+      expect(insertCall!.params[2]).toBe("cat-1");
+      expect(insertCall!.params[4]).toBe("admin-1");
+
+      // The PERSISTED id (the upsert's RETURNING, not the candidate UUID)
+      // threads through the read-back, the success audit, and the response.
+      const readback = findCapturedQuery("FROM workspace_plugins wp");
+      expect(readback).toBeDefined();
+      expect(readback!.params[0]).toBe("inst-1");
+      expect(readback!.params[1]).toBe("org-1");
+      const success = mockLogAdminAction.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.actionType === "plugin.install" && e.status !== "failure");
+      expect(success?.targetId).toBe("inst-1");
+      const body = await json(res);
+      expect(body.id).toBe("inst-1");
+    });
+
+    it("threads the catalog row's chat pillar into the spine SQL (#4186)", async () => {
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [
+        { ...sampleCatalogRow, pillar: "chat" },
+      ]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+      setInstallPersistResults({
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "BigQuery",
+        slug: "bigquery",
+        type: "datasource",
+        description: null,
+      });
+
+      const res = await buildWorkspaceApp().request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(201);
+      const insertCall = findCapturedQuery("INSERT INTO workspace_plugins");
+      expect(insertCall!.sql).toBe(buildFormInstallUpsertSql(true, "chat"));
+    });
+
+    it("500s truthfully when the read-back finds no row — install already audited as success (#4186)", async () => {
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [sampleCatalogRow]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+      setQueryResult("INSERT INTO workspace_plugins", [{ id: "inst-1" }]);
+      // Concurrent uninstall between the upsert and the read-back.
+      setQueryResult("FROM workspace_plugins wp", []);
+
+      const res = await buildWorkspaceApp().request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(500);
+      const body = await json(res);
+      expect(body.error).toBe("internal_error");
+      // The install DID complete — the success audit fires before the
+      // read-back so a response-shaping failure never hides the write.
+      const success = mockLogAdminAction.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.actionType === "plugin.install" && e.status !== "failure");
+      expect(success?.targetId).toBe("inst-1");
+      expect(evictCalls).toEqual([{ workspaceId: "org-1", catalogId: "cat-1" }]);
+    });
+
+    it("evicts the lazy plugin cache after the persist — spine step 4 (#4186)", async () => {
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [sampleCatalogRow]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+      setInstallPersistResults({
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "BigQuery",
+        slug: "bigquery",
+        type: "datasource",
+        description: "Google BigQuery datasource",
+      });
+
+      const res = await buildWorkspaceApp().request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(201);
+      expect(evictCalls).toEqual([{ workspaceId: "org-1", catalogId: "cat-1" }]);
+    });
+
+    // #4186 — the spine's singleton upsert only serves chat/action pillars;
+    // datasource (multi-instance drafts via /admin/connections) and knowledge
+    // (ingest flow) rows must be refused even when their install_model is
+    // `form`, mirroring the #3681 install-model gate.
+    it.each(["datasource", "knowledge", null])(
+      "rejects a form-model row on the %s pillar and persists nothing (#4186)",
+      async (pillar) => {
+        setQueryResult("SELECT * FROM plugin_catalog WHERE id", [
+          { ...sampleCatalogRow, pillar },
+        ]);
+        setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+        setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+
+        const res = await buildWorkspaceApp().request("/marketplace/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ catalogId: "cat-1" }),
+        });
+        expect(res.status).toBe(400);
+        const body = await json(res);
+        expect(body.error).toBe("pillar_unsupported");
+        expect(findCapturedQuery("INSERT INTO workspace_plugins")).toBeUndefined();
+        const failure = mockLogAdminAction.mock.calls
+          .map((c) => c[0])
+          .find((e) => e.actionType === "plugin.install" && e.status === "failure");
+        // A drifted row with no pillar fails closed and audits "unknown".
+        expect(failure?.metadata).toMatchObject({
+          pillarRejected: pillar ?? "unknown",
+          orgId: "org-1",
+        });
+      },
+    );
+
+    // #4186 — spine step 1: on a SaaS deploy with no encryption keyset,
+    // `encryptSecretFields` would silently degrade to plaintext passthrough.
+    // The install must refuse (500 + failure audit) before anything persists.
+    it("fails closed when SaaS has no encryption keyset — nothing persists (#4186)", async () => {
+      const originalDeployMode = process.env.ATLAS_DEPLOY_MODE;
+      process.env.ATLAS_DEPLOY_MODE = "saas";
+      mockKeysetAvailable = false;
+      try {
+        setQueryResult("SELECT * FROM plugin_catalog WHERE id", [{
+          ...sampleCatalogRow,
+          config_schema: [{ key: "apiKey", type: "string", secret: true }],
+        }]);
+        setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+        setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+
+        const res = await buildWorkspaceApp().request("/marketplace/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ catalogId: "cat-1", config: { apiKey: "sk-live-secret" } }),
+        });
+        expect(res.status).toBe(500);
+        const body = await json(res);
+        expect(body.error).toBe("encryption_unavailable");
+        expect(findCapturedQuery("INSERT INTO workspace_plugins")).toBeUndefined();
+        const failure = mockLogAdminAction.mock.calls
+          .map((c) => c[0])
+          .find((e) => e.actionType === "plugin.install" && e.status === "failure");
+        expect(failure?.metadata).toMatchObject({ keysetUnavailable: true, orgId: "org-1" });
+      } finally {
+        if (originalDeployMode === undefined) delete process.env.ATLAS_DEPLOY_MODE;
+        else process.env.ATLAS_DEPLOY_MODE = originalDeployMode;
+      }
+    });
+
+    it("emits a failure audit and 500 when the spine persist rejects (#4186)", async () => {
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [sampleCatalogRow]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+      setQueryResult("INSERT INTO workspace_plugins", new Error("pg pool exhausted"));
+
+      const res = await buildWorkspaceApp().request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(500);
+      const failure = mockLogAdminAction.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.actionType === "plugin.install" && e.status === "failure");
+      expect(failure?.metadata).toMatchObject({ orgId: "org-1", error: "pg pool exhausted" });
+      // Persist failed → the cache must not have been evicted.
+      expect(evictCalls).toEqual([]);
     });
 
     it("rejects when plan is insufficient", async () => {
@@ -1135,7 +1421,7 @@ describe("Workspace Plugin Marketplace", () => {
       ]);
       setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
       setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
-      setQueryResult("INSERT INTO workspace_plugins", [{
+      setInstallPersistResults({
         id: "inst-1",
         workspace_id: "org-1",
         catalog_id: "cat-1",
@@ -1146,7 +1432,7 @@ describe("Workspace Plugin Marketplace", () => {
         name: "DuckDB",
         slug: "duckdb",
         type: "datasource",
-      }]);
+      });
 
       const res = await buildWorkspaceApp().request("/marketplace/install", {
         method: "POST",
@@ -1169,7 +1455,7 @@ describe("Workspace Plugin Marketplace", () => {
       ]);
       setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
       setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
-      setQueryResult("INSERT INTO workspace_plugins", [{
+      setInstallPersistResults({
         id: "inst-1",
         workspace_id: "org-1",
         catalog_id: "cat-1",
@@ -1180,7 +1466,7 @@ describe("Workspace Plugin Marketplace", () => {
         name: "Obsidian",
         slug: "obsidian",
         type: "context",
-      }]);
+      });
 
       const res = await buildWorkspaceApp().request("/marketplace/install", {
         method: "POST",
@@ -1707,12 +1993,12 @@ describe("Workspace Plugin Marketplace", () => {
       }]);
       setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
       setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
-      setQueryResult("INSERT INTO workspace_plugins", [{
+      setInstallPersistResults({
         id: "inst-new",
         workspace_id: "org-1",
         catalog_id: "cat-1",
-        // Returned row carries the encrypted config the INSERT wrote; the
-        // route must mask before responding.
+        // The row fetch returns the encrypted config the spine upsert wrote;
+        // the route must mask before responding.
         config: { apiKey: "enc:v1:fake:fake:fake" },
         enabled: true,
         installed_at: now,
@@ -1720,7 +2006,7 @@ describe("Workspace Plugin Marketplace", () => {
         name: "BigQuery",
         slug: "bigquery",
         type: "datasource",
-      }]);
+      });
 
       const res = await buildWorkspaceApp().request("/marketplace/install", {
         method: "POST",
@@ -2121,7 +2407,7 @@ describe("audit emission — Workspace marketplace", () => {
       setQueryResult("SELECT * FROM plugin_catalog WHERE id", [sampleCatalogRow]);
       setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
       setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
-      setQueryResult("INSERT INTO workspace_plugins", [{
+      setInstallPersistResults({
         id: "inst-1",
         workspace_id: "org-1",
         catalog_id: "cat-1",
@@ -2133,7 +2419,7 @@ describe("audit emission — Workspace marketplace", () => {
         slug: "bigquery",
         type: "datasource",
         description: null,
-      }]);
+      });
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/install", {

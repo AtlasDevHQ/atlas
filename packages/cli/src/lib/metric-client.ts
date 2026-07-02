@@ -22,8 +22,13 @@
 
 import type { CliRestErrorCode, RunMetricRestResponse } from "@useatlas/types";
 import { RunMetricRestResponseSchema } from "@useatlas/schemas";
-import { credentialHeaders, type CliCredential } from "./credential";
-import { asRecord, isAbortOrTimeout, serverMessage, unreachableMessage, type FetchImpl } from "./http";
+import { type CliCredential } from "./credential";
+import {
+  defaultWorkspaceErrorInfo,
+  serverMessage,
+  workspaceRequest,
+  type FetchImpl,
+} from "./http";
 
 /**
  * The server `error`-field discriminators this client branches on, pinned to the
@@ -88,98 +93,81 @@ export interface RunMetricArgs {
 }
 
 /**
+ * Map a non-2xx metric-run `(status, body)` onto a typed {@link MetricCliError}.
+ * Only the statuses that diverge from the shared default are spelled out; 401
+ * (re-login), 400 `bad_request` (no-workspace), and any other status fall
+ * through to {@link defaultWorkspaceErrorInfo} so the byte-identical copy is
+ * defined once (#4196). Closes over the metric `id` for the 404 copy.
+ */
+function toMetricError(id: string, status: number, body: Record<string, unknown>): MetricCliError {
+  switch (status) {
+    case 403:
+      // Billing block, RLS-denied, or role — surface the server's message
+      // (it carries the actionable remedy, e.g. trial-expired guidance).
+      return new MetricCliError("forbidden", serverMessage(body, status));
+    case 404:
+      return new MetricCliError(
+        "not_found",
+        `Metric "${id}" not found in this workspace. Run \`atlas entities\` or check semantic/metrics/.`,
+      );
+    case 409:
+      return new MetricCliError("approval_required", serverMessage(body, status));
+    case 429:
+      // Per-identity rate-limit bucket, a workspace throttle, or the pipeline's
+      // concurrency cap — all 429. Surface the server's message (it names the
+      // remedy / retry hint) under a distinct kind, parity with `atlas sql`.
+      return new MetricCliError("rate_limited", serverMessage(body, status));
+    case 503:
+      // Datasource/enterprise subsystem unavailable, or a fail-closed billing
+      // check (#3433) — a transient "try again", not an upgrade prompt. Distinct
+      // kind, parity with `atlas sql`; the server message carries the detail.
+      return new MetricCliError("unavailable", serverMessage(body, status));
+    case 400:
+      // A `bad_request` (no bound workspace) falls through to the shared
+      // no-workspace default; every other 400 is an unsupported filter / wrong
+      // connection — the server message names the cause.
+      if (body.error !== ERR.badRequest) {
+        return new MetricCliError("invalid_request", serverMessage(body, status));
+      }
+  }
+  const info = defaultWorkspaceErrorInfo(status, body);
+  return new MetricCliError(info.kind, info.message);
+}
+
+/**
  * Execute a canonical metric by id against the bound workspace via
  * `POST /api/v1/metrics/{id}/run`, mapping every documented failure status onto
- * a typed {@link MetricCliError} with an actionable message.
+ * a typed {@link MetricCliError} with an actionable message. Rides the shared
+ * {@link workspaceRequest} transport (#4196); only the route, the response
+ * schema, and the metric-specific status copy live here.
  */
 export async function runMetric(
   opts: MetricClientOptions,
   args: RunMetricArgs,
 ): Promise<MetricRunResult> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? 60_000;
+  const raw = await workspaceRequest(
+    { ...opts, timeoutMs: opts.timeoutMs ?? 60_000 },
+    {
+      method: "POST",
+      path: `/api/v1/metrics/${encodeURIComponent(args.id)}/run`,
+      body: args.connectionId ? { connectionId: args.connectionId } : {},
+    },
+    {
+      toError: (status, body) => toMetricError(args.id, status, body),
+      toNetworkError: (message) => new MetricCliError("network", message),
+      timeoutMessage: (seconds) => `Timed out after ${seconds}s running metric "${args.id}".`,
+    },
+  );
 
-  let res: Response;
-  try {
-    res = await fetchImpl(
-      `${opts.baseUrl}/api/v1/metrics/${encodeURIComponent(args.id)}/run`,
-      {
-        method: "POST",
-        headers: {
-          ...credentialHeaders(opts.credential),
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(args.connectionId ? { connectionId: args.connectionId } : {}),
-        signal: AbortSignal.timeout(timeoutMs),
-      },
+  // Validate the 200 against the shared wire schema (the SSOT). A shape mismatch
+  // is a server bug / version skew — surface it rather than returning a
+  // half-filled result.
+  const parsed = RunMetricRestResponseSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new MetricCliError(
+      "request_failed",
+      `The Atlas API returned an unexpected response shape for metric "${args.id}". Update the CLI, or check the server logs.`,
     );
-  } catch (err) {
-    if (isAbortOrTimeout(err)) {
-      throw new MetricCliError(
-        "network",
-        `Timed out after ${Math.round(timeoutMs / 1000)}s running metric "${args.id}".`,
-      );
-    }
-    throw new MetricCliError("network", unreachableMessage(opts.baseUrl, err));
   }
-
-  if (res.ok) {
-    // intentionally ignored: a non-JSON 2xx body becomes `undefined` and fails
-    // the schema parse below — surfaced as a typed error, never silent garbage.
-    const raw = await res.json().catch(() => undefined);
-    // Validate the 200 against the shared wire schema (the SSOT). A shape
-    // mismatch is a server bug / version skew — surface it rather than returning
-    // a half-filled result.
-    const parsed = RunMetricRestResponseSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw new MetricCliError(
-        "request_failed",
-        `The Atlas API returned an unexpected response shape for metric "${args.id}". Update the CLI, or check the server logs.`,
-      );
-    }
-    return parsed.data;
-  }
-
-  // intentionally ignored: an error body that isn't JSON falls back to the
-  // HTTP-status message below via the empty record.
-  const body = asRecord(await res.json().catch(() => ({})));
-
-  switch (res.status) {
-    case 401:
-      throw new MetricCliError(
-        "unauthorized",
-        "Your session is no longer valid. Run `atlas login` again.",
-      );
-    case 403:
-      // Billing block, RLS-denied, or role — surface the server's message
-      // (it carries the actionable remedy, e.g. trial-expired guidance).
-      throw new MetricCliError("forbidden", serverMessage(body, res.status));
-    case 404:
-      throw new MetricCliError(
-        "not_found",
-        `Metric "${args.id}" not found in this workspace. Run \`atlas entities\` or check semantic/metrics/.`,
-      );
-    case 409:
-      throw new MetricCliError("approval_required", serverMessage(body, res.status));
-    case 429:
-      // Per-identity rate-limit bucket, a workspace throttle, or the pipeline's
-      // concurrency cap — all 429. Surface the server's message (it names the
-      // remedy / retry hint) under a distinct kind, parity with `atlas sql`.
-      throw new MetricCliError("rate_limited", serverMessage(body, res.status));
-    case 400:
-      if (body.error === ERR.badRequest) {
-        throw new MetricCliError(
-          "no_workspace",
-          "Your login is not bound to a workspace. Single-workspace accounts bind automatically; in-flow workspace selection for multi-workspace accounts is coming soon (ADR-0026).",
-        );
-      }
-      throw new MetricCliError("invalid_request", serverMessage(body, res.status));
-    case 503:
-      // Datasource/enterprise subsystem unavailable, or a fail-closed billing
-      // check (#3433) — a transient "try again", not an upgrade prompt. Distinct
-      // kind, parity with `atlas sql`; the server message carries the detail.
-      throw new MetricCliError("unavailable", serverMessage(body, res.status));
-    default:
-      throw new MetricCliError("request_failed", serverMessage(body, res.status));
-  }
+  return parsed.data;
 }

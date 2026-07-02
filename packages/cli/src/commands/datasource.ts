@@ -27,9 +27,7 @@
 
 import type { ConnectionDetail } from "@useatlas/types";
 import { renderTable } from "../../lib/output";
-import { resolveApiBaseUrl } from "../lib/api-base";
-import { readApiKeyFlag, resolveCredential } from "../lib/credential";
-import { readSession, type StoredSession } from "../lib/credentials";
+import { resolveWorkspaceCredential } from "../lib/credential";
 import { createProgressTracker } from "../progress";
 import {
   DatasourceCliError,
@@ -52,6 +50,12 @@ import {
   type DeferredSecret,
   type SecretCaptureDeps,
 } from "../lib/datasource-secret";
+import {
+  defaultCliIO,
+  runWorkspaceCommand,
+  type CliIO,
+  type WorkspaceCommandDeps,
+} from "../lib/workspace-command";
 
 const USAGE = `Manage the datasources of your logged-in workspace.
 
@@ -110,28 +114,14 @@ function isDatasourceSubcommand(value: string): value is DatasourceSubcommand {
   return (DATASOURCE_SUBCOMMANDS as readonly string[]).includes(value);
 }
 
-/** stdout/stderr sink — injected so tests can capture output. */
-export interface DatasourceIO {
-  readonly out: (line: string) => void;
-  readonly err: (line: string) => void;
-}
+/** stdout/stderr sink — the shared {@link CliIO}, injected so tests can capture output. */
+export type DatasourceIO = CliIO;
 
-const defaultIO: DatasourceIO = {
-  out: (line) => console.log(line),
-  err: (line) => console.error(line),
-};
-
-/** Everything `runDatasource` needs, injected so it stays server-free in tests. */
-export interface DatasourceRunDeps {
-  readonly baseUrl: string;
-  readonly session: StoredSession | null;
-  /**
-   * A workspace-scoped API key for unattended CI (#4046), resolved from the
-   * `--api-key` flag or the `ATLAS_API_KEY` env var. When present it takes
-   * precedence over the stored session — CI never goes through `atlas login`.
-   */
-  readonly apiKey?: string;
-  readonly fetchImpl?: typeof fetch;
+/**
+ * Everything `runDatasource` needs — the shared {@link WorkspaceCommandDeps} plus
+ * the datasource-only secret-capture wiring for `create`.
+ */
+export interface DatasourceRunDeps extends WorkspaceCommandDeps {
   /**
    * Secret-capture probes + prompt for `create` (injected so tests exercise the
    * env/stdin/defer branches without a real TTY). Defaults to the live
@@ -284,7 +274,7 @@ function renderProfileResult(io: DatasourceIO, result: ProfileResult): void {
 export async function runDatasource(
   args: string[],
   deps: DatasourceRunDeps,
-  io: DatasourceIO = defaultIO,
+  io: DatasourceIO = defaultCliIO,
 ): Promise<number> {
   const subcommand = args[1];
   if (!subcommand || subcommand === "--help" || subcommand === "-h") {
@@ -300,13 +290,10 @@ export async function runDatasource(
 
   // A workspace API key (#4046, unattended CI) takes precedence over a stored
   // login; the flag (either `--api-key key` or `--api-key=key`) wins over the env
-  // var (deps.apiKey). Keys are workspace-pinned, so no rebind is needed.
-  const apiKey = readApiKeyFlag(args) ?? deps.apiKey;
-  const credential = resolveCredential(apiKey, deps.session);
-  if (!credential) {
-    io.err("Not logged in. Run `atlas login` first, or set ATLAS_API_KEY for unattended use.");
-    return 1;
-  }
+  // var (deps.apiKey). Keys are workspace-pinned, so no rebind is needed. The
+  // shared resolver emits the "log in or set ATLAS_API_KEY" copy on `io.err`.
+  const credential = resolveWorkspaceCredential(args, deps, io);
+  if (!credential) return 1;
 
   const opts: DatasourceClientOptions = {
     baseUrl: deps.baseUrl,
@@ -672,19 +659,10 @@ function liveSecretCapture(): SecretCaptureDeps {
   };
 }
 
-/** Thin shell main() invokes: resolve the credential + base URL, then dispatch. */
+/** Thin shell main() invokes: the shared workspace-command shell dispatches the
+ * core, adding the live secret-capture wiring `create` needs. */
 export async function handleDatasource(args: string[]): Promise<void> {
-  const baseUrl = resolveApiBaseUrl();
-  const session = readSession(baseUrl);
-  // ATLAS_API_KEY (#4046) is the unattended-CI credential — it is NOT persisted
-  // to ~/.atlas/credentials (a CI secret managed by the CI system, not an
-  // interactive login). `--api-key` (parsed in runDatasource) overrides it.
-  const apiKey = process.env.ATLAS_API_KEY?.trim() || undefined;
-  const code = await runDatasource(args, {
-    baseUrl,
-    session,
-    ...(apiKey ? { apiKey } : {}),
-    secretCapture: liveSecretCapture(),
-  });
-  if (code !== 0) process.exit(code);
+  return runWorkspaceCommand(args, (a, deps) =>
+    runDatasource(a, { ...deps, secretCapture: liveSecretCapture() }),
+  );
 }

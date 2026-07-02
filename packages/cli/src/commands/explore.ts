@@ -15,10 +15,14 @@
  * server or `process.exit`. `handleExplore` is the thin shell main() calls.
  */
 
-import { resolveApiBaseUrl } from "../lib/api-base";
-import { credentialHeaders, resolveCredential } from "../lib/credential";
-import { readSession, type StoredSession } from "../lib/credentials";
-import { asRecord, serverMessage } from "../lib/http";
+import { credentialHeaders, resolveCredential, NOT_LOGGED_IN_MESSAGE } from "../lib/credential";
+import { asRecord, serverMessage, SESSION_INVALID_MESSAGE } from "../lib/http";
+import {
+  defaultCliIO,
+  runWorkspaceCommand,
+  type CliIO,
+  type WorkspaceCommandDeps,
+} from "../lib/workspace-command";
 
 const USAGE = `Run a read-only command against your logged-in workspace's semantic layer.
 
@@ -43,29 +47,11 @@ Authentication: \`atlas login\` for interactive use (ambient session reuse — n
 key needed), OR a workspace API key via --api-key / ATLAS_API_KEY for unattended
 CI. Set ATLAS_API_URL to target a non-local API.`;
 
-/** stdout/stderr sink — injected so tests can capture output. */
-export interface ExploreIO {
-  readonly out: (line: string) => void;
-  readonly err: (line: string) => void;
-}
+/** stdout/stderr sink — the shared {@link CliIO}, injected so tests can capture output. */
+export type ExploreIO = CliIO;
 
-const defaultIO: ExploreIO = {
-  out: (line) => console.log(line),
-  err: (line) => console.error(line),
-};
-
-/** Everything `runExplore` needs, injected so it stays server-free in tests. */
-export interface ExploreRunDeps {
-  readonly baseUrl: string;
-  readonly session: StoredSession | null;
-  /**
-   * A workspace-scoped API key for unattended CI (#4046), resolved from the
-   * `--api-key` flag or the `ATLAS_API_KEY` env var. When present it takes
-   * precedence over the stored session — CI never goes through `atlas login`.
-   */
-  readonly apiKey?: string;
-  readonly fetchImpl?: typeof fetch;
-}
+/** Everything `runExplore` needs — the shared {@link WorkspaceCommandDeps}. */
+export type ExploreRunDeps = WorkspaceCommandDeps;
 
 /** Response shape from `POST /api/v1/explore`. */
 interface ExploreResponse {
@@ -122,7 +108,7 @@ function parseExploreArgs(args: string[]): { command: string; apiKey?: string } 
 export async function runExplore(
   args: string[],
   deps: ExploreRunDeps,
-  io: ExploreIO = defaultIO,
+  io: ExploreIO = defaultCliIO,
 ): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
     io.out(USAGE);
@@ -143,7 +129,7 @@ export async function runExplore(
   const apiKey = argApiKey ?? deps.apiKey;
   const credential = resolveCredential(apiKey, deps.session);
   if (!credential) {
-    io.err("Not logged in. Run `atlas login` first, or set ATLAS_API_KEY for unattended use.");
+    io.err(NOT_LOGGED_IN_MESSAGE);
     return 1;
   }
 
@@ -168,7 +154,7 @@ export async function runExplore(
   }
 
   if (res.status === 401) {
-    io.err("Your session is no longer valid. Run `atlas login` again.");
+    io.err(SESSION_INVALID_MESSAGE);
     return 1;
   }
   if (!res.ok) {
@@ -201,14 +187,7 @@ export async function runExplore(
   return 0;
 }
 
-/** Thin shell main() invokes: resolve the credential + base URL, then dispatch. */
+/** Thin shell main() invokes: the shared workspace-command shell dispatches the core. */
 export async function handleExplore(args: string[]): Promise<void> {
-  const baseUrl = resolveApiBaseUrl();
-  const session = readSession(baseUrl);
-  // ATLAS_API_KEY (#4046) is the unattended-CI credential — it is NOT persisted
-  // to ~/.atlas/credentials (a CI secret managed by the CI system, not an
-  // interactive login). `--api-key` (parsed in runExplore) overrides it.
-  const apiKey = process.env.ATLAS_API_KEY?.trim() || undefined;
-  const code = await runExplore(args, { baseUrl, session, ...(apiKey ? { apiKey } : {}) });
-  if (code !== 0) process.exit(code);
+  return runWorkspaceCommand(args, runExplore);
 }

@@ -212,11 +212,11 @@ export function AtlasChat({
   const [relatedSuggestions, setRelatedSuggestions] = useState<QuerySuggestion[]>([]);
   // #2345 / #4189 — the conversation's env/member/REST/reach scope lives in the
   // `useConversationScope` hook (one owning module for the three (value,
-  // provenance) axes + sticky preference). The hook needs inputs derived from the
-  // transport (envGroups / sessionResolved via authResolved) and the session
-  // (activeWorkspaceId), so it's called below both — but the transport's
-  // chat-request getters need to read the
-  // LATEST scope. This mirror ref bridges that: the getters read
+  // provenance) axes + sticky preference). Its inputs only settle below the
+  // transport: `sessionResolved` (via `authResolved`) and `envGroupsQuery` (whose
+  // fetch is gated on `authResolved`), plus the session-derived `activeWorkspaceId`
+  // — so the hook is called below them. But the transport's chat-request getters
+  // need to read the LATEST scope. This mirror ref bridges that: the getters read
   // `scopeRef.current` (lazy, at fetch time), and the hook's `scope` is synced
   // into it on every render right after the hook call (the same latest-value ref
   // pattern as `refreshConvosRef`).
@@ -843,7 +843,7 @@ export function AtlasChat({
         break;
       default: {
         // Exhaustiveness guard — a new ConversationUrlAction variant must add a
-        // branch (mirrors the EnvSelectionDecision consumer above).
+        // branch (same `never`-checked pattern as the scope hook's decision consumers).
         const _exhaustive: never = action;
         void _exhaustive;
       }

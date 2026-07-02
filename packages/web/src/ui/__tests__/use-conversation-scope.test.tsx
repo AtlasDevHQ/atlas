@@ -343,10 +343,12 @@ describe("useConversationScope — seed/restore effect + persist-back (#4189)", 
         sessionResolved: true,
       }),
     );
-    // Establish an SQL pick first, then toggle a REST exclusion.
+    // Establish an SQL pick + a non-null reach first, then toggle a REST
+    // exclusion — the toggle must carry BOTH forward (the #3078/#3895 "a REST
+    // toggle must not drop the SQL scope / reach from the preference" contract).
     act(() =>
       result.current.applySelection({
-        groupReach: null,
+        groupReach: "g1",
         groupId: "g1",
         connectionId: "c1",
         routingMode: "pin",
@@ -356,9 +358,10 @@ describe("useConversationScope — seed/restore effect + persist-back (#4189)", 
     expect(result.current.scope.restExcludedDatasourceIds).toEqual(["d1"]);
     const pref = useChatRoutingPreferenceStore.getState();
     expect(pref.restExcludedDatasourceIds).toEqual(["d1"]);
-    // The exclude toggle carried the current SQL scope into the preference.
+    // The exclude toggle carried the current SQL scope + reach into the preference.
     expect(pref.groupId).toBe("g1");
     expect(pref.connectionId).toBe("c1");
+    expect(pref.groupReach).toBe("g1");
   });
 
   test("applyRestFocus persists the focus + carries the current SQL scope forward", async () => {

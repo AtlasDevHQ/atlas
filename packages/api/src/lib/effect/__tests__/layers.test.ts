@@ -596,6 +596,27 @@ describe("makeSchedulerLive", () => {
       expect(ticks).toBe(afterClose);
     });
 
+    test("the boot tick runs eagerly, not one interval late", async () => {
+      // At a large interval, only the eager `Effect.repeat` boot tick can
+      // land inside the hold window. Were the loop schedule-driven-only
+      // (first tick delayed by one interval), this would observe 0 ticks —
+      // and the billing reconcile would silently lose its
+      // "a deploy also doubles as an immediate reconcile" contract (#3446).
+      let ticks = 0;
+      await runScoped(
+        registerPeriodicFiber({
+          name: "oauth_state_cleanup",
+          intervalMs: 60_000,
+          tick: Effect.sync(() => {
+            ticks++;
+          }),
+          onTickFailure: { level: "warn", message: "test tick failed" },
+        }),
+        30,
+      );
+      expect(ticks).toBe(1);
+    });
+
     test("a failing tick is recovered and the repeat loop survives", async () => {
       let attempts = 0;
       await runScoped(
@@ -612,6 +633,26 @@ describe("makeSchedulerLive", () => {
       );
       // Were the failure NOT recovered per-tick, the repeat loop would exit
       // after the first attempt (withFiberDeathLog fires once, fiber dies).
+      expect(attempts).toBeGreaterThanOrEqual(2);
+    });
+
+    test("viaCause recovers a tick DEFECT and the repeat loop survives", async () => {
+      // The agent_runs sweep's contract: with `viaCause`, catchAllCause
+      // recovers defects per-tick (a plain catchAll would let the defect
+      // escape the repeat loop and kill the fiber after one attempt).
+      let attempts = 0;
+      await runScoped(
+        registerPeriodicFiber({
+          name: "oauth_state_cleanup",
+          intervalMs: 1,
+          tick: Effect.sync(() => {
+            attempts++;
+            throw new Error("defect");
+          }),
+          onTickFailure: { level: "error", message: "test tick died", viaCause: true },
+        }),
+        50,
+      );
       expect(attempts).toBeGreaterThanOrEqual(2);
     });
 

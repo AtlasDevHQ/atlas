@@ -326,7 +326,7 @@ interface PeriodicFiberSpec<A, E> {
    * Enablement gate, evaluated once at registration. `check` may throw
    * (module-availability probes): a throw debug-logs `failLog` and then
    * proceeds as a `false` return, so both `failLog` and `skipLog` fire on
-   * a throw.
+   * a throw (each when provided).
    */
   readonly gate?: {
     readonly check: () => boolean;
@@ -338,8 +338,9 @@ interface PeriodicFiberSpec<A, E> {
 }
 
 // Exported for the behavioral contract tests in layers.test.ts — every
-// periodic fiber flows through this one seam, so a helper-level bug is a
-// 21-fiber blast radius the structural source scans alone cannot see.
+// record-listed periodic fiber flows through this one seam (the outbox
+// flushers stay outside, see above), so a helper-level bug is a 21-fiber
+// blast radius the structural source scans alone cannot see.
 export function registerPeriodicFiber<A, E>(
   spec: PeriodicFiberSpec<A, E>,
 ): Effect.Effect<void, never, Scope.Scope> {

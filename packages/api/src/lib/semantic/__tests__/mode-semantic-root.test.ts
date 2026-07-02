@@ -54,6 +54,22 @@ mock.module("@atlas/api/lib/knowledge/mirror", () => ({
   },
 }));
 
+// `invalidateOrgModeRoots` fire-and-forget imports the explore module to drop
+// the org's cached backends (file-snapshot backends like Vercel copy semantic
+// files in at creation and would serve stale YAMLs otherwise). Mock ALL
+// exports so loading it here never touches real backend detection.
+const mockInvalidateOrgExploreBackends = mock((_orgId: string) => {});
+mock.module("@atlas/api/lib/tools/explore", () => ({
+  explore: {},
+  getActiveSandboxPluginId: () => null,
+  getExploreBackendType: () => "just-bash",
+  invalidateExploreBackend: () => {},
+  invalidateOrgExploreBackends: mockInvalidateOrgExploreBackends,
+  markNsjailFailed: () => {},
+  markSidecarFailed: () => {},
+  _formatSandboxPriorityFailureForTest: () => "",
+}));
+
 // ---------------------------------------------------------------------------
 // Imports under test
 // ---------------------------------------------------------------------------
@@ -164,6 +180,16 @@ describe("ensureOrgModeSemanticRoot", () => {
     const root = await ensureOrgModeSemanticRoot("org-1", "published");
     expect(mockListEntities).toHaveBeenCalledTimes(2);
     expect(fs.existsSync(path.join(root, "entities", "orders.yml"))).toBe(true);
+  });
+
+  it("invalidateOrgModeRoots also drops the org's cached explore backends", async () => {
+    mockInvalidateOrgExploreBackends.mockClear();
+
+    invalidateOrgModeRoots("org-1");
+
+    // The eviction rides a fire-and-forget dynamic import — flush microtasks
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockInvalidateOrgExploreBackends).toHaveBeenCalledWith("org-1");
   });
 
   it("invalidation that fires DURING a build prevents the stale result from being cached", async () => {

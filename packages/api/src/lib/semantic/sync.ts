@@ -440,6 +440,21 @@ export function invalidateOrgModeRoots(orgId: string): void {
     _modeBuilt.delete(key);
     _modeInvalidationStamp.set(key, (_modeInvalidationStamp.get(key) ?? 0) + 1);
   }
+  // Rebuilding the mode roots isn't enough for file-snapshot explore backends
+  // (Vercel/BYOC microVMs): they copy semantic files in at creation and never
+  // re-read host disk, so a pooled sandbox would serve stale YAMLs until an
+  // infra error forced a rebuild. Drop the org's cached backends too.
+  // Dynamic import breaks the tools/explore → semantic/sync module cycle;
+  // fire-and-forget is safe because the eviction only has to land before the
+  // next agent turn, and the microtask resolves long before that.
+  void import("@atlas/api/lib/tools/explore")
+    .then(({ invalidateOrgExploreBackends }) => invalidateOrgExploreBackends(orgId))
+    .catch((err) => {
+      log.warn(
+        { orgId, err: errorMessage(err) },
+        "Failed to invalidate explore backends after semantic change",
+      );
+    });
 }
 
 /**

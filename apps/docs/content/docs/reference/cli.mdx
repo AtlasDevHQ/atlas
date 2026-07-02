@@ -302,7 +302,7 @@ bun run atlas -- metric run total_gmv --json
 
 ## explore
 
-Run a single read-only command against your logged-in workspace's semantic layer — a thin HTTP client over `POST /api/v1/explore`. The server sandboxes execution with read-only, path-traversal-protected access scoped to `semantic/`, so writes, shell escapes, and traversal are rejected server-side (the CLI does no validation of its own).
+Run a single read-only command against your logged-in workspace's semantic layer — a thin HTTP client over `POST /api/v1/explore`. Neither the CLI nor the server validates the command against an allowlist: the server executes it inside its sandbox backend, whose isolation (ephemeral microVM, read-only bind mounts, or in-memory overlay) structurally scopes access to `semantic/` — writes land in an ephemeral layer and never touch the real semantic files.
 
 ```bash
 bun run atlas -- explore <command...> [options]
@@ -315,7 +315,7 @@ The command is every token after `explore` (minus this CLI's own flags), so both
 | `--api-key <key>` | Use a workspace API key instead of your `atlas login` session (unattended CI). Overrides `ATLAS_API_KEY` |
 | `--json` | Machine-readable JSON output (`{ "output": "..." }`) |
 
-Only read-only commands run (`ls` / `cat` / `grep` / `find` / `head` / `tail` / `wc` / `awk` / `sed` / pipes).
+Typical commands: `ls` / `cat` / `grep` / `find` / `head` / `tail` / `wc` / `awk` / `sed` / pipes. Output is capped at 1 MB.
 
 **Examples:**
 

@@ -77,6 +77,11 @@ function collectSemanticFiles(
   return results;
 }
 
+// Per-command wall-clock limit, enforced sandbox-side (SIGKILL). Matches the
+// 10s default of the nsjail (ATLAS_NSJAIL_TIME_LIMIT) and sidecar backends —
+// without it a pathological command holds the pooled sandbox open unboundedly.
+const COMMAND_TIMEOUT_MS = 10_000;
+
 // Prefix for sandbox file paths: the SDK resolves relative paths under /vercel/sandbox/.
 const SANDBOX_SEMANTIC_REL = "semantic";
 // Must match the absolute resolution of SANDBOX_SEMANTIC_REL (used as runCommand cwd).
@@ -249,6 +254,7 @@ export async function createSandboxBackend(
           cmd: "sh",
           args: ["-c", command],
           cwd: SANDBOX_SEMANTIC_CWD,
+          timeoutMs: COMMAND_TIMEOUT_MS,
         });
         return {
           stdout: await result.stdout(),

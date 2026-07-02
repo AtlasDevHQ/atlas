@@ -102,6 +102,12 @@ describe("approvalRequiredResult (#4199)", () => {
     expect(body2.approval_required).toBe(true);
     expect(body2.approval_request_id).toBe("appr_ok");
     expect("matched_rules" in body2).toBe(false);
+
+    // The whole point of stripping (not throwing) is that the RECOVERED payload
+    // is still representable by the consuming output schema — otherwise SDK
+    // validation would throw at dispatch and lose the approval signal (#3584).
+    expect(executeSqlOutputSchema.safeParse(body).success).toBe(true);
+    expect(executeSqlOutputSchema.safeParse(body2).success).toBe(true);
   });
 
   it("tolerates a missing upstream message — the resume hint is always present", () => {
@@ -174,5 +180,32 @@ describe("approvalRequiredResult (#4199)", () => {
       extra: { answer: "parked", sql: ["SELECT 1"] },
     }).structuredContent;
     expect(queryOutputSchema.safeParse(query).success).toBe(true);
+  });
+
+  it("strips reserved keys from `extra` so a caller cannot inject the approval signal (#4199)", () => {
+    const result = approvalRequiredResult({
+      approvalRequestId: undefined,
+      matchedRules: ["real rule"],
+      message: "m",
+      // A caller must not be able to smuggle a request id through `extra` and
+      // defeat the null-omission invariant, nor override approval_required /
+      // matched_rules / message from the passthrough.
+      extra: {
+        approval_request_id: "leaked",
+        approval_required: false,
+        matched_rules: ["hijacked"],
+        message: "spoofed",
+        answer: "kept",
+      },
+    });
+    const body = result.structuredContent as Record<string, unknown>;
+    // Reserved keys reflect the real builder inputs, not the `extra` injection.
+    expect("approval_request_id" in body).toBe(false); // undefined id → omitted
+    expect(body.approval_required).toBe(true);
+    expect(body.matched_rules).toEqual(["real rule"]);
+    expect(body.message).not.toBe("spoofed");
+    expect(String(body.message)).toContain(MCP_APPROVAL_RESUME_HINT);
+    // A non-reserved `extra` field still passes through.
+    expect(body.answer).toBe("kept");
   });
 });

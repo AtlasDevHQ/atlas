@@ -80,12 +80,38 @@ export function withResumeHint(message: unknown): string {
  */
 const approvalPayloadSchema = z
   .object({
+    // Derived from the `approvalFields` SSOT so a loosen/rename there can't
+    // drift the guard out of sync with the consuming output schemas; only the
+    // two invariants this builder enforces are tightened on top.
+    ...approvalFields,
     approval_required: z.literal(true),
-    approval_request_id: z.string().optional(),
-    matched_rules: z.array(z.unknown()).optional(),
     message: z.string(),
   })
   .catchall(z.unknown());
+
+/**
+ * Reserved keys the builder owns; stripped from caller-supplied `extra` before
+ * the spread so a caller can't inject e.g. `approval_request_id` through the
+ * passthrough and defeat the null-omission / `approval_required: true`
+ * invariants this builder exists to enforce (#4199).
+ */
+const RESERVED_APPROVAL_KEYS: ReadonlySet<string> = new Set([
+  "approval_required",
+  "approval_request_id",
+  "matched_rules",
+  "message",
+]);
+
+function sanitizeExtra(
+  extra: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (!extra) return {};
+  const clean: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(extra)) {
+    if (!RESERVED_APPROVAL_KEYS.has(key)) clean[key] = value;
+  }
+  return clean;
+}
 
 /**
  * #4199 — the ONE validated builder for the non-error `approval_required`
@@ -126,8 +152,9 @@ export function approvalRequiredResult({
   structured?: boolean;
 }): CallToolResult {
   const hinted = withResumeHint(message);
+  const safeExtra = sanitizeExtra(extra);
   const raw: Record<string, unknown> = {
-    ...(extra ?? {}),
+    ...safeExtra,
     approval_required: true,
     ...(approvalRequestId !== undefined && approvalRequestId !== null
       ? { approval_request_id: approvalRequestId }
@@ -141,7 +168,7 @@ export function approvalRequiredResult({
   const payload = approvalPayloadSchema.safeParse(raw).success
     ? raw
     : {
-        ...(extra ?? {}),
+        ...safeExtra,
         approval_required: true as const,
         ...(typeof approvalRequestId === "string"
           ? { approval_request_id: approvalRequestId }

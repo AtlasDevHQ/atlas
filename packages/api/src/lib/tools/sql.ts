@@ -96,12 +96,12 @@ function applyMaskingViaTag(
 }
 
 /**
- * Resolve the `ApprovalGate` Tag against `EnterpriseLayer`. Each sql.ts
- * approval call site (live path + cache path) reads three methods on
- * the gate (`checkApprovalRequired` → `hasApprovedRequest` →
- * `createApprovalRequest`); resolving the shape once + reading methods
- * keeps the existing try/catch fail-closed semantics intact and avoids
- * paying for three separate `Effect.runPromise` round-trips (#2567).
+ * Resolve the `ApprovalGate` Tag against `EnterpriseLayer` once per
+ * pipeline run. The single approval region in `runSqlPipelineEffect`
+ * reads three methods on the gate (`checkApprovalRequired` →
+ * `hasApprovedRequest` → `createApprovalRequest`); resolving the shape
+ * once avoids re-entering the enterprise runtime per method (#2567,
+ * #3764).
  *
  * #2593 — consumer-side fail-closed: on SaaS where EE didn't bind, the
  * no-op's `checkApprovalRequired` reports `required: false` — bypassing
@@ -1395,7 +1395,7 @@ function pipelineErrorToResponse(error: PipelineError): Record<string, unknown> 
 
 // ── Unified SQL execution pipeline (#4185, ADR-0027) ────────────────
 //
-// ONE core effect owns the six-step choreography for every path that runs
+// ONE core effect owns the full choreography for every path that runs
 // user- or agent-authored SQL:
 //
 //   resolve connection → validate (+ fail audit) → fail-closed approval
@@ -1404,9 +1404,11 @@ function pipelineErrorToResponse(error: PipelineError): Record<string, unknown> 
 //
 // `runUserQueryPipeline` (the raw-query path: dashboards, metrics,
 // validate-proposal, executeSQL-over-REST) and `executeSqlForConnection`
-// (the agent `executeSQL` leaf behind `executeSqlFanout`) are THIN
-// wrappers over this core: each contributes only its pre-step (dashboard
-// parameter binding vs result-cache check) and a result adapter (the
+// (the agent `executeSQL` leaf, called directly and via
+// `executeSqlFanout`) are THIN wrappers over this core: each contributes
+// only its pre-step (dashboard parameter binding vs result-cache check),
+// input adornments (fanout audit linkage, routing span attributes), and
+// a result adapter (the
 // `UserQueryOutcome` union vs the tool's `{success}` record). ADR-0027's
 // invariant — "raw-SQL reach ≡ agent-loop reach for the same member" — is
 // therefore structural: a governance fix to the pipeline cannot apply to
@@ -1438,18 +1440,18 @@ type SqlPipelinePreStep =
 
 export interface SqlPipelineOptions {
   readonly sql: string;
-  /** Audit + approval surface description (e.g. "Dashboard preview: Weekly signups"). */
+  /** Approval-request + response-surface description (e.g. "Dashboard preview: Weekly signups"). */
   readonly explanation: string;
   readonly connId: string;
-  readonly preStep?: SqlPipelinePreStep;
   /**
-   * SQL string handed to the plugin `beforeQuery` hook. The agent path
-   * historically passes the ORIGINAL (untrimmed, possibly `;`-suffixed)
-   * SQL; the raw path passes the normalized/bound SQL so the hook,
-   * re-validation, RLS, and execution all operate on the same string the
-   * bind array aligns to (#2267). Defaults to the normalized SQL.
+   * Optional pre-step (see {@link SqlPipelinePreStep}). Direct callers
+   * must pick the pre-step matching their surface: SQL carrying `:key`
+   * placeholders REQUIRES `bind-dashboard-parameters` — without it the
+   * explicit fail-closed placeholder rejection is skipped and the query
+   * only fails later at AST validation with a less actionable parse
+   * error.
    */
-  readonly hookInputSql?: string;
+  readonly preStep?: SqlPipelinePreStep;
   /**
    * Parent audit row id when this execution is one leg of a cross-environment
    * fanout. Threaded through every `logQueryAudit` call so each audit row
@@ -1515,7 +1517,7 @@ export function runSqlPipelineEffect(
     // Fail-closed default for mode: missing atlasMode implies published.
     const atlasMode = reqCtx?.atlasMode ?? "published";
 
-    // Step 1: Resolve connection (tagged errors)
+    // Resolve connection (tagged errors)
     const { db, dbType, poolOrgId } = yield* resolveConnectionEffect(connId, orgId, atlasMode, authOrgId);
 
     const targetHost = connections.getTargetHost(connId, authOrgId);
@@ -1553,12 +1555,12 @@ export function runSqlPipelineEffect(
       }
     }
 
-    // Step 2: Validate (custom validator or standard SQL validation)
+    // Validate (custom validator or standard SQL validation)
     const initial = yield* runQueryValidationEffect(normalizedSql, connId, dbType, customValidator, authOrgId);
     if (!initial.ok) {
       logQueryAudit({
         sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-        error: initial.auditError, sourceId: connId, sourceType: dbType,
+        error: initial.auditError, sourceId: connId, sourceType: dbType, targetHost,
         parentAuditId,
       });
       return { kind: "validation_failed" as const, message: initial.error };
@@ -1568,7 +1570,7 @@ export function runSqlPipelineEffect(
     // stays undefined — their audit entries store NULL for tables/columns_accessed.
     const classification = initial.classification;
 
-    // Step 3: Enterprise approval check — the fail-closed gate, exactly once.
+    // Enterprise approval check — the fail-closed gate, exactly once.
     // F-54 / F-55: this gate is fail-CLOSED. The previous behaviour
     // (catch → log.warn → proceed without approvalMatch) silently
     // bypassed governance whenever the EE module failed to import or
@@ -1580,8 +1582,9 @@ export function runSqlPipelineEffect(
     //
     // When the caller binds no user, `checkApprovalRequired` itself
     // returns `required: true` with `identityMissing: true` if any
-    // rule exists in the database; the Phase 2 user-identity gate
-    // below routes that into the "approve via the Atlas web app" outcome.
+    // rule exists in the database; the Phase 2 user-identity gate below
+    // routes that into the `approval_identity_missing` outcome
+    // (`APPROVAL_IDENTITY_MISSING_MESSAGE`).
     if (classification) {
       // #3764 — compose the gate's per-method Effects with `yield*` instead of
       // dropping out to `async`/`Effect.runPromise` per call. `loadApprovalGate()`
@@ -1779,7 +1782,10 @@ export function runSqlPipelineEffect(
                   });
                   cachedMaskingApplied = cachedRows !== preMaskRows;
                 } catch (err) {
-                  // #2593 — fail-closed (same rationale as the live path).
+                  // #2593 — `EnterpriseUnavailableError` (EE failed to bind
+                  // on SaaS) is fail-CLOSED; any other masking failure
+                  // deliberately fails OPEN (warn + serve unmasked), the
+                  // same scope as the live path in `executeAndAuditEffect`.
                   if (err instanceof EnterpriseUnavailableError) throw err;
                   log.warn(
                     { err: err instanceof Error ? err.message : String(err), connectionId: connId },
@@ -1830,10 +1836,17 @@ export function runSqlPipelineEffect(
           },
         });
         const hookMetadata: Record<string, unknown> = {};
-        // See `SqlPipelineOptions.hookInputSql` for which SQL string the
-        // hook receives on each path. Plugins that rewrite SQL must
-        // preserve placeholder order for parameterized cards (#2267).
-        const hookCtx = { sql: opts.hookInputSql ?? normalizedSql, connectionId: connId, metadata: hookMetadata };
+        // Which SQL string the hook receives is derived from the pre-step
+        // (keeping it a free option would let a caller desync the hook
+        // input from the bind array): the agent path (`check-cache`)
+        // historically hands plugins the ORIGINAL (untrimmed, possibly
+        // `;`-suffixed) SQL; the raw path hands the normalized/bound SQL
+        // so the hook, re-validation, RLS, and execution all operate on
+        // the same string the bind array aligns to (#2267). Plugins that
+        // rewrite SQL must preserve placeholder order for parameterized
+        // cards.
+        const hookInputSql = preStep?.kind === "check-cache" ? sql : normalizedSql;
+        const hookCtx = { sql: hookInputSql, connectionId: connId, metadata: hookMetadata };
         const mutatedSql = yield* Effect.tryPromise({
           try: () => dispatchMutableHook("beforeQuery", hookCtx, "sql"),
           catch: (err) => {
@@ -1943,7 +1956,7 @@ export type UserQueryOutcome =
 export interface RunUserQueryOpts {
   readonly sql: string;
   readonly connectionId?: string;
-  /** Audit + approval surface description (e.g. "Dashboard preview: Weekly signups"). */
+  /** Approval-request + response-surface description (e.g. "Dashboard preview: Weekly signups"). */
   readonly explanation: string;
   /**
    * Resolved dashboard parameter values keyed by parameter key (#2267). When
@@ -2087,9 +2100,6 @@ async function executeSqlForConnection({
     explanation,
     connId,
     preStep: { kind: "check-cache" },
-    // Historical contract: agent-path plugins receive the ORIGINAL SQL
-    // string (untrimmed) — see `SqlPipelineOptions.hookInputSql`.
-    hookInputSql: sql,
     parentAuditId,
     routingMode,
     routingReason,

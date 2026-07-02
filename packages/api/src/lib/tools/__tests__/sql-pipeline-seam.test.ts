@@ -38,12 +38,17 @@ const mockDBConnection = {
   close: async () => {},
 };
 
+// Mutable so the non-bindable-dialect test can present a datasource where
+// dashboard parameter binding is unsupported (fail-closed rejection).
+let mockDbType = "postgres";
+
 mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockDBConnection,
     connections: {
       get: () => mockDBConnection,
       getDefault: () => mockDBConnection,
+      getDBType: () => mockDbType,
     },
   }),
 );
@@ -80,9 +85,15 @@ mock.module("@atlas/api/lib/cache/index", () => ({
   getDefaultTtl: () => 60000,
 }));
 
+// Captures what SQL string the beforeQuery hook receives — the hook-input
+// contract test asserts the per-path derivation (original vs bound SQL).
+let hookSqlSeen: string[] = [];
 mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
-  dispatchMutableHook: async (_name: string, ctx: { sql: string }) => ctx.sql,
+  dispatchMutableHook: async (_name: string, ctx: { sql: string }) => {
+    hookSqlSeen.push(ctx.sql);
+    return ctx.sql;
+  },
 }));
 
 // Row limit is a mutable knob so the auto-LIMIT test can pin a distinctive value.
@@ -115,13 +126,18 @@ mock.module("@atlas/api/lib/config", () => ({
       : {},
 }));
 
+// Captures the filter groups the pipeline passes into injection so the RLS
+// test asserts propagation (resolved filters → injector), not just plumbing.
+let rlsGroupsSeen: unknown[] = [];
 mock.module("@atlas/api/lib/rls", () => ({
   resolveRLSFilters: () =>
     rlsConfigEnabled
       ? { groups: [{ filters: [{ table: "companies", column: "tenant_id", value: "tenant-42" }] }], combineWith: "and" }
       : { groups: [], combineWith: "and" },
-  injectRLSConditions: (sql: string) =>
-    rlsConfigEnabled ? `${sql} WHERE tenant_id = 'tenant-42'` : sql,
+  injectRLSConditions: (sql: string, groups: unknown) => {
+    rlsGroupsSeen.push(groups);
+    return rlsConfigEnabled ? `${sql} WHERE tenant_id = 'tenant-42'` : sql;
+  },
 }));
 
 let requestContextValue: {
@@ -229,10 +245,11 @@ process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test
 /** Run the seam with a given pre-step (or none) against the default connection. */
 function runSeam(
   preStep?: import("@atlas/api/lib/tools/sql").SqlPipelineOptions["preStep"],
+  sql = "SELECT id FROM companies",
 ): Promise<SqlPipelineOutcome> {
   return Effect.runPromise(
     runSqlPipelineEffect({
-      sql: "SELECT id FROM companies",
+      sql,
       explanation: "seam test",
       connId: "default",
       ...(preStep ? { preStep } : {}),
@@ -257,6 +274,9 @@ describe("unified SQL pipeline seam (#4185)", () => {
       user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
     };
     executedQueries = [];
+    hookSqlSeen = [];
+    rlsGroupsSeen = [];
+    mockDbType = "postgres";
     mockDBConnection.query.mockClear();
     cacheIsEnabled = false;
     cacheEntry = null;
@@ -298,7 +318,50 @@ describe("unified SQL pipeline seam (#4185)", () => {
       }
       expect(mockDBConnection.query).not.toHaveBeenCalled();
     });
+
+    it(`CREATE-phase fail-closed: a sync throw from createApprovalRequest blocks — ${label}`, async () => {
+      // The second fail-closed region (#3764): a governance-WRITE failure
+      // must block, not silently execute. A sync throw surfaces as a defect
+      // that only `catchAllCause` maps — this pins that path at the seam.
+      mockCheckApprovalRequired.mockImplementation(() =>
+        Effect.succeed({ required: true, matchedRules: [{ id: "rule-1", name: "PII tables" }] }),
+      );
+      mockCreateApprovalRequest.mockImplementation(() => {
+        throw new Error("simulated DB outage during approval request creation");
+      });
+      await expect(runSeam(preStep)).rejects.toThrow("Approval workflow failed");
+      expect(mockDBConnection.query).not.toHaveBeenCalled();
+    });
+
+    it(`identity-missing blocks with approval_identity_missing — ${label}`, async () => {
+      requestContextValue = {
+        requestId: "test-seam",
+        user: { id: "user-1", label: "user-1@example.com" },
+      };
+      mockCheckApprovalRequired.mockImplementation(() =>
+        Effect.succeed({
+          required: true,
+          matchedRules: [{ id: "__identity_missing__", name: "missing-requester-identity" }],
+          identityMissing: true,
+        }),
+      );
+      const outcome = await runSeam(preStep);
+      expect(outcome.kind).toBe("approval_identity_missing");
+      expect(mockCreateApprovalRequest).not.toHaveBeenCalled();
+      expect(mockDBConnection.query).not.toHaveBeenCalled();
+    });
   }
+
+  it("an already-approved match unblocks: executes without filing a second request", async () => {
+    mockCheckApprovalRequired.mockImplementation(() =>
+      Effect.succeed({ required: true, matchedRules: [{ id: "rule-1", name: "PII tables" }] }),
+    );
+    mockHasApprovedRequest.mockImplementation(() => Effect.succeed(true));
+    const outcome = await runSeam({ kind: "bind-dashboard-parameters", values: {} });
+    expect(outcome.kind).toBe("executed");
+    expect(mockCreateApprovalRequest).not.toHaveBeenCalled();
+    expect(mockDBConnection.query).toHaveBeenCalledTimes(1);
+  });
 
   it("a cache hit can never bypass the approval gate (agent pre-step ordering)", async () => {
     // Poison the cache with a servable entry AND make approval required:
@@ -321,6 +384,11 @@ describe("unified SQL pipeline seam (#4185)", () => {
     expect(outcome.kind).toBe("executed");
     expect(executedQueries).toHaveLength(1);
     expect(executedQueries[0]).toContain("tenant_id = 'tenant-42'");
+    // The RESOLVED filter groups must reach the injector — not just any call.
+    expect(rlsGroupsSeen).toHaveLength(1);
+    expect(rlsGroupsSeen[0]).toEqual([
+      { filters: [{ table: "companies", column: "tenant_id", value: "tenant-42" }] },
+    ]);
   });
 
   it("RLS applies identically under the agent pre-step", async () => {
@@ -343,6 +411,50 @@ describe("unified SQL pipeline seam (#4185)", () => {
     const outcome = await runSeam({ kind: "check-cache" });
     expect(outcome.kind).toBe("executed");
     expect(executedQueries[0]).toMatch(/LIMIT 7\b/);
+  });
+
+  // ── Dashboard parameter binding (raw pre-step, #2267) ──────────────
+  it("rejects placeholder SQL on a non-bindable dialect — fail closed, never sent to the driver", async () => {
+    mockDbType = "clickhouse";
+    const outcome = await runSeam(
+      { kind: "bind-dashboard-parameters", values: { id: 1 } },
+      "SELECT id FROM companies WHERE id = :id",
+    );
+    expect(outcome.kind).toBe("validation_failed");
+    if (outcome.kind === "validation_failed") {
+      expect(outcome.message).toContain("Parameterized queries are supported on PostgreSQL and MySQL");
+    }
+    expect(mockDBConnection.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects placeholder SQL with a missing parameter value — fail closed", async () => {
+    const outcome = await runSeam(
+      { kind: "bind-dashboard-parameters", values: {} },
+      "SELECT id FROM companies WHERE id = :id",
+    );
+    expect(outcome.kind).toBe("validation_failed");
+    expect(mockDBConnection.query).not.toHaveBeenCalled();
+  });
+
+  // ── beforeQuery hook input contract ─────────────────────────────────
+  it("agent pre-step hands the plugin hook the ORIGINAL untrimmed SQL", async () => {
+    // Historical contract: agent-path plugins see the raw string (trailing
+    // semicolon intact); execution still runs the normalized SQL.
+    const outcome = await runSeam({ kind: "check-cache" }, "SELECT id FROM companies;");
+    expect(outcome.kind).toBe("executed");
+    expect(hookSqlSeen).toEqual(["SELECT id FROM companies;"]);
+    expect(executedQueries[0]).not.toContain(";");
+  });
+
+  it("raw pre-step hands the plugin hook the BOUND SQL aligned with the bind array (#2267)", async () => {
+    const outcome = await runSeam(
+      { kind: "bind-dashboard-parameters", values: { id: 1 } },
+      "SELECT id FROM companies WHERE id = :id",
+    );
+    expect(outcome.kind).toBe("executed");
+    expect(hookSqlSeen).toHaveLength(1);
+    expect(hookSqlSeen[0]).not.toContain(":id");
+    expect(hookSqlSeen[0]).toContain("$1");
   });
 
   // ── Executed outcome shape ──────────────────────────────────────────

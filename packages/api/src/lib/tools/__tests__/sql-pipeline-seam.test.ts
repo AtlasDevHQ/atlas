@@ -14,6 +14,7 @@
 import { describe, expect, it, beforeEach, mock } from "bun:test";
 import { Effect } from "effect";
 import { createConnectionMock } from "@atlas/api/testing/connection";
+import type { ExecuteSqlSuccessResult } from "@useatlas/types";
 
 const whitelistedTables = new Set(["companies"]);
 
@@ -461,9 +462,62 @@ describe("unified SQL pipeline seam (#4185)", () => {
     const outcome = await runSeam({ kind: "bind-dashboard-parameters", values: {} });
     expect(outcome.kind).toBe("executed");
     if (outcome.kind === "executed") {
+      // The typed `ExecutedSqlResult` contract (#4244): every field the
+      // adapters read is now a compile-time-checked property, so a rename in
+      // either constructor site is caught here and in the wrapper adapters
+      // rather than silently desyncing an unchecked cast.
       expect(outcome.result.success).toBe(true);
+      expect(outcome.result.explanation).toBe("seam test");
       expect(outcome.result.columns).toEqual(["id"]);
+      expect(outcome.result.rows).toEqual([{ id: 1 }]);
       expect(outcome.result.row_count).toBe(1);
+      expect(outcome.result.truncated).toBe(false);
+      expect(outcome.result.cached).toBe(false);
+      // No classification masking runs in this seam (org pooling off), so the
+      // live path deterministically reports `maskingApplied: false`.
+      expect(outcome.result.maskingApplied).toBe(false);
+      expect(typeof outcome.result.executionMs).toBe("number");
     }
+  });
+
+  it("cache-hit executed outcome reports the cache-serve contract (cached, executionMs=0)", async () => {
+    // The SECOND `ExecutedSqlResult` construction site — the cache-hit
+    // constructor — sets the distinct values the live path can't: `cached:
+    // true` and the cache-serve `executionMs: 0`. Approval is not required
+    // (default mock), so the pre-step serves the pre-seeded entry and no DB
+    // round-trip happens. Runtime-verifies the field values `satisfies` only
+    // type-guards.
+    cacheIsEnabled = true;
+    cacheEntry = { columns: ["id"], rows: [{ id: 99 }], cachedAt: Date.now(), ttl: 60000, executionMs: 5 };
+    const outcome = await runSeam({ kind: "check-cache" });
+    expect(outcome.kind).toBe("executed");
+    if (outcome.kind === "executed") {
+      expect(outcome.result.success).toBe(true);
+      expect(outcome.result.cached).toBe(true);
+      expect(outcome.result.executionMs).toBe(0);
+      expect(outcome.result.columns).toEqual(["id"]);
+      expect(outcome.result.rows).toEqual([{ id: 99 }]);
+      expect(outcome.result.row_count).toBe(1);
+      expect(outcome.result.truncated).toBe(false);
+      expect(outcome.result.maskingApplied).toBe(false);
+    }
+    expect(mockDBConnection.query).not.toHaveBeenCalled();
+  });
+
+  // ── Wire-contract drift guard ───────────────────────────────────────
+  // The internal `ExecutedSqlResult` (private to sql.ts, reached here via the
+  // exported `SqlPipelineOutcome`) is the producer of the executeSQL tool's
+  // wire success shape: its widened record is finished into
+  // `ExecuteSqlSuccessResult` downstream, gaining `envContributions` — a
+  // 1-element array via `attachSingleEnvContribution` on the single-env path,
+  // or an N-element array via `mergeMemberResults` on fanout. Pin that the
+  // producer stays a valid wire success result (minus that downstream-added
+  // `envContributions`) so a rename on either side of the tool contract fails
+  // tsgo here instead of silently desyncing across the opaque `Record` seam.
+  it("type-level: ExecutedSqlResult stays wire-compatible with ExecuteSqlSuccessResult", () => {
+    type ExecutedResult = Extract<SqlPipelineOutcome, { kind: "executed" }>["result"];
+    type Check = ExecutedResult extends Omit<ExecuteSqlSuccessResult, "envContributions"> ? true : false;
+    const _: Check = true;
+    expect(_).toBe(true);
   });
 });

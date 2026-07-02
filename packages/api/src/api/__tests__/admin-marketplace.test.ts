@@ -666,11 +666,12 @@ describe("Platform Plugin Catalog", () => {
 
       // #4232 — pillar is NOT NULL with no default and the deriving
       // trigger was dropped by 0096: the INSERT must name it explicitly,
-      // derived from type (datasource→datasource).
+      // derived from type (datasource→datasource). Positions pinned by
+      // the builder: $5 = type, $6 = pillar.
       const insert = findCapturedQuery("INSERT INTO plugin_catalog");
       expect(insert?.sql).toContain("pillar");
-      expect(insert?.params).toContain("datasource");
-      expect(insert?.params[insert.params.indexOf("datasource") + 1]).toBe("datasource");
+      expect(insert?.params[4]).toBe("datasource");
+      expect(insert?.params[5]).toBe("datasource");
     });
 
     it("derives the action pillar for non-datasource types (#4232)", async () => {
@@ -688,8 +689,8 @@ describe("Platform Plugin Catalog", () => {
       expect(res.status).toBe(201);
 
       const insert = findCapturedQuery("INSERT INTO plugin_catalog");
-      expect(insert?.params).toContain("sandbox");
-      expect(insert?.params[insert.params.indexOf("sandbox") + 1]).toBe("action");
+      expect(insert?.params[4]).toBe("sandbox");
+      expect(insert?.params[5]).toBe("action");
     });
 
     it("returns 409 on duplicate slug", async () => {
@@ -741,9 +742,9 @@ describe("Platform Plugin Catalog", () => {
       });
       expect(res.status).toBe(200);
 
-      // The dropped 0096 sync trigger's semantics, now in the statement:
-      // re-derive only when type ACTUALLY changes (bare `type` in an
-      // UPDATE's SET reads the OLD row).
+      // The 0092 sync trigger's semantics (dropped by 0096), now in the
+      // statement: re-derive only when type ACTUALLY changes (bare `type`
+      // in an UPDATE's SET reads the OLD row).
       const update = findCapturedQuery("UPDATE plugin_catalog");
       expect(update?.sql).toContain("pillar = CASE WHEN type IS DISTINCT FROM");
       expect(update?.params).toEqual(["action", "action", "cat-1"]);
@@ -769,6 +770,9 @@ describe("Platform Plugin Catalog", () => {
         body: JSON.stringify({}),
       });
       expect(res.status).toBe(400);
+      // #4232 — this is the buildCatalogUpdateSql(...) === null seam.
+      const body = await json(res);
+      expect(body.error).toBe("bad_request");
     });
   });
 

@@ -47,10 +47,21 @@ describe("buildCatalogCreateSql", () => {
       enabled: true,
     });
     expect(sql).toContain("pillar");
-    // Param order is pinned by the pg test executing this verbatim; here
-    // just assert the derived pillar rides along with the type.
-    expect(params).toContain("datasource");
-    expect(params[params.indexOf("datasource") + 1]).toBe("datasource");
+    // Full-array pin: constraint-visible drift (id/pillar/NOT NULLs) is
+    // additionally covered by the pg test executing this verbatim.
+    expect(params).toEqual([
+      "id-1",
+      "BigQuery",
+      "bigquery",
+      null,
+      "datasource",
+      "datasource",
+      null,
+      null,
+      null,
+      "starter",
+      true,
+    ]);
   });
 
   it("serializes configSchema and defaults optionals to null", () => {
@@ -62,8 +73,19 @@ describe("buildCatalogCreateSql", () => {
       minPlan: "starter",
       enabled: false,
     });
-    expect(params).toContain('{"fields":[]}');
-    expect(params).toContain(null);
+    expect(params).toEqual([
+      "id-2",
+      "Email",
+      "email",
+      null,
+      "action",
+      "action",
+      null,
+      null,
+      '{"fields":[]}',
+      "starter",
+      false,
+    ]);
   });
 });
 

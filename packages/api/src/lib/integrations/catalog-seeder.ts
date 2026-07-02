@@ -555,7 +555,9 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
   // Datasource rows are seeded by `seed-builtin-datasource-catalog.ts`
   // (pillar='datasource'); this seeder only handles 'chat' +
   // 'integration' rows. Shared mapping (#4232): catalog-crud.ts is the
-  // one statement of type→pillar for every explicit-naming writer.
+  // one statement of the type→pillar DERIVATION — used by the CRUD
+  // routes and this seeder; the built-in datasource/knowledge/OpenAPI
+  // seeds name pillar as SQL literals and don't derive.
   const pillar = pillarFromCatalogType(entry.type);
 
   // Operator-curated-only gate (#4174/#4099): rows here come from the

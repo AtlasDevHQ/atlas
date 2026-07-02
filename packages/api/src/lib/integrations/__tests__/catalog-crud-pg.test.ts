@@ -2,8 +2,8 @@
  * Real-Postgres coverage for the platform-admin catalog CRUD SQL
  * (#4232). Mirrors the `persist-form-install-pg.test.ts` harness: skips
  * cleanly when `TEST_DATABASE_URL` is unset, runs every migration into a
- * unique per-test schema, and executes {@link buildCatalogCreateSql} /
- * {@link buildCatalogUpdateSql} VERBATIM against the live schema.
+ * unique per-test-file schema, and executes {@link buildCatalogCreateSql}
+ * / {@link buildCatalogUpdateSql} VERBATIM against the live schema.
  *
  * What this catches that the mocked route tests can't: plan-time /
  * constraint-time SQL errors. The pre-#4232 `POST /catalog` INSERT
@@ -25,6 +25,7 @@ import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import {
   buildCatalogCreateSql,
   buildCatalogUpdateSql,
+  type CatalogType,
 } from "../catalog-crud";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
@@ -35,12 +36,12 @@ const describeIfPg = TEST_DB_URL ? describe : describe.skip;
 const PG_TEST_TIMEOUT_MS = 30_000;
 
 /** Minimal valid `POST /catalog` body for a given type/slug. */
-function createFields(type: string, slug: string) {
+function createFields(type: CatalogType, slug: string) {
   return {
     name: `Catalog ${slug}`,
     slug,
     type,
-    minPlan: "starter",
+    minPlan: "starter" as const,
     enabled: true,
   };
 }
@@ -79,7 +80,7 @@ describeIfPg("platform catalog CRUD against the live schema (#4232)", () => {
     ["interaction", "action"],
     ["action", "action"],
     ["sandbox", "action"],
-  ])(
+  ] as const)(
     "POST /catalog INSERT executes verbatim for type %s and derives pillar %s",
     async (type, expectedPillar) => {
       const stamp = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
@@ -96,7 +97,20 @@ describeIfPg("platform catalog CRUD against the live schema (#4232)", () => {
     PG_TEST_TIMEOUT_MS,
   );
 
-  it("PUT /catalog/:id re-derives pillar when type changes (dropped 0096 sync trigger)", async () => {
+  it("a pillar-less INSERT still 23502s — the schema demands explicit naming", async () => {
+    // Deliberately fails if someone reintroduces a column default or a
+    // deriving trigger: every writer must keep naming pillar (#4232).
+    const stamp = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    await expect(
+      pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type)
+         VALUES ($1, $2, $3, 'action')`,
+        [crypto.randomUUID(), "No Pillar", `crud-nopillar-${stamp}`],
+      ),
+    ).rejects.toMatchObject({ code: "23502" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("PUT /catalog/:id re-derives pillar when type changes (0092 sync trigger semantics, dropped by 0096)", async () => {
     const stamp = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
     const id = crypto.randomUUID();
     const create = buildCatalogCreateSql(id, createFields("action", `crud-sync-${stamp}`));
@@ -117,6 +131,7 @@ describeIfPg("platform catalog CRUD against the live schema (#4232)", () => {
     await pool.query(create.sql, create.params);
 
     const update = buildCatalogUpdateSql(id, { name: "Renamed" });
+    expect(update).not.toBeNull();
     const { rows } = await pool.query<{ name: string; pillar: string }>(update!.sql, update!.params);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.name).toBe("Renamed");
@@ -125,9 +140,10 @@ describeIfPg("platform catalog CRUD against the live schema (#4232)", () => {
 
   it("PUT /catalog/:id with an unchanged type does NOT clobber an explicit knowledge pillar", async () => {
     // Knowledge-pillar rows (type 'context', pillar 'knowledge' — 0161 /
-    // ADR-0028) are created by the knowledge ingest seam with pillar named
-    // explicitly; the CRUD mapping never derives 'knowledge'. The dropped
-    // sync trigger only re-derived pillar when type ACTUALLY changed
+    // ADR-0028) are created by the built-in knowledge seeder
+    // (`seed-builtin-knowledge-catalog.ts`) with pillar named explicitly;
+    // the CRUD mapping never derives 'knowledge'. The 0092 sync trigger
+    // (dropped by 0096) only re-derived pillar when type ACTUALLY changed
     // (`IS DISTINCT FROM`), so a same-type PUT on a knowledge row must
     // preserve pillar='knowledge' rather than rewrite it to 'action'.
     const stamp = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
@@ -139,13 +155,16 @@ describeIfPg("platform catalog CRUD against the live schema (#4232)", () => {
     );
 
     const sameType = buildCatalogUpdateSql(id, { type: "context", name: "OKF v2" });
+    expect(sameType).not.toBeNull();
     const same = await pool.query<{ pillar: string; name: string }>(sameType!.sql, sameType!.params);
     expect(same.rows[0]?.name).toBe("OKF v2");
     expect(same.rows[0]?.pillar).toBe("knowledge");
 
     // An ACTUAL type change re-derives per the mapping — same semantics
-    // the 0092 sync trigger had.
+    // the 0092 sync trigger had. One-way: flipping type back to 'context'
+    // would land on 'action', not 'knowledge' (the mapping can't emit it).
     const changed = buildCatalogUpdateSql(id, { type: "action" });
+    expect(changed).not.toBeNull();
     const after = await pool.query<{ pillar: string }>(changed!.sql, changed!.params);
     expect(after.rows[0]?.pillar).toBe("action");
   }, PG_TEST_TIMEOUT_MS);

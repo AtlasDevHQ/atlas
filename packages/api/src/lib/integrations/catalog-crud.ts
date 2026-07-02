@@ -11,6 +11,28 @@
  * 23502s in production.
  */
 
+import type { Pillar, PlanTier } from "@useatlas/types";
+
+/**
+ * The `plugin_catalog.type` values the DB admits
+ * (`chk_plugin_catalog_type` in db/schema.ts / migration 0092). The CRUD
+ * route's Zod enum and the seeder's `CatalogEntryType` are both subsets.
+ */
+export type CatalogType =
+  | "datasource"
+  | "context"
+  | "interaction"
+  | "action"
+  | "sandbox"
+  | "chat"
+  | "integration";
+
+/** A statement + its positionally-aligned parameter list. */
+export interface CatalogSqlStatement {
+  readonly sql: string;
+  readonly params: unknown[];
+}
+
 /**
  * Map a `plugin_catalog.type` to its ADR-0006 pillar. Mirrors the
  * BEFORE-INSERT trigger 0092 installed and 0096 dropped
@@ -20,18 +42,31 @@
  * Every `plugin_catalog` writer must name `pillar` explicitly since 0096.
  *
  * `'knowledge'` (0161 / ADR-0028) is deliberately absent: it is never
- * derived from a type — the knowledge seeder/ingest names it explicitly
+ * derived from a type — the built-in knowledge seeder names it explicitly
  * on rows of type `context`, and the update builder below only re-derives
- * pillar when `type` actually changes, so those rows survive CRUD edits.
+ * pillar when `type` actually changes, so those rows survive
+ * type-preserving CRUD edits. A type change away from `context`
+ * re-derives to `action` and is one-way: flipping type back does NOT
+ * restore `knowledge` — re-seed or fix the row manually.
  */
-export function pillarFromCatalogType(type: string): "chat" | "datasource" | "action" {
+export function pillarFromCatalogType(type: CatalogType): Exclude<Pillar, "knowledge"> {
   switch (type) {
     case "chat":
       return "chat";
     case "datasource":
       return "datasource";
-    default:
+    case "context":
+    case "interaction":
+    case "action":
+    case "sandbox":
+    case "integration":
       return "action";
+    default: {
+      // Compile-time exhaustiveness: adding a CatalogType forces a
+      // pillar decision here instead of silently landing on 'action'.
+      const unmapped: never = type;
+      throw new Error(`Unmapped catalog type: ${String(unmapped)}`);
+    }
   }
 }
 
@@ -40,11 +75,11 @@ export interface CatalogCreateFields {
   name: string;
   slug: string;
   description?: string;
-  type: string;
+  type: CatalogType;
   npmPackage?: string;
   iconUrl?: string;
   configSchema?: unknown;
-  minPlan: string;
+  minPlan: PlanTier;
   enabled: boolean;
 }
 
@@ -52,11 +87,11 @@ export interface CatalogCreateFields {
 export interface CatalogUpdateFields {
   name?: string;
   description?: string;
-  type?: string;
+  type?: CatalogType;
   npmPackage?: string;
   iconUrl?: string;
   configSchema?: unknown;
-  minPlan?: string;
+  minPlan?: PlanTier;
   enabled?: boolean;
 }
 
@@ -67,7 +102,7 @@ export interface CatalogUpdateFields {
 export function buildCatalogCreateSql(
   id: string,
   fields: CatalogCreateFields,
-): { sql: string; params: unknown[] } {
+): CatalogSqlStatement {
   // `pillar` named explicitly (#4232): NOT NULL since 0092, and 0096
   // dropped the trigger that used to derive it — omitting it is a 23502
   // on every create.
@@ -98,7 +133,7 @@ export function buildCatalogCreateSql(
 export function buildCatalogUpdateSql(
   id: string,
   fields: CatalogUpdateFields,
-): { sql: string; params: unknown[] } | null {
+): CatalogSqlStatement | null {
   const setClauses: string[] = [];
   const params: unknown[] = [];
   let paramIdx = 1;
@@ -120,6 +155,10 @@ export function buildCatalogUpdateSql(
   }
   if (fields.npmPackage !== undefined) { setClauses.push(`npm_package = $${paramIdx++}`); params.push(fields.npmPackage); }
   if (fields.iconUrl !== undefined) { setClauses.push(`icon_url = $${paramIdx++}`); params.push(fields.iconUrl); }
+  // NOTE the create/update asymmetry, preserved verbatim from the
+  // pre-#4232 route: create maps a falsy configSchema to SQL NULL, while
+  // an update stringifies whatever arrived (`null` → JSONB 'null', a
+  // non-NULL value) — there is no way to clear the column via PUT.
   if (fields.configSchema !== undefined) { setClauses.push(`config_schema = $${paramIdx++}`); params.push(JSON.stringify(fields.configSchema)); }
   if (fields.minPlan !== undefined) { setClauses.push(`min_plan = $${paramIdx++}`); params.push(fields.minPlan); }
   if (fields.enabled !== undefined) { setClauses.push(`enabled = $${paramIdx++}`); params.push(fields.enabled); }

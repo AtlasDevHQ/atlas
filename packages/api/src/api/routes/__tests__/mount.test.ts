@@ -102,9 +102,9 @@ describe("trailing-slash mount pairs stay retired (#4202 source guard)", () => {
 
   it("mountBoth call sites in admin.ts cover the full sub-router surface", () => {
     const count = (adminSource.match(/mountBoth\(admin, "/g) ?? []).length;
-    // 49 static mounts + marketplace + semantic-improve. A drop below the
-    // floor means mounts were converted back to raw .route() calls (or the
-    // registration seam moved) — update this test alongside such a change.
+    // 50 static mounts + marketplace + semantic-improve (52 total). A drop
+    // below the floor means mounts were converted back to raw .route() calls
+    // (or the registration seam moved) — update this test alongside such a change.
     expect(count).toBeGreaterThanOrEqual(45);
   });
 });

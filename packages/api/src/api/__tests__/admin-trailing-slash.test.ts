@@ -4,13 +4,21 @@
  *
  * The mount list is extracted from admin.ts source (the mountBoth call sites)
  * rather than hardcoded, so a newly added sub-router is covered automatically.
- * For each mount path the real admin router is driven twice — `GET <path>` and
- * `GET <path>/` — and the two responses must carry the same status. The
- * assertion is equality (not a specific code): some sub-router roots have no
- * GET route (404 on both), others answer 200/4xx under the unified mocks —
- * either way the slash variant may never diverge, which is exactly the bug
- * class the old hand-written pairs allowed (`/organizations` shipped bare-only
- * before this refactor).
+ * For each mount path the real admin router is driven with several methods, at
+ * both `<path>` and `<path>/`, and the two responses must carry the same status
+ * per method. The assertion is equality (not a specific code): some roots have
+ * no root route (404 on both), so a GET-only probe would pass vacuously as
+ * `404 === 404` for the POST-style action roots (`/archive-connection`,
+ * `/restore-connection`, …). Probing GET **and** POST means each such root is
+ * exercised by a method its handler actually answers, so the parity assertion
+ * observes a real (non-404) response rather than the trivial 404 pair — which
+ * is exactly the divergence the old hand-written pairs allowed (`/organizations`
+ * shipped bare-only before this refactor).
+ *
+ * Structural completeness — that a mount can never be *half*-registered in the
+ * first place — is enforced separately by the source-scan guard in
+ * routes/__tests__/mount.test.ts (no bare `admin.route(`); this file pins the
+ * runtime behavior for the roots that answer at `/`.
  */
 
 import { describe, it, expect, afterAll } from "bun:test";
@@ -35,8 +43,8 @@ const { Hono } = await import("hono");
 const app = new Hono();
 app.route("/api/v1/admin", admin);
 
-function request(p: string) {
-  return app.request(`http://localhost${p}`);
+function request(p: string, method = "GET") {
+  return app.request(`http://localhost${p}`, { method });
 }
 
 const adminSource = fs.readFileSync(
@@ -59,13 +67,19 @@ describe("admin sub-router mounts — trailing-slash parity (#4202)", () => {
   });
 
   it("every mount answers with the same status with and without a trailing slash", async () => {
+    // Probe GET and POST: a GET-only probe passes vacuously (404 === 404) for
+    // the POST-style action roots, which have no root GET handler. POST hits
+    // their real handler, so the parity assertion observes a non-404 response.
     for (const mountPath of mountPaths) {
-      const bare = await request(`/api/v1/admin${mountPath}`);
-      const slash = await request(`/api/v1/admin${mountPath}/`);
-      expect({ path: mountPath, status: slash.status }).toEqual({
-        path: mountPath,
-        status: bare.status,
-      });
+      for (const method of ["GET", "POST"]) {
+        const bare = await request(`/api/v1/admin${mountPath}`, method);
+        const slash = await request(`/api/v1/admin${mountPath}/`, method);
+        expect({ path: mountPath, method, status: slash.status }).toEqual({
+          path: mountPath,
+          method,
+          status: bare.status,
+        });
+      }
     }
   });
 

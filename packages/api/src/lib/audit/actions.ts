@@ -579,6 +579,17 @@ export const ADMIN_ACTIONS = {
     catalogCascadeUninstall: "plugin.catalog_cascade_uninstall",
   },
   /**
+   * Knowledge Base pillar (#4207, ADR-0028). Collection install rides the shared
+   * form-install audit (`integration.*`); this domain covers the lifecycle acts
+   * on the `/admin/knowledge` surface: `ingest` (bundle upload → documents, with
+   * created/demoted/rejected counts in metadata) and `uninstall` (archive the
+   * collection's documents). `targetId` is the collection slug.
+   */
+  knowledge: {
+    ingest: "knowledge.ingest",
+    uninstall: "knowledge.uninstall",
+  },
+  /**
    * Without these entries a compromised admin could shrink retentionDays
    * and hard-delete the audit trail leaving zero forensic record.
    *

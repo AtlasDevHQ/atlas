@@ -32,6 +32,7 @@ import {
 } from "./elasticsearch-form-handler";
 import { DatasourceFormInstallHandler } from "./datasource-form-handler";
 import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
+import { OkfUploadFormInstallHandler, OKF_UPLOAD_SLUG } from "./okf-upload-form-handler";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
@@ -202,6 +203,13 @@ export function registerBuiltinInstallHandlers(): void {
   );
   registerFormHandler("obsidian", new ObsidianFormInstallHandler());
   log.info("Registered ObsidianFormInstallHandler");
+  // Knowledge Base (Upload) — the built-in `okf-upload` collection install
+  // (#4207, ADR-0028 §5). Knowledge-pillar, multi-instance (a workspace holds
+  // many collections, one per corpus). Credential-less "degenerate form
+  // install": installing creates the named collection container; the bundle
+  // upload is a separate admin act on `/api/v1/admin/knowledge`. No env gate.
+  registerFormHandler(OKF_UPLOAD_SLUG, new OkfUploadFormInstallHandler());
+  log.info("Registered OkfUploadFormInstallHandler");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
   // (a workspace installs Twenty, Stripe, an internal service side by side).
   // No env gate — the customer admin supplies the spec URL + credential at

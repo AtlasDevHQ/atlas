@@ -1378,6 +1378,46 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "platform",
     saasVisible: false,
   },
+
+  // Knowledge Base — OKF bundle ingest caps (#4207, ADR-0028 §5). Platform-
+  // scoped operator knobs, read at ingest by `lib/knowledge/ingest-limits.ts`.
+  // Registry-backed (not env) so a SaaS operator tunes them without a redeploy.
+  {
+    key: "ATLAS_KNOWLEDGE_INGEST_MAX_DOCS",
+    section: "Knowledge Base",
+    label: "Ingest Max Documents",
+    description:
+      "Maximum number of documents a single knowledge bundle may ingest (default 1000; non-positive values fall back to the default).",
+    type: "number",
+    default: "1000",
+    envVar: "ATLAS_KNOWLEDGE_INGEST_MAX_DOCS",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES",
+    section: "Knowledge Base",
+    label: "Ingest Max Document Size (bytes)",
+    description:
+      "Maximum decoded size of any single document in a knowledge bundle (default 1000000 / 1 MB; oversized documents are rejected per-file).",
+    type: "number",
+    default: "1000000",
+    envVar: "ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_KNOWLEDGE_INGEST_MAX_BUNDLE_BYTES",
+    section: "Knowledge Base",
+    label: "Ingest Max Bundle Size (bytes)",
+    description:
+      "Maximum raw upload size of a knowledge bundle (default 25000000 / 25 MB); also reused as the decoded-total cap that aborts a decompression bomb mid-inflate during extraction.",
+    type: "number",
+    default: "25000000",
+    envVar: "ATLAS_KNOWLEDGE_INGEST_MAX_BUNDLE_BYTES",
+    scope: "platform",
+    saasVisible: false,
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -2742,3 +2742,21 @@ The implementation survey narrowed the candidate's "16 pages" to the surfaces th
 - The next prompt section is a one-field addition, not a 13th positional slot rippling through 40 call sites.
 
 **Category:** Signature de-positionalization at a growth seam — the options-object threshold crossed deliberately as its own mechanical PR, isolated from feature logic so it reviews as pure churn (panel: CLEAN in 1 round).
+
+## 100. `registerPeriodicFiber` — the five-move scheduler-fiber choreography has one home, and the two hard-coded cadences become settings knobs (#4130)
+
+**Date:** 2026-07-02
+**Issue:** #4130 (candidate 4 of 5 of the #3801 v0.0.19 architecture review, from the Architecture Backlog)
+**PR:** #4177
+
+**Problem:** All 21 periodic scheduler fibers (20 in `makeSchedulerLive`, `settings_refresh` in `SettingsLive`) hand-rolled the same five moves — evaluate an enablement gate, resolve an interval, wrap the tick in a per-tick span + `withFiberDeathLog`, `forkScoped`, log-on-start — as ~40-line copy-paste blocks. The span name and the fiber-death label were paired by convention only (a source-scan test caught drift after the fact); the per-tick recovery shape (`catchAll` vs `catchAllCause`, inside vs outside the span) was re-decided per site; and two cadences — grace reaper (1h) and billing reconcile (6h) — were hard-coded constants, so retuning either meant a redeploy, against the settings-registry-first rule.
+
+**Solution:** One `registerPeriodicFiber(spec)` helper owning the choreography. `spec.name` is typed as `keyof` a merged span-name record, so the span is *derived* (`SCHEDULER_SPAN_NAMES[spec.name]`) — label≡span-op holds by construction, not convention. `intervalMs` accepts a thunk resolved only after the gate passes (lazy module `require`s, settings reads after `loadSettings()`); `onTickFailure` declares level/message plus `viaCause` for the one defect-recovering fiber; `spanResultAttributes` triggers the documented span-outside-recovery inversion for the two truthful-attribute fibers. The intervals became `ATLAS_BILLING_RECONCILE_INTERVAL_HOURS` (default 6) / `ATLAS_UNCLAIMED_GRACE_REAP_INTERVAL_HOURS` (default 1) — platform-scoped, boot-consumed `requiresRestart` knobs, byte-for-byte the expert-scheduler exemplar, with getters colocated in their billing modules. The outbox flusher/watchdog fibers stay deliberately outside the seam (heartbeat + stall-watchdog liveness, recovery sequencing).
+
+**Impact:**
+- Net-negative diff (-22 lines) despite a fully-documented helper: each fiber registration now states only what is fiber-specific (gate predicate, interval source, tick body, log copy).
+- The single seam is behaviorally pinned, not just source-scanned: a 7-test contract suite covers forkScoped tick-liveness + scope interruption (the #2864 regression class), eager boot tick (#3446's "deploy doubles as an immediate reconcile"), typed-failure and defect (`viaCause`) recovery keeping the repeat loop alive, and gate-false/gate-throw skip without failing boot. The structural guards retargeted to registration sites and got stronger: both spanning branches pinned, registration count tied to the helper, cadence getters pinned as wired.
+- Retuning either billing cadence is now an Admin-console settings change + restart — no redeploy; defaults preserve the pre-#4130 cadence exactly.
+- Zero behavior change verified adversarially: the review panel's silent-failure pass diffed every fiber's gate/recovery/log against `origin/main` byte-for-byte (levels, messages, span error-ordering for the two inverted fibers all identical). Bonus fix en route: CI surfaced a pre-existing 1-in-5000 flake in the F-47 legacy-ciphertext tests (random IV/authTag pairs can synthesize a `://`-shaped value that matches the plaintext-URL passthrough) — deflaked at all three synthesis sites.
+
+**Category:** Choreography extraction to a single typed seam (illegal label/span pairings made unrepresentable; per-site copy-paste replaced by declarative registrations) plus hard-coded-constant → settings-registry promotion — review-panel-driven (4 specialists, 2 rounds to CLEAN).

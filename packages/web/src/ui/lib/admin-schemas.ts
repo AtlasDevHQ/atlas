@@ -647,6 +647,8 @@ export const KnowledgeCollectionSchema = z.object({
   description: z.string().nullable(),
   installedAt: z.string().nullable(),
   endpointUrl: z.string().nullable(),
+  // Optional: absent from an older API during a deploy-overlap window.
+  authScheme: z.enum(["none", "bearer", "basic"]).nullable().optional(),
   sync: KnowledgeCollectionSyncStatusSchema.nullable(),
   documents: KnowledgeDocumentCountsSchema,
 });

@@ -25,10 +25,11 @@ import {
 } from "@/components/ui/select";
 import { InlineError } from "@/ui/components/admin/compact";
 import { getApiUrl } from "@/lib/api-url";
+import { extractApiError } from "@/ui/lib/extract-api-error";
 
 /* ────────────────────────────────────────────────────────────────────────
- *  Create collection — the explicit "install" flow for the Knowledge Base
- *  pillar (ADR-0028 §5). A collection is a form-install of a built-in
+ *  Create / edit collection — the explicit "install" flow for the Knowledge
+ *  Base pillar (ADR-0028 §5). A collection is a form-install of a built-in
  *  knowledge catalog row, keyed by a slug (the reserved `__install_id__`
  *  field):
  *    - Upload (`okf-upload`): no credentials; ingest is a separate upload act.
@@ -36,6 +37,13 @@ import { getApiUrl } from "@/lib/api-url";
  *      endpoint URL + auth scheme; the optional secret is encrypted at rest
  *      server-side (never echoed back). Atlas pulls the endpoint nightly and
  *      queues changes for review; "Sync now" runs a pull on demand.
+ *
+ *  Edit mode (`edit` prop) re-drives the SAME install pipeline with the
+ *  existing slug — the server upserts the container config in place and
+ *  rotates/deletes the credential row without touching the collection's
+ *  documents. This is how a leaked sync secret rotates WITHOUT the
+ *  uninstall-and-recreate dance (which would archive and un-publish every
+ *  document in the collection).
  * ──────────────────────────────────────────────────────────────────────── */
 
 /** Mirror of the server-side collection-slug rule (okf-upload-form-handler). */
@@ -45,18 +53,31 @@ const SLUG_MAX = 128;
 type SourceKind = "upload" | "bundle-sync";
 type AuthScheme = "none" | "bearer" | "basic";
 
+/** Pre-fill for edit mode — the non-secret sync settings of an existing
+ *  bundle-sync collection (the secret is never echoed, so it starts blank). */
+export interface EditSyncSettings {
+  readonly slug: string;
+  readonly endpointUrl: string | null;
+  readonly authScheme: AuthScheme | null;
+  readonly description: string | null;
+}
+
 export function CreateCollectionDialog({
   open,
   onOpenChange,
   onCreated,
   existingSlugs,
+  edit = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** `source` lets the caller decide the follow-up act (upload vs first sync). */
   onCreated: (slug: string, source: SourceKind) => void;
   existingSlugs: ReadonlyArray<string>;
+  /** When set, the dialog edits this synced collection's settings in place. */
+  edit?: EditSyncSettings | null;
 }) {
+  const isEdit = edit !== null;
   const [source, setSource] = useState<SourceKind>("upload");
   const [slug, setSlug] = useState("");
   const [description, setDescription] = useState("");
@@ -68,19 +89,20 @@ export function CreateCollectionDialog({
 
   useEffect(() => {
     if (open) {
-      setSource("upload");
-      setSlug("");
-      setDescription("");
-      setEndpointUrl("");
-      setAuthScheme("none");
+      setSource(edit ? "bundle-sync" : "upload");
+      setSlug(edit ? edit.slug : "");
+      setDescription(edit?.description ?? "");
+      setEndpointUrl(edit?.endpointUrl ?? "");
+      setAuthScheme(edit?.authScheme ?? "none");
       setAuthSecret("");
       setError(null);
     }
-  }, [open]);
+  }, [open, edit]);
 
   const trimmedSlug = slug.trim();
   const slugValid = trimmedSlug.length > 0 && trimmedSlug.length <= SLUG_MAX && SLUG_PATTERN.test(trimmedSlug);
-  const isDuplicate = existingSlugs.includes(trimmedSlug);
+  // Editing targets an existing slug by design; only creation rejects dupes.
+  const isDuplicate = !isEdit && existingSlugs.includes(trimmedSlug);
   const isSync = source === "bundle-sync";
   const endpointValid = !isSync || endpointUrl.trim().length > 0;
   const secretValid = !isSync || authScheme === "none" || authSecret.trim().length > 0;
@@ -122,28 +144,26 @@ export function CreateCollectionDialog({
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        let message = `Could not create the collection (${res.status}).`;
-        try {
-          const b = (await res.json()) as {
-            message?: string;
-            fieldErrors?: Record<string, string[] | undefined>;
-            requestId?: string;
-          };
-          const firstField = b.fieldErrors ? Object.keys(b.fieldErrors)[0] : undefined;
-          const firstErr = firstField ? b.fieldErrors?.[firstField]?.[0] : undefined;
-          if (firstErr) message = firstErr;
-          else if (b.message) message = b.message;
-          if (b.requestId) message = `${message} (ref: ${b.requestId.slice(0, 8)})`;
-        } catch {
-          // intentionally ignored: non-JSON body → keep the status-only message.
-        }
-        setError(message);
+        setError(
+          await extractApiError(
+            res,
+            isEdit ? "Could not update the sync settings" : "Could not create the collection",
+          ),
+        );
         return;
       }
-      toast.success(`Collection "${trimmedSlug}" created`);
+      toast.success(
+        isEdit ? `Sync settings for "${trimmedSlug}" updated` : `Collection "${trimmedSlug}" created`,
+      );
       onCreated(trimmedSlug, source);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create the collection.");
+      setError(
+        err instanceof Error
+          ? err.message
+          : isEdit
+            ? "Could not update the sync settings."
+            : "Could not create the collection.",
+      );
     } finally {
       setSaving(false);
     }
@@ -153,48 +173,52 @@ export function CreateCollectionDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>New collection</DialogTitle>
+          <DialogTitle>{isEdit ? `Edit sync settings — ${edit.slug}` : "New collection"}</DialogTitle>
           <DialogDescription>
-            A collection is a named knowledge corpus — one hosted OKF tree the agent can read as
-            descriptive context. Upload bundles yourself, or point it at an endpoint Atlas syncs
-            nightly.
+            {isEdit
+              ? "Change the endpoint or rotate the auth secret without reinstalling — the collection's documents are untouched."
+              : "A collection is a named knowledge corpus — one hosted OKF tree the agent can read as descriptive context. Upload bundles yourself, or point it at an endpoint Atlas syncs nightly."}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
-          <Tabs value={source} onValueChange={(v) => setSource(v === "bundle-sync" ? "bundle-sync" : "upload")}>
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="upload" data-testid="source-upload">
-                Upload
-              </TabsTrigger>
-              <TabsTrigger value="bundle-sync" data-testid="source-bundle-sync">
-                Sync from endpoint
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
+          {!isEdit ? (
+            <Tabs value={source} onValueChange={(v) => setSource(v === "bundle-sync" ? "bundle-sync" : "upload")}>
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="upload" data-testid="source-upload">
+                  Upload
+                </TabsTrigger>
+                <TabsTrigger value="bundle-sync" data-testid="source-bundle-sync">
+                  Sync from endpoint
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          ) : null}
 
-          <div className="space-y-1.5">
-            <Label htmlFor="collection-slug">Collection id</Label>
-            <Input
-              id="collection-slug"
-              placeholder="runbooks"
-              value={slug}
-              onChange={(e) => setSlug(e.target.value)}
-              autoFocus
-              data-testid="collection-slug"
-            />
-            <p className="text-xs text-muted-foreground">
-              Letters, digits, dots, dashes, and underscores. Becomes the collection&apos;s URL and
-              cannot be changed later.
-            </p>
-            {trimmedSlug.length > 0 && !slugValid ? (
-              <p className="text-xs text-destructive">
-                Only letters, digits, dots, dashes, and underscores (max {SLUG_MAX}).
+          {!isEdit ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="collection-slug">Collection id</Label>
+              <Input
+                id="collection-slug"
+                placeholder="runbooks"
+                value={slug}
+                onChange={(e) => setSlug(e.target.value)}
+                autoFocus
+                data-testid="collection-slug"
+              />
+              <p className="text-xs text-muted-foreground">
+                Letters, digits, dots, dashes, and underscores. Becomes the collection&apos;s URL and
+                cannot be changed later.
               </p>
-            ) : isDuplicate ? (
-              <p className="text-xs text-destructive">That collection already exists.</p>
-            ) : null}
-          </div>
+              {trimmedSlug.length > 0 && !slugValid ? (
+                <p className="text-xs text-destructive">
+                  Only letters, digits, dots, dashes, and underscores (max {SLUG_MAX}).
+                </p>
+              ) : isDuplicate ? (
+                <p className="text-xs text-destructive">That collection already exists.</p>
+              ) : null}
+            </div>
+          ) : null}
 
           {isSync ? (
             <>
@@ -241,7 +265,9 @@ export function CreateCollectionDialog({
                     data-testid="collection-secret"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Stored encrypted; never shown again.
+                    {isEdit
+                      ? "Enter the (new) secret — the stored one is never shown; saving replaces it."
+                      : "Stored encrypted; never shown again."}
                   </p>
                 </div>
               ) : null}
@@ -276,7 +302,7 @@ export function CreateCollectionDialog({
             ) : (
               <FolderPlus className="mr-1.5 size-3.5" />
             )}
-            Create collection
+            {isEdit ? "Save sync settings" : "Create collection"}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useQueryStates } from "nuqs";
 import { toast } from "sonner";
-import { BookText, FileUp, FolderPlus, Library, RefreshCw, Trash2 } from "lucide-react";
+import { BookText, FileUp, FolderPlus, Library, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -50,6 +50,7 @@ export default function KnowledgePage() {
   const [params, setParams] = useQueryStates(knowledgeSearchParams);
   const [createOpen, setCreateOpen] = useState(false);
   const [uploadTarget, setUploadTarget] = useState<string | null>(null);
+  const [editTarget, setEditTarget] = useState<KnowledgeCollection | null>(null);
   const [uninstallTarget, setUninstallTarget] = useState<KnowledgeCollection | null>(null);
 
   const uninstallMutation = useAdminMutation({ method: "DELETE" });
@@ -160,6 +161,7 @@ export default function KnowledgePage() {
                 onView={() => void setParams({ collection: collection.slug })}
                 onUpload={() => setUploadTarget(collection.slug)}
                 onSync={() => void handleSyncNow(collection.slug)}
+                onEdit={() => setEditTarget(collection)}
                 onUninstall={() => setUninstallTarget(collection)}
               />
             ))}
@@ -181,6 +183,33 @@ export default function KnowledgePage() {
           } else {
             setUploadTarget(slug);
           }
+        }}
+      />
+
+      {/* Edit sync settings — re-drives the install pipeline with the existing
+          slug: the container config upserts in place and the credential rotates
+          without touching the collection's documents (the pre-edit alternative
+          was uninstall-and-recreate, which archives and un-publishes them all). */}
+      <CreateCollectionDialog
+        open={editTarget !== null}
+        onOpenChange={(next) => !next && setEditTarget(null)}
+        existingSlugs={[]}
+        edit={
+          editTarget
+            ? {
+                slug: editTarget.slug,
+                endpointUrl: editTarget.endpointUrl,
+                authScheme: editTarget.authScheme ?? "none",
+                description: editTarget.description,
+              }
+            : null
+        }
+        onCreated={(slug) => {
+          setEditTarget(null);
+          void refetch();
+          // Verify the new endpoint/secret immediately rather than waiting for
+          // the nightly schedule — a failed rotation surfaces right away.
+          void handleSyncNow(slug);
         }}
       />
 
@@ -261,6 +290,7 @@ function CollectionCard({
   onView,
   onUpload,
   onSync,
+  onEdit,
   onUninstall,
 }: {
   collection: KnowledgeCollection;
@@ -268,6 +298,7 @@ function CollectionCard({
   onView: () => void;
   onUpload: () => void;
   onSync: () => void;
+  onEdit: () => void;
   onUninstall: () => void;
 }) {
   const { draft, published } = collection.documents;
@@ -322,16 +353,27 @@ function CollectionCard({
             Documents
           </Button>
           {isSynced ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onSync}
-              disabled={syncing}
-              data-testid={`sync-${collection.slug}`}
-            >
-              <RefreshCw className={`mr-1 size-3.5 ${syncing ? "animate-spin" : ""}`} />
-              {syncing ? "Syncing…" : "Sync now"}
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onSync}
+                disabled={syncing}
+                data-testid={`sync-${collection.slug}`}
+              >
+                <RefreshCw className={`mr-1 size-3.5 ${syncing ? "animate-spin" : ""}`} />
+                {syncing ? "Syncing…" : "Sync now"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onEdit}
+                aria-label={`Edit sync settings for ${collection.slug}`}
+                data-testid={`edit-${collection.slug}`}
+              >
+                <Pencil className="size-3.5" />
+              </Button>
+            </>
           ) : (
             <Button variant="outline" size="sm" onClick={onUpload} data-testid={`upload-${collection.slug}`}>
               <FileUp className="mr-1 size-3.5" />

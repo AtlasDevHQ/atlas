@@ -41,7 +41,10 @@ import {
   type AdminDocumentRow,
 } from "@atlas/api/lib/knowledge/queries";
 import { OKF_UPLOAD_CATALOG_ID } from "@atlas/api/lib/integrations/install/okf-upload-form-handler";
-import { BUNDLE_SYNC_CATALOG_ID } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
+import {
+  BUNDLE_SYNC_AUTH_SCHEMES,
+  BUNDLE_SYNC_CATALOG_ID,
+} from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
 import { syncCollection } from "@atlas/api/lib/knowledge/sync";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -135,6 +138,7 @@ const listRoute = createRoute({
                 description: z.string().nullable(),
                 installedAt: z.string().nullable(),
                 endpointUrl: z.string().nullable(),
+                authScheme: z.enum(["none", "bearer", "basic"]).nullable(),
                 sync: CollectionSyncStatusSchema.nullable(),
                 documents: z.object({
                   draft: z.number().int().nonnegative(),
@@ -416,6 +420,7 @@ adminKnowledge.openapi(listRoute, async (c) =>
           const description = r.config?.description;
           const source = sourceOf(r.catalog_id);
           const endpointUrl = r.config?.endpoint_url;
+          const rawAuthScheme = r.config?.auth_scheme;
           return {
             slug: r.install_id,
             // Wire enum is two-valued; an unknown catalog (unreachable today —
@@ -429,6 +434,16 @@ adminKnowledge.openapi(listRoute, async (c) =>
             // knowledge_sync_credentials, never in config.
             endpointUrl:
               source === "bundle-sync" && typeof endpointUrl === "string" ? endpointUrl : null,
+            // The scheme (not the secret) pre-fills the edit-sync-settings
+            // dialog. An unrecognized stored value renders as "none" — the
+            // sync engine itself rejects it with an actionable error.
+            authScheme:
+              source === "bundle-sync"
+                ? typeof rawAuthScheme === "string" &&
+                  (BUNDLE_SYNC_AUTH_SCHEMES as readonly string[]).includes(rawAuthScheme)
+                  ? (rawAuthScheme as (typeof BUNDLE_SYNC_AUTH_SCHEMES)[number])
+                  : ("none" as const)
+                : null,
             sync: source === "bundle-sync" ? syncBySlug.get(r.install_id) ?? null : null,
             documents: countsBySlug.get(r.install_id) ?? { draft: 0, published: 0, archived: 0 },
           };

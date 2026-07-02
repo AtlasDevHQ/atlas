@@ -49,6 +49,14 @@ export interface KnowledgeCollection {
   readonly installedAt: string | null;
   /** The configured bundle endpoint (non-secret) — `bundle-sync` only. */
   readonly endpointUrl: string | null;
+  /**
+   * Configured endpoint auth scheme (non-secret; the secret itself is never
+   * echoed) — `bundle-sync` only, null for upload collections. Pre-fills the
+   * edit-sync-settings dialog so a secret rotation doesn't require re-picking
+   * the scheme. Optional so a response from an older API during a
+   * deploy-overlap window still parses.
+   */
+  readonly authScheme?: "none" | "bearer" | "basic" | null;
   /** Last-sync bookkeeping — `bundle-sync` only, null before the first sync. */
   readonly sync: KnowledgeCollectionSyncStatus | null;
   readonly documents: KnowledgeDocumentCounts;

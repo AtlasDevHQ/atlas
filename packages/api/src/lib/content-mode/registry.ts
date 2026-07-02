@@ -14,7 +14,6 @@
  */
 
 import { Context, Effect, Layer } from "effect";
-import type { PoolClient } from "pg";
 import type { AtlasMode } from "@useatlas/types/auth";
 import type { ModeDraftCounts } from "@useatlas/types/mode";
 import { InternalDB } from "@atlas/api/lib/db/internal";
@@ -25,6 +24,7 @@ import type {
   SimpleModeTable,
 } from "./port";
 import {
+  type ModeTxClient,
   ExoticReadFilterUnavailableError,
   PublishPhaseError,
   resolveStatusClause,
@@ -79,13 +79,13 @@ export interface ContentModeRegistryService {
 
   /**
    * Promote drafts for every registered table using the caller's
-   * transactional `PoolClient`. Runs adapters in tuple order; stops
+   * transactional client. Runs adapters in tuple order; stops
    * on the first failure and surfaces a `PublishPhaseError` tagged
    * with the offending table and phase. The registry never opens or
    * commits its own transaction — caller owns `BEGIN`/`COMMIT`.
    */
   readonly runPublishPhases: (
-    tx: PoolClient,
+    tx: ModeTxClient,
     orgId: string,
   ) => Effect.Effect<ReadonlyArray<PromotionReport>, PublishPhaseError, never>;
 }
@@ -128,7 +128,7 @@ function simplePromoteSql(entry: SimpleModeTable): string {
 /** Promote a single simple table inside the caller's tx, wrapping errors. */
 function promoteSimpleTable(
   entry: SimpleModeTable,
-  tx: PoolClient,
+  tx: ModeTxClient,
   orgId: string,
 ): Effect.Effect<PromotionReport, PublishPhaseError, never> {
   const { table } = resolveSimple(entry);

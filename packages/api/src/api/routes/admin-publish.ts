@@ -235,15 +235,8 @@ adminPublish.openapi(publishRoute, async (c) =>
         // applyTombstones + promoteDraftEntities. A failure surfaces as
         // `PublishPhaseError` tagged with `{ table, phase }`; `Effect.runPromise`
         // throws on failure and `withInternalTransaction` rolls back.
-        // InternalPoolClient is the minimal `{ query, release }` shape the
-        // registry's adapters consume; the full `pg.PoolClient` extends it
-        // with EventEmitter methods the registry never touches. Cast is
-        // safe — the adapters only call `.query()`.
         const reports = await Effect.runPromise(
-          contentModeRegistry.runPublishPhases(
-            client as unknown as import("pg").PoolClient,
-            orgId,
-          ),
+          contentModeRegistry.runPublishPhases(client, orgId),
         );
 
         // Phase 4: archive requested connections (+ cascade to their entities +

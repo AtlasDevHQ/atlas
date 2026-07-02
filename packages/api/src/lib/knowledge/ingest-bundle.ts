@@ -23,7 +23,6 @@
  *     changed something visible (any churn, or a publish).
  */
 
-import type { PoolClient } from "pg";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
@@ -211,9 +210,7 @@ export async function ingestBundle(params: IngestBundleParams): Promise<IngestBu
           // workspace-wide (ADR-0028 §4 "runs that same endpoint") — it promotes
           // EVERY pending draft in the workspace across all content-mode tables,
           // not just this bundle's docs, exactly as clicking Publish would.
-          await Effect.runPromise(
-            contentModeRegistry.runPublishPhases(client as unknown as PoolClient, workspaceId),
-          );
+          await Effect.runPromise(contentModeRegistry.runPublishPhases(client, workspaceId));
         }
         return { report: ingestReport, archivedAbsent: archivedCount };
       },

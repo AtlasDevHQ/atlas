@@ -12,14 +12,13 @@
  * existing `admin-publish.ts` ordering so the refactor preserves
  * behavior when a caller migrates to `registry.runPublishPhases`.
  *
- * Runs under the caller's `PoolClient` — never opens its own
+ * Runs under the caller's transaction client — never opens its own
  * transaction. The helpers are pure async functions; this module
  * wraps them in Effect + `PublishPhaseError` so the registry's
  * error channel stays uniform across simple and exotic entries.
  */
 
 import { Effect } from "effect";
-import type { PoolClient } from "pg";
 import {
   applyTombstones,
   promoteDraftEntities,
@@ -27,6 +26,7 @@ import {
 } from "@atlas/api/lib/semantic/entities";
 import {
   PublishPhaseError,
+  type ModeTxClient,
   type PromotionReport,
 } from "@atlas/api/lib/content-mode/port";
 
@@ -37,12 +37,10 @@ import {
  * attribute partial failures.
  */
 export function promoteSemanticEntities(
-  tx: PoolClient,
+  tx: ModeTxClient,
   orgId: string,
 ): Effect.Effect<PromotionReport, PublishPhaseError, never> {
-  // `PoolClient.query` is compatible with the `TransactionalClient`
-  // shape the helpers consume (both expose `query(sql, params) => Promise<{ rows }>`).
-  const client = tx as unknown as TransactionalClient;
+  const client: TransactionalClient = tx;
 
   return Effect.gen(function* () {
     const tombstonesApplied = yield* Effect.tryPromise({

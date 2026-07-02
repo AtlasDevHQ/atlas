@@ -13,7 +13,6 @@
  * in #1531).
  */
 
-import type { PoolClient } from "pg";
 import { Data, type Effect } from "effect";
 import type { AtlasMode } from "@useatlas/types/auth";
 // `CONTENT_MODE_TABLES` creates a `port → tables → adapters/semantic-entities → port`
@@ -23,6 +22,23 @@ import type { AtlasMode } from "@useatlas/types/auth";
 // anyone actually reads them. Same shape as the existing adapters→port
 // cycle the registry already relies on.
 import { CONTENT_MODE_TABLES } from "./tables";
+
+/**
+ * The minimal transactional client the registry's adapters consume — exactly
+ * what `promote`/count SQL needs (mirrors `TransactionalClient` in
+ * `semantic/entities.ts`). Structurally satisfied by both `InternalPoolClient`
+ * and `pg.PoolClient`, so callers pass their transaction client straight
+ * through without casts. `rowCount` is optional in the TYPE (narrow client
+ * types omit it) but authoritative when present — the simple-promote UPDATE
+ * has no RETURNING, so `rows` is empty there and pg's runtime `rowCount`
+ * carries the count.
+ */
+export interface ModeTxClient {
+  query: (
+    sql: string,
+    params?: unknown[],
+  ) => Promise<{ rows: unknown[]; rowCount?: number | null }>;
+}
 
 /**
  * A status-lifecycle table where promote = `UPDATE ... SET status='published'
@@ -79,7 +95,7 @@ export type ExoticModeAdapter = {
     readonly sql: (orgParam: string) => string;
   }>;
   readonly promote: (
-    tx: PoolClient,
+    tx: ModeTxClient,
     orgId: string,
   ) => Effect.Effect<PromotionReport, PublishPhaseError, never>;
   readonly readFilter?: {
@@ -103,7 +119,7 @@ export interface PromotionReport {
  *
  * For `promote` / `tombstone` phases the caller owns rollback — the
  * registry never opens its own transaction, so the caller must issue
- * `ROLLBACK` on the shared `PoolClient`. For `count` this is simply
+ * `ROLLBACK` on the shared transaction client. For `count` this is simply
  * a wrapped executor failure with no transactional implication.
  */
 export class PublishPhaseError extends Data.TaggedError("PublishPhaseError")<{

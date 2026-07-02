@@ -550,7 +550,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     try {
       await txClient.query("BEGIN");
       reports = await Effect.runPromise(
-        registry.runPublishPhases(txClient as unknown as PoolClient, wsPromote),
+        registry.runPublishPhases(txClient, wsPromote),
       );
       await txClient.query("COMMIT");
     } catch (err) {

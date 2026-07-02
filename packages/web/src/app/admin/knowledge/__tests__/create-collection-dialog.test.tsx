@@ -144,6 +144,35 @@ describe("CreateCollectionDialog edit mode (sync-settings rotation)", () => {
     expect(onCreated).toHaveBeenCalledWith("synced-docs", "bundle-sync");
   });
 
+  test("a none-scheme edit needs no secret and posts auth_scheme none (no stray auth_secret)", async () => {
+    const onCreated = mock(() => {});
+    render(
+      <CreateCollectionDialog
+        open
+        onOpenChange={() => {}}
+        onCreated={onCreated}
+        existingSlugs={[]}
+        edit={{
+          slug: "public-docs",
+          endpointUrl: "https://kb.example.com/public.zip",
+          authScheme: "none",
+          description: null,
+        }}
+      />,
+    );
+    const submit = screen.getByTestId("create-collection-submit") as HTMLButtonElement;
+    expect(submit.disabled).toBe(false); // no secret required for a public endpoint
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(fetchCalls).toHaveLength(1));
+    expect(fetchCalls[0].body).toEqual({
+      __install_id__: "public-docs",
+      endpoint_url: "https://kb.example.com/public.zip",
+      auth_scheme: "none",
+    });
+    expect(onCreated).toHaveBeenCalledWith("public-docs", "bundle-sync");
+  });
+
   test("edit mode hides the slug/source pickers — the identity is fixed", () => {
     renderEdit();
     expect(screen.queryByTestId("collection-slug")).toBeNull();

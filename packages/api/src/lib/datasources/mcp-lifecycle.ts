@@ -284,7 +284,7 @@ export async function publishWorkspaceDrafts(orgId: string): Promise<PublishWork
   try {
     await client.query("BEGIN");
     const reports = await Effect.runPromise(
-      contentModeRegistry.runPublishPhases(client as unknown as import("pg").PoolClient, orgId),
+      contentModeRegistry.runPublishPhases(client, orgId),
     );
     await client.query("COMMIT");
 

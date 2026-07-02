@@ -3,7 +3,12 @@
  *
  * Effect migration (P3): sequential for-loops replaced with Effect.forEach.
  * Transient failures get exponential backoff retry (3 attempts, 1s base).
- * Channel-specific logic is parameterized via a handler map.
+ *
+ * One delivery-transport seam (#4198): the load → send → classify → log →
+ * DeliveryError skeleton lives once in {@link deliverVia}; each channel
+ * supplies a small {@link ChannelTransport} descriptor whose only real policy
+ * is permanence classification (email `provider === "log"`, slack missing
+ * token, webhook blocked URL / HTTP 4xx).
  */
 
 import { Effect, Schedule, Duration } from "effect";
@@ -111,187 +116,315 @@ const retryPolicy = Schedule.intersect(
 );
 
 /** HTTP 4xx errors are client errors that will never succeed on retry. */
-function isHttpPermanent(status: number): boolean {
+export function isHttpPermanent(status: number): boolean {
   return status >= 400 && status < 500;
 }
 
-// ── Per-recipient delivery Effects ────────────────────────────────
+// ── Delivery transport seam (#4198) ───────────────────────────────
 
-function deliverToEmail(
-  recipient: EmailRecipient,
+/**
+ * A classified delivery failure: the `DeliveryError` fields plus the log line
+ * that should accompany it. `permanent` is the channel's permanence policy —
+ * it decides whether `deliverResult`'s retry loop retries it (transient) or
+ * the run is recorded as `failed_permanent` (misconfiguration; see
+ * {@link DeliverySummary}).
+ */
+export interface DeliveryFailure {
+  readonly message: string;
+  readonly permanent: boolean;
+  readonly log?: {
+    /** Defaults to `"error"`. */
+    readonly level?: "warn" | "error";
+    readonly fields: Record<string, unknown>;
+    readonly message: string;
+  };
+}
+
+/**
+ * Channel descriptor consumed by {@link deliverVia}. The shared wrapper owns
+ * the skeleton (dynamic import → transport call → response inspection →
+ * logging → `DeliveryError` construction); a channel supplies:
+ *
+ * - `load` — backend acquisition (dynamic import + credential resolution).
+ *   A rejection is always a **transient** failure; contextualize the message
+ *   inside `load` itself (see {@link rethrowWith}).
+ * - `send` — the transport call. May throw a channel sentinel (e.g.
+ *   {@link MissingSlackTokenError}) for pre-send preconditions.
+ * - `classifyThrown` — the permanence policy for errors thrown by `send`.
+ *   Returning `null` falls back to the default: transient, raw message.
+ * - `inspect` — the permanence policy for a resolved response. Returning
+ *   `null` means the delivery succeeded. Must be total (never reject): the
+ *   wrapper maps a rejection to a transient failure, not a defect.
+ * - `success` — the fields + message for the success log line.
+ */
+interface ChannelTransport<Backend, Resp> {
+  readonly channel: Recipient["type"];
+  /** Recipient identity for `DeliveryError` (address / channel / URL). */
+  readonly recipient: string;
+  readonly load: () => Promise<Backend>;
+  readonly send: (backend: Backend) => Promise<Resp>;
+  readonly classifyThrown?: (err: unknown) => DeliveryFailure | null;
+  readonly inspect: (resp: Resp) => DeliveryFailure | null | Promise<DeliveryFailure | null>;
+  readonly success: (resp: Resp) => { readonly fields: Record<string, unknown>; readonly message: string };
+}
+
+const errMsg = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Rethrow with a contextual prefix so `load` failures keep their historical
+ * per-step messages ("Failed to load Slack API: …") without the wrapper
+ * needing per-channel knowledge.
+ */
+const rethrowWith =
+  (prefix: string) =>
+  (err: unknown): never => {
+    throw new Error(`${prefix}: ${errMsg(err)}`);
+  };
+
+/**
+ * The single transport wrapper: load → send → classify → log → DeliveryError.
+ * Every `DeliveryError` a channel can produce is constructed here.
+ *
+ * Exported for wrapper-policy unit tests (#4198) — the load/inspect
+ * failure-to-transient mapping is exercised via a stub transport.
+ */
+export function deliverVia<Backend, Resp>(
+  transport: ChannelTransport<Backend, Resp>,
   shaped: FormattedResult,
 ): Effect.Effect<void, DeliveryError> {
-  return Effect.gen(function* () {
-    const { subject, body } = formatEmailReport(shaped);
-
-    const { sendEmail } = yield* Effect.tryPromise({
-      try: () => import("@atlas/api/lib/email/delivery"),
-      catch: (err) =>
-        new DeliveryError({
-          message: `Failed to load email delivery: ${err instanceof Error ? err.message : String(err)}`,
-          channel: "email",
-          recipient: recipient.address,
-          permanent: false,
-        }),
+  const toError = (failure: { message: string; permanent: boolean }) =>
+    new DeliveryError({
+      message: failure.message,
+      channel: transport.channel,
+      recipient: transport.recipient,
+      permanent: failure.permanent,
     });
 
-    const deliveryResult = yield* Effect.tryPromise({
+  /** Emit the failure's log line (once per attempt) and build its error. */
+  const failWith = (failure: DeliveryFailure): DeliveryError => {
+    if (failure.log) {
+      const fields = { ...failure.log.fields, taskId: shaped.taskId };
+      if (failure.log.level === "warn") log.warn(fields, failure.log.message);
+      else log.error(fields, failure.log.message);
+    }
+    return toError(failure);
+  };
+
+  return Effect.gen(function* () {
+    const backend = yield* Effect.tryPromise({
+      try: transport.load,
+      catch: (err) => toError({ message: errMsg(err), permanent: false }),
+    });
+
+    const resp = yield* Effect.tryPromise({
+      try: () => transport.send(backend),
+      catch: (err) => {
+        const classified = transport.classifyThrown?.(err) ?? null;
+        return classified ? failWith(classified) : toError({ message: errMsg(err), permanent: false });
+      },
+    });
+
+    const failure = yield* Effect.tryPromise({
+      try: async () => transport.inspect(resp),
+      // A rejecting `inspect` degrades to a transient failure for THIS
+      // recipient — consistent with the load/send catches. Using Effect.promise
+      // here would turn a rejection into a defect (die) that escapes the
+      // per-recipient catchTag and aborts the whole batch (see #4198 review).
+      catch: (err) => toError({ message: errMsg(err), permanent: false }),
+    });
+    if (failure) {
+      return yield* Effect.fail(failWith(failure));
+    }
+
+    const success = transport.success(resp);
+    log.info({ ...success.fields, taskId: shaped.taskId }, success.message);
+  });
+}
+
+// ── Channel descriptors ───────────────────────────────────────────
+
+type EmailModule = typeof import("@atlas/api/lib/email/delivery");
+type EmailOutcome = Awaited<ReturnType<EmailModule["sendEmail"]>>;
+
+/** Exported for permanence-policy unit tests (#4198). */
+export function emailTransport(
+  recipient: EmailRecipient,
+  shaped: FormattedResult,
+): ChannelTransport<EmailModule, EmailOutcome> {
+  return {
+    channel: "email",
+    recipient: recipient.address,
+    load: () => import("@atlas/api/lib/email/delivery").catch(rethrowWith("Failed to load email delivery")),
+    send: async ({ sendEmail }) => {
+      const { subject, body } = formatEmailReport(shaped);
       // Threading shaped.orgId keeps the send on the SAME chain link the
       // #3379 preflight resolved (per-org transport first) — without it,
       // an org-transport-only deployment preflights clean and then falls
       // through to platform/env/log at delivery time (#3386).
-      try: () => sendEmail({ to: recipient.address, subject, html: body }, shaped.orgId ?? undefined),
-      catch: (err) =>
-        new DeliveryError({
-          message: err instanceof Error ? err.message : String(err),
-          channel: "email",
-          recipient: recipient.address,
-          permanent: false,
-        }),
-    });
-
-    if (!deliveryResult.success) {
-      log.error(
-        { taskId: shaped.taskId, recipient: recipient.address, provider: deliveryResult.provider, error: deliveryResult.error },
-        "Email delivery failed",
-      );
-      return yield* Effect.fail(
-        new DeliveryError({
-          message: deliveryResult.error ?? "Email delivery failed",
-          channel: "email",
-          recipient: recipient.address,
-          permanent: deliveryResult.provider === "log",
-        }),
-      );
-    }
-
-    log.info({ taskId: shaped.taskId, recipient: recipient.address, provider: deliveryResult.provider }, "Email delivered");
-  });
+      return sendEmail({ to: recipient.address, subject, html: body }, shaped.orgId ?? undefined);
+    },
+    inspect: (outcome) =>
+      outcome.success
+        ? null
+        : {
+            message: outcome.error ?? "Email delivery failed",
+            // The "log" provider is the configured-nothing fallback — no
+            // sender exists, so retrying can never succeed (#3379).
+            permanent: outcome.provider === "log",
+            log: {
+              fields: { recipient: recipient.address, provider: outcome.provider, error: outcome.error },
+              message: "Email delivery failed",
+            },
+          },
+    success: (outcome) => ({
+      fields: { recipient: recipient.address, provider: outcome.provider },
+      message: "Email delivered",
+    }),
+  };
 }
 
-function deliverToSlack(
+/**
+ * Pre-send sentinel: no Slack bot token is resolvable for the recipient's
+ * team. Thrown by the slack transport's `send` and classified permanent by
+ * its `classifyThrown` — missing credentials never heal on retry.
+ */
+export class MissingSlackTokenError extends Error {
+  constructor() {
+    super("No Slack bot token");
+    this.name = "MissingSlackTokenError";
+  }
+}
+
+type SlackModule = typeof import("@atlas/api/lib/slack/api");
+interface SlackBackend {
+  readonly token: string | null;
+  readonly postMessage: SlackModule["postMessage"];
+}
+type SlackResponse = Awaited<ReturnType<SlackModule["postMessage"]>>;
+
+/** Exported for permanence-policy unit tests (#4198). */
+export function slackTransport(
   recipient: SlackRecipient,
   shaped: FormattedResult,
-): Effect.Effect<void, DeliveryError> {
-  return Effect.gen(function* () {
-    const { text, blocks } = formatSlackReport(shaped);
-
-    // Per-team token, then SLACK_BOT_TOKEN env — via the shared resolver the
-    // sender preflight also uses (#3379), so the two can never disagree.
-    const token = yield* Effect.tryPromise({
-      try: () => resolveSlackBotToken(recipient.teamId),
-      catch: (err) =>
-        new DeliveryError({
-          message: `Failed to resolve Slack bot token: ${err instanceof Error ? err.message : String(err)}`,
-          channel: "slack",
-          recipient: recipient.channel,
-          permanent: false,
-        }),
-    });
-    if (!token) {
-      log.warn({ taskId: shaped.taskId, channel: recipient.channel }, "No Slack bot token available — delivery skipped");
-      return yield* Effect.fail(
-        new DeliveryError({ message: "No Slack bot token", channel: "slack", recipient: recipient.channel, permanent: true }),
+): ChannelTransport<SlackBackend, SlackResponse> {
+  return {
+    channel: "slack",
+    recipient: recipient.channel,
+    load: async () => {
+      // Per-team token, then SLACK_BOT_TOKEN env — via the shared resolver the
+      // sender preflight also uses (#3379), so the two can never disagree.
+      const token = await resolveSlackBotToken(recipient.teamId).catch(
+        rethrowWith("Failed to resolve Slack bot token"),
       );
-    }
-
-    const { postMessage } = yield* Effect.tryPromise({
-      try: () => import("@atlas/api/lib/slack/api"),
-      catch: (err) =>
-        new DeliveryError({
-          message: `Failed to load Slack API: ${err instanceof Error ? err.message : String(err)}`,
-          channel: "slack",
-          recipient: recipient.channel,
-          permanent: false,
-        }),
-    });
-    const resp = yield* Effect.tryPromise({
-      try: () => postMessage(token, { channel: recipient.channel, text, blocks }),
-      catch: (err) =>
-        new DeliveryError({
-          message: err instanceof Error ? err.message : String(err),
-          channel: "slack",
-          recipient: recipient.channel,
-          permanent: false,
-        }),
-    });
-
-    if (!resp.ok) {
-      log.error({ taskId: shaped.taskId, channel: recipient.channel, error: resp.error }, "Slack delivery failed");
-      return yield* Effect.fail(
-        new DeliveryError({ message: resp.error ?? "Slack API error", channel: "slack", recipient: recipient.channel, permanent: false }),
+      const { postMessage } = await import("@atlas/api/lib/slack/api").catch(
+        rethrowWith("Failed to load Slack API"),
       );
-    }
-
-    log.info({ taskId: shaped.taskId, channel: recipient.channel }, "Slack message delivered");
-  });
+      return { token, postMessage };
+    },
+    send: async ({ token, postMessage }) => {
+      if (!token) throw new MissingSlackTokenError();
+      const { text, blocks } = formatSlackReport(shaped);
+      return postMessage(token, { channel: recipient.channel, text, blocks });
+    },
+    classifyThrown: (err) =>
+      err instanceof MissingSlackTokenError
+        ? {
+            message: "No Slack bot token",
+            permanent: true,
+            log: {
+              level: "warn",
+              fields: { channel: recipient.channel },
+              message: "No Slack bot token available — delivery skipped",
+            },
+          }
+        : null,
+    inspect: (resp) =>
+      resp.ok
+        ? null
+        : {
+            message: resp.error ?? "Slack API error",
+            permanent: false,
+            log: {
+              fields: { channel: recipient.channel, error: resp.error },
+              message: "Slack delivery failed",
+            },
+          },
+    success: () => ({ fields: { channel: recipient.channel }, message: "Slack message delivered" }),
+  };
 }
 
-function deliverToWebhook(
+/**
+ * Pre-send sentinel: the webhook URL targets a private/internal address
+ * ({@link isBlockedUrl}). Thrown by the webhook transport's `send` and
+ * classified permanent by its `classifyThrown`.
+ */
+export class BlockedWebhookUrlError extends Error {
+  constructor() {
+    super("Blocked URL");
+    this.name = "BlockedWebhookUrlError";
+  }
+}
+
+/** Exported for permanence-policy unit tests (#4198). */
+export function webhookTransport(
   recipient: WebhookRecipient,
   shaped: FormattedResult,
-): Effect.Effect<void, DeliveryError> {
-  return Effect.gen(function* () {
-    if (isBlockedUrl(recipient.url)) {
-      log.error({ taskId: shaped.taskId, url: recipient.url }, "Webhook URL blocked — targets private/internal address");
-      return yield* Effect.fail(
-        new DeliveryError({ message: "Blocked URL", channel: "webhook", recipient: recipient.url, permanent: true }),
-      );
-    }
-
-    const payload = formatWebhookPayload(shaped);
-    const safeHeaders = sanitizeHeaders(recipient.headers ?? {});
-
-    // guardedFetch re-validates the target before the request leaves the box
-    // and on every redirect hop (manual redirects) — a public recipient that
-    // 302-redirects to an internal address is rejected, not followed (#3340).
-    const resp = yield* Effect.tryPromise({
-      try: () =>
-        guardedFetch(recipient.url, {
-          method: "POST",
-          headers: { ...safeHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        }),
-      catch: (err) => {
-        if (err instanceof EgressBlockedError) {
-          log.error(
-            { taskId: shaped.taskId, host: err.host },
-            "Webhook delivery blocked by egress guard",
-          );
-          return new DeliveryError({
-            message: `Blocked URL (egress guard): ${hostForLog(recipient.url)}`,
-            channel: "webhook",
-            recipient: recipient.url,
-            permanent: true,
-          });
-        }
-        return new DeliveryError({
-          message: err instanceof Error ? err.message : String(err),
-          channel: "webhook",
-          recipient: recipient.url,
-          permanent: false,
-        });
-      },
-    });
-
-    if (!resp.ok) {
-      const text = yield* Effect.promise(() => resp.text().catch(() => ""));
-      log.error(
-        { taskId: shaped.taskId, url: recipient.url, status: resp.status, body: text.slice(0, 200) },
-        "Webhook delivery failed",
-      );
-      return yield* Effect.fail(
-        new DeliveryError({
-          message: `HTTP ${resp.status}`,
-          channel: "webhook",
-          recipient: recipient.url,
-          permanent: isHttpPermanent(resp.status),
-        }),
-      );
-    }
-
-    log.info({ taskId: shaped.taskId, url: recipient.url }, "Webhook delivered");
-  });
+): ChannelTransport<typeof guardedFetch, Response> {
+  return {
+    channel: "webhook",
+    recipient: recipient.url,
+    load: async () => guardedFetch,
+    send: async (fetchImpl) => {
+      if (isBlockedUrl(recipient.url)) throw new BlockedWebhookUrlError();
+      const payload = formatWebhookPayload(shaped);
+      const safeHeaders = sanitizeHeaders(recipient.headers ?? {});
+      // guardedFetch re-validates the target before the request leaves the box
+      // and on every redirect hop (manual redirects) — a public recipient that
+      // 302-redirects to an internal address is rejected, not followed (#3340).
+      return fetchImpl(recipient.url, {
+        method: "POST",
+        headers: { ...safeHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    },
+    classifyThrown: (err) => {
+      if (err instanceof BlockedWebhookUrlError) {
+        return {
+          message: "Blocked URL",
+          permanent: true,
+          log: {
+            fields: { url: recipient.url },
+            message: "Webhook URL blocked — targets private/internal address",
+          },
+        };
+      }
+      if (err instanceof EgressBlockedError) {
+        return {
+          message: `Blocked URL (egress guard): ${hostForLog(recipient.url)}`,
+          permanent: true,
+          log: {
+            fields: { host: err.host },
+            message: "Webhook delivery blocked by egress guard",
+          },
+        };
+      }
+      return null;
+    },
+    inspect: async (resp) => {
+      if (resp.ok) return null;
+      // intentionally ignored: the body is best-effort log context only.
+      const text = await resp.text().catch(() => "");
+      return {
+        message: `HTTP ${resp.status}`,
+        permanent: isHttpPermanent(resp.status),
+        log: {
+          fields: { url: recipient.url, status: resp.status, body: text.slice(0, 200) },
+          message: "Webhook delivery failed",
+        },
+      };
+    },
+    success: () => ({ fields: { url: recipient.url }, message: "Webhook delivered" }),
+  };
 }
 
 // ── Channel routing ───────────────────────────────────────────────
@@ -303,11 +436,11 @@ function deliverySingle(
   const inner = (() => {
     switch (recipient.type) {
       case "email":
-        return deliverToEmail(recipient, shaped);
+        return deliverVia(emailTransport(recipient, shaped), shaped);
       case "slack":
-        return deliverToSlack(recipient, shaped);
+        return deliverVia(slackTransport(recipient, shaped), shaped);
       case "webhook":
-        return deliverToWebhook(recipient, shaped);
+        return deliverVia(webhookTransport(recipient, shaped), shaped);
     }
   })();
   return withEffectSpan(

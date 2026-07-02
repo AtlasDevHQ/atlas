@@ -1175,8 +1175,9 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
       // #4186 — spine steps 3+4: the canonical post-0092 singleton upsert
       // (explicit `install_id` + `pillar`, partial-index conflict target,
       // returned-id invariant) + the unconditional lazy-loader evict, via
-      // `persistInstallRecord` — the same tested artifact every form/OAuth
-      // install handler persists through. The pre-#4186 hand-rolled INSERT
+      // `persistInstallRecord` — the same tested artifact the form-install
+      // spine and OAuth install handlers persist through. The pre-#4186
+      // hand-rolled INSERT
       // here omitted `install_id`/`pillar` (both NOT NULL since 0092; the
       // filler trigger that papered over the omission was dropped by 0096,
       // so every marketplace install 23502'd against the live schema) and

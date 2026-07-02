@@ -42,10 +42,8 @@ import { saveInstallation } from "@atlas/api/lib/slack/store";
 import { BillingCheckFailedError, ChatIntegrationLimitError, PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { checkChatIntegrationLimit, checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
 import type { WorkspaceId } from "@useatlas/types";
-import {
-  mintOAuthStateToken,
-  verifyOAuthStateToken,
-} from "./oauth-state-token";
+import { mintOAuthStateToken } from "./oauth-state-token";
+import { verifyCallbackState } from "./oauth-callback-verify";
 import type {
   CatalogId,
   CredentialResult,
@@ -180,28 +178,18 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
     readonly installRecord: InstallRecord;
     readonly credentialResult: CredentialResult;
   } | null> {
-    // ── 1. Verify state token — null on every failure mode ────────
-    const verified = verifyOAuthStateToken(stateToken);
+    // ── 1. Verify state token + catalog binding (shared seam) ─────
+    // A token bound to a different catalog slug shouldn't reach the
+    // Slack handler — the dispatch routes by slug. If it does, it's a
+    // bug or a cross-catalog forge attempt; the seam returns null.
+    const verified = verifyCallbackState(
+      stateToken,
+      SLACK_SLUG,
+      log,
+      "Slack OAuth callback received state bound to a different catalog — rejecting",
+    );
     if (!verified) return null;
-    // Promote the verified workspaceId string to the brand. The token
-    // was minted from a branded WorkspaceId at startInstall time; the
-    // signed payload guarantees the round-trip preserves the same
-    // bytes, so the assertion is sound here. We don't pull
-    // `assertWorkspaceId` from `@useatlas/chat` (used at the proactive
-    // listener boundary) because that helper rejects empty strings —
-    // which the token verifier already filters out — and would add a
-    // cross-package dep this module otherwise doesn't need.
-    const workspaceId = verified.workspaceId as WorkspaceId;
-    if (verified.catalogId !== SLACK_SLUG) {
-      // A token bound to a different catalog slug shouldn't reach the
-      // Slack handler — the dispatch routes by slug. If it does, it's
-      // a bug or a cross-catalog forge attempt; treat as invalid state.
-      log.warn(
-        { expected: SLACK_SLUG, got: verified.catalogId },
-        "Slack OAuth callback received state bound to a different catalog — rejecting",
-      );
-      return null;
-    }
+    const { workspaceId } = verified;
 
     // ── 2. Exchange code via Slack's oauth.v2.access ──────────────
     // `slackAPI` handles the form-encoded request body Slack's

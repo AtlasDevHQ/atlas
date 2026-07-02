@@ -56573,6 +56573,170 @@
         "operationId": "getAdminKnowledge"
       }
     },
+    "/api/v1/admin/knowledge/{collectionSlug}/documents": {
+      "get": {
+        "tags": [
+          "Admin — Knowledge"
+        ],
+        "summary": "List a knowledge collection's documents",
+        "description": "List the documents in one collection with their content-mode status (`draft` / `published`), ordered by bundle path. Archived documents (from a prior uninstall) are excluded. Admins use this to review what a bundle ingested and which documents are still pending publish.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "collectionSlug",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Document list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "collection": {
+                      "type": "string"
+                    },
+                    "documents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "description": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "type": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "tags": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "draft",
+                              "published"
+                            ]
+                          },
+                          "updatedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "path",
+                          "title",
+                          "description",
+                          "type",
+                          "tags",
+                          "status",
+                          "updatedAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "collection",
+                    "documents"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Collection not found or no internal database",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminKnowledgeByCollectionSlugDocuments"
+      }
+    },
     "/api/v1/admin/knowledge/{collectionSlug}/ingest": {
       "post": {
         "tags": [
@@ -58201,6 +58365,29 @@
                           "updatedAt"
                         ]
                       }
+                    },
+                    "knowledgeDocuments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "updatedAt"
+                        ]
+                      }
                     }
                   },
                   "required": [
@@ -58209,7 +58396,8 @@
                     "entityEdits",
                     "entityDeletes",
                     "prompts",
-                    "starterPrompts"
+                    "starterPrompts",
+                    "knowledgeDocuments"
                   ]
                 }
               }

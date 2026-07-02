@@ -188,6 +188,14 @@ export function perSurfaceSegments(
       lastEditedRelative: relativeOrNull(activity?.starterPrompts.lastEditedAt ?? null),
     });
   }
+  if (counts.knowledgeDocuments > 0) {
+    out.push({
+      key: "knowledgeDocuments",
+      label: pluralize(counts.knowledgeDocuments, "Knowledge document", "Knowledge documents"),
+      count: counts.knowledgeDocuments,
+      lastEditedRelative: relativeOrNull(activity?.knowledgeDocuments?.lastEditedAt ?? null),
+    });
+  }
   return out;
 }
 
@@ -202,7 +210,8 @@ function totalDrafts(counts: ModeDraftCounts): number {
     counts.entityEdits +
     counts.entityDeletes +
     counts.prompts +
-    counts.starterPrompts
+    counts.starterPrompts +
+    counts.knowledgeDocuments
   );
 }
 

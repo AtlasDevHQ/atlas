@@ -12,10 +12,10 @@
  * covers the most-asked-for case.
  *
  * Scope follows the content-mode registry: connections, prompt_collections,
- * query_suggestions (starter prompts), and semantic_entities (drafts,
- * draft-edits, and tombstoned deletes). Adding a new mode-tracked surface
- * means widening the response schema below in lockstep with
- * `CONTENT_MODE_TABLES`.
+ * query_suggestions (starter prompts), knowledge_documents (hosted-OKF
+ * drafts, ADR-0028), and semantic_entities (drafts, draft-edits, and
+ * tombstoned deletes). Adding a new mode-tracked surface means widening the
+ * response schema below in lockstep with `CONTENT_MODE_TABLES`.
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
@@ -66,6 +66,8 @@ const PublishPreviewSchema = z.object({
   entityDeletes: z.array(TombstoneRowSchema),
   prompts: z.array(DraftRowSchema),
   starterPrompts: z.array(DraftRowSchema),
+  /** Draft hosted-OKF knowledge documents (ADR-0028). Label = title or path. */
+  knowledgeDocuments: z.array(DraftRowSchema),
 });
 
 export type PublishPreview = z.infer<typeof PublishPreviewSchema>;
@@ -149,6 +151,7 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
       entityDeleteRows,
       promptRows,
       starterPromptRows,
+      knowledgeRows,
     ] = await Promise.all([
       internalQuery<DbRow>(
         `SELECT install_id AS id, install_id AS label, updated_at
@@ -223,6 +226,15 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
           ORDER BY updated_at DESC`,
         [orgId],
       ),
+      // Knowledge documents label on their title, falling back to the bundle
+      // path when a lenient-parsed document has no frontmatter title.
+      internalQuery<DbRow>(
+        `SELECT id::text AS id, COALESCE(NULLIF(title, ''), path) AS label, updated_at
+           FROM knowledge_documents
+          WHERE workspace_id = $1 AND status = 'draft'
+          ORDER BY updated_at DESC`,
+        [orgId],
+      ),
     ]);
 
     const response: PublishPreview = {
@@ -253,6 +265,11 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
         updatedAt: toIso(r.updated_at),
       })),
       starterPrompts: starterPromptRows.map((r) => ({
+        id: r.id,
+        label: r.label,
+        updatedAt: toIso(r.updated_at),
+      })),
+      knowledgeDocuments: knowledgeRows.map((r) => ({
         id: r.id,
         label: r.label,
         updatedAt: toIso(r.updated_at),

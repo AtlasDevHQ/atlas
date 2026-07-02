@@ -14,7 +14,14 @@
  * `packages/schemas/README.md`.
  */
 import { z } from "zod";
-import type { AbuseRestoreStatus, PlanTier } from "@useatlas/types";
+import type {
+  AbuseRestoreStatus,
+  PlanTier,
+  KnowledgeCollectionListResponse,
+  KnowledgeDocumentListResponse,
+  KnowledgeIngestSummary,
+  KnowledgeUninstallResponse,
+} from "@useatlas/types";
 import {
   BackupEntrySchema,
   CustomDomainSchema,
@@ -608,3 +615,102 @@ export const DemoTranscriptResponseSchema = z.object({
 });
 export type DemoTranscriptResponse = z.infer<typeof DemoTranscriptResponseSchema>;
 export type DemoTranscriptConversation = z.infer<typeof DemoTranscriptConversationSchema>;
+
+// ---------------------------------------------------------------------------
+// Knowledge Base (/admin/knowledge, #4209, ADR-0028)
+// ---------------------------------------------------------------------------
+// Local Zod mirrors of the `@useatlas/types` knowledge wire types. Kept local
+// (not imported as values from `@useatlas/schemas`) to avoid the scaffold
+// publish-first dance — see the file header. `status` is a CLOSED
+// `z.enum(["draft","published"])` (not the usual forward-compat `z.string()`)
+// because the API excludes archived rows — see the inline comment on the field.
+// The `_Assignable*` type-level checks at the end of this block are the drift
+// guard: each schema's inferred output must stay assignable to its canonical
+// `@useatlas/types` interface, or this file fails to type-check.
+
+const KnowledgeDocumentCountsSchema = z.object({
+  draft: z.number().int().nonnegative(),
+  published: z.number().int().nonnegative(),
+  archived: z.number().int().nonnegative(),
+});
+
+export const KnowledgeCollectionSchema = z.object({
+  slug: z.string(),
+  description: z.string().nullable(),
+  installedAt: z.string().nullable(),
+  documents: KnowledgeDocumentCountsSchema,
+});
+
+export const KnowledgeCollectionListResponseSchema = z.object({
+  collections: z.array(KnowledgeCollectionSchema),
+});
+
+export const KnowledgeDocumentSummarySchema = z.object({
+  id: z.string(),
+  path: z.string(),
+  title: z.string().nullable(),
+  description: z.string().nullable(),
+  type: z.string().nullable(),
+  tags: z.array(z.string()),
+  // The API excludes archived documents, so an active collection's documents
+  // are only ever draft or published — a closed union (not the usual
+  // forward-compat `z.string()`), matching `KnowledgeDocumentSummary`.
+  status: z.enum(["draft", "published"]),
+  updatedAt: z.string().nullable(),
+});
+
+export const KnowledgeDocumentListResponseSchema = z.object({
+  collection: z.string(),
+  documents: z.array(KnowledgeDocumentSummarySchema),
+});
+
+const KnowledgeRejectedFileSchema = z.object({
+  path: z.string(),
+  reason: z.string(),
+});
+
+export const KnowledgeIngestSummarySchema = z.object({
+  collection: z.string(),
+  format: z.enum(["tar", "tar.gz", "zip"]),
+  documents: z.object({
+    created: z.number().int().nonnegative(),
+    updated: z.number().int().nonnegative(),
+    demoted: z.number().int().nonnegative(),
+    resurrected: z.number().int().nonnegative(),
+    unchanged: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+  }),
+  linksWritten: z.number().int().nonnegative(),
+  published: z.boolean(),
+  rejected: z.array(KnowledgeRejectedFileSchema),
+});
+
+export const KnowledgeUninstallResponseSchema = z.object({
+  archived: z.boolean(),
+  collection: z.string(),
+  archivedDocuments: z.number().int().nonnegative(),
+});
+
+// Compile-time drift guards. `_Expect<T extends true>` rejects any check that
+// resolves to `false`, so if a schema's inferred output stops being assignable
+// to its `@useatlas/types` wire interface (a dropped field, a widened enum),
+// this file fails to type-check. This is the actual SSOT bridge referenced in
+// the block header — and it keeps the otherwise consumer-less uninstall
+// shape honest.
+type _Expect<T extends true> = T;
+export type _KnowledgeCollectionListDrift = _Expect<
+  z.infer<typeof KnowledgeCollectionListResponseSchema> extends KnowledgeCollectionListResponse
+    ? true
+    : false
+>;
+export type _KnowledgeDocumentListDrift = _Expect<
+  z.infer<typeof KnowledgeDocumentListResponseSchema> extends KnowledgeDocumentListResponse
+    ? true
+    : false
+>;
+export type _KnowledgeIngestSummaryDrift = _Expect<
+  z.infer<typeof KnowledgeIngestSummarySchema> extends KnowledgeIngestSummary ? true : false
+>;
+export type _KnowledgeUninstallDrift = _Expect<
+  z.infer<typeof KnowledgeUninstallResponseSchema> extends KnowledgeUninstallResponse ? true : false
+>;

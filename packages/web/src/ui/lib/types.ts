@@ -145,6 +145,17 @@ export type {
 } from "@useatlas/types";
 export type { Percentage, Ratio } from "@useatlas/types";
 export type {
+  KnowledgeCollection,
+  KnowledgeCollectionListResponse,
+  KnowledgeDocumentCounts,
+  KnowledgeDocumentSummary,
+  KnowledgeDocumentListResponse,
+  KnowledgeIngestSummary,
+  KnowledgeIngestDocumentCounts,
+  KnowledgeRejectedFile,
+  KnowledgeUninstallResponse,
+} from "@useatlas/types";
+export type {
   WorkspaceSLASummary,
   SLAMetricPoint,
   WorkspaceSLADetail,

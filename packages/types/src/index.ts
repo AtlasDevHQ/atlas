@@ -30,6 +30,7 @@ export * from "./domain";
 export * from "./migration";
 export * from "./dashboard";
 export * from "./mode";
+export * from "./knowledge";
 export * from "./starter-prompt";
 export * from "./integrations";
 export * from "./email-provider";

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
+  BookText,
   Database,
   FileText,
   Layers,
@@ -65,6 +66,8 @@ interface PublishPreviewData {
   readonly entityDeletes: ReadonlyArray<DraftRow>;
   readonly prompts: ReadonlyArray<DraftRow>;
   readonly starterPrompts: ReadonlyArray<DraftRow>;
+  /** Optional: absent from an older API during a deploy-overlap window. */
+  readonly knowledgeDocuments?: ReadonlyArray<DraftRow>;
 }
 
 /**
@@ -340,7 +343,8 @@ function totalRows(data: PublishPreviewData): number {
     data.entityEdits.length +
     data.entityDeletes.length +
     data.prompts.length +
-    data.starterPrompts.length
+    data.starterPrompts.length +
+    (data.knowledgeDocuments?.length ?? 0)
   );
 }
 
@@ -392,6 +396,15 @@ function buildSections(data: PublishPreviewData): Section[] {
       title: "Starter prompts",
       icon: Lightbulb,
       rows: data.starterPrompts.map((r) => ({ ...r, intent: "create" as const })),
+    });
+  }
+
+  if (data.knowledgeDocuments && data.knowledgeDocuments.length > 0) {
+    sections.push({
+      key: "knowledgeDocuments",
+      title: "Knowledge documents",
+      icon: BookText,
+      rows: data.knowledgeDocuments.map((r) => ({ ...r, intent: "create" as const })),
     });
   }
 

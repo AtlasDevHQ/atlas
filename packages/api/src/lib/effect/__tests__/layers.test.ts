@@ -25,6 +25,7 @@ import {
   BuiltinDatasourceCatalogSeed,
   SCHEDULER_CLEANUP_SPAN_NAMES,
   SCHEDULER_WORK_SPAN_NAMES,
+  registerPeriodicFiber,
   type ConfigShape,
   type MigrationShape,
   type SettingsShape,
@@ -416,9 +417,10 @@ describe("makeSchedulerLive", () => {
   const SPAN_RECORDS = [
     {
       // Cleanup/sweep fibers. Eight were retrofitted by #2945;
-      // `orphan_task_reconcile` (#2944) shipped with its span and is the only
-      // member (of either record) that also attaches a result attribute (the
-      // orphan count).
+      // `orphan_task_reconcile` (#2944) shipped with its span and attaches
+      // the orphan count as a result attribute (one of the two
+      // `spanResultAttributes` fibers — the other is `unclaimed_grace_reap`
+      // in the work record, #3796).
       constName: "SCHEDULER_CLEANUP_SPAN_NAMES",
       record: SCHEDULER_CLEANUP_SPAN_NAMES as Record<string, string>,
       expectedKeys: [
@@ -438,7 +440,7 @@ describe("makeSchedulerLive", () => {
     },
     {
       // Background-work fibers spanned by #2987. `settings_refresh` is forked
-      // in `SettingsLive`; the other three in `makeSchedulerLive`. The source
+      // in `SettingsLive`; the other eight in `makeSchedulerLive`. The source
       // scan reads the whole file, so the defining function doesn't matter.
       constName: "SCHEDULER_WORK_SPAN_NAMES",
       record: SCHEDULER_WORK_SPAN_NAMES as Record<string, string>,
@@ -521,14 +523,146 @@ describe("makeSchedulerLive", () => {
   // merged record and actually applied around the tick. Without it, the
   // helper could stop spanning and every per-record scan would stay green.
   describe("registerPeriodicFiber span derivation (#4130)", () => {
-    test("derives the span from the merged record and wraps the tick", () => {
+    test("derives the span from the merged record and wraps the tick in BOTH branches", () => {
       expect(layersSource).toMatch(/SCHEDULER_SPAN_NAMES\[spec\.name\]/);
-      expect(layersSource).toMatch(/withEffectSpan\s*\(\s*span\b/);
+      // The helper has two spanning branches (spanResultAttributes inverts
+      // the recovery ordering); de-spanning either one — e.g. the default
+      // branch that serves 19 of 21 fibers — must fail here, not just the
+      // rarely-exercised attribute branch.
+      expect(layersSource.match(/withEffectSpan\s*\(\s*span\b/g) ?? []).toHaveLength(2);
+    });
+
+    test("every registration flows through registerPeriodicFiber", () => {
+      // Ties the per-record `name:` scans above to the helper: a deleted
+      // registration can't hide behind an unrelated `{ name: "<key>" }`
+      // object literal appearing elsewhere in the file.
+      const expectedCount =
+        Object.keys(SCHEDULER_CLEANUP_SPAN_NAMES).length +
+        Object.keys(SCHEDULER_WORK_SPAN_NAMES).length;
+      expect(
+        layersSource.match(/yield\* registerPeriodicFiber\(/g) ?? [],
+      ).toHaveLength(expectedCount);
+    });
+
+    test("the two #4130 settings-backed cadences are wired to their getters", () => {
+      // A re-hardcoded interval would orphan the new registry knobs while
+      // the tuning-knob precedence tests stayed green.
+      expect(layersSource).toContain("getBillingReconcileIntervalMs");
+      expect(layersSource).toContain("getUnclaimedGraceReapIntervalMs");
+    });
+  });
+
+  // ── registerPeriodicFiber behavioral contract (#4130) ─────────────────
+  // The helper is the single seam every periodic fiber now flows through,
+  // so a helper-level bug is a 21-fiber blast radius. These pin the four
+  // behaviors the structural scans above cannot see: the forked fiber
+  // actually ticks and repeats (the #2864 forkScoped regression), a failing
+  // tick is recovered so the repeat loop survives, a false gate skips the
+  // fork, and a throwing gate skips without failing the Layer build.
+  describe("registerPeriodicFiber behavior (#4130)", () => {
+    // Runs the registration inside a scope, holds the scope open for
+    // `holdMs` of live-clock ticking, then closes it (interrupting the
+    // fiber via the scope finalizer — the forkScoped contract).
+    const runScoped = (
+      registration: ReturnType<typeof registerPeriodicFiber>,
+      holdMs: number,
+    ) =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            yield* registration;
+            yield* Effect.sleep(holdMs);
+          }),
+        ),
+      );
+
+    test("forked fiber ticks eagerly, repeats, and stops when the scope closes", async () => {
+      let ticks = 0;
+      await runScoped(
+        registerPeriodicFiber({
+          name: "oauth_state_cleanup",
+          intervalMs: 1,
+          tick: Effect.sync(() => {
+            ticks++;
+          }),
+          onTickFailure: { level: "warn", message: "test tick failed" },
+        }),
+        50,
+      );
+      // Eager boot tick + at least one spaced repeat within the window.
+      expect(ticks).toBeGreaterThanOrEqual(2);
+      const afterClose = ticks;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(ticks).toBe(afterClose);
+    });
+
+    test("a failing tick is recovered and the repeat loop survives", async () => {
+      let attempts = 0;
+      await runScoped(
+        registerPeriodicFiber({
+          name: "oauth_state_cleanup",
+          intervalMs: 1,
+          tick: Effect.suspend(() => {
+            attempts++;
+            return Effect.fail(new Error("boom"));
+          }),
+          onTickFailure: { level: "warn", message: "test tick failed" },
+        }),
+        50,
+      );
+      // Were the failure NOT recovered per-tick, the repeat loop would exit
+      // after the first attempt (withFiberDeathLog fires once, fiber dies).
+      expect(attempts).toBeGreaterThanOrEqual(2);
+    });
+
+    test("a false gate skips the fork entirely", async () => {
+      let ticks = 0;
+      await runScoped(
+        registerPeriodicFiber({
+          name: "oauth_state_cleanup",
+          intervalMs: 1,
+          tick: Effect.sync(() => {
+            ticks++;
+          }),
+          onTickFailure: { level: "warn", message: "test tick failed" },
+          gate: { check: () => false, skipLog: "test fiber skipped" },
+        }),
+        30,
+      );
+      expect(ticks).toBe(0);
+    });
+
+    test("a throwing gate skips without failing the Layer build", async () => {
+      let ticks = 0;
+      // The interval thunk throws too — it must never be resolved when the
+      // gate skips (thunks resolve only after the gate passes).
+      await runScoped(
+        registerPeriodicFiber({
+          name: "oauth_state_cleanup",
+          intervalMs: () => {
+            throw new Error("interval must not resolve on a skipped fiber");
+          },
+          tick: Effect.sync(() => {
+            ticks++;
+          }),
+          onTickFailure: { level: "warn", message: "test tick failed" },
+          gate: {
+            check: () => {
+              throw new Error("gate exploded");
+            },
+            failLog: "test gate check failed — skipping",
+            skipLog: "test fiber skipped",
+          },
+        }),
+        30,
+      );
+      expect(ticks).toBe(0);
     });
   });
 
   // ── agent_runs retention tick: sweep ORDER guard (#3757) ──────────────────
-  // The memory sweep MUST run before the runs sweep in `agentRunsRetentionTick`:
+  // The memory sweep MUST run before the runs sweep in the
+  // `agent_runs_retention_sweep` tick body:
   // `sweepExpiredSessionMemory` dates each session by its newest `agent_runs`
   // row, so the terminal runs must still exist when it runs. If a refactor
   // reordered the two lines, the runs sweep would delete the terminal rows first

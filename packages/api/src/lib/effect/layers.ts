@@ -164,13 +164,14 @@ function withFiberDeathLog<A, E, R>(
 // span — a wedged fiber then shows up as an absence of spans against its
 // expected cadence.
 //
-// OK-on-failure trade-off: each tick's loop-liveness `catchAll` sits INSIDE
+// OK-on-failure trade-off: each tick's loop-liveness recovery sits INSIDE
 // the span, so a failed-but-recovered tick still records span status OK (the
 // error itself goes to `log.warn`). These spans answer "is the fiber still
 // ticking?" via presence/absence + cadence, NOT "did this tick error?". The
-// lone exception is `orphan_task_reconcile` below, which rides a result
-// attribute and so deliberately inverts the ordering (raw tick spanned,
-// `catchAll` applied OUTSIDE) to keep that attribute truthful — see its site.
+// exceptions are the two `spanResultAttributes` fibers — `orphan_task_reconcile`
+// (#2944) and `unclaimed_grace_reap` (#3796) — which deliberately invert the
+// ordering (raw tick spanned, recovery applied OUTSIDE) to keep their result
+// attributes truthful; see `registerPeriodicFiber` below.
 //
 // Membership splits into two single-source records, by fiber kind:
 //
@@ -178,10 +179,11 @@ function withFiberDeathLog<A, E, R>(
 //     expired in-memory or DB state). Eight were retrofitted with a span by
 //     #2945 (the TTL/ratelimit/state sweeps below); the ninth,
 //     `orphan_task_reconcile` (#2944), shipped with its span from day one and
-//     additionally attaches the orphan count as a result attribute (the only
-//     fiber in either record that passes `setResultAttributes` — the BYOT
-//     catalog-refresh fiber and the scheduler engine use that 4th arg
-//     elsewhere, inside their own modules). The tenth,
+//     additionally attaches the orphan count as a result attribute (one of
+//     the two `spanResultAttributes` fibers in these records — the other is
+//     `unclaimed_grace_reap` in the work record; the BYOT catalog-refresh
+//     fiber and the scheduler engine use that 4th arg elsewhere, inside
+//     their own modules). The tenth,
 //     `trial_rate_limit_cleanup` (#3654), sweeps the unauthenticated
 //     `start_trial` per-IP/email attempt-limiter maps. The eleventh,
 //     `agent_runs_retention_sweep` (#3745, ADR-0020), deletes terminal
@@ -196,8 +198,8 @@ function withFiberDeathLog<A, E, R>(
 //     `stripe_teardown_sweep`, `unclaimed_grace_reap`, `overage_report`.
 //     Spanned by #2987 (+#3423 for billing_reconcile, #3992 for
 //     overage_report) — identical rationale and wrap shape, no result
-//     attributes (each tick returns void, matching the attribute-less
-//     cleanup fibers).
+//     attributes except `unclaimed_grace_reap` (#3796), which attaches the
+//     reaped count.
 //
 // Two records, not one: "cleanup sweep" vs "background work" is a real
 // distinction (it drives the log wording and the operator's mental model),
@@ -222,12 +224,13 @@ function withFiberDeathLog<A, E, R>(
 // label; the LOW finding in #2945 is about NOT dropping the dotted
 // `atlas.scheduler.` prefix, not about the underscores within the op.
 //
-// Each record is the single source of truth for its span names: every wrap
-// site below reads from it. `layers.test.ts` asserts, for each record, both
-// the exact name set AND (via a structural source-scan guard) that every key
-// has exactly one matching `withEffectSpan(<RECORD>.<key>` wrap site — so
-// renaming an entry OR deleting a wrap at a call site is a test failure
-// rather than a silent regression.
+// Each record is the single source of truth for its span names:
+// `registerPeriodicFiber` (below) derives every fiber's span from the merged
+// `SCHEDULER_SPAN_NAMES[spec.name]` lookup. `layers.test.ts` asserts, for
+// each record, both the exact name set AND (via a structural source-scan
+// guard) that every key has exactly one matching `name: "<key>"`
+// registration site — so renaming an entry OR deleting a registration is a
+// test failure rather than a silent regression.
 export const SCHEDULER_CLEANUP_SPAN_NAMES = {
   oauth_state_cleanup: "atlas.scheduler.oauth_state_cleanup",
   rate_limit_cleanup: "atlas.scheduler.rate_limit_cleanup",
@@ -290,6 +293,9 @@ interface PeriodicFiberSpec<A, E> {
    * resolved once, after the gate passes — so a module that only makes
    * sense to `require` when its feature is enabled can supply the value,
    * and a settings-registry-backed knob is read after `loadSettings()`.
+   * The thunk must not throw: a throw here is a layer-build defect (boot
+   * failure). Self-guard if the source module may be absent, as the
+   * `dashboard_rate_limit_cleanup` thunk does.
    */
   readonly intervalMs: number | (() => number);
   /** Raw per-tick body. Recovery is applied by the helper per `onTickFailure`. */
@@ -311,13 +317,16 @@ interface PeriodicFiberSpec<A, E> {
    * Attach result attributes to the per-tick span (orphan_task_reconcile /
    * unclaimed_grace_reap). The span then wraps the RAW tick and recovery is
    * applied OUTSIDE it, so a failed tick records ERROR + the exception
-   * rather than a status-OK span carrying fabricated attributes.
+   * rather than a status-OK span carrying fabricated attributes. Do not
+   * combine with `viaCause` — recovering defects outside the span is a
+   * semantics no fiber wants.
    */
   readonly spanResultAttributes?: (result: A) => Attributes;
   /**
    * Enablement gate, evaluated once at registration. `check` may throw
-   * (module-availability probes): a throw debug-logs `failLog` and skips
-   * the fiber, same as a `false` return (which debug-logs `skipLog`).
+   * (module-availability probes): a throw debug-logs `failLog` and then
+   * proceeds as a `false` return, so both `failLog` and `skipLog` fire on
+   * a throw.
    */
   readonly gate?: {
     readonly check: () => boolean;
@@ -328,12 +337,17 @@ interface PeriodicFiberSpec<A, E> {
   readonly startLog?: string;
 }
 
-function registerPeriodicFiber<A, E>(
+// Exported for the behavioral contract tests in layers.test.ts — every
+// periodic fiber flows through this one seam, so a helper-level bug is a
+// 21-fiber blast radius the structural source scans alone cannot see.
+export function registerPeriodicFiber<A, E>(
   spec: PeriodicFiberSpec<A, E>,
 ): Effect.Effect<void, never, Scope.Scope> {
   return Effect.gen(function* () {
     const { gate, onTickFailure } = spec;
     if (gate) {
+      // Normalize to Error per the Effect.try/tryPromise rule; the catchAll
+      // below logs it and degrades to "fiber not started".
       const enabled = yield* Effect.try({
         try: gate.check,
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
@@ -1775,9 +1789,10 @@ export function makeSchedulerLive(
         // Default 6h: drift heals well inside Stripe's ~3-week retry horizon
         // without adding meaningful load (one org-table scan per pass).
         // Settings-registry-backed (#4130): platform DB override > env >
-        // default, so retuning needs no redeploy. `Effect.repeat` runs the
-        // tick once at boot, then on the spacing — so a deploy also doubles
-        // as an immediate reconcile.
+        // default; boot-consumed, so retuning needs a restart (not a
+        // redeploy) — same shape as expert_scheduler (#3399). `Effect.repeat`
+        // runs the tick once at boot, then on the spacing — so a deploy also
+        // doubles as an immediate reconcile.
         intervalMs: () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           const { getBillingReconcileIntervalMs } = require("@atlas/api/lib/billing/reconcile-plan-tiers") as {
@@ -1929,7 +1944,8 @@ export function makeSchedulerLive(
         // (TRIAL_GRACE_HOURS), so an hourly sweep keeps the abandoned-signup
         // horizon tight without adding meaningful load (one guarded UPDATE
         // per pass). Settings-registry-backed (#4130): platform DB override
-        // > env > default, so retuning needs no redeploy. `Effect.repeat`
+        // > env > default; boot-consumed, so retuning needs a restart (not a
+        // redeploy) — same shape as expert_scheduler (#3399). `Effect.repeat`
         // runs the tick once at boot, then on the spacing.
         intervalMs: () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1955,7 +1971,7 @@ export function makeSchedulerLive(
         // orphan_task_reconcile pattern): the span wraps the raw tick so the
         // attribute is truthful, and the loop-liveness catchAll is applied
         // OUTSIDE the span so a failed tick records ERROR (not OK-with-a-
-        // fabricated-zero) while the hourly fiber survives a DB blip.
+        // fabricated-zero) while the (default-hourly) fiber survives a DB blip.
         spanResultAttributes: (result) => ({
           "atlas.unclaimed_grace.reaped_count": result.reapedCount,
         }),
@@ -2680,7 +2696,7 @@ export function makeSchedulerLive(
           outboxNextTrigger = reason === "kick" ? "kick" : "backstop";
         });
 
-        // forkScoped, not fork — see SettingsLive for rationale.
+        // forkScoped, not fork — see registerPeriodicFiber for the #2864 rationale.
         // The recovery sweep finalizer is registered ABOVE this fork
         // (not below) so LIFO finalizer order interrupts this fiber
         // (and the watchdog below) before the sweep runs.
@@ -2718,7 +2734,7 @@ export function makeSchedulerLive(
             `Outbox flusher fiber appears stalled — no tick in ${Math.round(sinceMs / 1000)}s (threshold ${Math.round(OUTBOX_STALL_THRESHOLD_MS / 1000)}s). Redeploy to restart; investigate the prior tick_complete / tick_failed line for the trigger.`,
           );
         });
-        // forkScoped, not fork — see SettingsLive for rationale.
+        // forkScoped, not fork — see registerPeriodicFiber for the #2864 rationale.
         yield* Effect.forkScoped(
           withFiberDeathLog(
             "lead_outbox_watchdog",
@@ -2919,7 +2935,7 @@ export function makeSchedulerLive(
               }),
             ),
           );
-          // forkScoped, not fork — see SettingsLive. Recovery finalizer is
+          // forkScoped, not fork — see registerPeriodicFiber (#2864). Recovery finalizer is
           // registered ABOVE this fork so LIFO interrupts this fiber before
           // the sweep runs.
           yield* Effect.forkScoped(
@@ -2949,7 +2965,7 @@ export function makeSchedulerLive(
               `Email outbox flusher fiber appears stalled — no tick in ${Math.round(sinceMs / 1000)}s (threshold ${Math.round(EMAIL_STALL_THRESHOLD_MS / 1000)}s). Redeploy to restart.`,
             );
           });
-          // forkScoped, not fork — see SettingsLive for rationale.
+          // forkScoped, not fork — see registerPeriodicFiber for the #2864 rationale.
           yield* Effect.forkScoped(
             withFiberDeathLog(
               "email_outbox_watchdog",

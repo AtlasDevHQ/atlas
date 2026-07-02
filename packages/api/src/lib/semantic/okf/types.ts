@@ -18,7 +18,23 @@ export interface InteropFile {
   content: string;
 }
 
-/** Parsed OKF frontmatter — the spec's recommended keys plus passthrough extras. */
+/**
+ * Frontmatter as parsed from an untrusted bundle. Only `type` is verified at
+ * the parse boundary — every other key is `unknown` and consumers MUST narrow
+ * before use (the compiler enforces it). Do not widen this to the richer
+ * {@link OkfFrontmatter}: that type is for documents *we construct* on export,
+ * where the field shapes are true by construction.
+ */
+export interface ParsedFrontmatter {
+  type: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Frontmatter Atlas constructs on export — the spec's recommended keys plus
+ * the `atlas:` extension. Sound only on the write side; parsed input uses
+ * {@link ParsedFrontmatter}.
+ */
 export interface OkfFrontmatter {
   type: string;
   title?: string;
@@ -26,7 +42,7 @@ export interface OkfFrontmatter {
   resource?: string;
   tags?: string[];
   timestamp?: string;
-  /** Atlas extension namespace (spec-legal unknown key) enabling lossless round-trip. */
+  /** Atlas extension namespace (spec-legal unknown key) enabling near-lossless round-trip. */
   atlas?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -35,10 +51,13 @@ export interface OkfFrontmatter {
 export interface OkfConcept {
   /** Bundle-relative path, e.g. `tables/orders.md`. */
   path: string;
-  frontmatter: OkfFrontmatter;
+  frontmatter: ParsedFrontmatter;
   /** Markdown body after the frontmatter block. */
   body: string;
 }
+
+/** Atlas's closed dimension-type vocabulary — what imported columns map onto. */
+export type AtlasDimensionType = "number" | "string" | "date" | "timestamp" | "boolean";
 
 /** How a concept was classified for import. */
 export type OkfConceptKind =

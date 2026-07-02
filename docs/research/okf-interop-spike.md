@@ -53,8 +53,15 @@ table instead), metrics and joins are `type: Reference` docs tagged
 | anything else (`Playbook`, `API Endpoint`, …) | reported unmapped | by design — but this is exactly the content a knowledge-connection store would want (#4182) |
 | entity type / grain / measures / virtual dims / sample stats | not inferable from prose | left for the existing scan → enrich → edit flow |
 
-Every import carries an `okf:` provenance block (source path, resource, tags,
-timestamp) — legal because `EntityShape` is passthrough.
+Every *heuristically* imported artifact carries an `okf:` provenance block
+(source path, resource, tags, timestamp) — legal because `EntityShape` is
+passthrough. Native `atlas:` restores keep whatever the source object carried.
+
+**Trust boundary:** a bundle is third-party input, and the `atlas:` extension
+is trivially forgeable. Table names are validated via `safeSemanticRowName`
+on *both* import paths (a forged `atlas.entity.table: "../../x"` is reported
+and dropped, never written), the CLI's `writeFiles` independently refuses any
+path escaping `--out`, and metric authority never transfers (next section).
 
 ### Export (Atlas → OKF)
 
@@ -76,16 +83,24 @@ What foreign consumers **lose is semantics, not data**:
 
 **Prose alone does not round-trip.** Structured → prose → structured loses
 types (coarsened), measures, virtual-dimension SQL, join cardinality, and all
-profiler stats. **With an extension namespace it round-trips exactly:** the
+profiler stats. **With an extension namespace, objects round-trip:** the
 exporter writes the full source object under the `atlas:` frontmatter key
 (`atlas.entity` / `atlas.metric` / `atlas.term`+`entry`), which OKF v0.1
 explicitly permits and requires consumers to preserve. Re-import restores
-those objects verbatim — the round-trip test asserts deep equality, including
-`status: ambiguous` gating and metric authority (no `unverified_sql` flag on
-the native path).
+entity and glossary objects verbatim (deep-equality asserted, including
+`status: ambiguous` gating) and metric *fields* verbatim.
+
+Two deliberate exceptions keep the trip from being an identity:
+- **Metric authority never transfers.** The extension is forgeable, so even
+  `atlas.metric` restores are re-stamped `okf.unverified_sql: true` — Atlas
+  runs metric SQL verbatim at runtime, and authority belongs to the reviewed
+  file in your repo, not to data that arrived in a bundle.
+- **Catalog description and file layout are not preserved** (all metrics
+  land in `metrics/okf-imported.yml`; `catalog.yml` is rebuilt).
 
 So the two paths through the importer are:
-1. **Atlas-produced bundle** → lossless restore from `atlas:` (identity).
+1. **Atlas-produced bundle** → lossless object restore from `atlas:` (modulo
+   the unverified re-stamp above).
 2. **Foreign bundle (GA4 etc.)** → heuristic prose parse, deterministic, no
    LLM pass needed for the structural 80% (schema/descriptions/links);
    an LLM pass would only add value for inferring grain/measures/types from

@@ -16,9 +16,10 @@
  * means "import an Atlas export bundle" — see the #4140 triage note.
  *
  * Pure file <-> file: no REST, no DB, so it lives in the published `atlas`
- * binary (per ADR-0025/0026 only direct-DB tenant tooling is operator-only).
- * The mapping engine is `@atlas/api/lib/semantic/okf`; this file only walks
- * and writes directories. Findings: docs/research/okf-interop-spike.md.
+ * binary (per ADR-0025 §Sequencing / #4045, only tenant-destructive
+ * direct-DB tooling is operator-only). The mapping engine is
+ * `@atlas/api/lib/semantic/okf`; this file only walks and writes
+ * directories. Findings: docs/research/okf-interop-spike.md.
  */
 
 import * as fs from "fs";
@@ -79,6 +80,9 @@ function collectFiles(root: string, extensions: RegExp): InteropFile[] {
       // Skip dotfiles/dirs (.git, .orgs mirrors) — never part of a bundle or layer.
       if (entry.name.startsWith(".")) continue;
       const full = path.join(dir, entry.name);
+      // Symlinks fail both isDirectory() and isFile() and are intentionally
+      // excluded: a bundle should be self-contained, and following links
+      // would let it read outside its own tree.
       if (entry.isDirectory()) {
         walk(full);
       } else if (entry.isFile() && extensions.test(entry.name)) {
@@ -93,29 +97,45 @@ function collectFiles(root: string, extensions: RegExp): InteropFile[] {
   return files;
 }
 
+/**
+ * Resolve a bundle-relative POSIX path under `outDir`, refusing anything
+ * that escapes it. The mapping engine validates names on its side; this is
+ * the defense-in-depth sink guard (CLAUDE.md path-traversal rule) so no
+ * future engine bug can turn an import into an arbitrary file write.
+ */
+function resolveInside(outDir: string, relPath: string): string {
+  const root = path.resolve(outDir);
+  const target = path.resolve(root, ...relPath.split("/"));
+  if (target !== root && !target.startsWith(root + path.sep)) {
+    throw new Error(`refusing to write outside ${outDir}: ${relPath}`);
+  }
+  return target;
+}
+
 function writeFiles(outDir: string, files: InteropFile[]): void {
   for (const file of files) {
-    const target = path.join(outDir, ...file.path.split("/"));
+    const target = resolveInside(outDir, file.path);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, file.content, "utf8");
   }
 }
 
+/** Warnings go to stderr so stdout stays pipeable. */
 function printReport(io: OkfIO, report: MappingReport): void {
   if (report.lossy.length > 0) {
-    io.out("");
-    io.out(`Lossy mappings (${report.lossy.length}):`);
-    for (const l of report.lossy) io.out(`  ! ${l}`);
+    io.err("");
+    io.err(`Lossy mappings (${report.lossy.length}):`);
+    for (const l of report.lossy) io.err(`  ! ${l}`);
   }
   if (report.unmapped.length > 0) {
-    io.out("");
-    io.out(`Unmapped (${report.unmapped.length}):`);
-    for (const u of report.unmapped) io.out(`  x ${u}`);
+    io.err("");
+    io.err(`Unmapped (${report.unmapped.length}):`);
+    for (const u of report.unmapped) io.err(`  x ${u}`);
   }
   if (report.notes.length > 0) {
-    io.out("");
-    io.out(`Notes (${report.notes.length}):`);
-    for (const n of report.notes) io.out(`  - ${n}`);
+    io.err("");
+    io.err(`Notes (${report.notes.length}):`);
+    for (const n of report.notes) io.err(`  - ${n}`);
   }
 }
 
@@ -142,9 +162,7 @@ function runImport(args: string[], io: OkfIO): number {
   const { files, report } = importOkfBundle(bundleFiles, { bundleName });
 
   if (!force) {
-    const collisions = files.filter((f) =>
-      fs.existsSync(path.join(outDir, ...f.path.split("/"))),
-    );
+    const collisions = files.filter((f) => fs.existsSync(resolveInside(outDir, f.path)));
     if (collisions.length > 0) {
       io.err(
         `Refusing to overwrite ${collisions.length} existing file(s) in ${outDir} ` +
@@ -161,6 +179,11 @@ function runImport(args: string[], io: OkfIO): number {
     `  ${entityCount} entities, ${files.length} files total. ` +
       "Drafts only - review via scan -> enrich -> edit before publishing.",
   );
+  if (entityCount === 0) {
+    io.err(
+      "Warning: no entities were imported - every table concept was unmapped or the bundle has none. See the report below.",
+    );
+  }
   printReport(io, report);
   return 0;
 }
@@ -199,12 +222,25 @@ function runExport(args: string[], io: OkfIO): number {
   return 0;
 }
 
+/** Run a subcommand with foreseeable fs failures turned into actionable messages. */
+function guarded(label: string, io: OkfIO, fn: () => number): number {
+  try {
+    return fn();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    io.err(
+      `okf ${label} failed: ${msg}. Check that the input path is a readable directory and the output path is writable, then re-run.`,
+    );
+    return 1;
+  }
+}
+
 /** Testable core — dispatches subcommands, returns the exit code. */
 export function runOkf(args: string[], io: OkfIO = defaultIO): number {
   // args[0] is the command name ("okf"); the subcommand follows.
   const sub = args[1];
-  if (sub === "import") return runImport(args, io);
-  if (sub === "export") return runExport(args, io);
+  if (sub === "import") return guarded("import", io, () => runImport(args, io));
+  if (sub === "export") return guarded("export", io, () => runExport(args, io));
   if (sub === undefined || sub === "--help" || sub === "-h") {
     io.out(USAGE);
     return sub === undefined ? 1 : 0;

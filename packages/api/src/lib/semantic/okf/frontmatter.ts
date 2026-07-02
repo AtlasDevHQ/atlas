@@ -8,12 +8,12 @@
  */
 
 import * as yaml from "js-yaml";
-import type { OkfFrontmatter } from "./types";
+import type { OkfFrontmatter, ParsedFrontmatter } from "./types";
 
 const FRONTMATTER_OPEN = /^---\r?\n/;
 
 export interface ParsedDocument {
-  frontmatter: OkfFrontmatter;
+  frontmatter: ParsedFrontmatter;
   body: string;
 }
 
@@ -59,7 +59,7 @@ export function parseFrontmatter(content: string): FrontmatterResult {
   }
   return {
     ok: true,
-    doc: { frontmatter: record as OkfFrontmatter, body },
+    doc: { frontmatter: { ...record, type }, body },
   };
 }
 

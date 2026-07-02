@@ -127,19 +127,77 @@ describe("round-trip: Atlas -> OKF -> Atlas", () => {
     expect(roundTripped.terms).toEqual(original.terms);
   });
 
-  it("restores metrics verbatim (no unverified flag on the native path)", () => {
+  it("restores metric fields verbatim but re-stamps SQL as unverified (authority is trust, not data)", () => {
     const original = loadOriginal("metrics/revenue.yml") as {
       metrics: Array<Record<string, unknown>>;
     };
     const roundTripped = yaml.load(byPath.get("metrics/okf-imported.yml") ?? "") as {
       metrics: Array<Record<string, unknown>>;
     };
-    expect(roundTripped.metrics).toEqual(original.metrics);
+    expect(roundTripped.metrics).toEqual(
+      original.metrics.map((m) => ({ ...m, okf: { unverified_sql: true } })),
+    );
   });
 
   it("notes the lossless restores in the report", () => {
     expect(
       reimported.report.notes.filter((n) => n.includes("restored verbatim")).length,
     ).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe("exportToOkf (malformed layer input)", () => {
+  it("reports malformed metrics/glossary/entity files instead of silently dropping them", () => {
+    const { files, report } = exportToOkf(
+      [
+        { path: "entities/no-table.yml", content: "name: NoTable\n" },
+        { path: "metrics/bad.yml", content: "metrics:\n  keyed: not-an-array\n" },
+        { path: "metrics/mixed.yml", content: "metrics:\n  - id: ok\n    label: OK\n  - just-a-string\n" },
+        { path: "glossary.yml", content: "definitions: wrong-key\n" },
+        { path: "entities/broken.yml", content: "table: [unclosed\n" },
+      ],
+      { timestamp: TIMESTAMP },
+    );
+    expect(report.unmapped.some((u) => u.includes("no-table.yml") && u.includes("table"))).toBe(
+      true,
+    );
+    expect(
+      report.unmapped.some((u) => u.includes("metrics/bad.yml") && u.includes("array")),
+    ).toBe(true);
+    expect(
+      report.unmapped.some((u) => u.includes("metrics/mixed.yml") && u.includes("non-mapping")),
+    ).toBe(true);
+    expect(
+      report.unmapped.some((u) => u.includes("glossary.yml") && u.includes("terms")),
+    ).toBe(true);
+    expect(
+      report.unmapped.some((u) => u.includes("entities/broken.yml") && u.includes("parse error")),
+    ).toBe(true);
+    // The one valid metric still exports.
+    expect(files.some((f) => f.path === "references/metrics/ok.md")).toBe(true);
+  });
+
+  it("renders map-form (name-keyed) dimensions", () => {
+    const { files } = exportToOkf(
+      [
+        {
+          path: "entities/legacy.yml",
+          content: `name: Legacy
+table: legacy
+dimensions:
+  id:
+    type: number
+    primary_key: true
+  label:
+    type: string
+    description: Display label
+`,
+        },
+      ],
+      { timestamp: TIMESTAMP },
+    );
+    const doc = files.find((f) => f.path === "tables/legacy.md")?.content ?? "";
+    expect(doc).toContain("- `id` (NUMBER): Primary key.");
+    expect(doc).toContain("- `label` (STRING): Display label");
   });
 });

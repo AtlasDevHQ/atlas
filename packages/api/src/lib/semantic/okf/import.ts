@@ -6,21 +6,27 @@
  *
  * - **Native round-trip** — Atlas-produced bundles carry the full source
  *   object under the `atlas:` frontmatter extension (spec-legal unknown key);
- *   we restore it verbatim. Lossless.
+ *   entity and glossary objects are restored verbatim.
  * - **Foreign bundle** — heuristic prose parsing of frontmatter + body
  *   sections (`# Schema` bullets/tables, sql code fences). Lossy by nature;
  *   every approximation lands in the {@link MappingReport}.
  *
- * Deliberately NOT restored/produced on import (no OKF equivalent):
- * whitelist membership beyond entity existence, metric authority (imported
- * SQL is marked unverified — Atlas runs metric SQL verbatim, so promoting
- * prose SQL silently would be an integrity hole), and glossary ambiguity
- * gating (OKF has no ask-first semantics).
+ * Trust boundary: a bundle is third-party input regardless of what its
+ * frontmatter claims, and the `atlas:` extension is trivially forgeable. So:
+ * - table names are validated via `safeSemanticRowName` on BOTH paths
+ *   (a native `atlas.entity.table` of `../../x` must never become a write path);
+ * - **metric authority is never imported** — even `atlas.metric` restores are
+ *   re-stamped `okf.unverified_sql: true`. Atlas runs metric SQL verbatim at
+ *   runtime; authority is a property of the reviewed file in your repo, not
+ *   of data that arrived in a bundle.
+ * For foreign bundles, additionally not producible (no OKF equivalent):
+ * glossary `status: ambiguous` ask-first gating, entity type/grain/measures.
  */
 
 import * as yaml from "js-yaml";
 import { safeSemanticRowName } from "../shapes";
 import {
+  atlasExtension,
   classifyConcept,
   conceptStem,
   extractSqlBlock,
@@ -40,7 +46,7 @@ import {
 
 const YAML_DUMP_OPTS = { lineWidth: 120, noRefs: true } as const;
 
-/** Provenance block attached to every imported artifact (passthrough-safe). */
+/** Provenance block attached to every heuristically imported artifact (passthrough-safe). */
 function provenance(concept: OkfConcept): Record<string, unknown> {
   const p: Record<string, unknown> = { source_path: concept.path };
   if (typeof concept.frontmatter.resource === "string") {
@@ -77,16 +83,27 @@ export function importOkfBundle(
   const concepts = parseBundle(files, report);
 
   const entities: DraftEntity[] = [];
+  const seenTables = new Set<string>();
   const metrics: Record<string, unknown>[] = [];
   const terms: Record<string, unknown> = {};
   const datasetNotes: string[] = [];
   const joinConcepts: OkfConcept[] = [];
+  let foreignTermCount = 0;
 
   for (const concept of concepts) {
-    switch (classifyConcept(concept)) {
+    const kind = classifyConcept(concept);
+    switch (kind) {
       case "table": {
         const entity = importTable(concept, report);
-        if (entity) entities.push(entity);
+        if (!entity) break;
+        if (seenTables.has(entity.table)) {
+          report.unmapped.push(
+            `${concept.path}: duplicate table "${entity.table}" — an earlier concept already produced entities/${entity.table}.yml; this one skipped`,
+          );
+          break;
+        }
+        seenTables.add(entity.table);
+        entities.push(entity);
         break;
       }
       case "metric":
@@ -96,7 +113,7 @@ export function importOkfBundle(
         joinConcepts.push(concept);
         break;
       case "glossary_term":
-        importTerm(concept, terms, report);
+        if (importTerm(concept, terms, report) === "foreign") foreignTermCount++;
         break;
       case "dataset": {
         const desc = concept.frontmatter.description;
@@ -111,6 +128,8 @@ export function importOkfBundle(
           `${concept.path}: unrecognized concept type "${concept.frontmatter.type}" — no Atlas equivalent`,
         );
         break;
+      default:
+        kind satisfies never;
     }
   }
 
@@ -128,21 +147,24 @@ export function importOkfBundle(
       path: "glossary.yml",
       content: yaml.dump({ terms }, YAML_DUMP_OPTS),
     });
-    report.notes.push(
-      "glossary terms imported as status: defined — OKF cannot express Atlas's `status: ambiguous` ask-first gating",
-    );
+    if (foreignTermCount > 0) {
+      report.notes.push(
+        `${foreignTermCount} foreign glossary term(s) imported as status: defined — OKF cannot express Atlas's \`status: ambiguous\` ask-first gating`,
+      );
+    }
   }
   if (metrics.length > 0) {
     const header =
-      "# Imported from OKF — metric SQL below is UNVERIFIED prose from the source\n" +
-      "# bundle. Atlas runs metric SQL verbatim (authoritative); review and edit each\n" +
-      "# entry before relying on it. Entries carry `okf.unverified_sql: true` until then.\n";
+      "# Imported from OKF. A bundle cannot confer metric authority: Atlas runs metric\n" +
+      "# SQL verbatim (authoritative), so every imported entry — including atlas.metric\n" +
+      "# extension restores — carries `okf.unverified_sql: true`. Review and edit each\n" +
+      "# entry, then remove the flag, before relying on it.\n";
     out.push({
       path: "metrics/okf-imported.yml",
       content: header + yaml.dump({ metrics }, YAML_DUMP_OPTS),
     });
     report.lossy.push(
-      "imported metric SQL is descriptive prose in OKF, not an executable contract — marked unverified, requires human review before use",
+      "metric authority cannot travel through OKF — every imported metric is marked unverified and requires human review before use",
     );
   }
   out.push({
@@ -157,11 +179,22 @@ export function importOkfBundle(
 }
 
 function importTable(concept: OkfConcept, report: MappingReport): DraftEntity | null {
-  // Native round-trip: full entity object under the atlas extension.
-  const native = concept.frontmatter.atlas?.entity;
+  // Native round-trip: full entity object under the atlas extension. The
+  // extension is untrusted input like the rest of the bundle, so the table
+  // name goes through the same safeSemanticRowName gate as the heuristic
+  // path — `entities/${table}.yml` becomes a write path downstream, and a
+  // forged `table: "../../x"` must die here, reported, not on disk.
+  const native = atlasExtension(concept)?.entity;
   if (isRecord(native) && typeof native.table === "string") {
+    const table = safeSemanticRowName(native.table);
+    if (table === null || table !== native.table) {
+      report.unmapped.push(
+        `${concept.path}: atlas.entity.table ${JSON.stringify(native.table)} is not a safe table name — extension ignored`,
+      );
+      return null;
+    }
     report.notes.push(`${concept.path}: restored verbatim from atlas.entity extension (lossless)`);
-    return { table: native.table, obj: native, concept };
+    return { table, obj: native, concept };
   }
 
   const stem = conceptStem(concept.path);
@@ -194,10 +227,15 @@ function importTable(concept: OkfConcept, report: MappingReport): DraftEntity | 
         );
         continue;
       }
+      if (mapped.guessed) {
+        report.notes.push(
+          `${concept.path}: column \`${col.name}\` type "${col.rawType}" not recognized — defaulted to string`,
+        );
+      }
       dimensions.push({
         name: col.name,
         sql: col.name,
-        type: mapped,
+        type: mapped.type,
         ...(col.description !== "" ? { description: col.description } : {}),
       });
     }
@@ -219,10 +257,15 @@ function importTable(concept: OkfConcept, report: MappingReport): DraftEntity | 
 }
 
 function importMetric(concept: OkfConcept, report: MappingReport): Record<string, unknown> {
-  const native = concept.frontmatter.atlas?.metric;
+  const native = atlasExtension(concept)?.metric;
   if (isRecord(native)) {
-    report.notes.push(`${concept.path}: restored verbatim from atlas.metric extension (lossless)`);
-    return native;
+    // Fields restore losslessly, but authority does not: the extension is
+    // forgeable, so the SQL is re-stamped unverified like any other import.
+    report.notes.push(
+      `${concept.path}: metric fields restored from atlas.metric extension; SQL re-marked unverified (authority is trust, not data)`,
+    );
+    const okf = isRecord(native.okf) ? native.okf : {};
+    return { ...native, okf: { ...okf, unverified_sql: true } };
   }
   const stem = conceptStem(concept.path);
   const sql = extractSqlBlock(concept.body);
@@ -244,19 +287,27 @@ function importTerm(
   concept: OkfConcept,
   terms: Record<string, unknown>,
   report: MappingReport,
-): void {
-  const atlasExt = concept.frontmatter.atlas;
-  const nativeName = atlasExt?.term;
-  const nativeEntry = atlasExt?.entry;
+): "native" | "foreign" | "skipped" {
+  const ext = atlasExtension(concept);
+  const nativeName = ext?.term;
+  const nativeEntry = ext?.entry;
   if (typeof nativeName === "string" && isRecord(nativeEntry)) {
+    if (nativeName in terms) {
+      report.unmapped.push(`${concept.path}: duplicate glossary term "${nativeName}" — skipped`);
+      return "skipped";
+    }
     terms[nativeName] = nativeEntry;
     report.notes.push(`${concept.path}: restored verbatim from atlas.term extension (lossless)`);
-    return;
+    return "native";
   }
   const name =
     typeof concept.frontmatter.title === "string"
       ? concept.frontmatter.title
       : conceptStem(concept.path);
+  if (name in terms) {
+    report.unmapped.push(`${concept.path}: duplicate glossary term "${name}" — skipped`);
+    return "skipped";
+  }
   const definition =
     typeof concept.frontmatter.description === "string" &&
     concept.frontmatter.description.trim() !== ""
@@ -267,6 +318,7 @@ function importTerm(
     definition,
     okf: provenance(concept),
   };
+  return "foreign";
 }
 
 /** Resolve join reference concepts against imported entities where possible. */

@@ -32,6 +32,27 @@ describe("parseFrontmatter", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toContain("type");
   });
+
+  it("rejects an unterminated frontmatter block", () => {
+    const result = parseFrontmatter(`---\ntype: Reference\nno closing fence`);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toContain("unterminated");
+  });
+
+  it("rejects non-mapping frontmatter (scalar or list)", () => {
+    const result = parseFrontmatter(`---\n- just\n- a list\n---\nBody\n`);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toContain("not a YAML mapping");
+  });
+
+  it("surfaces YAML parse errors with the parser message", () => {
+    const result = parseFrontmatter(`---\ntype: [unclosed\n---\nBody\n`);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toContain("parse error");
+  });
 });
 
 describe("schema section parsing", () => {
@@ -61,14 +82,18 @@ describe("schema section parsing", () => {
   });
 
   it("maps source types onto Atlas dimension types", () => {
-    expect(mapColumnType("STRING")).toBe("string");
-    expect(mapColumnType("INT64")).toBe("number");
-    expect(mapColumnType("FLOAT")).toBe("number");
-    expect(mapColumnType("TIMESTAMP")).toBe("timestamp");
-    expect(mapColumnType("DATE")).toBe("date");
-    expect(mapColumnType("BOOLEAN")).toBe("boolean");
+    expect(mapColumnType("STRING")).toEqual({ type: "string", guessed: false });
+    expect(mapColumnType("INT64")).toEqual({ type: "number", guessed: false });
+    expect(mapColumnType("FLOAT")).toEqual({ type: "number", guessed: false });
+    expect(mapColumnType("TIMESTAMP")).toEqual({ type: "timestamp", guessed: false });
+    expect(mapColumnType("DATE")).toEqual({ type: "date", guessed: false });
+    expect(mapColumnType("BOOLEAN")).toEqual({ type: "boolean", guessed: false });
     expect(mapColumnType("RECORD")).toBeUndefined();
     expect(mapColumnType("ARRAY<STRING>")).toBeUndefined();
+    expect(mapColumnType("JSON")).toBeUndefined();
+    // Substring traps: INTERVAL/POINT must not word-match INT.
+    expect(mapColumnType("INTERVAL")).toEqual({ type: "string", guessed: true });
+    expect(mapColumnType("GEOGRAPHY")).toEqual({ type: "string", guessed: true });
   });
 
   it("splits bodies on top-level headings only", () => {
@@ -135,7 +160,7 @@ describe("importOkfBundle (foreign bundle)", () => {
     expect(String(purchase?.sql)).toContain("COUNT(*)");
     expect((purchase?.okf as Record<string, unknown>).unverified_sql).toBe(true);
     expect(
-      report.lossy.some((l) => l.includes("not an executable contract")),
+      report.lossy.some((l) => l.includes("metric authority cannot travel through OKF")),
     ).toBe(true);
   });
 
@@ -178,7 +203,112 @@ describe("importOkfBundle (foreign bundle)", () => {
     expect(report.unmapped.some((u) => u.includes("tables/broken.md"))).toBe(true);
   });
 
-  it("does not emit a glossary when the bundle has no term concepts", () => {
-    expect(byPath.has("glossary.yml")).toBe(false);
+  it("imports foreign glossary concepts as defined terms and reports the ambiguity gap", () => {
+    const glossary = yaml.load(byPath.get("glossary.yml") ?? "") as {
+      terms: Record<string, Record<string, unknown>>;
+    };
+    const mrr = glossary.terms.MRR;
+    expect(mrr.status).toBe("defined");
+    expect(String(mrr.definition)).toContain("Monthly recurring revenue");
+    expect((mrr.okf as Record<string, unknown>).source_path).toBe("references/glossary/mrr.md");
+    expect(report.notes.some((n) => n.includes("ask-first gating"))).toBe(true);
+  });
+});
+
+describe("importOkfBundle (hostile/edge bundles)", () => {
+  it("rejects a forged atlas.entity.table containing path traversal", () => {
+    const { files, report } = importOkfBundle([
+      {
+        path: "tables/evil.md",
+        content: `---
+type: Table
+title: Evil
+atlas:
+  kind: table
+  entity:
+    table: ../../.github/workflows/evil
+    name: Evil
+---
+
+# Overview
+Nope.
+`,
+      },
+    ]);
+    expect(files.filter((f) => f.path.startsWith("entities/"))).toHaveLength(0);
+    expect(files.every((f) => !f.path.includes(".."))).toBe(true);
+    expect(
+      report.unmapped.some((u) => u.includes("evil.md") && u.includes("not a safe table name")),
+    ).toBe(true);
+  });
+
+  it("re-stamps forged atlas.metric extensions as unverified", () => {
+    const { files } = importOkfBundle([
+      {
+        path: "references/metrics/pwn.md",
+        content: `---
+type: Reference
+title: Pwn
+tags:
+- metric
+atlas:
+  kind: metric
+  metric:
+    id: pwn
+    label: Pwn
+    sql: SELECT * FROM secrets
+---
+
+Body.
+`,
+      },
+    ]);
+    const metricsFile = files.find((f) => f.path === "metrics/okf-imported.yml");
+    expect(metricsFile).toBeDefined();
+    const doc = yaml.load(metricsFile?.content ?? "") as {
+      metrics: Array<Record<string, unknown>>;
+    };
+    expect((doc.metrics[0].okf as Record<string, unknown>).unverified_sql).toBe(true);
+  });
+
+  it("reports duplicate table concepts instead of clobbering", () => {
+    const table = (p: string): { path: string; content: string } => ({
+      path: p,
+      content: `---
+type: Table
+title: Orders
+---
+
+# Schema
+- \`id\` (INTEGER): id.
+`,
+    });
+    const { files, report } = importOkfBundle([table("a/orders.md"), table("b/orders.md")]);
+    expect(files.filter((f) => f.path === "entities/orders.yml")).toHaveLength(1);
+    expect(report.unmapped.some((u) => u.includes('duplicate table "orders"'))).toBe(true);
+  });
+
+  it("notes columns whose type had to be guessed", () => {
+    const { files, report } = importOkfBundle([
+      {
+        path: "tables/geo.md",
+        content: `---
+type: Table
+title: Geo
+---
+
+# Schema
+- \`region\` (GEOGRAPHY): A shape.
+`,
+      },
+    ]);
+    const entity = yaml.load(
+      files.find((f) => f.path === "entities/geo.yml")?.content ?? "",
+    ) as Record<string, unknown>;
+    const dims = entity.dimensions as Array<Record<string, unknown>>;
+    expect(dims[0].type).toBe("string");
+    expect(report.notes.some((n) => n.includes("GEOGRAPHY") && n.includes("defaulted"))).toBe(
+      true,
+    );
   });
 });

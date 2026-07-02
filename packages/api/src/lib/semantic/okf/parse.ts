@@ -12,6 +12,7 @@
 
 import { parseFrontmatter } from "./frontmatter";
 import type {
+  AtlasDimensionType,
   MappingReport,
   OkfConcept,
   OkfConceptKind,
@@ -56,15 +57,24 @@ function tagsOf(concept: OkfConcept): string[] {
   return tags.filter((t): t is string => typeof t === "string").map((t) => t.toLowerCase());
 }
 
+/** The `atlas:` extension block, when present and a mapping (narrowed from unknown). */
+export function atlasExtension(concept: OkfConcept): Record<string, unknown> | undefined {
+  const ext = concept.frontmatter.atlas;
+  return typeof ext === "object" && ext !== null && !Array.isArray(ext)
+    ? (ext as Record<string, unknown>)
+    : undefined;
+}
+
 /**
  * Classify a concept for import. Signals in precedence order:
  * 1. `atlas.kind` extension key (Atlas-produced bundles — unambiguous)
- * 2. `type` substring match ("table", "dataset")
- * 3. tags ("metric", "join", "glossary", "term")
- * 4. directory placement (metrics/, joins/, glossary/)
+ * 2. `type` substring match ("table"/"view", "dataset")
+ * 3. per-kind tag-or-directory signals, checked in kind order metric →
+ *    join → glossary_term (so a doc under `metrics/` tagged `join`
+ *    classifies as a metric — placement and tag rank equally within a kind)
  */
 export function classifyConcept(concept: OkfConcept): OkfConceptKind {
-  const atlasKind = concept.frontmatter.atlas?.kind;
+  const atlasKind = atlasExtension(concept)?.kind;
   if (
     atlasKind === "table" ||
     atlasKind === "metric" ||
@@ -98,24 +108,30 @@ export function classifyConcept(concept: OkfConcept): OkfConceptKind {
 /**
  * Split a markdown body into `# Heading` → section-text pairs (top-level
  * headings only; `##` subsections stay inside their parent section). Text
- * before the first heading is returned under the empty-string key.
+ * before the first heading is returned under the empty-string key. Repeated
+ * headings concatenate rather than overwrite.
  */
 export function splitSections(body: string): Map<string, string> {
   const sections = new Map<string, string>();
+  const flush = (key: string, buf: string[]): void => {
+    const text = buf.join("\n").trim();
+    const existing = sections.get(key);
+    sections.set(key, existing !== undefined && existing !== "" ? `${existing}\n\n${text}` : text);
+  };
   const lines = body.split("\n");
   let current = "";
   let buf: string[] = [];
   for (const line of lines) {
     const m = line.match(/^#\s+(.+?)\s*$/);
     if (m) {
-      sections.set(current, buf.join("\n").trim());
+      flush(current, buf);
       current = m[1].toLowerCase();
       buf = [];
     } else {
       buf.push(line);
     }
   }
-  sections.set(current, buf.join("\n").trim());
+  flush(current, buf);
   return sections;
 }
 
@@ -166,21 +182,36 @@ export function parseSchemaColumns(section: string): OkfParsedColumn[] {
   return columns;
 }
 
+/** A column type mapped onto Atlas's closed vocabulary; `guessed` marks the fallback. */
+export interface MappedColumnType {
+  type: AtlasDimensionType;
+  guessed: boolean;
+}
+
 /**
- * Map a source column type string onto Atlas's dimension type vocabulary
- * (`number` | `string` | `date` | `timestamp` | `boolean`). Returns
+ * Map a source column type string onto {@link AtlasDimensionType}. Returns
  * undefined for shapes Atlas can't represent as a scalar dimension
- * (RECORD/STRUCT/ARRAY) — callers report those as lossy.
+ * (RECORD/STRUCT/ARRAY/REPEATED/JSON) — callers report those as lossy.
+ * Unrecognized types fall back to `string` with `guessed: true` so callers
+ * can report the approximation instead of passing it off as a real match.
  */
-export function mapColumnType(rawType: string): string | undefined {
+export function mapColumnType(rawType: string): MappedColumnType | undefined {
   const t = rawType.toUpperCase();
-  if (/RECORD|STRUCT|ARRAY|REPEATED|JSON/.test(t)) return undefined;
-  if (/INT|NUMERIC|DECIMAL|FLOAT|DOUBLE|NUMBER|BIGNUM|MONEY|SERIAL/.test(t)) return "number";
-  if (/TIMESTAMP|DATETIME/.test(t)) return "timestamp";
-  if (/^DATE$/.test(t)) return "date";
-  if (/BOOL/.test(t)) return "boolean";
-  if (/STRING|TEXT|CHAR|UUID|BYTES/.test(t)) return "string";
-  return "string";
+  if (/\b(RECORD|STRUCT|ARRAY|REPEATED|JSON)\b/.test(t) || /ARRAY</.test(t)) return undefined;
+  if (
+    /\b(INT|INTEGER|INT64|BIGINT|SMALLINT|TINYINT|NUMERIC|DECIMAL|FLOAT|FLOAT64|DOUBLE|NUMBER|BIGNUMERIC|MONEY|SERIAL|REAL)\b/.test(
+      t,
+    )
+  ) {
+    return { type: "number", guessed: false };
+  }
+  if (/\b(TIMESTAMP|DATETIME)\b/.test(t)) return { type: "timestamp", guessed: false };
+  if (/^DATE$/.test(t)) return { type: "date", guessed: false };
+  if (/\bBOOL(EAN)?\b/.test(t)) return { type: "boolean", guessed: false };
+  if (/\b(STRING|TEXT|CHAR|VARCHAR|UUID|BYTES)\b/.test(t)) {
+    return { type: "string", guessed: false };
+  }
+  return { type: "string", guessed: true };
 }
 
 /** Equality pattern in a join spec's SQL: `left_table.col = right_table.col`. */
@@ -205,7 +236,11 @@ export function parseJoinEquality(
   };
 }
 
-/** Filename stem (`tables/events_.md` → `events_`). */
+/**
+ * Filename stem, NOT sanitized (`tables/events_.md` → `events_`, as in the
+ * GA4 sample's sharded-table doc) — importers validate it separately via
+ * `safeSemanticRowName`.
+ */
 export function conceptStem(path: string): string {
   return basename(path).replace(/\.md$/, "");
 }

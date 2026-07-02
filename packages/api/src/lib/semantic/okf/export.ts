@@ -5,8 +5,11 @@
  * metric / glossary term, index.md navigation files, and prose bodies an
  * OKF consumer can read without knowing Atlas exists. Every concept also
  * carries the full source object under the `atlas:` frontmatter extension
- * (spec-legal — consumers must preserve unknown keys), which is what makes
- * OKF -> Atlas -> OKF round-trips lossless for Atlas-produced bundles.
+ * (spec-legal — consumers must preserve unknown keys), which makes an
+ * Atlas -> OKF -> Atlas re-import lossless for entity and glossary
+ * OBJECTS and for metric fields (the importer re-stamps metrics
+ * unverified — authority never travels through a bundle). Catalog
+ * description and metric file layout are NOT preserved across the trip.
  *
  * What is semantically DROPPED for foreign consumers (data preserved in the
  * extension, semantics not enforceable):
@@ -29,7 +32,7 @@ import {
 export interface OkfExportOptions {
   /** ISO-8601 timestamp stamped on every concept (caller supplies the clock). */
   timestamp: string;
-  /** Bundle display name for the root index; defaults to the catalog name. */
+  /** Bundle display name for the root index; defaults to the catalog name, then `atlas-export`. */
   bundleName?: string;
 }
 
@@ -95,7 +98,8 @@ function safeFileStem(name: string): string {
 // ---------------------------------------------------------------------------
 
 interface ParsedLayer {
-  entities: Record<string, unknown>[];
+  /** Only entities that passed the non-empty `table` gate in {@link parseLayer}. */
+  entities: Array<Record<string, unknown> & { table: string }>;
   metrics: Record<string, unknown>[];
   terms: Record<string, Record<string, unknown>>;
   catalog: Record<string, unknown> | undefined;
@@ -120,21 +124,33 @@ function parseLayer(files: InteropFile[], report: MappingReport): ParsedLayer {
     const base = file.path.split("/").pop() ?? file.path;
     if (/(^|\/)entities\/[^/]+\.ya?ml$/.test(file.path)) {
       if (typeof doc.table === "string" && doc.table !== "") {
-        layer.entities.push(doc);
+        layer.entities.push({ ...doc, table: doc.table });
       } else {
         report.unmapped.push(`${file.path}: entity file without a \`table\` field`);
       }
     } else if (/(^|\/)metrics\/[^/]+\.ya?ml$/.test(file.path)) {
       if (Array.isArray(doc.metrics)) {
         for (const m of doc.metrics) {
-          if (isRecord(m)) layer.metrics.push(m);
+          if (isRecord(m)) {
+            layer.metrics.push(m);
+          } else {
+            report.unmapped.push(`${file.path}: non-mapping entry in \`metrics\` array skipped`);
+          }
         }
+      } else {
+        report.unmapped.push(`${file.path}: metrics file without a \`metrics\` array`);
       }
     } else if (base === "glossary.yml" || base === "glossary.yaml") {
       if (isRecord(doc.terms)) {
         for (const [name, entry] of Object.entries(doc.terms)) {
-          if (isRecord(entry)) layer.terms[name] = entry;
+          if (isRecord(entry)) {
+            layer.terms[name] = entry;
+          } else {
+            report.unmapped.push(`${file.path}: glossary term "${name}" is not a mapping — skipped`);
+          }
         }
+      } else {
+        report.unmapped.push(`${file.path}: glossary file without a \`terms\` mapping`);
       }
     } else if (base === "catalog.yml" || base === "catalog.yaml") {
       layer.catalog = doc;
@@ -150,12 +166,12 @@ function parseLayer(files: InteropFile[], report: MappingReport): ParsedLayer {
 // ---------------------------------------------------------------------------
 
 function renderEntityDoc(
-  entity: Record<string, unknown>,
+  entity: Record<string, unknown> & { table: string },
   metricLinks: Array<{ file: string; label: string; description?: string }>,
   options: OkfExportOptions,
   report: MappingReport,
 ): InteropFile {
-  const table = String(entity.table);
+  const table = entity.table;
   const name = asString(entity.name) ?? table;
   const description = asString(entity.description) ?? "";
   const tags = ["atlas"];
@@ -259,9 +275,11 @@ function renderEntityDoc(
     for (const u of useCases) lines.push(`- ${String(u)}`);
   }
 
-  report.notes.push(
-    `entities/${table}.yml: measures/virtual-dimension SQL/query patterns exported as prose + atlas extension (no first-class OKF concepts)`,
-  );
+  if (measures.length > 0 || patterns.length > 0 || dims.some((d) => d.virtual)) {
+    report.notes.push(
+      `entities/${table}.yml: measures/virtual-dimension SQL/query patterns exported as prose + atlas extension (no first-class OKF concepts)`,
+    );
+  }
 
   return {
     path: `tables/${safeFileStem(table)}.md`,
@@ -485,5 +503,20 @@ export function exportToOkf(
     "pinned-metric authority has no OKF equivalent — exported SQL is illustrative prose to non-Atlas consumers",
   );
 
-  return { files: out, report };
+  // safeFileStem can collide ("Q1 Revenue" vs "Q1-Revenue", case-only diffs).
+  // First doc wins; the loser is reported, never silently clobbered on disk.
+  const seenPaths = new Set<string>();
+  const deduped: InteropFile[] = [];
+  for (const file of out) {
+    if (seenPaths.has(file.path)) {
+      report.unmapped.push(
+        `${file.path}: duplicate bundle path — a same-named concept was already emitted; this one dropped`,
+      );
+      continue;
+    }
+    seenPaths.add(file.path);
+    deduped.push(file);
+  }
+
+  return { files: deduped, report };
 }

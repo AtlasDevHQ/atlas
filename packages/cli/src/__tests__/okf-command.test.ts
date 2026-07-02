@@ -159,11 +159,52 @@ describe("okf import", () => {
   });
 });
 
+describe("okf import (hostile bundle)", () => {
+  it("never writes outside --out for a forged atlas.entity.table", () => {
+    const bundle = path.join(workDir, "bundle");
+    fs.mkdirSync(path.join(bundle, "tables"), { recursive: true });
+    fs.writeFileSync(
+      path.join(bundle, "tables", "evil.md"),
+      `---
+type: Table
+title: Evil
+atlas:
+  kind: table
+  entity:
+    table: ../../escaped
+---
+
+# Overview
+Nope.
+`,
+    );
+    const out = path.join(workDir, "out");
+    const io = captureIO();
+    expect(runOkf(["okf", "import", "--bundle", bundle, "--out", out], io)).toBe(0);
+    // The engine rejects the forged name; nothing may exist above --out.
+    expect(fs.existsSync(path.join(workDir, "escaped.yml"))).toBe(false);
+    expect(fs.existsSync(path.join(out, "entities"))).toBe(false);
+    expect(io.errLines.join("\n")).toContain("not a safe table name");
+    expect(io.errLines.join("\n")).toContain("no entities were imported");
+  });
+});
+
 describe("okf export", () => {
   it("requires --out", () => {
     const io = captureIO();
     expect(runOkf(["okf", "export"], io)).toBe(1);
     expect(io.errLines.join("\n")).toContain("--out");
+  });
+
+  it("fails on a missing semantic layer directory", () => {
+    const io = captureIO();
+    expect(
+      runOkf(
+        ["okf", "export", "--semantic", path.join(workDir, "nope"), "--out", path.join(workDir, "b")],
+        io,
+      ),
+    ).toBe(1);
+    expect(io.errLines.join("\n")).toContain("not found");
   });
 
   it("writes an OKF bundle from a semantic layer", () => {

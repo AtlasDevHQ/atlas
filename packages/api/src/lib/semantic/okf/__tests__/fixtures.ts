@@ -170,6 +170,19 @@ SHOP_EVENTS.collected.gclid = ADS_CLICKS.gclid
 `,
   },
   {
+    path: "references/glossary/mrr.md",
+    content: `---
+type: Reference
+title: MRR
+description: Monthly recurring revenue, net of refunds.
+tags:
+- glossary
+---
+
+Monthly recurring revenue, net of refunds. Computed monthly by finance.
+`,
+  },
+  {
     path: "references/runbook.md",
     content: `---
 type: Playbook

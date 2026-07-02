@@ -43,6 +43,18 @@ export const CONTENT_MODE_TABLES = [
   },
   { kind: "simple", key: "prompts", table: "prompt_collections" },
   { kind: "simple", key: "starterPrompts", table: "query_suggestions" },
+  // #4206 / ADR-0028 — hosted OKF knowledge documents. Every ingest lands
+  // `draft` (the review gate); the atomic publish endpoint promotes them and
+  // the non-admin agent read gates on `status='published'`. `workspace_id` is
+  // the org scope (workspace-global, never group-scoped). `knowledge_links` is
+  // NOT registered — a link's visibility follows its source document, so it is
+  // content-mode-exempt derived data (see migration 0163).
+  {
+    kind: "simple",
+    key: "knowledgeDocuments",
+    table: "knowledge_documents",
+    orgColumn: "workspace_id",
+  },
   {
     kind: "exotic",
     key: "semantic_entities",

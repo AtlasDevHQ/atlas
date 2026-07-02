@@ -64,6 +64,7 @@ const DraftCountsSchema = z.object({
   entityDeletes: z.number().int().nonnegative(),
   prompts: z.number().int().nonnegative(),
   starterPrompts: z.number().int().nonnegative(),
+  knowledgeDocuments: z.number().int().nonnegative(),
 });
 
 const DraftSurfaceActivitySchema = z.object({
@@ -77,6 +78,7 @@ const DraftActivitySchema = z.object({
   entityDeletes: DraftSurfaceActivitySchema,
   prompts: DraftSurfaceActivitySchema,
   starterPrompts: DraftSurfaceActivitySchema,
+  knowledgeDocuments: DraftSurfaceActivitySchema,
 });
 
 const ModeStatusSchema = z.object({
@@ -141,7 +143,8 @@ function totalDrafts(counts: ModeDraftCounts): number {
     counts.entityEdits +
     counts.entityDeletes +
     counts.prompts +
-    counts.starterPrompts
+    counts.starterPrompts +
+    counts.knowledgeDocuments
   );
 }
 
@@ -178,6 +181,9 @@ const DRAFT_ACTIVITY_SQL = `
   UNION ALL
   SELECT 'starterPrompts' AS key, MAX(updated_at) AS at FROM query_suggestions
    WHERE org_id = $1 AND status = 'draft'
+  UNION ALL
+  SELECT 'knowledgeDocuments' AS key, MAX(updated_at) AS at FROM knowledge_documents
+   WHERE workspace_id = $1 AND status = 'draft'
 `;
 
 /**
@@ -205,6 +211,7 @@ const ACTIVITY_SURFACE_KEYS = [
   "entityDeletes",
   "prompts",
   "starterPrompts",
+  "knowledgeDocuments",
 ] as const satisfies ReadonlyArray<keyof ModeDraftActivity>;
 
 function buildDraftActivity(

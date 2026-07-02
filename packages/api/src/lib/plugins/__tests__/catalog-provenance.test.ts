@@ -55,6 +55,8 @@ const KNOWN_CATALOG_WRITE_SITES = {
   "packages/api/src/api/routes/admin-marketplace.ts": "platform-admin-crud",
   "packages/api/src/lib/db/seed-builtin-datasource-catalog.ts":
     "builtin-datasource-seed",
+  "packages/api/src/lib/db/seed-builtin-knowledge-catalog.ts":
+    "builtin-knowledge-seed",
   "packages/api/src/lib/integrations/catalog-seeder.ts": "config-catalog-seed",
   "packages/api/src/lib/integrations/implementation-status-override.ts":
     "implementation-status-override",

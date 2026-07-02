@@ -3045,6 +3045,157 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     );
     expect(remaining.rowCount).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 0161–0163 — Knowledge Base pillar foundation (#4206, ADR-0028)
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("0161: plugin_catalog + workspace_plugins pillar CHECKs admit 'knowledge' (#4206)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const catalogId = `catalog:kb-${stamp}`;
+    const slug = `kb-${stamp}`;
+    // A knowledge-pillar catalog row is now legal.
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, install_model, pillar)
+       VALUES ($1, 'KB test', $2, 'context', 'form', 'knowledge')`,
+      [catalogId, slug],
+    );
+    // …and a knowledge-pillar install of it.
+    await pool.query(
+      `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar)
+       VALUES ($1, $2, $3, 'my-collection', 'knowledge')`,
+      [`wp-${stamp}`, `ws-${stamp}`, catalogId],
+    );
+    const { rows } = await pool.query<{ pillar: string }>(
+      `SELECT pillar FROM workspace_plugins WHERE catalog_id = $1`,
+      [catalogId],
+    );
+    expect(rows[0]?.pillar).toBe("knowledge");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0161: an unknown pillar is still rejected by the widened CHECK (#4206)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, install_model, pillar)
+         VALUES ($1, 'bad pillar', $2, 'context', 'form', 'nonsense')`,
+        [`catalog:bad-${stamp}`, `bad-${stamp}`],
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    expect(err?.message).toMatch(/chk_plugin_catalog_pillar|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0161: workspace_plugins_singleton does NOT cover 'knowledge' — collections are multi-instance (#4206)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const catalogId = `catalog:kbmulti-${stamp}`;
+    const workspaceId = `ws-multi-${stamp}`;
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, install_model, pillar)
+       VALUES ($1, 'KB multi', $2, 'context', 'form', 'knowledge')`,
+      [catalogId, `kbmulti-${stamp}`],
+    );
+    // Two installs of the SAME (workspace, catalog) with distinct install_ids —
+    // the datasource-pillar pattern. This is what makes multiple collections
+    // per workspace possible; the singleton partial unique must not reject it.
+    await pool.query(
+      `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar) VALUES
+         ($1, $3, $4, 'runbooks', 'knowledge'),
+         ($2, $3, $4, 'product-docs', 'knowledge')`,
+      [`wp-a-${stamp}`, `wp-b-${stamp}`, workspaceId, catalogId],
+    );
+    const { rows } = await pool.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM workspace_plugins
+        WHERE workspace_id = $1 AND catalog_id = $2`,
+      [workspaceId, catalogId],
+    );
+    expect(rows[0]?.n).toBe("2");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0162: knowledge_documents defaults status to 'draft' and enforces the status CHECK (#4206)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-doc-${stamp}`;
+    const { rows } = await pool.query<{ status: string; tags: unknown }>(
+      `INSERT INTO knowledge_documents (workspace_id, collection_id, path, body)
+       VALUES ($1, 'runbooks', 'index.md', '# Index')
+       RETURNING status, tags`,
+      [ws],
+    );
+    // Content-mode default: every ingest lands draft (the review gate).
+    expect(rows[0]?.status).toBe("draft");
+    // tags defaults to an empty JSON array.
+    expect(rows[0]?.tags).toEqual([]);
+
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO knowledge_documents (workspace_id, collection_id, path, body, status)
+         VALUES ($1, 'runbooks', 'other.md', 'x', 'live')`,
+        [ws],
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    expect(err?.message).toMatch(/chk_knowledge_documents_status|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0162: knowledge_documents path is unique per collection, not per workspace (#4206)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-uniq-${stamp}`;
+    // Same path in two DIFFERENT collections of the same workspace is allowed.
+    await pool.query(
+      `INSERT INTO knowledge_documents (workspace_id, collection_id, path, body) VALUES
+         ($1, 'coll-a', 'index.md', 'A'),
+         ($1, 'coll-b', 'index.md', 'B')`,
+      [ws],
+    );
+    // Re-inserting the same (workspace, collection, path) collides.
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO knowledge_documents (workspace_id, collection_id, path, body)
+         VALUES ($1, 'coll-a', 'index.md', 'dupe')`,
+        [ws],
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    expect(err?.message).toMatch(/uq_knowledge_documents_collection_path|23505|unique/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0163: knowledge_links cascade-delete with the source document; target_path is not a FK (#4206)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-link-${stamp}`;
+    const doc = await pool.query<{ id: string }>(
+      `INSERT INTO knowledge_documents (workspace_id, collection_id, path, body)
+       VALUES ($1, 'runbooks', 'a.md', 'A') RETURNING id`,
+      [ws],
+    );
+    const sourceId = doc.rows[0]?.id as string;
+    // target_path may point at a not-yet-ingested path — no FK enforcement.
+    await pool.query(
+      `INSERT INTO knowledge_links (source_document_id, target_path, anchor_text)
+       VALUES ($1, 'not/ingested/yet.md', 'see also')`,
+      [sourceId],
+    );
+    const before = await pool.query(
+      `SELECT 1 FROM knowledge_links WHERE source_document_id = $1`,
+      [sourceId],
+    );
+    expect(before.rowCount).toBe(1);
+    // Deleting the source document cascades its edges away.
+    await pool.query(`DELETE FROM knowledge_documents WHERE id = $1`, [sourceId]);
+    const after = await pool.query(
+      `SELECT 1 FROM knowledge_links WHERE source_document_id = $1`,
+      [sourceId],
+    );
+    expect(after.rowCount).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
 });
 
 // #2606 — source-level revert guard for the integration-store SQL formatter.

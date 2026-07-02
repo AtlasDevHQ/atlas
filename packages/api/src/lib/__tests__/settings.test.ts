@@ -694,6 +694,9 @@ describe("settings module", () => {
         // fiber forked once at boot; both keys are consumed only there,
         // so they need a restart in BOTH deploy modes.
         "ATLAS_EXPERT_SCHEDULER_ENABLED", "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
+        // #4130 — billing scheduler cadences: same boot-consumed shape as
+        // the expert scheduler pair (interval resolved when the fiber forks).
+        "ATLAS_BILLING_RECONCILE_INTERVAL_HOURS", "ATLAS_UNCLAIMED_GRACE_REAP_INTERVAL_HOURS",
       ];
       for (const key of restartRequired) {
         const def = registry.find((s) => s.key === key);

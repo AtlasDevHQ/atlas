@@ -395,12 +395,13 @@ describe("makeSchedulerLive", () => {
   // standing up an in-memory trace exporter (would add
   // `@opentelemetry/sdk-trace-base` to @atlas/api devDeps — out of scope).
   // Instead, for each single-source span-name record:
-  //   (a) the production wrap sites derive their span name from the record,
-  //       and the derivation/prefix guard below pins that record's shape; and
+  //   (a) `registerPeriodicFiber` (#4130) derives every fiber's span from the
+  //       record via `SCHEDULER_SPAN_NAMES[spec.name]`, and the
+  //       derivation/prefix guard below pins each record's shape; and
   //   (b) a structural source-scan guard asserts each key is referenced by a
-  //       `withEffectSpan(<RECORD>.<key>` call site, and that the call-site
-  //       count matches the record exactly.
-  // Together these make "rename a span" AND "delete a wrap at a call site"
+  //       `name: "<key>"` registration site, and that the registration count
+  //       matches the record exactly.
+  // Together these make "rename a span" AND "delete a fiber registration"
   // (the precise regression these spans exist to prevent) both fail here.
   //
   // Two records: cleanup/sweep fibers (#2945/#2944) and background-work fibers
@@ -477,43 +478,54 @@ describe("makeSchedulerLive", () => {
       });
 
       // Structural wiring guard: the name-set test above proves the const is
-      // correct, but a wrap site can be deleted while every other test stays
-      // green — re-hiding the exact regression these spans prevent. Scan the
-      // `layers.ts` source and assert each key is referenced by a
-      // `withEffectSpan(<constName>.<key>` call AND that the call-site count
-      // matches the record exactly, so deleting/adding a wrap fails here.
+      // correct, but a fiber registration can be deleted while every other
+      // test stays green — re-hiding the exact regression these spans
+      // prevent. Post-#4130 every periodic fiber is registered through
+      // `registerPeriodicFiber`, which derives the span from the fiber name
+      // (`SCHEDULER_SPAN_NAMES[spec.name]`), so the scan targets the
+      // registration sites: assert each key is referenced by a
+      // `name: "<key>"` registration AND that the registration count matches
+      // the record exactly, so deleting/adding a registration fails here.
       // (A full in-memory OTel exporter test was rejected as too heavy — see
       // the block comment above; this source scan is the pragmatic guard.)
-      describe("wrap-site wiring guard", () => {
-        // Matches `withEffectSpan(<constName>.<key>` tolerating arbitrary
-        // whitespace/newlines around the call paren and the dot.
-        const wrapCallRegex = new RegExp(
-          `withEffectSpan\\s*\\(\\s*${constName}\\s*\\.\\s*([A-Za-z_][A-Za-z0-9_]*)`,
-          "g",
-        );
+      describe("registration wiring guard", () => {
+        // Matches `name: "<key>"` registration properties, tolerating
+        // arbitrary whitespace around the colon. `layers.ts` has no other
+        // `name: "..."` object properties, and the cross-record filter below
+        // keeps the count honest per record.
+        const registrationRegex = /name\s*:\s*"([A-Za-z_][A-Za-z0-9_]*)"/g;
 
-        test("each fiber has a withEffectSpan wrap site", () => {
+        test("each fiber has a registerPeriodicFiber registration site", () => {
           for (const key of expectedKeys) {
-            const perKey = new RegExp(
-              `withEffectSpan\\s*\\(\\s*${constName}\\s*\\.\\s*${key}\\b`,
-            );
+            const perKey = new RegExp(`name\\s*:\\s*"${key}"`);
             expect(layersSource).toMatch(perKey);
           }
         });
 
-        test(`there are exactly ${expectedKeys.length} ${constName} wrap sites`, () => {
-          const matchedKeys = [...layersSource.matchAll(wrapCallRegex)].map(
-            (m) => m[1],
-          );
+        test(`there are exactly ${expectedKeys.length} ${constName} registrations`, () => {
+          const matchedKeys = [...layersSource.matchAll(registrationRegex)]
+            .map((m) => m[1])
+            .filter((key) => key in record);
           expect(matchedKeys).toHaveLength(expectedKeys.length);
-          // Every matched call site references a known fiber key — guards
-          // against a typo'd `.foo` reference that wouldn't type-check anyway
-          // but keeps the scan honest if the const is widened later.
+          // Every matched registration references a known fiber key — a
+          // typo'd name wouldn't type-check anyway (PeriodicFiberName), but
+          // this keeps the scan honest if the records are widened later.
           expect(matchedKeys.toSorted()).toEqual([...expectedKeys].toSorted());
         });
       });
     });
   }
+
+  // The registration guard above only proves each fiber is registered — this
+  // pins the helper's side of the contract: the span is derived from the
+  // merged record and actually applied around the tick. Without it, the
+  // helper could stop spanning and every per-record scan would stay green.
+  describe("registerPeriodicFiber span derivation (#4130)", () => {
+    test("derives the span from the merged record and wraps the tick", () => {
+      expect(layersSource).toMatch(/SCHEDULER_SPAN_NAMES\[spec\.name\]/);
+      expect(layersSource).toMatch(/withEffectSpan\s*\(\s*span\b/);
+    });
+  });
 
   // ── agent_runs retention tick: sweep ORDER guard (#3757) ──────────────────
   // The memory sweep MUST run before the runs sweep in `agentRunsRetentionTick`:

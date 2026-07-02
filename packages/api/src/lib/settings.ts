@@ -935,6 +935,38 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
+  // Billing scheduler cadences (#4130) — the plan-tier reconcile and
+  // unclaimed-grace reap fiber intervals, previously hard-coded in
+  // lib/effect/layers.ts. Platform-scoped: each is a single process-global
+  // fiber forked once at boot by `makeSchedulerLive`, so there is no
+  // per-workspace tick to override. Boot-consumed (the interval is resolved
+  // when the fiber forks), hence `requiresRestart` — same shape as the
+  // expert scheduler pair (#3399). Defaults preserve the pre-#4130 cadence.
+  {
+    key: "ATLAS_BILLING_RECONCILE_INTERVAL_HOURS",
+    section: "Billing",
+    label: "Plan-Tier Reconcile Interval",
+    description: "Hours between plan-tier reconciliation sweeps (heals plan_tier drift from Stripe subscriptions and prunes the webhook event ledger)",
+    type: "number",
+    default: "6",
+    envVar: "ATLAS_BILLING_RECONCILE_INTERVAL_HOURS",
+    requiresRestart: true,
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_UNCLAIMED_GRACE_REAP_INTERVAL_HOURS",
+    section: "Billing",
+    label: "Unclaimed-Grace Reap Interval",
+    description: "Hours between unclaimed-grace reaper sweeps (demotes lapsed unclaimed trial workspaces to the locked tier; SaaS only)",
+    type: "number",
+    default: "1",
+    envVar: "ATLAS_UNCLAIMED_GRACE_REAP_INTERVAL_HOURS",
+    requiresRestart: true,
+    scope: "platform",
+    saasVisible: false,
+  },
+
   // Dynamic Learning — retrieval-time tuning for learned query patterns.
   // Workspace-scoped + hot-reloaded (read per-request via getSettingAuto), so
   // a tenant can tune them from Admin → Settings with no redeploy. The env var

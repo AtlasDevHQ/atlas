@@ -44,9 +44,34 @@ import {
 } from "@atlas/api/lib/billing/stripe-event-ledger";
 import { parsePlanTier } from "@atlas/api/lib/integrations/install/plan-rank";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSetting } from "@atlas/api/lib/settings";
 import type { PlanTier } from "@useatlas/types";
 
 const log = createLogger("billing:reconcile");
+
+/**
+ * Default sweep cadence: 6h. Drift heals well inside Stripe's ~3-week retry
+ * horizon without adding meaningful load (one org-table scan per pass).
+ */
+export const DEFAULT_BILLING_RECONCILE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Sweep interval in milliseconds — settings-registry-backed (#4130).
+ *
+ * Resolves ATLAS_BILLING_RECONCILE_INTERVAL_HOURS through getSetting()
+ * (platform DB override > env > registry default of 6). Platform-scoped:
+ * the sweep is a single process-global fiber forked once at boot by
+ * `makeSchedulerLive` (lib/effect/layers.ts), so there is no per-workspace
+ * tick. Boot-consumed — retuning needs a restart (`requiresRestart` in the
+ * registry), not a redeploy.
+ */
+export function getBillingReconcileIntervalMs(): number {
+  const raw = getSetting("ATLAS_BILLING_RECONCILE_INTERVAL_HOURS");
+  if (!raw) return DEFAULT_BILLING_RECONCILE_INTERVAL_MS;
+  const hours = parseFloat(raw);
+  if (!Number.isFinite(hours) || hours <= 0) return DEFAULT_BILLING_RECONCILE_INTERVAL_MS;
+  return hours * 60 * 60 * 1000;
+}
 
 /** Tiers that imply a live Stripe subscription should exist. */
 const PAID_TIERS: ReadonlySet<PlanTier> = new Set(["starter", "pro", "business"]);

@@ -3,7 +3,14 @@
  * ingest". A synced collection (a `bundle-sync` install) points at an endpoint
  * serving its OKF bundle as a `.tar` / `.tar.gz` / `.zip` (including GitHub /
  * GitLab repo-archive URLs); this module pulls it and re-runs the #4207 ingest
- * so the diff falls out of upsert-by-path:
+ * so the diff falls out of upsert-by-path. NOTE: path identity includes the
+ * archive's top-level folder — repo BRANCH archives (stable `repo-main/`
+ * prefix) diff cleanly across pulls, but a moving prefix (tag/commit archive
+ * URLs) changes every path and archives-and-recreates the whole tree each
+ * sync. Point synced collections at branch archives or a stable-layout
+ * endpoint.
+ *
+ * The diff:
  *
  *   - unchanged docs no-op, changed published docs demote to `draft`, new docs
  *     insert as `draft` (`ingestBundleIntoCollection`, source `bundle-sync`);
@@ -35,9 +42,11 @@
  *     misbehaving endpoint must not archive an entire collection.
  *
  * Every sync attempt (success or error) upserts one `knowledge_sync_state`
- * row per collection — the `/admin/knowledge` surface reads it (#4209
- * coordination). Error messages are host-redacted at construction so a
- * credentialed URL can never leak into state rows or logs.
+ * row per collection — the `/admin/knowledge` list reads the time/status/error
+ * columns (#4209 coordination); the JSONB `report` (counts + capped per-file
+ * rejections) is persisted for a fuller drill-down surface (no reader yet).
+ * Error messages are host-redacted at construction so a credentialed URL can
+ * never leak into state rows or logs.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -47,8 +56,13 @@ import {
   internalQuery,
   type InternalPoolClient,
 } from "@atlas/api/lib/db/internal";
+import type { KnowledgeIngestDocumentCounts } from "@useatlas/types";
 import { getSettingAuto } from "@atlas/api/lib/settings";
-import { guardedFetch, hostForLog } from "@atlas/api/lib/openapi/egress-guard";
+import {
+  guardedFetch,
+  hostForLog,
+  EgressBlockedError,
+} from "@atlas/api/lib/openapi/egress-guard";
 import { extractBundle, BundleFormatError, type BundleEntryError } from "./bundle-archive";
 import { parseLenientBundle } from "./parse-lenient";
 import {
@@ -63,7 +77,11 @@ import {
   positiveIntSetting,
 } from "./ingest-limits";
 import { readSyncCredential } from "./sync-credentials";
-import { BUNDLE_SYNC_CATALOG_ID } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
+import {
+  BUNDLE_SYNC_CATALOG_ID,
+  parseBundleSyncConfig,
+  type BundleSyncAuthScheme,
+} from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
 
 const log = createLogger("knowledge.sync");
 
@@ -109,20 +127,24 @@ export function getKnowledgeSyncFetchTimeoutMs(): number {
   );
 }
 
-/** Document counts in the wire shape the admin surface reports. */
-export interface KnowledgeSyncDocumentCounts {
-  readonly created: number;
-  readonly updated: number;
-  readonly demoted: number;
-  readonly resurrected: number;
-  readonly unchanged: number;
-  readonly total: number;
+/**
+ * The response body was rejected mid-stream by the size cap. Message is
+ * host-only at construction (never the path/query), so it may pass through the
+ * fetch catch verbatim — same posture as `EgressBlockedError`.
+ */
+class BundleDownloadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BundleDownloadError";
+  }
 }
 
 /**
  * Outcome of one sync attempt. `status: "error"` carries an actionable,
  * host-redacted `error`; the ingest fields are null when the sync failed
- * before (or during) ingest.
+ * before (or during) ingest. Document counts reuse the ingest wire shape
+ * (`KnowledgeIngestDocumentCounts` from `@useatlas/types`) — sync IS an
+ * ingest, so the counts are the same vocabulary.
  */
 export interface KnowledgeSyncOutcome {
   readonly collection: string;
@@ -131,7 +153,7 @@ export interface KnowledgeSyncOutcome {
   readonly syncedAt: string;
   readonly error: string | null;
   readonly format: "tar" | "tar.gz" | "zip" | null;
-  readonly documents: KnowledgeSyncDocumentCounts | null;
+  readonly documents: KnowledgeIngestDocumentCounts | null;
   /** Previously-ingested docs archived because their path left the bundle. */
   readonly archivedAbsent: number | null;
   readonly linksWritten: number | null;
@@ -155,13 +177,30 @@ export interface SyncCollectionParams {
  * Sync one collection end-to-end and record the attempt in
  * `knowledge_sync_state`. Never throws — every failure becomes a
  * `status: "error"` outcome (and an error state row) so a scheduler cycle
- * survives any single bad endpoint.
+ * survives any single bad endpoint. The catch below makes that claim
+ * structural: even a defect escaping `runSyncAttempt` (a settings/parse
+ * regression) still lands an error state row, so the admin surface can never
+ * keep showing a stale "success" for a sync that is silently failing.
  */
 export async function syncCollection(params: SyncCollectionParams): Promise<KnowledgeSyncOutcome> {
   const { workspaceId, collectionSlug } = params;
   const now = params.now ?? (() => new Date());
 
-  const attempt = await runSyncAttempt(params);
+  let attempt: SyncAttempt;
+  try {
+    attempt = await runSyncAttempt(params);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error(
+      { workspaceId, collectionSlug, err: msg },
+      "Knowledge bundle sync attempt threw past its internal handling — recording an error state",
+    );
+    attempt = {
+      kind: "error",
+      error: `Sync failed unexpectedly: ${msg}. Retry "Sync now"; if it persists, check the API logs.`,
+      rejected: [],
+    };
+  }
   const syncedAt = now().toISOString();
   const outcome: KnowledgeSyncOutcome =
     attempt.kind === "ok"
@@ -229,15 +268,14 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
   const { workspaceId, collectionSlug, config } = params;
 
   // ── Resolve endpoint + auth from the install config ──────────────────────
-  const endpointUrl = typeof config?.endpoint_url === "string" ? config.endpoint_url : "";
-  if (endpointUrl === "") {
-    return {
-      kind: "error",
-      error: "Collection has no endpoint_url configured — edit the collection and set one.",
-      rejected: [],
-    };
+  // The install handler owns the config shape; this shared parser keeps the
+  // JSONB field names from being re-derived by hand here (a rename would
+  // compile clean and silently break every sync).
+  const parsedConfig = parseBundleSyncConfig(config);
+  if (!parsedConfig.ok) {
+    return { kind: "error", error: parsedConfig.error, rejected: [] };
   }
-  const authScheme = typeof config?.auth_scheme === "string" ? config.auth_scheme : "none";
+  const { endpointUrl, authScheme } = parsedConfig;
 
   let headers: Record<string, string>;
   try {
@@ -279,16 +317,32 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
     }
     bytes = await readBodyWithCap(response, maxBundleBytes, host);
   } catch (err) {
-    // `EgressBlockedError` is already host-redacted + actionable; timeouts and
-    // transport errors are rebuilt around the host so a credentialed URL never
-    // reaches the state row.
-    const isTimeout = err instanceof DOMException && err.name === "TimeoutError";
-    const message = isTimeout
-      ? `Fetching the bundle from "${host}" exceeded the ${timeoutMs / 1000}s time budget.`
-      : err instanceof Error
-        ? err.message
-        : String(err);
-    return { kind: "error", error: message, rejected: [] };
+    // `EgressBlockedError` (SSRF block) and `BundleDownloadError` (size cap)
+    // carry host-redacted, actionable messages by construction — pass them
+    // through. EVERY other error (DNS, TLS, connection reset, abort) is
+    // rebuilt around the host so a credentialed URL can never reach the state
+    // row, folding in the narrowed `cause` (undici buries the useful part
+    // there — a bare "fetch failed" wraps the real ECONNREFUSED/ENOTFOUND).
+    if (err instanceof EgressBlockedError || err instanceof BundleDownloadError) {
+      return { kind: "error", error: err.message, rejected: [] };
+    }
+    if (err instanceof DOMException && err.name === "TimeoutError") {
+      return {
+        kind: "error",
+        error: `Fetching the bundle from "${host}" exceeded the ${timeoutMs / 1000}s time budget.`,
+        rejected: [],
+      };
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    const causeMsg =
+      err instanceof Error && err.cause instanceof Error && err.cause.message !== ""
+        ? ` (${err.cause.message})`
+        : "";
+    return {
+      kind: "error",
+      error: `Fetching the bundle from "${host}" failed: ${msg}${causeMsg} — check the endpoint is reachable and serving the archive.`,
+      rejected: [],
+    };
   }
 
   if (bytes.length === 0) {
@@ -388,15 +442,10 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
 async function buildAuthHeaders(
   workspaceId: string,
   collectionSlug: string,
-  authScheme: string,
+  authScheme: BundleSyncAuthScheme,
 ): Promise<Record<string, string>> {
   const headers: Record<string, string> = { accept: "*/*" };
   if (authScheme === "none") return headers;
-  if (authScheme !== "bearer" && authScheme !== "basic") {
-    throw new Error(
-      `Unknown auth scheme "${authScheme}" on the collection config — edit the collection to fix it.`,
-    );
-  }
   let secret: string | null;
   try {
     secret = await readSyncCredential(workspaceId, collectionSlug);
@@ -445,7 +494,7 @@ async function readBodyWithCap(
       if (!value) continue;
       total += value.length;
       if (total > maxBytes) {
-        throw new Error(
+        throw new BundleDownloadError(
           `Bundle from "${host}" exceeds the ${maxBytes}-byte limit — download aborted.`,
         );
       }
@@ -479,6 +528,9 @@ async function recordSyncState(
   collectionSlug: string,
   outcome: KnowledgeSyncOutcome,
 ): Promise<void> {
+  // Error outcomes keep their (capped) per-file rejections too — several
+  // error messages point the admin at "the per-file errors", so they must
+  // actually be persisted somewhere the surface can read.
   const report =
     outcome.status === "success"
       ? {
@@ -488,7 +540,9 @@ async function recordSyncState(
           linksWritten: outcome.linksWritten,
           rejected: outcome.rejected.slice(0, REPORT_REJECTED_CAP),
         }
-      : null;
+      : outcome.rejected.length > 0
+        ? { rejected: outcome.rejected.slice(0, REPORT_REJECTED_CAP) }
+        : null;
   try {
     await internalQuery(SYNC_STATE_UPSERT_SQL, [
       workspaceId,

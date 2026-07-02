@@ -36,7 +36,11 @@ import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import type { WorkspaceId } from "@useatlas/types";
-import { assertBaseUrlAllowed, EgressBlockedError } from "@atlas/api/lib/openapi/egress-guard";
+import {
+  assertBaseUrlAllowed,
+  EgressBlockedError,
+  hostForLog,
+} from "@atlas/api/lib/openapi/egress-guard";
 import {
   saveSyncCredential,
   deleteSyncCredential,
@@ -69,6 +73,41 @@ export interface BundleSyncCollectionConfig {
   readonly endpoint_url: string;
   readonly auth_scheme: BundleSyncAuthScheme;
   readonly description?: string;
+}
+
+export type ParsedBundleSyncConfig =
+  | { readonly ok: true; readonly endpointUrl: string; readonly authScheme: BundleSyncAuthScheme }
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * Parse a stored install config back into the sync engine's inputs. Lives
+ * next to {@link BundleSyncCollectionConfig} so the JSONB field names have
+ * exactly one owner — the sync engine consumes this instead of re-deriving
+ * the shape by hand (a field rename would compile clean and silently break
+ * every sync). Errors are actionable admin-facing messages (they land in
+ * `knowledge_sync_state.error`).
+ */
+export function parseBundleSyncConfig(
+  config: Record<string, unknown> | null,
+): ParsedBundleSyncConfig {
+  const endpointUrl = typeof config?.endpoint_url === "string" ? config.endpoint_url.trim() : "";
+  if (endpointUrl === "") {
+    return {
+      ok: false,
+      error: "Collection has no endpoint_url configured — edit the collection and set one.",
+    };
+  }
+  const rawScheme = config?.auth_scheme ?? "none";
+  if (
+    typeof rawScheme !== "string" ||
+    !(BUNDLE_SYNC_AUTH_SCHEMES as readonly string[]).includes(rawScheme)
+  ) {
+    return {
+      ok: false,
+      error: `Unknown auth scheme "${String(rawScheme)}" on the collection config — edit the collection to fix it.`,
+    };
+  }
+  return { ok: true, endpointUrl, authScheme: rawScheme as BundleSyncAuthScheme };
 }
 
 /**
@@ -205,24 +244,15 @@ export class BundleSyncFormInstallHandler implements FormBasedInstallHandler {
     }
 
     this.log.info(
-      // Host only — the URL path could embed a token-ish segment.
-      { workspaceId, collectionSlug, rowId: persistedId, endpointHost: hostOnly(endpointUrl), authScheme },
+      // Host only (via the guard's shared helper) — the URL path could embed a
+      // token-ish segment.
+      { workspaceId, collectionSlug, rowId: persistedId, endpointHost: hostForLog(endpointUrl), authScheme },
       "Bundle-sync collection install completed",
     );
     return {
       installRecord: { id: persistedId, workspaceId, catalogId: BUNDLE_SYNC_SLUG },
       credentialWritten: authSecret !== null,
     };
-  }
-}
-
-/** Host-only breadcrumb for logs (never the path/query). */
-function hostOnly(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    // intentionally ignored: log breadcrumb only.
-    return "<unparseable>";
   }
 }
 
@@ -264,6 +294,20 @@ function validateEndpointUrl(raw: unknown): string {
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new FormInstallValidationError({
       fieldErrors: { endpoint_url: ["Endpoint URL must be http(s)."] },
+      formErrors: [],
+    });
+  }
+  // URL userinfo (`https://user:pass@host/...`) would land the credential
+  // PLAINTEXT in workspace_plugins.config (echoed by the admin list and
+  // rendered in the UI) — and `fetch` rejects credentialed URLs anyway. The
+  // encrypted Authentication fields are the only sanctioned carrier.
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new FormInstallValidationError({
+      fieldErrors: {
+        endpoint_url: [
+          "Remove the credentials from the URL — use the Authentication fields instead (stored encrypted).",
+        ],
+      },
       formErrors: [],
     });
   }

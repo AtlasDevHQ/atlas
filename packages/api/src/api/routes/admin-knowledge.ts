@@ -5,8 +5,9 @@
  *
  * A *collection* is a `pillar='knowledge'` `workspace_plugins` install
  * (`install_id` = slug). Installing one goes through the shared form-install
- * pipeline (`POST /api/v1/integrations/okf-upload/install-form` →
- * `OkfUploadFormInstallHandler`); this router owns the post-install lifecycle:
+ * pipeline (`okf-upload` → `OkfUploadFormInstallHandler`; `bundle-sync` →
+ * `BundleSyncFormInstallHandler`, #4211); this router owns the post-install
+ * lifecycle:
  *
  *   - `GET  /`                          — list the workspace's collections + doc counts + sync status
  *   - `GET  /{collectionSlug}/documents` — list a collection's documents + status
@@ -19,8 +20,10 @@
  * document parsed leniently (OKF is the at-rest normal form, not an ingest
  * requirement), and upserted by path at `status='draft'` — the review gate.
  * `?publish=true` ("upload & publish") runs the atomic content-mode promotion in
- * the SAME transaction (ADR-0028 §4); a future connector sync gets no such
- * option and always queues for review.
+ * the SAME transaction (ADR-0028 §4); connector-style syncs (`bundle-sync`, and
+ * future Notion/Confluence connectors) get no such option — every non-upload
+ * collection is rejected from the ingest route outright, so synced content
+ * always queues for review.
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
@@ -46,6 +49,7 @@ import {
   getIngestMaxDocBytes,
   getIngestMaxBundleBytes,
 } from "@atlas/api/lib/knowledge/ingest-limits";
+import { OKF_UPLOAD_CATALOG_ID } from "@atlas/api/lib/integrations/install/okf-upload-form-handler";
 import { BUNDLE_SYNC_CATALOG_ID } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
 import { syncCollection } from "@atlas/api/lib/knowledge/sync";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -87,8 +91,10 @@ async function invalidateKnowledgeMirror(orgId: string): Promise<void> {
  * knowledge-pillar catalog (`okf-upload` upload collections and `bundle-sync`
  * synced collections, #4211); `catalog_id` is returned so per-source routes
  * can gate — upload-ingest is upload-collections-only, "Sync now" is
- * synced-collections-only. The cross-catalog slug guard at install time
- * guarantees at most one row per (workspace, slug) across knowledge catalogs.
+ * synced-collections-only. The install-time cross-catalog slug guard makes a
+ * duplicate (workspace, slug) across knowledge catalogs require a same-instant
+ * race — it is a check-then-insert, not a DB constraint — so this LIMIT 1 read
+ * assumes at most one row in practice.
  */
 async function loadCollection(
   orgId: string,
@@ -114,9 +120,17 @@ async function loadCollection(
   return rows[0] ?? null;
 }
 
-/** Map a knowledge catalog id to the wire `source` discriminator. */
-function sourceOf(catalogId: string): "upload" | "bundle-sync" {
-  return catalogId === BUNDLE_SYNC_CATALOG_ID ? "bundle-sync" : "upload";
+/**
+ * Map a knowledge catalog id to the wire `source` discriminator — matching
+ * each KNOWN catalog explicitly so a future third knowledge catalog can never
+ * default into a privileged branch (`upload` is the source that inherits the
+ * upload-&-publish ingest route, ADR-0028 §4). Both gated routes reject
+ * `"unknown"` outright; only the list rendering maps it to a wire label.
+ */
+function sourceOf(catalogId: string): "upload" | "bundle-sync" | "unknown" {
+  if (catalogId === OKF_UPLOAD_CATALOG_ID) return "upload";
+  if (catalogId === BUNDLE_SYNC_CATALOG_ID) return "bundle-sync";
+  return "unknown";
 }
 
 /**
@@ -453,8 +467,10 @@ adminKnowledge.openapi(listRoute, async (c) =>
     for (const row of syncStates) {
       syncBySlug.set(row.collection_id, {
         lastSyncAt: row.last_sync_at,
-        // The table CHECK pins success|error; normalize defensively.
-        status: row.status === "error" ? ("error" as const) : ("success" as const),
+        // The table CHECK pins success|error; if something unexpected slips
+        // through, fail toward "error" — never report a sync healthy on a
+        // value we don't recognize.
+        status: row.status === "success" ? ("success" as const) : ("error" as const),
         error: row.error,
       });
     }
@@ -467,7 +483,11 @@ adminKnowledge.openapi(listRoute, async (c) =>
           const endpointUrl = r.config?.endpoint_url;
           return {
             slug: r.install_id,
-            source,
+            // Wire enum is two-valued; an unknown catalog (unreachable today —
+            // only the two built-in catalogs can create knowledge installs)
+            // renders as "upload" but NEVER gains upload privileges: both
+            // gated routes check `sourceOf` directly and reject "unknown".
+            source: source === "bundle-sync" ? ("bundle-sync" as const) : ("upload" as const),
             description: typeof description === "string" ? description : null,
             installedAt: r.installed_at,
             // Non-secret by construction — the auth secret lives only in
@@ -560,12 +580,14 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
     // A synced collection's tree is owned by its endpoint — a manual upload
     // would be archived-as-absent on the next pull, and the ADR-0028 §4 rule
     // that connector-synced content never pairs with publish is enforced by
-    // keeping synced collections off this route entirely (#4211).
-    if (sourceOf(collection.catalog_id) === "bundle-sync") {
+    // keeping everything except upload collections off this route entirely
+    // (#4211). Fail-closed: an unrecognized knowledge catalog is rejected too,
+    // never granted the privileged upload(-&-publish) path by default.
+    if (sourceOf(collection.catalog_id) !== "upload") {
       return c.json(
         {
           error: "synced_collection",
-          message: `"${collectionSlug}" is a synced collection — its content comes from the configured endpoint. Use "Sync now" instead of uploading.`,
+          message: `"${collectionSlug}" is not an upload collection — its content comes from its integration. Use "Sync now" instead of uploading.`,
           requestId,
         },
         400,
@@ -752,7 +774,7 @@ adminKnowledge.openapi(syncRoute, async (c) =>
       return c.json(
         {
           error: "not_synced_collection",
-          message: `"${collectionSlug}" is an upload collection — it has no endpoint to sync. Upload a bundle instead.`,
+          message: `"${collectionSlug}" is not a synced collection — only bundle-sync collections have an endpoint to sync.`,
           requestId,
         },
         400,

@@ -78,6 +78,11 @@ export default function KnowledgePage() {
           toast.error(result.data.error ?? `Sync of "${slug}" failed.`);
         }
         void refetch();
+      } else if (result.ok) {
+        // A 2xx with no parseable body shouldn't silently no-op — the sync may
+        // still have run, so refetch to pick up the recorded state.
+        toast.warning(`Sync of "${slug}" finished but returned no report — refreshing status.`);
+        void refetch();
       }
       // On a transport/HTTP failure the surface below the list renders the error.
     } finally {
@@ -240,8 +245,9 @@ export function describeArchive(collection: KnowledgeCollection): string {
 }
 
 /**
- * Footer status line for a synced collection: last sync time + outcome, or
- * "Never synced" before the first attempt. Exported for tests.
+ * Classify a synced collection's footer state (the card renders the actual
+ * line): `null` for upload collections, `"never-synced"` before the first
+ * attempt, else the last attempt's outcome. Exported for tests.
  */
 export function describeSync(collection: KnowledgeCollection): "synced" | "sync-failed" | "never-synced" | null {
   if (collection.source !== "bundle-sync") return null;

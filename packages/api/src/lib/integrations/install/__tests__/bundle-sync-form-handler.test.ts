@@ -48,7 +48,7 @@ mock.module("@atlas/api/lib/knowledge/sync-credentials", () => ({
   readSyncCredential,
 }));
 
-const { BundleSyncFormInstallHandler, BUNDLE_SYNC_SLUG } = await import(
+const { BundleSyncFormInstallHandler, BUNDLE_SYNC_SLUG, parseBundleSyncConfig } = await import(
   "@atlas/api/lib/integrations/install/bundle-sync-form-handler"
 );
 const { FormInstallValidationError } = await import(
@@ -125,6 +125,50 @@ describe("BundleSyncFormInstallHandler.validateConfig — endpoint validation", 
       "endpoint_url",
     );
     expect(msg).toBeDefined();
+  });
+
+  it("rejects URL userinfo — a user:pass@ URL would store the credential plaintext in config", async () => {
+    const msg = await fieldErrorOf(
+      handler().validateConfig(WORKSPACE, {
+        endpoint_url: "https://user:hunter2@example.com/kb.tar.gz",
+      }),
+      "endpoint_url",
+    );
+    expect(msg).toMatch(/Authentication fields/);
+    expect(insertCalls).toHaveLength(0);
+    expect(saveSyncCredential).not.toHaveBeenCalled();
+  });
+});
+
+describe("parseBundleSyncConfig — the sync engine's config reader", () => {
+  it("round-trips the exact config shape validateConfig persists (single owner of the JSONB fields)", async () => {
+    await handler().validateConfig(WORKSPACE, {
+      endpoint_url: ENDPOINT,
+      auth_scheme: "bearer",
+      auth_secret: "tok",
+    });
+    const persisted = JSON.parse(insertCalls[0].params[4] as string) as Record<string, unknown>;
+    expect(parseBundleSyncConfig(persisted)).toEqual({
+      ok: true,
+      endpointUrl: ENDPOINT,
+      authScheme: "bearer",
+    });
+  });
+
+  it("errors actionably on a missing endpoint or unrecognized scheme", () => {
+    expect(parseBundleSyncConfig(null)).toMatchObject({ ok: false });
+    expect(parseBundleSyncConfig({})).toMatchObject({ ok: false });
+    const bad = parseBundleSyncConfig({ endpoint_url: ENDPOINT, auth_scheme: "digest" });
+    expect(bad).toMatchObject({ ok: false });
+    if (!bad.ok) expect(bad.error).toContain("digest");
+  });
+
+  it("defaults a missing auth_scheme to none", () => {
+    expect(parseBundleSyncConfig({ endpoint_url: ENDPOINT })).toEqual({
+      ok: true,
+      endpointUrl: ENDPOINT,
+      authScheme: "none",
+    });
   });
 });
 

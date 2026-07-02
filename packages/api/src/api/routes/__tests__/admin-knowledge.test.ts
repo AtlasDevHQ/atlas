@@ -43,10 +43,14 @@ let publishRan = false;
 let archivedDocRows = 0;
 let nextId = 1;
 
+// Transaction SQL captured per test (uninstall cleanup assertions).
+const txSql: string[] = [];
+
 function fakeTxClient() {
   return {
     async query(sql: string, params: unknown[] = []): Promise<{ rows: Record<string, unknown>[] }> {
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+      txSql.push(sql);
       if (sql.includes("SELECT id, status, body") && sql.includes("knowledge_documents")) {
         const existing = store.get(params[2] as string);
         return { rows: existing ? [existing] : [] };
@@ -110,23 +114,46 @@ mock.module("@atlas/api/lib/audit", () => ({
 }));
 
 // The sync engine is pinned in lib/knowledge/__tests__/sync.test.ts — here it
-// is a spy so the route tests assert dispatch + gating only.
-const syncCollection = mock(async (params: { collectionSlug: string }) => ({
-  collection: params.collectionSlug,
-  status: "success" as const,
-  syncedAt: "2026-07-02T01:00:00.000Z",
-  error: null,
-  format: "zip" as const,
-  documents: { created: 1, updated: 0, demoted: 0, resurrected: 0, unchanged: 0, total: 1 },
-  archivedAbsent: 0,
-  linksWritten: 0,
-  rejected: [],
-}));
+// is a spy so the route tests assert dispatch + gating only. Typed to the
+// outcome UNION so per-test overrides can return the error shape.
+interface OutcomeLike {
+  collection: string;
+  status: "success" | "error";
+  syncedAt: string;
+  error: string | null;
+  format: "tar" | "tar.gz" | "zip" | null;
+  documents: {
+    created: number;
+    updated: number;
+    demoted: number;
+    resurrected: number;
+    unchanged: number;
+    total: number;
+  } | null;
+  archivedAbsent: number | null;
+  linksWritten: number | null;
+  rejected: { path: string; reason: string }[];
+}
+const syncCollection = mock(
+  async (params: { collectionSlug: string }): Promise<OutcomeLike> => ({
+    collection: params.collectionSlug,
+    status: "success",
+    syncedAt: "2026-07-02T01:00:00.000Z",
+    error: null,
+    format: "zip",
+    documents: { created: 1, updated: 0, demoted: 0, resurrected: 0, unchanged: 0, total: 1 },
+    archivedAbsent: 0,
+    linksWritten: 0,
+    rejected: [],
+  }),
+);
 mock.module("@atlas/api/lib/knowledge/sync", () => ({
   syncCollection,
   runKnowledgeSyncCycle: async () => ({ inspected: 0, succeeded: 0, failed: 0 }),
   getKnowledgeSyncFetchTimeoutMs: () => 60_000,
   DEFAULT_SYNC_FETCH_TIMEOUT_SECONDS: 60,
+  ARCHIVE_ABSENT_SQL: "",
+  SYNC_STATE_UPSERT_SQL: "",
 }));
 
 // Only the catalog-id constant is consumed by the router; mock the handler
@@ -137,6 +164,7 @@ mock.module("@atlas/api/lib/integrations/install/bundle-sync-form-handler", () =
   BUNDLE_SYNC_AUTH_SCHEMES: ["none", "bearer", "basic"],
   BUNDLE_SYNC_INSTALL_UPSERT_SQL: "",
   BundleSyncFormInstallHandler: class {},
+  parseBundleSyncConfig: () => ({ ok: true, endpointUrl: "https://kb.example.com/bundle.zip", authScheme: "none" }),
 }));
 
 mock.module("@atlas/api/lib/content-mode", () => ({
@@ -185,6 +213,7 @@ beforeEach(() => {
   nextId = 1;
   DOCUMENTS = [];
   SYNC_STATES = [];
+  txSql.length = 0;
   internalQuery.mockClear();
   syncCollection.mockClear();
 });
@@ -362,6 +391,16 @@ describe("DELETE /{collectionSlug} — uninstall archives", () => {
     COLLECTION = null;
     const res = await adminKnowledge.request("/nope", { method: "DELETE" });
     expect(res.status).toBe(404);
+  });
+
+  it("hard-deletes the sync credential + state when uninstalling a synced collection (#4211)", async () => {
+    useSyncedCollection();
+    const res = await adminKnowledge.request("/runbooks", { method: "DELETE" });
+    expect(res.status).toBe(200);
+    // Secrets never outlive their install — both cleanup DELETEs must run in
+    // the uninstall transaction (removing them silently would strand a secret).
+    expect(txSql.some((q) => q.includes("DELETE FROM knowledge_sync_credentials"))).toBe(true);
+    expect(txSql.some((q) => q.includes("DELETE FROM knowledge_sync_state"))).toBe(true);
   });
 });
 

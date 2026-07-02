@@ -19,8 +19,9 @@
 -- table in `NON_NULL_ENCRYPTED_TABLES`.
 --
 -- knowledge_sync_state — one bookkeeping row per synced collection: last sync
--- time, outcome, error, and a compact JSONB report (ingest counts + rejected
--- files) surfaced on `/admin/knowledge` (#4209 coordination). Deliberately NOT
+-- time, outcome, and error (surfaced on `/admin/knowledge`, #4209
+-- coordination), plus a compact JSONB report (ingest counts + rejected files)
+-- persisted for a fuller drill-down surface (no reader yet). Deliberately NOT
 -- stored in `workspace_plugins.config`: a re-install upserts `config =
 -- EXCLUDED.config`, which would silently wipe sync bookkeeping on every edit.
 --

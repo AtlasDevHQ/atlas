@@ -24,6 +24,9 @@ const ENDPOINT = "https://kb.example.com/bundle.zip";
 let MAX_DOCS = 100;
 let MAX_DOC_BYTES = 100_000;
 let MAX_BUNDLE_BYTES = 200_000;
+// When set, the bundle-bytes getter THROWS — simulates a defect escaping
+// runSyncAttempt (a settings-backend regression) for the never-throws pin.
+let LIMITS_THROW = false;
 
 mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
   DEFAULT_INGEST_MAX_DOCS: 1000,
@@ -31,7 +34,10 @@ mock.module("@atlas/api/lib/knowledge/ingest-limits", () => ({
   DEFAULT_INGEST_MAX_BUNDLE_BYTES: 25_000_000,
   getIngestMaxDocs: () => MAX_DOCS,
   getIngestMaxDocBytes: () => MAX_DOC_BYTES,
-  getIngestMaxBundleBytes: () => MAX_BUNDLE_BYTES,
+  getIngestMaxBundleBytes: () => {
+    if (LIMITS_THROW) throw new Error("settings backend exploded");
+    return MAX_BUNDLE_BYTES;
+  },
   positiveIntSetting: (_key: string, raw: string | undefined, fallback: number) => {
     if (raw === undefined) return fallback;
     const parsed = Number.parseInt(raw, 10);
@@ -67,19 +73,30 @@ interface StoredDoc {
 let store: Map<string, StoredDoc>;
 let nextId = 1;
 const txSql: { sql: string; params: unknown[] }[] = [];
+// Transaction control statements (BEGIN/COMMIT/ROLLBACK), captured separately.
+const txControl: string[] = [];
+// When set, the fake client throws on the ingest INSERT — exercises the
+// transaction-failure path (ROLLBACK + error outcome + error state row).
+let TX_INSERT_THROWS = false;
+// When set, the state upsert throws — exercises recordSyncState resilience.
+let STATE_WRITE_THROWS = false;
 let INSTALL_ROWS: Array<{ workspace_id: string; install_id: string; config: unknown }> = [];
 const stateWrites: { params: unknown[] }[] = [];
 
 function fakeTxClient() {
   return {
     async query(sql: string, params: unknown[] = []): Promise<{ rows: Record<string, unknown>[] }> {
-      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+        txControl.push(sql);
+        return { rows: [] };
+      }
       txSql.push({ sql, params });
       if (sql.includes("SELECT id, status, body")) {
         const existing = store.get(params[2] as string);
         return { rows: existing ? [existing as unknown as Record<string, unknown>] : [] };
       }
       if (sql.includes("INSERT INTO knowledge_documents")) {
+        if (TX_INSERT_THROWS) throw new Error("duplicate key value violates unique constraint");
         const id = `doc-${nextId++}`;
         store.set(params[2] as string, {
           id,
@@ -124,6 +141,7 @@ function fakeTxClient() {
 let HAS_INTERNAL_DB = true;
 const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<unknown[]> => {
   if (sql.includes("INSERT INTO knowledge_sync_state")) {
+    if (STATE_WRITE_THROWS) throw new Error("state table unavailable");
     stateWrites.push({ params });
     return [];
   }
@@ -164,7 +182,12 @@ function fakeResponse(opts: {
     ok: (opts.status ?? 200) >= 200 && (opts.status ?? 200) < 300,
     status: opts.status ?? 200,
     headers: new Headers(opts.headers ?? {}),
-    body: new Blob([bytes as BlobPart]).stream(),
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (bytes.length > 0) controller.enqueue(bytes);
+        controller.close();
+      },
+    }),
   } as unknown as Response;
 }
 
@@ -173,7 +196,7 @@ function fetchReturning(response: Response | (() => Response)) {
   const impl = (async (url: unknown, init?: unknown) => {
     calls.push({ url: String(url), init: (init ?? {}) as RequestInit });
     return typeof response === "function" ? response() : response;
-  }) as typeof globalThis.fetch;
+  }) as unknown as typeof globalThis.fetch;
   return { impl, calls };
 }
 
@@ -199,12 +222,16 @@ beforeEach(() => {
   MAX_DOCS = 100;
   MAX_DOC_BYTES = 100_000;
   MAX_BUNDLE_BYTES = 200_000;
+  LIMITS_THROW = false;
+  TX_INSERT_THROWS = false;
+  STATE_WRITE_THROWS = false;
   CREDENTIAL = null;
   CREDENTIAL_THROWS = false;
   HAS_INTERNAL_DB = true;
   store = new Map();
   nextId = 1;
   txSql.length = 0;
+  txControl.length = 0;
   stateWrites.length = 0;
   INSTALL_ROWS = [];
   internalQuery.mockClear();
@@ -246,9 +273,11 @@ describe("syncCollection — ingest-computed diff", () => {
     expect(store.get("changed.md")?.status).toBe("draft");
     expect(store.get("new.md")?.status).toBe("draft");
 
-    // The review gate holds: nothing on the sync path ever writes 'published'.
-    for (const { sql } of txSql) {
+    // The review gate holds: nothing on the sync path ever writes 'published'
+    // — neither as a SQL literal nor as a bound parameter.
+    for (const { sql, params } of txSql) {
       expect(sql).not.toMatch(/status\s*=\s*'published'/);
+      expect(params).not.toContain("published");
     }
     // Docs land with the bundle-sync provenance source.
     const insert = txSql.find((q) => q.sql.includes("INSERT INTO knowledge_documents"));
@@ -315,6 +344,72 @@ describe("syncCollection — ingest-computed diff", () => {
     });
     expect(outcome.status).toBe("error");
     expect(outcome.error).toMatch(/document limit/);
+  });
+
+  it("rejects a non-archive response (HTML error page) with an actionable error and no writes", async () => {
+    seedDoc("keep.md", "published", "body");
+    const { impl } = fetchReturning(
+      fakeResponse({ bytes: strToU8("<html>404 not found</html>") }),
+    );
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/Unrecognized bundle format/);
+    expect(txSql).toHaveLength(0);
+    expect(store.get("keep.md")?.status).toBe("published");
+    expect(stateWrites[0].params[2]).toBe("error");
+  });
+
+  it("rolls back and records an error state when the ingest transaction fails", async () => {
+    TX_INSERT_THROWS = true;
+    const bundle = zipBundle({ "a.md": "# a" });
+    const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/Ingest failed after a successful fetch/);
+    expect(txControl).toContain("ROLLBACK");
+    expect(txControl).not.toContain("COMMIT");
+    expect(stateWrites[0].params[2]).toBe("error");
+  });
+
+  it("still reports success when the state bookkeeping write itself fails (never fail a committed sync)", async () => {
+    STATE_WRITE_THROWS = true;
+    const bundle = zipBundle({ "a.md": "# a" });
+    const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("success");
+  });
+
+  it("records an error state even when the attempt throws unexpectedly (never a stale success)", async () => {
+    LIMITS_THROW = true;
+    const bundle = zipBundle({ "a.md": "# a" });
+    const { impl } = fetchReturning(fakeResponse({ bytes: bundle }));
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig(),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toMatch(/Sync failed unexpectedly: settings backend exploded/);
+    // The defect still landed a state row — the admin surface can't keep
+    // showing a stale "success".
+    expect(stateWrites).toHaveLength(1);
+    expect(stateWrites[0].params[2]).toBe("error");
   });
 });
 
@@ -392,10 +487,30 @@ describe("syncCollection — fetch hardening", () => {
     expect(outcome.error).toMatch(/download aborted/);
   });
 
+  it("rebuilds transport errors around the host — folding the cause, never leaking the URL", async () => {
+    const impl = (async () => {
+      throw new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED 93.184.216.34:443") });
+    }) as unknown as typeof globalThis.fetch;
+    const outcome = await syncCollection({
+      workspaceId: ORG,
+      collectionSlug: COLLECTION,
+      config: baseConfig({ endpoint_url: `${ENDPOINT}?token=SECRET` }),
+      fetchImpl: impl,
+    });
+    expect(outcome.status).toBe("error");
+    expect(outcome.error).toContain('"kb.example.com"');
+    expect(outcome.error).toContain("fetch failed");
+    // The narrowed cause (where undici hides the useful part) is folded in…
+    expect(outcome.error).toContain("ECONNREFUSED");
+    // …and the credentialed URL never reaches the state row.
+    expect(outcome.error).not.toContain("SECRET");
+    expect(stateWrites[0].params[3]).not.toContain("SECRET");
+  });
+
   it("maps a fetch timeout to the time-budget error", async () => {
     const impl = (async () => {
       throw new DOMException("The operation timed out.", "TimeoutError");
-    }) as typeof globalThis.fetch;
+    }) as unknown as typeof globalThis.fetch;
     const outcome = await syncCollection({
       workspaceId: ORG,
       collectionSlug: COLLECTION,

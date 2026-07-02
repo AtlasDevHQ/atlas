@@ -166,8 +166,8 @@ export interface BuiltinKnowledgeCatalogSeedResult {
  * Column order matches the built-in Datasource seed's VALUES block so the two
  * seeds stay structurally recognizable; `type` and `pillar` differ (`context` /
  * `knowledge`). `RETURNING slug` reports whether each row was inserted vs
- * preserved. Rows seed independently — a failure on one propagates (the boot
- * wrapper logs and continues), but a pre-existing row never blocks the other.
+ * preserved. Rows seed sequentially: a pre-existing row never blocks the next,
+ * but a hard failure aborts the pass and propagates (the boot wrapper logs and continues booting).
  */
 export async function seedBuiltinKnowledgeCatalog(
   db: BuiltinKnowledgeCatalogSeedDb,

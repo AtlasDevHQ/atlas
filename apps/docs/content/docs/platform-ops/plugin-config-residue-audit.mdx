@@ -78,7 +78,7 @@ plaintext-drop PR:
    ```sql
    SELECT count(*) FROM <table> WHERE <col>_encrypted IS NULL;
    ```
-   for the eight tables in `NON_NULL_ENCRYPTED_TABLES`. The audit
+   for the tables in `NON_NULL_ENCRYPTED_TABLES`. The audit
    script bundles this check, so passing it in step 1 covers this.
 
 If any of the three checks fails, **do not merge** the destructive

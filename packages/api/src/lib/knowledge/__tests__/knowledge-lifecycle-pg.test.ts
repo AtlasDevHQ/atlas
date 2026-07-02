@@ -415,6 +415,27 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     await expect(
       pool.query(SYNC_STATE_UPSERT_SQL, [ws, "synced-docs", "bogus", null, null]),
     ).rejects.toThrow(/chk_knowledge_sync_state_status/);
+
+    // The admin list route's sync-state projection (to_char / column names)
+    // against the live schema — the same drift class the documents-list
+    // projection test above exists for (#4209).
+    const projection = await pool.query<{
+      collection_id: string;
+      last_sync_at: string;
+      status: string;
+      error: string | null;
+    }>(
+      `SELECT collection_id,
+              to_char(last_sync_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_sync_at,
+              status,
+              error
+         FROM knowledge_sync_state
+        WHERE workspace_id = $1`,
+      [ws],
+    );
+    expect(projection.rows).toHaveLength(1);
+    expect(projection.rows[0]?.collection_id).toBe("synced-docs");
+    expect(projection.rows[0]?.last_sync_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   }, PG_TEST_TIMEOUT_MS);
 
   it("archives absent paths via ARCHIVE_ABSENT_SQL without touching present or rejected paths", async () => {

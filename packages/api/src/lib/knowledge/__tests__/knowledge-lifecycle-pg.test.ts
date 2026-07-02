@@ -24,11 +24,11 @@ import { extractBundle } from "@atlas/api/lib/knowledge/bundle-archive";
 import { parseLenientBundle } from "@atlas/api/lib/knowledge/parse-lenient";
 import { ingestBundleIntoCollection, type IngestClient } from "@atlas/api/lib/knowledge/ingest";
 import { KNOWLEDGE_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/okf-upload-form-handler";
+import { rowToDoc } from "@atlas/api/lib/knowledge/mirror";
 import {
   buildCollectionsQuery,
-  rowToDoc,
-  type KnowledgeDocRow,
-} from "@atlas/api/lib/knowledge/mirror";
+  type KnowledgeDocRowWithBody,
+} from "@atlas/api/lib/knowledge/queries";
 import { BUNDLE_SYNC_INSTALL_UPSERT_SQL } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
 import { ARCHIVE_ABSENT_SQL, SYNC_STATE_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync";
 import { SYNC_CREDENTIAL_UPSERT_SQL } from "@atlas/api/lib/knowledge/sync-credentials";
@@ -351,7 +351,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
     // The REAL serving SELECT (quoted "timestamp" alias, atlas_* columns, status
     // clause) against the live schema — published mode sees only the published doc.
     const pub = buildCollectionsQuery(ws, "published", "serving");
-    const pubRows = (await pool.query<KnowledgeDocRow>(pub.text, pub.params)).rows;
+    const pubRows = (await pool.query<KnowledgeDocRowWithBody>(pub.text, pub.params)).rows;
     expect(pubRows.map((r) => r.path)).toEqual(["pub.md"]);
     // The read→map path produces a conformant MirrorDoc with provenance + timestamp.
     const doc = rowToDoc(pubRows[0]);
@@ -362,7 +362,7 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
 
     // Developer mode overlays the draft.
     const dev = buildCollectionsQuery(ws, "developer", "serving");
-    const devRows = (await pool.query<KnowledgeDocRow>(dev.text, dev.params)).rows;
+    const devRows = (await pool.query<KnowledgeDocRowWithBody>(dev.text, dev.params)).rows;
     expect(devRows.map((r) => r.path).sort()).toEqual(["draft.md", "pub.md"]);
   }, PG_TEST_TIMEOUT_MS);
 

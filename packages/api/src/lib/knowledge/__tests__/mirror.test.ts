@@ -62,17 +62,19 @@ const {
 
 function docRow(over: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
   return {
+    id: "00000000-0000-0000-0000-000000000001",
     collection_id: "runbooks",
     path: "deploy.md",
     type: "Document",
     title: "Deploy Runbook",
     description: "How we deploy.",
     tags: ["ops", "deploy"],
-    doc_timestamp: null,
+    timestamp: null,
     resource: null,
     body: "# Deploy\n\nRun the pipeline.\n",
     atlas_source: "upload",
     atlas_ingested_at: new Date("2026-07-01T00:00:00.000Z"),
+    status: "published",
     ...over,
   };
 }
@@ -149,17 +151,19 @@ describe("serializeMirrorDocument", () => {
 describe("rowToDoc conformance defense-in-depth", () => {
   it("stamps a conformant type/title and sanitizes tags/timestamp on a malformed row", () => {
     const doc = rowToDoc({
+      id: "00000000-0000-0000-0000-000000000002",
       collection_id: "c",
       path: "corp/x.md",
       type: null,
       title: "  ",
       description: null,
       tags: [1, "ok", null, "keep"],
-      doc_timestamp: "not-a-date",
+      timestamp: "not-a-date",
       resource: null,
       body: "b",
       atlas_source: null,
       atlas_ingested_at: null,
+      status: "draft",
     });
     expect(doc.type).toBe("Document");
     expect(doc.title).toBe("corp/x.md"); // falls back to the path

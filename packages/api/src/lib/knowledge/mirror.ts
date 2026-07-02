@@ -37,7 +37,12 @@ import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getSettingAuto } from "@atlas/api/lib/settings";
-import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
+import {
+  buildCollectionsQuery,
+  normTags,
+  normTimestamp,
+  type KnowledgeDocRowWithBody,
+} from "./queries";
 import type { InteropFile } from "@atlas/api/lib/semantic/okf";
 
 const log = createLogger("knowledge-mirror");
@@ -56,23 +61,9 @@ const INDEX_BASENAME = "index.md";
 export const DEFAULT_KNOWLEDGE_TOC_MAX_BYTES = 12_000;
 
 // ---------------------------------------------------------------------------
-// Row + document shapes
+// Document shapes (the row shape + normalizers live in ./queries — the shared
+// knowledge read module)
 // ---------------------------------------------------------------------------
-
-/** Raw `knowledge_documents` read-back — timestamptz columns come back Date|string. */
-export interface KnowledgeDocRow extends Record<string, unknown> {
-  collection_id: string;
-  path: string;
-  type: string | null;
-  title: string | null;
-  description: string | null;
-  tags: unknown;
-  doc_timestamp: Date | string | null;
-  resource: string | null;
-  body: string;
-  atlas_source: string | null;
-  atlas_ingested_at: Date | string | null;
-}
 
 /** One conformant knowledge document, ready to render as OKF. `type`/`title` are
  *  always non-empty (stamped at ingest by `parse-lenient.ts`). */
@@ -239,29 +230,9 @@ export function renderCollectionBundle(
 // DB read — content-mode-filtered documents grouped by collection
 // ---------------------------------------------------------------------------
 
-/**
- * Normalize a timestamptz read-back to ISO | null. Takes `unknown` (symmetric
- * with {@link normTags}) because the row is untrusted DB output: a `Date`, an ISO
- * string, null, or — after a hypothetical schema drift — anything. Non-date
- * inputs normalize to null rather than throwing.
- */
-function normTimestamp(value: unknown): string | null {
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value.toISOString();
-  }
-  if (typeof value !== "string" || value.trim() === "") return null;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-/** OKF `tags` jsonb → a clean `string[]` (drops non-strings). */
-function normTags(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((t): t is string => typeof t === "string") : [];
-}
-
 /** Map one raw `knowledge_documents` row onto a conformant {@link MirrorDoc}.
  *  Exported for the real-Postgres test to drive the full read→render path. */
-export function rowToDoc(row: KnowledgeDocRow): MirrorDoc {
+export function rowToDoc(row: KnowledgeDocRowWithBody): MirrorDoc {
   return {
     path: row.path,
     // Defense-in-depth: ingest always stamps a non-empty type/title, but a
@@ -271,7 +242,7 @@ export function rowToDoc(row: KnowledgeDocRow): MirrorDoc {
     description: row.description,
     resource: row.resource,
     tags: normTags(row.tags),
-    timestamp: normTimestamp(row.doc_timestamp),
+    timestamp: normTimestamp(row.timestamp),
     body: row.body,
     atlasSource: row.atlas_source,
     atlasIngestedAt: normTimestamp(row.atlas_ingested_at),
@@ -279,43 +250,11 @@ export function rowToDoc(row: KnowledgeDocRow): MirrorDoc {
 }
 
 /**
- * Build the content-mode-filtered `knowledge_documents` read for a workspace.
- * Visibility follows content-mode exactly like entities: published mode returns
- * `status='published'`; developer mode adds `draft` (the draft-preview overlay).
- * The status clause is built from a fixed table + mode (no user input), so it is
- * safe to inline into the query text.
- *
- * Exported so the real-Postgres test can run the exact SELECT (quoted
- * `"timestamp"` alias, `kd.` alias, `atlas_*` columns, the injected status
- * clause) against the live schema — the drift class a mocked pool can't catch.
- */
-export function buildCollectionsQuery(
-  orgId: string,
-  mode: AtlasMode,
-  collectionId?: string,
-): { text: string; params: unknown[] } {
-  const statusClause = resolveStatusClause("knowledgeDocuments", mode, "kd");
-  const params: unknown[] = [orgId];
-  let collectionFilter = "";
-  if (collectionId !== undefined) {
-    params.push(collectionId);
-    collectionFilter = ` AND kd.collection_id = $${params.length}`;
-  }
-  return {
-    text: `SELECT collection_id, path, type, title, description, tags,
-            "timestamp" AS doc_timestamp, resource, body,
-            atlas_source, atlas_ingested_at
-       FROM knowledge_documents kd
-      WHERE kd.workspace_id = $1 AND ${statusClause}${collectionFilter}
-      ORDER BY collection_id, path`,
-    params,
-  };
-}
-
-/**
  * Load a workspace's knowledge documents for a mode, grouped by collection.
  * Returns `[]` (never throws for a missing DB) when there is no internal DB.
- * `collectionId` filters to a single collection (the export path).
+ * `collectionId` filters to a single collection (the export path). The SELECT
+ * comes from the shared knowledge read module (`./queries`), so the mirror,
+ * search, and admin surfaces can't drift apart on projection or mode gating.
  */
 async function loadCollections(
   orgId: string,
@@ -326,7 +265,7 @@ async function loadCollections(
   if (!hasInternalDB()) return [];
 
   const { text, params } = buildCollectionsQuery(orgId, mode, collectionId);
-  const rows = await internalQuery<KnowledgeDocRow>(text, params);
+  const rows = await internalQuery<KnowledgeDocRowWithBody>(text, params);
 
   const byCollection = new Map<string, MirrorDoc[]>();
   for (const row of rows) {

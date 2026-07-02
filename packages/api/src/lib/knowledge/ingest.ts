@@ -23,6 +23,7 @@
  */
 
 import type { LenientDoc } from "./parse-lenient";
+import { normTags, normTimestamp } from "./queries";
 
 /** Minimal transactional client shape (satisfied by `pg.PoolClient`). */
 export interface IngestClient {
@@ -78,18 +79,9 @@ interface ExistingRow {
   readonly timestamp: Date | string | null;
 }
 
-/** Normalize a timestamptz read-back (Date | ISO string | null) to ISO | null. */
-function normTimestamp(value: Date | string | null): string | null {
-  if (value === null) return null;
-  const d = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
-
 /** True when the freshly-parsed doc differs from the stored row (any mirrored field). */
 export function docChanged(existing: ExistingRow, next: LenientDoc): boolean {
-  const existingTags = Array.isArray(existing.tags)
-    ? existing.tags.filter((t): t is string => typeof t === "string")
-    : [];
+  const existingTags = normTags(existing.tags);
   return (
     existing.body !== next.body ||
     (existing.type ?? "") !== next.type ||

@@ -49,6 +49,12 @@ import {
   getIngestMaxDocBytes,
   getIngestMaxBundleBytes,
 } from "@atlas/api/lib/knowledge/ingest-limits";
+import {
+  buildCollectionDocumentsQuery,
+  buildDocumentStatusCountsQuery,
+  normTags,
+  type AdminDocumentRow,
+} from "@atlas/api/lib/knowledge/queries";
 import { OKF_UPLOAD_CATALOG_ID } from "@atlas/api/lib/integrations/install/okf-upload-form-handler";
 import { BUNDLE_SYNC_CATALOG_ID } from "@atlas/api/lib/integrations/install/bundle-sync-form-handler";
 import { syncCollection } from "@atlas/api/lib/knowledge/sync";
@@ -416,6 +422,7 @@ adminKnowledge.use(requireOrgContext());
 adminKnowledge.openapi(listRoute, async (c) =>
   runHandler(c, "list knowledge collections", async () => {
     const { orgId } = c.get("orgContext");
+    const countsQuery = buildDocumentStatusCountsQuery(orgId);
     const [installs, counts, syncStates] = await Promise.all([
       internalQuery<{
         install_id: string;
@@ -434,11 +441,8 @@ adminKnowledge.openapi(listRoute, async (c) =>
         [orgId],
       ),
       internalQuery<{ collection_id: string; status: string; n: number }>(
-        `SELECT collection_id, status, COUNT(*)::int AS n
-           FROM knowledge_documents
-          WHERE workspace_id = $1
-          GROUP BY collection_id, status`,
-        [orgId],
+        countsQuery.text,
+        countsQuery.params,
       ),
       internalQuery<{ collection_id: string; last_sync_at: string; status: string; error: string | null }>(
         `SELECT collection_id,
@@ -517,29 +521,8 @@ adminKnowledge.openapi(documentsRoute, async (c) =>
       );
     }
 
-    const rows = await internalQuery<{
-      id: string;
-      path: string;
-      title: string | null;
-      description: string | null;
-      type: string | null;
-      tags: unknown;
-      status: string;
-      updated_at: string | null;
-    }>(
-      `SELECT id,
-              path,
-              title,
-              description,
-              type,
-              tags,
-              status,
-              to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at
-         FROM knowledge_documents
-        WHERE workspace_id = $1 AND collection_id = $2 AND status <> 'archived'
-        ORDER BY path ASC`,
-      [orgId, collectionSlug],
-    );
+    const docsQuery = buildCollectionDocumentsQuery(orgId, collectionSlug);
+    const rows = await internalQuery<AdminDocumentRow>(docsQuery.text, docsQuery.params);
 
     return c.json(
       {
@@ -552,8 +535,8 @@ adminKnowledge.openapi(documentsRoute, async (c) =>
           type: r.type,
           // `tags` is a jsonb array; keep only string members so a
           // malformed frontmatter array never breaks the wire contract.
-          tags: Array.isArray(r.tags) ? r.tags.filter((t): t is string => typeof t === "string") : [],
-          // The archived filter above guarantees draft | published only.
+          tags: normTags(r.tags),
+          // The query's archived filter guarantees draft | published only.
           status: r.status === "published" ? ("published" as const) : ("draft" as const),
           updatedAt: r.updated_at,
         })),

@@ -106,6 +106,19 @@ export function classifyConcept(concept: OkfConcept): OkfConceptKind {
 // ---------------------------------------------------------------------------
 
 /**
+ * A top-level `# Heading` line's text, or null. String ops instead of a
+ * regex: `/^#\s+(.+?)\s*$/` backtracks polynomially on hostile whitespace
+ * runs, and this runs on untrusted bundle content (CodeQL js/polynomial-redos).
+ */
+function topLevelHeading(line: string): string | null {
+  if (line.charAt(0) !== "#") return null;
+  const second = line.charAt(1);
+  if (second !== " " && second !== "\t") return null;
+  const text = line.slice(2).trim();
+  return text === "" ? null : text;
+}
+
+/**
  * Split a markdown body into `# Heading` → section-text pairs (top-level
  * headings only; `##` subsections stay inside their parent section). Text
  * before the first heading is returned under the empty-string key. Repeated
@@ -122,10 +135,10 @@ export function splitSections(body: string): Map<string, string> {
   let current = "";
   let buf: string[] = [];
   for (const line of lines) {
-    const m = line.match(/^#\s+(.+?)\s*$/);
-    if (m) {
+    const heading = topLevelHeading(line);
+    if (heading !== null) {
       flush(current, buf);
-      current = m[1].toLowerCase();
+      current = heading.toLowerCase();
       buf = [];
     } else {
       buf.push(line);
@@ -142,6 +155,41 @@ export function extractSqlBlock(text: string): string | undefined {
 }
 
 /**
+ * One bullet-form schema entry — `- \`col\` (TYPE): description` — or null.
+ * Hand-parsed with indexOf/slice: the equivalent regex's adjacent optional
+ * whitespace runs backtrack polynomially on hostile input (CodeQL
+ * js/polynomial-redos), and schema sections are untrusted bundle content.
+ * Expects a pre-trimmed line.
+ */
+function parseBulletColumn(line: string): OkfParsedColumn | null {
+  const marker = line.charAt(0);
+  if (marker !== "-" && marker !== "*") return null;
+  const afterMarker = line.slice(1);
+  const second = afterMarker.charAt(0);
+  if (second !== " " && second !== "\t") return null;
+
+  const tickStart = afterMarker.indexOf("`");
+  if (tickStart === -1) return null;
+  // Only whitespace may sit between the list marker and the backtick.
+  if (afterMarker.slice(0, tickStart).trim() !== "") return null;
+  const tickEnd = afterMarker.indexOf("`", tickStart + 1);
+  if (tickEnd === -1) return null;
+  const name = afterMarker.slice(tickStart + 1, tickEnd).trim();
+  if (name === "") return null;
+
+  let rest = afterMarker.slice(tickEnd + 1).trimStart();
+  if (rest.charAt(0) !== "(") return null;
+  const closeParen = rest.indexOf(")");
+  if (closeParen === -1) return null;
+  const rawType = rest.slice(1, closeParen).trim();
+  if (rawType === "") return null;
+
+  rest = rest.slice(closeParen + 1).trimStart();
+  if (rest.startsWith(":")) rest = rest.slice(1);
+  return { name, rawType, description: rest.trim() };
+}
+
+/**
  * Parse column entries from a `# Schema` section. Two shapes seen in the
  * wild (both in Google's own material):
  *
@@ -152,13 +200,9 @@ export function parseSchemaColumns(section: string): OkfParsedColumn[] {
   const columns: OkfParsedColumn[] = [];
   for (const rawLine of section.split("\n")) {
     const line = rawLine.trim();
-    const bullet = line.match(/^[-*]\s+`([^`]+)`\s*\(([^)]+)\)\s*:?\s*(.*)$/);
+    const bullet = parseBulletColumn(line);
     if (bullet) {
-      columns.push({
-        name: bullet[1].trim(),
-        rawType: bullet[2].trim(),
-        description: bullet[3].trim(),
-      });
+      columns.push(bullet);
       continue;
     }
     if (line.startsWith("|")) {
@@ -214,25 +258,32 @@ export function mapColumnType(rawType: string): MappedColumnType | undefined {
   return { type: "string", guessed: true };
 }
 
-/** Equality pattern in a join spec's SQL: `left_table.col = right_table.col`. */
+/**
+ * Equality pattern in a join spec's SQL: `left_table.col = right_table.col`.
+ * The dotted-chain alternation `(?:\.\w+)+` is deliberately unambiguous
+ * (each hop starts with a literal dot, and `\w`/`.`/`\s` are disjoint) so
+ * the regex stays linear on untrusted sql fences — the naive
+ * `[\w.]*\.\w+` form backtracks polynomially (same CodeQL class as the
+ * schema/heading parsers above).
+ */
 export function parseJoinEquality(
   sql: string,
 ): { fromTable: string; fromColumn: string; toTable: string; toColumn: string } | undefined {
-  const m = sql.match(
-    /([A-Za-z_][\w.]*)\.(\w+)\s*=\s*([A-Za-z_][\w.]*)\.(\w+)/,
-  );
+  const m = sql.match(/([A-Za-z_]\w*(?:\.\w+)+)\s*=\s*([A-Za-z_]\w*(?:\.\w+)+)/);
   if (!m) return undefined;
-  // For dotted qualifiers keep only the trailing table token; the column is
-  // the final segment already captured separately.
-  const tableToken = (q: string): string => {
-    const parts = q.split(".");
-    return parts[parts.length - 1];
+  // For dotted qualifiers the column is the last segment and the table the
+  // one before it (`db.schema.table.col` -> table `table`, column `col`).
+  const split = (chain: string): { table: string; column: string } => {
+    const parts = chain.split(".");
+    return { table: parts[parts.length - 2], column: parts[parts.length - 1] };
   };
+  const from = split(m[1]);
+  const to = split(m[2]);
   return {
-    fromTable: tableToken(m[1]),
-    fromColumn: m[2],
-    toTable: tableToken(m[3]),
-    toColumn: m[4],
+    fromTable: from.table,
+    fromColumn: from.column,
+    toTable: to.table,
+    toColumn: to.column,
   };
 }
 

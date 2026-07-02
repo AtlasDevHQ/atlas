@@ -10,7 +10,7 @@
  */
 
 import type { ExploreBackend, ExecResult } from "./backends/types";
-import { sandboxErrorDetail, safeError } from "./backends/shared";
+import { sandboxErrorDetail, safeError, atlasSandboxTags } from "./backends/shared";
 import { vercelSandboxAccess, type RedactedSecret } from "./backends/detect";
 import * as path from "path";
 import * as fs from "fs";
@@ -76,6 +76,11 @@ function collectSemanticFiles(
   walk(localDir, sandboxDir);
   return results;
 }
+
+// Per-command wall-clock limit, enforced sandbox-side (SIGKILL). Matches the
+// 10s default of the nsjail (ATLAS_NSJAIL_TIME_LIMIT) and sidecar backends —
+// without it a pathological command holds the pooled sandbox open unboundedly.
+const COMMAND_TIMEOUT_MS = 10_000;
 
 // Prefix for sandbox file paths: the SDK resolves relative paths under /vercel/sandbox/.
 const SANDBOX_SEMANTIC_REL = "semantic";
@@ -147,6 +152,7 @@ export async function createSandboxBackend(
       // v2 persists (snapshots) by default — force ephemeral so semantic
       // files never linger in Vercel snapshot storage after stop().
       persistent: false,
+      tags: atlasSandboxTags("explore"),
       ...(explicitAccess ?? {}),
     });
   } catch (err) {
@@ -249,6 +255,7 @@ export async function createSandboxBackend(
           cmd: "sh",
           args: ["-c", command],
           cwd: SANDBOX_SEMANTIC_CWD,
+          timeoutMs: COMMAND_TIMEOUT_MS,
         });
         return {
           stdout: await result.stdout(),

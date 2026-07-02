@@ -373,3 +373,112 @@ describe("explore sandbox plugin integration", () => {
     expect(mod.getActiveSandboxPluginId()).toBe("default-priority");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Output capping at the tool seam
+// ---------------------------------------------------------------------------
+
+describe("explore output capping", () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    mockSandboxPlugins = [];
+    delete process.env.ATLAS_RUNTIME;
+    delete process.env.VERCEL;
+    delete process.env.ATLAS_SANDBOX;
+    delete process.env.ATLAS_SANDBOX_URL;
+    delete process.env.ATLAS_NSJAIL_PATH;
+    process.env.PATH = "/usr/bin:/bin";
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  const MAX_OUTPUT = 1024 * 1024;
+
+  it("truncates oversized stdout with a notice", async () => {
+    mockSandboxPlugins = [
+      {
+        id: "huge-stdout",
+        types: ["sandbox"],
+        version: "1.0.0",
+        sandbox: {
+          create: async () => ({
+            exec: async (): Promise<ExecResult> => ({
+              stdout: "x".repeat(MAX_OUTPUT + 4096),
+              stderr: "",
+              exitCode: 0,
+            }),
+          }),
+        },
+      },
+    ];
+
+    const mod = await freshExploreModule();
+    const result = await mod.explore.execute(
+      { command: "cat entities/huge.yml" },
+      { toolCallId: "test", messages: [], abortSignal: new AbortController().signal },
+    );
+
+    expect(result).toContain("[output truncated: exceeded 1 MB limit]");
+    // Capped payload + one line of truncation notice — never the full 1 MB + 4 KB
+    expect(result.length).toBeLessThan(MAX_OUTPUT + 100);
+  });
+
+  it("truncates oversized stderr on non-zero exit", async () => {
+    mockSandboxPlugins = [
+      {
+        id: "huge-stderr",
+        types: ["sandbox"],
+        version: "1.0.0",
+        sandbox: {
+          create: async () => ({
+            exec: async (): Promise<ExecResult> => ({
+              stdout: "",
+              stderr: "e".repeat(MAX_OUTPUT + 4096),
+              exitCode: 2,
+            }),
+          }),
+        },
+      },
+    ];
+
+    const mod = await freshExploreModule();
+    const result = await mod.explore.execute(
+      { command: "grep -r nope ." },
+      { toolCallId: "test", messages: [], abortSignal: new AbortController().signal },
+    );
+
+    expect(result).toContain("Error (exit 2)");
+    expect(result).toContain("[output truncated: exceeded 1 MB limit]");
+    expect(result.length).toBeLessThan(MAX_OUTPUT + 100);
+  });
+
+  it("passes small output through unchanged", async () => {
+    mockSandboxPlugins = [
+      {
+        id: "small-output",
+        types: ["sandbox"],
+        version: "1.0.0",
+        sandbox: {
+          create: async () => ({
+            exec: async (): Promise<ExecResult> => ({
+              stdout: "table: orders\n",
+              stderr: "",
+              exitCode: 0,
+            }),
+          }),
+        },
+      },
+    ];
+
+    const mod = await freshExploreModule();
+    const result = await mod.explore.execute(
+      { command: "cat entities/orders.yml" },
+      { toolCallId: "test", messages: [], abortSignal: new AbortController().signal },
+    );
+
+    expect(result).toBe("table: orders\n");
+  });
+});

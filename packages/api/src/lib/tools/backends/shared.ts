@@ -6,9 +6,23 @@
  */
 
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
+import { resolveDeployEnv } from "@atlas/api/lib/env-profile";
 
 /** Maximum bytes to read from stdout/stderr (1 MB). */
 export const MAX_OUTPUT = 1024 * 1024;
+
+/**
+ * Cap a fully-buffered output string destined for agent context, appending a
+ * truncation notice so the model knows the output was cut rather than complete.
+ *
+ * Complements readLimited: readLimited bounds subprocess-stream memory during
+ * the read; capOutput bounds already-buffered strings from backends that return
+ * whole outputs (Vercel sandbox, just-bash, plugin/BYOC backends).
+ */
+export function capOutput(output: string, max = MAX_OUTPUT): string {
+  if (output.length <= max) return output;
+  return `${output.slice(0, max)}\n[output truncated: exceeded ${Math.floor(max / (1024 * 1024))} MB limit]`;
+}
 
 /**
  * Read up to `max` bytes from a stream, releasing the reader on completion or error.
@@ -39,6 +53,21 @@ export async function readLimited(
     await reader.cancel().catch(() => {});
   }
   return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
+/**
+ * Attribution tags for Vercel sandboxes created by Atlas (max 5 allowed by
+ * the API; we use 3). Without them, sandbox listings are a wall of
+ * random-named entries with no way to tell prod explore pools from local-dev
+ * or e2e churn — which is exactly how 1,200+ untraceable sandboxes
+ * accumulated before 2026-07.
+ */
+export function atlasSandboxTags(source: "explore" | "python"): Record<string, string> {
+  return {
+    app: "atlas",
+    source,
+    env: resolveDeployEnv(),
+  };
 }
 
 /** Logger interface accepted by parsePositiveInt — avoids coupling to pino. */

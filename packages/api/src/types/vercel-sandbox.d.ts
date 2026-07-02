@@ -55,6 +55,13 @@ declare module "@vercel/sandbox" {
     persistent?: boolean;
     ports?: number[];
     timeout?: number;
+    /**
+     * Key-value attribution tags (max 5, per the API). Atlas always passes
+     * `atlasSandboxTags()` (`app`/`source`/`env`) so sandbox listings can be
+     * attributed to a code path + deploy env instead of reading as a wall of
+     * random-named entries.
+     */
+    tags?: Record<string, string>;
   }
 
   interface WriteFileEntry {
@@ -74,6 +81,13 @@ declare module "@vercel/sandbox" {
     cwd?: string;
     env?: Record<string, string>;
     sudo?: boolean;
+    /**
+     * Maximum time in milliseconds the command may run before it is killed
+     * with SIGKILL — enforced sandbox-side at exec time. Atlas passes this
+     * from `explore-sandbox.ts` so a pathological command can't hold the
+     * pooled sandbox open unboundedly.
+     */
+    timeoutMs?: number;
   }
 
   /** Subset of actual CommandFinished class — see SDK docs for full API. */

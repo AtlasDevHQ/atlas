@@ -8,9 +8,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 The Knowledge Base is Atlas's fourth integration pillar (alongside datasources, chat platforms, and action targets, shipped in `v0.0.40`): a place to host the knowledge that informs data answers but isn't schema — business rules, runbooks, product definitions, deprecation notices. You upload it as plain markdown, review it, publish it, and the agent reads it alongside your semantic layer when answering questions.
 
 <Callout title="Prerequisites">
-- [Managed auth](/deployment/authentication#managed-auth) enabled
-- An internal database configured (`DATABASE_URL`)
-- A user with the `admin` role
+On [app.useatlas.dev](https://app.useatlas.dev) there is nothing to set up — the Knowledge Base is available to every workspace admin out of the box. Self-hosted deployments need the internal database (`DATABASE_URL`) and [managed auth](/deployment/authentication#managed-auth): collections are organization-scoped, so the no-auth dev mode (`ATLAS_AUTH_MODE=none`) cannot reach them.
 </Callout>
 
 ---
@@ -42,7 +40,7 @@ The endpoint can be anything that serves a tarball or zip, including git-forge r
 
 ## Uploading a bundle
 
-Upload collections accept `.tar`, `.tar.gz`/`.tgz`, and `.zip` bundles. A plain folder of markdown files works — ingest is deliberately lenient:
+Upload collections accept `.tar`, `.tar.gz`/`.tgz`, and `.zip` bundles. A folder of plain markdown files — archived in any of those formats — works; ingest is deliberately lenient:
 
 - Documents missing OKF `type` or `title` frontmatter have them stamped at ingest, so stored documents are always conformant OKF.
 - Documents with *malformed* frontmatter are rejected per-file, not silently repaired.
@@ -102,7 +100,7 @@ Uninstalling a collection **archives** its documents — they leave the agent's 
 
 ## Settings
 
-All Knowledge Base knobs live in the settings registry — platform-scoped, adjustable from the admin console without a redeploy (self-hosted deployments can also set them as environment variables):
+All Knowledge Base knobs are platform-scoped operator guardrails (abuse caps and budgets), not workspace preferences. On the hosted SaaS they are managed by Atlas. Self-hosted deployments adjust them from the admin console at runtime — they live in the settings registry, so no redeploy — or set them as environment variables:
 
 | Setting | Default | What it does |
 |---------|---------|--------------|

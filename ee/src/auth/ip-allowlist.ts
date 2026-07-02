@@ -11,9 +11,8 @@
 
 import { Effect, Layer } from "effect";
 import ipaddr from "ipaddr.js";
-import { requireEnterpriseEffect } from "../index";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
-import { requireInternalDBEffect } from "../lib/db-guard";
+import { eeRead, eeWrite } from "../lib/ee-query";
 import {
   hasInternalDB,
   internalQuery,
@@ -219,10 +218,7 @@ function rowToEntry(row: IPAllowlistRow): IPAllowlistEntry {
  * List IP allowlist entries for an organization.
  */
 export const listIPAllowlistEntries = (orgId: string): Effect.Effect<IPAllowlistEntry[], EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("ip-allowlist");
-    if (!hasInternalDB()) return [];
-
+  eeRead("ip-allowlist", [], Effect.gen(function* () {
     const rows = yield* Effect.promise(() => internalQuery<IPAllowlistRow>(
       `SELECT id, org_id, cidr, description, created_at, created_by
        FROM ip_allowlist
@@ -231,7 +227,7 @@ export const listIPAllowlistEntries = (orgId: string): Effect.Effect<IPAllowlist
       [orgId],
     ));
     return rows.map(rowToEntry);
-  });
+  }));
 
 /**
  * Add a CIDR range to an organization's IP allowlist.
@@ -248,10 +244,7 @@ export const addIPAllowlistEntry = (
   description: string | null,
   createdBy: string | null,
 ): Effect.Effect<IPAllowlistEntry, IPAllowlistError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("ip-allowlist");
-    yield* requireInternalDBEffect("IP allowlist management");
-
+  eeWrite("ip-allowlist", "IP allowlist management", Effect.gen(function* () {
     // Validate CIDR format
     const parsed = parseCIDR(cidr);
     if (!parsed) {
@@ -282,16 +275,13 @@ export const addIPAllowlistEntry = (
     log.info({ orgId, cidr: normalizedCidr }, "IP allowlist entry added");
     invalidateCache(orgId);
     return rowToEntry(rows[0]);
-  });
+  }));
 
 /**
  * Remove an IP allowlist entry by ID.
  */
 export const removeIPAllowlistEntry = (orgId: string, entryId: string): Effect.Effect<boolean, EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("ip-allowlist");
-    if (!hasInternalDB()) return false;
-
+  eeRead("ip-allowlist", false, Effect.gen(function* () {
     const pool = getInternalDB();
     const result = yield* Effect.promise(() =>
       pool.query(
@@ -306,7 +296,7 @@ export const removeIPAllowlistEntry = (orgId: string, entryId: string): Effect.E
       invalidateCache(orgId);
     }
     return deleted;
-  });
+  }));
 
 // ── Middleware helper ─────────────────────────────────────────────────
 

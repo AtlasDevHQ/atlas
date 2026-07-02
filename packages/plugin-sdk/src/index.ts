@@ -83,6 +83,7 @@ export {
   isActionPlugin,
   isSandboxPlugin,
   collectSemanticFiles,
+  measuredHealthCheck,
   runHealthCheckWithTimeout,
 } from "./helpers";
 

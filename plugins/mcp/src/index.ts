@@ -22,7 +22,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type { AtlasInteractionPlugin, PluginHealthResult } from "@useatlas/plugin-sdk";
 
 const McpConfigSchema = z.object({
@@ -104,22 +104,15 @@ export function buildMcpPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
-      const start = performance.now();
-      if (!connected) {
-        return {
-          healthy: false,
-          message: "MCP server not initialized or not connected",
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
-      if (config.transport === "sse" && !sseHandle) {
-        return {
-          healthy: false,
-          message: "SSE handle missing — server may have crashed",
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
-      return { healthy: true, latencyMs: Math.round(performance.now() - start) };
+      return measuredHealthCheck(() => {
+        if (!connected) {
+          return { healthy: false, message: "MCP server not initialized or not connected" };
+        }
+        if (config.transport === "sse" && !sseHandle) {
+          return { healthy: false, message: "SSE handle missing — server may have crashed" };
+        }
+        return { healthy: true };
+      });
     },
 
     async teardown() {

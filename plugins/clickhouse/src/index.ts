@@ -29,7 +29,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult, PluginLogger } from "@useatlas/plugin-sdk";
 import {
   createClickHouseConnection,
@@ -167,26 +167,18 @@ export function buildClickHousePlugin(
       if (!staticUrl) {
         return { healthy: true, message: "adapter-only: no static datasource configured" };
       }
-      const start = performance.now();
-      let conn: PluginDBConnection | undefined;
-      try {
-        conn = createClickHouseConnection({ url: staticUrl, database: config.database });
-        await conn.query("SELECT 1", 5000);
-        return {
-          healthy: true,
-          latencyMs: Math.round(performance.now() - start),
-        };
-      } catch (err) {
-        return {
-          healthy: false,
-          message: err instanceof Error ? err.message : String(err),
-          latencyMs: Math.round(performance.now() - start),
-        };
-      } finally {
-        if (conn) {
-          await conn.close();
+      return measuredHealthCheck(async () => {
+        let conn: PluginDBConnection | undefined;
+        try {
+          conn = createClickHouseConnection({ url: staticUrl, database: config.database });
+          await conn.query("SELECT 1", 5000);
+          return { healthy: true };
+        } finally {
+          if (conn) {
+            await conn.close();
+          }
         }
-      }
+      });
     },
   };
 }

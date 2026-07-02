@@ -18,7 +18,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult, PluginLogger } from "@useatlas/plugin-sdk";
 import { createMySQLConnection, extractHost } from "./connection";
 
@@ -95,30 +95,22 @@ export function buildMySQLPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
-      const start = performance.now();
-      let conn: PluginDBConnection | undefined;
-      try {
-        conn = createMySQLConnection({
-          url: config.url,
-          poolSize: config.poolSize,
-          idleTimeoutMs: config.idleTimeoutMs,
-        });
-        await conn.query("SELECT 1", 5000);
-        return {
-          healthy: true,
-          latencyMs: Math.round(performance.now() - start),
-        };
-      } catch (err) {
-        return {
-          healthy: false,
-          message: err instanceof Error ? err.message : String(err),
-          latencyMs: Math.round(performance.now() - start),
-        };
-      } finally {
-        if (conn) {
-          await conn.close();
+      return measuredHealthCheck(async () => {
+        let conn: PluginDBConnection | undefined;
+        try {
+          conn = createMySQLConnection({
+            url: config.url,
+            poolSize: config.poolSize,
+            idleTimeoutMs: config.idleTimeoutMs,
+          });
+          await conn.query("SELECT 1", 5000);
+          return { healthy: true };
+        } finally {
+          if (conn) {
+            await conn.close();
+          }
         }
-      }
+      });
     },
   };
 }

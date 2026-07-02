@@ -36,7 +36,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult, PluginLogger, PluginHooks, QueryHookContext, QueryHookMutation } from "@useatlas/plugin-sdk";
 import {
   createBigQueryConnection,
@@ -263,33 +263,25 @@ export function buildBigQueryPlugin(
       if (!hasStaticConfig) {
         return { healthy: true, message: "adapter-only: no static datasource configured" };
       }
-      const start = performance.now();
-      let conn: PluginDBConnection | undefined;
-      try {
-        conn = createBigQueryConnection({
-          projectId: config.projectId,
-          dataset: config.dataset,
-          keyFilename: config.keyFilename,
-          credentials: config.credentials,
-          location: config.location,
-        });
-        // SELECT 1 processes 0 bytes in BigQuery — effectively free.
-        await conn.query("SELECT 1", 5000);
-        return {
-          healthy: true,
-          latencyMs: Math.round(performance.now() - start),
-        };
-      } catch (err) {
-        return {
-          healthy: false,
-          message: err instanceof Error ? err.message : String(err),
-          latencyMs: Math.round(performance.now() - start),
-        };
-      } finally {
-        if (conn) {
-          await conn.close();
+      return measuredHealthCheck(async () => {
+        let conn: PluginDBConnection | undefined;
+        try {
+          conn = createBigQueryConnection({
+            projectId: config.projectId,
+            dataset: config.dataset,
+            keyFilename: config.keyFilename,
+            credentials: config.credentials,
+            location: config.location,
+          });
+          // SELECT 1 processes 0 bytes in BigQuery — effectively free.
+          await conn.query("SELECT 1", 5000);
+          return { healthy: true };
+        } finally {
+          if (conn) {
+            await conn.close();
+          }
         }
-      }
+      });
     },
   };
 }

@@ -23,7 +23,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type {
   AtlasSandboxPlugin,
   PluginExploreBackend,
@@ -239,32 +239,20 @@ export function buildSidecarSandboxPlugin(
 
     async healthCheck(): Promise<PluginHealthResult> {
       const healthUrl = `${baseUrl.origin}/health`;
-      const start = performance.now();
-
-      try {
+      return measuredHealthCheck(async () => {
         const response = await fetch(healthUrl, {
           signal: AbortSignal.timeout(5000),
         });
 
-        const latencyMs = Math.round(performance.now() - start);
-
         if (response.ok) {
-          return { healthy: true, latencyMs };
+          return { healthy: true };
         }
 
         return {
           healthy: false,
           message: `Sidecar returned HTTP ${response.status}`,
-          latencyMs,
         };
-      } catch (err) {
-        const latencyMs = Math.round(performance.now() - start);
-        return {
-          healthy: false,
-          message: err instanceof Error ? err.message : String(err),
-          latencyMs,
-        };
-      }
+      });
     },
   };
 }

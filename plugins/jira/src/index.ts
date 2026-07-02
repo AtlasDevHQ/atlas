@@ -23,7 +23,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type { AtlasActionPlugin, PluginAction, PluginLogger } from "@useatlas/plugin-sdk";
 import { createJiraTool } from "./tool";
 import type { JiraPluginConfig } from "./tool";
@@ -137,11 +137,10 @@ export const jiraPlugin = createPlugin<JiraPluginConfig, AtlasActionPlugin<JiraP
       },
 
       async healthCheck() {
-        const start = performance.now();
-        const auth = Buffer.from(`${config.email}:${config.apiToken}`).toString("base64");
-        const url = `${config.host.replace(/\/$/, "")}/rest/api/3/myself`;
+        return measuredHealthCheck(async () => {
+          const auth = Buffer.from(`${config.email}:${config.apiToken}`).toString("base64");
+          const url = `${config.host.replace(/\/$/, "")}/rest/api/3/myself`;
 
-        try {
           const response = await fetch(url, {
             method: "GET",
             headers: {
@@ -150,24 +149,15 @@ export const jiraPlugin = createPlugin<JiraPluginConfig, AtlasActionPlugin<JiraP
             },
             signal: AbortSignal.timeout(5000),
           });
-          const latencyMs = Math.round(performance.now() - start);
-
           if (response.ok) {
-            return { healthy: true, latencyMs };
+            return { healthy: true };
           }
 
           return {
             healthy: false,
             message: `JIRA API returned ${response.status}`,
-            latencyMs,
           };
-        } catch (err) {
-          return {
-            healthy: false,
-            message: err instanceof Error ? err.message : String(err),
-            latencyMs: Math.round(performance.now() - start),
-          };
-        }
+        });
       },
     };
   },

@@ -31,7 +31,7 @@
  * ```
  */
 
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
   AtlasPluginContext,
@@ -104,25 +104,17 @@ function buildWebhookPlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
-      const start = performance.now();
+      return measuredHealthCheck(() => {
+        if (!initialized) {
+          return { healthy: false, message: "Webhook plugin not initialized" };
+        }
 
-      if (!initialized) {
-        return {
-          healthy: false,
-          message: "Webhook plugin not initialized",
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
+        if (channelMap.size === 0) {
+          return { healthy: false, message: "No webhook channels configured" };
+        }
 
-      if (channelMap.size === 0) {
-        return {
-          healthy: false,
-          message: "No webhook channels configured",
-          latencyMs: Math.round(performance.now() - start),
-        };
-      }
-
-      return { healthy: true, latencyMs: Math.round(performance.now() - start) };
+        return { healthy: true };
+      });
     },
 
     async teardown() {

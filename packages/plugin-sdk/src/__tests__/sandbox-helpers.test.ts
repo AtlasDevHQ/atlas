@@ -1,18 +1,22 @@
 /**
- * Tests for the shared sandbox helpers (#3373) — `collectSemanticFiles` and
+ * Tests for the shared health-check + sandbox helpers (#3373, #4191) —
+ * `collectSemanticFiles`, `measuredHealthCheck`, and
  * `runHealthCheckWithTimeout`.
  *
- * These single-source two blocks that were copy-pasted across the four sandbox
- * plugins (vercel-sandbox, e2b, daytona, railway-sandbox). The symlink-escape
- * guard in `collectSemanticFiles` is a SECURITY property — a symlink that
- * resolves outside the semantic root must never be uploaded into a sandbox.
+ * These single-source blocks that were copy-pasted across plugins: the
+ * measured-health-check bracket (latency + error narrowing) hand-rolled by 18
+ * non-sandbox plugins, and the sandbox-shaped timeout/cleanup variant from the
+ * four sandbox plugins (vercel-sandbox, e2b, daytona, railway-sandbox). The
+ * symlink-escape guard in `collectSemanticFiles` is a SECURITY property — a
+ * symlink that resolves outside the semantic root must never be uploaded into
+ * a sandbox.
  */
 
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { collectSemanticFiles, runHealthCheckWithTimeout } from "../helpers";
+import { collectSemanticFiles, measuredHealthCheck, runHealthCheckWithTimeout } from "../helpers";
 
 function makeLogger() {
   const warnings: string[] = [];
@@ -247,6 +251,80 @@ describe("collectSemanticFiles", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// measuredHealthCheck
+// ---------------------------------------------------------------------------
+
+describe("measuredHealthCheck", () => {
+  test("stamps latencyMs onto a healthy probe result", async () => {
+    const result = await measuredHealthCheck(async () => ({ healthy: true }));
+    expect(result.healthy).toBe(true);
+    expect(typeof result.latencyMs).toBe("number");
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test("passes through the probe's message on healthy and unhealthy results", async () => {
+    const healthy = await measuredHealthCheck(async () => ({
+      healthy: true,
+      message: "3 entity file(s) found",
+    }));
+    expect(healthy.message).toBe("3 entity file(s) found");
+
+    const unhealthy = await measuredHealthCheck(async () => ({
+      healthy: false,
+      message: "not initialized",
+    }));
+    expect(unhealthy.healthy).toBe(false);
+    expect(unhealthy.message).toBe("not initialized");
+    // The unhealthy-return branch is stamped too — it is the probe's own
+    // verdict, not a throw, and callers rely on latency either way.
+    expect(typeof unhealthy.latencyMs).toBe("number");
+  });
+
+  test("accepts a synchronous (non-promise-returning) probe", async () => {
+    const result = await measuredHealthCheck(() => ({ healthy: true }));
+    expect(result.healthy).toBe(true);
+    expect(typeof result.latencyMs).toBe("number");
+  });
+
+  test("narrows a thrown Error into { healthy: false, message }", async () => {
+    const result = await measuredHealthCheck(async () => {
+      throw new Error("connection refused");
+    });
+    expect(result.healthy).toBe(false);
+    expect(result.message).toBe("connection refused");
+    expect(typeof result.latencyMs).toBe("number");
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test("normalizes a non-Error throw via String(err)", async () => {
+    const result = await measuredHealthCheck(async () => {
+      throw "plain string failure";
+    });
+    expect(result.healthy).toBe(false);
+    expect(result.message).toBe("plain string failure");
+  });
+
+  test("handles a synchronously-throwing probe", async () => {
+    const result = await measuredHealthCheck(() => {
+      throw new Error("sync boom");
+    });
+    expect(result.healthy).toBe(false);
+    expect(result.message).toBe("sync boom");
+    expect(typeof result.latencyMs).toBe("number");
+  });
+
+  test("measures elapsed time across the probe's await", async () => {
+    const result = await measuredHealthCheck(async () => {
+      await new Promise((r) => setTimeout(r, 25));
+      return { healthy: true };
+    });
+    // Rounded wall-clock; allow generous slack below the nominal 25ms since
+    // timers can fire marginally early under load.
+    expect(result.latencyMs).toBeGreaterThanOrEqual(15);
   });
 });
 

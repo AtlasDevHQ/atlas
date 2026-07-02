@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { useModeStatus } from "@/ui/hooks/use-mode-status";
 import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
 import { ADMIN_ROLES } from "@/ui/lib/types";
+import { totalDraftCount } from "@/ui/lib/draft-counts";
 import { PublishModal } from "./publish-modal";
 import type { ModeDraftCounts, ModeDraftActivity } from "@useatlas/types/mode";
 
@@ -37,7 +38,7 @@ export function PendingChangesPill() {
   if (!isAdmin) return null;
   const counts = data?.draftCounts;
   if (!counts) return null;
-  const total = totalDrafts(counts);
+  const total = totalDraftCount(counts);
   if (total === 0) return null;
 
   const segments = perSurfaceSegments(counts, data?.draftActivity ?? null);
@@ -201,18 +202,6 @@ export function perSurfaceSegments(
 
 function pluralize(n: number, singular: string, plural: string): string {
   return n === 1 ? singular : plural;
-}
-
-function totalDrafts(counts: ModeDraftCounts): number {
-  return (
-    counts.connections +
-    counts.entities +
-    counts.entityEdits +
-    counts.entityDeletes +
-    counts.prompts +
-    counts.starterPrompts +
-    counts.knowledgeDocuments
-  );
 }
 
 /** Pick the most recent ISO timestamp from a list, ignoring nulls. */

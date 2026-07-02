@@ -294,6 +294,7 @@ export async function publishWorkspaceDrafts(orgId: string): Promise<PublishWork
         entities: entitiesReport?.promoted ?? 0,
         prompts: find("prompt_collections")?.promoted ?? 0,
         starterPrompts: find("query_suggestions")?.promoted ?? 0,
+        knowledgeDocuments: find("knowledge_documents")?.promoted ?? 0,
       },
       // #4156 — `deleted.entities` (shared shape), NOT the old flat
       // `deletedEntities`; mirrors the REST route's `deleted: { entities }`.

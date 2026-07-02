@@ -2,6 +2,7 @@
 
 import { useModeStatus } from "@/ui/hooks/use-mode-status";
 import { cn } from "@/lib/utils";
+import { totalDraftCount } from "@/ui/lib/draft-counts";
 import type { ModeDraftCounts } from "@useatlas/types/mode";
 
 /**
@@ -9,9 +10,9 @@ import type { ModeDraftCounts } from "@useatlas/types/mode";
  *
  * Shows the number of drafts split by resource type (connections, entities,
  * prompts) so admins can see at a glance what's in flight. The underlying
- * counts come from `GET /api/v1/mode` which unions five `COUNT(*)` queries
- * over indexed `(org_id, status)` pairs — cheap enough to poll on every
- * focus via TanStack Query.
+ * counts come from `GET /api/v1/mode`, which unions per-segment `COUNT(*)`
+ * branches over indexed `(org_id, status)` pairs — cheap enough to poll on
+ * every focus via TanStack Query.
  *
  * Renders nothing when there are no drafts so the banner stays visually
  * quiet in the common "admin just toggled developer mode" case.
@@ -27,7 +28,7 @@ export function PendingChangesSummary({ className }: { className?: string }) {
   if (segments.length === 0) return null;
 
   const label = segments.join(" \u00b7 ");
-  const total = totalDrafts(counts);
+  const total = totalDraftCount(counts);
   const plural = total === 1 ? "change" : "changes";
 
   return (
@@ -88,16 +89,4 @@ export function formatDraftSegments(counts: ModeDraftCounts): string[] {
 
 function pluralize(count: number, singular: string, plural: string): string {
   return `${count} ${count === 1 ? singular : plural}`;
-}
-
-function totalDrafts(counts: ModeDraftCounts): number {
-  return (
-    counts.connections +
-    counts.entities +
-    counts.entityEdits +
-    counts.entityDeletes +
-    counts.prompts +
-    counts.starterPrompts +
-    counts.knowledgeDocuments
-  );
 }

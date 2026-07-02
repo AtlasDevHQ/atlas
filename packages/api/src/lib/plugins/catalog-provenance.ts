@@ -63,7 +63,7 @@ export const OPERATOR_CATALOG_WRITE_SOURCES = [
   "openapi-generic-seed",
   /** OpenAPI data-candidate rows (`openapi/data-candidate-seed.ts`). */
   "openapi-data-candidate-seed",
-  /** The built-in `okf-upload` Knowledge Base row (`db/seed-builtin-knowledge-catalog.ts`, #4206). */
+  /** The built-in Knowledge Base rows — `okf-upload` #4206, `bundle-sync` #4211 (`db/seed-builtin-knowledge-catalog.ts`). */
   "builtin-knowledge-seed",
 ] as const;
 

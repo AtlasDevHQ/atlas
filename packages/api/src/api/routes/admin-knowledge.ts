@@ -40,10 +40,15 @@ import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
 import { Effect } from "effect";
 import { extractBundle, BundleFormatError } from "@atlas/api/lib/knowledge/bundle-archive";
 import { parseLenientBundle } from "@atlas/api/lib/knowledge/parse-lenient";
-import {
-  ingestBundleIntoCollection,
-  type IngestClient,
-} from "@atlas/api/lib/knowledge/ingest";
+import { readBodyWithCap, BodyCapExceededError } from "@atlas/api/lib/knowledge/read-body-cap";
+import { ingestBundleIntoCollection } from "@atlas/api/lib/knowledge/ingest";
+import type {
+  KnowledgeCollectionListResponse,
+  KnowledgeDocumentListResponse,
+  KnowledgeIngestSummary,
+  KnowledgeSyncRunResponse,
+  KnowledgeUninstallResponse,
+} from "@useatlas/types";
 import {
   getIngestMaxDocs,
   getIngestMaxDocBytes,
@@ -307,6 +312,7 @@ const ingestRoute = createRoute({
             linksWritten: z.number().int().nonnegative(),
             published: z.boolean(),
             rejected: z.array(RejectedFileSchema),
+            skippedNonMarkdown: z.number().int().nonnegative(),
           }),
         },
       },
@@ -350,7 +356,7 @@ const syncRoute = createRoute({
   summary: "Sync a bundle-sync collection now",
   description:
     "Manually pull a synced collection's bundle endpoint and apply the diff immediately (the same " +
-    "run the nightly scheduler performs). Changed and new documents land as `draft` for review — " +
+    "run the scheduled sync performs — daily by default, operator-tunable). Changed and new documents land as `draft` for review — " +
     "synced content has no publish shortcut; paths absent from the fetched bundle are archived, " +
     "never hard-deleted. Returns the attempt's outcome; a failed fetch/ingest is reported as " +
     "`status: \"error\"` with an actionable message (also recorded on the collection's sync status).",
@@ -381,7 +387,10 @@ const deleteRoute = createRoute({
   summary: "Uninstall a knowledge collection",
   description:
     "Uninstall a collection: its documents are ARCHIVED (status='archived'), never hard-deleted, and the " +
-    "collection install is archived. A later re-install does not resurrect the archived documents.",
+    "collection install is archived. A later re-install does not by itself resurrect the archived " +
+    "documents — but any ingest that sees an archived path again brings it back as a `draft` for " +
+    "re-review: re-uploading a bundle (upload collections), or the next sync after re-installing a " +
+    "bundle-sync collection (the endpoint is the source of truth for its tree).",
   request: {
     params: z.object({
       collectionSlug: z.string().min(1).openapi({ param: { name: "collectionSlug", in: "path" } }),
@@ -498,7 +507,10 @@ adminKnowledge.openapi(listRoute, async (c) =>
             documents: countsBySlug.get(r.install_id) ?? { draft: 0, published: 0, archived: 0 },
           };
         }),
-      },
+        // `satisfies` ties the route payload to the published wire type — a
+        // schema/handler rename that drifts from `@useatlas/types` is a compile
+        // error here instead of a runtime web Zod parse failure.
+      } satisfies KnowledgeCollectionListResponse,
       200,
     );
   }),
@@ -557,7 +569,7 @@ adminKnowledge.openapi(documentsRoute, async (c) =>
           status: r.status === "published" ? ("published" as const) : ("draft" as const),
           updatedAt: r.updated_at,
         })),
-      },
+      } satisfies KnowledgeDocumentListResponse,
       200,
     );
   }),
@@ -596,10 +608,12 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
 
     // Read the raw bundle bytes. The total-size cap is the first line of defense
     // against a decompression bomb (the streaming extractor enforces the decoded
-    // cap too). Reject on the declared Content-Length BEFORE buffering the body,
-    // so an obviously-oversized upload never fully materializes in memory; the
-    // client-supplied header is advisory, so the post-buffer check below stays as
-    // the authoritative guard.
+    // cap too). Reject on the declared Content-Length BEFORE reading the body,
+    // so an obviously-oversized upload fails immediately; the client-supplied
+    // header is advisory, so the body is then STREAMED with a cumulative cap
+    // (the same `readBodyWithCap` guard the sync fetch uses) — a chunked or
+    // lying upload aborts the moment it crosses the limit instead of fully
+    // materializing in memory first.
     const maxBundleBytes = getIngestMaxBundleBytes();
     const declaredLength = Number(c.req.header("content-length"));
     if (Number.isFinite(declaredLength) && declaredLength > maxBundleBytes) {
@@ -612,19 +626,24 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
         400,
       );
     }
-    const bytes = new Uint8Array(await c.req.arrayBuffer());
+    let bytes: Uint8Array;
+    try {
+      bytes = await readBodyWithCap(c.req.raw.body, maxBundleBytes, { requestId });
+    } catch (err) {
+      if (err instanceof BodyCapExceededError) {
+        return c.json(
+          {
+            error: "bundle_too_large",
+            message: `Bundle exceeds the ${maxBundleBytes}-byte limit — upload aborted.`,
+            requestId,
+          },
+          400,
+        );
+      }
+      throw err;
+    }
     if (bytes.length === 0) {
       return c.json({ error: "empty_bundle", message: "The uploaded bundle is empty.", requestId }, 400);
-    }
-    if (bytes.length > maxBundleBytes) {
-      return c.json(
-        {
-          error: "bundle_too_large",
-          message: `Bundle is ${bytes.length} bytes, over the ${maxBundleBytes}-byte limit.`,
-          requestId,
-        },
-        400,
-      );
     }
 
     // ── Extract (in memory) → parse leniently ───────────────────────────────
@@ -675,11 +694,7 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
     // ── Ingest (+ optional atomic publish) in one transaction ───────────────
     const report = await withTransaction(async (client) => {
       const ingestReport = await ingestBundleIntoCollection({
-        // `InternalPoolClient.query` is non-generic, so it can't structurally
-        // satisfy `IngestClient`'s generic `query<T>` without a cast — the same
-        // unchecked-DB-row seam the `PoolClient` cast below uses. The ingest core
-        // only calls `.query()`.
-        client: client as unknown as IngestClient,
+        client,
         workspaceId: orgId,
         collectionId: collectionSlug,
         // v0 has only the explicit upload source; connector syncs (later) never
@@ -752,7 +767,8 @@ adminKnowledge.openapi(ingestRoute, async (c) =>
         linksWritten: report.linksWritten,
         published: shouldPublish,
         rejected,
-      },
+        skippedNonMarkdown: parsed.skippedNonMarkdown,
+      } satisfies KnowledgeIngestSummary,
       200,
     );
   }),
@@ -824,7 +840,7 @@ adminKnowledge.openapi(syncRoute, async (c) =>
         archivedAbsent: outcome.archivedAbsent,
         linksWritten: outcome.linksWritten,
         rejected: [...outcome.rejected],
-      },
+      } satisfies KnowledgeSyncRunResponse,
       200,
     );
   }),
@@ -892,7 +908,10 @@ adminKnowledge.openapi(deleteRoute, async (c) =>
 
     log.info({ requestId, orgId, collectionSlug, archivedDocuments }, "Knowledge collection uninstalled (archived)");
 
-    return c.json({ archived: true, collection: collectionSlug, archivedDocuments }, 200);
+    return c.json(
+      { archived: true, collection: collectionSlug, archivedDocuments } satisfies KnowledgeUninstallResponse,
+      200,
+    );
   }),
 );
 

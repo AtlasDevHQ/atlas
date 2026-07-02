@@ -14,15 +14,18 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 
 let internalDBPresent = true;
 let queryRows: Record<string, unknown>[] = [];
+// Full internal-DB mock via the sanctioned helper (mock-all-exports
+// discipline) — a new export on db/internal must not break this file's load.
 mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => internalDBPresent,
-  internalQuery: () => Promise.resolve(queryRows),
+  ...buildInternalDbMockDefaults({
+    internalQuery: () => Promise.resolve(queryRows),
+    hasInternalDB: () => internalDBPresent,
+  }),
   getInternalDB: () => null,
-  internalExecute: () => {},
-  closeInternalDB: async () => {},
 }));
 
 import { scanEntities } from "@atlas/api/lib/semantic/scanner";

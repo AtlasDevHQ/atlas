@@ -17,6 +17,10 @@ export const PublishPromotedCountsSchema = z.object({
   entities: z.number().int().nonnegative(),
   prompts: z.number().int().nonnegative(),
   starterPrompts: z.number().int().nonnegative(),
+  // `.default(0)`: knowledge documents joined the promoted counts in v0.0.41;
+  // an older API omits the field, and the CLI parsing that response must not
+  // fail — absent means "that surface promoted nothing".
+  knowledgeDocuments: z.number().int().nonnegative().default(0),
 }) satisfies z.ZodType<PublishPromotedCounts, unknown>;
 
 export const PublishResultSchema = z.object({

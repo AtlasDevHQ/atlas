@@ -13,6 +13,7 @@
  */
 
 import { describe, expect, it, beforeEach, mock } from "bun:test";
+import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 
 // Mutable mock state — set per test before invoking the tool.
 let mockRequestContext:
@@ -22,12 +23,17 @@ let mockHasInternalDB = true;
 const queryCalls: { sql: string; params: unknown[] }[] = [];
 let queryImpl: (sql: string, params?: unknown[]) => Promise<unknown[]> = async () => [];
 
+// Full internal-DB mock via the sanctioned helper (mock-all-exports
+// discipline) — a new export on db/internal must not break this file's load.
 mock.module("@atlas/api/lib/db/internal", () => ({
+  ...buildInternalDbMockDefaults({
+    internalQuery: async (sql: string, params?: unknown[]) => {
+      queryCalls.push({ sql, params: params ?? [] });
+      return queryImpl(sql, params);
+    },
+    hasInternalDB: () => mockHasInternalDB,
+  }),
   hasInternalDB: () => mockHasInternalDB,
-  internalQuery: (sql: string, params?: unknown[]) => {
-    queryCalls.push({ sql, params: params ?? [] });
-    return queryImpl(sql, params);
-  },
 }));
 
 let loggedError: unknown;

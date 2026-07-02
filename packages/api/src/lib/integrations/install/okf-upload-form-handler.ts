@@ -23,9 +23,12 @@
  *     publishing.)
  *
  * Re-installing an existing slug edits the container in place (and re-enables a
- * previously-uninstalled one) WITHOUT touching its documents — an
- * uninstall-archived collection's docs stay `archived` until an explicit
- * re-ingest, never silently resurrected (ADR-0028 §5).
+ * previously-uninstalled one) WITHOUT touching its documents — the install
+ * itself never writes documents. An uninstall-archived collection's docs stay
+ * `archived` until an ingest sees their paths again: an explicit re-upload
+ * here, or (for `bundle-sync` collections) the next scheduled/manual sync
+ * after re-install. Either way resurrection lands at `draft`, so ADR-0028 §5's
+ * archive-over-hard-delete posture and the §4 review gate both hold.
  */
 
 import crypto from "crypto";

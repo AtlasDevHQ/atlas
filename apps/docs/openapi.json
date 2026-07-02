@@ -56901,6 +56901,10 @@
                           "reason"
                         ]
                       }
+                    },
+                    "skippedNonMarkdown": {
+                      "type": "integer",
+                      "minimum": 0
                     }
                   },
                   "required": [
@@ -56909,7 +56913,8 @@
                     "documents",
                     "linksWritten",
                     "published",
-                    "rejected"
+                    "rejected",
+                    "skippedNonMarkdown"
                   ]
                 }
               }
@@ -57029,7 +57034,7 @@
           "Admin — Knowledge"
         ],
         "summary": "Sync a bundle-sync collection now",
-        "description": "Manually pull a synced collection's bundle endpoint and apply the diff immediately (the same run the nightly scheduler performs). Changed and new documents land as `draft` for review — synced content has no publish shortcut; paths absent from the fetched bundle are archived, never hard-deleted. Returns the attempt's outcome; a failed fetch/ingest is reported as `status: \"error\"` with an actionable message (also recorded on the collection's sync status).",
+        "description": "Manually pull a synced collection's bundle endpoint and apply the diff immediately (the same run the scheduled sync performs — daily by default, operator-tunable). Changed and new documents land as `draft` for review — synced content has no publish shortcut; paths absent from the fetched bundle are archived, never hard-deleted. Returns the attempt's outcome; a failed fetch/ingest is reported as `status: \"error\"` with an actionable message (also recorded on the collection's sync status).",
         "parameters": [
           {
             "schema": {
@@ -57264,7 +57269,7 @@
           "Admin — Knowledge"
         ],
         "summary": "Uninstall a knowledge collection",
-        "description": "Uninstall a collection: its documents are ARCHIVED (status='archived'), never hard-deleted, and the collection install is archived. A later re-install does not resurrect the archived documents.",
+        "description": "Uninstall a collection: its documents are ARCHIVED (status='archived'), never hard-deleted, and the collection install is archived. A later re-install does not by itself resurrect the archived documents — but any ingest that sees an archived path again brings it back as a `draft` for re-review: re-uploading a bundle (upload collections), or the next sync after re-installing a bundle-sync collection (the endpoint is the source of truth for its tree).",
         "parameters": [
           {
             "schema": {
@@ -58263,13 +58268,18 @@
                         "starterPrompts": {
                           "type": "integer",
                           "minimum": 0
+                        },
+                        "knowledgeDocuments": {
+                          "type": "integer",
+                          "minimum": 0
                         }
                       },
                       "required": [
                         "connections",
                         "entities",
                         "prompts",
-                        "starterPrompts"
+                        "starterPrompts",
+                        "knowledgeDocuments"
                       ]
                     },
                     "deleted": {

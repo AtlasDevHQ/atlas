@@ -56,7 +56,7 @@ import {
   internalQuery,
   type InternalPoolClient,
 } from "@atlas/api/lib/db/internal";
-import type { KnowledgeIngestDocumentCounts } from "@useatlas/types";
+import type { KnowledgeBundleFormat, KnowledgeIngestDocumentCounts } from "@useatlas/types";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import {
   guardedFetch,
@@ -65,9 +65,9 @@ import {
 } from "@atlas/api/lib/openapi/egress-guard";
 import { extractBundle, BundleFormatError, type BundleEntryError } from "./bundle-archive";
 import { parseLenientBundle } from "./parse-lenient";
+import { readBodyWithCap, BodyCapExceededError } from "./read-body-cap";
 import {
   ingestBundleIntoCollection,
-  type IngestClient,
   type IngestReport,
 } from "./ingest";
 import {
@@ -104,17 +104,36 @@ export const ARCHIVE_ABSENT_SQL = `UPDATE knowledge_documents
 
 /**
  * The per-collection sync bookkeeping upsert, keyed on the migration-0164
- * primary key. Exported for the real-Postgres test.
+ * primary key. The `WHERE EXISTS` guard skips the write entirely when the
+ * install is gone (uninstall archives it and hard-deletes its sync state), so
+ * a sync racing an uninstall can't re-create the row the uninstall just
+ * deleted. (A sub-millisecond interleaving — the uninstall's DELETE executing
+ * between this statement's read and its commit — can still leave a state row
+ * behind, but it is keyed to an archived install the list route never joins,
+ * so it is invisible and harmless.) Exported for the real-Postgres test.
  */
 export const SYNC_STATE_UPSERT_SQL = `INSERT INTO knowledge_sync_state
          (workspace_id, collection_id, last_sync_at, status, error, report, created_at, updated_at)
-       VALUES ($1, $2, NOW(), $3, $4, $5::jsonb, NOW(), NOW())
+       SELECT $1, $2, NOW(), $3, $4, $5::jsonb, NOW(), NOW()
+        WHERE EXISTS (SELECT 1 FROM workspace_plugins
+                       WHERE workspace_id = $1 AND install_id = $2
+                         AND pillar = 'knowledge' AND status <> 'archived')
        ON CONFLICT (workspace_id, collection_id) DO UPDATE
          SET last_sync_at = NOW(),
              status = EXCLUDED.status,
              error = EXCLUDED.error,
              report = EXCLUDED.report,
              updated_at = NOW()`;
+
+/**
+ * The in-transaction install re-check backing the uninstall × in-flight-sync
+ * race guard (`FOR UPDATE` serializes against the uninstall's UPDATE on the
+ * same row). Exported for the real-Postgres test.
+ */
+export const SYNC_INSTALL_RECHECK_SQL = `SELECT status
+         FROM workspace_plugins
+        WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'knowledge'
+        FOR UPDATE`;
 
 /** Per-sync fetch time budget (ms), settings-registry driven. */
 export function getKnowledgeSyncFetchTimeoutMs(): number {
@@ -128,14 +147,15 @@ export function getKnowledgeSyncFetchTimeoutMs(): number {
 }
 
 /**
- * The response body was rejected mid-stream by the size cap. Message is
- * host-only at construction (never the path/query), so it may pass through the
- * fetch catch verbatim — same posture as `EgressBlockedError`.
+ * Raised inside the ingest transaction when the install row was uninstalled
+ * (archived) or deleted between the pre-fetch check and the write phase — the
+ * uninstall × in-flight-sync race. Aborting the transaction keeps the sync
+ * from resurrecting just-archived documents.
  */
-class BundleDownloadError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "BundleDownloadError";
+class SyncInstallGoneError extends Error {
+  constructor() {
+    super("The collection was uninstalled while the sync was running — no changes were applied.");
+    this.name = "SyncInstallGoneError";
   }
 }
 
@@ -152,7 +172,7 @@ export interface KnowledgeSyncOutcome {
   /** ISO-8601 completion time of this attempt. */
   readonly syncedAt: string;
   readonly error: string | null;
-  readonly format: "tar" | "tar.gz" | "zip" | null;
+  readonly format: KnowledgeBundleFormat | null;
   readonly documents: KnowledgeIngestDocumentCounts | null;
   /** Previously-ingested docs archived because their path left the bundle. */
   readonly archivedAbsent: number | null;
@@ -280,7 +300,7 @@ export async function syncCollection(params: SyncCollectionParams): Promise<Know
 type SyncAttempt =
   | {
       readonly kind: "ok";
-      readonly format: "tar" | "tar.gz" | "zip";
+      readonly format: KnowledgeBundleFormat;
       readonly report: IngestReport;
       readonly archivedAbsent: number;
       readonly rejected: ReadonlyArray<BundleEntryError>;
@@ -342,16 +362,24 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
         rejected: [],
       };
     }
-    bytes = await readBodyWithCap(response, maxBundleBytes, host);
+    bytes = await readBodyWithCap(response.body, maxBundleBytes, { host });
   } catch (err) {
-    // `EgressBlockedError` (SSRF block) and `BundleDownloadError` (size cap)
-    // carry host-redacted, actionable messages by construction — pass them
-    // through. EVERY other error (DNS, TLS, connection reset, abort) is
-    // rebuilt around the host so a credentialed URL can never reach the state
-    // row, folding in the narrowed `cause` (undici buries the useful part
-    // there — a bare "fetch failed" wraps the real ECONNREFUSED/ENOTFOUND).
-    if (err instanceof EgressBlockedError || err instanceof BundleDownloadError) {
+    // `EgressBlockedError` (SSRF block) carries a host-redacted, actionable
+    // message by construction — pass it through. The shared cap error carries
+    // no source details, so it is rebuilt around the host here. EVERY other
+    // error (DNS, TLS, connection reset, abort) is rebuilt around the host so
+    // a credentialed URL can never reach the state row, folding in the
+    // narrowed `cause` (undici buries the useful part there — a bare "fetch
+    // failed" wraps the real ECONNREFUSED/ENOTFOUND).
+    if (err instanceof EgressBlockedError) {
       return { kind: "error", error: err.message, rejected: [] };
+    }
+    if (err instanceof BodyCapExceededError) {
+      return {
+        kind: "error",
+        error: `Bundle from "${host}" exceeds the ${maxBundleBytes}-byte limit — download aborted.`,
+        rejected: [],
+      };
     }
     if (err instanceof DOMException && err.name === "TimeoutError") {
       return {
@@ -430,23 +458,40 @@ async function runSyncAttempt(params: SyncCollectionParams): Promise<SyncAttempt
 
   try {
     const { report, archivedAbsent } = await withTransaction(async (client) => {
+      // Re-check the install INSIDE the transaction (`FOR UPDATE`, so this
+      // serializes against a concurrent uninstall's row UPDATE): the route /
+      // cycle checked it before the fetch, but an uninstall landing during the
+      // fetch window would otherwise let this ingest resurrect the
+      // just-archived documents to `draft` and re-create sync bookkeeping the
+      // uninstall just deleted.
+      const recheck = await client.query(SYNC_INSTALL_RECHECK_SQL, [workspaceId, collectionSlug]);
+      const liveStatus = recheck.rows[0]?.status;
+      if (liveStatus === undefined || liveStatus === "archived") {
+        throw new SyncInstallGoneError();
+      }
       const ingestReport = await ingestBundleIntoCollection({
-        // Same minimal-client cast the admin ingest route uses — the ingest
-        // core only calls `.query()`.
-        client: client as unknown as IngestClient,
+        client,
         workspaceId,
         collectionId: collectionSlug,
         source: "bundle-sync",
         docs: parsed.docs,
       });
-      const archivedRows = await (client as unknown as IngestClient).query<{ id: string }>(
-        ARCHIVE_ABSENT_SQL,
-        [workspaceId, collectionSlug, presentPaths],
-      );
+      const archivedRows = await client.query(ARCHIVE_ABSENT_SQL, [
+        workspaceId,
+        collectionSlug,
+        presentPaths,
+      ]);
       return { report: ingestReport, archivedAbsent: archivedRows.rows.length };
     });
     return { kind: "ok", format: extracted.format, report, archivedAbsent, rejected };
   } catch (err) {
+    if (err instanceof SyncInstallGoneError) {
+      log.warn(
+        { workspaceId, collectionSlug },
+        "Knowledge bundle sync aborted — the collection was uninstalled mid-sync; no writes applied",
+      );
+      return { kind: "error", error: err.message, rejected };
+    }
     log.error(
       { workspaceId, collectionSlug, err: err instanceof Error ? err.message : String(err) },
       "Knowledge bundle sync ingest transaction failed",
@@ -499,53 +544,6 @@ async function buildAuthHeaders(
 }
 
 /**
- * Stream a response body with a cumulative size cap, so a chunked / lying
- * endpoint can't buffer unbounded bytes (the `Content-Length` pre-check is
- * advisory; this is the authoritative guard). Throws an `Error` whose message
- * is host-only.
- */
-async function readBodyWithCap(
-  response: Response,
-  maxBytes: number,
-  host: string,
-): Promise<Uint8Array> {
-  const body = response.body;
-  if (!body) return new Uint8Array(0);
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      total += value.length;
-      if (total > maxBytes) {
-        throw new BundleDownloadError(
-          `Bundle from "${host}" exceeds the ${maxBytes}-byte limit — download aborted.`,
-        );
-      }
-      chunks.push(value);
-    }
-  } finally {
-    // Release the connection whether we finished or bailed on the cap.
-    await reader.cancel().catch((err: unknown) => {
-      log.debug(
-        { host, err: err instanceof Error ? err.message : String(err) },
-        "Bundle body reader cancel failed after read completed/aborted",
-      );
-    });
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return out;
-}
-
-/**
  * Upsert the per-collection sync bookkeeping row. Never throws — a state-write
  * failure must not fail a sync that already committed (it is logged at error
  * so a persistently broken state table is visible).
@@ -595,6 +593,12 @@ export interface KnowledgeSyncCycleResult {
   readonly inspected: number;
   readonly succeeded: number;
   readonly failed: number;
+  /**
+   * True when the installs query itself failed — the zero counts then mean
+   * "couldn't look", not "nothing to sync". Callers (the scheduler span, the
+   * heartbeat log) must not present such a cycle as an idle success.
+   */
+  readonly queryFailed: boolean;
 }
 
 interface SyncInstallRow extends Record<string, unknown> {
@@ -602,6 +606,17 @@ interface SyncInstallRow extends Record<string, unknown> {
   install_id: string;
   config: Record<string, unknown> | null;
 }
+
+/**
+ * The cycle's install listing — every enabled, non-archived `bundle-sync`
+ * install, ordered for deterministic walks. Exported for the real-Postgres
+ * test so the WHERE predicates are executed, not just asserted as a string.
+ */
+export const SYNC_CYCLE_INSTALLS_SQL = `SELECT workspace_id, install_id, config
+         FROM workspace_plugins
+        WHERE catalog_id = $1 AND pillar = 'knowledge'
+          AND enabled = true AND status <> 'archived'
+        ORDER BY workspace_id ASC, install_id ASC`;
 
 /**
  * Run one sync pass over every enabled, non-archived `bundle-sync` install.
@@ -612,25 +627,20 @@ export async function runKnowledgeSyncCycle(options?: {
   readonly fetchImpl?: typeof globalThis.fetch;
 }): Promise<KnowledgeSyncCycleResult> {
   if (!hasInternalDB()) {
-    return { inspected: 0, succeeded: 0, failed: 0 };
+    return { inspected: 0, succeeded: 0, failed: 0, queryFailed: false };
   }
 
   let installs: SyncInstallRow[];
   try {
-    installs = await internalQuery<SyncInstallRow>(
-      `SELECT workspace_id, install_id, config
-         FROM workspace_plugins
-        WHERE catalog_id = $1 AND pillar = 'knowledge'
-          AND enabled = true AND status <> 'archived'
-        ORDER BY workspace_id ASC, install_id ASC`,
-      [BUNDLE_SYNC_CATALOG_ID],
-    );
+    installs = await internalQuery<SyncInstallRow>(SYNC_CYCLE_INSTALLS_SQL, [
+      BUNDLE_SYNC_CATALOG_ID,
+    ]);
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err) },
       "Knowledge sync cycle: failed to query bundle-sync installs",
     );
-    return { inspected: 0, succeeded: 0, failed: 0 };
+    return { inspected: 0, succeeded: 0, failed: 0, queryFailed: true };
   }
 
   let succeeded = 0;
@@ -663,7 +673,7 @@ export async function runKnowledgeSyncCycle(options?: {
   if (installs.length > 0) {
     log.info({ inspected: installs.length, succeeded, failed }, "Knowledge sync cycle complete");
   }
-  return { inspected: installs.length, succeeded, failed };
+  return { inspected: installs.length, succeeded, failed, queryFailed: false };
 }
 
 // ---------------------------------------------------------------------------

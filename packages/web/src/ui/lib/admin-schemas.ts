@@ -693,6 +693,9 @@ export const KnowledgeIngestSummarySchema = z.object({
   linksWritten: z.number().int().nonnegative(),
   published: z.boolean(),
   rejected: z.array(KnowledgeRejectedFileSchema),
+  // `.default(0)`: added in v0.0.41 — an older API omits it during a
+  // deploy-overlap window, and the parse must not fail (absent = none skipped).
+  skippedNonMarkdown: z.number().int().nonnegative().default(0),
 });
 
 export const KnowledgeUninstallResponseSchema = z.object({

@@ -72,6 +72,12 @@ export interface LenientParseResult {
   readonly docs: readonly LenientDoc[];
   /** Per-file rejections (malformed frontmatter). Never silently dropped. */
   readonly errors: readonly BundleEntryError[];
+  /**
+   * Non-`.md` entries skipped by design (assets — only markdown ingests).
+   * Surfaced as a count so a mostly-binary bundle ("3 documents ingested" out
+   * of 300 files) doesn't read as fully ingested.
+   */
+  readonly skippedNonMarkdown: number;
 }
 
 function basename(p: string): string {
@@ -249,9 +255,13 @@ export function extractLinks(sourcePath: string, body: string): LenientLink[] {
 export function parseLenientBundle(files: readonly InteropFile[]): LenientParseResult {
   const docs: LenientDoc[] = [];
   const errors: BundleEntryError[] = [];
+  let skippedNonMarkdown = 0;
 
   for (const file of files) {
-    if (!file.path.toLowerCase().endsWith(".md")) continue;
+    if (!file.path.toLowerCase().endsWith(".md")) {
+      skippedNonMarkdown++;
+      continue;
+    }
     if (RESERVED_BASENAMES.has(basename(file.path).toLowerCase())) continue;
 
     const split = splitLenientFrontmatter(file.content);
@@ -276,5 +286,5 @@ export function parseLenientBundle(files: readonly InteropFile[]): LenientParseR
     });
   }
 
-  return { docs, errors };
+  return { docs, errors, skippedNonMarkdown };
 }

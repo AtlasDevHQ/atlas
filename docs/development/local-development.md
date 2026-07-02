@@ -58,12 +58,21 @@ pass for free on any working dev box (DB up, `BETTER_AUTH_SECRET` set, migration
 > `env-profile.ts`). The authoritative list of SaaS boot keys is `SAAS_ENV_KEYS` in
 > `packages/api/src/lib/effect/saas-env.ts`; the guards live in `saas-guards.ts`.
 
-## `VERCEL_*` / `ATLAS_SANDBOX_URL` in your shell breaks sandbox tests
+## `VERCEL_*` / `ATLAS_SANDBOX_URL` in your shell and sandbox tests
 
-A separate, related papercut: if your shell profile exports `VERCEL_TOKEN` / `VERCEL_TEAM_ID`
-/ `VERCEL_PROJECT_ID` or `ATLAS_SANDBOX_URL` (common when you also do deploy work), the
-explore/python sandbox tests resolve the real Vercel sandbox and fail locally even though
-they're green in CI. Run those with the vars unset:
+**Fixed at the choke point:** the global test preload
+(`packages/api/src/test-setup.ts`) strips `VERCEL_TOKEN` / `VERCEL_TEAM_ID` /
+`VERCEL_PROJECT_ID` alongside `ATLAS_*` before any test file loads, and the
+sandbox backend-selection suites (`explore-backend`,
+`explore-workspace-override`, `python`) additionally scrub them (plus the bare
+`VERCEL` platform flag and `ATLAS_SANDBOX_URL`) in their own env setup. A shell
+— or a `.env`-loading agent session — that carries deploy credentials no longer
+makes them resolve the real Vercel sandbox and fail locally while green in CI.
+
+If a sandbox test ever fails this way again, the leak is a *new* ambient var
+missing from the preload's strip list (or a test relying on ambient platform
+flags) — fix it there rather than working around it. The blunt workaround still
+works in a pinch:
 
 ```bash
 env -u VERCEL_TOKEN -u VERCEL_TEAM_ID -u VERCEL_PROJECT_ID -u ATLAS_SANDBOX_URL bun run test

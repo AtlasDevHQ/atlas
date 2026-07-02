@@ -175,6 +175,11 @@ describe("workspace sandbox backend override", () => {
     delete process.env.ATLAS_SANDBOX;
     delete process.env.ATLAS_SANDBOX_URL;
     delete process.env.ATLAS_NSJAIL_PATH;
+    // Ambient deploy credentials make vercel-sandbox eligible
+    // (vercelSandboxAccess) and would win over the expected backends.
+    delete process.env.VERCEL_TEAM_ID;
+    delete process.env.VERCEL_PROJECT_ID;
+    delete process.env.VERCEL_TOKEN;
     process.env.PATH = "/usr/bin:/bin";
   });
 

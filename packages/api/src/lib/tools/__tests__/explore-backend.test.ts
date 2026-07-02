@@ -38,6 +38,12 @@ describe("explore backend selection", () => {
     delete process.env.ATLAS_SANDBOX;
     delete process.env.ATLAS_SANDBOX_URL;
     delete process.env.ATLAS_NSJAIL_PATH;
+    // Ambient deploy credentials make the vercel-sandbox backend eligible
+    // (vercelSandboxAccess), which would win the priority chain and skew
+    // every expectation below when the developer's env carries them.
+    delete process.env.VERCEL_TEAM_ID;
+    delete process.env.VERCEL_PROJECT_ID;
+    delete process.env.VERCEL_TOKEN;
   });
 
   afterEach(() => {

@@ -1,4 +1,4 @@
-import { describe, expect, it, mock, afterEach } from "bun:test";
+import { describe, expect, it, mock, beforeEach, afterEach } from "bun:test";
 
 // Mock logger and tracing to avoid side effects
 mock.module("@atlas/api/lib/logger", () => ({
@@ -289,6 +289,18 @@ describe("executePython tool", () => {
       process.env[key] = value;
     }
   }
+
+  beforeEach(() => {
+    // Ambient Vercel state makes useVercelSandbox() true — via explicit deploy
+    // credentials (vercelSandboxAccess) or platform detection (VERCEL /
+    // ATLAS_RUNTIME) — routing execution to a real Vercel sandbox instead of
+    // the local rejection/sidecar paths under test.
+    saveAndSetEnv("VERCEL_TEAM_ID", undefined);
+    saveAndSetEnv("VERCEL_PROJECT_ID", undefined);
+    saveAndSetEnv("VERCEL_TOKEN", undefined);
+    saveAndSetEnv("ATLAS_RUNTIME", undefined);
+    saveAndSetEnv("VERCEL", undefined);
+  });
 
   afterEach(() => {
     for (const [key, value] of Object.entries(savedEnv)) {

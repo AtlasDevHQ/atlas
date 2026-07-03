@@ -16,6 +16,21 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/blog",
     siteName: "Atlas",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Atlas blog — field notes",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Blog — Atlas",
+    description:
+      "Launch notes, technical deep dives, and the occasional founder note, on building a text-to-SQL agent.",
+    images: ["/og.png"],
   },
 };
 
@@ -34,6 +49,16 @@ interface Post {
 }
 
 const POSTS: Post[] = [
+  {
+    slug: "atlas-speaks-okf",
+    title: "Atlas speaks OKF",
+    description:
+      "Google shipped the Open Knowledge Format seventeen days before my post arguing the semantic layer should be a plain YAML file. Here's where the two agree, where a runtime has to go further, and how OKF became the native format of Atlas's new Knowledge Base pillar.",
+    isoDate: "2026-07-03",
+    dateLabel: "July 3, 2026",
+    readingTime: "6 min read",
+    tag: "How it works",
+  },
   {
     slug: "the-price-of-ci",
     title: "The price of /ci",

@@ -31,6 +31,21 @@ export const metadata: Metadata = {
     siteName: "Atlas",
     type: "article",
     authors: ["Matt Sywulak"],
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Why this one stuck",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Why This One Stuck",
+    description:
+      "Thirty-two repositories since 2023, most dead within two weeks. Why Atlas is the first one I got over the line, and the first I built end to end with an AI agent.",
+    images: ["/og.png"],
   },
 };
 

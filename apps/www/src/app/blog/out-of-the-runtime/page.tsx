@@ -33,6 +33,21 @@ export const metadata: Metadata = {
     siteName: "Atlas",
     type: "article",
     authors: ["Matt Sywulak"],
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Out of the runtime",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Out of the Runtime",
+    description:
+      "How I built Atlas with an AI agent: a control plane of commands, a GitHub-issue work queue, and a memory of its own, evolved from hand-running prompts to overnight ship loops.",
+    images: ["/og.png"],
   },
 };
 

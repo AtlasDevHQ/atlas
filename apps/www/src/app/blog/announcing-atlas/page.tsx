@@ -36,6 +36,21 @@ export const metadata: Metadata = {
     siteName: "Atlas",
     type: "article",
     authors: ["Matt Sywulak"],
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "The road to launch: everything I shipped in beta",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "The Road to Launch: Everything I Shipped in Atlas's Beta",
+    description:
+      "Atlas goes GA in July 2026. A recap of the first half of 2026 — a run of internal milestones from 0.1 through 1.6, then twenty-nine public releases in under a month.",
+    images: ["/og.png"],
   },
 };
 

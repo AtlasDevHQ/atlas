@@ -38,7 +38,7 @@ const POSTS: Post[] = [
     slug: "atlas-speaks-okf",
     title: "Atlas speaks OKF",
     description:
-      "Google shipped the Open Knowledge Format seventeen days before my post arguing the semantic layer should be a plain YAML file. Here's where the two formats agree, where a runtime has to go further than a format, and how OKF became the native format of Atlas's new Knowledge Base pillar.",
+      "Google shipped the Open Knowledge Format seventeen days before my post arguing the semantic layer should be a plain YAML file. Here's where the two agree, where a runtime has to go further, and how OKF became the native format of Atlas's new Knowledge Base pillar.",
     isoDate: "2026-07-03",
     dateLabel: "July 3, 2026",
     readingTime: "6 min read",

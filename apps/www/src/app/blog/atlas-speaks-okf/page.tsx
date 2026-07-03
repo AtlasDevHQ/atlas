@@ -24,12 +24,12 @@ import { StickyNav } from "../../../components/sticky-nav";
 export const metadata: Metadata = {
   title: "Atlas Speaks OKF",
   description:
-    "Google shipped the Open Knowledge Format seventeen days before my post arguing the semantic layer should be a plain YAML file. Here's where the two formats agree, where a runtime has to go further, and how OKF became the native format of Atlas's new Knowledge Base.",
+    "Google shipped the Open Knowledge Format seventeen days before my post arguing the semantic layer should be a plain YAML file. Here's where the two agree, where a runtime has to go further, and how OKF became the native format of Atlas's new Knowledge Base.",
   authors: [{ name: "Matt Sywulak" }],
   openGraph: {
     title: "Atlas Speaks OKF",
     description:
-      "Google shipped the Open Knowledge Format seventeen days before my post arguing the semantic layer should be a plain YAML file. Where the two formats agree, where a runtime has to go further, and how OKF became the native format of Atlas's new Knowledge Base. By Matt Sywulak.",
+      "Google shipped the Open Knowledge Format seventeen days before my post arguing the semantic layer should be a plain YAML file. Where the two agree, where a runtime has to go further, and how OKF became the native format of Atlas's new Knowledge Base. By Matt Sywulak.",
     url: "https://www.useatlas.dev/blog/atlas-speaks-okf",
     siteName: "Atlas",
     type: "article",
@@ -51,7 +51,7 @@ export default function AtlasSpeaksOkf() {
           dateLabel="July 3, 2026"
           readingTime="6 min read"
           title="Atlas speaks OKF"
-          dek="Google shipped an open format for the context AI agents need, two weeks before my post arguing the same thesis landed. Here's what Atlas did about it: import, export, and a whole new pillar."
+          dek="Google's new Open Knowledge Format lands on the same thesis as Atlas's semantic layer: plain files, in git, that agents and people both read. Here's what Atlas did about it: import, export, and a whole new pillar."
         />
 
         <Lead>
@@ -137,8 +137,8 @@ tags: [sales]
           before it runs. A pinned metric runs exactly as written, every time.
           A glossary term marked <InlineCode>ambiguous</InlineCode> forces the
           agent to stop and ask which meaning you want. OKF hands an agent
-          knowledge. The semantic layer hands it knowledge plus the rules for
-          acting on it, and the runtime holds the agent to those rules.
+          knowledge; the semantic layer adds the rules for acting on it, and
+          the runtime holds the agent to those rules.
         </P>
 
         <H2>What crosses the boundary, and what can&apos;t</H2>
@@ -238,7 +238,7 @@ tags: [sales]
         </P>
         <P>
           One boundary never moves, and it&apos;s the same line the export
-          section drew. Knowledge documents are descriptive, full stop.
+          section drew. Knowledge documents stay descriptive.
           Nothing in an uploaded bundle ever runs verbatim, extends the table
           whitelist, or gates the agent — that authority stays with the
           semantic layer, where a human reviews every line. And uploaded
@@ -251,11 +251,12 @@ tags: [sales]
           Google&apos;s line about a format&apos;s value coming from how many
           parties speak it cuts both ways: it&apos;s an argument for them to
           publish the spec, and an argument for Atlas to adopt it. So Atlas
-          keeps its own YAML where enforcement is the point, and speaks OKF
-          everywhere interchange is the point. In through import, out through
-          export, hosted untouched in between. If you someday leave Atlas,
-          your semantic layer exports to a spec anyone can implement, and your
-          knowledge base was never in a proprietary shape to begin with.
+          keeps its own YAML where the guardrails live, and speaks OKF
+          wherever interchange matters. Import is the way in, export is the
+          way out, and anything hosted in between stays untouched. If you
+          someday leave Atlas, your semantic layer exports to a spec anyone
+          can implement, and your knowledge base was never in a proprietary
+          shape to begin with.
         </P>
         <P>
           The YAML-file post ended by saying the semantic layer is what lets

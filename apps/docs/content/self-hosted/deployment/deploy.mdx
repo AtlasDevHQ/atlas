@@ -4,23 +4,6 @@ description: Deploy Atlas to Railway, Vercel, or Docker in one click.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
-import { Tabs, Tab } from "fumadocs-ui/components/tabs";
-
-Atlas can be used as a hosted SaaS platform or deployed to your own infrastructure. Choose the path that fits your needs.
-
-<Tabs items={["SaaS (app.useatlas.dev)", "Self-Hosted"]}>
-<Tab value="SaaS (app.useatlas.dev)">
-
-The fastest way to use Atlas. No infrastructure to manage — sign up, connect your database, and start querying.
-
-1. **Sign up** at [app.useatlas.dev](https://app.useatlas.dev)
-2. **Connect your database** — go to **Admin &gt; Connections** and paste your connection string. See [Connect Your Data](/getting-started/connect-your-data) for database-specific setup (creating read-only users, SSL configuration)
-3. **Start querying** — the semantic layer is generated automatically. You can review and edit entity files in **Admin &gt; Semantic Layer**
-
-Authentication, sandbox isolation, scaling, and updates are managed by the Atlas platform. For workspace configuration, see [Admin Console](/guides/admin-console).
-
-</Tab>
-<Tab value="Self-Hosted">
 
 Deploy Atlas to your own infrastructure. You control the environment, data residency, and LLM provider.
 
@@ -30,8 +13,9 @@ Deploy Atlas to your own infrastructure. You control the environment, data resid
 
 Continue reading for one-click deploy options, scaffolding a project, and platform-specific guides.
 
-</Tab>
-</Tabs>
+<Callout type="info" title="Prefer a managed instance?">
+  [app.useatlas.dev](https://app.useatlas.dev) runs Atlas for you — no infrastructure to manage. Sign up, connect your database, and start querying. Authentication, sandbox isolation, scaling, and updates are all handled by the platform.
+</Callout>
 
 ---
 
@@ -242,7 +226,7 @@ Auth is opt-in. Set one variable to enable:
 | `BETTER_AUTH_SECRET` | Managed | Email/password login with sessions. Min 32 chars. Requires `DATABASE_URL` |
 | `ATLAS_AUTH_JWKS_URL` | BYOT | Stateless JWT verification against your identity provider |
 
-See [Authentication](/deployment/authentication) for detailed configuration.
+See [Authentication](/self-hosted/deployment/authentication) for detailed configuration.
 
 ## Security & Isolation
 
@@ -348,7 +332,7 @@ export default defineConfig({
 ## See Also
 
 - [Environment Variables](/reference/environment-variables) — Full reference for all deployment variables
-- [Authentication](/deployment/authentication) — Auth mode configuration for production
+- [Authentication](/self-hosted/deployment/authentication) — Auth mode configuration for production
 - [Configuration](/reference/config) — Declarative `atlas.config.ts` for advanced setups
 - [Sandbox Architecture](/architecture/sandbox) — Design doc for code execution isolation across platforms
 - [Troubleshooting](/guides/troubleshooting) — Diagnosing deployment issues

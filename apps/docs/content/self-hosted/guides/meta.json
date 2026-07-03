@@ -1,0 +1,6 @@
+{
+  "title": "Guides",
+  "description": "Operator walkthroughs for self-hosted Atlas",
+  "icon": "BookOpen",
+  "pages": ["self-hosted-models"]
+}

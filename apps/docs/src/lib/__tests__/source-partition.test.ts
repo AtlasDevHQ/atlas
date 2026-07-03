@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { buildSectionSource, type CollectionLike } from "@/lib/compose";
 import { classifyByPath } from "@/lib/audience-taxonomy";
+import { MOVED_SELF_HOSTED_SLUGS } from "@/lib/redirects";
 
 /**
  * Source-partition test (PRD #4257's highest-value seam).
@@ -164,25 +165,10 @@ const saasTreeFiles = contentFiles.filter((p) =>
   p.includes(`${join(CONTENT_DIR, "docs")}/`),
 );
 
-// Old-root slug → the self-hosted-only pages relocated by this slice (#4264).
-// Intentionally FROZEN to slice #4264's scope — this is a migration-landing
-// assertion, not a live inventory of the self-hosted tree. Later slices that
-// move more pages add their own block; they do not extend this list.
-const MOVED_SELF_HOSTED_SLUGS = [
-  "getting-started/quick-start",
-  "deployment/deploy",
-  "deployment/authentication",
-  "deployment/cache-configuration",
-  "frameworks/overview",
-  "frameworks/react-vite",
-  "frameworks/nuxt",
-  "frameworks/sveltekit",
-  "frameworks/tanstack-start",
-  "guides/self-hosted-models",
-  "contributing/ci",
-  "contributing/eval-harness",
-];
-
+// Old-root slug → the self-hosted-only pages relocated by slice #4264. This
+// migration-landing assertion and the #4267 redirect-coverage test share ONE
+// frozen move set — `MOVED_SELF_HOSTED_SLUGS` in `@/lib/redirects` (the redirect
+// SSOT) — so the redirect map and this partition check can never drift apart.
 test("every moved self-hosted-only page lives under content/self-hosted/ and NOT content/docs/", () => {
   for (const slug of MOVED_SELF_HOSTED_SLUGS) {
     expect(selfHostedFiles).toContain(

@@ -13,6 +13,11 @@
 import type { ExploreBackend, ExecResult } from "./backends/types";
 import type { SidecarExecResponse } from "@atlas/api/lib/sidecar-types";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  isSidecarConnectionError,
+  isSidecarTimeoutError,
+  sidecarRequestHeaders,
+} from "./backends/sidecar-transport";
 
 const log = createLogger("explore-sidecar");
 
@@ -26,8 +31,6 @@ export async function createSidecarBackend(
   sidecarUrl: string,
   options?: { semanticRoot?: string },
 ): Promise<ExploreBackend> {
-  const authToken = process.env.SIDECAR_AUTH_TOKEN;
-
   // Compute sidecar cwd for org-scoped directories.
   // The sidecar mounts the host's semantic/ at /semantic. If the semantic
   // root is semantic/.orgs/org123, the sidecar cwd is .orgs/org123
@@ -99,10 +102,7 @@ export async function createSidecarBackend(
       try {
         response = await fetch(execUrl, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-          },
+          headers: sidecarRequestHeaders(),
           body: JSON.stringify({ command, timeout, ...(sidecarCwd ? { cwd: sidecarCwd } : {}) }),
           signal: AbortSignal.timeout(timeout + HTTP_OVERHEAD_MS),
         });
@@ -110,11 +110,7 @@ export async function createSidecarBackend(
         const detail = err instanceof Error ? err.message : String(err);
 
         // Connection refused or timeout — sidecar may be down
-        if (
-          detail.includes("ECONNREFUSED") ||
-          detail.includes("fetch failed") ||
-          detail.includes("Failed to connect")
-        ) {
+        if (isSidecarConnectionError(detail)) {
           log.error({ err: detail, url: execUrl }, "Sidecar connection failed");
           // Invalidate backend cache so the next call re-evaluates the backend priority chain.
           // If the sidecar stays down, the system falls back to just-bash.
@@ -127,7 +123,7 @@ export async function createSidecarBackend(
           );
         }
 
-        if (detail.includes("TimeoutError") || detail.includes("timed out") || detail.includes("aborted")) {
+        if (isSidecarTimeoutError(detail)) {
           log.warn({ command, timeout }, "Sidecar request timed out");
           return {
             stdout: "",

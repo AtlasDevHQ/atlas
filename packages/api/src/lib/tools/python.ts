@@ -15,10 +15,18 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig } from "@atlas/api/lib/config";
 import { getWorkspaceSandboxOverride } from "@atlas/api/lib/sandbox/workspace-override";
 import { useVercelSandbox, useSidecar } from "./backends/detect";
+import {
+  planSandboxSelection,
+  runSandboxPlan,
+  formatSandboxPriorityFailure,
+  assertNever,
+  type SandboxSelectionEnv,
+} from "./backends/selection";
 import { getStreamWriter } from "./python-stream";
 import type { PythonSandboxOptions } from "./python-sandbox";
 import type { RestDatasource } from "@atlas/api/lib/openapi/datasource";
@@ -329,97 +337,180 @@ async function vercelSandboxOptionsFor(
 }
 
 /**
- * Resolve the Python execution backend.
+ * Snapshot the env + config inputs that drive backend selection into the shape
+ * the shared pure planner ({@link planSandboxSelection}) consumes — the SAME
+ * snapshot the explore tool builds, which is what makes the two tools resolve
+ * the same backend for the same env/config (#4187).
  *
- * Priority:
- * 1. Sidecar (ATLAS_SANDBOX_URL) — HTTP-isolated container
- * 2. Vercel (ATLAS_RUNTIME=vercel) — Python 3.13 in Firecracker microVM
- * 3. nsjail explicit (ATLAS_SANDBOX=nsjail) — hard-fail if unavailable
- * 4. nsjail auto-detect (on PATH or ATLAS_NSJAIL_PATH) — graceful fallback
- * 5. No backend — error
+ * `nsjailFailed` is always `false`: unlike explore, the Python nsjail backend
+ * has no exit-109 runtime-degradation callback, so it re-attempts nsjail each
+ * turn (its prior behavior). The config priority (`sandbox.priority`, also fed
+ * by `ATLAS_SANDBOX_PRIORITY`) is honored here for the first time — before
+ * #4187 the Python tool ignored it entirely, a latent posture bug given SaaS
+ * pins `["vercel-sandbox"]`.
+ */
+export async function snapshotPythonSandboxEnv(): Promise<SandboxSelectionEnv> {
+  const { isNsjailAvailable } = await import("./backends/nsjail");
+  return {
+    atlasSandbox: process.env.ATLAS_SANDBOX,
+    vercelAvailable: useVercelSandbox(),
+    sidecarAvailable: useSidecar(),
+    nsjailAvailable: isNsjailAvailable(),
+    nsjailFailed: false,
+    configPriority: getConfig()?.sandbox?.priority,
+  };
+}
+
+/**
+ * Resolve the Python execution backend through the shared selection policy
+ * ({@link planSandboxSelection} + {@link runSandboxPlan}) so explore and Python
+ * agree on the chosen backend and both honor `sandbox.priority` /
+ * `ATLAS_SANDBOX_PRIORITY`. The default chain is Vercel > nsjail-explicit >
+ * sidecar > nsjail-auto (there is no `just-bash` step — Python refuses to run
+ * without process isolation).
  *
- * `restDatasource` (when non-null) bounds the **Vercel sandbox**'s egress to the
- * datasource host (#2927 layer 0): the per-request network allowlist replaces
- * the default `deny-all`. The sidecar and nsjail backends ignore it — the
- * sidecar has no network policy (its network is open) and nsjail has no network
- * at all. The caller only passes a non-null datasource when the Vercel backend
- * will actually be selected. NB: this opens egress only; no credential is
- * injected, so the authenticated read path stays the host-side
- * `executeRestOperation` tool.
+ * `resolveVercelOptions` is called ONLY if/when the Vercel step is actually
+ * reached; it lazily resolves the per-request REST datasource and bounds the
+ * sandbox egress to that host (#2927 layer 0). Absent datasource → deny-all.
+ * The sidecar and nsjail backends ignore it — the sidecar's network is open and
+ * nsjail has no network. NB: egress-open only; no credential is injected, so the
+ * authenticated read path stays the host-side `executeRestOperation` tool.
  */
 async function getPythonBackend(
-  restDatasource?: RestDatasource | null,
+  resolveVercelOptions: () => Promise<PythonSandboxOptions>,
 ): Promise<PythonBackend | { error: string }> {
-  // 1. Sidecar
-  if (useSidecar()) {
-    const sidecarUrl = process.env.ATLAS_SANDBOX_URL!;
-    const { executePythonViaSidecar, executePythonViaSidecarStream } = await import("./python-sidecar");
-    return {
-      exec: (code, data) => executePythonViaSidecar(sidecarUrl, code, data),
-      execStream: (code, data, onProgress) =>
-        executePythonViaSidecarStream(sidecarUrl, code, data, onProgress),
-    };
+  const { findNsjailBinary } = await import("./backends/nsjail");
+  const plan = planSandboxSelection(await snapshotPythonSandboxEnv());
+  if (plan.source === "config-priority") {
+    log.info(
+      { priority: plan.configPriority },
+      "Using configured sandbox priority for Python: %s",
+      plan.configPriority.join(" > "),
+    );
   }
 
-  // 2. Vercel sandbox (Python 3.13 runtime)
-  if (useVercelSandbox()) {
-    let createPythonSandboxBackend;
-    try {
-      ({ createPythonSandboxBackend } = await import("./python-sandbox"));
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      log.error({ err: detail }, "Vercel Python sandbox module not available");
-      return { error: `Vercel Python sandbox unavailable: ${detail}` };
-    }
-    // Bound egress to the datasource host (#2927 layer 0). Absent
-    // datasource → default options (deny-all network).
-    return createPythonSandboxBackend(await vercelSandboxOptionsFor(restDatasource ?? null));
-  }
-
-  // 3. nsjail explicit (ATLAS_SANDBOX=nsjail) — hard-fail
-  if (process.env.ATLAS_SANDBOX === "nsjail") {
-    try {
-      const { findNsjailBinary } = await import("./backends/nsjail");
-      const nsjailPath = findNsjailBinary();
-      if (nsjailPath) {
-        const { createPythonNsjailBackend } = await import("./python-nsjail");
-        return createPythonNsjailBackend(nsjailPath);
+  const outcome = await runSandboxPlan<PythonBackend>(
+    plan,
+    async (step) => {
+    switch (step.kind) {
+      case "sidecar": {
+        // Read into a null-checked local (no non-null assertion). The default
+        // chain only reaches this step when ATLAS_SANDBOX_URL is set, but a
+        // config pin can list "sidecar" with the URL unset — guard for it.
+        const sidecarUrl = process.env.ATLAS_SANDBOX_URL;
+        if (!sidecarUrl) {
+          return { failure: { name: step.kind, reason: "not configured (set ATLAS_SANDBOX_URL)" } };
+        }
+        const { executePythonViaSidecar, executePythonViaSidecarStream } = await import(
+          "./python-sidecar"
+        );
+        return {
+          backend: {
+            exec: (code, data) => executePythonViaSidecar(sidecarUrl, code, data),
+            execStream: (code, data, onProgress) =>
+              executePythonViaSidecarStream(sidecarUrl, code, data, onProgress),
+          },
+        };
       }
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      log.error({ err: detail }, "nsjail explicitly requested but Python nsjail backend failed to load");
-    }
-    return {
-      error: "ATLAS_SANDBOX=nsjail but nsjail binary not found. Python execution unavailable.",
-    };
-  }
 
-  // 4. nsjail auto-detect
-  try {
-    const { findNsjailBinary } = await import("./backends/nsjail");
-    const nsjailPath = findNsjailBinary();
-    if (nsjailPath) {
-      const { createPythonNsjailBackend } = await import("./python-nsjail");
-      return createPythonNsjailBackend(nsjailPath);
-    }
-  } catch (err) {
-    if (
-      err != null &&
-      typeof err === "object" &&
-      "code" in err &&
-      (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND"
-    ) {
-      log.debug("nsjail module not available, skipping nsjail Python backend");
-    } else {
-      const detail = err instanceof Error ? err.message : String(err);
-      log.error({ err: detail }, "Unexpected error initializing nsjail Python backend");
-    }
-  }
+      case "vercel-sandbox": {
+        if (!useVercelSandbox()) {
+          return {
+            failure: {
+              name: step.kind,
+              reason: "not configured (set ATLAS_RUNTIME=vercel, VERCEL=1, or VERCEL_* credentials)",
+            },
+          };
+        }
+        let createPythonSandboxBackend;
+        try {
+          ({ createPythonSandboxBackend } = await import("./python-sandbox"));
+        } catch (err) {
+          // Scrub via errorMessage (matches explore's tryCreateBackend) so an
+          // operator-facing reason can never carry a connection string.
+          const detail = errorMessage(err);
+          log.error({ err: detail }, "Vercel Python sandbox module not available");
+          return { failure: { name: step.kind, reason: `runtime unavailable: ${detail}` } };
+        }
+        // Bound egress to the datasource host (#2927 layer 0). Resolved lazily,
+        // only now that the Vercel step is actually selected.
+        return { backend: createPythonSandboxBackend(await resolveVercelOptions()) };
+      }
 
-  // 5. No backend
-  return {
-    error: "Python execution requires a sandbox (ATLAS_SANDBOX_URL or nsjail). See deployment docs.",
-  };
+      case "nsjail": {
+        const nsjailPath = findNsjailBinary();
+        if (!nsjailPath) {
+          return { failure: { name: step.kind, reason: "nsjail binary not found" } };
+        }
+        const { createPythonNsjailBackend } = await import("./python-nsjail");
+        return { backend: createPythonNsjailBackend(nsjailPath) };
+      }
+
+      case "just-bash":
+        // Python has no unsandboxed mode; refuse rather than run without
+        // isolation. A default-chain exhaustion surfaces as the "requires a
+        // sandbox" error below; a config pin to just-bash fails the same way.
+        return {
+          failure: {
+            name: step.kind,
+            reason: "Python requires process isolation; the just-bash fallback cannot execute Python",
+          },
+        };
+
+      default:
+        return assertNever(step.kind);
+    }
+    },
+    (step, reason) =>
+      log.warn(
+        { backend: step.kind, reason },
+        "Python sandbox step threw during construction — treated as soft failure",
+      ),
+  );
+
+  switch (outcome.kind) {
+    case "backend":
+      log.debug({ backend: outcome.selected, source: plan.source }, "Python backend selected");
+      return outcome.backend;
+
+    case "hard-fail":
+      // Explicit nsjail (ATLAS_SANDBOX=nsjail) could not be initialized.
+      return {
+        error:
+          `ATLAS_SANDBOX=nsjail but the nsjail Python backend could not be initialized: ${outcome.reason}. ` +
+          "Python execution unavailable.",
+      };
+
+    case "fail-closed":
+      // Config-priority pin with no fallback (the SaaS deny-all posture).
+      // `fail-closed` only arises from the config-priority arm, which carries the pin.
+      return {
+        error: formatSandboxPriorityFailure(
+          plan.source === "config-priority" ? plan.configPriority : [],
+          outcome.failures,
+          getConfig()?.deployMode,
+        ),
+      };
+
+    case "exhausted": {
+      // No isolation backend was available. Surface any attempted-backend
+      // reasons (e.g. a Vercel/nsjail that was tried and failed) so the operator
+      // can tell a missing binary from a crashing runtime — but keep the base
+      // message (and its ATLAS_SANDBOX_URL hint) intact for empty-attempt cases.
+      const attempted =
+        outcome.failures.length > 0
+          ? ` Attempted: ${outcome.failures.map((f) => `${f.name}: ${f.reason}`).join("; ")}.`
+          : "";
+      return {
+        error:
+          "Python execution requires a sandbox (ATLAS_SANDBOX_URL or nsjail). See deployment docs." +
+          attempted,
+      };
+    }
+
+    default:
+      return assertNever(outcome);
+  }
 }
 
 // --- Tool definition ---
@@ -596,16 +687,18 @@ Blocked: subprocess, os, socket, shutil, sys, ctypes, importlib, exec(), eval(),
         }
       }
 
-      // 0b. Operator chain (BYOC not engaged). Resolve the REST datasource
-      // only when the Vercel backend will actually be selected — the
-      // sidecar / nsjail backends have no network policy to narrow (see
-      // getPythonBackend).
+      // 0b. Operator chain (BYOC not engaged). The REST datasource is resolved
+      // lazily — only if the shared selector actually reaches the Vercel step
+      // (the sidecar / nsjail backends have no network policy to narrow). This
+      // replaces the old `useVercelSandbox() && !useSidecar()` heuristic with
+      // the real selection decision, so the egress resolve tracks the backend
+      // that is truly chosen (e.g. it is skipped when a config pin routes away
+      // from Vercel).
       if (!resolvedBackend) {
-        const operatorVercel = useVercelSandbox() && !useSidecar();
-        if (operatorVercel && !restDatasourceResolved) {
-          await resolveRestDatasourceFailSoft();
-        }
-        resolvedBackend = await getPythonBackend(operatorVercel ? restDatasource : null);
+        resolvedBackend = await getPythonBackend(async () => {
+          if (!restDatasourceResolved) await resolveRestDatasourceFailSoft();
+          return vercelSandboxOptionsFor(restDatasource);
+        });
       }
       if ("error" in resolvedBackend) {
         log.error(resolvedBackend.error);

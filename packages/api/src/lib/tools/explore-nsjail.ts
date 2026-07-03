@@ -12,7 +12,7 @@
 
 import type { ExploreBackend, ExecResult } from "./backends/types";
 import { readLimited, MAX_OUTPUT } from "./backends/shared";
-import { findNsjailBinary, buildNsjailArgs } from "./backends/nsjail";
+import { findNsjailBinary, buildNsjailArgs, BASE_JAIL_ENV } from "./backends/nsjail";
 import { createLogger } from "@atlas/api/lib/logger";
 import * as fs from "fs";
 
@@ -21,13 +21,6 @@ const log = createLogger("nsjail-sandbox");
 // Re-export nsjail detection utilities for backward compatibility.
 // startup.ts dynamically imports these from this module path.
 export { findNsjailBinary, isNsjailAvailable, testNsjailCapabilities } from "./backends/nsjail";
-
-/** Minimal env passed into the jail — no secrets. */
-const JAIL_ENV: Record<string, string> = {
-  PATH: "/bin:/usr/bin",
-  HOME: "/tmp",
-  LANG: "C.UTF-8",
-};
 
 /** Callbacks injected by the explore module to avoid circular dynamic imports. */
 export interface NsjailCallbacks {
@@ -69,7 +62,7 @@ export async function createNsjailBackend(
       try {
         const args = buildNsjailArgs(nsjailPath, semanticRoot, command, log);
         proc = Bun.spawn(args, {
-          env: JAIL_ENV,
+          env: BASE_JAIL_ENV,
           stdout: "pipe",
           stderr: "pipe",
         });

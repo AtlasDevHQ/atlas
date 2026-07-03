@@ -203,10 +203,15 @@ describe("executePython REST egress (#2927, layer 0)", () => {
     expect(mockUpdateNetworkPolicyCalls).toEqual([{ allow: { "crm.internal": [] } }]);
   });
 
-  it("SECURITY (self-hosted asymmetry): a configured sidecar bypasses the resolver and applies NO network policy", async () => {
-    // When ATLAS_SANDBOX_URL is set, useSidecar() wins over the Vercel backend.
-    // The resolver must NOT run (the guard is `useVercelSandbox() && !useSidecar()`)
-    // and the sidecar — which has no networkPolicy equivalent — gets no narrowing.
+  it("SECURITY (self-hosted asymmetry): the sidecar backend bypasses the resolver and applies NO network policy", async () => {
+    // When the sidecar is the selected backend (ATLAS_SANDBOX_URL set, no Vercel),
+    // the egress resolver must NOT run — the shared selector only resolves the
+    // REST datasource when the Vercel step is actually reached — and the sidecar,
+    // which has no networkPolicy equivalent, gets no narrowing. Under the unified
+    // #4187 policy Vercel outranks the sidecar, so we clear ATLAS_RUNTIME here to
+    // make the sidecar the genuinely-selected backend (the prior test relied on
+    // Python's now-removed sidecar-first ordering).
+    delete process.env.ATLAS_RUNTIME;
     process.env.ATLAS_SANDBOX_URL = "http://sandbox-sidecar:8080";
     let resolverCalls = 0;
     const result = await runPython(async () => {

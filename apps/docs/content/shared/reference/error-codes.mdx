@@ -36,7 +36,7 @@ Retrying these will not help — the request or configuration must be changed.
 
 | Code | HTTP Status | Description | Common Cause | Fix |
 |------|-------------|-------------|--------------|-----|
-| `auth_error` | 401 | Authentication failed | Invalid API key or revoked token | Check your API key or sign in again. See [Authentication](/deployment/authentication) |
+| `auth_error` | 401 | Authentication failed | Invalid API key or revoked token | Check your API key or sign in again. See [Authentication](/self-hosted/deployment/authentication) |
 | `session_expired` | 401 | Session expired | Session token has expired or been revoked | Sign in again to get a new session |
 | `forbidden` | 403 | Access denied | User lacks the required role (e.g., admin endpoints require `admin` role) | Request the appropriate role from your Atlas administrator |
 | `forbidden_role` | 403 | Admin role required | Non-admin user tried to access an admin endpoint | Sign in with an admin account or request the admin role |

@@ -12,9 +12,11 @@ Atlas is a semantic layer for any query layer — SQL warehouses **and** REST/Op
 
 You can also connect any **REST API with an OpenAPI 3.x spec** — **Stripe**, **GitHub**, **Notion**, **Twenty**, or your own service. The agent reads the spec into an operation graph and calls operations through the `executeRestOperation` tool, under the same read-only-by-default safety model as SQL. See the [OpenAPI (Generic REST) datasource](/plugins/datasources/openapi-generic) guide, or jump to [REST & OpenAPI APIs](#rest--openapi-apis) below.
 
+<WhenSaaS>
 <Callout type="info" title="Using app.useatlas.dev?">
   On the hosted SaaS platform, go to **Admin &gt; Connections** to add a datasource through the UI. You do not need to set environment variables or edit config files — the platform manages connection configuration, SSL, and pooling for you. The database-specific setup below (creating read-only users, SSL settings) still applies when preparing your database for Atlas access.
 </Callout>
+</WhenSaaS>
 
 Pick your database below and follow the steps. Each section is self-contained. For non-SQL sources, see [REST & OpenAPI APIs](#rest--openapi-apis).
 

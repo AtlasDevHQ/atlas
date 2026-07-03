@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildSectionSource, type CollectionLike } from "@/lib/compose";
 import { classifyByPath } from "@/lib/audience-taxonomy";
@@ -341,4 +341,263 @@ test("[#4263] enumerated saas-only topics render at the site root, none under /s
   expect(saasOnlyRootUrls.every((u) => !u.startsWith("/self-hosted"))).toBe(
     true,
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slice 3c (#4265) — shared content single-sourced into BOTH human trees.
+//
+// The audience-agnostic pages (getting-started concepts, the semantic layer,
+// plugins, the SDK, chat-platform integrations, comparisons, architecture, the
+// reference, and the changelog) were MOVED into content/shared/ as ONE file
+// each. content/shared/ is concatenated into BOTH the root (SaaS) and the
+// /self-hosted loaders (compose.ts), so each shared file renders at `/<slug>`
+// AND `/self-hosted/<slug>` from the one real source — full presence, single
+// source (PRD #4257).
+//
+// This block proves what #4265 asks for, self-contained (synthetic composition
+// + a read-only content/ walk — no bundler, no network):
+//   1. Dual-mount presence — a shared page mounts at both URLs and BOTH mounts
+//      resolve `editOnGithub` (via absolutePath) to the SAME real content/shared
+//      file.
+//   2. Migration landing — every 3c-moved page now lives under content/shared/
+//      and NOT content/docs/ (the taxonomy is directory-based, so a page's
+//      physical location IS its classification), while the saas-only pages that
+//      STAYED (hosted onboarding, the SaaS integrations console, sub-processor
+//      feed, BYOT provider guides) are absent from content/shared/.
+//   3. Cross-link integrity — no shared page links to a path that #3b moved out
+//      to /self-hosted (those old roots now 404 on BOTH mounts); the repointed
+//      cross-refs land on real self-hosted pages; and the shared→shared link
+//      targets are real shared pages, present at both mounts.
+//
+// Uses uniquely-named fixtures/consts (reusing only the read-only top-of-file
+// helpers + the #3b filesystem consts), so it doesn't disturb the 3a/3b blocks.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SHARED_ROOT = join(CONTENT_DIR, "shared");
+const sharedMdxFiles = contentFiles.filter(
+  (p) => p.startsWith(`${SHARED_ROOT}/`) && p.endsWith(".mdx"),
+);
+
+// A real shared source file → its root-mount URL (baseUrl "/"): drop the content
+// root and `.mdx`, and collapse a trailing `/index` (a folder landing renders at
+// the folder URL). Because a shared page mounts at both `/<slug>` and
+// `/self-hosted/<slug>`, membership in this set means the target resolves on both.
+function sharedRootUrl(absPath: string): string {
+  const rel = absPath.slice(`${SHARED_ROOT}/`.length).replace(/\.mdx$/i, "");
+  const noIndex = rel.replace(/(^|\/)index$/i, "");
+  return noIndex === "" ? "/" : `/${noIndex}`;
+}
+const sharedRootUrls = new Set(sharedMdxFiles.map(sharedRootUrl));
+
+// Synthetic fixtures mirroring the REAL moved files (one per moved section) —
+// bun test can't load compiled MDX, so the composition is exercised with these
+// stand-ins whose `fullPath` equals the on-disk file.
+const shared3c = [
+  doc(
+    "getting-started/concepts.mdx",
+    "content/shared/getting-started/concepts.mdx",
+    "Semantic Layer Concepts",
+  ),
+  doc(
+    "semantic-layer/index.mdx",
+    "content/shared/semantic-layer/index.mdx",
+    "The Semantic Layer",
+  ),
+  doc("plugins/overview.mdx", "content/shared/plugins/overview.mdx", "Plugins"),
+  doc("sdk/mcp.mdx", "content/shared/sdk/mcp.mdx", "MCP"),
+  doc(
+    "integrations/telegram.mdx",
+    "content/shared/integrations/telegram.mdx",
+    "Telegram",
+  ),
+  doc(
+    "comparisons/index.mdx",
+    "content/shared/comparisons/index.mdx",
+    "Comparisons",
+  ),
+  doc(
+    "architecture/sandbox.mdx",
+    "content/shared/architecture/sandbox.mdx",
+    "Sandbox",
+  ),
+  doc("reference/config.mdx", "content/shared/reference/config.mdx", "Config"),
+  doc("changelog.mdx", "content/shared/changelog.mdx", "Changelog"),
+];
+const saas3cAudience = [
+  doc("index.mdx", "content/docs/index.mdx", "Introduction"),
+  doc(
+    "getting-started/hosted.mdx",
+    "content/docs/getting-started/hosted.mdx",
+    "Hosted Quick Start",
+  ),
+];
+const selfHosted3cAudience = [
+  doc("index.mdx", "content/self-hosted/index.mdx", "Self-Hosted"),
+  doc(
+    "getting-started/quick-start.mdx",
+    "content/self-hosted/getting-started/quick-start.mdx",
+    "Quick Start",
+  ),
+];
+
+const root3c = buildSectionSource({
+  audience: collection(saas3cAudience),
+  shared: collection(shared3c),
+  baseUrl: "/",
+});
+const selfHosted3c = buildSectionSource({
+  audience: collection(selfHosted3cAudience),
+  shared: collection(shared3c),
+  baseUrl: "/self-hosted",
+});
+const root3cPages = root3c.getPages();
+const selfHosted3cPages = selfHosted3c.getPages();
+
+test("[#4265] every shared page mounts at BOTH root and /self-hosted from the ONE real file", () => {
+  // Cardinality floor: a composition regression that dropped the shared
+  // collection would otherwise let the `.find` lookups return undefined without
+  // the count catching it.
+  expect(root3cPages.length).toBe(saas3cAudience.length + shared3c.length);
+  expect(selfHosted3cPages.length).toBe(
+    selfHosted3cAudience.length + shared3c.length,
+  );
+
+  for (const s of shared3c) {
+    const slug = s.info.path.replace(/\.mdx$/, "").replace(/(^|\/)index$/, "");
+    const rootUrl = slug === "" ? "/" : `/${slug}`;
+    const selfHostedUrl = slug === "" ? "/self-hosted" : `/self-hosted/${slug}`;
+
+    const onRoot = root3cPages.find((p) => p.url === rootUrl);
+    const onSelfHosted = selfHosted3cPages.find((p) => p.url === selfHostedUrl);
+    expect(onRoot).toBeDefined();
+    expect(onSelfHosted).toBeDefined();
+
+    // Both mounts resolve edit / last-updated to the SAME real content/shared
+    // file (spike #4258 caveat #1 — one place to fix it), and it classifies
+    // `shared`.
+    expect(onRoot?.absolutePath).toBe(s.info.fullPath);
+    expect(onSelfHosted?.absolutePath).toBe(s.info.fullPath);
+    expect(onRoot?.absolutePath).toBe(onSelfHosted?.absolutePath);
+    expect(classifyByPath(onRoot?.absolutePath ?? "")).toBe("shared");
+  }
+});
+
+// Old-root slug → shared pages relocated by this slice (#4265). FROZEN to this
+// slice's scope — a migration-landing assertion, not a live inventory of the
+// shared tree.
+const MOVED_SHARED_SLUGS = [
+  "getting-started/concepts",
+  "getting-started/connect-your-data",
+  "getting-started/semantic-layer",
+  "getting-started/demo-datasets",
+  "semantic-layer/index",
+  "semantic-layer/yaml-format",
+  "plugins/overview",
+  "plugins/authoring-guide",
+  "plugins/composition",
+  "sdk/mcp",
+  "sdk/starter-prompts",
+  "integrations/telegram",
+  "integrations/twenty",
+  "comparisons/index",
+  "comparisons/raw-mcp",
+  "architecture/sandbox",
+  "reference/config",
+  "reference/error-codes",
+  "changelog",
+];
+
+const saasTree3c = contentFiles.filter((p) =>
+  p.includes(`${join(CONTENT_DIR, "docs")}/`),
+);
+
+test("[#4265] every moved shared page lives under content/shared/ and NOT content/docs/", () => {
+  for (const slug of MOVED_SHARED_SLUGS) {
+    expect(sharedMdxFiles).toContain(join(SHARED_ROOT, `${slug}.mdx`));
+    expect(saasTree3c).not.toContain(join(CONTENT_DIR, "docs", `${slug}.mdx`));
+  }
+});
+
+test("[#4265] saas-only pages that stayed at the root are NOT single-sourced into content/shared/", () => {
+  // Mixed dirs (getting-started, integrations) kept their saas-only members at
+  // the root; grabbing one into shared would wrongly expose it under /self-hosted.
+  const STAYED_SAAS_ONLY = [
+    "getting-started/hosted",
+    "integrations/admin-console",
+    "integrations/sub-processor-feed",
+    "integrations/llm-providers/bedrock",
+  ];
+  for (const slug of STAYED_SAAS_ONLY) {
+    expect(sharedMdxFiles).not.toContain(join(SHARED_ROOT, `${slug}.mdx`));
+    expect(saasTree3c).toContain(join(CONTENT_DIR, "docs", `${slug}.mdx`));
+  }
+});
+
+test("[#4265] every physical content/shared/ page classifies as shared", () => {
+  expect(sharedMdxFiles.length).toBeGreaterThan(0);
+  for (const f of sharedMdxFiles) {
+    expect(classifyByPath(f)).toBe("shared");
+  }
+});
+
+// The old ROOT locations of the pages slice #3b moved to /self-hosted. A shared
+// page still linking to one of these would 404 on BOTH mounts (the page no
+// longer exists at the root), so the single source must not carry a stale link.
+const STALE_MOVED_LINK =
+  /\]\(\/(?:deployment\/(?:deploy|authentication|cache-configuration)|getting-started\/quick-start|frameworks\/|contributing\/|guides\/self-hosted-models)/;
+
+test("[#4265] no shared page links to a path #3b moved out (would 404 on both mounts)", () => {
+  const offenders = sharedMdxFiles.filter((f) =>
+    STALE_MOVED_LINK.test(readFileSync(f, "utf8")),
+  );
+  expect(offenders).toEqual([]);
+});
+
+const selfHostedFiles3c = contentFiles.filter((p) =>
+  p.includes(`${join(CONTENT_DIR, "self-hosted")}/`),
+);
+
+test("[#4265] shared cross-refs into /self-hosted resolve to real self-hosted pages", () => {
+  const targets = new Set<string>();
+  for (const f of sharedMdxFiles) {
+    for (const m of readFileSync(f, "utf8").matchAll(
+      /\]\((\/self-hosted\/[a-z0-9/-]+)/g,
+    )) {
+      targets.add(m[1]); // char class already excludes the #anchor / ?query
+    }
+  }
+  // We repointed at least the deploy/auth/quick-start refs, so this must be
+  // non-empty — otherwise the assertion is vacuous.
+  expect(targets.size).toBeGreaterThan(0);
+  for (const url of targets) {
+    const rel = url.replace(/^\/self-hosted\//, "");
+    const asPage = join(CONTENT_DIR, "self-hosted", `${rel}.mdx`);
+    const asIndex = join(CONTENT_DIR, "self-hosted", rel, "index.mdx");
+    expect(
+      selfHostedFiles3c.includes(asPage) || selfHostedFiles3c.includes(asIndex),
+    ).toBe(true);
+  }
+});
+
+test("[#4265] shared→shared link targets are real shared pages present at both mounts", () => {
+  // A curated set of intra-shared link targets that recur across the moved
+  // pages. Each must be a real shared page — and because a shared page mounts at
+  // both `/<slug>` and `/self-hosted/<slug>`, resolving here means the link
+  // resolves on both mounts (PRD user-story 22/25).
+  const sharedTargets = [
+    "/plugins/overview",
+    "/reference/config",
+    "/reference/cli",
+    "/semantic-layer",
+    "/getting-started/concepts",
+    "/getting-started/semantic-layer",
+    "/comparisons",
+    "/architecture/sandbox",
+    "/changelog",
+    "/sdk/mcp",
+    "/integrations/telegram",
+  ];
+  for (const t of sharedTargets) {
+    expect(sharedRootUrls).toContain(t);
+  }
 });

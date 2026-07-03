@@ -3,5 +3,11 @@
   "description": "Install Atlas on your own machine and run your first query",
   "icon": "Rocket",
   "defaultOpen": true,
-  "pages": ["quick-start"]
+  "pages": [
+    "quick-start",
+    "connect-your-data",
+    "concepts",
+    "semantic-layer",
+    "demo-datasets"
+  ]
 }

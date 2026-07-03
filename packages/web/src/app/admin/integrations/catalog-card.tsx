@@ -19,7 +19,7 @@
  *   5. accessible + not installed
  *        - oauth + configurable → Connect (GET /:slug/install)
  *        - form                 → Install → FormInstallModal
- *        - BYOT-eligible        → "Add token" → inline {@link ByotForm}
+ *        - BYOT-eligible        → "Add token" → {@link ByotInstallModal}
  *        - static-bot / no path → inert "Connect" (handler ships in its own slice)
  *
  * Visual idiom: CompactRow when collapsed, Shell when expanded / installed.
@@ -94,7 +94,7 @@ import { formatDateTime } from "@/lib/format";
 import { getApiUrl } from "@/lib/api-url";
 import { FormInstallModal } from "./form-install-modal";
 import { StaticBotInstallModal } from "./static-bot-install-modal";
-import { ByotForm, isByotEligibleSlug, type ByotEligibleSlug } from "./byot-form";
+import { ByotInstallModal, isByotEligibleSlug, type ByotEligibleSlug } from "./byot-form";
 
 // ---------------------------------------------------------------------------
 // Icons + display
@@ -486,6 +486,10 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
   // Static-bot routing-identifier modal open state (#3140). Only the
   // form-shaped static-bot slugs (not Discord) capture their routing id here.
   const [staticBotModalOpen, setStaticBotModalOpen] = useState(false);
+  // BYOT modal open state (#4203). The "Add token" affordance opens
+  // {@link ByotInstallModal} — the same FormDialog-riding modal shape as the
+  // form / static-bot siblings — rather than expanding an inline card form.
+  const [byotModalOpen, setByotModalOpen] = useState(false);
   const isStaticBotForm =
     entry.installModel === "static-bot" && STATIC_BOT_FORM_SLUGS.has(entry.slug);
   // Driven by whichever disconnect mutation last fired so the inline
@@ -512,10 +516,15 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
 
   // ── useDisclosure for the expand / collapse panel ────────────────
   //
-  // `collapseOn` flips to true when the entry transitions to connected —
-  // the BYOT form auto-collapses after a successful submit, matching the
-  // legacy SlackCard / TeamsCard UX.
-  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } = useDisclosure({
+  // Since #4203 the BYOT path opens a modal instead of expanding the card, so
+  // the disclosure hook's `setExpanded` / `triggerRef` are no longer wired to
+  // any trigger — a not-connected card stays a CompactRow until it connects
+  // (nothing sets `expanded` true anymore). Collapse-on-connect now rides
+  // `collapseOn: isConnected` + `onCollapseCleanup`, and the connected-card
+  // Shell's a11y wiring rides `panelRef` / `panelId`. (`collapse` survives only
+  // in the `onCollapse={!isConnected ? …}` ternary below, whose `!isConnected`
+  // branch the Shell can no longer reach — inert, a removal candidate.)
+  const { expanded, collapse, panelRef, panelId } = useDisclosure({
     collapseOn: isConnected,
     onCollapseCleanup: () => setInlineError(null),
   });
@@ -656,8 +665,7 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
           action={collapsedAction(entry, {
             canByot,
             isStaticBotForm,
-            triggerRef,
-            onByotToggle: () => setExpanded(true),
+            onByotOpen: () => setByotModalOpen(true),
             onFormOpen: () => setFormModalOpen(true),
             onStaticBotOpen: () => setStaticBotModalOpen(true),
           })}
@@ -686,6 +694,18 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
             configSchema={entry.configSchema}
             onInstalled={() => {
               toast.success(`${entry.name} installed`);
+              onChange();
+            }}
+          />
+        )}
+        {byotSlug && canByot && (
+          <ByotInstallModal
+            slug={byotSlug}
+            name={entry.name}
+            open={byotModalOpen}
+            onOpenChange={setByotModalOpen}
+            onSuccess={() => {
+              setInlineError(null);
               onChange();
             }}
           />
@@ -748,18 +768,6 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
           </p>
         )}
 
-        {/* BYOT inline form (slack/teams/discord with internal DB but no OAuth env). */}
-        {!isConnected && byotSlug && canByot && (
-          <ByotForm
-            slug={byotSlug}
-            onSuccess={() => {
-              setInlineError(null);
-              onChange();
-            }}
-            onError={setInlineError}
-          />
-        )}
-
         {/* Slack-only env-only hint, matching the pre-#2746 SlackCard copy. */}
         {entry.slug === "slack" &&
           isConnected &&
@@ -819,6 +827,18 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
           }}
         />
       )}
+      {byotSlug && canByot && (
+        <ByotInstallModal
+          slug={byotSlug}
+          name={entry.name}
+          open={byotModalOpen}
+          onOpenChange={setByotModalOpen}
+          onSuccess={() => {
+            setInlineError(null);
+            onChange();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -851,8 +871,8 @@ interface CollapsedActionOptions {
    * an OAuth dance. Excludes Discord (OAuth-shaped static-bot).
    */
   readonly isStaticBotForm: boolean;
-  readonly triggerRef: React.RefObject<HTMLButtonElement | null>;
-  readonly onByotToggle: () => void;
+  /** Opens {@link ByotInstallModal} (#4203) — replaces the old inline expand. */
+  readonly onByotOpen: () => void;
   readonly onFormOpen: () => void;
   readonly onStaticBotOpen: () => void;
 }
@@ -869,18 +889,16 @@ interface CollapsedActionOptions {
  */
 function collapsedAction(
   entry: IntegrationsCatalogEntry,
-  { canByot, isStaticBotForm, triggerRef, onByotToggle, onFormOpen, onStaticBotOpen }: CollapsedActionOptions,
+  { canByot, isStaticBotForm, onByotOpen, onFormOpen, onStaticBotOpen }: CollapsedActionOptions,
 ): React.ReactNode {
   // BYOT wins over OAuth Connect for chat slugs where the env vars are
   // missing — see canByot derivation in CatalogCard.
   if (canByot) {
     return (
       <Button
-        ref={triggerRef}
         size="sm"
         variant="outline"
-        aria-expanded={false}
-        onClick={onByotToggle}
+        onClick={onByotOpen}
         data-testid={`catalog-card-${entry.slug}-byot-toggle`}
       >
         <Plus className="mr-1.5 size-3.5" />

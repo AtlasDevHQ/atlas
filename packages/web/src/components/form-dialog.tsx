@@ -42,6 +42,19 @@ interface FormDialogProps<TValues extends FieldValues> {
   extraFooter?: (form: UseFormReturn<TValues>) => ReactNode;
   /** Dialog content class name override. */
   className?: string;
+  /**
+   * Extra reset trigger — a STABLE identity key. The form resets to
+   * `defaultValues` on every open (see the effect below); pass a value here to
+   * ALSO reset while the dialog stays open and this value changes — e.g. a
+   * long-lived install dialog reused across vendors (curated REST) keys
+   * `resetKey` on the candidate slug so a pasted secret can't bleed from one
+   * vendor into the next. Restricted to a primitive so a caller can't pass an
+   * object/array literal whose reference churns every render and silently
+   * resets the form mid-typing.
+   */
+  resetKey?: string | number | boolean | null;
+  /** `data-testid` for the submit button (per-dialog e2e/unit hooks). */
+  submitTestId?: string;
 }
 
 /**
@@ -66,6 +79,8 @@ export function FormDialog<TValues extends FieldValues>({
   serverError,
   extraFooter,
   className,
+  resetKey,
+  submitTestId,
 }: FormDialogProps<TValues>) {
   const form = useForm<TValues>({
     resolver: zodResolver(schema),
@@ -76,7 +91,11 @@ export function FormDialog<TValues extends FieldValues>({
     if (open) {
       form.reset(defaultValues);
     }
-  }, [open]); // intentionally depends only on `open` — reset to latest defaultValues on each open
+    // Depends on `open` (reset to latest defaultValues on each open) and
+    // `resetKey` (reset while open when the caller's identity changes, e.g. the
+    // curated dialog swapping vendors). Intentionally NOT `defaultValues`,
+    // whose identity churns each render.
+  }, [open, resetKey]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -111,7 +130,11 @@ export function FormDialog<TValues extends FieldValues>({
 
             <DialogFooter>
               {extraFooter?.(form)}
-              <Button type="submit" disabled={saving || form.formState.isSubmitting}>
+              <Button
+                type="submit"
+                disabled={saving || form.formState.isSubmitting}
+                data-testid={submitTestId}
+              >
                 {(saving || form.formState.isSubmitting) && <Loader2 className="mr-2 size-4 animate-spin" />}
                 {submitLabel}
               </Button>

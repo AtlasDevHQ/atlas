@@ -17,11 +17,11 @@
  */
 
 import { useState } from "react";
+import { type Control, useWatch } from "react-hook-form";
 import { z } from "zod";
 import { toast } from "sonner";
 import {
   AlertTriangle,
-  ExternalLink,
   Loader2,
   Network,
   Plus,
@@ -45,12 +45,10 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -80,11 +78,20 @@ import {
   SectionEmpty,
   SectionHeader,
 } from "./section-header";
+import {
+  FormDialog,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/form-dialog";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { getApiUrl } from "@/lib/api-url";
 import { cn } from "@/lib/utils";
+import { installFormErrorMessage } from "./install-form-error";
 
 const OPENAPI_SLUG = "openapi-generic";
 
@@ -820,7 +827,193 @@ function OperationsDialog({
 
 // ── Install dialog ───────────────────────────────────────────────────────────
 
-/** The freeform "Custom REST API" install dialog (OpenAPI spec URL + auth).
+/**
+ * Form value shape for the Custom REST API install (arch-win #91 / #4203).
+ * `auth_kind` is a plain string (validated against {@link AUTH_KINDS} on the
+ * server); every credential field is present-but-optional so the dialog can
+ * carry them across auth-kind switches without churn — {@link buildRestInstallBody}
+ * drops the ones the selected kind doesn't need. `RestFormValues` is derived
+ * from the schema (`z.infer`) so the schema is the single source of truth — a
+ * field added to one can't silently drift from the other.
+ */
+const restSchema = z.object({
+  openapi_url: z.string().min(1, "OpenAPI spec URL is required"),
+  auth_kind: z.string(),
+  auth_value: z.string(),
+  auth_header_name: z.string(),
+  auth_param_name: z.string(),
+  base_url_override: z.string(),
+  display_name: z.string(),
+});
+type RestFormValues = z.infer<typeof restSchema>;
+
+const REST_DEFAULTS: RestFormValues = {
+  openapi_url: "",
+  auth_kind: "bearer",
+  auth_value: "",
+  auth_header_name: "",
+  auth_param_name: "",
+  base_url_override: "",
+  display_name: "",
+};
+
+/**
+ * Assemble the `install-form` wire body from the form values, dropping the
+ * credential fields the selected `auth_kind` doesn't use (so a stale value from
+ * a previously-selected kind never leaks) and trimming/omitting blank optional
+ * fields. Exported as a pure function so the conditional shaping — the most
+ * substantive logic here — is unit-testable without rendering the dialog.
+ */
+export function buildRestInstallBody(values: RestFormValues): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    openapi_url: values.openapi_url.trim(),
+    auth_kind: values.auth_kind,
+  };
+  if (values.auth_kind !== "none") body.auth_value = values.auth_value;
+  if (values.auth_kind === "apikey-header") body.auth_header_name = values.auth_header_name.trim();
+  if (values.auth_kind === "apikey-query") body.auth_param_name = values.auth_param_name.trim();
+  if (values.base_url_override.trim()) body.base_url_override = values.base_url_override.trim();
+  if (values.display_name.trim()) body.display_name = values.display_name.trim();
+  return body;
+}
+
+/** Custom REST API install fields — the freeform OpenAPI-spec form body,
+ *  rendered inside {@link FormDialog}. Auth-specific inputs disclose off the
+ *  selected auth kind (none → no credential; bearer/basic → the secret;
+ *  api-key kinds → the secret PLUS a header or query-param name) via a
+ *  `useWatch` on `auth_kind`, mirroring the config-schema `showWhen` pattern
+ *  the catalog form uses. */
+function RestInstallFields({ control }: { control: Control<RestFormValues> }) {
+  const authKind = useWatch({ control, name: "auth_kind" });
+  return (
+    <>
+      <FormField
+        control={control}
+        name="openapi_url"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>OpenAPI spec URL</FormLabel>
+            <FormControl>
+              <Input
+                placeholder="https://crm.example.com/rest/open-api/core"
+                data-testid="openapi-url-input"
+                {...field}
+              />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+
+      <FormField
+        control={control}
+        name="auth_kind"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>Authentication</FormLabel>
+            <Select value={field.value} onValueChange={field.onChange}>
+              <FormControl>
+                <SelectTrigger data-testid="openapi-auth-kind">
+                  <SelectValue />
+                </SelectTrigger>
+              </FormControl>
+              <SelectContent>
+                {AUTH_KINDS.map((k) => (
+                  <SelectItem key={k} value={k}>
+                    {k}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+
+      {authKind !== "none" ? (
+        <FormField
+          control={control}
+          name="auth_value"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>
+                {authKind === "basic" ? "username:password" : "Token / API key"}
+              </FormLabel>
+              <FormControl>
+                <Input type="password" data-testid="openapi-auth-value" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      ) : null}
+
+      {authKind === "apikey-header" ? (
+        <FormField
+          control={control}
+          name="auth_header_name"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>API key header name</FormLabel>
+              <FormControl>
+                <Input placeholder="X-API-Key" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      ) : null}
+
+      {authKind === "apikey-query" ? (
+        <FormField
+          control={control}
+          name="auth_param_name"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>API key query param</FormLabel>
+              <FormControl>
+                <Input placeholder="api_key" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      ) : null}
+
+      <FormField
+        control={control}
+        name="display_name"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>Display name (optional)</FormLabel>
+            <FormControl>
+              <Input placeholder="Twenty CRM" {...field} />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+
+      <FormField
+        control={control}
+        name="base_url_override"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>Base URL override (optional)</FormLabel>
+            <FormControl>
+              <Input placeholder="https://staging.example.com/rest" {...field} />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+    </>
+  );
+}
+
+/** The freeform "Custom REST API" install dialog (OpenAPI spec URL + auth),
+ *  riding the shared {@link FormDialog} primitive (arch-win #91 / #4203) — the
+ *  same spine as `FormInstallModal` / `CuratedInstallDialog` / `ByotInstallModal`.
  *  Hosted by the connections page and opened from the Add picker. */
 export function RestInstallDialog({
   open,
@@ -831,193 +1024,36 @@ export function RestInstallDialog({
   onOpenChange: (open: boolean) => void;
   onInstalled: () => void;
 }) {
-  const [openapiUrl, setOpenapiUrl] = useState("");
-  const [authKind, setAuthKind] = useState<(typeof AUTH_KINDS)[number]>("bearer");
-  const [authValue, setAuthValue] = useState("");
-  const [authHeaderName, setAuthHeaderName] = useState("");
-  const [authParamName, setAuthParamName] = useState("");
-  const [baseUrlOverride, setBaseUrlOverride] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  function reset() {
-    setOpenapiUrl("");
-    setAuthKind("bearer");
-    setAuthValue("");
-    setAuthHeaderName("");
-    setAuthParamName("");
-    setBaseUrlOverride("");
-    setDisplayName("");
-    setError(null);
-  }
-
-  async function handleSubmit() {
-    setSaving(true);
-    setError(null);
-    const body: Record<string, unknown> = { openapi_url: openapiUrl.trim(), auth_kind: authKind };
-    if (authKind !== "none") body.auth_value = authValue;
-    if (authKind === "apikey-header") body.auth_header_name = authHeaderName.trim();
-    if (authKind === "apikey-query") body.auth_param_name = authParamName.trim();
-    if (baseUrlOverride.trim()) body.base_url_override = baseUrlOverride.trim();
-    if (displayName.trim()) body.display_name = displayName.trim();
-
-    try {
-      const res = await fetch(`${getApiUrl()}/api/v1/integrations/${OPENAPI_SLUG}/install-form`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        let message = `Install failed (${res.status})`;
-        try {
-          const b = (await res.json()) as {
-            message?: string;
-            fieldErrors?: Record<string, string[] | undefined>;
-            requestId?: string;
-          };
-          // Surface the first field error (e.g. the spec-probe failure on
-          // openapi_url) so the admin sees exactly what to fix.
-          const firstField = b.fieldErrors ? Object.keys(b.fieldErrors)[0] : undefined;
-          const firstErr = firstField ? b.fieldErrors?.[firstField]?.[0] : undefined;
-          if (firstField && firstErr) message = `${firstField}: ${firstErr}`;
-          else if (b.message) message = b.message;
-          if (b.requestId) message = `${message} (ref: ${b.requestId.slice(0, 8)})`;
-        } catch {
-          // intentionally ignored: non-JSON body → keep the status-only message.
-        }
-        setError(message);
-        return;
-      }
-      toast.success("REST datasource connected");
-      reset();
-      onInstalled();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Install failed");
-    } finally {
-      setSaving(false);
+  async function handleSubmit(values: RestFormValues): Promise<void> {
+    const res = await fetch(`${getApiUrl()}/api/v1/integrations/${OPENAPI_SLUG}/install-form`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(buildRestInstallBody(values)),
+    });
+    if (!res.ok) {
+      // Throw so FormDialog surfaces it as the shared root-level error banner.
+      throw new Error(await installFormErrorMessage(res));
     }
+    toast.success("REST datasource connected");
+    onInstalled();
   }
 
   return (
-    <Dialog
+    <FormDialog
       open={open}
-      onOpenChange={(o) => {
-        if (!o) reset();
-        onOpenChange(o);
-      }}
+      onOpenChange={onOpenChange}
+      title="Connect a REST datasource"
+      description="Point Atlas at an OpenAPI 3.x spec URL. Atlas probes the spec on install; the agent then queries it read-only. The credential is encrypted at rest."
+      schema={restSchema}
+      defaultValues={REST_DEFAULTS}
+      onSubmit={handleSubmit}
+      submitLabel="Connect"
+      submitTestId="openapi-install-submit"
+      className="max-w-lg"
     >
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Connect a REST datasource</DialogTitle>
-          <DialogDescription>
-            Point Atlas at an OpenAPI 3.x spec URL. Atlas probes the spec on install; the agent then
-            queries it read-only. The credential is encrypted at rest.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="openapi-url">OpenAPI spec URL</Label>
-            <Input
-              id="openapi-url"
-              placeholder="https://crm.example.com/rest/open-api/core"
-              value={openapiUrl}
-              onChange={(e) => setOpenapiUrl(e.target.value)}
-              data-testid="openapi-url-input"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="openapi-auth-kind">Authentication</Label>
-            <Select value={authKind} onValueChange={(v) => setAuthKind(v as (typeof AUTH_KINDS)[number])}>
-              <SelectTrigger id="openapi-auth-kind" data-testid="openapi-auth-kind">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {AUTH_KINDS.map((k) => (
-                  <SelectItem key={k} value={k}>
-                    {k}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {authKind !== "none" ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="openapi-auth-value">
-                {authKind === "basic" ? "username:password" : "Token / API key"}
-              </Label>
-              <Input
-                id="openapi-auth-value"
-                type="password"
-                value={authValue}
-                onChange={(e) => setAuthValue(e.target.value)}
-                data-testid="openapi-auth-value"
-              />
-            </div>
-          ) : null}
-
-          {authKind === "apikey-header" ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="openapi-header-name">API key header name</Label>
-              <Input
-                id="openapi-header-name"
-                placeholder="X-API-Key"
-                value={authHeaderName}
-                onChange={(e) => setAuthHeaderName(e.target.value)}
-              />
-            </div>
-          ) : null}
-
-          {authKind === "apikey-query" ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="openapi-param-name">API key query param</Label>
-              <Input
-                id="openapi-param-name"
-                placeholder="api_key"
-                value={authParamName}
-                onChange={(e) => setAuthParamName(e.target.value)}
-              />
-            </div>
-          ) : null}
-
-          <div className="space-y-1.5">
-            <Label htmlFor="openapi-display-name">Display name (optional)</Label>
-            <Input
-              id="openapi-display-name"
-              placeholder="Twenty CRM"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="openapi-base-url">Base URL override (optional)</Label>
-            <Input
-              id="openapi-base-url"
-              placeholder="https://staging.example.com/rest"
-              value={baseUrlOverride}
-              onChange={(e) => setBaseUrlOverride(e.target.value)}
-            />
-          </div>
-
-          {error ? <InlineError>{error}</InlineError> : null}
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
-            Cancel
-          </Button>
-          <Button onClick={handleSubmit} disabled={saving || openapiUrl.trim().length === 0} data-testid="openapi-install-submit">
-            {saving ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <ExternalLink className="mr-1.5 size-3.5" />}
-            Connect
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      {(form) => <RestInstallFields control={form.control} />}
+    </FormDialog>
   );
 }
 

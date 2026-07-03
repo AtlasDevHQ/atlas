@@ -937,6 +937,22 @@ const DEMO_EDIT_READONLY_TOOLTIP = "Switch to developer mode to edit the demo co
  */
 const DEMO_ADD_READONLY_TOOLTIP = "Delete the demo connection or switch to developer mode to add a new one";
 
+/**
+ * The add-a-datasource flow as one discriminated union (#4203). Replaces the
+ * old fan-out of four boolean/nullable dialog-open flags (`pickerOpen`,
+ * `customRestOpen`, `curatedCandidate`, `formInstallCandidate`): each install
+ * surface derives its `open` from `install.kind`, so exactly one can be open at
+ * a time and a new install path is one more variant, not another boolean +
+ * another close-reset to remember. Edit / delete / generate-prompt keep their
+ * own state — they aren't part of the add flow.
+ */
+type InstallState =
+  | { kind: "idle" }
+  | { kind: "picking" }
+  | { kind: "custom-rest" }
+  | { kind: "curated"; candidate: CuratedCandidate }
+  | { kind: "form-install"; candidate: DatasourceFormCandidate };
+
 export default function ConnectionsPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
@@ -966,16 +982,11 @@ export default function ConnectionsPage() {
   // generate flow to; `null` when no prompt is pending.
   const [genPrompt, setGenPrompt] = useState<{ connectionId: string; groupLabel: string } | null>(null);
 
-  // Add-connection picker + the REST install dialogs it routes to. The
-  // picker replaces the old always-listed "Connect" provider rows.
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [customRestOpen, setCustomRestOpen] = useState(false);
-  const [curatedCandidate, setCuratedCandidate] = useState<CuratedCandidate | null>(null);
-  // Catalog datasource picked from the Add picker's form-install tiles
-  // (ClickHouse, Snowflake, BigQuery, …) — opens the schema-driven
-  // marketplace FormInstallModal (#3377).
-  const [formInstallCandidate, setFormInstallCandidate] =
-    useState<DatasourceFormCandidate | null>(null);
+  // Add-connection picker + the install dialogs it routes to, modeled as one
+  // discriminated union (#4203 — see {@link InstallState}). Covers the picker,
+  // the custom-REST dialog, the curated-candidate dialog, and the schema-driven
+  // marketplace FormInstallModal (ClickHouse / Snowflake / BigQuery, #3377).
+  const [install, setInstall] = useState<InstallState>({ kind: "idle" });
   // Bumped after a REST/curated install so the plugin-owned blocks
   // (OpenAPI, Salesforce) remount and refetch their own lists — their data
   // lives behind separate query keys from the `connections` fetch below.
@@ -1142,8 +1153,8 @@ export default function ConnectionsPage() {
     handleAdd(dbType);
   }
   function handleDatasourceInstalled() {
-    setCustomRestOpen(false);
-    setCuratedCandidate(null);
+    // Closes whichever add surface is open (custom-rest / curated / form-install).
+    setInstall({ kind: "idle" });
     refreshDatasources();
   }
   // Form-install tiles (ClickHouse / Snowflake / BigQuery / Elasticsearch).
@@ -1151,7 +1162,6 @@ export default function ConnectionsPage() {
   // #3295 the install registers into ConnectionRegistry immediately, so the
   // new connection belongs in the main list without a reload.
   function handleFormInstallInstalled() {
-    setFormInstallCandidate(null);
     handleDatasourceInstalled();
     refetch();
   }
@@ -1238,7 +1248,7 @@ export default function ConnectionsPage() {
               </Tooltip>
             </TooltipProvider>
           ) : (
-            <Button onClick={() => setPickerOpen(true)} size="sm" data-testid="add-connection-hero">
+            <Button onClick={() => setInstall({ kind: "picking" })} size="sm" data-testid="add-connection-hero">
               <Plus className="mr-2 size-4" />
               Add connection
             </Button>
@@ -1281,7 +1291,7 @@ export default function ConnectionsPage() {
               action={
                 <AddDatasourceButton
                   label="Add database"
-                  onClick={() => setPickerOpen(true)}
+                  onClick={() => setInstall({ kind: "picking" })}
                   demoReadOnly={demoReadOnly}
                   demoTooltip={DEMO_ADD_READONLY_TOOLTIP}
                   testId="add-database"
@@ -1303,7 +1313,7 @@ export default function ConnectionsPage() {
                   description="Connect Postgres, MySQL, Snowflake, and more."
                   action={
                     demoReadOnly ? null : (
-                      <Button size="sm" variant="outline" onClick={() => setPickerOpen(true)}>
+                      <Button size="sm" variant="outline" onClick={() => setInstall({ kind: "picking" })}>
                         <Plus className="mr-1.5 size-3.5" />
                         Add database
                       </Button>
@@ -1341,7 +1351,7 @@ export default function ConnectionsPage() {
           <OpenApiProviderBlock
             key={`rest-${datasourceRefreshKey}`}
             demoReadOnly={demoReadOnly}
-            onAdd={() => setPickerOpen(true)}
+            onAdd={() => setInstall({ kind: "picking" })}
             onChange={handleMutationSuccess}
           />
 
@@ -1416,26 +1426,28 @@ export default function ConnectionsPage() {
       />
 
       <AddConnectionPicker
-        open={pickerOpen}
-        onOpenChange={setPickerOpen}
+        open={install.kind === "picking"}
+        onOpenChange={(open) => setInstall(open ? { kind: "picking" } : { kind: "idle" })}
         demoReadOnly={demoReadOnly}
         onPickDatabase={handlePickDatabase}
-        onPickCustomRest={() => setCustomRestOpen(true)}
-        onPickCuratedForm={setCuratedCandidate}
-        onPickDatasourceForm={setFormInstallCandidate}
+        onPickCustomRest={() => setInstall({ kind: "custom-rest" })}
+        onPickCuratedForm={(candidate) => setInstall({ kind: "curated", candidate })}
+        onPickDatasourceForm={(candidate) => setInstall({ kind: "form-install", candidate })}
       />
 
       <RestInstallDialog
-        open={customRestOpen}
-        onOpenChange={setCustomRestOpen}
+        open={install.kind === "custom-rest"}
+        onOpenChange={(open) => {
+          if (!open) setInstall({ kind: "idle" });
+        }}
         onInstalled={handleDatasourceInstalled}
       />
 
       <CuratedInstallDialog
-        candidate={curatedCandidate}
-        open={curatedCandidate !== null}
+        candidate={install.kind === "curated" ? install.candidate : null}
+        open={install.kind === "curated"}
         onOpenChange={(open) => {
-          if (!open) setCuratedCandidate(null);
+          if (!open) setInstall({ kind: "idle" });
         }}
         onInstalled={handleDatasourceInstalled}
       />
@@ -1444,16 +1456,16 @@ export default function ConnectionsPage() {
           (ClickHouse / Snowflake / BigQuery / Elasticsearch, #3377) — the
           same modal Admin → Integrations uses, so install semantics
           (validation, secret encryption, edit-in-place) stay identical. */}
-      {formInstallCandidate ? (
+      {install.kind === "form-install" ? (
         <FormInstallModal
           open
           onOpenChange={(open) => {
-            if (!open) setFormInstallCandidate(null);
+            if (!open) setInstall({ kind: "idle" });
           }}
-          slug={formInstallCandidate.slug}
-          name={formInstallCandidate.name}
-          description={formInstallCandidate.description}
-          configSchema={formInstallCandidate.configSchema}
+          slug={install.candidate.slug}
+          name={install.candidate.name}
+          description={install.candidate.description}
+          configSchema={install.candidate.configSchema}
           // Surface the connection-name field so a workspace can install more
           // than one datasource of the same catalog (#3858) — e.g. an
           // Elasticsearch and an OpenSearch cluster under the unified slug.

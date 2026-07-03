@@ -273,8 +273,8 @@ const mockListObjects = mock(async () => [{ name: "orders", type: "table" }]);
 // One profiler home (#3657): the wizard resolves a LIVE connection whose
 // introspection is bound to its creds. The clickhouse install resolves to a
 // connection exposing the (mock) listObjects/profile capability.
-mock.module("@atlas/api/lib/datasources/wizard-connection", () => ({
-  resolveWizardConnection: async () => ({
+mock.module("@atlas/api/lib/datasources/profiling-connection", () => ({
+  resolveProfilingConnection: async () => ({
     kind: "ok" as const,
     dbType: "clickhouse",
     querySchema: "default",

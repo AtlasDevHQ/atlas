@@ -1,17 +1,43 @@
 /**
- * profileTable tool — get column cardinality, nulls, distributions, and sample values.
+ * profileTable tool — column cardinality, null rates, and sample values for one
+ * whitelisted table.
  *
- * Delegates to the enhanced profiler. Subject to the same table whitelist as executeSQL.
+ * Profiles through the ONE profiler home (#4197): the live connection resolved
+ * by `resolveProfilingConnection` (riding the same `resolveLiveConnection` that
+ * MCP and the wizard use), whose `profile()` is a capability bound to the creds
+ * that built the connection. That makes the tool work for plugin dbTypes (ClickHouse,
+ * Snowflake, BigQuery, …) and OAuth datasources, not just native pg/mysql — the
+ * previous implementation hand-rolled its own registry-pool sampling queries and
+ * was native-only. Subject to the same table whitelist + mode gate as executeSQL.
  */
 
 import { tool } from "ai";
 import { z } from "zod";
-import { connections, getDB, isConnectionVisibleInMode } from "@atlas/api/lib/db/connection";
+import { isConnectionVisibleInMode } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTables, getOrgWhitelistedTables } from "@atlas/api/lib/semantic";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
+import { resolveProfilingConnection } from "@atlas/api/lib/datasources/profiling-connection";
 
 const log = createLogger("tool:profile-table");
+
+/** One column's report — the unified `ColumnProfile`, mapped for the agent. */
+export interface ProfileTableColumn {
+  readonly name: string;
+  readonly sqlType: string;
+  readonly nullable: boolean;
+  /** `null` when the profiler's column stats degraded (introspection failed). */
+  readonly nullRate: number | null;
+  readonly distinctCount: number | null;
+  readonly sampleValues: string[];
+  readonly isPrimaryKey: boolean;
+  readonly isForeignKey: boolean;
+  readonly isEnumLike: boolean;
+}
+
+export type ProfileTableResult =
+  | { readonly error: string }
+  | { readonly rowCount: number; readonly columns: ProfileTableColumn[] };
 
 export const profileTable = tool({
   description: "Profile a table to get column cardinality, null rates, data types, and sample values. Only tables in the semantic layer can be profiled.",
@@ -21,7 +47,7 @@ export const profileTable = tool({
     columns: z
       .array(z.string())
       .optional()
-      .describe("Specific columns to profile (omit for all columns)"),
+      .describe("Specific columns to report (omit for all columns)"),
     connectionId: z
       .string()
       .optional()
@@ -49,16 +75,15 @@ async function profileTableImpl({
   table: string;
   columns?: string[];
   connId: string;
-}) {
+}): Promise<ProfileTableResult> {
   try {
     // Whitelist + mode visibility check
     const reqCtx = getRequestContext();
     const atlasMode = reqCtx?.atlasMode ?? "published";
     const authOrgId = reqCtx?.user?.activeOrganizationId;
-    const poolOrgId = connections.isOrgPoolingEnabled() ? authOrgId : undefined;
 
-    // Mode isolation: reject non-visible connections before touching pools.
-    // Mirrors the gate in executeSQL.
+    // Mode isolation: reject non-visible connections before resolving a
+    // connection. Mirrors the gate in executeSQL.
     if (authOrgId) {
       const visible = await isConnectionVisibleInMode(authOrgId, connId, atlasMode);
       if (!visible) {
@@ -78,115 +103,85 @@ async function profileTableImpl({
       };
     }
 
-    // Get connection info. When org pooling is off we still route per
-    // (workspace, install_id) via getForWorkspace so a shared install_id
-    // resolves the querying workspace's DB, not a sibling's (#3109).
-    const db = poolOrgId
-      ? connections.getForOrg(poolOrgId, connId)
-      : connId === "default"
-        ? getDB()
-        : authOrgId
-          ? connections.getForWorkspace(authOrgId, connId)
-          : connections.get(connId);
+    // Resolve the live connection through the one profiler home. Introspection
+    // is a capability of the connection — no dialect branching here.
+    const resolved = await resolveProfilingConnection(connId, authOrgId);
+    if (resolved.kind === "not_found") {
+      return { error: `Connection "${connId}" was not found.` };
+    }
+    if (resolved.kind === "unsupported" || resolved.kind === "reconnect_required") {
+      return { error: resolved.message };
+    }
 
-    const dbType = connections.getDBType(connId, authOrgId);
+    const { connection } = resolved;
+    try {
+      const result = await connection.profile({ selectedTables: [table] });
 
-    // Profile using direct SQL queries through the connection
-    const rowCountResult = await db.query(
-      `SELECT COUNT(*) AS cnt FROM ${quoteIdent(table)}`,
-      30000,
-    );
-    const rowCount = parseInt(String(rowCountResult.rows[0]?.cnt ?? "0"), 10);
+      const exact = result.profiles.find((p) => p.table_name === table);
+      if (!exact && result.profiles[0]) {
+        // A profiler that returns a profile under a different name (casing,
+        // schema qualification) still profiled the ONE selected table — but
+        // leave a breadcrumb so a mismatch is diagnosable, never silent.
+        log.warn(
+          { requested: table, got: result.profiles[0].table_name, connId },
+          "profileTable: exact table_name match missed; using the positional profile",
+        );
+      }
+      const profile = exact ?? result.profiles[0];
+      if (!profile) {
+        const profErr = result.errors.find((e) => e.table === table) ?? result.errors[0];
+        log.warn(
+          { table, connId, profilerError: profErr?.error },
+          "profileTable: profiler returned no profile for table",
+        );
+        return {
+          error: `Failed to profile table "${table}": ${
+            profErr ? profErr.error : "table not found in the datasource"
+          }`,
+        };
+      }
 
-    // Get column info (table name is whitelist-verified above, escape for defense-in-depth)
-    const safeTable = escapeLiteral(table);
-    const columnInfoSql = dbType === "mysql"
-      ? `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = ${safeTable} ORDER BY ordinal_position`
-      : `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = ${safeTable} AND table_schema = 'public' ORDER BY ordinal_position`;
+      const targetColumns = columns
+        ? profile.columns.filter((c) => columns.includes(c.name))
+        : profile.columns;
 
-    const colInfoResult = await db.query(columnInfoSql, 30000);
-    const allColumns = colInfoResult.rows as Array<{
-      column_name: string;
-      data_type: string;
-      is_nullable: string;
-    }>;
-
-    // Filter to requested columns if specified
-    const targetColumns = columns
-      ? allColumns.filter((c) => columns.includes(c.column_name))
-      : allColumns;
-
-    // Profile each column
-    const profiledColumns = await Promise.all(
-      targetColumns.map(async (col) => {
-        try {
-          const colName = quoteIdent(col.column_name);
-          const tableName = quoteIdent(table);
-
-          // Combined query: distinct count, null count, min, max
-          const textCast = dbType === "mysql" ? `CAST(${colName} AS CHAR)` : `${colName}::text`;
-          const statsResult = await db.query(
-            `SELECT COUNT(DISTINCT ${colName}) AS distinct_count, SUM(CASE WHEN ${colName} IS NULL THEN 1 ELSE 0 END) AS null_count, MIN(${textCast}) AS min_val, MAX(${textCast}) AS max_val FROM ${tableName}`,
-            30000,
-          );
-          const stats = statsResult.rows[0] ?? {};
-
-          // Top values
-          const topResult = await db.query(
-            `SELECT ${textCast} AS val, COUNT(*) AS cnt FROM ${tableName} WHERE ${colName} IS NOT NULL GROUP BY ${colName} ORDER BY cnt DESC LIMIT 10`,
-            30000,
-          );
-
-          const distinctCount = parseInt(String(stats.distinct_count ?? "0"), 10);
-          const nullCount = parseInt(String(stats.null_count ?? "0"), 10);
-
-          return {
-            name: col.column_name,
-            sqlType: col.data_type,
-            nullRate: rowCount > 0 ? nullCount / rowCount : 0,
-            distinctCount,
-            topValues: (topResult.rows as Array<{ val: string; cnt: string | number }>).map((r) => ({
-              value: String(r.val),
-              count: parseInt(String(r.cnt), 10),
-            })),
-            minValue: stats.min_val != null ? String(stats.min_val) : undefined,
-            maxValue: stats.max_val != null ? String(stats.max_val) : undefined,
-          };
-        } catch (err) {
-          log.warn(
-            { err: err instanceof Error ? err.message : String(err), column: col.column_name, table },
-            "Failed to profile column",
-          );
-          return {
-            name: col.column_name,
-            sqlType: col.data_type,
-            nullRate: null,
-            distinctCount: null,
-            topValues: [],
-            error: `Failed to profile: ${err instanceof Error ? err.message : String(err)}`,
-          };
-        }
-      }),
-    );
-
-    return { rowCount, columns: profiledColumns };
+      return {
+        rowCount: profile.row_count,
+        columns: targetColumns.map((c) => ({
+          name: c.name,
+          sqlType: c.type,
+          nullable: c.nullable,
+          nullRate:
+            c.null_count == null
+              ? null
+              : profile.row_count > 0
+                ? c.null_count / profile.row_count
+                : 0,
+          distinctCount: c.unique_count,
+          sampleValues: c.sample_values,
+          isPrimaryKey: c.is_primary_key,
+          isForeignKey: c.is_foreign_key,
+          isEnumLike: c.is_enum_like,
+        })),
+      };
+    } finally {
+      // The caller owns the resolved connection's lifecycle — a plugin-built
+      // connection is a real client that must be torn down. Best-effort: a
+      // close failure must not mask the profile result.
+      await connection.close().catch((closeErr: unknown) => {
+        log.warn(
+          { err: closeErr instanceof Error ? closeErr.message : String(closeErr), table, connId },
+          "Failed to close profiling connection",
+        );
+      });
+    }
   } catch (err) {
     log.warn(
-      { err: err instanceof Error ? err.message : String(err), table },
+      { err: err instanceof Error ? err.message : String(err), table, connId },
       "profileTable failed",
     );
     return {
       error: `Failed to profile table "${table}": ${err instanceof Error ? err.message : String(err)}`,
     };
   }
-}
-
-function quoteIdent(name: string): string {
-  // Simple identifier quoting — prevents SQL injection in column/table names
-  return `"${name.replace(/"/g, '""')}"`;
-}
-
-function escapeLiteral(value: string): string {
-  // Escape single quotes for use in SQL string literals
-  return `'${value.replace(/'/g, "''")}'`;
 }

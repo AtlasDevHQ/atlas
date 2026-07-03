@@ -1,8 +1,9 @@
 /**
- * Lib-layer tests for `resolveWizardConnection` (#3657, ADR-0017
- * §Amendment(#3667)) — the ONE profiler home the in-product wizard rides.
+ * Lib-layer tests for `resolveProfilingConnection` (#3657, ADR-0017
+ * §Amendment(#3667), #4197) — the ONE profiler home the in-product wizard AND
+ * the agent's `profileTable` tool ride.
  *
- * The guarantee: the wizard resolves the SAME live connection MCP does
+ * The guarantee: both consumers resolve the SAME live connection MCP does
  * (`resolveLiveConnection`), and introspection is a capability OF that
  * connection. There is no second profiler seam (`resolveWizardProfiler` is
  * gone), no url/config threading, no per-call native signature adaptation.
@@ -51,7 +52,7 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   connections: { get: () => fakeRegistryConn, has: () => registryHas },
 }));
 
-const { resolveWizardConnection } = await import("../wizard-connection.js");
+const { resolveProfilingConnection } = await import("../profiling-connection.js");
 
 function liveConn(dbType: string) {
   return {
@@ -75,12 +76,12 @@ beforeEach(() => {
   delete process.env.ATLAS_DATASOURCE_URL;
 });
 
-describe("resolveWizardConnection — SaaS primary (resolveLiveConnection)", () => {
+describe("resolveProfilingConnection — SaaS primary (resolveLiveConnection)", () => {
   it("ok: returns the resolved live connection + dbType + effective schema", async () => {
     const connection = liveConn("clickhouse");
     liveByScope.set("org_1", { kind: "ok", connection, defaultSchema: "analytics" });
 
-    const ctx = await resolveWizardConnection("ch_install", "org_1");
+    const ctx = await resolveProfilingConnection("ch_install", "org_1");
     expect(ctx.kind).toBe("ok");
     if (ctx.kind !== "ok") return;
     // The SAME connection the shared resolver returned — no second seam.
@@ -92,42 +93,42 @@ describe("resolveWizardConnection — SaaS primary (resolveLiveConnection)", () 
 
   it("ok postgres with no configured schema → querySchema defaults to public", async () => {
     liveByScope.set("org_1", { kind: "ok", connection: liveConn("postgres"), defaultSchema: undefined });
-    const ctx = await resolveWizardConnection("pg_install", "org_1");
+    const ctx = await resolveProfilingConnection("pg_install", "org_1");
     expect(ctx.kind === "ok" && ctx.querySchema).toBe("public");
   });
 
   it("unsupported → unsupported (actionable message passed through)", async () => {
     liveByScope.set("org_1", { kind: "unsupported", dbType: "weird", message: "no plugin" });
-    const ctx = await resolveWizardConnection("x", "org_1");
+    const ctx = await resolveProfilingConnection("x", "org_1");
     expect(ctx.kind).toBe("unsupported");
     if (ctx.kind === "unsupported") expect(ctx.message).toBe("no plugin");
   });
 
   it("reconnect_required → reconnect_required (OAuth token stale)", async () => {
     liveByScope.set("org_1", { kind: "reconnect_required", dbType: "salesforce", message: "reconnect it" });
-    const ctx = await resolveWizardConnection("sf", "org_1");
+    const ctx = await resolveProfilingConnection("sf", "org_1");
     expect(ctx.kind).toBe("reconnect_required");
   });
 
   it("workspace scope is tried before the global config row", async () => {
     liveByScope.set("__global__", { kind: "ok", connection: liveConn("postgres"), defaultSchema: null as unknown as undefined });
     // Nothing for org_1 → falls back to __global__.
-    const ctx = await resolveWizardConnection("pg", "org_1");
+    const ctx = await resolveProfilingConnection("pg", "org_1");
     expect(ctx.kind).toBe("ok");
     expect(resolveLiveConnectionSpy).toHaveBeenNthCalledWith(1, "org_1", "pg");
     expect(resolveLiveConnectionSpy).toHaveBeenNthCalledWith(2, "__global__", "pg");
   });
 
   it("not_found in every scope and not an env-var id → not_found", async () => {
-    const ctx = await resolveWizardConnection("missing", "org_1");
+    const ctx = await resolveProfilingConnection("missing", "org_1");
     expect(ctx.kind).toBe("not_found");
   });
 });
 
-describe("resolveWizardConnection — env-var byproduct (self-hosted/dev)", () => {
+describe("resolveProfilingConnection — env-var byproduct (self-hosted/dev)", () => {
   it("default + ATLAS_DATASOURCE_URL (postgres) → native live connection, schema public", async () => {
     process.env.ATLAS_DATASOURCE_URL = "postgresql://h/db";
-    const ctx = await resolveWizardConnection("default", null);
+    const ctx = await resolveProfilingConnection("default", null);
     expect(ctx.kind).toBe("ok");
     if (ctx.kind !== "ok") return;
     expect(ctx.dbType).toBe("postgres");
@@ -140,7 +141,7 @@ describe("resolveWizardConnection — env-var byproduct (self-hosted/dev)", () =
 
   it("__demo__ + ATLAS_DATASOURCE_URL (mysql) → native live connection, schema undefined", async () => {
     process.env.ATLAS_DATASOURCE_URL = "mysql://h/db";
-    const ctx = await resolveWizardConnection("__demo__", null);
+    const ctx = await resolveProfilingConnection("__demo__", null);
     expect(ctx.kind).toBe("ok");
     if (ctx.kind !== "ok") return;
     expect(ctx.dbType).toBe("mysql");
@@ -151,27 +152,27 @@ describe("resolveWizardConnection — env-var byproduct (self-hosted/dev)", () =
 
   it("non-pg/mysql env URL → unsupported (core detectDBType supports pg/mysql only)", async () => {
     process.env.ATLAS_DATASOURCE_URL = "clickhouse://h/db";
-    const ctx = await resolveWizardConnection("default", null);
+    const ctx = await resolveProfilingConnection("default", null);
     // Env-var is native-only by construction; a plugin datasource installs via
     // a workspace_plugins row (the SaaS path), not ATLAS_DATASOURCE_URL.
     expect(ctx.kind).toBe("unsupported");
   });
 
   it("no ATLAS_DATASOURCE_URL → not_found for default", async () => {
-    const ctx = await resolveWizardConnection("default", "org_1");
+    const ctx = await resolveProfilingConnection("default", "org_1");
     expect(ctx.kind).toBe("not_found");
   });
 
   it("gated on registry presence: not registered → not_found even with the env URL set", async () => {
     process.env.ATLAS_DATASOURCE_URL = "postgresql://h/db";
     registryHas = false;
-    const ctx = await resolveWizardConnection("default", null);
+    const ctx = await resolveProfilingConnection("default", null);
     expect(ctx.kind).toBe("not_found");
   });
 
   it("other underscore-prefixed ids are never env-var profilable", async () => {
     process.env.ATLAS_DATASOURCE_URL = "postgresql://h/db";
-    const ctx = await resolveWizardConnection("draft_test", "org_1");
+    const ctx = await resolveProfilingConnection("draft_test", "org_1");
     expect(ctx.kind).toBe("not_found");
   });
 });

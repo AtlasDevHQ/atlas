@@ -1,6 +1,7 @@
 /**
- * One profiler home for the in-product onboarding wizard (#3657, ADR-0017
- * §Amendment(#3667)).
+ * One profiler home for in-product profiling surfaces (#3657, ADR-0017
+ * §Amendment(#3667), #4197) — the onboarding wizard routes AND the agent's
+ * `profileTable` tool.
  *
  * The wizard's `/wizard/profile`, `/wizard/generate`, and `/wizard/enrich`
  * routes used to each re-derive their OWN connection resolution
@@ -9,14 +10,16 @@
  * plugins' `connection`-namespace `listObjects`/`profile` exports, threading
  * url/config by hand). That was the SECOND profiling home — a parallel resolver +
  * a parallel introspection surface from the one MCP converged onto in #3670.
+ * (The `profileTable` tool was the THIRD: a hand-rolled, native-only sampling
+ * path over the registry pool — retired onto this resolver in #4197.)
  *
  * This module collapses that prologue into ONE context resolver built on the
  * SAME connection resolution MCP uses ({@link resolveLiveConnection}): a SaaS
  * datasource resolves to a live, authenticated connection whose
  * `listObjects`/`profile` are a capability OF the connection, bound to the creds
- * that built it. `/profile` reads `listObjects`, `/generate` + `/enrich` read
- * `profile` — straight off the resolved connection, no url/config threading and
- * no per-call native signature adaptation.
+ * that built it. `/profile` reads `listObjects`; `/generate`, `/enrich`, and
+ * `profileTable` read `profile` — straight off the resolved connection, no
+ * url/config threading and no per-call native signature adaptation.
  *
  * SaaS is the primary path. The env-var (`ATLAS_DATASOURCE_URL`) `default` /
  * `__demo__` fast path is a self-hosted/dev BYPRODUCT — those identities have no
@@ -29,23 +32,19 @@
  */
 
 import { detectDBType, connections, type DBType } from "@atlas/api/lib/db/connection";
-import {
-  listPostgresObjects,
-  listMySQLObjects,
-  profilePostgres,
-  profileMySQL,
-} from "@atlas/api/lib/profiler";
 import { DEMO_CONNECTION_ID } from "@atlas/api/lib/semantic/entities";
+import { buildNativeLiveConnection } from "@atlas/api/lib/datasources/native-live-connection";
+import { isMcpNativeDbType } from "@atlas/api/lib/datasources/provisionable-types";
 import type { LiveDatasourceConnection } from "@atlas/api/lib/datasources/mcp-lifecycle";
 
 /**
- * Resolved wizard profiling context — a live connection (introspection bound to
- * its creds) plus the metadata the routes' responses need. The route reads
- * `connection.listObjects` (`/profile`) or `connection.profile` (`/generate`,
- * `/enrich`) off this; it never threads a url/config or adapts a native
- * signature.
+ * Resolved profiling context — a live connection (introspection bound to
+ * its creds) plus the metadata the consumers' responses need. The wizard routes
+ * read `connection.listObjects` (`/profile`) or `connection.profile`
+ * (`/generate`, `/enrich`); the `profileTable` tool reads `connection.profile`.
+ * None of them thread a url/config or adapt a native signature.
  */
-export type WizardConnectionContext =
+export type ProfilingConnectionContext =
   | {
       readonly kind: "ok";
       readonly connection: LiveDatasourceConnection;
@@ -64,7 +63,7 @@ export type WizardConnectionContext =
   | { readonly kind: "reconnect_required"; readonly message: string };
 
 /**
- * Apply the dbType-specific schema default for the wizard response wire shape.
+ * Apply the dbType-specific schema default for the response wire shape.
  * Native Postgres defaults a missing schema to `"public"` (its canonical default
  * search-path). A plugin dbType where `"public"` is meaningless passes the
  * configured schema through, or `undefined` when none was set, so the plugin
@@ -76,17 +75,17 @@ function effectiveSchema(dbType: DBType, schema: string | null | undefined): str
 }
 
 /**
- * Resolve the wizard's profiling context for a connection. SaaS-first: rides
+ * Resolve a profiling context for a connection. SaaS-first: rides
  * {@link resolveLiveConnection} (workspace-scoped, then the global config row),
  * falling back to the env-var byproduct only when neither matches.
  */
-export async function resolveWizardConnection(
+export async function resolveProfilingConnection(
   connectionId: string,
   orgId: string | null | undefined,
-): Promise<WizardConnectionContext> {
+): Promise<ProfilingConnectionContext> {
   // ── SaaS primary: the workspace_plugins → live-connection spine ───────
   // Lazy-import the resolver so the heavy `mcp-lifecycle` graph (workspace-
-  // installer, semantic-generator, Effect layers) stays OUT of the wizard route's
+  // installer, semantic-generator, Effect layers) stays OUT of the consumers'
   // static module-load path — mirroring how the prior `resolveWizardProfiler`
   // lazy-imported it. Keeps partial-`mock.module` route tests loading cleanly.
   const { resolveLiveConnection } = await import("@atlas/api/lib/datasources/mcp-lifecycle");
@@ -139,7 +138,7 @@ export async function resolveWizardConnection(
 function buildEnvVarLiveConnection(
   connectionId: string,
   url: string,
-): WizardConnectionContext {
+): ProfilingConnectionContext {
   let dbType: DBType;
   try {
     dbType = detectDBType(url);
@@ -151,25 +150,29 @@ function buildEnvVarLiveConnection(
       message: err instanceof Error ? err.message : String(err),
     };
   }
+  if (!isMcpNativeDbType(dbType)) {
+    // Unreachable in practice (`detectDBType` throws for anything but pg/mysql);
+    // narrows the open `DBType` for the native builder and fails actionable if
+    // that invariant ever changes.
+    return {
+      kind: "unsupported",
+      message: `Datasource type "${dbType}" cannot be profiled from ATLAS_DATASOURCE_URL. Install it via Admin → Connections instead.`,
+    };
+  }
 
-  // The wizard never queries through the resolved connection (it only lists /
-  // profiles); route `query` to the registry pool for this id so the surface is
-  // still correct if a future caller uses it.
-  const connection: LiveDatasourceConnection = {
+  // The env-var identities never query through the resolved connection (their
+  // consumers only list / profile); route `query` to the registry pool for this
+  // id so the surface is still correct if a future caller uses it. The shared
+  // builder binds `listObjects`/`profile` to the env URL (#4197).
+  return {
+    kind: "ok",
+    connection: buildNativeLiveConnection({
+      dbType,
+      url,
+      connectionGroupId: null,
+      query: (sql, timeoutMs) => connections.get(connectionId).query(sql, timeoutMs),
+    }),
     dbType,
-    connectionGroupId: null,
-    query: (sql, timeoutMs) => connections.get(connectionId).query(sql, timeoutMs),
-    listObjects: (o) =>
-      dbType === "mysql"
-        ? listMySQLObjects({ url, logger: o?.logger })
-        : listPostgresObjects({ url, schema: o?.schema ?? "public", logger: o?.logger }),
-    profile: (o) =>
-      dbType === "mysql"
-        ? profileMySQL({ url, selectedTables: o.selectedTables, prefetchedObjects: o.prefetchedObjects, progress: o.progress, logger: o.logger })
-        : profilePostgres({ url, schema: o.schema ?? "public", selectedTables: o.selectedTables, prefetchedObjects: o.prefetchedObjects, progress: o.progress, logger: o.logger }),
-    close: async () => {
-      // Native profilers own their own throwaway pools; nothing to tear down.
-    },
+    querySchema: dbType === "postgres" ? "public" : undefined,
   };
-  return { kind: "ok", connection, dbType, querySchema: dbType === "postgres" ? "public" : undefined };
 }

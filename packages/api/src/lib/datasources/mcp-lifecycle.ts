@@ -51,12 +51,7 @@ import type {
   LiveConnectionListOptions,
   LiveConnectionProfileOptions,
 } from "@atlas/api/lib/effect/semantic-generator";
-import {
-  profilePostgres,
-  profileMySQL,
-  listPostgresObjects,
-  listMySQLObjects,
-} from "@atlas/api/lib/profiler";
+import { buildNativeLiveConnection } from "@atlas/api/lib/datasources/native-live-connection";
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import type { DatabaseObject, ProfilingResult } from "@useatlas/types";
 import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
@@ -986,14 +981,15 @@ export type ResolveLiveConnectionResult =
       /**
        * The connection's CONFIGURED schema/database/dataset scope — the
        * `workspace_plugins` config schema (`poolSchema`) — or `undefined` when
-       * none was configured / it's not meaningful (MySQL, OAuth). This is the
-       * configured scope, NOT the fully-resolved effective scope: the canonical
-       * dialect default (Postgres → `"public"`) is applied DOWNSTREAM by the
-       * consumer ({@link WizardConnectionContext}'s `effectiveSchema`), not baked
-       * in here. Surfaced so the in-product wizard, which rides this same resolver
-       * (one profiler home), can report the schema in its response without
-       * re-deriving its own connection resolution. The MCP profiling path ignores
-       * it. (Always present on the `ok` variant so every `ok` branch must decide.)
+       * none was configured / it's not meaningful (MySQL, OAuth). This FIELD is
+       * the raw configured scope, never defaulted: the canonical dialect default
+       * (Postgres → `"public"`) is applied by `buildNativeLiveConnection` for the
+       * connection's own `listObjects`/`profile`, and for the wire shape by
+       * `profiling-connection.ts`'s `effectiveSchema` ({@link ProfilingConnectionContext}).
+       * Surfaced so the profiling consumers riding this one resolver (the wizard
+       * routes, the `profileTable` tool) can report the schema without
+       * re-deriving connection resolution. The MCP profiling path ignores it.
+       * (Always present on the `ok` variant so every `ok` branch must decide.)
        */
       readonly defaultSchema: string | undefined;
     }
@@ -1157,40 +1153,16 @@ export async function resolveLiveConnection(
 
   // ── Native pg/mysql — the ConnectionRegistry path ─────────────────────
   if (isMcpNativeDbType(dbType)) {
-    const effectiveSchema = (opts?: { schema?: string }) =>
-      opts?.schema ?? poolSchema ?? (dbType === "postgres" ? "public" : undefined);
     return {
       kind: "ok",
       defaultSchema: poolSchema,
-      connection: {
+      connection: buildNativeLiveConnection({
         dbType,
+        url: poolUrl,
+        ...(poolSchema !== undefined ? { configuredSchema: poolSchema } : {}),
         connectionGroupId,
         query: (sql, timeoutMs) => connections.getForOrg(orgId, installId).query(sql, timeoutMs),
-        listObjects: (options) =>
-          dbType === "mysql"
-            ? listMySQLObjects({ url: poolUrl, logger: options?.logger })
-            : listPostgresObjects({ url: poolUrl, schema: effectiveSchema(options), logger: options?.logger }),
-        profile: (options) =>
-          dbType === "mysql"
-            ? profileMySQL({
-                url: poolUrl,
-                selectedTables: options.selectedTables,
-                prefetchedObjects: options.prefetchedObjects,
-                progress: options.progress,
-                logger: options.logger,
-              })
-            : profilePostgres({
-                url: poolUrl,
-                schema: effectiveSchema(options),
-                selectedTables: options.selectedTables,
-                prefetchedObjects: options.prefetchedObjects,
-                progress: options.progress,
-                logger: options.logger,
-              }),
-        close: async () => {
-          // Registry-managed pool — not torn down by the caller.
-        },
-      },
+      }),
     };
   }
 

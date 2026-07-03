@@ -39,13 +39,13 @@ import type {
 } from "@useatlas/types";
 import type { DBType } from "@atlas/api/lib/db/connection";
 import {
-  profilePostgres,
-  profileMySQL,
   profileSpanAttributes,
   checkFailureThreshold,
   type ProfileLogger,
   type ProfileProgressCallbacks,
 } from "@atlas/api/lib/profiler";
+import { nativeProfilerFor } from "@atlas/api/lib/datasources/native-live-connection";
+import { isMcpNativeDbType } from "@atlas/api/lib/datasources/provisionable-types";
 import { withEffectSpan } from "@atlas/api/lib/tracing";
 import {
   analyzeTableProfiles,
@@ -368,8 +368,8 @@ function resolveProfiler(
   if (profileFn) return profileFn;
   // Native pg/mysql profilers take the unified options shape at source, so they
   // ARE `DatasourceProfiler`s — no positional→options adapter shim here (#3666).
-  if (dbType === "postgres") return profilePostgres;
-  if (dbType === "mysql") return profileMySQL;
+  // The pg-vs-mysql dispatch itself lives in ONE place (#4197).
+  if (isMcpNativeDbType(dbType)) return nativeProfilerFor(dbType).profile;
   return new ProfilingFailedError({
     message:
       `No profiler available for dbType "${dbType}". Core profiles postgres/mysql; ` +

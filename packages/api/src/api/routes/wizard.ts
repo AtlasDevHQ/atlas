@@ -44,12 +44,13 @@ import {
 } from "@atlas/api/lib/profiler";
 // One profiler home (#3657, ADR-0017 §Amendment(#3667)): the wizard resolves a
 // LIVE connection via the SAME resolver MCP uses — `resolveLiveConnection`,
-// surfaced for the wizard as `resolveWizardConnection`. Introspection
+// surfaced as `resolveProfilingConnection` (shared with the agent's
+// `profileTable` tool since #4197). Introspection
 // (`listObjects` / `profile`) is a capability OF that connection, bound to the
 // creds that built it — there is no second profiler seam, no url/config
 // threading, and no per-call native signature adaptation. The only rejections
 // are the actionable not-found / not-profilable / reconnect-required states.
-import { resolveWizardConnection } from "@atlas/api/lib/datasources/wizard-connection";
+import { resolveProfilingConnection } from "@atlas/api/lib/datasources/profiling-connection";
 // Mechanical generation runs through the shared semantic engine (issue #3233)
 // so the wizard and the CLI emit identical YAML. Both the `/generate` entity
 // YAML and the `/save` catalog/glossary/metric assembly delegate to
@@ -554,7 +555,7 @@ wizard.openapi(profileRoute, async (c) => {
     // One resolver, shared with MCP: resolve a LIVE connection whose
     // introspection is bound to its creds. Throws only on infrastructure errors.
     const ctxResult = yield* Effect.tryPromise({
-      try: () => resolveWizardConnection(connectionId, user?.activeOrganizationId),
+      try: () => resolveProfilingConnection(connectionId, user?.activeOrganizationId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.either);
 
@@ -657,7 +658,7 @@ wizard.openapi(generateRoute, async (c) => {
     const { connectionId, tables: tableNames } = c.req.valid("json");
 
     const ctxResult = yield* Effect.tryPromise({
-      try: () => resolveWizardConnection(connectionId, user?.activeOrganizationId),
+      try: () => resolveProfilingConnection(connectionId, user?.activeOrganizationId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.either);
 
@@ -879,7 +880,7 @@ wizard.openapi(enrichRoute, async (c) => {
     const model = modelChoice.model;
 
     const ctxResult = yield* Effect.tryPromise({
-      try: () => resolveWizardConnection(connectionId, user?.activeOrganizationId),
+      try: () => resolveProfilingConnection(connectionId, user?.activeOrganizationId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.either);
 

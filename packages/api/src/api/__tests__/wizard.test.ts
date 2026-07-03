@@ -457,13 +457,13 @@ mock.module("@atlas/api/lib/semantic/enrich", () => ({
 }));
 
 // One profiler home (#3657, ADR-0017 §Amendment(#3667)). The wizard routes now
-// resolve a LIVE connection via `resolveWizardConnection` (which rides the same
+// resolve a LIVE connection via `resolveProfilingConnection` (which rides the same
 // `resolveLiveConnection` MCP uses) — introspection is a capability OF that
 // connection, not a second profiler seam. We mock that ONE seam so the route
 // tests drive resolution outcomes (ok / not_found / unsupported / reconnect)
 // directly. The resolver's own internals (workspace vs global vs env-var
 // byproduct, the connections.has gate) are unit-tested in
-// `datasources/__tests__/wizard-connection.test.ts`.
+// `datasources/__tests__/profiling-connection.test.ts`.
 type WizListObjects = (o?: { schema?: string }) => Promise<{ name: string; type: string }[]>;
 type WizProfile = (o?: { schema?: string; selectedTables?: string[] }) => Promise<{
   profiles: unknown[];
@@ -508,7 +508,7 @@ function okCtx(opts: {
   };
 }
 
-const mockResolveWizardConnection: Mock<(connectionId: string, orgId?: string | null) => Promise<WizCtx>> = mock(
+const mockResolveProfilingConnection: Mock<(connectionId: string, orgId?: string | null) => Promise<WizCtx>> = mock(
   async () =>
     okCtx({
       dbType: "postgres",
@@ -517,8 +517,8 @@ const mockResolveWizardConnection: Mock<(connectionId: string, orgId?: string | 
       profile: () => mockProfilePostgres(),
     }),
 );
-mock.module("@atlas/api/lib/datasources/wizard-connection", () => ({
-  resolveWizardConnection: mockResolveWizardConnection,
+mock.module("@atlas/api/lib/datasources/profiling-connection", () => ({
+  resolveProfilingConnection: mockResolveProfilingConnection,
 }));
 
 // --- Import after mocks ---
@@ -622,8 +622,8 @@ beforeEach(() => {
   mockRunEnterprise.mockReset();
   mockRunEnterprise.mockImplementation(async () => null); // no workspace BYOT by default
 
-  mockResolveWizardConnection.mockReset();
-  mockResolveWizardConnection.mockImplementation(async () =>
+  mockResolveProfilingConnection.mockReset();
+  mockResolveProfilingConnection.mockImplementation(async () =>
     okCtx({
       dbType: "postgres",
       querySchema: "public",
@@ -952,7 +952,7 @@ describe("POST /api/v1/wizard/enrich", () => {
   });
 
   it("returns 404 when the connection is not found", async () => {
-    mockResolveWizardConnection.mockImplementation(async () => ({ kind: "not_found" }));
+    mockResolveProfilingConnection.mockImplementation(async () => ({ kind: "not_found" }));
     const res = await postJson("/api/v1/wizard/enrich", {
       connectionId: "nonexistent",
       tableName: "users",
@@ -1808,7 +1808,7 @@ describe("POST /api/v1/wizard/save", () => {
 // Profiler dispatch for a plugin dbType (#3657 / ADR-0017)
 //
 // The wizard reads introspection off the ONE resolved live connection
-// (`resolveWizardConnection`). These tests pin that dispatch end-to-end with a
+// (`resolveProfilingConnection`). These tests pin that dispatch end-to-end with a
 // clickhouse-shaped connection: a plugin connection flows the same baseline →
 // enrich → save path pg/mysql does, and a connection exposing no profiling
 // capability surfaces the actionable not_profilable state, and a plugin that
@@ -1844,7 +1844,7 @@ describe("wizard profiler-seam dispatch — plugin dbType (#3621)", () => {
   const pluginProfile = mock(async () => ({ profiles: [mockOrdersProfile], errors: [] }));
 
   function injectClickHousePlugin() {
-    mockResolveWizardConnection.mockImplementation(async () =>
+    mockResolveProfilingConnection.mockImplementation(async () =>
       okCtx({
         dbType: "clickhouse",
         querySchema: "default",
@@ -1872,7 +1872,7 @@ describe("wizard profiler-seam dispatch — plugin dbType (#3621)", () => {
     expect(tables.map((t) => t.name).toSorted()).toEqual(["events", "sessions"]);
     // Routed through the ONE resolver (the same `resolveLiveConnection` MCP uses),
     // reading `listObjects` off the resolved live connection — not the native pg path.
-    expect(mockResolveWizardConnection).toHaveBeenCalledWith("analytics", "org-1");
+    expect(mockResolveProfilingConnection).toHaveBeenCalledWith("analytics", "org-1");
     expect(pluginListObjects).toHaveBeenCalledTimes(1);
     expect(mockListPostgresObjects).not.toHaveBeenCalled();
   });
@@ -1919,7 +1919,7 @@ describe("wizard profiler-seam dispatch — plugin dbType (#3621)", () => {
   // A clickhouse install whose resolved connection exposes no profiling
   // capability → the resolver surfaces the actionable not-profilable state.
   function injectUnprofilableClickHouse() {
-    mockResolveWizardConnection.mockImplementation(async () => ({
+    mockResolveProfilingConnection.mockImplementation(async () => ({
       kind: "unsupported" as const,
       message:
         `Datasource type "clickhouse" cannot be profiled in this deployment. No registered plugin ` +
@@ -1971,16 +1971,16 @@ describe("wizard profiler-seam dispatch — plugin dbType (#3621)", () => {
 // =====================================================================
 // Connection resolution → route mapping (#3657)
 //
-// Resolution moved into the ONE resolver (`resolveWizardConnection`, riding
+// Resolution moved into the ONE resolver (`resolveProfilingConnection`, riding
 // `resolveLiveConnection`); its internals — workspace vs global vs env-var
 // byproduct, the connections.has gate — are unit-tested in
-// `datasources/__tests__/wizard-connection.test.ts`. Here we pin the ROUTE's
+// `datasources/__tests__/profiling-connection.test.ts`. Here we pin the ROUTE's
 // mapping of each resolver outcome to an HTTP response.
 // =====================================================================
 
 describe("wizard connection resolution → route mapping", () => {
   it("not_found → 404 with the connectionId in the message", async () => {
-    mockResolveWizardConnection.mockImplementation(async () => ({ kind: "not_found" }));
+    mockResolveProfilingConnection.mockImplementation(async () => ({ kind: "not_found" }));
 
     const res = await postJson("/api/v1/wizard/profile", { connectionId: "nonexistent" });
     expect(res.status).toBe(404);
@@ -1990,7 +1990,7 @@ describe("wizard connection resolution → route mapping", () => {
   });
 
   it("resolver throws (infrastructure error) → 500 connection_resolution_failed + requestId", async () => {
-    mockResolveWizardConnection.mockImplementation(async () => {
+    mockResolveProfilingConnection.mockImplementation(async () => {
       throw new Error("Connection pool exhausted");
     });
 
@@ -2002,7 +2002,7 @@ describe("wizard connection resolution → route mapping", () => {
   });
 
   it("reconnect_required (OAuth token stale) → 400 reconnect_required", async () => {
-    mockResolveWizardConnection.mockImplementation(async () => ({
+    mockResolveProfilingConnection.mockImplementation(async () => ({
       kind: "reconnect_required",
       message: "The salesforce connection needs to be reconnected before it can be profiled.",
     }));
@@ -2091,7 +2091,7 @@ describe("wizard __demo__ end-to-end", () => {
 
   it("profile → resolves __demo__ when the resolver returns ok (e.g. env-var byproduct)", async () => {
     // The resolver owns the workspace-miss → ATLAS_DATASOURCE_URL byproduct
-    // fallback (unit-tested in wizard-connection.test.ts). At the route level we
+    // fallback (unit-tested in profiling-connection.test.ts). At the route level we
     // pin that an ok outcome for __demo__ profiles normally.
     registerDemoInRegistry();
     const res = await postJson("/api/v1/wizard/profile", { connectionId: "__demo__" });
@@ -2104,7 +2104,7 @@ describe("wizard __demo__ end-to-end", () => {
     // The connections.has gate + workspace/global misses live in the resolver;
     // here we pin the route maps that not_found to a 404 rather than silently
     // profiling ATLAS_DATASOURCE_URL.
-    mockResolveWizardConnection.mockImplementation(async () => ({ kind: "not_found" }));
+    mockResolveProfilingConnection.mockImplementation(async () => ({ kind: "not_found" }));
     const res = await postJson("/api/v1/wizard/profile", { connectionId: "__demo__" });
     expect(res.status).toBe(404);
     const data = await json(res);
@@ -2114,7 +2114,7 @@ describe("wizard __demo__ end-to-end", () => {
   it("profile → 404s for other underscore-prefixed identities (e.g. draft_test)", async () => {
     // Mirror the wizard frontend filter: only __demo__ is first-class. The
     // resolver never env-var-profiles a stray `_`-prefixed id → not_found → 404.
-    mockResolveWizardConnection.mockImplementation(async () => ({ kind: "not_found" }));
+    mockResolveProfilingConnection.mockImplementation(async () => ({ kind: "not_found" }));
     const originalUrl = process.env.ATLAS_DATASOURCE_URL;
     process.env.ATLAS_DATASOURCE_URL = "postgresql://fallback/atlas";
     try {

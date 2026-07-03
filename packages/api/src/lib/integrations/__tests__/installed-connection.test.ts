@@ -243,6 +243,18 @@ describe("loadInstalledConnection", () => {
     expect(await loadInstalledConnection("org-1", "missing")).toBeNull();
   });
 
+  it("skips decryption entirely with decryptConfig:false — not_loaded state, no decrypt-failure log", async () => {
+    // Row has an un-decryptable secret, but the metadata-only caller opted
+    // out of decryption, so the walker is never invoked and nothing logs.
+    mockQueryResult = [installRow({ config: { url: "enc:v1:throw:key-rotated" } })];
+    const conn = await loadInstalledConnection("org-1", "warehouse", { decryptConfig: false });
+    expect(conn).not.toBeNull();
+    expect(conn!.config.state).toBe("not_loaded");
+    expect(conn!.catalogSlug).toBe("clickhouse");
+    expect(conn!.status).toBe("published");
+    expect(logError).not.toHaveBeenCalled();
+  });
+
   it("degrades a decrypt failure to the decrypt_failed state, keeping row metadata", async () => {
     mockQueryResult = [installRow({ config: { url: "enc:v1:throw:key-rotated", region: "eu" } })];
     const conn = await loadInstalledConnection("org-1", "warehouse");
@@ -289,6 +301,13 @@ describe("listInstalledConnections", () => {
     const { sql, params } = capturedQueries[0];
     expect(sql).not.toContain("ANY(");
     expect(params).toEqual(["org-1"]);
+  });
+
+  it("returns not_loaded for every row under decryptConfig:false without logging", async () => {
+    mockQueryResult = [installRow(), installRow({ id: "row-2", config: { url: "enc:v1:throw:bad" } })];
+    const rows = await listInstalledConnections("org-1", { decryptConfig: false });
+    expect(rows.every((r) => r.config.state === "not_loaded")).toBe(true);
+    expect(logError).not.toHaveBeenCalled();
   });
 });
 

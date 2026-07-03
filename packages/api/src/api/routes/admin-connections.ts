@@ -612,7 +612,10 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
   let groupInfoByConnection = new Map<string, { groupId: string | null; groupName: string | null }>();
   if (hasInternalDB() && filtered.length > 0) {
     const ids = filtered.map((c) => c.id);
-    const rows = await listInstalledConnections(orgId, { installIds: ids });
+    // Metadata-only: this decoration reads installId + groupId, never the
+    // decrypted config — opt out of decryption so an un-decryptable row
+    // doesn't spam a decrypt-failure log on every list.
+    const rows = await listInstalledConnections(orgId, { installIds: ids, decryptConfig: false });
     groupInfoByConnection = new Map(
       rows.map((r) => [
         r.installId,
@@ -993,8 +996,8 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   // can re-create it under the same install_id and we revive in place to
   // preserve audit history. Any other status (published/draft) is a real
   // conflict. `includeArchived` so the archived row is visible to the
-  // revive branch.
-  const existingRow = await loadInstalledConnection(orgId, id, { includeArchived: true });
+  // revive branch; `decryptConfig: false` because we read only `.status`.
+  const existingRow = await loadInstalledConnection(orgId, id, { includeArchived: true, decryptConfig: false });
   if (existingRow !== null && existingRow.status !== "archived") {
     return c.json({ error: "conflict", message: `Connection "${id}" already exists.`, requestId }, 409);
   }
@@ -1511,8 +1514,10 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
   // anymore, so the legacy global/own branching collapses into one
   // simple lookup. `includeArchived` preserves the pre-seam behavior:
   // deleting an already-archived install re-runs the (idempotent)
-  // uninstall rather than 404ing.
-  const existing = await loadInstalledConnection(orgId, id, { includeArchived: true });
+  // uninstall rather than 404ing. `decryptConfig: false` — the delete path
+  // reads only `.catalogSlug`, so an un-decryptable row must not 500 (or
+  // log) a delete that would otherwise succeed.
+  const existing = await loadInstalledConnection(orgId, id, { includeArchived: true, decryptConfig: false });
 
   if (existing === null) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.`, requestId }, 404);

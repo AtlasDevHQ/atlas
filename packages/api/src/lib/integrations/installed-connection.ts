@@ -105,7 +105,15 @@ export function decryptStoredConfig(
  */
 export type InstalledConnectionConfig =
   | { readonly state: "decrypted"; readonly values: Record<string, unknown> }
-  | { readonly state: "decrypt_failed"; readonly reason: string };
+  | { readonly state: "decrypt_failed"; readonly reason: string }
+  // The caller opted out of decryption (`decryptConfig: false`) because it
+  // only reads row metadata (status / catalogSlug / groupId). The stored
+  // ciphertext is never touched, so an un-decryptable row on a
+  // config-agnostic path (list decoration, delete, create-conflict check)
+  // produces no spurious decrypt-failure log. Reading `config` still forces
+  // the caller through the discriminated union, so a metadata-only load can
+  // never silently hand back a blank credential.
+  | { readonly state: "not_loaded" };
 
 /** Typed result of the `workspace_plugins ⋈ plugin_catalog` datasource load. */
 export interface InstalledConnection {
@@ -159,24 +167,37 @@ function installedConnectionSql(where: string): string {
       ${where}`;
 }
 
-/** Map a raw row to the typed struct, decrypting per-row (never throws). */
-function toInstalledConnection(row: InstalledConnectionRow, workspaceId: string): InstalledConnection {
+/**
+ * Map a raw row to the typed struct. Decrypts per-row (never throws) unless
+ * `decrypt` is false, in which case the ciphertext is left untouched and
+ * `config.state` is `not_loaded` — a config-agnostic caller thus emits no
+ * decrypt-failure log for an un-decryptable row it was never going to read.
+ */
+function toInstalledConnection(
+  row: InstalledConnectionRow,
+  workspaceId: string,
+  decrypt: boolean,
+): InstalledConnection {
   const configSchema = parseConfigSchema(row.config_schema);
   let config: InstalledConnectionConfig;
-  try {
-    config = {
-      state: "decrypted",
-      values: decryptStoredConfig(row.config ?? {}, configSchema, {
-        workspaceId,
-        installId: row.install_id,
-        catalogSlug: row.catalog_slug,
-      }),
-    };
-  } catch (err) {
-    if (!(err instanceof InstalledConfigDecryptError)) throw err;
-    // Already logged (scrubbed) by decryptStoredConfig — carry the reason so
-    // callers can attach it to audit metadata without re-deriving.
-    config = { state: "decrypt_failed", reason: err.message };
+  if (!decrypt) {
+    config = { state: "not_loaded" };
+  } else {
+    try {
+      config = {
+        state: "decrypted",
+        values: decryptStoredConfig(row.config ?? {}, configSchema, {
+          workspaceId,
+          installId: row.install_id,
+          catalogSlug: row.catalog_slug,
+        }),
+      };
+    } catch (err) {
+      if (!(err instanceof InstalledConfigDecryptError)) throw err;
+      // Already logged (scrubbed) by decryptStoredConfig — carry the reason so
+      // callers can attach it to audit metadata without re-deriving.
+      config = { state: "decrypt_failed", reason: err.message };
+    }
   }
   return {
     rowId: row.id,
@@ -197,6 +218,14 @@ export interface LoadInstalledConnectionOptions {
    * 500. DELETE/revive flows opt in to see the archived row.
    */
   readonly includeArchived?: boolean;
+  /**
+   * Decrypt the stored config. Default true. Set false on config-agnostic
+   * paths (delete, create-conflict check, list decoration) that read only
+   * row metadata — the ciphertext is then never walked, so an
+   * un-decryptable row emits no spurious decrypt-failure log and `config`
+   * arrives as `{ state: "not_loaded" }`.
+   */
+  readonly decryptConfig?: boolean;
 }
 
 /**
@@ -221,7 +250,7 @@ export async function loadInstalledConnection(
     [workspaceId, installId],
   );
   if (rows.length === 0) return null;
-  return toInstalledConnection(rows[0], workspaceId);
+  return toInstalledConnection(rows[0], workspaceId, opts.decryptConfig !== false);
 }
 
 export interface ListInstalledConnectionsOptions extends LoadInstalledConnectionOptions {
@@ -250,7 +279,8 @@ export async function listInstalledConnections(
     installedConnectionSql(`${where}\n    ORDER BY wp.install_id ASC`),
     params,
   );
-  return rows.map((row) => toInstalledConnection(row, workspaceId));
+  const decrypt = opts.decryptConfig !== false;
+  return rows.map((row) => toInstalledConnection(row, workspaceId, decrypt));
 }
 
 /**
@@ -298,10 +328,11 @@ export async function datasourceGroupExists(
 /** Result of {@link applyConfigEdit} — what to persist vs what to echo. */
 export interface ConfigEditResult {
   /**
-   * The blob to write to `workspace_plugins.config` / `plugin_settings`:
-   * masked placeholders restored to their stored plaintext, then every
-   * `secret: true` field freshly encrypted (fresh IV — never a ciphertext
-   * round-trip of the previous blob).
+   * The blob to write to `workspace_plugins.config` (the marketplace
+   * config PUT's persistence target): masked placeholders restored to
+   * their stored plaintext, then every `secret: true` field freshly
+   * encrypted (fresh IV — never a ciphertext round-trip of the previous
+   * blob).
    */
   readonly persistConfig: Record<string, unknown>;
   /**

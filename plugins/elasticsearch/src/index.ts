@@ -12,6 +12,13 @@
  * surface via the standard `executeSQL` tool; and the `atlas init` `_mapping`
  * profiler. The dedicated Query DSL tool (#3267) is a later slice.
  *
+ * Assembled via `createDatasourcePlugin` (#4192): the factory owns the
+ * static-vs-adapter-only mode branch, the `createFromConfig` wrapper, the
+ * initialize logging, the static-connection cache + teardown, and the
+ * adapter-only health branch. This module supplies the ES substance: the
+ * schema pair, the connection builders, the introspection bindings, the
+ * scrubbed ping health probe, and the static-mode DSL tool registration.
+ *
  * Usage in atlas.config.ts:
  * ```typescript
  * import { defineConfig } from "@atlas/api/lib/config";
@@ -29,13 +36,8 @@
  */
 
 import { z } from "zod";
-import { createPlugin, measuredHealthCheck, warnIfStructuralOnly } from "@useatlas/plugin-sdk";
-import type {
-  AtlasDatasourcePlugin,
-  ConfigSchemaField,
-  PluginHealthResult,
-  PluginLogger,
-} from "@useatlas/plugin-sdk";
+import { createDatasourcePlugin, warnIfStructuralOnly } from "@useatlas/plugin-sdk";
+import type { ConfigSchemaField } from "@useatlas/plugin-sdk";
 import {
   createElasticsearchConnection,
   parseElasticsearchUrl,
@@ -71,7 +73,7 @@ const ELASTICSEARCH_SQL_GUIDE = [
 
 /**
  * Query DSL guidance — injected ONLY in static-datasource mode, where the
- * dedicated `queryElasticsearch` tool is registered (see `initialize`). Tells the
+ * dedicated `queryElasticsearch` tool is registered (see `onInitialize`). Tells the
  * agent WHEN to reach for the DSL surface instead of SQL, and the read-only rails.
  */
 const ELASTICSEARCH_DSL_GUIDE = [
@@ -210,343 +212,12 @@ type _ConfigsAligned = [StrictElasticsearchConfig] extends [ElasticsearchPluginC
 const _configsAligned: _ConfigsAligned = true;
 void _configsAligned;
 
-/**
- * Build the plugin object from validated config.
- * Exported for direct use with definePlugin() when Zod validation
- * has already been performed externally (e.g. in tests or custom wiring).
- */
-export function buildElasticsearchPlugin(
-  config: ElasticsearchConfig,
-): AtlasDatasourcePlugin<ElasticsearchConfig> {
-  let cachedConn: ElasticsearchConnection | undefined;
-  let log: PluginLogger | undefined;
-
-  // This plugin's static connection registers in the ConnectionRegistry under
-  // its plugin id (wiring.ts `registerDirect(plugin.id, …)`), which is also the
-  // connectionId `getWhitelistedTables` / `executeSQL` key the index whitelist
-  // on. The DSL tool MUST use the same id so its membership whitelist agrees
-  // with the SQL path.
-  const DATASOURCE_ID = "elasticsearch-datasource";
-
-  // A static config-defined ES datasource (self-host / operator-baked) needs an
-  // endpoint source (`url`/`cloudId`) AND an auth signal (apiKey / username+
-  // password / awsRegion). Without a complete config the plugin is registered
-  // ADAPTER ONLY (the SaaS per-workspace model): no static connection, customers
-  // add their own per workspace via Admin → Connections, and the datasource
-  // bridge builds each connection via `createFromConfig`.
-  const staticConfig: ElasticsearchPluginConfig | undefined = isCompleteConnectionConfig(
-    config,
-  )
-    ? config
-    : undefined;
-
-  /** Cached singleton so health checks and teardown share one client (static mode). */
-  function getOrCreateConnection(): ElasticsearchConnection {
-    if (!staticConfig) {
-      throw new Error(
-        "Elasticsearch plugin is adapter-only — no static datasource configured",
-      );
-    }
-    if (!cachedConn) {
-      // Static (operator-baked, self-hosted) datasource — SigV4 MAY use the
-      // ambient AWS env chain, like any other process.env read in atlas.config.ts.
-      cachedConn = createElasticsearchConnection(staticConfig, {
-        logger: log,
-        allowAmbientAwsCreds: true,
-      });
-    }
-    return cachedConn;
-  }
-
-  const connection: AtlasDatasourcePlugin<ElasticsearchConfig>["connection"] = {
-    // DB-driven (admin-UI-registered) datasources: build a connection from the
-    // per-(workspace, install) config decrypted from `workspace_plugins`,
-    // re-validated through the strict schema. Always available — this is the
-    // SaaS per-workspace path and the only path in adapter-only mode.
-    //
-    // `allowAmbientAwsCreds` is intentionally NOT set: a stored per-workspace
-    // SigV4 datasource must carry its own explicit, encrypted keys — it must
-    // never sign with the operator's ambient AWS env on a multi-tenant deploy
-    // (CLAUDE.md: per-tenant creds never fall back to operator env vars, #2850).
-    // The strict schema's completeness check runs the same env-less resolver, so
-    // a credential-less SigV4 config is rejected at validation, not silently.
-    createFromConfig: (runtimeConfig) => {
-      const parsed = ElasticsearchConnectionConfigSchema.parse(runtimeConfig);
-      const built = createElasticsearchConnection(parsed, { logger: log });
-      // #3667 — introspection as a capability of the built connection. ES holds
-      // credentials in SEPARATE config fields (apiKey / username / password /
-      // SigV4), so the bound `config` (the tenant's decrypted record) is what the
-      // profiler authenticates with — never operator ATLAS_ES_* env (#2850). The
-      // tenant-config path sets allowAmbientAwsCreds: false inside the profiler.
-      return {
-        ...built,
-        listObjects: (o) =>
-          listElasticsearchObjects({ url: parsed.url ?? "", schema: o?.schema, config: runtimeConfig }),
-        profile: (o) =>
-          profileElasticsearchObjects({
-            url: parsed.url ?? "",
-            schema: o?.schema,
-            config: runtimeConfig,
-            selectedTables: o?.selectedTables,
-            prefetchedObjects: o?.prefetchedObjects,
-            progress: o?.progress,
-            logger: o?.logger,
-          }),
-      };
-    },
-    dbType: "elasticsearch",
-    // ES SQL is real SQL, so there is intentionally NO custom `validate`: the
-    // host's standard 4-layer pipeline (regex guard → AST parse → index/table
-    // whitelist → auto-LIMIT + timeout) applies unchanged. We only tell it
-    // which grammar to parse with and add ES-specific guards on top of the
-    // base DML/DDL regex.
-    parserDialect: ELASTICSEARCH_PARSER_DIALECT,
-    forbiddenPatterns: ELASTICSEARCH_FORBIDDEN_PATTERNS,
-    // Introspection (listObjects / profile) is a capability of the BUILT
-    // connection (createFromConfig above), bound to the creds that built it — the
-    // one home MCP, the wizard, and the CLI all consume (ADR-0017 / #3670). It
-    // collapses indices/aliases/data-streams into ONE logical object (#3269). No
-    // connection-namespace profiler exports remain.
-  };
-
-  if (staticConfig) {
-    connection.create = () => getOrCreateConnection();
-  }
-
-  return {
-    id: DATASOURCE_ID,
-    types: ["datasource"] as const,
-    version: "0.1.0",
-    name: "Elasticsearch DataSource",
-    config,
-
-    connection,
-
-    entities: [],
-
-    dialect: buildDialectGuide(Boolean(staticConfig)),
-
-    /**
-     * Serializable config schema for the admin install form + the secret
-     * encryption flow. The `secret: true` fields (`apiKey`, `password`,
-     * `awsSecretAccessKey`, `awsSessionToken`) drive `encryptSecretFields` so
-     * they land encrypted at rest and the admin mask/restore flow applies; `url`
-     * and the AWS region/key-id/service carry no credential, so they are not
-     * secret. The form offers all three auth modes (API key / HTTP Basic / AWS
-     * SigV4) — supply exactly one mode's fields. Engine is auto-detected from the
-     * URL scheme (`opensearch://`) and overridable here.
-     *
-     * Kept in lockstep with the built-in datasource catalog row
-     * (`db/seed-builtin-datasource-catalog.ts` + migration `0125`) — the admin
-     * form-install handler reads the catalog's `config_schema` to decide which
-     * fields to encrypt. Cloud ID is an `atlas.config.ts`-only convenience and
-     * intentionally not a form field.
-     */
-    getConfigSchema(): ConfigSchemaField[] {
-      return [
-        {
-          key: "url",
-          type: "string",
-          label: "Connection URL",
-          required: true,
-          description:
-            "elasticsearch://host:9200 or opensearch://host:9200. HTTPS by default; append ?ssl=false for a plaintext cluster.",
-        },
-        {
-          key: "authMode",
-          type: "select",
-          label: "Authentication",
-          required: true,
-          default: "basic",
-          options: [
-            { value: "basic", label: "Username & password" },
-            { value: "apiKey", label: "API key" },
-            { value: "sigv4", label: "AWS SigV4" },
-            { value: "none", label: "None (no auth)" },
-          ],
-          description: "How Atlas authenticates to the cluster.",
-        },
-        {
-          key: "username",
-          type: "string",
-          label: "Username",
-          required: true,
-          showWhen: { field: "authMode", equals: ["basic"] },
-          description: "Cluster username.",
-        },
-        {
-          key: "password",
-          type: "string",
-          label: "Password",
-          required: true,
-          secret: true,
-          showWhen: { field: "authMode", equals: ["basic"] },
-          description: "Cluster password. Encrypted at rest.",
-        },
-        {
-          key: "apiKey",
-          type: "string",
-          label: "API key",
-          required: true,
-          secret: true,
-          showWhen: { field: "authMode", equals: ["apiKey"] },
-          description: "Base64-encoded API key, sent as `Authorization: ApiKey`. Encrypted at rest.",
-        },
-        {
-          key: "awsRegion",
-          type: "string",
-          label: "AWS region",
-          required: true,
-          showWhen: { field: "authMode", equals: ["sigv4"] },
-          description: "Region of the Amazon OpenSearch domain, e.g. us-east-1.",
-        },
-        {
-          key: "awsAccessKeyId",
-          type: "string",
-          label: "AWS access key ID",
-          showWhen: { field: "authMode", equals: ["sigv4"] },
-          description: "Optional. Falls back to the AWS_ACCESS_KEY_ID environment variable.",
-        },
-        {
-          key: "awsSecretAccessKey",
-          type: "string",
-          label: "AWS secret access key",
-          secret: true,
-          showWhen: { field: "authMode", equals: ["sigv4"] },
-          description: "Optional. Falls back to AWS_SECRET_ACCESS_KEY. Encrypted at rest.",
-        },
-        {
-          key: "awsSessionToken",
-          type: "string",
-          label: "AWS session token",
-          secret: true,
-          showWhen: { field: "authMode", equals: ["sigv4"] },
-          description: "Optional, for temporary credentials. Falls back to AWS_SESSION_TOKEN. Encrypted at rest.",
-        },
-        {
-          key: "awsService",
-          type: "string",
-          label: "AWS service",
-          showWhen: { field: "authMode", equals: ["sigv4"] },
-          description: "Service code to sign with. Defaults to `es`.",
-        },
-        {
-          key: "engine",
-          type: "select",
-          label: "Engine",
-          options: [
-            { value: "elasticsearch", label: "Elasticsearch" },
-            { value: "opensearch", label: "OpenSearch" },
-          ],
-          description: "Auto-detected from the URL scheme. Override only if the cluster reports otherwise.",
-        },
-        {
-          key: "description",
-          type: "string",
-          label: "Description",
-          description: "Optional. Shown to the agent in its system prompt.",
-        },
-      ];
-    },
-
-    async initialize(ctx) {
-      log = ctx.logger;
-      if (staticConfig) {
-        // Log a non-secret target identifier (host, or "Elastic Cloud" for a
-        // Cloud ID) — never a credential.
-        const target = staticConfig.url
-          ? extractHost(staticConfig.url)
-          : staticConfig.cloudId
-            ? "Elastic Cloud (cloud id)"
-            : "(unknown)";
-        ctx.logger.info(`Elasticsearch datasource plugin initialized (${target})`);
-      } else {
-        ctx.logger.info(
-          "Elasticsearch datasource plugin registered as adapter-only — per-workspace datasources via Admin → Connections",
-        );
-      }
-
-      // Register the queryElasticsearch DSL tool ONLY in static-datasource mode.
-      // The tool is hardwired to the static connection, so in adapter-only mode
-      // it would throw on every call. SaaS per-workspace Elasticsearch
-      // datasources are queried via the standard `executeSQL` (ES SQL) path,
-      // routed through the bridge-built connection. (Per-workspace DSL routing is
-      // a later slice — see #3269/#3271.)
-      if (staticConfig) {
-        const esTool = createQueryElasticsearchTool({
-          getConnection: () => getOrCreateConnection(),
-          // The index MEMBERSHIP whitelist is the semantic layer's index names
-          // for this connection — `ctx.connections.tables(id)`, the same
-          // filesystem whitelist `executeSQL` validates against in self-host /
-          // static mode. So the DSL tool and the SQL surface enforce the
-          // identical per-index boundary (#3307). (This tool is static-only;
-          // SaaS per-workspace ES is queried over the SQL path.)
-          //
-          // `ctx.connections.list()` would be wrong here — it returns CONNECTION
-          // IDs, not index names, so it can never match a real index like
-          // "flights". Empty-layer (structural-only) vs scan-failure
-          // (fail-closed) handling (#3243/#3313) is owned by the SDK's
-          // `gateOnSemanticWhitelist` inside the tool, which also builds the Set.
-          getWhitelist: () => ctx.connections.tables(DATASOURCE_ID),
-          logger: ctx.logger,
-        });
-
-        ctx.tools.register({
-          name: "queryElasticsearch",
-          description: "Execute a read-only Elasticsearch Query DSL request (full-text / aggregations)",
-          tool: esTool,
-        });
-
-        // One-time operator signal (#3313): empty whitelist → STRUCTURAL-ONLY
-        // warning; scan failure → fail-closed-until-recovery warning. The
-        // policy and copy live in the SDK's semantic-whitelist module.
-        warnIfStructuralOnly(
-          ES_DSL_WHITELIST_SUBJECT,
-          () => ctx.connections.tables(DATASOURCE_ID),
-          ctx.logger,
-        );
-      }
-    },
-
-    async healthCheck(): Promise<PluginHealthResult> {
-      // Adapter-only: no static datasource to probe. The plugin itself is a
-      // healthy adapter; per-workspace connections are health-checked by the
-      // ConnectionRegistry once installed.
-      if (!staticConfig) {
-        return { healthy: true, message: "adapter-only: no static datasource configured" };
-      }
-      return measuredHealthCheck(async () => {
-        try {
-          // The client owns the timeout/abort (it rejects with a clear "timed out"
-          // message at 5000ms), so awaiting it directly avoids the orphaned-promise
-          // / unhandled-rejection hazard of racing it against an outer setTimeout.
-          await getOrCreateConnection().ping(5000);
-          return { healthy: true };
-        } catch (err) {
-          // Returned (not rethrown) so the scrubbed message — never the raw
-          // error, which can embed credentials — is what surfaces.
-          const message = scrubElasticsearchError(err, collectConfigSecrets(staticConfig));
-          log?.warn(`Elasticsearch health check failed: ${message}`);
-          return { healthy: false, message };
-        }
-      });
-    },
-
-    async teardown(): Promise<void> {
-      if (cachedConn) {
-        try {
-          await cachedConn.close();
-        } catch (err) {
-          log?.warn(
-            { err: err instanceof Error ? err.message : String(err) },
-            "Failed to close Elasticsearch connection during teardown",
-          );
-        }
-        cachedConn = undefined;
-      }
-    },
-  };
-}
+// This plugin's static connection registers in the ConnectionRegistry under
+// its plugin id (wiring.ts `registerDirect(plugin.id, …)`), which is also the
+// connectionId `getWhitelistedTables` / `executeSQL` key the index whitelist
+// on. The DSL tool MUST use the same id so its membership whitelist agrees
+// with the SQL path.
+const DATASOURCE_ID = "elasticsearch-datasource";
 
 /**
  * Factory function for use in atlas.config.ts plugins array.
@@ -558,10 +229,275 @@ export function buildElasticsearchPlugin(
  * plugins: [elasticsearchPlugin({ url: "elasticsearch://host:9200", apiKey: "..." })]
  * ```
  */
-export const elasticsearchPlugin = createPlugin({
+export const elasticsearchPlugin = createDatasourcePlugin<
+  ElasticsearchConfig,
+  z.infer<typeof ElasticsearchConnectionConfigSchema>,
+  ElasticsearchConnection
+>({
+  id: DATASOURCE_ID,
+  name: "Elasticsearch DataSource",
+  dbType: "elasticsearch",
+  // ES SQL is real SQL, so there is intentionally NO custom `validate`: the
+  // host's standard 4-layer pipeline (regex guard → AST parse → index/table
+  // whitelist → auto-LIMIT + timeout) applies unchanged. We only tell it
+  // which grammar to parse with and add ES-specific guards on top of the
+  // base DML/DDL regex.
+  parserDialect: ELASTICSEARCH_PARSER_DIALECT,
+  forbiddenPatterns: ELASTICSEARCH_FORBIDDEN_PATTERNS,
   configSchema: ElasticsearchConfigSchema,
-  create: buildElasticsearchPlugin,
+  connectionConfigSchema: ElasticsearchConnectionConfigSchema,
+
+  dialect: buildDialectGuide,
+
+  // A static config-defined ES datasource (self-host / operator-baked) needs an
+  // endpoint source (`url`/`cloudId`) AND an auth signal (apiKey / username+
+  // password / awsRegion). Without a complete config the plugin is registered
+  // ADAPTER ONLY (the SaaS per-workspace model): no static connection, customers
+  // add their own per workspace via Admin → Connections, and the datasource
+  // bridge builds each connection via `createFromConfig`.
+  hasStaticConfig: (config) => isCompleteConnectionConfig(config),
+
+  // Log a non-secret target identifier (host, or "Elastic Cloud" for a
+  // Cloud ID) — never a credential.
+  describeStaticTarget: (config) =>
+    config.url
+      ? extractHost(config.url)
+      : config.cloudId
+        ? "Elastic Cloud (cloud id)"
+        : "(unknown)",
+
+  // The ES client session is shared: health checks, the DSL tool, and teardown
+  // all use the one cached static connection (closed + reset by the factory's
+  // teardown).
+  cacheStaticConnection: true,
+
+  // Static (operator-baked, self-hosted) datasource — SigV4 MAY use the
+  // ambient AWS env chain, like any other process.env read in atlas.config.ts.
+  createStaticConnection: (rt) =>
+    createElasticsearchConnection(rt.config, {
+      logger: rt.logger,
+      allowAmbientAwsCreds: true,
+    }),
+
+  // DB-driven (admin-UI-registered) datasources — `allowAmbientAwsCreds` is
+  // intentionally NOT set: a stored per-workspace SigV4 datasource must carry
+  // its own explicit, encrypted keys — it must never sign with the operator's
+  // ambient AWS env on a multi-tenant deploy (CLAUDE.md: per-tenant creds never
+  // fall back to operator env vars, #2850). The strict schema's completeness
+  // check runs the same env-less resolver, so a credential-less SigV4 config is
+  // rejected at validation, not silently.
+  buildConnection: (parsed, rt) => createElasticsearchConnection(parsed, { logger: rt.logger }),
+
+  // #3667 — introspection as a capability of the built connection. ES holds
+  // credentials in SEPARATE config fields (apiKey / username / password /
+  // SigV4), so the bound `runtimeConfig` (the tenant's decrypted record) is what
+  // the profiler authenticates with — never operator ATLAS_ES_* env (#2850). The
+  // tenant-config path sets allowAmbientAwsCreds: false inside the profiler.
+  attachIntrospection: (built, { parsed, runtimeConfig }) => ({
+    ...built,
+    listObjects: (o) =>
+      listElasticsearchObjects({ url: parsed.url ?? "", schema: o?.schema, config: runtimeConfig }),
+    profile: (o) =>
+      profileElasticsearchObjects({
+        url: parsed.url ?? "",
+        schema: o?.schema,
+        config: runtimeConfig,
+        selectedTables: o?.selectedTables,
+        prefetchedObjects: o?.prefetchedObjects,
+        progress: o?.progress,
+        logger: o?.logger,
+      }),
+  }),
+
+  healthProbe: async (rt) => {
+    try {
+      // The client owns the timeout/abort (it rejects with a clear "timed out"
+      // message at 5000ms), so awaiting it directly avoids the orphaned-promise
+      // / unhandled-rejection hazard of racing it against an outer setTimeout.
+      await rt.staticConnection().ping(5000);
+      return { healthy: true };
+    } catch (err) {
+      // Returned (not rethrown) so the scrubbed message — never the raw
+      // error, which can embed credentials — is what surfaces.
+      const message = scrubElasticsearchError(err, collectConfigSecrets(rt.config));
+      rt.logger?.warn(`Elasticsearch health check failed: ${message}`);
+      return { healthy: false, message };
+    }
+  },
+
+  /**
+   * Serializable config schema for the admin install form + the secret
+   * encryption flow. The `secret: true` fields (`apiKey`, `password`,
+   * `awsSecretAccessKey`, `awsSessionToken`) drive `encryptSecretFields` so
+   * they land encrypted at rest and the admin mask/restore flow applies; `url`
+   * and the AWS region/key-id/service carry no credential, so they are not
+   * secret. The form offers all three auth modes (API key / HTTP Basic / AWS
+   * SigV4) — supply exactly one mode's fields. Engine is auto-detected from the
+   * URL scheme (`opensearch://`) and overridable here.
+   *
+   * Kept in lockstep with the built-in datasource catalog row
+   * (`db/seed-builtin-datasource-catalog.ts` + migration `0125`) — the admin
+   * form-install handler reads the catalog's `config_schema` to decide which
+   * fields to encrypt. Cloud ID is an `atlas.config.ts`-only convenience and
+   * intentionally not a form field.
+   */
+  getConfigSchema(): ConfigSchemaField[] {
+    return [
+      {
+        key: "url",
+        type: "string",
+        label: "Connection URL",
+        required: true,
+        description:
+          "elasticsearch://host:9200 or opensearch://host:9200. HTTPS by default; append ?ssl=false for a plaintext cluster.",
+      },
+      {
+        key: "authMode",
+        type: "select",
+        label: "Authentication",
+        required: true,
+        default: "basic",
+        options: [
+          { value: "basic", label: "Username & password" },
+          { value: "apiKey", label: "API key" },
+          { value: "sigv4", label: "AWS SigV4" },
+          { value: "none", label: "None (no auth)" },
+        ],
+        description: "How Atlas authenticates to the cluster.",
+      },
+      {
+        key: "username",
+        type: "string",
+        label: "Username",
+        required: true,
+        showWhen: { field: "authMode", equals: ["basic"] },
+        description: "Cluster username.",
+      },
+      {
+        key: "password",
+        type: "string",
+        label: "Password",
+        required: true,
+        secret: true,
+        showWhen: { field: "authMode", equals: ["basic"] },
+        description: "Cluster password. Encrypted at rest.",
+      },
+      {
+        key: "apiKey",
+        type: "string",
+        label: "API key",
+        required: true,
+        secret: true,
+        showWhen: { field: "authMode", equals: ["apiKey"] },
+        description: "Base64-encoded API key, sent as `Authorization: ApiKey`. Encrypted at rest.",
+      },
+      {
+        key: "awsRegion",
+        type: "string",
+        label: "AWS region",
+        required: true,
+        showWhen: { field: "authMode", equals: ["sigv4"] },
+        description: "Region of the Amazon OpenSearch domain, e.g. us-east-1.",
+      },
+      {
+        key: "awsAccessKeyId",
+        type: "string",
+        label: "AWS access key ID",
+        showWhen: { field: "authMode", equals: ["sigv4"] },
+        description: "Optional. Falls back to the AWS_ACCESS_KEY_ID environment variable.",
+      },
+      {
+        key: "awsSecretAccessKey",
+        type: "string",
+        label: "AWS secret access key",
+        secret: true,
+        showWhen: { field: "authMode", equals: ["sigv4"] },
+        description: "Optional. Falls back to AWS_SECRET_ACCESS_KEY. Encrypted at rest.",
+      },
+      {
+        key: "awsSessionToken",
+        type: "string",
+        label: "AWS session token",
+        secret: true,
+        showWhen: { field: "authMode", equals: ["sigv4"] },
+        description: "Optional, for temporary credentials. Falls back to AWS_SESSION_TOKEN. Encrypted at rest.",
+      },
+      {
+        key: "awsService",
+        type: "string",
+        label: "AWS service",
+        showWhen: { field: "authMode", equals: ["sigv4"] },
+        description: "Service code to sign with. Defaults to `es`.",
+      },
+      {
+        key: "engine",
+        type: "select",
+        label: "Engine",
+        options: [
+          { value: "elasticsearch", label: "Elasticsearch" },
+          { value: "opensearch", label: "OpenSearch" },
+        ],
+        description: "Auto-detected from the URL scheme. Override only if the cluster reports otherwise.",
+      },
+      {
+        key: "description",
+        type: "string",
+        label: "Description",
+        description: "Optional. Shown to the agent in its system prompt.",
+      },
+    ];
+  },
+
+  // Register the queryElasticsearch DSL tool ONLY in static-datasource mode.
+  // The tool is hardwired to the static connection, so in adapter-only mode
+  // it would throw on every call. SaaS per-workspace Elasticsearch
+  // datasources are queried via the standard `executeSQL` (ES SQL) path,
+  // routed through the bridge-built connection. (Per-workspace DSL routing is
+  // a later slice — see #3269/#3271.)
+  onInitialize: (ctx, rt) => {
+    if (!rt.hasStaticConfig) return;
+
+    const esTool = createQueryElasticsearchTool({
+      getConnection: () => rt.staticConnection(),
+      // The index MEMBERSHIP whitelist is the semantic layer's index names
+      // for this connection — `ctx.connections.tables(id)`, the same
+      // filesystem whitelist `executeSQL` validates against in self-host /
+      // static mode. So the DSL tool and the SQL surface enforce the
+      // identical per-index boundary (#3307). (This tool is static-only;
+      // SaaS per-workspace ES is queried over the SQL path.)
+      //
+      // `ctx.connections.list()` would be wrong here — it returns CONNECTION
+      // IDs, not index names, so it can never match a real index like
+      // "flights". Empty-layer (structural-only) vs scan-failure
+      // (fail-closed) handling (#3243/#3313) is owned by the SDK's
+      // `gateOnSemanticWhitelist` inside the tool, which also builds the Set.
+      getWhitelist: () => ctx.connections.tables(DATASOURCE_ID),
+      logger: ctx.logger,
+    });
+
+    ctx.tools.register({
+      name: "queryElasticsearch",
+      description: "Execute a read-only Elasticsearch Query DSL request (full-text / aggregations)",
+      tool: esTool,
+    });
+
+    // One-time operator signal (#3313): empty whitelist → STRUCTURAL-ONLY
+    // warning; scan failure → fail-closed-until-recovery warning. The
+    // policy and copy live in the SDK's semantic-whitelist module.
+    warnIfStructuralOnly(
+      ES_DSL_WHITELIST_SUBJECT,
+      () => ctx.connections.tables(DATASOURCE_ID),
+      ctx.logger,
+    );
+  },
 });
+
+/**
+ * Build the plugin object from an already-validated config — bypasses the Zod
+ * config schema. For direct use when validation has been performed externally
+ * (e.g. in tests or custom wiring).
+ */
+export const buildElasticsearchPlugin = elasticsearchPlugin.build;
 
 export {
   parseElasticsearchUrl,
@@ -612,6 +548,26 @@ export type {
   EsDslValidationResult,
   DslSafeguardLimits,
 } from "./dsl";
+export type {
+  ElasticsearchEngine,
+  ParsedElasticsearchUrl,
+  ElasticsearchApiKeyAuth,
+  ElasticsearchBasicAuth,
+  ElasticsearchSigV4Auth,
+  ElasticsearchAuthDescriptor,
+  ElasticsearchPluginConfig,
+  ResolvedElasticsearchConfig,
+  ElasticsearchConnection,
+  ElasticsearchClient,
+  ElasticsearchClientOptions,
+  ClusterInfo,
+  ElasticsearchSqlColumn,
+  ElasticsearchSqlResponse,
+  ElasticsearchSqlQueryOptions,
+  ElasticsearchDslEndpoint,
+  ElasticsearchDslQueryOptions,
+  ResolveAuthOptions,
+} from "./connection";
 export {
   mapEsFieldType,
   flattenMapping,
@@ -645,26 +601,6 @@ export type {
   EsDimension,
   EsEntityDoc,
 } from "./mapping";
-export type {
-  ElasticsearchEngine,
-  ParsedElasticsearchUrl,
-  ElasticsearchApiKeyAuth,
-  ElasticsearchBasicAuth,
-  ElasticsearchSigV4Auth,
-  ElasticsearchAuthDescriptor,
-  ElasticsearchPluginConfig,
-  ResolvedElasticsearchConfig,
-  ElasticsearchConnection,
-  ElasticsearchClient,
-  ElasticsearchClientOptions,
-  ClusterInfo,
-  ElasticsearchSqlColumn,
-  ElasticsearchSqlResponse,
-  ElasticsearchSqlQueryOptions,
-  ElasticsearchDslEndpoint,
-  ElasticsearchDslQueryOptions,
-  ResolveAuthOptions,
-} from "./connection";
 // Profiler — the introspection half of the datasource contract (ADR-0017),
 // plus the ES-specific entity-doc path the CLI consumes directly. `flattenMapping`,
 // `entityFileSlug`, and `buildUniqueFileSlugs` are already exported from `./mapping`

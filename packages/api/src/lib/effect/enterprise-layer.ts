@@ -14,8 +14,10 @@
  * file plus the `@atlas/ee/layers` aggregator dynamic import below.
  */
 
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Context, Effect, Layer, ManagedRuntime } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { EnterpriseUnavailableError } from "@atlas/api/lib/effect/errors";
+import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import {
   NoopEnterpriseDefaultsLayer,
   type ResidencyResolver,
@@ -37,7 +39,6 @@ import {
   type ProactiveGate,
   type ProactiveService,
   type AnswerMeter,
-  type DeployModeResolver,
   type MarketplaceVeneer,
   type SaasCrm,
 } from "./services";
@@ -98,7 +99,9 @@ function isEnterpriseEnabledLocal(): boolean {
  *   - MaskingPolicy → `lib/tools/sql.ts:applyMaskingViaTag`
  *   - ApprovalGate → `lib/tools/sql.ts:loadApprovalGate`
  *   - AuditRetention → `api/routes/admin-{audit,action}-retention.ts`
- *     (via `yieldAuditRetentionFailClosed` helpers)
+ *
+ * Every site routes through the shared `yieldFailClosed` helper (below)
+ * so the guard lives in one place instead of being hand-copied per site.
  *
  * The IP allowlist middleware site is the obvious next candidate but
  * was scoped out — partial-mock `@atlas/ee/layers` setups across ~17
@@ -189,7 +192,6 @@ export type EnterpriseSubsystem =
   | ProactiveGate
   | ProactiveService
   | AnswerMeter
-  | DeployModeResolver
   | MarketplaceVeneer
   | SaasCrm;
 
@@ -271,4 +273,34 @@ export function runEnterprise<A, E>(
   program: Effect.Effect<A, E, EnterpriseSubsystem>,
 ): Promise<A> {
   return getEnterpriseRuntime().runPromise(program);
+}
+
+/**
+ * Shared consumer-side fail-closed guard (#2593). Yields an enterprise
+ * Tag, then short-circuits with `EnterpriseUnavailableError` (→ HTTP 503
+ * `enterprise_load_failed`) when `isEnterpriseEnabled() === true` but the
+ * resolved service is still the no-op default (`available === false`) —
+ * i.e. SaaS where the `@atlas/ee/layers` load failed and returning the
+ * pass-through would silently bypass masking / approval / retention.
+ * Self-hosted (`ATLAS_ENTERPRISE_ENABLED !== true`) returns the service
+ * unchanged: the no-op IS the expected self-hosted path.
+ *
+ * Every consumer (masking + approval in `lib/tools/sql.ts`, both retention
+ * route files) routes through this single helper so the "EE-enabled +
+ * available=false → 503" contract lives in one place instead of being
+ * hand-copied per call site. The error's `tag` field is the Context.Tag's
+ * runtime identifier (`tag.key`), so it stays exactly "MaskingPolicy" /
+ * "ApprovalGate" / "AuditRetention".
+ */
+export function yieldFailClosed<Self, Shape extends { readonly available: boolean }>(
+  tag: Context.Tag<Self, Shape>,
+  message: string,
+): Effect.Effect<Shape, EnterpriseUnavailableError, Self> {
+  return Effect.gen(function* () {
+    const service = yield* tag;
+    if (isEnterpriseEnabled() && !service.available) {
+      return yield* Effect.fail(new EnterpriseUnavailableError({ message, tag: tag.key }));
+    }
+    return service;
+  });
 }

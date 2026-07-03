@@ -34,11 +34,10 @@
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { AnonymizeInitiatedBy } from "@useatlas/types";
-import { AuditRetention, type AuditRetentionShape } from "@atlas/api/lib/effect/services";
+import { AuditRetention } from "@atlas/api/lib/effect/services";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
-import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
-import { EnterpriseUnavailableError } from "@atlas/api/lib/effect/errors";
+import { yieldFailClosed } from "@atlas/api/lib/effect/enterprise-layer";
 import { logAdminActionAwait, ADMIN_ACTIONS, type AdminActionEntry } from "@atlas/api/lib/audit";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -54,33 +53,6 @@ function clientIpFrom(headers: { header(name: string): string | undefined }): st
     if (first) return first;
   }
   return headers.header("x-real-ip") ?? null;
-}
-
-/**
- * Yield the `AuditRetention` Tag with a consumer-side fail-closed guard
- * (#2593). Mirror of the helper in `admin-audit-retention.ts` — kept as
- * two copies (not extracted) because both routers are the only consumers
- * of the Tag and centralising the guard would force a shared module
- * across two route files that otherwise share no code.
- */
-function yieldAuditRetentionFailClosed(): Effect.Effect<
-  AuditRetentionShape,
-  EnterpriseUnavailableError,
-  AuditRetention
-> {
-  return Effect.gen(function* () {
-    const retention = yield* AuditRetention;
-    if (isEnterpriseEnabled() && !retention.available) {
-      return yield* Effect.fail(
-        new EnterpriseUnavailableError({
-          message:
-            "Audit retention unavailable — admin action operations cannot be evaluated. Contact your administrator.",
-          tag: "AuditRetention",
-        }),
-      );
-    }
-    return retention;
-  });
 }
 
 function errorContext(err: unknown): Record<string, unknown> {
@@ -348,7 +320,10 @@ adminActionRetention.use(requirePermission("admin:audit"));
 adminActionRetention.openapi(getRetentionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-    const retention = yield* yieldAuditRetentionFailClosed();
+    const retention = yield* yieldFailClosed(
+      AuditRetention,
+      "Audit retention unavailable — admin action operations cannot be evaluated. Contact your administrator.",
+    );
     const policy = yield* retention.getAdminActionRetentionPolicy(orgId!);
     return c.json({ policy }, 200);
   }), { label: "get admin-action retention policy", domainErrors: [retentionDomainError] });
@@ -361,7 +336,10 @@ adminActionRetention.openapi(updateRetentionRoute, async (c) => {
     const { orgId, user } = yield* AuthContext;
     const body = c.req.valid("json");
 
-    const retention = yield* yieldAuditRetentionFailClosed();
+    const retention = yield* yieldFailClosed(
+      AuditRetention,
+      "Audit retention unavailable — admin action operations cannot be evaluated. Contact your administrator.",
+    );
     const { setAdminActionRetentionPolicy, getAdminActionRetentionPolicy } = retention;
 
     const requestedMeta = {
@@ -432,7 +410,10 @@ adminActionRetention.openapi(purgeRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const retention = yield* yieldAuditRetentionFailClosed();
+    const retention = yield* yieldFailClosed(
+      AuditRetention,
+      "Audit retention unavailable — admin action operations cannot be evaluated. Contact your administrator.",
+    );
     const { purgeAdminActionExpired, getAdminActionRetentionPolicy } = retention;
 
     const policy = yield* getAdminActionRetentionPolicy(orgId!).pipe(
@@ -484,7 +465,10 @@ adminEraseUser.use(requirePermission("admin:audit"));
 adminEraseUser.openapi(erasePreviewRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const query = c.req.valid("query");
-    const retention = yield* yieldAuditRetentionFailClosed();
+    const retention = yield* yieldFailClosed(
+      AuditRetention,
+      "Audit retention unavailable — admin action operations cannot be evaluated. Contact your administrator.",
+    );
     const result = yield* retention.previewAdminActionErasure(query.userId);
     return c.json(result, 200);
   }), { label: "preview admin-action erasure", domainErrors: [retentionDomainError] });
@@ -496,7 +480,10 @@ adminEraseUser.openapi(eraseUserRoute, async (c) => {
   const ipAddress = clientIpFrom(c.req);
   return runEffect(c, Effect.gen(function* () {
     const body = c.req.valid("json");
-    const retention = yield* yieldAuditRetentionFailClosed();
+    const retention = yield* yieldFailClosed(
+      AuditRetention,
+      "Audit retention unavailable — admin action operations cannot be evaluated. Contact your administrator.",
+    );
 
     return yield* retention.anonymizeUserAdminActions(body.userId, body.initiatedBy).pipe(
       Effect.tapError((err) =>

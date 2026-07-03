@@ -288,6 +288,22 @@ export default function WhyTheSemanticLayerIsYaml() {
           live and runs on the same NovaMart data you just read about, no signup
           required.
         </P>
+        <P>
+          Postscript: seventeen days before this post went out, Google Cloud
+          shipped the{" "}
+          <a
+            href="https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing"
+            className="link-accent"
+          >
+            Open Knowledge Format
+          </a>
+          , an open standard built on the same plain-files thesis. I found it
+          the next day. What Atlas did about it is the follow-up,{" "}
+          <a href="/blog/atlas-speaks-okf" className="link-accent">
+            Atlas speaks OKF
+          </a>
+          .
+        </P>
 
         <PostActions />
         <Signoff />

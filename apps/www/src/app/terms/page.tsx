@@ -6,6 +6,7 @@ import { Nav } from "../../components/nav";
 import { TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
 import { TalkToSalesDialog } from "../../components/talk-to-sales-dialog";
+import { LEGAL_STAMPS } from "../../data/legal";
 
 export const metadata: Metadata = {
   title: "Terms of Service",
@@ -211,11 +212,11 @@ export default function TermsPage() {
             right.
           </p>
           <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-fg-muted uppercase">
-            <span>effective 2026-06-19</span>
+            <span>effective {LEGAL_STAMPS.terms.effective}</span>
             <span aria-hidden="true">·</span>
-            <span>v4.3</span>
+            <span>{LEGAL_STAMPS.terms.version}</span>
             <span aria-hidden="true">·</span>
-            <span>last updated 2026-05-02</span>
+            <span>last updated {LEGAL_STAMPS.terms.lastUpdated}</span>
           </div>
         </section>
 

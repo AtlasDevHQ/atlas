@@ -1,20 +1,11 @@
 import type { MetadataRoute } from "next";
 
+import { LEGAL_STAMPS, legalLastModified, type LegalSlug } from "../data/legal";
 import { POSTS } from "../data/posts";
 
 const baseUrl = "https://www.useatlas.dev";
 
 export const dynamic = "force-static";
-
-// Legal pages carry the effective date shown in their footer stamp; keep in
-// sync when a policy is revised. Marketing pages omit lastModified — an
-// always-fresh build timestamp teaches crawlers to ignore the field.
-const LEGAL_EFFECTIVE: Record<string, string> = {
-  privacy: "2026-06-19",
-  terms: "2026-05-02",
-  dpa: "2026-05-02",
-  aup: "2026-04-26",
-};
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   return [
@@ -34,9 +25,11 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       priority: 0.7,
     })),
     { url: `${baseUrl}/security`, changeFrequency: "monthly", priority: 0.7 },
-    ...Object.entries(LEGAL_EFFECTIVE).map(([slug, effective]) => ({
+    // Marketing pages above omit lastModified — an always-fresh build
+    // timestamp teaches crawlers to ignore the field.
+    ...(Object.keys(LEGAL_STAMPS) as LegalSlug[]).map((slug) => ({
       url: `${baseUrl}/${slug}`,
-      lastModified: new Date(effective),
+      lastModified: legalLastModified(slug),
       changeFrequency: "monthly" as const,
       priority: 0.5,
     })),

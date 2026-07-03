@@ -5,6 +5,7 @@ import { LegalSection, LegalTOC, type LegalSectionData } from "../../components/
 import { Nav } from "../../components/nav";
 import { TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
+import { LEGAL_STAMPS } from "../../data/legal";
 
 export const metadata: Metadata = {
   title: "Privacy Policy",
@@ -243,9 +244,9 @@ export default function PrivacyPage() {
             it. Aggressively boring on purpose.
           </p>
           <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-fg-muted uppercase">
-            <span>effective 2026-06-19</span>
+            <span>effective {LEGAL_STAMPS.privacy.effective}</span>
             <span aria-hidden="true">·</span>
-            <span>v3.2</span>
+            <span>{LEGAL_STAMPS.privacy.version}</span>
             <span aria-hidden="true">·</span>
             <span>questions: privacy@useatlas.dev</span>
           </div>

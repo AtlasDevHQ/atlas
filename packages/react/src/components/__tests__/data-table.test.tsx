@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { render, fireEvent } from "@testing-library/react";
 import { DataTable } from "../chat/data-table";
 
@@ -121,5 +121,95 @@ describe("DataTable", () => {
     expect(container.querySelector("table")).toBeNull();
     expect(container.textContent).toContain("Query returned no results");
     expect(container.textContent).toContain("Try adjusting your query filters or criteria");
+  });
+
+  // -------------------------------------------------------------------------
+  // Row click-to-drilldown (#3212) — opt-in via onRowClick
+  // -------------------------------------------------------------------------
+
+  test("rows are inert (no button role) when onRowClick is omitted", () => {
+    const { container } = render(<DataTable columns={columns} rows={rows} />);
+    expect(container.querySelectorAll("tbody tr[role='button']").length).toBe(0);
+  });
+
+  test("clicking a row forwards the row object when onRowClick is provided", () => {
+    const onRowClick = mock((_row: Record<string, unknown> | unknown[]) => {});
+    const { container } = render(
+      <DataTable columns={columns} rows={rows} onRowClick={onRowClick} />,
+    );
+    const firstRow = container.querySelector("tbody tr");
+    expect(firstRow?.getAttribute("role")).toBe("button");
+    fireEvent.click(firstRow!);
+    expect(onRowClick).toHaveBeenCalledTimes(1);
+    expect(onRowClick.mock.calls[0]?.[0]).toEqual(rows[0]);
+  });
+
+  test("Enter/Space on a focused row activates it (keyboard a11y)", () => {
+    const onRowClick = mock((_row: Record<string, unknown> | unknown[]) => {});
+    const { container } = render(
+      <DataTable columns={columns} rows={rows} onRowClick={onRowClick} />,
+    );
+    const firstRow = container.querySelector("tbody tr")!;
+    fireEvent.keyDown(firstRow, { key: "Enter" });
+    fireEvent.keyDown(firstRow, { key: " " });
+    expect(onRowClick).toHaveBeenCalledTimes(2);
+  });
+
+  // -------------------------------------------------------------------------
+  // Cross-filter selected row (#3213) — opt-in via selectedColumn/selectedValue
+  // -------------------------------------------------------------------------
+
+  test("highlights the row matching selectedColumn/selectedValue", () => {
+    const { container } = render(
+      <DataTable columns={columns} rows={rows} selectedColumn="name" selectedValue="Beta" />,
+    );
+    const selected = container.querySelectorAll("tbody tr[aria-selected='true']");
+    expect(selected.length).toBe(1);
+    expect(selected[0].textContent).toContain("Beta");
+  });
+
+  test("timestamp cells match a normalized YYYY-MM-DD date filter (#3219)", () => {
+    const dateRows = [
+      { day: "2026-06-04T12:00:00Z", total: 1 },
+      { day: "2026-06-05T12:00:00Z", total: 2 },
+    ];
+    const { container } = render(
+      <DataTable
+        columns={["day", "total"]}
+        rows={dateRows}
+        selectedColumn="day"
+        selectedValue="2026-06-04"
+      />,
+    );
+    const selected = container.querySelectorAll("tbody tr[aria-selected='true']");
+    expect(selected.length).toBe(1);
+    expect(selected[0].textContent).toContain("2026-06-04");
+  });
+
+  test("no row is highlighted when selection props are omitted", () => {
+    const { container } = render(<DataTable columns={columns} rows={rows} />);
+    expect(container.querySelectorAll("tbody tr[aria-selected='true']").length).toBe(0);
+  });
+
+  test("array rows (unknown[][]) forward on click and are never aria-selected", () => {
+    const arrayRows = [
+      ["Alice", 100],
+      ["Bob", 200],
+    ];
+    const onRowClick = mock((_row: Record<string, unknown> | unknown[]) => {});
+    const { container } = render(
+      <DataTable
+        columns={["name", "score"]}
+        rows={arrayRows}
+        onRowClick={onRowClick}
+        // selection is skipped for array rows (no column keys to read)
+        selectedColumn="name"
+        selectedValue="Alice"
+      />,
+    );
+    const firstRow = container.querySelector("tbody tr")!;
+    fireEvent.click(firstRow);
+    expect(onRowClick.mock.calls[0]?.[0]).toEqual(arrayRows[0]);
+    expect(container.querySelectorAll("tbody tr[aria-selected='true']").length).toBe(0);
   });
 });

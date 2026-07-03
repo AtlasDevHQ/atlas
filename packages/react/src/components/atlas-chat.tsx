@@ -822,6 +822,11 @@ function AtlasChatInner({
                   <ErrorBanner
                     error={error}
                     authMode={authMode ?? "none"}
+                    // #3342 — the embeddable widget notifies its host page of
+                    // chat errors via postMessage("atlas:error"); opt-in here
+                    // because the shared banner defaults to silent (web app has
+                    // no host frame).
+                    notifyHostOnError
                     onRetry={
                       messages.some((m) => m.role === "user")
                         ? () => {

@@ -1,18 +1,37 @@
 "use client";
 
 import { useState, type ComponentProps } from "react";
-import { formatCell } from "../../lib/helpers";
+import { categoryMatchesSelection, formatCell } from "../../lib/helpers";
 import { ErrorBoundary } from "../error-boundary";
 import { Button } from "../ui/button";
+import { cn } from "../../lib/utils";
 
 function DataTableInner({
   columns,
   rows,
   maxRows = 10,
+  onRowClick,
+  selectedColumn,
+  selectedValue,
 }: {
   columns: string[];
   rows: (Record<string, unknown> | unknown[])[];
   maxRows?: number;
+  /**
+   * #3212 — click-to-drilldown. When provided, each row becomes an activatable
+   * button (pointer cursor + Enter/Space) that forwards the clicked row object.
+   * Omitted on the chat surface (rows stay inert), so this is opt-in and
+   * back-compatible. The consumer decides which column's value to read.
+   */
+  onRowClick?: (row: Record<string, unknown> | unknown[]) => void;
+  /**
+   * #3213 — cross-filter "selected" state. When the row's `selectedColumn` cell
+   * equals `selectedValue`, the row renders highlighted + `aria-selected`, so a
+   * drilldown row reads as the active filter (re-clicking it deselects, via the
+   * page's toggle). Both must be set; omitted → no row is highlighted.
+   */
+  selectedColumn?: string;
+  selectedValue?: string;
 }) {
   const [sortCol, setSortCol] = useState<number | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -92,7 +111,7 @@ function DataTableInner({
                     handleSort(i);
                   }
                 }}
-                className="group cursor-pointer select-none whitespace-nowrap px-3 py-2 text-left font-medium text-zinc-500 transition-colors hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:text-zinc-400 dark:hover:text-zinc-200"
+                className="group cursor-pointer select-none whitespace-nowrap px-3 py-3 text-left font-medium text-zinc-700 transition-colors hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:text-zinc-300 dark:hover:text-zinc-100"
               >
                 {col}
                 {sortCol === i
@@ -103,18 +122,49 @@ function DataTableInner({
           </tr>
         </thead>
         <tbody>
-          {display.map((row, i) => (
-            <tr
-              key={i}
-              className={i % 2 === 0 ? "bg-zinc-100/60 dark:bg-zinc-900/60" : "bg-zinc-50/30 dark:bg-zinc-900/30"}
-            >
-              {columns.map((_, j) => (
-                <td key={j} className="whitespace-nowrap px-3 py-1.5 text-zinc-700 dark:text-zinc-300">
-                  {formatCell(cell(row, j))}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {display.map((row, i) => {
+            const clickable = onRowClick !== undefined;
+            // #3213 — does this row carry the active cross-filter value? The
+            // comparison normalizes date/timestamp cells (#3219 Codex review) so a
+            // timestamp-backed `date` filter still highlights its row.
+            const selected =
+              selectedColumn != null &&
+              selectedValue != null &&
+              !Array.isArray(row) &&
+              categoryMatchesSelection((row as Record<string, unknown>)[selectedColumn], selectedValue);
+            return (
+              <tr
+                key={i}
+                className={cn(
+                  i % 2 === 0 ? "bg-zinc-100/60 dark:bg-zinc-900/60" : "bg-zinc-50/30 dark:bg-zinc-900/30",
+                  clickable &&
+                    "cursor-pointer transition-colors hover:bg-blue-100/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:hover:bg-blue-950/30",
+                  selected &&
+                    "bg-blue-100/80 ring-1 ring-inset ring-blue-400 dark:bg-blue-900/40 dark:ring-blue-500",
+                )}
+                role={clickable ? "button" : undefined}
+                aria-selected={selected || undefined}
+                tabIndex={clickable ? 0 : undefined}
+                onClick={clickable ? () => onRowClick?.(row) : undefined}
+                onKeyDown={
+                  clickable
+                    ? (e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onRowClick?.(row);
+                        }
+                      }
+                    : undefined
+                }
+              >
+                {columns.map((_, j) => (
+                  <td key={j} className="whitespace-nowrap px-3 py-1.5 text-zinc-700 dark:text-zinc-300">
+                    {formatCell(cell(row, j))}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       </div>

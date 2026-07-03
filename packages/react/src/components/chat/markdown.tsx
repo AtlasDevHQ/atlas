@@ -66,7 +66,7 @@ const mdComponents = {
     <p className="mb-3 leading-relaxed last:mb-0">{children}</p>
   ),
   h1: ({ children }: { children?: ReactNode }) => (
-    <h1 className="mb-2 mt-4 text-lg font-bold first:mt-0">{children}</h1>
+    <h1 className="mb-2 mt-4 text-lg font-semibold first:mt-0">{children}</h1>
   ),
   h2: ({ children }: { children?: ReactNode }) => (
     <h2 className="mb-2 mt-3 text-base font-semibold first:mt-0">{children}</h2>
@@ -113,18 +113,41 @@ const mdComponents = {
   pre: ({ children }: { children?: ReactNode }) => <>{children}</>,
 };
 
-export const Markdown = memo(function Markdown({ content }: { content: string }) {
-  const dark = useContext(DarkModeContext);
+export const Markdown = memo(function Markdown({
+  content,
+  disallowImages = false,
+  dark,
+}: {
+  content: string;
+  /**
+   * Strip markdown images (`![alt](url)`). react-markdown renders these as
+   * `<img>` even with raw HTML disabled, so an `![x](https://attacker/track)`
+   * fires a network request from every viewer's browser. Set this on
+   * untrusted / publicly-shared surfaces (e.g. shared-dashboard text cards,
+   * #3138) to close the IP/referrer-tracking vector.
+   */
+  disallowImages?: boolean;
+  /**
+   * Per-side dark-mode seam: hosts with their own theme store (e.g.
+   * @atlas/web's `useDarkMode`) pass the resolved value; omitted, it falls
+   * back to the package's `DarkModeContext` (what `AtlasChat` provides).
+   */
+  dark?: boolean;
+}) {
+  const ctxDark = useContext(DarkModeContext);
+  const isDark = dark ?? ctxDark;
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
+      disallowedElements={disallowImages ? ["img"] : undefined}
+      unwrapDisallowed={disallowImages}
       components={{
         ...mdComponents,
         code({ className, children, ...props }) {
           const match = /language-(\w+)/.exec(className || "");
           if (match) {
             return (
-              <LazyCodeBlock language={match[1]} dark={dark}>
+              <LazyCodeBlock language={match[1]} dark={isDark}>
                 {String(children).replace(/\n$/, "")}
               </LazyCodeBlock>
             );

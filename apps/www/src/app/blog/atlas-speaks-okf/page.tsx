@@ -86,19 +86,22 @@ export default function AtlasSpeaksOkf() {
           parties speak it, not from who owns it.&rdquo;
         </P>
         <P>
-          Nobody copied anybody; the timelines rule it out in both directions.
-          And that&apos;s the encouraging part. Two teams working on different
-          problems both landed on plain files in git as the way to hand an
-          agent context about data, and an idea that shows up twice,
-          independently, is usually pointing at something real. So rather than
-          squint at OKF as a competitor, I spent the next two days teaching
-          Atlas to speak it.
+          Nobody copied anybody, and the git history is happy to testify.
+          Atlas has kept its semantic layer in plain YAML since the
+          repo&apos;s first commit in early March, and in the prototype repo
+          before that, back in February. A spec like OKF takes more than
+          seventeen days to design, so Google was clearly at it long before my
+          post too. Two teams working on different problems both landed on
+          plain files in git as the way to hand an agent context about data,
+          and an idea that shows up twice, independently, is usually pointing
+          at something real. So rather than squint at OKF as a competitor, I
+          spent the next two days teaching Atlas to speak it.
         </P>
 
         <StatStrip
           items={[
+            { value: "Mar 5", label: "Atlas's first commit, YAML layer included" },
             { value: "Jun 12", label: "Google ships OKF v0.1" },
-            { value: "Jun 29", label: "the YAML-file post" },
             { value: "Jul 2", label: "Atlas imports, exports, and hosts OKF" },
           ]}
         />

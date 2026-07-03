@@ -2,9 +2,5 @@
   "title": "Deployment",
   "description": "Deploy to Docker, Railway, or Vercel",
   "icon": "CloudUpload",
-  "pages": [
-    "multi-datasource",
-    "plugin-catalog",
-    "schema-evolution"
-  ]
+  "pages": ["deploy", "authentication", "cache-configuration"]
 }

@@ -4,24 +4,24 @@ description: Run and operate Atlas on your own infrastructure — Docker, sandbo
 icon: Server
 ---
 
-import { Callout } from "fumadocs-ui/components/callout";
+Every page in this section is written for operators running Atlas on their own
+infrastructure. Atlas is AGPL-licensed and free to self-host — you control the
+environment, data residency, and LLM provider.
 
-This is the landing page for the **Self-Hosted** documentation section. Every
-page under `/self-hosted/*` is written for operators running Atlas on their own
-infrastructure — Docker deploys, sandbox isolation, bring-your-own auth and
-models.
+## Start here
 
-<Callout title="Scaffolding placeholder">
-  This page exists to prove the `/self-hosted` route group renders end-to-end
-  (issue #4259). The self-hosted deployment, sandboxing and BYO guides are
-  migrated here in later slices (#4264). SaaS / Cloud docs stay at the site
-  root; the API reference stays at `/api-reference`.
-</Callout>
+- **[Quick Start](/self-hosted/getting-started/quick-start)** — get Atlas running locally in under 5 minutes with the demo dataset.
+- **[Deploy](/self-hosted/deployment/deploy)** — one-click deploy to Railway, Vercel, or Docker, or scaffold your own project.
+- **[Authentication](/self-hosted/deployment/authentication)** — configure API-key, managed, or bring-your-own-token (JWKS) auth.
 
-The route injects a static audience value into the MDX render scope. A component
-reading it here renders: <AudienceLabel />.
+## Operate
 
-Shared concept pages are single-sourced — authored once in `content/shared/` and
-mounted into both this section and the SaaS root. See the
-[single-source example](./single-source-example) to watch one file adapt to its
-mount.
+- **[Self-Hosted Models](/self-hosted/guides/self-hosted-models)** — run Atlas against Ollama, vLLM, or any OpenAI-compatible endpoint.
+- **[Cache Configuration](/self-hosted/deployment/cache-configuration)** — tune query-result caching or plug in an external Redis backend.
+- **[Bring Your Own Frontend](/self-hosted/frameworks/overview)** — embed the headless Atlas API in React, Vue, Svelte, or TanStack.
+- **[Contributing](/self-hosted/contributing/ci)** — CI gates and the eval harness for working on Atlas itself.
+
+Shared concept pages — the semantic layer, plugins, SDK, and integrations —
+will be single-sourced into this section from `content/shared/` in later
+migration slices, so a self-hoster won't get bounced into a SaaS-framed page
+mid-task.

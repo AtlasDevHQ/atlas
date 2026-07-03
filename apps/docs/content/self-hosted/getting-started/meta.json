@@ -1,0 +1,7 @@
+{
+  "title": "Getting Started",
+  "description": "Install Atlas on your own machine and run your first query",
+  "icon": "Rocket",
+  "defaultOpen": true,
+  "pages": ["quick-start"]
+}

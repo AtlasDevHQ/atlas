@@ -14,7 +14,7 @@ import { Accordions, Accordion } from "fumadocs-ui/components/accordion";
 
 ## The fast path
 
-For most people, scaffolding a new Atlas app is the right starting point. Demo data seeds by default:
+For most people, scaffolding a new Atlas app is the right starting point:
 
 ```bash
 bun create atlas-agent my-app
@@ -24,7 +24,7 @@ bun run dev
 # Open http://localhost:3000
 ```
 
-The scaffold creates a runnable Atlas project with the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) pre-seeded and a semantic layer auto-generated. It defaults to SQLite + Anthropic — pass `--defaults` for non-interactive setup, or follow the prompts to pick PostgreSQL / OpenAI / Bedrock / Ollama / Gateway.
+The scaffold creates a runnable Atlas project. It defaults to PostgreSQL + Anthropic — pass `--defaults` for non-interactive setup, or follow the prompts to pick MySQL / OpenAI / Bedrock / Ollama / Gateway. Add `--demo` to seed the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) and its semantic layer; otherwise you point it at your own database and generate the semantic layer with `bun run atlas -- init`.
 
 Once `bun run dev` is up, jump to [Ask your first question](#ask-your-first-question) below.
 
@@ -36,7 +36,7 @@ Once `bun run dev` is up, jump to [Ask your first question](#ask-your-first-ques
 
 Before you start, make sure you have:
 
-- **[Bun](https://bun.sh/) v1.3.14+** — check with `bun --version`
+- **[Bun](https://bun.sh/) v1.3.13** — check with `bun --version`
 - **[Docker](https://docs.docker.com/get-docker/)** — check with `docker --version` (Docker Desktop must be running)
 - **An LLM API key** — [Anthropic](https://console.anthropic.com/), [OpenAI](https://platform.openai.com/), or another [supported provider](/reference/environment-variables#llm-provider)
 
@@ -46,7 +46,7 @@ Before you start, make sure you have:
 curl -fsSL https://bun.sh/install | bash
 ```
 
-Restart your terminal after installing. Verify with `bun --version` — you need v1.3.14 or later.
+Restart your terminal after installing. Verify with `bun --version` — you need v1.3.13.
 </Accordion>
 </Accordions>
 
@@ -130,7 +130,7 @@ AWS_REGION=us-east-1
 
 # Local Ollama — runs models on your machine (no API key needed)
 ATLAS_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_BASE_URL=http://localhost:11434/v1
 
 # AI Gateway — route through LiteLLM, Portkey, or similar proxy
 ATLAS_PROVIDER=gateway
@@ -245,8 +245,8 @@ See [CLI Reference](/reference/cli) for all commands and flags.
 - **[Understand the semantic layer](/getting-started/concepts)** — learn what entities, dimensions, measures, and metrics mean
 - **[Connect your own database](/getting-started/connect-your-data)** — replace the demo with your PostgreSQL, MySQL, or other datasource
 - **[Connect a REST API](/plugins/datasources/openapi-generic)** — point Atlas at Stripe, GitHub, Notion, Twenty, or any OpenAPI 3.x service
-- **[Deploy to production](/deployment/deploy)** — Railway, Vercel, or Docker
-- **[Set up authentication](/deployment/authentication)** — API key, managed auth, or bring-your-own-token
+- **[Deploy to production](/self-hosted/deployment/deploy)** — Railway, Vercel, or Docker
+- **[Set up authentication](/self-hosted/deployment/authentication)** — API key, managed auth, or bring-your-own-token
 - **[Choose an integration](/guides/choosing-an-integration)** — not sure whether to use the widget, SDK, or API? Compare all options
 - **[Embed in your app](/guides/embedding-widget)** — add Atlas as a chat widget in any web app
 - **[Integrate with Slack](/guides/slack)** — query data from Slack channels

@@ -1,4 +1,6 @@
 import { test, expect } from "bun:test";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { buildSectionSource, type CollectionLike } from "@/lib/compose";
 import { classifyByPath } from "@/lib/audience-taxonomy";
 
@@ -128,6 +130,95 @@ test("a shared page mounts into BOTH sections from the ONE real source file", ()
   expect(selfHostedShared?.absolutePath).toBe(
     "content/shared/single-source-example.mdx",
   );
+});
+
+// ── real-content partition (slice #4264: self-hosted-only pages MOVED) ────────
+//
+// The synthetic assertions above prove the COMPOSITION never cross-leaks. This
+// block proves the actual MIGRATION landed: every self-hosted-only page this
+// slice moved now lives physically under content/self-hosted/ and no longer
+// under content/docs/ (the saas-only tree). It scans the real content directory
+// on disk — the taxonomy is directory-based, so a page's physical location IS
+// its classification, and re-adding e.g. deploy.mdx to content/docs/ would fail
+// here immediately. Self-contained: read-only filesystem walk, no bundler.
+
+const CONTENT_DIR = join(import.meta.dir, "../../../content");
+
+function walk(dir: string): string[] {
+  const out: string[] = [];
+  // `withFileTypes` avoids a per-entry statSync and does NOT follow directory
+  // symlinks, so a stray symlink under content/ can't drive unbounded recursion.
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...walk(full));
+    else out.push(full);
+  }
+  return out;
+}
+
+const contentFiles = walk(CONTENT_DIR);
+const selfHostedFiles = contentFiles.filter((p) =>
+  p.includes(`${join(CONTENT_DIR, "self-hosted")}/`),
+);
+const saasTreeFiles = contentFiles.filter((p) =>
+  p.includes(`${join(CONTENT_DIR, "docs")}/`),
+);
+
+// Old-root slug → the self-hosted-only pages relocated by this slice (#4264).
+// Intentionally FROZEN to slice #4264's scope — this is a migration-landing
+// assertion, not a live inventory of the self-hosted tree. Later slices that
+// move more pages add their own block; they do not extend this list.
+const MOVED_SELF_HOSTED_SLUGS = [
+  "getting-started/quick-start",
+  "deployment/deploy",
+  "deployment/authentication",
+  "deployment/cache-configuration",
+  "frameworks/overview",
+  "frameworks/react-vite",
+  "frameworks/nuxt",
+  "frameworks/sveltekit",
+  "frameworks/tanstack-start",
+  "guides/self-hosted-models",
+  "contributing/ci",
+  "contributing/eval-harness",
+];
+
+test("every moved self-hosted-only page lives under content/self-hosted/ and NOT content/docs/", () => {
+  for (const slug of MOVED_SELF_HOSTED_SLUGS) {
+    expect(selfHostedFiles).toContain(
+      join(CONTENT_DIR, "self-hosted", `${slug}.mdx`),
+    );
+    expect(saasTreeFiles).not.toContain(
+      join(CONTENT_DIR, "docs", `${slug}.mdx`),
+    );
+  }
+});
+
+test("no known saas-only page leaked into content/self-hosted/", () => {
+  // A representative set of pages that MUST stay in the SaaS (root) tree; if any
+  // showed up under content/self-hosted/ the migration grabbed the wrong page.
+  const SAAS_ONLY_TOPICS = [
+    "hosted",
+    "billing-and-plans",
+    "enterprise-sso",
+    "scim",
+    "white-labeling",
+    "pii-masking",
+    "model-routing",
+  ];
+  for (const f of selfHostedFiles) {
+    for (const topic of SAAS_ONLY_TOPICS) {
+      expect(f.endsWith(`/${topic}.mdx`)).toBe(false);
+    }
+  }
+});
+
+test("every physical content/self-hosted/ page classifies as self-hosted-only", () => {
+  const mdx = selfHostedFiles.filter((p) => p.endsWith(".mdx"));
+  expect(mdx.length).toBeGreaterThan(0);
+  for (const f of mdx) {
+    expect(classifyByPath(f)).toBe("self-hosted-only");
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -9,3 +9,5 @@ export * from "./types";
 export * from "./shared";
 export * from "./nsjail";
 export * from "./detect";
+export * from "./sidecar-transport";
+export * from "./selection";

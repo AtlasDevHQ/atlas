@@ -11,6 +11,11 @@
 import type { SidecarPythonRequest, SidecarPythonStreamEvent } from "@atlas/api/lib/sidecar-types";
 import type { PythonChart, PythonProgressEvent, PythonResult, RechartsChart } from "./python";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  isSidecarConnectionError,
+  isSidecarTimeoutError,
+  sidecarRequestHeaders,
+} from "./backends/sidecar-transport";
 
 const log = createLogger("python-sidecar");
 
@@ -30,8 +35,6 @@ export async function executePythonViaSidecar(
   code: string,
   data?: { columns: string[]; rows: unknown[][] },
 ): Promise<PythonResult> {
-  const authToken = process.env.SIDECAR_AUTH_TOKEN;
-
   let baseUrl: URL;
   try {
     baseUrl = new URL(sidecarUrl);
@@ -58,28 +61,21 @@ export async function executePythonViaSidecar(
   try {
     response = await fetch(execUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-      },
+      headers: sidecarRequestHeaders(),
       body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(timeout + HTTP_OVERHEAD_MS),
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
 
-    if (
-      detail.includes("ECONNREFUSED") ||
-      detail.includes("fetch failed") ||
-      detail.includes("Failed to connect")
-    ) {
+    if (isSidecarConnectionError(detail)) {
       log.error({ err: detail, url: execUrl }, "Sidecar connection failed for Python execution");
       return pythonError(
         `Python sidecar unreachable at ${baseUrl.origin}: ${detail}. Check that the sandbox-sidecar service is running.`,
       );
     }
 
-    if (detail.includes("TimeoutError") || detail.includes("timed out") || detail.includes("aborted")) {
+    if (isSidecarTimeoutError(detail)) {
       log.warn({ timeout }, "Python sidecar request timed out");
       return pythonError(`Python execution timed out after ${timeout}ms`);
     }
@@ -164,8 +160,6 @@ export async function executePythonViaSidecarStream(
   data: { columns: string[]; rows: unknown[][] } | undefined,
   onProgress: (event: PythonProgressEvent) => void,
 ): Promise<PythonResult> {
-  const authToken = process.env.SIDECAR_AUTH_TOKEN;
-
   let baseUrl: URL;
   try {
     baseUrl = new URL(sidecarUrl);
@@ -189,21 +183,14 @@ export async function executePythonViaSidecarStream(
   try {
     response = await fetch(execUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-      },
+      headers: sidecarRequestHeaders(),
       body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(timeout + HTTP_OVERHEAD_MS),
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    const isConnectionError =
-      detail.includes("ECONNREFUSED") ||
-      detail.includes("fetch failed") ||
-      detail.includes("Failed to connect");
 
-    if (isConnectionError) {
+    if (isSidecarConnectionError(detail)) {
       log.warn({ err: detail }, "Streaming endpoint unreachable, falling back to non-streaming");
       return executePythonViaSidecar(sidecarUrl, code, data);
     }

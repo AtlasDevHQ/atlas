@@ -12,7 +12,8 @@
 
 import type { PythonBackend, PythonResult } from "./python";
 import { PYTHON_SECURITY_AND_SETUP, PYTHON_EXEC_AND_COLLECT } from "./python-wrapper";
-import { readLimited, MAX_OUTPUT, parsePositiveInt } from "./backends/shared";
+import { readLimited, MAX_OUTPUT } from "./backends/shared";
+import { buildPythonNsjailArgs, BASE_JAIL_ENV } from "./backends/nsjail";
 import { randomUUID } from "crypto";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
@@ -20,14 +21,9 @@ import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("python-nsjail");
 
-/** Default Python execution timeout in seconds. */
-const DEFAULT_TIME_LIMIT = 30;
-
-/** Default memory limit in MB. */
-const DEFAULT_MEMORY_LIMIT = 512;
-
-/** Default max processes. */
-const DEFAULT_NPROC = 16;
+// Re-export the nsjail arg builder from its canonical home (backends/nsjail.ts,
+// co-located with the explore twin) for callers/tests importing it here.
+export { buildPythonNsjailArgs };
 
 /**
  * Non-streaming Python wrapper for nsjail. Composes shared fragments
@@ -65,82 +61,16 @@ if _atlas_data:
 ${PYTHON_EXEC_AND_COLLECT}
 `;
 
-/** Build nsjail args for Python execution. */
-export function buildPythonNsjailArgs(
-  nsjailPath: string,
-  tmpDir: string,
-  codeFile: string,
-  wrapperFile: string,
-  chartDir: string,
-  _resultMarker: string,
-): string[] {
-  const timeLimit = parsePositiveInt("ATLAS_NSJAIL_TIME_LIMIT", DEFAULT_TIME_LIMIT, "time limit", log);
-  const memoryLimit = parsePositiveInt("ATLAS_NSJAIL_MEMORY_LIMIT", DEFAULT_MEMORY_LIMIT, "memory limit", log);
-  const nproc = DEFAULT_NPROC;
-
-  return [
-    nsjailPath,
-    "--mode", "o",
-
-    // Read-only bind mounts: system libs + Python runtime
-    "-R", "/bin",
-    "-R", "/usr/bin",
-    "-R", "/usr/local/bin",
-    "-R", "/lib",
-    "-R", "/lib64",
-    "-R", "/usr/lib",
-    "-R", "/usr/local/lib",
-
-    // Minimal /dev
-    "-R", "/dev/null",
-    "-R", "/dev/zero",
-    "-R", "/dev/urandom",
-
-    // /proc for correct namespace operation
-    "--proc_path", "/proc",
-
-    // Writable tmpfs for scratch
-    "-T", "/tmp",
-
-    // Bind-mount code files and chart dir into the jail (read-write for charts)
-    "-R", `${wrapperFile}:/tmp/wrapper.py`,
-    "-R", `${codeFile}:/tmp/user_code.py`,
-    "-B", `${chartDir}:/tmp/charts`,
-
-    // Working directory
-    "--cwd", "/tmp",
-
-    // Time limit
-    "-t", String(timeLimit),
-
-    // Resource limits (higher than explore for data science workloads)
-    "--rlimit_as", String(memoryLimit),
-    "--rlimit_fsize", "50",  // 50 MB for chart output
-    "--rlimit_nproc", String(nproc),
-    "--rlimit_nofile", "128",
-
-    // Run as nobody
-    "-u", "65534",
-    "-g", "65534",
-
-    // Pass stdin through
-    "--pass_fd", "0",
-
-    // Suppress nsjail info logs
-    "--quiet",
-
-    // Command: python3 wrapper.py user_code.py
-    "--",
-    "/usr/bin/python3", "/tmp/wrapper.py", "/tmp/user_code.py",
-  ];
-}
-
-/** Minimal env for the Python jail — no secrets. */
+/**
+ * Minimal env for the Python jail — no secrets. Spreads the shared
+ * {@link BASE_JAIL_ENV} (HOME/LANG), widens PATH to reach the Python runtime
+ * under /usr/local/bin, and adds the matplotlib backend + chart dir + result
+ * marker the wrapper reads.
+ */
 function buildJailEnv(resultMarker: string): Record<string, string> {
   return {
+    ...BASE_JAIL_ENV,
     PATH: "/bin:/usr/bin:/usr/local/bin",
-    HOME: "/tmp",
-    LANG: "C.UTF-8",
     MPLBACKEND: "Agg",
     ATLAS_CHART_DIR: "/tmp/charts",
     ATLAS_RESULT_MARKER: resultMarker,

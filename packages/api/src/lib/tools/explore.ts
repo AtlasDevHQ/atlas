@@ -31,6 +31,15 @@ import { getSetting } from "@atlas/api/lib/settings";
 import { getWorkspaceSandboxOverride } from "@atlas/api/lib/sandbox/workspace-override";
 import { useVercelSandbox, useSidecar } from "./backends/detect";
 import { capOutput } from "./backends/shared";
+import {
+  planSandboxSelection,
+  runSandboxPlan,
+  firstAvailableBackend,
+  formatSandboxPriorityFailure,
+  assertNever,
+  type SandboxSelectionEnv,
+  type BackendInitFailure,
+} from "./backends/selection";
 import { EXPLORE_TOOL_DESCRIPTION } from "./descriptions";
 
 const log = createLogger("explore");
@@ -148,47 +157,46 @@ function isBackendAvailable(name: SandboxBackendName): boolean {
 }
 
 /**
+ * Snapshot the env + config inputs that drive backend selection into the
+ * immutable shape the shared pure planner ({@link planSandboxSelection})
+ * consumes. Captures explore's runtime failure flag (`_nsjailFailed`) so the
+ * degraded chain matches health reporting. The Python tool builds the same
+ * snapshot shape, which is what makes the two tools resolve the same backend.
+ */
+export function snapshotExploreSandboxEnv(): SandboxSelectionEnv {
+  return {
+    atlasSandbox: process.env.ATLAS_SANDBOX,
+    vercelAvailable: useVercelSandbox(),
+    sidecarAvailable: useSidecar(),
+    // useNsjail() reports the explicit pin OR a detected binary; the planner
+    // only consults this field on the auto-detect branch (ATLAS_SANDBOX !==
+    // "nsjail"), where it is exactly binary detection.
+    nsjailAvailable: useNsjail(),
+    nsjailFailed: _nsjailFailed,
+    configPriority: getConfig()?.sandbox?.priority,
+  };
+}
+
+/**
  * Returns which explore backend is active (for health endpoint).
  *
  * Plugin detection is lazy — _activeSandboxPluginId is only set after the
  * first explore command triggers getExploreBackend(). Before that, this
- * function falls through to the built-in detection chain.
+ * function falls through to the shared selection policy.
  *
  * When `sandbox.priority` is configured, the first available backend in the
- * priority list is returned instead of the hardcoded chain.
+ * priority list is returned instead of the default chain.
  */
 export function getExploreBackendType(): ExploreBackendType {
   if (_activeSandboxPluginId) return "plugin";
-
-  // Config-driven priority
-  const configPriority = getConfig()?.sandbox?.priority;
-  if (configPriority && configPriority.length > 0) {
-    for (const name of configPriority) {
-      if (isBackendAvailable(name)) return name;
-    }
-    return "just-bash";
-  }
-
-  // Default chain
-  if (useVercelSandbox()) return "vercel-sandbox";
-  // Explicit nsjail (ATLAS_SANDBOX=nsjail) — hard-fail if unavailable
-  if (process.env.ATLAS_SANDBOX === "nsjail" && !_nsjailFailed) return "nsjail";
-  // Sidecar takes priority over nsjail auto-detection (Railway sets ATLAS_SANDBOX_URL)
-  if (useSidecar() && !_sidecarFailed) return "sidecar";
-  // nsjail auto-detect (binary on PATH)
-  if (!_nsjailFailed && useNsjail()) return "nsjail";
-  return "just-bash";
+  const plan = planSandboxSelection(snapshotExploreSandboxEnv());
+  return firstAvailableBackend(plan, isBackendAvailable) ?? "just-bash";
 }
 
 /**
  * Try to create a specific backend by name. Returns a backend on success,
  * otherwise a sanitized reason suitable for operator-facing config errors.
  */
-interface BackendInitFailure {
-  name: SandboxBackendName;
-  reason: string;
-}
-
 interface BackendInitResult {
   backend: ExploreBackend | null;
   failure?: BackendInitFailure;
@@ -198,29 +206,7 @@ function unavailable(name: SandboxBackendName, reason: string): BackendInitResul
   return { backend: null, failure: { name, reason } };
 }
 
-function formatSandboxPriorityFailure(
-  priority: readonly SandboxBackendName[],
-  failures: readonly BackendInitFailure[],
-  deployMode: "saas" | "self-hosted" | undefined,
-): string {
-  const summary = failures.length > 0
-    ? ` Failed backends: ${failures.map((f) => `${f.name}: ${f.reason}`).join("; ")}.`
-    : "";
-  const guidance: string[] = [];
-  if (priority.includes("vercel-sandbox")) {
-    guidance.push("For Vercel Sandbox off-Vercel, set VERCEL_TEAM_ID, VERCEL_PROJECT_ID, and VERCEL_TOKEN.");
-  }
-  if (priority.includes("sidecar")) {
-    guidance.push("For sidecar, set ATLAS_SANDBOX_URL.");
-  }
-  if (deployMode !== "saas") {
-    guidance.push("Add 'just-bash' to the priority list if you want an unsandboxed fallback.");
-  }
-  guidance.push("Fix the backend configuration.");
-
-  return `All backends in sandbox.priority (${priority.join(", ")}) failed to initialize.${summary} ${guidance.join(" ")}`;
-}
-
+/** Kept for the existing explore-backend test that pins the priority-failure copy. */
 export const _formatSandboxPriorityFailureForTest = formatSandboxPriorityFailure;
 
 async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string, orgId?: string): Promise<BackendInitResult> {
@@ -282,11 +268,19 @@ async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string, 
         const { createSidecarBackend } = await import("./explore-sidecar");
         return { backend: await createSidecarBackend(sidecarUrl, { semanticRoot }) };
       } catch (err) {
-        _sidecarFailed = true;
+        // A transient sidecar init failure (e.g. malformed ATLAS_SANDBOX_URL,
+        // sidecar momentarily down) is a SOFT failure: fall through to the next
+        // backend but do NOT set the process-global `_sidecarFailed` flag
+        // (#3196). That flag is reserved for the deliberate, permanent mark made
+        // by the startup health probe (`markSidecarFailed`). Pinning it here
+        // would strand the deployment on the weaker fallback until restart even
+        // after the sidecar recovers, and make `getExploreBackendType()` report
+        // "just-bash" for a still-configured sidecar. Recovery instead happens
+        // on the next backend-cache resolution (invalidateExploreBackend).
         const detail = errorMessage(err);
         log.warn(
           { error: detail },
-          "sidecar backend failed to initialize — trying next in priority",
+          "sidecar backend failed to initialize — trying next in priority (retried on the next backend-cache resolution)",
         );
         return unavailable(name, detail);
       }
@@ -489,149 +483,87 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
         }
       }
 
-      // --- Config-driven priority ---
-      const configPriority = getConfig()?.sandbox?.priority;
-      if (configPriority && configPriority.length > 0) {
+      // --- Env/config-driven backend chain (the shared #4187 policy) ---
+      //
+      // `planSandboxSelection` produces the ONE priority policy shared with the
+      // Python tool (config `sandbox.priority` / `ATLAS_SANDBOX_PRIORITY` when
+      // set, else the default Vercel > nsjail-explicit > sidecar > nsjail-auto
+      // chain). `runSandboxPlan` walks it, deferring per-backend construction to
+      // `tryCreateBackend`. Both the config-priority and default-chain fall-
+      // through behaviors that used to be hand-rolled here now live in one place
+      // — see explore-default-chain-fallthrough.test.ts for the invariants.
+      const plan = planSandboxSelection(snapshotExploreSandboxEnv());
+      if (plan.source === "config-priority") {
         log.info(
-          { priority: configPriority },
+          { priority: plan.configPriority },
           "Using configured sandbox priority: %s",
-          configPriority.join(" > "),
+          plan.configPriority.join(" > "),
         );
-        const failures: BackendInitFailure[] = [];
-        for (const name of configPriority) {
-          const result = await tryCreateBackend(name, semanticRoot, orgId);
-          if (result.backend) {
-            log.info(
-              { backend: name, source: "config" },
-              "Explore backend selected: %s (config priority)",
-              name,
-            );
-            return result.backend;
-          }
-          if (result.failure) {
-            failures.push(result.failure);
-          }
-          log.debug(
-            { backend: name, reason: result.failure?.reason },
-            "Backend %s unavailable — trying next in priority",
-            name,
-          );
-        }
-        // All config backends failed
-        if (configPriority.includes("just-bash")) {
-          // just-bash was in the list but somehow failed (should not happen) — try once more
-          log.warn(
-            { priority: configPriority },
-            "All higher-priority backends in sandbox.priority unavailable — using just-bash",
-          );
-          return createBashBackend(semanticRoot);
-        }
-        // Operator did NOT include just-bash — respect their intent
-        throw new Error(formatSandboxPriorityFailure(configPriority, failures, getConfig()?.deployMode));
       }
-
-      // --- Default priority chain ---
-
-      // Priority 1: Vercel Sandbox (Firecracker VM)
-      // Init failures fall through to the next backend in the chain, mirroring
-      // `tryCreateBackend` (the config-priority path). Without this local
-      // try/catch the throw escapes to the outer IIFE `.catch` below, which
-      // only invalidates the cache and rethrows — it does NOT degrade to
-      // nsjail/sidecar/just-bash that are sitting right there in the chain.
-      // SaaS is unaffected: it pins `sandbox.priority: ["vercel-sandbox"]` and
-      // takes the config-priority path above, which fails closed by design.
-      if (useVercelSandbox()) {
-        try {
-          const { createSandboxBackend } = await import("./explore-sandbox");
-          return await createSandboxBackend(semanticRoot);
-        } catch (err) {
-          const detail = errorMessage(err);
+      const outcome = await runSandboxPlan<ExploreBackend>(
+        plan,
+        async (step) => {
+          const result = await tryCreateBackend(step.kind, semanticRoot, orgId);
+          return result.backend
+            ? { backend: result.backend }
+            : { failure: result.failure ?? { name: step.kind, reason: "unavailable" } };
+        },
+        (step, reason) =>
           log.warn(
-            { error: detail },
-            "vercel-sandbox backend failed to initialize — falling through to next backend in default priority",
-          );
-        }
-      }
+            { backend: step.kind, reason },
+            "Explore sandbox step threw during construction — treated as soft failure",
+          ),
+      );
 
-      // Priority 2: nsjail explicit (ATLAS_SANDBOX=nsjail) — hard-fail if init fails
-      if (process.env.ATLAS_SANDBOX === "nsjail" && !_nsjailFailed) {
-        try {
-          const { createNsjailBackend } = await import("./explore-nsjail");
-          return await createNsjailBackend(semanticRoot, {
-            onInfrastructureError: invalidateExploreBackend,
-            onNsjailFailed: markNsjailFailed,
-          });
-        } catch (err) {
-          // @atlas-ok-ternary: detail is concatenated into a thrown Error message
-          // — per #1829 non-goal, don't modify throw new Error(...) constructors.
-          const detail = err instanceof Error ? err.message : String(err);
+      switch (outcome.kind) {
+        case "backend":
+          log.info(
+            { backend: outcome.selected, source: plan.source },
+            "Explore backend selected: %s",
+            outcome.selected,
+          );
+          return outcome.backend;
+
+        case "hard-fail":
+          // Explicit nsjail (ATLAS_SANDBOX=nsjail) failed — hard-fail by
+          // contract, never fall through to a weaker backend.
           throw new Error(
             "nsjail was explicitly requested (ATLAS_SANDBOX=nsjail) but failed to initialize: " +
-              detail + ". Fix the nsjail installation or remove ATLAS_SANDBOX to allow fallback.",
-            { cause: err },
+              outcome.reason +
+              ". Fix the nsjail installation or remove ATLAS_SANDBOX to allow fallback.",
           );
-        }
-      }
 
-      // Priority 3: Sidecar service (HTTP-isolated microservice)
-      // When ATLAS_SANDBOX_URL is set, sidecar is the intended backend (Railway).
-      // Skips nsjail auto-detection entirely — no noisy namespace warnings.
-      // Same fall-through fix as the Vercel branch above: an init failure
-      // (e.g. malformed ATLAS_SANDBOX_URL) logs and degrades to the next
-      // backend instead of hard-failing the explore tool. We deliberately do
-      // NOT set the process-global `_sidecarFailed` flag here (#3196 review):
-      // that flag is for a *deliberate, permanent* mark (the startup health
-      // probe via markSidecarFailed). A transient init failure on this path
-      // should be retried on the next backend-cache resolution — the resolved
-      // backend is cached per semantic root, so a down sidecar isn't re-probed
-      // every request, and recovery happens when the cache is invalidated
-      // (invalidateExploreBackend). Pinning the flag here would strand the
-      // deployment on the weaker fallback until process restart even after the
-      // sidecar recovers.
-      if (useSidecar()) {
-        try {
-          const { createSidecarBackend } = await import("./explore-sidecar");
-          return await createSidecarBackend(process.env.ATLAS_SANDBOX_URL!, { semanticRoot });
-        } catch (err) {
-          const detail = errorMessage(err);
-          log.warn(
-            { error: detail },
-            "sidecar backend failed to initialize — falling through to next backend in default priority (retried on the next backend-cache resolution)",
+        case "fail-closed":
+          // Config-priority pin with no `just-bash` fallback (the SaaS deny-all
+          // posture) — respect the operator's intent and fail closed. `fail-closed`
+          // only arises from the config-priority arm, which carries the pin.
+          throw new Error(
+            formatSandboxPriorityFailure(
+              plan.source === "config-priority" ? plan.configPriority : [],
+              outcome.failures,
+              getConfig()?.deployMode,
+            ),
           );
-        }
-      }
 
-      // Priority 4: nsjail auto-detect (binary on PATH, graceful fallback)
-      if (!_nsjailFailed && useNsjail()) {
-        try {
-          const { createNsjailBackend } = await import("./explore-nsjail");
-          return await createNsjailBackend(semanticRoot, {
-            onInfrastructureError: invalidateExploreBackend,
-            onNsjailFailed: markNsjailFailed,
-          });
-        } catch (err) {
-          const detail = errorMessage(err);
-          _nsjailFailed = true;
-          log.error(
-            { error: detail, fallback: "just-bash" },
-            "nsjail backend failed to initialize, falling back to just-bash",
-          );
+        case "exhausted": {
+          // Default chain bottomed out — degrade to just-bash (no isolation).
+          if (process.env.NODE_ENV === "production") {
+            log.warn(
+              "SECURITY DEGRADATION: Explore tool running without process isolation (just-bash fallback). " +
+                "In production, this means shell commands execute directly on the host with only OverlayFs " +
+                "read-only protection — no namespace, network, or resource isolation. " +
+                "Install nsjail, configure a sidecar (ATLAS_SANDBOX_URL), or deploy on Vercel for sandboxed execution. " +
+                "See: https://github.com/google/nsjail",
+            );
+          } else {
+            log.debug("Explore tool using just-bash backend (acceptable for development)");
+          }
+          return createBashBackend(semanticRoot);
         }
-      }
 
-      // Priority 5: just-bash (no process isolation)
-      if (process.env.NODE_ENV === "production") {
-        log.warn(
-          "SECURITY DEGRADATION: Explore tool running without process isolation (just-bash fallback). " +
-            "In production, this means shell commands execute directly on the host with only OverlayFs " +
-            "read-only protection — no namespace, network, or resource isolation. " +
-            "Install nsjail, configure a sidecar (ATLAS_SANDBOX_URL), or deploy on Vercel for sandboxed execution. " +
-            "See: https://github.com/google/nsjail",
-        );
-      } else {
-        log.debug("Explore tool using just-bash backend (acceptable for development)");
+        default:
+          return assertNever(outcome);
       }
-      return createBashBackend(semanticRoot);
     })().catch((err) => {
       // Identity-guarded: if invalidation already evicted this promise and a
       // newer backend was cached under the same key, deleting blindly would

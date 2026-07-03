@@ -34,17 +34,20 @@
  *     over a 48 h window is the "scheduler stopped" signal (mirroring the
  *     F-27 audit-purge invariant).
  *
- * Lifecycle mirrors `ee/src/audit/purge-scheduler.ts`: setInterval-based
- * with `unref()` so it doesn't pin the process, an initial tick on start,
- * and a single-running guard so double-start is a no-op.
+ * Lifecycle: scheduled by `registerPeriodicFiber` in `effect/layers.ts`
+ * (#4195) — a `forkScoped` fiber that runs an initial cycle on boot then
+ * repeats on the configured cadence, gated on an internal DB and interrupted
+ * cleanly on layer-scope shutdown. The scan → forEach → tally → audit cycle
+ * body is the shared `runPeriodicDbCycle` skeleton.
  *
- * @see ee/src/audit/purge-scheduler.ts
+ * @see ./periodic-db-job.ts — the shared DB-cycle skeleton this cycle uses.
+ * @see ../effect/layers.ts — `registerPeriodicFiber`, the fiber scheduler.
  */
 
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { withEffectSpan } from "@atlas/api/lib/tracing";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { runPeriodicDbCycle } from "@atlas/api/lib/scheduler/periodic-db-job";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { buildStaleCatalogQuery } from "@atlas/api/lib/scheduler/byot-catalog-query";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -456,128 +459,74 @@ interface CycleOptions {
 /**
  * Run a single refresh cycle. Errors are caught and surfaced as `status:
  * "failure"` (stale-row query failed) or per-row `failed` counts — the
- * scheduler must not throw out of the tick or the `setInterval` loop dies.
+ * scheduler must not throw out of the tick or the repeat loop dies. The
+ * scan → guard → forEach → tally → audit choreography is the shared
+ * `runPeriodicDbCycle` skeleton (#4195); this function supplies only the
+ * BYOT-specific scan query, per-row apply, and per-outcome tally + backoff
+ * bookkeeping. The per-tick span is applied by `registerPeriodicFiber` around
+ * the fiber, not here (#2945 attribution is preserved via that fiber's
+ * `spanResultAttributes`).
  */
 export const runByotCatalogRefreshCycle = (
   opts: CycleOptions = {},
-): Effect.Effect<ByotRefreshCycleResult> =>
-  // Span the whole cycle so a slow/failing upstream provider refresh shows
-  // up in the trace waterfall alongside atlas.scheduler.tick — logs + audit
-  // rows alone gave no latency attribution (#2945).
-  withEffectSpan(
-    "atlas.scheduler.byot_catalog_refresh",
-    {},
-    Effect.gen(function* () {
-    if (!hasInternalDB()) {
-      const result = zeroResult();
-      emitCycleAudit(result);
-      return result;
-    }
+): Effect.Effect<ByotRefreshCycleResult> => {
+  const staleThresholdMs = opts.staleThresholdMs ?? DEFAULT_INTERVAL_MS;
+  const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
+  const dormancyThresholdMs = opts.dormancyThresholdMs ?? getDormancyThresholdMs();
+  const now = opts.nowFn ?? Date.now;
 
-    const staleThresholdMs = opts.staleThresholdMs ?? DEFAULT_INTERVAL_MS;
-    const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
-    const dormancyThresholdMs = opts.dormancyThresholdMs ?? getDormancyThresholdMs();
-    const now = opts.nowFn ?? Date.now;
-
-    const fetchResult = yield* Effect.tryPromise({
-      try: () => findStaleByotCatalogs(staleThresholdMs, batchSize, dormancyThresholdMs),
-      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-    }).pipe(
-      Effect.map((rows) => ({ ok: true as const, rows })),
-      Effect.catchAll((err) => {
-        log.error({ err: errorMessage(err) }, "BYOT catalog refresh: failed to query stale rows");
-        return Effect.succeed({ ok: false as const, error: errorMessage(err) });
-      }),
-    );
-
-    if (!fetchResult.ok) {
-      const failed: ByotRefreshCycleResult = {
-        status: "failure",
-        ...ZERO_COUNTS,
-        error: fetchResult.error,
-      };
-      emitCycleAudit(failed);
-      return failed;
-    }
-
-    const rows = fetchResult.rows;
-    const result: ByotRefreshCycleResult = { status: "success", ...ZERO_COUNTS, inspected: rows.length };
-
-    if (rows.length === 0) {
-      emitCycleAudit(result);
-      return result;
-    }
-
-    log.info({ count: rows.length }, "BYOT catalog refresh: cycle starting");
-
-    // Sequential — one upstream provider call at a time. `Effect.forEach`
-    // with `{ concurrency: 1 }` stays in the Effect chain so a fiber
-    // interrupt cancels cleanly mid-cycle.
-    yield* Effect.forEach(
-      rows,
-      (row) =>
-        Effect.gen(function* () {
-          const outcome = yield* Effect.tryPromise({
-            try: () => refreshOne(row, now()),
-            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-          }).pipe(
-            Effect.catchAll((err) =>
-              Effect.succeed({ kind: "failed" as const, error: errorMessage(err) }),
-            ),
-          );
-
-          const key = backoffKey(row.orgId, row.provider, regionForKey(row));
-          if (outcome.kind === "refreshed") {
-            recordSuccess(key);
-            result.refreshed++;
-            emitPerRowAudit({
-              action: ADMIN_ACTIONS.model_config.catalogRefresh,
-              orgId: row.orgId,
-              status: "success",
-              metadata: {
-                provider: providerOfRow(row),
-                modelCount: outcome.modelCount,
-                source: outcome.source,
-                triggeredBy: "scheduler",
-              },
-            });
-          } else if (outcome.kind === "skipped") {
-            countSkip(result, outcome.reason);
-            emitPerRowAudit({
-              action: ADMIN_ACTIONS.model_config.catalogRefreshSkip,
-              orgId: row.orgId,
-              status: skipStatus(outcome.reason),
-              metadata: { provider: providerOfRow(row), reason: outcome.reason },
-            });
-          } else {
-            recordFailure(key, now());
-            result.failed++;
-            emitPerRowAudit({
-              action: ADMIN_ACTIONS.model_config.catalogRefresh,
-              orgId: row.orgId,
-              status: "failure",
-              metadata: {
-                provider: providerOfRow(row),
-                error: outcome.error,
-                triggeredBy: "scheduler",
-              },
-            });
-          }
-        }),
-      { concurrency: 1 },
-    );
-
-    log.info({ ...result }, "BYOT catalog refresh: cycle complete");
-    emitCycleAudit(result);
-    return result;
-  }),
-    (result) => ({
-      "atlas.byot.status": result.status,
-      "atlas.byot.inspected": result.inspected ?? 0,
-      "atlas.byot.refreshed": result.refreshed,
-      "atlas.byot.failed": result.failed,
-    }),
-  );
+  return runPeriodicDbCycle<StaleRow, RefreshOutcome, ByotRefreshCycleResult>({
+    log,
+    label: "BYOT catalog refresh",
+    emptyResult: zeroResult,
+    failureResult: (error) => ({ status: "failure", ...ZERO_COUNTS, error }),
+    scan: () => findStaleByotCatalogs(staleThresholdMs, batchSize, dormancyThresholdMs),
+    // Sequential per-row upstream provider call; `runPeriodicDbCycle` runs
+    // these at `{ concurrency: 1 }` so a fiber interrupt cancels cleanly.
+    applyRow: (row) => refreshOne(row, now()),
+    defectOutcome: (error) => ({ kind: "failed", error }),
+    tally: (result, row, outcome) => {
+      const key = backoffKey(row.orgId, row.provider, regionForKey(row));
+      if (outcome.kind === "refreshed") {
+        recordSuccess(key);
+        result.refreshed++;
+        emitPerRowAudit({
+          action: ADMIN_ACTIONS.model_config.catalogRefresh,
+          orgId: row.orgId,
+          status: "success",
+          metadata: {
+            provider: providerOfRow(row),
+            modelCount: outcome.modelCount,
+            source: outcome.source,
+            triggeredBy: "scheduler",
+          },
+        });
+      } else if (outcome.kind === "skipped") {
+        countSkip(result, outcome.reason);
+        emitPerRowAudit({
+          action: ADMIN_ACTIONS.model_config.catalogRefreshSkip,
+          orgId: row.orgId,
+          status: skipStatus(outcome.reason),
+          metadata: { provider: providerOfRow(row), reason: outcome.reason },
+        });
+      } else {
+        recordFailure(key, now());
+        result.failed++;
+        emitPerRowAudit({
+          action: ADMIN_ACTIONS.model_config.catalogRefresh,
+          orgId: row.orgId,
+          status: "failure",
+          metadata: {
+            provider: providerOfRow(row),
+            error: outcome.error,
+            triggeredBy: "scheduler",
+          },
+        });
+      }
+    },
+    emitCycleAudit,
+  });
+};
 
 function countSkip(result: ByotRefreshCycleResult, reason: ByotCatalogRefreshSkipReason): void {
   switch (reason) {
@@ -663,82 +612,38 @@ function emitCycleAudit(result: ByotRefreshCycleResult): void {
 }
 
 // ---------------------------------------------------------------------------
-// Lifecycle (setInterval-based, mirrors ee/audit/purge-scheduler.ts)
+// Scheduling — via `registerPeriodicFiber` in `effect/layers.ts` (#4195)
 // ---------------------------------------------------------------------------
 //
-// #3764 — deliberately NOT on `engine.ts`'s `Effect.runFork` + `Schedule`
-// fiber pattern, by the same reasoning as `openapi-install-rediscover.ts` +
-// `openapi-spec-refresh.ts` + `ee/audit/purge-scheduler.ts` (which all share
-// this `setInterval` + `unref()` shape and cross-reference each other):
-//   • The cycle is self-contained and idempotent — it emits an audit row and
-//     mutates catalog staleness; there are no per-tick "running" rows that a
-//     mid-flight interrupt must clean up. `engine.ts` needs the fiber pattern
-//     ONLY because its `Effect.onInterrupt` finalizer must release orphaned
-//     `task_run` rows on shutdown (see engine.ts:306). Nothing here is
-//     interrupt-sensitive, so the fiber pattern would add machinery for a
-//     guarantee we don't need.
-//   • `_timer.unref()` keeps the timer from pinning the process — the desired
-//     posture for a best-effort background refresher.
-//   • `{ concurrency: 1 }` inside the cycle (see `runByotCatalogRefreshCycle`)
-//     already prevents a slow cycle from overlapping the next tick.
-// `Effect.runPromise` here boots a fresh default-runtime fiber per cycle, which
-// is fine: each cycle is a fully self-contained program, not a re-entry into a
-// surrounding Effect.
+// The BYOT refresh no longer hand-rolls a `setInterval` lifecycle. Its cycle
+// body is the shared `runPeriodicDbCycle` skeleton (above); the fiber that
+// repeats it — interval, per-tick span, `withFiberDeathLog`, and the
+// `hasInternalDB()` enablement gate — is owned by `registerPeriodicFiber`
+// (arch-win #100 / #4130), forked `forkScoped` for the pod lifetime and
+// interrupted cleanly on layer-scope shutdown. `Schedule.spaced` there spaces
+// ticks by completion, so a slow cycle can never overlap the next — the old
+// `setInterval` model had no cross-tick overlap guard beyond the daily cadence
+// and the in-cycle `{ concurrency: 1 }` (unlike the two OpenAPI siblings, byot
+// never carried an `_inFlight` flag). See `scheduler/periodic-db-job.ts` for
+// how the DB-cycle skeleton and the fiber scheduler compose.
 
-let _timer: ReturnType<typeof setInterval> | null = null;
-let _running = false;
-
-function runCycleWithDefectGuard(): void {
-  Effect.runPromise(runByotCatalogRefreshCycle()).catch((err: unknown) => {
-    log.error(
-      { err: err instanceof Error ? err.message : String(err) },
-      "BYOT catalog refresh cycle defected past catchAll — cycle row may not have been emitted",
-    );
-  });
+/**
+ * The periodic tick interval (ms) — a daily cadence, mirroring the staleness
+ * TTL. `registerPeriodicFiber` reads this once at registration.
+ */
+export function getByotCatalogRefreshIntervalMs(): number {
+  return DEFAULT_INTERVAL_MS;
 }
 
 /**
- * Start the BYOT catalog refresh scheduler. Runs an initial cycle
- * immediately, then repeats at the configured interval. No-op if already
- * running or if the internal DB is unavailable.
+ * Whether the BYOT catalog refresh is active on this pod. Post-#4195 the
+ * refresh runs as a `forkScoped` periodic fiber (via `registerPeriodicFiber`)
+ * for the whole pod lifetime whenever an internal DB is present — there is no
+ * separate start/stop flag, so "running" reflects the registration gate
+ * (`hasInternalDB()`), which the admin scheduler surface reports.
  */
-export function startByotCatalogRefreshScheduler(intervalMs?: number): void {
-  if (_running) {
-    log.debug("BYOT catalog refresh scheduler already running — skipping start");
-    return;
-  }
-  if (!hasInternalDB()) {
-    log.debug("No internal database — BYOT catalog refresh scheduler not started");
-    return;
-  }
-
-  const interval = intervalMs ?? DEFAULT_INTERVAL_MS;
-  _running = true;
-  log.info({ intervalMs: interval }, "Starting BYOT catalog refresh scheduler");
-
-  runCycleWithDefectGuard();
-  _timer = setInterval(() => {
-    runCycleWithDefectGuard();
-  }, interval);
-  _timer.unref();
-}
-
-export function stopByotCatalogRefreshScheduler(): void {
-  if (_timer) {
-    clearInterval(_timer);
-    _timer = null;
-  }
-  _running = false;
-  log.info("BYOT catalog refresh scheduler stopped");
-}
-
 export function isByotCatalogRefreshSchedulerRunning(): boolean {
-  return _running;
-}
-
-/** Test-only: reset scheduler state. */
-export function _resetByotCatalogRefreshScheduler(): void {
-  stopByotCatalogRefreshScheduler();
+  return hasInternalDB();
 }
 
 /**

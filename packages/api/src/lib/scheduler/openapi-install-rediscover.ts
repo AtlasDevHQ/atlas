@@ -45,11 +45,11 @@
  * negatively-caching a half-applied refresh.
  *
  * ## Lifecycle
- * `setInterval`-based with `unref()` (doesn't pin the process), an initial cycle on
- * start, a single-running guard (double-start is a no-op), and an in-flight guard so
- * a slow cycle never overlaps the next tick — mirrors `byot-catalog-refresh.ts` +
- * `openapi-spec-refresh.ts`. No-op without an internal DB (it reads
- * `workspace_plugins`).
+ * Scheduled by `registerPeriodicFiber` in `effect/layers.ts` (#4195): a
+ * `forkScoped` fiber that runs an initial cycle on boot then repeats on the
+ * configured cadence, gated on an internal DB (it reads `workspace_plugins`) and
+ * interrupted cleanly on layer-scope shutdown. `Schedule.spaced` spaces ticks by
+ * completion, so a slow cycle never overlaps the next.
  *
  * Like every other per-process scheduler here (BYOT, Tier-1, semantic-expert), this
  * takes no distributed lock — it relies on the deploy invariant that each regional
@@ -59,15 +59,16 @@
  * duplicate egress + audit rows, not corruption. A cross-scheduler distributed
  * singleton is the right home for replica gating if that invariant is ever lifted.
  *
- * @see ./byot-catalog-refresh.ts — the periodic-fiber pattern this follows.
+ * @see ./periodic-db-job.ts — the shared DB-cycle skeleton this job's cycle uses.
+ * @see ../effect/layers.ts — `registerPeriodicFiber`, the fiber scheduler.
  * @see ./openapi-spec-refresh.ts — the Tier-1 sibling this is deliberately NOT.
  * @see ../openapi/rediscover.ts — the shared re-probe → snapshot → diff core.
  */
 
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { withEffectSpan } from "@atlas/api/lib/tracing";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { internalQuery } from "@atlas/api/lib/db/internal";
+import { runPeriodicDbCycle } from "@atlas/api/lib/scheduler/periodic-db-job";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { OPENAPI_GENERIC_CATALOG_ID, type OpenApiSnapshot } from "@atlas/api/lib/openapi/catalog";
@@ -507,239 +508,110 @@ function emitCycleAudit(result: RediscoverCycleResult): void {
 /**
  * Run a single re-discovery cycle. Never throws — a failure in the candidate query
  * surfaces as `status: "failure"` + an emitted cycle row; per-install failures are
- * isolated and counted. Returns the structured {@link RediscoverCycleResult}.
+ * isolated and counted. Returns the structured {@link RediscoverCycleResult}. The
+ * scan → guard → forEach → tally → audit choreography is the shared
+ * `runPeriodicDbCycle` skeleton (#4195); this function supplies only the
+ * rediscover-specific candidate query, per-install apply, and per-outcome tally +
+ * drift bookkeeping. The per-tick span is applied by `registerPeriodicFiber` around
+ * the fiber, not here — its `spanResultAttributes` preserve the trace attribution.
  */
 export const runOpenApiInstallRediscoverCycle = (
   opts: RediscoverCycleOptions = {},
-): Effect.Effect<RediscoverCycleResult> =>
-  // Span the whole cycle so a slow/failing upstream re-probe shows up in the trace
-  // waterfall alongside the other scheduler ticks.
-  withEffectSpan(
-    "atlas.scheduler.openapi_install_rediscover",
-    {},
-    Effect.gen(function* () {
-      if (!hasInternalDB()) {
-        const result: RediscoverCycleResult = { status: "success", ...ZERO_COUNTS };
-        emitCycleAudit(result);
-        return result;
+): Effect.Effect<RediscoverCycleResult> => {
+  const nowFn = opts.now ?? Date.now;
+  const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
+  const query = opts.query ?? defaultQuery;
+  const deps: CycleDeps = {
+    rediscover: opts.rediscover ?? defaultRediscover,
+    persistSuccess: opts.persistSuccess ?? defaultPersistSuccess,
+    stampChecked: opts.stampChecked ?? defaultStampChecked,
+  };
+
+  // Stamp one ISO timestamp for the whole cycle so every watermark written this
+  // tick is consistent (and the due-calc uses the same instant). Resolved up
+  // front — the scan doesn't consume it, so hoisting it above the skeleton is
+  // behaviorally identical to the pre-#4195 "after the empty check" placement.
+  const nowMs = nowFn();
+  const nowIso = new Date(nowMs).toISOString();
+
+  return runPeriodicDbCycle<DueCandidateRow, InstallOutcome, RediscoverCycleResult>({
+    log,
+    label: "OpenAPI rediscover",
+    emptyResult: () => ({ status: "success", ...ZERO_COUNTS }),
+    failureResult: (error) => ({ status: "failure", ...ZERO_COUNTS, error }),
+    scan: () => query(batchSize),
+    // Sequential per-install probe; `runPeriodicDbCycle` runs these at
+    // `{ concurrency: 1 }`. Each probe is `AbortSignal.timeout`-bounded, so a
+    // slow upstream delays (but does not stall) the rest.
+    applyRow: (row) => runInstall(row, nowMs, nowIso, deps),
+    // runInstall is designed never to throw; this is belt-and-braces so a
+    // surprise defect counts as a failure rather than aborting the loop. Phase
+    // it "rediscover": runInstall stamps internally on its own fault paths, so a
+    // defect that escapes it left nothing persisted.
+    defectOutcome: (error) => ({ kind: "failed", phase: "rediscover", error }),
+    tally: (result, row, outcome) => {
+      switch (outcome.kind) {
+        case "not_due":
+          result.skippedNotDue++;
+          return;
+        case "refreshed":
+          result.due++;
+          result.refreshed++;
+          emitInstallAudit(row, "success", {
+            operationCount: outcome.operationCount,
+            ...driftMetadata(outcome.drift),
+          });
+          // #2979 — a SCHEDULED breaking re-probe also raises the attention
+          // signal: count it + write the dedicated audit row. Additive/clean
+          // refreshes carry `breaking: null` and stay quiet.
+          if (outcome.breaking) {
+            result.breaking++;
+            emitBreakingDriftAudit(row, outcome.breaking);
+          }
+          return;
+        case "probe_failed":
+          result.due++;
+          result.failed++;
+          emitInstallAudit(row, "failure", { reason: "probe_failed", probeReason: outcome.reason });
+          return;
+        case "config_skip":
+          result.due++;
+          result.skippedConfig++;
+          emitInstallAudit(row, "failure", {
+            reason: outcome.reason,
+            ...(outcome.detail !== undefined ? { authKind: outcome.detail } : {}),
+          });
+          return;
+        case "failed":
+          result.due++;
+          result.failed++;
+          // Surface the retry semantics in the audit `reason`: `persist_failed`
+          // retries next tick; `rediscover_fault` is deferred a full interval.
+          emitInstallAudit(row, "failure", {
+            reason: outcome.phase === "persist" ? "persist_failed" : "rediscover_fault",
+            error: outcome.error,
+          });
+          return;
       }
-
-      const nowFn = opts.now ?? Date.now;
-      const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
-      const query = opts.query ?? defaultQuery;
-      const deps: CycleDeps = {
-        rediscover: opts.rediscover ?? defaultRediscover,
-        persistSuccess: opts.persistSuccess ?? defaultPersistSuccess,
-        stampChecked: opts.stampChecked ?? defaultStampChecked,
-      };
-
-      const fetchResult = yield* Effect.tryPromise({
-        try: () => query(batchSize),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.map((rows) => ({ ok: true as const, rows })),
-        Effect.catchAll((err) => {
-          log.error(
-            { err: errorMessage(err) },
-            "OpenAPI rediscover: failed to query due candidates",
-          );
-          return Effect.succeed({ ok: false as const, error: errorMessage(err) });
-        }),
-      );
-
-      if (!fetchResult.ok) {
-        const failed: RediscoverCycleResult = {
-          status: "failure",
-          ...ZERO_COUNTS,
-          error: fetchResult.error,
-        };
-        emitCycleAudit(failed);
-        return failed;
-      }
-
-      const rows = fetchResult.rows;
-      const result: RediscoverCycleResult = { status: "success", ...ZERO_COUNTS, inspected: rows.length };
-
-      if (rows.length === 0) {
-        emitCycleAudit(result);
-        return result;
-      }
-
-      // Stamp one ISO timestamp for the whole cycle so every watermark written this
-      // tick is consistent (and the due-calc uses the same instant).
-      const nowMs = nowFn();
-      const nowIso = new Date(nowMs).toISOString();
-
-      log.info({ count: rows.length }, "OpenAPI rediscover: cycle starting");
-
-      // Sequential — one upstream probe at a time (concurrency: 1), so a noisy
-      // install can't fan out egress and a fiber interrupt cancels cleanly
-      // mid-cycle. Each probe is `AbortSignal.timeout`-bounded, so a slow upstream
-      // delays (but does not stall) the rest; per-install failures are contained.
-      yield* Effect.forEach(
-        rows,
-        (row) =>
-          Effect.gen(function* () {
-            const outcome = yield* Effect.tryPromise({
-              try: () => runInstall(row, nowMs, nowIso, deps),
-              catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-            }).pipe(
-              // runInstall is designed never to throw; this is belt-and-braces so a
-              // surprise defect counts as a failure rather than aborting the loop.
-              // Phase it "rediscover": runInstall stamps internally on its own fault
-              // paths, so a defect that escapes it left nothing persisted.
-              Effect.catchAll((err) =>
-                Effect.succeed({ kind: "failed" as const, phase: "rediscover" as const, error: errorMessage(err) }),
-              ),
-            );
-
-            switch (outcome.kind) {
-              case "not_due":
-                result.skippedNotDue++;
-                return;
-              case "refreshed":
-                result.due++;
-                result.refreshed++;
-                emitInstallAudit(row, "success", {
-                  operationCount: outcome.operationCount,
-                  ...driftMetadata(outcome.drift),
-                });
-                // #2979 — a SCHEDULED breaking re-probe also raises the attention
-                // signal: count it + write the dedicated audit row. Additive/clean
-                // refreshes carry `breaking: null` and stay quiet.
-                if (outcome.breaking) {
-                  result.breaking++;
-                  emitBreakingDriftAudit(row, outcome.breaking);
-                }
-                return;
-              case "probe_failed":
-                result.due++;
-                result.failed++;
-                emitInstallAudit(row, "failure", { reason: "probe_failed", probeReason: outcome.reason });
-                return;
-              case "config_skip":
-                result.due++;
-                result.skippedConfig++;
-                emitInstallAudit(row, "failure", {
-                  reason: outcome.reason,
-                  ...(outcome.detail !== undefined ? { authKind: outcome.detail } : {}),
-                });
-                return;
-              case "failed":
-                result.due++;
-                result.failed++;
-                // Surface the retry semantics in the audit `reason`: `persist_failed`
-                // retries next tick; `rediscover_fault` is deferred a full interval.
-                emitInstallAudit(row, "failure", {
-                  reason: outcome.phase === "persist" ? "persist_failed" : "rediscover_fault",
-                  error: outcome.error,
-                });
-                return;
-            }
-          }),
-        { concurrency: 1 },
-      );
-
-      log.info({ ...result }, "OpenAPI rediscover: cycle complete");
-      emitCycleAudit(result);
-      return result;
-    }),
-    (result) => ({
-      "atlas.openapi_rediscover.status": result.status,
-      "atlas.openapi_rediscover.inspected": result.inspected,
-      "atlas.openapi_rediscover.due": result.due,
-      "atlas.openapi_rediscover.refreshed": result.refreshed,
-      "atlas.openapi_rediscover.breaking": result.breaking,
-      "atlas.openapi_rediscover.failed": result.failed,
-    }),
-  );
+    },
+    emitCycleAudit,
+  });
+};
 
 // ---------------------------------------------------------------------------
-// Lifecycle (setInterval-based, mirrors byot-catalog-refresh.ts + openapi-spec-refresh.ts)
+// Scheduling — via `registerPeriodicFiber` in `effect/layers.ts` (#4195)
 // ---------------------------------------------------------------------------
 //
-// #3764 — deliberately NOT on `engine.ts`'s `Effect.runFork` + `Schedule`
-// fiber pattern, by the same reasoning as `byot-catalog-refresh.ts` +
-// `openapi-spec-refresh.ts` + `ee/audit/purge-scheduler.ts` (all sharing this
-// `setInterval` + `unref()` shape): the cycle is self-contained and idempotent
-// (re-probes install status), with no per-tick rows a mid-flight interrupt
-// must release — so it doesn't need `engine.ts`'s `Effect.onInterrupt`
-// task_run cleanup (engine.ts:306). `_inFlight` already prevents overlap and
-// `unref()` keeps the timer from pinning the process; `Effect.runPromise` per
-// cycle is a self-contained program, not a re-entry into a surrounding Effect.
-
-let _timer: ReturnType<typeof setInterval> | null = null;
-let _running = false;
-/** A still-running cycle, so a slow tick (network I/O) never overlaps the next one. */
-let _inFlight = false;
-
-function runCycleWithDefectGuard(): void {
-  if (_inFlight) {
-    log.debug("OpenAPI rediscover cycle still in flight — skipping this tick");
-    return;
-  }
-  _inFlight = true;
-  Effect.runPromise(runOpenApiInstallRediscoverCycle())
-    .catch((err: unknown) => {
-      // The cycle catches its own errors; this only fires on an unexpected defect so
-      // the loop survives and the next tick still runs.
-      log.error(
-        { err: err instanceof Error ? err.message : String(err) },
-        "OpenAPI rediscover cycle defected past its internal catch",
-      );
-    })
-    .finally(() => {
-      _inFlight = false;
-    });
-}
-
-/**
- * Start the Tier-2 OpenAPI re-discovery scheduler. Runs an initial cycle
- * immediately, then repeats at the configured interval. No-op if already running or
- * if the internal DB is unavailable (it reads `workspace_plugins`). A non-positive /
- * non-finite `intervalMs` falls back to the configured default rather than
- * hot-looping `setInterval`.
- */
-export function startOpenApiInstallRediscoverScheduler(intervalMs?: number): void {
-  if (_running) {
-    log.debug("OpenAPI rediscover scheduler already running — skipping start");
-    return;
-  }
-  if (!hasInternalDB()) {
-    log.debug("No internal database — OpenAPI rediscover scheduler not started");
-    return;
-  }
-
-  const interval =
-    intervalMs !== undefined && Number.isFinite(intervalMs) && intervalMs > 0
-      ? intervalMs
-      : getInstallRediscoverIntervalMs();
-  _running = true;
-  log.info({ intervalMs: interval }, "Starting OpenAPI install rediscover scheduler");
-
-  runCycleWithDefectGuard();
-  _timer = setInterval(runCycleWithDefectGuard, interval);
-  _timer.unref();
-}
-
-export function stopOpenApiInstallRediscoverScheduler(): void {
-  if (_timer) {
-    clearInterval(_timer);
-    _timer = null;
-  }
-  _running = false;
-  log.info("OpenAPI install rediscover scheduler stopped");
-}
-
-export function isOpenApiInstallRediscoverSchedulerRunning(): boolean {
-  return _running;
-}
-
-/** Test-only: reset scheduler state. */
-export function _resetOpenApiInstallRediscoverScheduler(): void {
-  stopOpenApiInstallRediscoverScheduler();
-  _inFlight = false;
-}
+// The Tier-2 re-discovery no longer hand-rolls a `setInterval` lifecycle. Its
+// cycle body is the shared `runPeriodicDbCycle` skeleton (above); the fiber
+// that repeats it — interval, per-tick span, `withFiberDeathLog`, and the
+// `hasInternalDB()` enablement gate — is owned by `registerPeriodicFiber`
+// (arch-win #100 / #4130), forked `forkScoped` for the pod lifetime.
+// `Schedule.spaced` there spaces ticks by completion, so a slow cycle can never
+// overlap the next — subsuming the old `_inFlight` guard. See
+// `scheduler/periodic-db-job.ts` for how the two seams compose.
+// The loop cadence is `getInstallRediscoverIntervalMs()` (above), which the
+// `registerPeriodicFiber` registration reads once at boot.
 
 /**
  * Manual-trigger entry point (admin scheduler page / tests). Runs a single cycle and

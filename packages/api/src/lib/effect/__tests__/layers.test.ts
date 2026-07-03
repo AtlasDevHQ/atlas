@@ -440,8 +440,11 @@ describe("makeSchedulerLive", () => {
     },
     {
       // Background-work fibers spanned by #2987. `settings_refresh` is forked
-      // in `SettingsLive`; the other eight in `makeSchedulerLive`. The source
-      // scan reads the whole file, so the defining function doesn't matter.
+      // in `SettingsLive`; the rest in `makeSchedulerLive`. The source scan
+      // reads the whole file, so the defining function doesn't matter. The
+      // final three (#4195) are the BYOT/OpenAPI refresh jobs that folded off
+      // their bespoke `setInterval` lifecycle onto `registerPeriodicFiber`
+      // (two are DB cycles; `openapi_spec_refresh` is the non-DB Tier-1 sibling).
       constName: "SCHEDULER_WORK_SPAN_NAMES",
       record: SCHEDULER_WORK_SPAN_NAMES as Record<string, string>,
       expectedKeys: [
@@ -454,6 +457,9 @@ describe("makeSchedulerLive", () => {
         "stripe_teardown_sweep",
         "unclaimed_grace_reap",
         "overage_report",
+        "byot_catalog_refresh",
+        "openapi_spec_refresh",
+        "openapi_install_rediscover",
       ],
     },
   ] as const;

@@ -21,18 +21,19 @@
  * snapshot/diff/persist path.
  *
  * ## Lifecycle
- * `setInterval`-based with `unref()` (doesn't pin the process), an initial cycle
- * on start, and a single-running guard so double-start is a no-op — mirrors
- * `byot-catalog-refresh.ts`. No internal-DB dependency (the cache is process-
- * local), so it starts unconditionally; a cycle with an empty cache is a cheap
- * no-op.
+ * Scheduled by `registerPeriodicFiber` in `effect/layers.ts` (#4195): a
+ * `forkScoped` fiber that runs an initial cycle on boot then repeats on the
+ * configured cadence, interrupted cleanly on layer-scope shutdown. No internal-DB
+ * dependency (the cache is process-local), so it starts unconditionally; a cycle
+ * with an empty cache is a cheap no-op.
  *
- * @see ./byot-catalog-refresh.ts — the periodic-refresh pattern this follows.
+ * @see ../effect/layers.ts — `registerPeriodicFiber`, the fiber scheduler.
+ * @see ./periodic-db-job.ts — the DB-cycle skeleton the byot/rediscover siblings
+ *   share and that this (non-DB) job deliberately does NOT use.
  * @see ../openapi/shared-spec-cache.ts — the cache + the per-cycle logic.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { withSpan } from "@atlas/api/lib/tracing";
 import {
   refreshSharedSpecsCycle,
   type SharedRefreshCycleResult,
@@ -73,121 +74,42 @@ export function getSharedSpecRefreshIntervalMs(): number {
  * `refreshSharedSpecsCycle` isolates per-catalog failures (logged + counted) so a
  * down upstream can't stall the others or kill the scheduler loop.
  *
- * Span + heartbeat (#3183 L-1): the cycle was the only periodic refresh fiber
- * without a per-tick span — its siblings `byot-catalog-refresh.ts` and
- * `openapi-install-rediscover.ts` both emit one, so a wedged spec-refresh fiber
- * was invisible until a catalog drift surfaced. Wrap the cycle in
- * `atlas.scheduler.openapi_spec_refresh` (presence/absence against the cadence is
- * the liveness signal) and emit a per-cycle `log.info` heartbeat so a hung tick
- * is visible in logs too, not just traces. This is a `setInterval` scheduler with
- * a Promise-native cycle, so it uses the Promise `withSpan` (not the Effect
- * `withEffectSpan` the byot/rediscover cycles use); it self-spans here and so
- * never slots into `SCHEDULER_WORK_SPAN_NAMES` in `effect/layers.ts`.
+ * Heartbeat (#3183 L-1): emits a per-cycle `log.info` start line, and — for the
+ * empty-cache case `refreshSharedSpecsCycle` doesn't otherwise log — a completion
+ * heartbeat, so a hung tick is visible in logs. The per-tick liveness SPAN
+ * (`atlas.scheduler.openapi_spec_refresh`) is applied by `registerPeriodicFiber`
+ * around the fiber in `effect/layers.ts` (#4195), where the fiber's
+ * `spanResultAttributes` carry the inspected/updated/not-modified/failed counts.
+ * This job schedules through `registerPeriodicFiber` like its siblings but,
+ * having no internal-DB working set (its cache is process-local), does NOT use
+ * the `runPeriodicDbCycle` DB-cycle skeleton the byot/rediscover jobs share.
  */
 export async function runOpenApiSpecRefreshCycle(): Promise<SharedRefreshCycleResult> {
-  return withSpan(
-    "atlas.scheduler.openapi_spec_refresh",
-    {},
-    async () => {
-      log.info("Shared OpenAPI spec refresh cycle starting");
-      const result = await refreshSharedSpecsCycle({ specUrlFor: specUrlForCatalog });
-      // `refreshSharedSpecsCycle` already emits a detailed "cycle complete" log
-      // (with per-catalog counts) when the working set is non-empty. Emit our own
-      // completion heartbeat for the empty-cache case — the common shape on a
-      // fresh pod or low-traffic region — so the cadence is unbroken there too
-      // and the two paths each leave exactly one start + one complete log.
-      if (result.inspected === 0) {
-        log.info("Shared OpenAPI spec refresh cycle complete — empty working set (no cached specs to refresh)");
-      }
-      return result;
-    },
-    (result) => ({
-      "atlas.openapi_spec_refresh.inspected": result.inspected,
-      "atlas.openapi_spec_refresh.updated": result.updated,
-      "atlas.openapi_spec_refresh.not_modified": result.notModified,
-      "atlas.openapi_spec_refresh.failed": result.failed,
-    }),
-  );
+  log.info("Shared OpenAPI spec refresh cycle starting");
+  const result = await refreshSharedSpecsCycle({ specUrlFor: specUrlForCatalog });
+  // `refreshSharedSpecsCycle` already emits a detailed "cycle complete" log
+  // (with per-catalog counts) when the working set is non-empty. Emit our own
+  // completion heartbeat for the empty-cache case — the common shape on a
+  // fresh pod or low-traffic region — so the cadence is unbroken there too
+  // and the two paths each leave exactly one start + one complete log.
+  if (result.inspected === 0) {
+    log.info("Shared OpenAPI spec refresh cycle complete — empty working set (no cached specs to refresh)");
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
-// Lifecycle (setInterval-based, mirrors byot-catalog-refresh.ts)
+// Scheduling — via `registerPeriodicFiber` in `effect/layers.ts` (#4195)
 // ---------------------------------------------------------------------------
-
-let _timer: ReturnType<typeof setInterval> | null = null;
-let _running = false;
-/** A still-running cycle, so a slow tick never overlaps the next one. */
-let _inFlight = false;
-
-function runCycleWithDefectGuard(): void {
-  // Overlap guard: a cycle does network I/O (conditional GETs). With the default
-  // 24h cadence overlap is impossible, but a misconfigured short interval — or a
-  // very slow upstream — could otherwise start a second cycle before the first
-  // finished, racing on the shared-cache pointers. Skip this tick if one is still
-  // in flight; the next tick picks the work back up.
-  if (_inFlight) {
-    log.debug("Shared OpenAPI spec refresh cycle still in flight — skipping this tick");
-    return;
-  }
-  _inFlight = true;
-  runOpenApiSpecRefreshCycle()
-    .catch((err: unknown) => {
-      // The cycle catches per-catalog failures internally; this guard only fires
-      // on an unexpected defect (e.g. the registry import threw) so the loop
-      // survives and the next tick still runs.
-      log.error(
-        { err: err instanceof Error ? err.message : String(err) },
-        "Shared OpenAPI spec refresh cycle defected past its internal catch",
-      );
-    })
-    .finally(() => {
-      _inFlight = false;
-    });
-}
-
-/**
- * Start the shared OpenAPI spec refresh scheduler. Runs an initial cycle
- * immediately, then repeats at the configured interval. No-op if already running.
- * A non-positive / non-finite `intervalMs` falls back to the configured default
- * rather than hot-looping `setInterval`.
- */
-export function startOpenApiSpecRefreshScheduler(intervalMs?: number): void {
-  if (_running) {
-    log.debug("Shared OpenAPI spec refresh scheduler already running — skipping start");
-    return;
-  }
-  // Validate the explicit override: a 0 / negative / NaN interval would make
-  // setInterval fire continuously. Fall back to the (already-validated) configured
-  // interval so a bad caller-supplied value can't spin the event loop.
-  const interval =
-    intervalMs !== undefined && Number.isFinite(intervalMs) && intervalMs > 0
-      ? intervalMs
-      : getSharedSpecRefreshIntervalMs();
-  _running = true;
-  log.info({ intervalMs: interval }, "Starting shared OpenAPI spec refresh scheduler");
-
-  runCycleWithDefectGuard();
-  _timer = setInterval(runCycleWithDefectGuard, interval);
-  _timer.unref();
-}
-
-export function stopOpenApiSpecRefreshScheduler(): void {
-  if (_timer) {
-    clearInterval(_timer);
-    _timer = null;
-  }
-  _running = false;
-  log.info("Shared OpenAPI spec refresh scheduler stopped");
-}
-
-export function isOpenApiSpecRefreshSchedulerRunning(): boolean {
-  return _running;
-}
-
-/** Test-only: reset scheduler state. */
-export function _resetOpenApiSpecRefreshScheduler(): void {
-  stopOpenApiSpecRefreshScheduler();
-}
+//
+// The Tier-1 refresh no longer hand-rolls a `setInterval` lifecycle. The fiber
+// that repeats `runOpenApiSpecRefreshCycle` — interval
+// (`getSharedSpecRefreshIntervalMs`), per-tick span, and `withFiberDeathLog` —
+// is owned by `registerPeriodicFiber` (arch-win #100 / #4130), forked
+// `forkScoped` for the pod lifetime. It starts unconditionally (no internal-DB
+// gate; the cache is process-local). `Schedule.spaced` there spaces ticks by
+// completion, so a slow cycle can never overlap the next — subsuming the old
+// `_inFlight` guard.
 
 /**
  * Manual-trigger entry point (admin scheduler page / tests). Runs a single cycle

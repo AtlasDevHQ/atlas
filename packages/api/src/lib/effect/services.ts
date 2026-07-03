@@ -1224,8 +1224,6 @@ export function createAuthContextTestLayer(
 // handlers just call the methods and the Noop's typed-error failure
 // (mapped to 403 by the Hono bridge via `EnterpriseError`) is the
 // "feature unavailable" signal.
-// `DeployModeResolver` is the lone sentinel-returning Tag
-// (`"saas" | "self-hosted"` is the value, not a boolean flag).
 //
 // New Tags MUST default to omitting `available`. Add it only when a
 // concrete route needs the branch — and document the route in the
@@ -2853,28 +2851,6 @@ export const NoopProactiveGateLayer: Layer.Layer<ProactiveGate> = Layer.sync(
   },
 );
 
-// ── DeployModeResolver (#2572 — slice 10/11 of #2017) ────────────────
-//
-// Replaces `await import("@atlas/ee/deploy-mode")` in `lib/config.ts`.
-// Resolution logic moved to `lib/effect/deploy-mode.ts` in core
-// (`resolveDeployMode`); EE re-exports for back-compat. The Tag still
-// exists because some non-config callers (e.g. agent-loop telemetry,
-// SaaS guards) may eventually want to yield it. The no-op default
-// always reports `"self-hosted"` (the correct answer when EE is not
-// loaded — `"saas"` mode requires enterprise).
-
-export interface DeployModeResolverShape {
-  readonly resolve: () => "saas" | "self-hosted";
-}
-export class DeployModeResolver extends Context.Tag("DeployModeResolver")<
-  DeployModeResolver,
-  DeployModeResolverShape
->() {}
-export const NoopDeployModeResolverLayer: Layer.Layer<DeployModeResolver> =
-  Layer.succeed(DeployModeResolver, {
-    resolve: () => "self-hosted",
-  } satisfies DeployModeResolverShape);
-
 // ── MarketplaceVeneer (#4001 — WS5 plugin-marketplace veneer split) ──
 //
 // The plugin-marketplace **plan-gated veneer** — the deploy-mode-dependent
@@ -3138,7 +3114,6 @@ export const NoopEnterpriseDefaultsLayer: Layer.Layer<
   | ProactiveGate
   | ProactiveService
   | AnswerMeter
-  | DeployModeResolver
   | MarketplaceVeneer
   | SaasCrm
 > = Layer.mergeAll(
@@ -3161,7 +3136,6 @@ export const NoopEnterpriseDefaultsLayer: Layer.Layer<
   NoopProactiveGateLayer,
   NoopProactiveServiceLayer,
   NoopAnswerMeterLayer,
-  NoopDeployModeResolverLayer,
   NoopMarketplaceVeneerLayer,
   NoopSaasCrmLayer,
 );

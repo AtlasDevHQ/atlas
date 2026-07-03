@@ -109,9 +109,6 @@ mock.module("@atlas/api/lib/agent", () => ({
   getAgentMaxSteps: () => 25,
   buildSystemParam: () => "",
   applyCacheControl: <T,>(messages: T): T => messages,
-  runAgentEffect: () => {
-    throw new Error("not used in adapter tests");
-  },
 }));
 
 // Mock the logger so the error-path tests can assert what the adapter

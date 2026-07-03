@@ -61,6 +61,7 @@ import {
   mintRestConfirmToken,
   type RestWriteConfirmRequest,
 } from "@atlas/api/lib/openapi/rest-write-confirm";
+import { auditRestOperation, deriveRestRowCount } from "@atlas/api/lib/openapi/rest-audit";
 import type { OperationParams } from "@atlas/api/lib/openapi/types";
 
 const log = createLogger("tools.rest-operation");
@@ -433,6 +434,12 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
           };
         }
 
+        // The op is validated as existing + dispatchable, so `peeked` is defined;
+        // the fallback is defensive only. Used for the audit descriptor's method.
+        const dispatchMethod = peeked?.method ?? verdict.operation.method;
+        // Only DISPATCHED outcomes below are audited — the pre-dispatch rejections
+        // above never touched the datasource (they keep their `log.info` only).
+        const dispatchStart = Date.now();
         try {
           const result = await executeOperation(ds.graph, operationId, params, ds.auth, {
             baseUrl: ds.baseUrl,
@@ -445,25 +452,52 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
           });
 
           if (result.status >= 200 && result.status < 300) {
+            auditRestOperation({
+              method: dispatchMethod,
+              operationId,
+              datasourceId: ds.id,
+              baseUrl: ds.baseUrl,
+              durationMs: Date.now() - dispatchStart,
+              outcome: { success: true, rowCount: deriveRestRowCount(result.body) },
+            });
             return { status: "ok", httpStatus: result.status, body: result.body };
           }
           // Non-2xx is not a transport error — surface it so the agent can adjust.
+          const httpErrorMessage = `Upstream returned HTTP ${result.status} for "${operationId}".`;
           log.info(
             { operationId, httpStatus: result.status, datasource: ds.id },
             "executeRestOperation upstream non-2xx",
           );
+          auditRestOperation({
+            method: dispatchMethod,
+            operationId,
+            datasourceId: ds.id,
+            baseUrl: ds.baseUrl,
+            durationMs: Date.now() - dispatchStart,
+            outcome: { success: false, error: httpErrorMessage },
+          });
           return {
             status: "http_error",
             httpStatus: result.status,
             body: result.body,
-            message: `Upstream returned HTTP ${result.status} for "${operationId}".`,
+            message: httpErrorMessage,
           };
         } catch (err) {
+          const durationMs = Date.now() - dispatchStart;
           if (err instanceof OpenApiClientError) {
             log.warn(
               { operationId, reason: err.reason, datasource: ds.id },
               "executeRestOperation client fault",
             );
+            // The dispatch began and then faulted (transport/parse) — audit it.
+            auditRestOperation({
+              method: dispatchMethod,
+              operationId,
+              datasourceId: ds.id,
+              baseUrl: ds.baseUrl,
+              durationMs,
+              outcome: { success: false, error: err.message },
+            });
             return {
               status: "client_error",
               reason: err.reason,
@@ -476,6 +510,16 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
             { operationId, requestId, err: message, datasource: ds.id },
             "executeRestOperation unexpected failure",
           );
+          // A post-dispatch fault too (executeOperation threw after we entered the
+          // dispatch) — audit it as a failed execution.
+          auditRestOperation({
+            method: dispatchMethod,
+            operationId,
+            datasourceId: ds.id,
+            baseUrl: ds.baseUrl,
+            durationMs,
+            outcome: { success: false, error: message },
+          });
           // Not an OpenApiClientError — a code bug / OOM / etc. Classify it as
           // `unexpected`, never `network`: a deterministic internal failure must
           // not read to the agent as a transient transport fault worth retrying.

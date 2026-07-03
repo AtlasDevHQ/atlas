@@ -71,6 +71,12 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
   resetAuthModeCache: () => {},
 }));
 
+// The confirmed-write dispatch is the real "action against the datasource" — it
+// MUST land in the query audit log. Mock logQueryAudit (all exports) so the
+// audit-coverage test asserts the exact entry the route hands it.
+const mockLogQueryAudit: Mock<(entry: AuditEntry) => void> = mock(() => {});
+mock.module("@atlas/api/lib/auth/audit", () => ({ logQueryAudit: mockLogQueryAudit }));
+
 // Import after mocks.
 const { Hono } = await import("hono");
 const { buildOperationGraph } = await import("@atlas/api/lib/openapi/spec");
@@ -84,6 +90,7 @@ const { startTwentyMockServer } = await import(
 );
 import type { RestDatasource } from "@atlas/api/lib/openapi/datasource";
 import type { TwentyMock } from "@atlas/api/lib/openapi/__tests__/twenty-acceptance/mock-server";
+import type { AuditEntry } from "@atlas/api/lib/auth/audit";
 
 const SPEC = JSON.parse(
   fs.readFileSync(
@@ -119,6 +126,7 @@ beforeEach(() => {
   twentyMock.reset();
   _resetRestRateLimits();
   _resetRestConfirmNonces();
+  mockLogQueryAudit.mockClear();
 });
 
 /** A workspace-resolved Twenty datasource with a configurable write allowlist. */
@@ -208,6 +216,71 @@ describe("POST /rest-operations/confirm", () => {
     const req = twentyMock.matching("/rest/people").at(-1);
     expect(req?.method).toBe("POST");
     expect(req?.headers["authorization"]).toBe("Bearer confirm-token");
+  });
+
+  it("audits the CONFIRMED write with success:true and the `${method} ${operationId}` descriptor", async () => {
+    // The confirmed-write dispatch is the critical audit point — a reviewer must
+    // see the agent-initiated, human-confirmed action against the datasource.
+    const app = appWith([datasource({ writeAllowlist: new Set(["createOnePerson"]) })]);
+    const res = await post(
+      app,
+      confirmBody({
+        datasourceId: "twenty",
+        operationId: "createOnePerson",
+        body: { name: { firstName: "Ada" } },
+      }),
+    );
+    expect(res.status).toBe(200);
+
+    expect(mockLogQueryAudit).toHaveBeenCalledTimes(1);
+    const entry = mockLogQueryAudit.mock.calls[0][0];
+    expect(entry.success).toBe(true);
+    expect(entry.sql).toBe("POST createOnePerson");
+    expect(entry.sourceId).toBe("twenty");
+    // A REST datasource is not a SQL DBType — sourceType stays unset.
+    expect(entry.sourceType).toBeUndefined();
+    expect(entry.targetHost).toBe(new URL(twentyMock.restBaseUrl).host);
+  });
+
+  it("audits a confirmed write whose upstream returns non-2xx with success:false", async () => {
+    // Point the datasource at a base that returns a non-2xx for the write so the
+    // route takes its http_error branch — the audit row records the failure.
+    const failingFetch = (async () =>
+      new Response(JSON.stringify({ error: "boom" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+    const route = createRestOperationsRoute({
+      resolveDatasources: async (workspaceId: string) =>
+        workspaceId === "ws-1" ? [datasource({ writeAllowlist: new Set(["createOnePerson"]) })] : [],
+      fetchImpl: failingFetch,
+    });
+    const app = new Hono();
+    app.route("/api/v1/rest-operations", route);
+    const res = await post(
+      app,
+      confirmBody({ datasourceId: "twenty", operationId: "createOnePerson", body: { name: { firstName: "Ada" } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { status: string }).status).toBe("http_error");
+
+    expect(mockLogQueryAudit).toHaveBeenCalledTimes(1);
+    const entry = mockLogQueryAudit.mock.calls[0][0];
+    expect(entry.success).toBe(false);
+    expect(entry.sql).toBe("POST createOnePerson");
+    if (entry.success) return; // narrow to the failure variant
+    expect(entry.error).toContain("HTTP 500");
+  });
+
+  it("does NOT audit a confirm rejected BEFORE dispatch (non-allowlisted write, 403)", async () => {
+    const app = appWith([datasource({ writeAllowlist: new Set(["createOnePerson"]) })]);
+    const res = await post(
+      app,
+      confirmBody({ datasourceId: "twenty", operationId: "deleteOnePerson", pathParams: { id: "p-matt" } }),
+    );
+    expect(res.status).toBe(403);
+    // The write never fired — nothing to audit.
+    expect(mockLogQueryAudit).not.toHaveBeenCalled();
   });
 
   it("#3066 — replay resolves the FULL set: the resolver is called with only orgId (no exclude-set)", async () => {

@@ -47,6 +47,7 @@ import { resolveRoutingPlan, type RoutingMode, type RoutingReason } from "@atlas
 import { loadGroupRoutingContext } from "@atlas/api/lib/env-routing/lookup";
 import { resolveReach, isReachable, reachStateFromColumn } from "@atlas/api/lib/group-reach";
 import { loadVisibleGroups } from "@atlas/api/lib/group-reach/lookup";
+import { resolveExecutionTarget, type ExecutionTarget } from "@atlas/api/lib/group-reach/execution-target";
 import { mergeMemberResults } from "@atlas/api/lib/multi-env-merger";
 import {
   ApprovalGate,
@@ -55,8 +56,7 @@ import {
   type ApprovalGateShape,
   type MaskingContext,
 } from "@atlas/api/lib/effect/services";
-import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
-import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
+import { runEnterprise, yieldFailClosed } from "@atlas/api/lib/effect/enterprise-layer";
 
 /**
  * Run `MaskingPolicy.applyMasking` via `EnterpriseLayer`. Promise-shaped
@@ -80,16 +80,10 @@ function applyMaskingViaTag(
 ): Promise<Record<string, unknown>[]> {
   return runEnterprise(
     Effect.gen(function* () {
-      const masking = yield* MaskingPolicy;
-      if (isEnterpriseEnabled() && !masking.available) {
-        return yield* Effect.fail(
-          new EnterpriseUnavailableError({
-            message:
-              "PII masking unavailable — query blocked to prevent unmasked-data exposure. Contact your administrator.",
-            tag: "MaskingPolicy",
-          }),
-        );
-      }
+      const masking = yield* yieldFailClosed(
+        MaskingPolicy,
+        "PII masking unavailable — query blocked to prevent unmasked-data exposure. Contact your administrator.",
+      );
       return yield* masking.applyMasking(ctx);
     }),
   );
@@ -112,16 +106,10 @@ function applyMaskingViaTag(
 function loadApprovalGate(): Promise<ApprovalGateShape> {
   return runEnterprise(
     Effect.gen(function* () {
-      const gate = yield* ApprovalGate;
-      if (isEnterpriseEnabled() && !gate.available) {
-        return yield* Effect.fail(
-          new EnterpriseUnavailableError({
-            message:
-              "Approval gate unavailable — query blocked to prevent governance bypass. Contact your administrator.",
-            tag: "ApprovalGate",
-          }),
-        );
-      }
+      const gate = yield* yieldFailClosed(
+        ApprovalGate,
+        "Approval gate unavailable — query blocked to prevent governance bypass. Contact your administrator.",
+      );
       return gate;
     }),
   );
@@ -442,7 +430,12 @@ function getExtraPatterns(dbType: DBType | string, connectionId?: string, worksp
   }
 }
 
-export async function validateSQL(sql: string, connectionId?: string, workspaceId?: string): Promise<SQLValidationResult> {
+export async function validateSQL(
+  sql: string,
+  connectionId?: string,
+  workspaceId?: string,
+  executionTarget?: ExecutionTarget,
+): Promise<SQLValidationResult> {
   // `workspaceId` scopes the dbType, the dialect/pattern lookups, AND the table
   // whitelist below to the per-(workspace, install_id) config, so a shared
   // install_id validates against the querying workspace's actual dialect +
@@ -643,29 +636,26 @@ export async function validateSQL(sql: string, connectionId?: string, workspaceI
       // the direct lookup missed AND the literal-`"default"` union was bypassed →
       // every demo table rejected on the first answer, while `/api/v1/tables`
       // (fetched with no connectionId → resolves "default" → unions) still listed
-      // the full demo set. Detect the unpinned case here — All-sources reach AND
-      // the lookup id IS the conversation's own connection — and tell the
-      // whitelist to union every bucket, matching `/api/v1/tables`.
+      // the full demo set. The unpinned case — All-sources reach AND the lookup
+      // id IS the conversation's own connection — tells the whitelist to union
+      // every bucket, matching `/api/v1/tables`.
       //
-      // The `connectionId === sqlReqCtx?.connectionId` clause is load-bearing: it
-      // keeps `unpinned = false` for an agent pin to a SIBLING connection
-      // (`currentMember` ≠ the conversation's own id), so an explicit pin is never
-      // widened to the union. A user-pinned or fanout self-leg CAN still derive
-      // `unpinned = true`, but its own bucket is non-empty, so isolation there is
-      // preserved by the `tables.size === 0` direct-hit short-circuit in
-      // `getOrgWhitelistedTables` — not by this flag. Reach is decoded via the
-      // canonical `reachStateFromColumn` SSOT so this notion of "All sources"
-      // can't drift from `executeSQL`'s reach gate (a falsy-but-non-null
-      // `groupReach` is "all", which a bare `?? null` check would miss).
-      const unpinnedAllSources =
-        reachStateFromColumn(sqlReqCtx?.groupReach).kind === "all" &&
-        connectionId !== undefined &&
-        connectionId === sqlReqCtx?.connectionId;
+      // The `unpinned` flag + resolved bucket id come from the single
+      // `resolveExecutionTarget` SSOT (`group-reach/execution-target.ts`): the
+      // `executeSQL` pipeline threads an `executionTarget` built from the
+      // POST-reach/post-routing member id, and non-execute callers fall back to
+      // re-deriving it here from the request context + this leg's connectionId.
+      // Both compute the SAME `unpinned` — that is the whole point of this SSOT,
+      // and why the whitelist bucket a query validates against can no longer
+      // drift from the member it executes against. See the interface doc for the
+      // load-bearing `connectionId === reqCtx.connectionId` (no sibling widening)
+      // and falsy-but-non-null `groupReach` ("all") invariants.
+      const target = executionTarget ?? resolveExecutionTarget(sqlReqCtx, connectionId);
       const allowed = orgId
-        ? getOrgWhitelistedTables(orgId, connectionId, sqlReqCtx?.atlasMode, {
-            unpinned: unpinnedAllSources,
+        ? getOrgWhitelistedTables(orgId, target.connectionId, sqlReqCtx?.atlasMode, {
+            unpinned: target.unpinned,
           })
-        : getWhitelistedTables(connectionId);
+        : getWhitelistedTables(target.connectionId);
 
       // Self-hosted reads its whitelist from on-disk `catalog.yml` / entity
       // YAML files; SaaS workspaces read from the per-org `entities` table
@@ -935,10 +925,11 @@ function runQueryValidationEffect(
   dbType: DBType | string,
   customValidator: CustomValidator | undefined,
   workspaceId?: string,
+  executionTarget?: ExecutionTarget,
 ): Effect.Effect<{ ok: true; classification?: SQLClassification } | { ok: false; error: string; auditError: string }> {
   if (!customValidator) {
     return Effect.promise(async () => {
-      const validation = await validateSQL(sql, connId, workspaceId);
+      const validation = await validateSQL(sql, connId, workspaceId, executionTarget);
       if (!validation.valid) {
         return { ok: false as const, error: validation.error, auditError: `Validation rejected: ${validation.error}` };
       }
@@ -1502,6 +1493,16 @@ export interface SqlPipelineOptions {
    * `atlas.routing_reason`.
    */
   readonly routingReason?: RoutingReason;
+  /**
+   * Pre-resolved execution target (post-reach/post-routing member id +
+   * whitelist-widening `unpinned` flag) for THIS leg. Threaded into
+   * `validateSQL` so the table whitelist a query validates against is the
+   * SAME bucket the query executes against — the SSOT that closes the
+   * #3961/#3947/#3109 drift. Fan-out resolves this PER-LEG; each leg carries
+   * its own target, never a shared broadcast one. Undefined for callers that
+   * don't route through `executeSQL` (validateSQL re-derives via fallback).
+   */
+  readonly executionTarget?: ExecutionTarget;
 }
 
 /**
@@ -1534,7 +1535,7 @@ export type SqlPipelineOutcome =
 export function runSqlPipelineEffect(
   opts: SqlPipelineOptions,
 ): Effect.Effect<SqlPipelineOutcome, PipelineError> {
-  const { sql, explanation, connId, preStep, parentAuditId, routingMode, routingReason } = opts;
+  const { sql, explanation, connId, preStep, parentAuditId, routingMode, routingReason, executionTarget } = opts;
 
   return Effect.gen(function* () {
     // Resolve org context for tenant-scoped pool isolation
@@ -1600,7 +1601,7 @@ export function runSqlPipelineEffect(
     }
 
     // Validate (custom validator or standard SQL validation)
-    const initial = yield* runQueryValidationEffect(normalizedSql, connId, dbType, customValidator, authOrgId);
+    const initial = yield* runQueryValidationEffect(normalizedSql, connId, dbType, customValidator, authOrgId, executionTarget);
     if (!initial.ok) {
       logQueryAudit({
         sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
@@ -2128,6 +2129,7 @@ async function executeSqlForConnection({
   parentAuditId,
   routingMode,
   routingReason,
+  executionTarget,
 }: {
   readonly sql: string;
   readonly explanation: string;
@@ -2138,6 +2140,8 @@ async function executeSqlForConnection({
   readonly routingMode?: RoutingMode;
   /** See {@link SqlPipelineOptions.routingReason}. */
   readonly routingReason?: RoutingReason;
+  /** See {@link SqlPipelineOptions.executionTarget}. Per-leg; never shared. */
+  readonly executionTarget?: ExecutionTarget;
 }): Promise<Record<string, unknown>> {
   const pipeline = runSqlPipelineEffect({
     sql,
@@ -2147,6 +2151,7 @@ async function executeSqlForConnection({
     parentAuditId,
     routingMode,
     routingReason,
+    executionTarget,
   }).pipe(
     Effect.map((outcome): Record<string, unknown> => {
       switch (outcome.kind) {
@@ -2264,6 +2269,13 @@ async function executeSqlFanout(args: {
     );
   }
 
+  // Per-leg execution target: each fanout leg resolves its OWN target from
+  // ITS connection id — NEVER a single broadcast target across legs (that
+  // would leak one leg's whitelist bucket onto the others, a regression). A
+  // leg whose id IS the conversation's own connection under All-sources reach
+  // derives `unpinned: true`; sibling legs derive `false` — exactly the
+  // current per-leg re-derivation `validateSQL` did via its fallback.
+  const fanoutReqCtx = getRequestContext();
   const startTimes = new Map<string, number>();
   const settled = await Promise.allSettled(
     connectionIds.map((connId) => {
@@ -2275,6 +2287,7 @@ async function executeSqlFanout(args: {
         parentAuditId,
         routingMode: "all",
         routingReason: fanoutReason,
+        executionTarget: resolveExecutionTarget(fanoutReqCtx, connId),
       });
     }),
   );
@@ -2478,6 +2491,10 @@ export const executeSQL = tool({
         explanation,
         connId: currentMember,
         routingMode,
+        // Resolve the target from the POST-reach/post-routing member id
+        // (`currentMember`) — NEVER the raw `connectionId` arg — so the
+        // whitelist bucket matches what we execute against (risk guard #1).
+        executionTarget: resolveExecutionTarget(reqCtx, currentMember),
       });
       return attachSingleEnvContribution(result, currentMember);
     }
@@ -2508,6 +2525,8 @@ export const executeSQL = tool({
         connId: plan.connectionId,
         routingMode,
         routingReason: plan.reason,
+        // Post-routing member id (`plan.connectionId`), not the raw arg.
+        executionTarget: resolveExecutionTarget(reqCtx, plan.connectionId),
       });
       return attachSingleEnvContribution(result, plan.connectionId);
     }

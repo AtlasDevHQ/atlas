@@ -16,7 +16,6 @@ import type {
   BackupsManager,
   Branding,
   ComplianceReports,
-  DeployModeResolver,
   Domains,
   IpAllowlistPolicy,
   MaskingPolicy,
@@ -52,7 +51,6 @@ import { DomainsLive } from "./platform/domains";
 import { ProactiveGateLive } from "./proactive-gate";
 import { ProactiveServiceLive } from "./proactive/service";
 import { AnswerMeterLive } from "./proactive/answer-meter";
-import { DeployModeResolverLive } from "./deploy-mode";
 import { MarketplaceVeneerLive } from "./marketplace/veneer";
 import { SaasCrmLive } from "./saas-crm/index";
 
@@ -69,7 +67,6 @@ export const EELayer: Layer.Layer<
   | BackupsManager
   | Branding
   | ComplianceReports
-  | DeployModeResolver
   | Domains
   | IpAllowlistPolicy
   | MaskingPolicy
@@ -105,7 +102,6 @@ export const EELayer: Layer.Layer<
   ProactiveGateLive,
   ProactiveServiceLive,
   AnswerMeterLive,
-  DeployModeResolverLive,
   MarketplaceVeneerLive,
   SaasCrmLive,
 );

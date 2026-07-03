@@ -2,7 +2,11 @@
  * DuckDB DataSource Plugin — reference implementation for @useatlas/plugin-sdk.
  *
  * Wraps the in-process DuckDB adapter extracted from
- * packages/api/src/lib/db/duckdb.ts.
+ * packages/api/src/lib/db/duckdb.ts. Assembled via `createDatasourcePlugin`
+ * (#4192): the factory owns the static-vs-adapter-only mode branch, the
+ * `createFromConfig` wrapper, the initialize logging, and the measured
+ * SELECT-1 health check. This module supplies only the DuckDB substance: the
+ * schema pair, the url/path resolution, and the introspection bindings.
  *
  * Two registration modes:
  *
@@ -31,10 +35,8 @@
  */
 
 import { z } from "zod";
-import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
-import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult } from "@useatlas/plugin-sdk";
+import { createDatasourcePlugin } from "@useatlas/plugin-sdk";
 import { createDuckDBConnection, parseDuckDBUrl } from "./connection";
-import type { PluginLogger } from "@useatlas/plugin-sdk";
 import { listDuckDBObjects, profileDuckDB } from "./profiler";
 import { DUCKDB_FORBIDDEN_PATTERNS } from "./validation";
 
@@ -83,155 +85,16 @@ const DuckDBConfigSchema = DuckDBConfigBaseSchema;
 
 export type DuckDBPluginConfig = z.infer<typeof DuckDBConfigSchema>;
 
-/**
- * Build the plugin object from validated config.
- * Exported for direct use with definePlugin() when Zod validation
- * has already been performed externally (e.g. in tests or custom wiring).
- */
-export function buildDuckDBPlugin(
-  config: DuckDBPluginConfig,
-): AtlasDatasourcePlugin<DuckDBPluginConfig> {
-  let log: PluginLogger | undefined;
-
-  // When a static url/path is configured the plugin wires a config-defined
-  // connection at boot; without one it is registered adapter-only.
-  const hasStaticConfig = !!(config.url || config.path);
-  const staticUrl = config.url;
-  const staticPath = config.path;
-  const staticReadOnly = config.readOnly;
-
-  /** Resolve a DuckDBConnectionConfig from a url/path/readOnly triple, matching the build-time logic. */
-  const resolveDbConfig = (input: {
-    url?: string;
-    path?: string;
-    readOnly?: boolean;
-  }) => {
-    const parsed = input.url
-      ? parseDuckDBUrl(input.url)
-      : { path: input.path as string, readOnly: input.path !== ":memory:" };
-    return { ...parsed, readOnly: input.readOnly ?? parsed.readOnly };
-  };
-
-  const connection: AtlasDatasourcePlugin<DuckDBPluginConfig>["connection"] = {
-    // DB-driven (admin-UI-registered) datasources: build a connection from
-    // the per-(workspace, install) config decrypted from `workspace_plugins`,
-    // re-validated through the strict schema. Always available — this is the
-    // SaaS per-workspace path and the only path in adapter-only mode.
-    createFromConfig: (runtimeConfig) => {
-      const parsed = DuckDBConnectionConfigSchema.parse(runtimeConfig);
-      const dbConfig = resolveDbConfig(parsed);
-      const built = createDuckDBConnection({ ...dbConfig, logger: log });
-      // #3667 — introspection is a capability OF the built connection, bound to
-      // the path/url that built it (the host's unified resolver consumes these;
-      // no url/config re-resolution). `parseDuckDBUrl` round-trips a reconstructed
-      // `duckdb://<path>` when the config carried a bare `path`. Read-only via the
-      // connection's READ_ONLY access mode.
-      const introspectUrl = parsed.url ?? `duckdb://${dbConfig.path}`;
-      return {
-        ...built,
-        listObjects: (o) =>
-          listDuckDBObjects({ url: introspectUrl, ...(o?.schema !== undefined ? { schema: o.schema } : {}) }),
-        profile: (o) =>
-          profileDuckDB({
-            url: introspectUrl,
-            ...(o?.schema !== undefined ? { schema: o.schema } : {}),
-            selectedTables: o?.selectedTables,
-            prefetchedObjects: o?.prefetchedObjects,
-            progress: o?.progress,
-            logger: o?.logger,
-          }),
-      };
-    },
-    dbType: "duckdb",
-    parserDialect: "PostgresQL",
-    forbiddenPatterns: DUCKDB_FORBIDDEN_PATTERNS,
-    // Introspection (listObjects / profile) is a capability of the BUILT
-    // connection (createFromConfig above), bound to the path/url that built it —
-    // the one home MCP, the wizard, and the CLI all consume (ADR-0017 / #3670).
-    // No connection-namespace profiler exports remain.
-  };
-
-  if (hasStaticConfig) {
-    // Parse the static config once, inside the create closure so adapter-only
-    // mode never calls parseDuckDBUrl on an undefined url/path.
-    const dbConfig = resolveDbConfig({
-      url: staticUrl,
-      path: staticPath,
-      readOnly: staticReadOnly,
-    });
-    connection.create = () => createDuckDBConnection({ ...dbConfig, logger: log });
-  }
-
-  return {
-    id: "duckdb-datasource",
-    types: ["datasource"] as const,
-    version: "0.1.0",
-    name: "DuckDB DataSource",
-    config,
-
-    connection,
-
-    entities: [],
-
-    dialect: [
-      "This datasource uses DuckDB SQL dialect.",
-      "- DuckDB syntax is similar to PostgreSQL with additional features.",
-      "- Use UNNEST() to expand arrays into rows.",
-      "- LIST and STRUCT types are natively supported.",
-      "- File-reading functions (read_csv_auto, read_parquet, etc.) are blocked for security.",
-      "- Use DATE_TRUNC() and DATE_PART() for date operations.",
-      "- Use STRING_AGG() for string aggregation.",
-      "- Supports window functions, CTEs, and lateral joins.",
-      "- In-process engine — no connection pooling needed.",
-    ].join("\n"),
-
-    async initialize(ctx) {
-      log = ctx.logger;
-      if (hasStaticConfig) {
-        const dbConfig = resolveDbConfig({
-          url: staticUrl,
-          path: staticPath,
-          readOnly: staticReadOnly,
-        });
-        const label = dbConfig.path === ":memory:" ? "in-memory" : dbConfig.path;
-        ctx.logger.info(`DuckDB datasource plugin initialized (${label})`);
-      } else {
-        ctx.logger.info(
-          "DuckDB datasource plugin registered as adapter-only — per-workspace datasources via Admin → Connections",
-        );
-      }
-    },
-
-    async healthCheck(): Promise<PluginHealthResult> {
-      // Adapter-only: no static datasource to probe. The plugin itself is a
-      // healthy adapter; per-workspace connections are health-checked by the
-      // ConnectionRegistry once installed.
-      if (!hasStaticConfig) {
-        return { healthy: true, message: "adapter-only: no static datasource configured" };
-      }
-      const dbConfig = resolveDbConfig({
-        url: staticUrl,
-        path: staticPath,
-        readOnly: staticReadOnly,
-      });
-      return measuredHealthCheck(async () => {
-        let conn: PluginDBConnection | undefined;
-        try {
-          conn = createDuckDBConnection(dbConfig);
-          await conn.query("SELECT 1", 5000);
-          return { healthy: true };
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          log?.warn(`Health check failed: ${message}`);
-          return { healthy: false, message };
-        } finally {
-          if (conn) {
-            await conn.close();
-          }
-        }
-      });
-    },
-  };
+/** Resolve a DuckDBConnectionConfig from a url/path/readOnly triple. Pure — safe to call per use. */
+function resolveDbConfig(input: {
+  url?: string;
+  path?: string;
+  readOnly?: boolean;
+}) {
+  const parsed = input.url
+    ? parseDuckDBUrl(input.url)
+    : { path: input.path as string, readOnly: input.path !== ":memory:" };
+  return { ...parsed, readOnly: input.readOnly ?? parsed.readOnly };
 }
 
 /**
@@ -245,10 +108,74 @@ export function buildDuckDBPlugin(
  * plugins: [duckdbPlugin({})]
  * ```
  */
-export const duckdbPlugin = createPlugin({
+export const duckdbPlugin = createDatasourcePlugin<
+  DuckDBPluginConfig,
+  z.infer<typeof DuckDBConnectionConfigSchema>
+>({
+  id: "duckdb-datasource",
+  name: "DuckDB DataSource",
+  dbType: "duckdb",
+  parserDialect: "PostgresQL",
+  forbiddenPatterns: DUCKDB_FORBIDDEN_PATTERNS,
   configSchema: DuckDBConfigSchema,
-  create: buildDuckDBPlugin,
+  connectionConfigSchema: DuckDBConnectionConfigSchema,
+
+  dialect: [
+    "This datasource uses DuckDB SQL dialect.",
+    "- DuckDB syntax is similar to PostgreSQL with additional features.",
+    "- Use UNNEST() to expand arrays into rows.",
+    "- LIST and STRUCT types are natively supported.",
+    "- File-reading functions (read_csv_auto, read_parquet, etc.) are blocked for security.",
+    "- Use DATE_TRUNC() and DATE_PART() for date operations.",
+    "- Use STRING_AGG() for string aggregation.",
+    "- Supports window functions, CTEs, and lateral joins.",
+    "- In-process engine — no connection pooling needed.",
+  ].join("\n"),
+
+  // A static datasource is defined by a url OR a bare path — the default
+  // url-only predicate would demote path-configured deploys to adapter-only.
+  hasStaticConfig: (config) => !!(config.url || config.path),
+
+  // Resolution happens here (never on the adapter-only build path), so an
+  // adapter-only registration never calls parseDuckDBUrl on undefined input.
+  describeStaticTarget: (config) => {
+    const dbConfig = resolveDbConfig(config);
+    return dbConfig.path === ":memory:" ? "in-memory" : dbConfig.path;
+  },
+
+  buildConnection: (parsed, rt) =>
+    createDuckDBConnection({ ...resolveDbConfig(parsed), logger: rt.logger }),
+
+  // #3667 — introspection is a capability OF the built connection, bound to
+  // the path/url that built it (the host's unified resolver consumes these;
+  // no url/config re-resolution). `parseDuckDBUrl` round-trips a reconstructed
+  // `duckdb://<path>` when the config carried a bare `path`. Read-only via the
+  // connection's READ_ONLY access mode.
+  attachIntrospection: (built, { parsed }) => {
+    const introspectUrl = parsed.url ?? `duckdb://${resolveDbConfig(parsed).path}`;
+    return {
+      ...built,
+      listObjects: (o) =>
+        listDuckDBObjects({ url: introspectUrl, ...(o?.schema !== undefined ? { schema: o.schema } : {}) }),
+      profile: (o) =>
+        profileDuckDB({
+          url: introspectUrl,
+          ...(o?.schema !== undefined ? { schema: o.schema } : {}),
+          selectedTables: o?.selectedTables,
+          prefetchedObjects: o?.prefetchedObjects,
+          progress: o?.progress,
+          logger: o?.logger,
+        }),
+    };
+  },
 });
+
+/**
+ * Build the plugin object from an already-validated config — bypasses the Zod
+ * config schema. For direct use when validation has been performed externally
+ * (e.g. in tests or custom wiring).
+ */
+export const buildDuckDBPlugin = duckdbPlugin.build;
 
 export { createDuckDBConnection, parseDuckDBUrl } from "./connection";
 export { listDuckDBObjects, profileDuckDB } from "./profiler";

@@ -242,30 +242,36 @@ const sqlIs = {
     sql.includes("FROM workspace_plugins wp") &&
     sql.includes("config->>'group_id' AS group_id") &&
     sql.includes("ANY"),
-  /** Route's GET /:id detail query — JOINs plugin_catalog for config_schema. */
-  detail: (sql: string): boolean =>
-    sql.includes("SELECT wp.config, pc.config_schema") &&
-    sql.includes("JOIN plugin_catalog"),
-  /** Route's plan-limit count. */
+  /**
+   * Lib seam's single-install load (`loadInstalledConnection`, #4194) in
+   * its default not-archived form — the PUT load and the GET /:id detail
+   * load share this exact SQL now.
+   */
+  detail: (sql: string): boolean => sqlIs.putLoad(sql),
+  /** Route's plan-limit count (`countActiveDatasourceInstalls`). */
   planCount: (sql: string): boolean =>
     sql.includes("SELECT COUNT") &&
     sql.includes("FROM workspace_plugins") &&
     sql.includes("status != 'archived'"),
-  /** Route's archive-aware existence check before POST install. */
-  archiveCheck: (sql: string): boolean =>
-    sql.includes("SELECT status FROM workspace_plugins"),
-  /** Route's PUT load (catalog_slug + config + group_id). */
+  /**
+   * Lib seam's single-install load with `includeArchived` — the POST
+   * archive-aware existence check and the DELETE load share this SQL.
+   */
+  archiveCheck: (sql: string): boolean => sqlIs.deleteLoad(sql),
+  /** Lib seam's single-install load, default (not-archived) form. */
   putLoad: (sql: string): boolean =>
-    sql.includes("SELECT pc.slug AS catalog_slug") &&
-    sql.includes("wp.config"),
-  /** Route's DELETE load (catalog_slug only). */
+    sql.includes("pc.slug AS catalog_slug") &&
+    sql.includes("wp.install_id = $2") &&
+    sql.includes("status != 'archived'"),
+  /** Lib seam's single-install load with `includeArchived` (no status clause). */
   deleteLoad: (sql: string): boolean =>
-    sql.includes("SELECT pc.slug AS catalog_slug") &&
-    !sql.includes("wp.config"),
-  /** Route's cross-org group existence check. */
+    sql.includes("pc.slug AS catalog_slug") &&
+    sql.includes("wp.install_id = $2") &&
+    !sql.includes("status != 'archived'"),
+  /** Lib seam's cross-org group existence check (`datasourceGroupExists`). */
   groupExists: (sql: string): boolean =>
-    sql.includes("SELECT install_id FROM workspace_plugins") &&
-    sql.includes("config->>'group_id' = "),
+    sql.includes("install_id FROM workspace_plugins") &&
+    sql.includes("config->>'group_id' = $2"),
   /** Route's scheduled-task references check (DELETE). */
   schedRefs: (sql: string): boolean => sql.includes("FROM scheduled_tasks st"),
   /** Installer's `loadCatalogRowForInstall` / `loadCatalogRowForDisconnect`. */

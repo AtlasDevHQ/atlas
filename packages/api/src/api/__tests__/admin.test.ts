@@ -1942,8 +1942,9 @@ describe("GET /api/v1/admin/connections/:id", () => {
       }
       if (
         typeof sql === "string" &&
-        sql.includes("SELECT wp.config, pc.config_schema") &&
-        sql.includes("JOIN plugin_catalog")
+        // Lib seam's single-install load (`loadInstalledConnection`, #4194).
+        sql.includes("pc.slug AS catalog_slug") &&
+        sql.includes("wp.install_id = $2")
       ) {
         return Promise.resolve([
           {
@@ -2005,8 +2006,9 @@ describe("PUT /api/v1/admin/connections/:id — rollback escalation", () => {
     mockInternalQuery.mockImplementation((sql: string) => {
       if (
         typeof sql === "string" &&
-        sql.includes("SELECT pc.slug AS catalog_slug") &&
-        sql.includes("wp.config")
+        // Lib seam's single-install load (`loadInstalledConnection`, #4194).
+        sql.includes("pc.slug AS catalog_slug") &&
+        sql.includes("wp.install_id = $2")
       ) {
         return Promise.resolve([
           {

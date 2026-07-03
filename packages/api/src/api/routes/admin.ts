@@ -29,6 +29,7 @@ import {
   getWorkspaceRegion,
   getWorkspaceDetails,
 } from "@atlas/api/lib/db/internal";
+import { isDemoInstallActive } from "@atlas/api/lib/integrations/installed-connection";
 import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
 import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-state";
 import { plugins } from "@atlas/api/lib/plugins/registry";
@@ -2305,16 +2306,7 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
     // Post-0096 cutover (#2744 / ADR-0007) every workspace owns its own
     // per-workspace demo install row, so the OWN_OR_GLOBAL shadow check
     // collapses to a simple workspace-scoped lookup.
-    const ownsDemo = await internalQuery<{ install_id: string }>(
-      `SELECT wp.install_id FROM workspace_plugins wp
-         JOIN plugin_catalog pc ON pc.id = wp.catalog_id
-        WHERE wp.workspace_id = $1
-          AND wp.pillar = 'datasource'
-          AND wp.install_id = '__demo__'
-          AND pc.slug = 'demo-postgres'
-          AND wp.status IN ('published', 'draft')`,
-      [orgId],
-    ).then((rows) => rows.length > 0).catch((err) => {
+    const ownsDemo = await isDemoInstallActive(orgId, ["published", "draft"]).catch((err) => {
       log.warn({ err: err instanceof Error ? err.message : String(err), requestId, orgId }, "Demo-ownership probe failed during recovery");
       return false;
     });
@@ -2350,19 +2342,9 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
       // recover from the bundled seed transparently.
       let ownsDemo = false;
       try {
-        const demoRows = await internalQuery<{ install_id: string }>(
-          // Workspace-scoped lookup — see the matching probe above for
-          // why this collapsed post-0096 cutover.
-          `SELECT wp.install_id FROM workspace_plugins wp
-             JOIN plugin_catalog pc ON pc.id = wp.catalog_id
-            WHERE wp.workspace_id = $1
-              AND wp.pillar = 'datasource'
-              AND wp.install_id = '__demo__'
-              AND pc.slug = 'demo-postgres'
-              AND wp.status IN ('published', 'draft')`,
-          [orgId],
-        );
-        ownsDemo = demoRows.length > 0;
+        // Workspace-scoped lookup — see the matching probe above for
+        // why this collapsed post-0096 cutover.
+        ownsDemo = await isDemoInstallActive(orgId, ["published", "draft"]);
       } catch (err) {
         // A transient DB blip during the recovery probe shouldn't mask the
         // legitimate "nothing to import" outcome the caller already got.

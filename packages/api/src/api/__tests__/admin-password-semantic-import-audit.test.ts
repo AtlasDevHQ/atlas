@@ -315,7 +315,7 @@ describe("POST /api/v1/admin/semantic/org/import — audit emission (F-29)", () 
     // Org owns __demo__ — triggers the auto-recovery branch.
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
       if (typeof sql === "string" && sql.includes("FROM workspace_plugins") && sql.includes("__demo__")) {
-        return [{ install_id: "__demo__" }];
+        return [{ active: true }];
       }
       return [];
     });
@@ -371,7 +371,7 @@ describe("POST /api/v1/admin/semantic/org/import — audit emission (F-29)", () 
     // Org owns __demo__ — but caller asked about warehouse.
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
       if (typeof sql === "string" && sql.includes("__demo__")) {
-        return [{ install_id: "__demo__" }];
+        return [{ active: true }];
       }
       return [];
     });
@@ -406,7 +406,7 @@ describe("POST /api/v1/admin/semantic/org/import — audit emission (F-29)", () 
     });
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
       if (typeof sql === "string" && sql.includes("__demo__")) {
-        return [{ install_id: "__demo__" }];
+        return [{ active: true }];
       }
       return [];
     });
@@ -433,7 +433,7 @@ describe("POST /api/v1/admin/semantic/org/import — audit emission (F-29)", () 
     // Ownership check: caller must already have a __demo__ connection.
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
       if (typeof sql === "string" && sql.includes("__demo__")) {
-        return [{ install_id: "__demo__" }];
+        return [{ active: true }];
       }
       return [];
     });

@@ -77,6 +77,7 @@ export { SANDBOX_DEFAULT_PRIORITY } from "./types";
 export {
   definePlugin,
   createPlugin,
+  createDatasourcePlugin,
   isDatasourcePlugin,
   isContextPlugin,
   isInteractionPlugin,
@@ -89,6 +90,9 @@ export {
 
 export type {
   CreatePluginOptions,
+  CreateDatasourcePluginOptions,
+  DatasourcePluginFactory,
+  DatasourcePluginRuntime,
   CollectedSemanticFile,
   SandboxHelperLogger,
   HealthCheckTimeoutOptions,

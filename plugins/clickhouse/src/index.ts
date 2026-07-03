@@ -1,8 +1,11 @@
 /**
  * ClickHouse DataSource Plugin — reference implementation for @useatlas/plugin-sdk.
  *
- * Demonstrates how the AtlasDatasourcePlugin interface can wrap real adapter
- * code extracted from the core ClickHouse adapter in packages/api/src/lib/db/connection.ts.
+ * Assembled via `createDatasourcePlugin` (#4192): the factory owns the
+ * static-vs-adapter-only mode branch, the `createFromConfig` wrapper, the
+ * initialize logging, and the measured SELECT-1 health check. This module
+ * supplies only the ClickHouse substance: the schema pair, the connection
+ * builder, and the introspection bindings.
  *
  * Two registration modes:
  *
@@ -29,8 +32,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
-import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult, PluginLogger } from "@useatlas/plugin-sdk";
+import { createDatasourcePlugin } from "@useatlas/plugin-sdk";
 import {
   createClickHouseConnection,
   extractHost,
@@ -69,121 +71,6 @@ const ClickHouseConfigSchema = ClickHouseConnectionConfigSchema.partial();
 export type ClickHouseConfig = z.infer<typeof ClickHouseConfigSchema>;
 
 /**
- * Build the plugin object from validated config.
- * Exported for direct use with definePlugin() when Zod validation
- * has already been performed externally (e.g. in tests or custom wiring).
- */
-export function buildClickHousePlugin(
-  config: ClickHouseConfig,
-): AtlasDatasourcePlugin<ClickHouseConfig> {
-  let log: PluginLogger | undefined;
-
-  // When a static url is configured the plugin wires a config-defined
-  // connection at boot; without one it is registered adapter-only.
-  const staticUrl = config.url;
-
-  const connection: AtlasDatasourcePlugin<ClickHouseConfig>["connection"] = {
-    // DB-driven (admin-UI-registered) datasources: build a connection from
-    // the per-(workspace, install) config decrypted from `workspace_plugins`,
-    // re-validated through the strict schema. Always available — this is the
-    // SaaS per-workspace path and the only path in adapter-only mode.
-    createFromConfig: (runtimeConfig) => {
-      const parsed = ClickHouseConnectionConfigSchema.parse(runtimeConfig);
-      const built = createClickHouseConnection({
-        url: parsed.url,
-        database: parsed.database,
-        logger: log,
-      });
-      // #3667 — introspection is a capability OF the built connection, bound to
-      // the creds that built it (the host's unified resolver consumes these; no
-      // url/config re-resolution). Read-only via the connection's query path.
-      return {
-        ...built,
-        listObjects: (o) => listClickHouseObjects({ url: parsed.url, schema: o?.schema ?? parsed.database }),
-        profile: (o) =>
-          profileClickHouse({
-            url: parsed.url,
-            schema: o?.schema ?? parsed.database,
-            selectedTables: o?.selectedTables,
-            prefetchedObjects: o?.prefetchedObjects,
-            progress: o?.progress,
-            logger: o?.logger,
-          }),
-      };
-    },
-    dbType: "clickhouse",
-    parserDialect: "PostgresQL", // closest match in node-sql-parser
-    forbiddenPatterns: CLICKHOUSE_FORBIDDEN_PATTERNS,
-    // Introspection (listObjects / profile) is a capability of the BUILT
-    // connection (createFromConfig above), bound to the creds that built it — the
-    // one home MCP, the wizard, and the CLI all consume (ADR-0017 / #3670). No
-    // connection-namespace profiler exports remain.
-  };
-
-  if (staticUrl) {
-    connection.create = () =>
-      // ClickHouse HTTP transport is stateless — safe to create per call.
-      // Pool-based databases (Postgres, MySQL) should cache the connection.
-      createClickHouseConnection({ url: staticUrl, database: config.database, logger: log });
-  }
-
-  return {
-    id: "clickhouse-datasource",
-    types: ["datasource"] as const,
-    version: "0.1.0",
-    name: "ClickHouse DataSource",
-    config,
-
-    connection,
-
-    entities: [],
-
-    dialect: [
-      "This datasource uses ClickHouse SQL dialect.",
-      "- Use toStartOfMonth(), toStartOfWeek() for date truncation (not DATE_TRUNC).",
-      "- Use countIf(condition) instead of COUNT(CASE WHEN ... END).",
-      "- Use sumIf(column, condition) instead of SUM(CASE WHEN ... END).",
-      "- Use arrayJoin() to unnest arrays.",
-      "- String functions: lower(), upper(), trim(), splitByChar().",
-      "- Do not add FORMAT clauses — the adapter handles output format automatically.",
-      "- ClickHouse is column-oriented — avoid SELECT * on wide tables.",
-    ].join("\n"),
-
-    async initialize(ctx) {
-      log = ctx.logger;
-      if (staticUrl) {
-        ctx.logger.info(`ClickHouse datasource plugin initialized (${extractHost(staticUrl)})`);
-      } else {
-        ctx.logger.info(
-          "ClickHouse datasource plugin registered as adapter-only — per-workspace datasources via Admin → Connections",
-        );
-      }
-    },
-
-    async healthCheck(): Promise<PluginHealthResult> {
-      // Adapter-only: no static datasource to probe. The plugin itself is a
-      // healthy adapter; per-workspace connections are health-checked by the
-      // ConnectionRegistry once installed.
-      if (!staticUrl) {
-        return { healthy: true, message: "adapter-only: no static datasource configured" };
-      }
-      return measuredHealthCheck(async () => {
-        let conn: PluginDBConnection | undefined;
-        try {
-          conn = createClickHouseConnection({ url: staticUrl, database: config.database });
-          await conn.query("SELECT 1", 5000);
-          return { healthy: true };
-        } finally {
-          if (conn) {
-            await conn.close();
-          }
-        }
-      });
-    },
-  };
-}
-
-/**
  * Factory function for use in atlas.config.ts plugins array.
  *
  * Validates config via Zod at call time, then builds the plugin.
@@ -196,10 +83,68 @@ export function buildClickHousePlugin(
  * plugins: [clickhousePlugin({})]
  * ```
  */
-export const clickhousePlugin = createPlugin({
+export const clickhousePlugin = createDatasourcePlugin<
+  ClickHouseConfig,
+  z.infer<typeof ClickHouseConnectionConfigSchema>
+>({
+  id: "clickhouse-datasource",
+  name: "ClickHouse DataSource",
+  dbType: "clickhouse",
+  parserDialect: "PostgresQL", // closest match in node-sql-parser
+  forbiddenPatterns: CLICKHOUSE_FORBIDDEN_PATTERNS,
   configSchema: ClickHouseConfigSchema,
-  create: buildClickHousePlugin,
+  connectionConfigSchema: ClickHouseConnectionConfigSchema,
+
+  dialect: [
+    "This datasource uses ClickHouse SQL dialect.",
+    "- Use toStartOfMonth(), toStartOfWeek() for date truncation (not DATE_TRUNC).",
+    "- Use countIf(condition) instead of COUNT(CASE WHEN ... END).",
+    "- Use sumIf(column, condition) instead of SUM(CASE WHEN ... END).",
+    "- Use arrayJoin() to unnest arrays.",
+    "- String functions: lower(), upper(), trim(), splitByChar().",
+    "- Do not add FORMAT clauses — the adapter handles output format automatically.",
+    "- ClickHouse is column-oriented — avoid SELECT * on wide tables.",
+  ].join("\n"),
+
+  // Static mode logs the host only — never credentials embedded in the url.
+  // `url!` is provably present: describeStaticTarget only runs in static mode,
+  // which the factory's default predicate gates on a non-empty `url`.
+  describeStaticTarget: (config) => extractHost(config.url!),
+
+  // ClickHouse HTTP transport is stateless — safe to build per call (the
+  // factory default), so `connection.create()` and the health probe each get a
+  // fresh connection. Pool-based databases would set `cacheStaticConnection`.
+  buildConnection: (parsed, rt) =>
+    createClickHouseConnection({
+      url: parsed.url,
+      database: parsed.database,
+      logger: rt.logger,
+    }),
+
+  // #3667 — introspection is a capability OF the built connection, bound to
+  // the creds that built it (the host's unified resolver consumes these; no
+  // url/config re-resolution). Read-only via the connection's query path.
+  attachIntrospection: (built, { parsed }) => ({
+    ...built,
+    listObjects: (o) => listClickHouseObjects({ url: parsed.url, schema: o?.schema ?? parsed.database }),
+    profile: (o) =>
+      profileClickHouse({
+        url: parsed.url,
+        schema: o?.schema ?? parsed.database,
+        selectedTables: o?.selectedTables,
+        prefetchedObjects: o?.prefetchedObjects,
+        progress: o?.progress,
+        logger: o?.logger,
+      }),
+  }),
 });
+
+/**
+ * Build the plugin object from an already-validated config — bypasses the Zod
+ * config schema. For direct use when validation has been performed externally
+ * (e.g. in tests or custom wiring).
+ */
+export const buildClickHousePlugin = clickhousePlugin.build;
 
 export { createClickHouseConnection, rewriteClickHouseUrl, extractHost } from "./connection";
 export { listClickHouseObjects, profileClickHouse } from "./profiler";

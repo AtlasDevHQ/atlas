@@ -14,11 +14,13 @@ import { savePluginEnabled, savePluginConfig, getPluginConfig } from "@atlas/api
 import {
   MASKED_PLACEHOLDER,
   encryptSecretFields,
-  decryptSecretFields,
   checkStrictPluginSecrets,
   type ConfigSchema,
 } from "@atlas/api/lib/plugins/secrets";
-import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import {
+  decryptStoredConfig,
+  InstalledConfigDecryptError,
+} from "@atlas/api/lib/integrations/installed-connection";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -356,17 +358,13 @@ adminPlugins.openapi(getPluginSchemaRoute, async (c) => {
   const dbOverridesRaw = await getPluginConfig(id);
   let dbOverrides: Record<string, unknown>;
   try {
-    dbOverrides = decryptSecretFields(dbOverridesRaw, configSchema);
+    dbOverrides = decryptStoredConfig(dbOverridesRaw, configSchema, {
+      pluginId: id,
+      requestId,
+      surface: "plugin-schema-read",
+    });
   } catch (err) {
-    log.error(
-      {
-        pluginId: id,
-        err: err instanceof Error ? err : new Error(String(err)),
-        scrubbed: errorMessage(err),
-        requestId,
-      },
-      "Failed to decrypt plugin config secrets on schema read",
-    );
+    if (!(err instanceof InstalledConfigDecryptError)) throw err;
     return c.json({
       error: "internal_error",
       message: "Failed to read plugin configuration — encrypted secret could not be decrypted.",
@@ -451,8 +449,13 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
     const dbOverridesRaw = await getPluginConfig(id);
     let dbOverrides: Record<string, unknown>;
     try {
-      dbOverrides = decryptSecretFields(dbOverridesRaw, configSchemaForEncrypt);
+      dbOverrides = decryptStoredConfig(dbOverridesRaw, configSchemaForEncrypt, {
+        pluginId: id,
+        requestId,
+        surface: "plugin-config-put",
+      });
     } catch (err) {
+      if (!(err instanceof InstalledConfigDecryptError)) throw err;
       logAdminAction({
         actionType: ADMIN_ACTIONS.plugin.configUpdate,
         targetType: "plugin",
@@ -463,18 +466,9 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
           pluginId: id,
           pluginSlug: id,
           decryptFailure: true,
-          error: errorMessage(err),
+          error: err.message,
         },
       });
-      log.error(
-        {
-          pluginId: id,
-          err: err instanceof Error ? err : new Error(String(err)),
-          scrubbed: errorMessage(err),
-          requestId,
-        },
-        "Failed to decrypt plugin config secrets on save-read",
-      );
       return c.json({
         error: "internal_error",
         message: "Failed to read current plugin configuration — encrypted secret could not be decrypted.",

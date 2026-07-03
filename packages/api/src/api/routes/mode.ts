@@ -33,6 +33,7 @@ import {
   queryEffect,
 } from "@atlas/api/lib/db/internal";
 import { matchScopeAcrossAliases } from "@atlas/api/lib/db/with-group-scope";
+import { demoInstallActiveSql } from "@atlas/api/lib/integrations/installed-connection";
 import {
   ContentModeRegistry,
   ContentModeRegistryLive,
@@ -120,21 +121,11 @@ const getModeRoute = createRoute({
 
 // "Demo is active for this org" post-0096 cutover: every workspace
 // owns its own per-workspace `demo-postgres` install row, archived
-// per-workspace to hide. So "active" is simply "the demo row exists
-// for this workspace and isn't archived". The shared-tombstone
-// fallback the legacy `connections` shape required is gone (#2744 /
-// ADR-0007).
-const DEMO_ACTIVE_SQL = `
-  SELECT EXISTS (
-    SELECT 1 FROM workspace_plugins wp
-      JOIN plugin_catalog pc ON pc.id = wp.catalog_id
-     WHERE wp.workspace_id = $1
-       AND wp.pillar = 'datasource'
-       AND wp.install_id = '__demo__'
-       AND pc.slug = 'demo-postgres'
-       AND wp.status = 'published'
-  ) AS active
-`;
+// per-workspace to hide. So "active" is simply "the demo row is
+// published for this workspace". The probe SQL is stated once in the
+// installed-connection lib seam (#4194); this route runs it through
+// `queryEffect` so failures land in the Effect error channel.
+const DEMO_ACTIVE_SQL = demoInstallActiveSql(["published"]);
 
 function totalDrafts(counts: ModeDraftCounts): number {
   return (

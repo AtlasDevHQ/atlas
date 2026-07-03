@@ -30,6 +30,22 @@ mock.module("@duckdb/node-api", () => ({
   },
 }));
 
+// Spy on the profiler so the built-connection introspection tests can assert
+// WHAT url the plugin forwards, without standing up a real DuckDB. `...real`
+// keeps every other profiler export intact so the plugin module loads normally.
+// (#3667 — introspection is a capability of the BUILT connection; the DuckDB
+// substance the shared factory can't express is the bare-path → `duckdb://`
+// reconstruction, pinned below. The generic assembly is covered once in the SDK
+// factory test, packages/plugin-sdk/src/__tests__/datasource-factory.test.ts.)
+const listSpy = mock(async (_o: unknown) => [] as unknown[]);
+const profileSpy = mock(async (_o: unknown) => ({ profiles: [], errors: [] }));
+const realProfiler = await import("../src/profiler");
+mock.module("../src/profiler", () => ({
+  ...realProfiler,
+  listDuckDBObjects: listSpy,
+  profileDuckDB: profileSpy,
+}));
+
 import { definePlugin, isDatasourcePlugin } from "@useatlas/plugin-sdk";
 import {
   duckdbPlugin,
@@ -289,6 +305,34 @@ describe("adapter-only mode", () => {
     expect(() => plugin.connection.createFromConfig!({})).toThrow(
       /Either url or path is required/,
     );
+  });
+
+  // #3667 — the built connection's introspection is bound to the path/url that
+  // built it. DuckDB's unique substance (vs the generic factory assembly) is
+  // reconstructing a profilable `duckdb://` url from a bare `path`.
+  test("createFromConfig().profile forwards the configured duckdb:// url to the profiler", async () => {
+    profileSpy.mockClear();
+    const plugin = duckdbPlugin({});
+    const built = plugin.connection.createFromConfig!({ url: "duckdb://analytics.duckdb" }) as {
+      profile: (o?: { selectedTables?: string[] }) => Promise<unknown>;
+    };
+    await built.profile({ selectedTables: ["events"] });
+    expect(profileSpy).toHaveBeenCalledTimes(1);
+    const args = profileSpy.mock.calls[0][0] as { url?: string; selectedTables?: string[] };
+    expect(args.url).toBe("duckdb://analytics.duckdb");
+    expect(args.selectedTables).toEqual(["events"]);
+  });
+
+  test("createFromConfig().listObjects reconstructs a duckdb:// url from a bare path", async () => {
+    listSpy.mockClear();
+    const plugin = duckdbPlugin({});
+    const built = plugin.connection.createFromConfig!({ path: "/tmp/a.duckdb" }) as {
+      listObjects: (o?: { schema?: string }) => Promise<unknown>;
+    };
+    await built.listObjects();
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    const args = listSpy.mock.calls[0][0] as { url?: string };
+    expect(args.url).toBe("duckdb:///tmp/a.duckdb");
   });
 
   test("createFromConfig rejects an invalid runtime url scheme", () => {

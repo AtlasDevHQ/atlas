@@ -37,7 +37,6 @@ import {
   type ProactiveGate,
   type ProactiveService,
   type AnswerMeter,
-  type DeployModeResolver,
   type MarketplaceVeneer,
   type SaasCrm,
 } from "./services";
@@ -189,7 +188,6 @@ export type EnterpriseSubsystem =
   | ProactiveGate
   | ProactiveService
   | AnswerMeter
-  | DeployModeResolver
   | MarketplaceVeneer
   | SaasCrm;
 

@@ -96,7 +96,6 @@ export {
   Branding,
   Domains,
   ProactiveGate,
-  DeployModeResolver,
   NoopResidencyResolverLayer,
   NoopModelRouterLayer,
   NoopMaskingPolicyLayer,
@@ -113,7 +112,6 @@ export {
   NoopBrandingLayer,
   NoopDomainsLayer,
   NoopProactiveGateLayer,
-  NoopDeployModeResolverLayer,
   NoopEnterpriseDefaultsLayer,
   type ResidencyResolverShape,
   type ModelRouterShape,
@@ -131,7 +129,6 @@ export {
   type BrandingShape,
   type DomainsShape,
   type ProactiveGateShape,
-  type DeployModeResolverShape,
 } from "./services";
 
 // ── Startup Layers (P6) ─────────────────────────────────────────────
@@ -168,16 +165,6 @@ export {
   type AtlasAiModelShape,
 } from "./ai";
 
-// ── Toolkit Service (P10b) ──────────────────────────────────────────
-
-export {
-  AtlasToolkit,
-  AtlasToolkitLive,
-  makeAtlasToolkitLive,
-  createToolkitTestLayer,
-  type AtlasToolkitShape,
-} from "./toolkit";
-
 // ── SemanticGenerator Service (#3506 — MCP V2 Blocker #1) ───────────
 
 export {
@@ -191,16 +178,6 @@ export {
   type ProfileAndGenerateOptions,
   type ProfileAndGenerateResult,
 } from "./semantic-generator";
-
-// ── SQL Client Service (native @effect/sql) ─────────────────────────
-
-export {
-  AtlasSqlClient,
-  makeAtlasSqlClientLive,
-  makeOrgSqlClientLive,
-  createSqlClientTestLayer,
-  type AtlasSqlClientShape,
-} from "./sql";
 
 // ── Internal DB Service (P11b) ──────────────────────────────────────
 

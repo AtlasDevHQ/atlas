@@ -1,8 +1,7 @@
 /**
- * Deploy mode resolution — promoted to core in #2572 so the
- * `DeployModeResolver` Tag (and `lib/config.ts:applyDeployMode`) can
- * resolve `"saas" | "self-hosted"` without core importing from
- * `@atlas/ee`.
+ * Deploy mode resolution — promoted to core in #2572 so
+ * `lib/config.ts:applyDeployMode` can resolve `"saas" | "self-hosted"`
+ * without core importing from `@atlas/ee`.
  *
  * EE's `ee/src/deploy-mode.ts` is now a thin re-export for back-compat —
  * the resolution logic lives here. Behavior is identical: `"saas"` mode

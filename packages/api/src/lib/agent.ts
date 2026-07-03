@@ -73,7 +73,7 @@ import {
   SpanStatusCode,
   context as otelContext,
 } from "@opentelemetry/api";
-import { AtlasAiModel, type AtlasAiModelShape } from "./effect/ai";
+import { type AtlasAiModelShape } from "./effect/ai";
 import {
   resolveCompactionSettings,
   estimateContextTokens,
@@ -2188,52 +2188,4 @@ export async function runAgent({
   // `x-run-id` reattach header. Attached as a non-enumerable-ish extra property
   // on the streamText result; existing callers ignore it.
   return Object.assign(result, { runId });
-}
-
-// ── Effect-based agent runner (P10c) ────────────────────────────────
-
-/**
- * Run the Atlas agent as an Effect program.
- *
- * Reads the AI model from `AtlasAiModel` in the Effect Context and
- * delegates to `runAgent`. This is the preferred entry point for
- * Effect-based callers — it makes the agent testable via Layer.provide
- * with a mock LLM.
- *
- * @example
- * ```ts
- * import { runAgentEffect } from "@atlas/api/lib/agent";
- * import { createAiModelTestLayer } from "@atlas/api/lib/effect/ai";
- *
- * // In tests — provide a mock model
- * const result = await Effect.runPromise(
- *   runAgentEffect({ messages }).pipe(
- *     Effect.provide(createAiModelTestLayer({ ... })),
- *   ),
- * );
- * ```
- */
-export function runAgentEffect(params: {
-  messages: UIMessage[];
-  tools?: ToolRegistry;
-  conversationId?: string;
-  warnings?: string[];
-  maxSteps?: number;
-  /**
-   * #3756 — run as a delegated subagent (isolated, empty working memory). Mirrors
-   * the `runAgent` flag so an Effect-based delegated caller can request isolation
-   * through this seam too, rather than silently inheriting a parent-scoped store.
-   */
-  subagent?: boolean;
-}): Effect.Effect<ReturnType<typeof streamText>, Error, AtlasAiModel> {
-  return Effect.gen(function* () {
-    const aiModel = yield* AtlasAiModel;
-    return yield* Effect.tryPromise({
-      try: () => runAgent({ ...params, aiModel }),
-      catch: (err) =>
-        new Error(
-          `Agent execution failed: ${err instanceof Error ? err.message : String(err)}`,
-        ),
-    });
-  });
 }

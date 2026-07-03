@@ -204,10 +204,9 @@ export type DbCredentialLookup = (
 /**
  * Deploy mode discriminator passed to {@link resolveWorkspaceCredentials}.
  * Used only to tailor the "missing credentials" error message — both
- * modes are DB-only. The caller resolves this via the
- * `DeployModeResolver` Tag in `packages/api/src/lib/effect/services.ts`
- * and passes the value in so the plugin stays portable (no `@atlas/api`
- * back-import).
+ * modes are DB-only. The caller resolves this via `resolveDeployMode`
+ * in `packages/api/src/lib/effect/deploy-mode.ts` and passes the value
+ * in so the plugin stays portable (no `@atlas/api` back-import).
  */
 export type DeployMode = "saas" | "self-hosted";
 

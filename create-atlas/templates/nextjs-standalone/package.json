@@ -20,7 +20,7 @@
     "@ai-sdk/openai": "^3.0.74",
     "@ai-sdk/provider": "^3.0.10",
     "@ai-sdk/react": "^3.0.210",
-    "@useatlas/react": "^0.1.0",
+    "@useatlas/react": "^0.2.0",
     "@useatlas/sdk": "^0.1.0",
     "@useatlas/twenty": "^0.0.6",
     "@useatlas/types": "^0.2.0",

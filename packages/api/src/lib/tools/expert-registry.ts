@@ -18,7 +18,7 @@ import { validateProposal } from "./validate-proposal";
 const PROFILE_TABLE_DESCRIPTION = `### 5. Profile a Table
 Use the profileTable tool to examine table structure, cardinality, null rates, and sample values:
 - Profile a table before proposing changes to understand the actual data
-- Use column-level stats (nullRate, distinctCount, topValues) to validate type accuracy
+- Use column-level stats (nullRate, distinctCount, sampleValues) to validate type accuracy
 - Check if sample_values in entity YAML match actual data`;
 
 const CHECK_DISTRIBUTION_DESCRIPTION = `### 6. Check Data Distribution

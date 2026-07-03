@@ -146,6 +146,18 @@ function runCycleWithDefectGuard(): void {
 }
 
 /**
+ * Clamp a millisecond delay into `setTimeout`'s safe range. Non-finite /
+ * non-positive → the 24h default; over-large → `MAX_TIMER_DELAY_MS` (a bigger
+ * value overflows the 32-bit timer and hot-loops at 1ms). Applied to BOTH
+ * arming paths — the registry read and an explicit start-time override — so the
+ * overflow guard is a genuine guarantee, not just a registry-path one (#4236).
+ */
+function clampTimerDelayMs(ms: number): number {
+  if (!Number.isFinite(ms) || ms <= 0) return DEFAULT_KNOWLEDGE_SYNC_INTERVAL_MS;
+  return Math.min(ms, MAX_TIMER_DELAY_MS);
+}
+
+/**
  * Arm the next tick, re-reading the configured interval so a settings change
  * (admin console / DB override, ~30s registry hot-reload) takes effect by the
  * following tick — no restart. An explicit start-time override stays fixed.
@@ -154,7 +166,10 @@ function runCycleWithDefectGuard(): void {
  */
 function armNextTick(): void {
   if (!_running) return;
-  const interval = _intervalOverrideMs ?? getKnowledgeSyncIntervalMs();
+  // getKnowledgeSyncIntervalMs already returns a clamped value; clamp again so
+  // an explicit start-time override (which bypasses that function) can't
+  // overflow the timer either — the guard covers every arming path.
+  const interval = clampTimerDelayMs(_intervalOverrideMs ?? getKnowledgeSyncIntervalMs());
   if (_armedIntervalMs !== null && _armedIntervalMs !== interval) {
     log.info(
       { previousMs: _armedIntervalMs, intervalMs: interval },
@@ -171,6 +186,10 @@ function armNextTick(): void {
     try {
       runCycleWithDefectGuard();
     } catch (err: unknown) {
+      // Defensive / near-unreachable: runCycleWithDefectGuard delegates to an
+      // async cycle (rejections, not sync throws) and its only sync statements
+      // are the in-flight guard + a debug log. This catch exists so a future
+      // refactor that adds a throwing sync pre-check can't kill the chain.
       log.error(
         { err: err instanceof Error ? err.message : String(err) },
         "Knowledge bundle sync tick threw synchronously — re-arming anyway",

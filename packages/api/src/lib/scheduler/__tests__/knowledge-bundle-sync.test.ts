@@ -146,7 +146,9 @@ describe("interval hot-reload (#4236)", () => {
       // Operator changes the setting between ticks (env tier stands in for
       // the registry's DB-override tier — same getSettingAuto read path).
       process.env[KEY] = "1";
-      await Bun.sleep(150); // let the 72ms tick fire and re-arm
+      // Generous margin over the 72ms tick — the assertion is a strict lower
+      // bound, so headroom guards against a congested-CI real-timer delay.
+      await Bun.sleep(300); // let the 72ms tick fire and re-arm
       expect(CYCLE_CALLS).toBeGreaterThanOrEqual(2); // initial + ≥1 tick
       expect(_getArmedKnowledgeSyncIntervalMs()).toBe(60 * 60 * 1000);
       stopKnowledgeBundleSyncScheduler();

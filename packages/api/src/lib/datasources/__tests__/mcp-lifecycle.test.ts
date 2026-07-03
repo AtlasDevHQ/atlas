@@ -156,6 +156,19 @@ mock.module("@atlas/api/lib/plugins/secrets", () => ({
   maskSecretFields: (config: Record<string, unknown>) => config,
 }));
 
+// Native profilers — spied (spread-real) so the native branch's
+// `buildNativeLiveConnection` wiring is observable: the resolved connection's
+// `profile`/`listObjects` must reach the pg profiler with the install's
+// configured schema (#4197), not just exist as functions.
+const realProfiler = await import("@atlas/api/lib/profiler");
+const profilePostgresSpy = mock(async () => ({ profiles: [], errors: [] }));
+const listPostgresObjectsSpy = mock(async () => []);
+mock.module("@atlas/api/lib/profiler", () => ({
+  ...realProfiler,
+  profilePostgres: profilePostgresSpy,
+  listPostgresObjects: listPostgresObjectsSpy,
+}));
+
 // Controllable plugin lookup so the `createFromConfig` path in
 // `resolveLiveConnection` can be exercised without registering real plugins.
 // Defaults to `undefined` ("no plugin registered" — the real lookup's result in
@@ -181,6 +194,8 @@ const {
 beforeEach(() => {
   mockInternalQuery.mockClear();
   mockHasInternalDB.mockClear();
+  profilePostgresSpy.mockClear();
+  listPostgresObjectsSpy.mockClear();
   registerSpy.mockClear();
   unregisterSpy.mockClear();
   healthCheckSpy.mockClear();
@@ -698,6 +713,20 @@ describe("resolveLiveConnection (#3667)", () => {
       expect(typeof res.connection.listObjects).toBe("function");
       // #3546 — the group scope drives where persisted drafts land.
       expect(res.connection.connectionGroupId).toBe("prod");
+      // #4197 — the bound introspection reaches the native profiler with the
+      // install's CONFIGURED schema (not the pg "public" default): drop the
+      // configuredSchema forwarding in the native branch and this goes red.
+      await res.connection.profile({ selectedTables: ["users"] });
+      expect(profilePostgresSpy).toHaveBeenCalledWith({
+        url: "postgres://u:p@h/db",
+        schema: "analytics",
+        selectedTables: ["users"],
+      });
+      await res.connection.listObjects();
+      expect(listPostgresObjectsSpy).toHaveBeenCalledWith({
+        url: "postgres://u:p@h/db",
+        schema: "analytics",
+      });
     }
   });
 

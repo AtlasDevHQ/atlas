@@ -3,7 +3,7 @@
  * dispatch (`nativeProfilerFor`) and the shared native
  * `LiveDatasourceConnection` assembly (`buildNativeLiveConnection`).
  *
- * Before #4197 the dialect ternary was copy-pasted at three sites and the
+ * Before #4197 the dialect dispatch was duplicated at three sites and the
  * native connection shape was hand-built twice (mcp-lifecycle's native branch +
  * the env-var byproduct). These tests pin the single home's contract: dispatch
  * per dialect, the schema-default rule (caller > configured > pg "public"),
@@ -20,7 +20,11 @@ const listPostgresObjectsSpy = mock(async (): Promise<DatabaseObject[]> => noObj
 const listMySQLObjectsSpy = mock(async (): Promise<DatabaseObject[]> => noObjects);
 const profilePostgresSpy = mock(async (): Promise<ProfilingResult> => emptyResult());
 const profileMySQLSpy = mock(async (): Promise<ProfilingResult> => emptyResult());
+// Spread the real module so every export stays present (mock-all-exports
+// discipline); override only the four natives this suite drives.
+const realProfiler = await import("@atlas/api/lib/profiler");
 mock.module("@atlas/api/lib/profiler", () => ({
+  ...realProfiler,
   listPostgresObjects: listPostgresObjectsSpy,
   listMySQLObjects: listMySQLObjectsSpy,
   profilePostgres: profilePostgresSpy,

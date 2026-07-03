@@ -3,9 +3,9 @@
  * whitelisted table.
  *
  * Profiles through the ONE profiler home (#4197): the live connection resolved
- * by `resolveProfilingConnection` (riding the same `resolveLiveConnection` MCP
- * and the wizard use), whose `profile()` is a capability bound to the creds that
- * built the connection. That makes the tool work for plugin dbTypes (ClickHouse,
+ * by `resolveProfilingConnection` (riding the same `resolveLiveConnection` that
+ * MCP and the wizard use), whose `profile()` is a capability bound to the creds
+ * that built the connection. That makes the tool work for plugin dbTypes (ClickHouse,
  * Snowflake, BigQuery, …) and OAuth datasources, not just native pg/mysql — the
  * previous implementation hand-rolled its own registry-pool sampling queries and
  * was native-only. Subject to the same table whitelist + mode gate as executeSQL.
@@ -20,6 +20,24 @@ import { withSpan } from "@atlas/api/lib/tracing";
 import { resolveProfilingConnection } from "@atlas/api/lib/datasources/profiling-connection";
 
 const log = createLogger("tool:profile-table");
+
+/** One column's report — the unified `ColumnProfile`, mapped for the agent. */
+export interface ProfileTableColumn {
+  readonly name: string;
+  readonly sqlType: string;
+  readonly nullable: boolean;
+  /** `null` when the profiler's column stats degraded (introspection failed). */
+  readonly nullRate: number | null;
+  readonly distinctCount: number | null;
+  readonly sampleValues: string[];
+  readonly isPrimaryKey: boolean;
+  readonly isForeignKey: boolean;
+  readonly isEnumLike: boolean;
+}
+
+export type ProfileTableResult =
+  | { readonly error: string }
+  | { readonly rowCount: number; readonly columns: ProfileTableColumn[] };
 
 export const profileTable = tool({
   description: "Profile a table to get column cardinality, null rates, data types, and sample values. Only tables in the semantic layer can be profiled.",
@@ -57,15 +75,15 @@ async function profileTableImpl({
   table: string;
   columns?: string[];
   connId: string;
-}) {
+}): Promise<ProfileTableResult> {
   try {
     // Whitelist + mode visibility check
     const reqCtx = getRequestContext();
     const atlasMode = reqCtx?.atlasMode ?? "published";
     const authOrgId = reqCtx?.user?.activeOrganizationId;
 
-    // Mode isolation: reject non-visible connections before touching pools.
-    // Mirrors the gate in executeSQL.
+    // Mode isolation: reject non-visible connections before resolving a
+    // connection. Mirrors the gate in executeSQL.
     if (authOrgId) {
       const visible = await isConnectionVisibleInMode(authOrgId, connId, atlasMode);
       if (!visible) {
@@ -99,10 +117,23 @@ async function profileTableImpl({
     try {
       const result = await connection.profile({ selectedTables: [table] });
 
-      const profile =
-        result.profiles.find((p) => p.table_name === table) ?? result.profiles[0];
+      const exact = result.profiles.find((p) => p.table_name === table);
+      if (!exact && result.profiles[0]) {
+        // A profiler that returns a profile under a different name (casing,
+        // schema qualification) still profiled the ONE selected table — but
+        // leave a breadcrumb so a mismatch is diagnosable, never silent.
+        log.warn(
+          { requested: table, got: result.profiles[0].table_name, connId },
+          "profileTable: exact table_name match missed; using the positional profile",
+        );
+      }
+      const profile = exact ?? result.profiles[0];
       if (!profile) {
         const profErr = result.errors.find((e) => e.table === table) ?? result.errors[0];
+        log.warn(
+          { table, connId, profilerError: profErr?.error },
+          "profileTable: profiler returned no profile for table",
+        );
         return {
           error: `Failed to profile table "${table}": ${
             profErr ? profErr.error : "table not found in the datasource"
@@ -146,7 +177,7 @@ async function profileTableImpl({
     }
   } catch (err) {
     log.warn(
-      { err: err instanceof Error ? err.message : String(err), table },
+      { err: err instanceof Error ? err.message : String(err), table, connId },
       "profileTable failed",
     );
     return {

@@ -44,7 +44,8 @@ import {
 } from "@atlas/api/lib/profiler";
 // One profiler home (#3657, ADR-0017 §Amendment(#3667)): the wizard resolves a
 // LIVE connection via the SAME resolver MCP uses — `resolveLiveConnection`,
-// surfaced for the wizard as `resolveProfilingConnection`. Introspection
+// surfaced as `resolveProfilingConnection` (shared with the agent's
+// `profileTable` tool since #4197). Introspection
 // (`listObjects` / `profile`) is a capability OF that connection, bound to the
 // creds that built it — there is no second profiler seam, no url/config
 // threading, and no per-call native signature adaptation. The only rejections

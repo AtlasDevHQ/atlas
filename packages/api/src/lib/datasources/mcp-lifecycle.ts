@@ -981,14 +981,15 @@ export type ResolveLiveConnectionResult =
       /**
        * The connection's CONFIGURED schema/database/dataset scope — the
        * `workspace_plugins` config schema (`poolSchema`) — or `undefined` when
-       * none was configured / it's not meaningful (MySQL, OAuth). This is the
-       * configured scope, NOT the fully-resolved effective scope: the canonical
-       * dialect default (Postgres → `"public"`) is applied DOWNSTREAM by the
-       * consumer ({@link WizardConnectionContext}'s `effectiveSchema`), not baked
-       * in here. Surfaced so the in-product wizard, which rides this same resolver
-       * (one profiler home), can report the schema in its response without
-       * re-deriving its own connection resolution. The MCP profiling path ignores
-       * it. (Always present on the `ok` variant so every `ok` branch must decide.)
+       * none was configured / it's not meaningful (MySQL, OAuth). This FIELD is
+       * the raw configured scope, never defaulted: the canonical dialect default
+       * (Postgres → `"public"`) is applied by `buildNativeLiveConnection` for the
+       * connection's own `listObjects`/`profile`, and for the wire shape by
+       * `profiling-connection.ts`'s `effectiveSchema` ({@link ProfilingConnectionContext}).
+       * Surfaced so the profiling consumers riding this one resolver (the wizard
+       * routes, the `profileTable` tool) can report the schema without
+       * re-deriving connection resolution. The MCP profiling path ignores it.
+       * (Always present on the `ok` variant so every `ok` branch must decide.)
        */
       readonly defaultSchema: string | undefined;
     }

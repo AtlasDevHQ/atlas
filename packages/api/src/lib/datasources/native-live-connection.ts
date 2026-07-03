@@ -2,13 +2,12 @@
  * Native (pg/mysql) profiler dispatch + live-connection assembly — ONE home
  * (#4197).
  *
- * Before this module, the `dbType === "mysql" ? profileMySQL : profilePostgres`
- * ternary was copy-pasted at three sites (`effect/semantic-generator.ts`'s
- * `resolveProfiler`, `mcp-lifecycle.ts`'s native branch, the wizard byproduct in
- * `profiling-connection.ts`), and the native `LiveDatasourceConnection` shape was
- * hand-built twice (mcp-lifecycle + the wizard byproduct). A dialect added to the
- * native set — or a fix to the schema-default rule — had to be made in every
- * copy or silently diverge.
+ * Before this module, the pg-vs-mysql dialect dispatch was duplicated at three
+ * sites (`effect/semantic-generator.ts`'s `resolveProfiler`, `mcp-lifecycle.ts`'s
+ * native branch, the wizard byproduct in `profiling-connection.ts`), and the
+ * native `LiveDatasourceConnection` shape was hand-built twice (mcp-lifecycle +
+ * the wizard byproduct). A dialect added to the native set — or a fix to the
+ * schema-default rule — had to be made in every copy or silently diverge.
  *
  * Kept LIGHT on purpose: runtime imports are the native profilers only (which
  * lazy-load their own drivers), so consumers like `profiling-connection.ts` can
@@ -56,7 +55,9 @@ export interface BuildNativeLiveConnectionOptions {
   /**
    * The install's CONFIGURED schema scope (`workspace_plugins` config), if any.
    * Applied when the caller passes none; Postgres falls back to `"public"`
-   * (its canonical search-path), MySQL ignores schema entirely.
+   * (its canonical search-path). MySQL ignores schema entirely (forwarded but
+   * inert per the `NativeListObjectsOptions` contract — the mysql profilers
+   * never read it).
    */
   readonly configuredSchema?: string;
   /** The install's connection-group scope (`null` for an ungrouped install). */

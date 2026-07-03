@@ -32,19 +32,16 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 // ── Semantic whitelist, mutable per test ──────────────────────────────
+// Spread the real barrel so every export stays present (mock-all-exports
+// discipline); override only the whitelist reads this tool consumes.
 let whitelistedTables: Set<string>;
 let orgWhitelistedTables: Set<string>;
 const getOrgWhitelistedTablesSpy = mock(() => orgWhitelistedTables);
+const realSemantic = await import("@atlas/api/lib/semantic");
 mock.module("@atlas/api/lib/semantic", () => ({
+  ...realSemantic,
   getOrgWhitelistedTables: getOrgWhitelistedTablesSpy,
-  loadOrgWhitelist: async () => new Map(),
-  invalidateOrgWhitelist: () => {},
-  getOrgSemanticIndex: async () => "",
-  invalidateOrgSemanticIndex: () => {},
-  _resetOrgWhitelists: () => {},
-  _resetOrgSemanticIndexes: () => {},
   getWhitelistedTables: () => whitelistedTables,
-  _resetWhitelists: () => {},
 }));
 
 // ── Mode-visibility gate, mutable per test ────────────────────────────
@@ -89,26 +86,14 @@ mock.module("@atlas/api/lib/datasources/profiling-connection", () => ({
 
 // Import after mocks
 const { profileTable } = await import("../profile-table");
-
-interface ProfiledColumn {
-  name: string;
-  sqlType: string;
-  nullable: boolean;
-  nullRate: number | null;
-  distinctCount: number | null;
-  sampleValues: string[];
-  isPrimaryKey: boolean;
-  isForeignKey: boolean;
-  isEnumLike: boolean;
-}
-type ToolResult = { error: string } | { rowCount: number; columns: ProfiledColumn[] };
+import type { ProfileTableResult } from "../profile-table";
 
 const run = (input: { table: string; columns?: string[]; connectionId?: string }) =>
   profileTable.execute!(input, {
     toolCallId: "test",
     messages: [],
-    abortSignal: undefined as never,
-  }) as Promise<ToolResult>;
+    abortSignal: new AbortController().signal,
+  }) as Promise<ProfileTableResult>;
 
 /** One profiled table with two columns — the shape the unified profiler emits. */
 function usersProfile(): ProfilingResult {
@@ -266,6 +251,38 @@ describe("profileTable — profiles through the live connection's bound profile(
     const result = await run({ table: "users" });
     expect("error" in result && result.error).toContain("network unreachable");
     expect(connection.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("a close() rejection never masks a successful profile (best-effort teardown)", async () => {
+    const connection = fakeConnection("clickhouse", usersProfile());
+    connection.close = mock(async () => {
+      throw new Error("teardown failed");
+    });
+    resolvedCtx = { kind: "ok", connection, dbType: "clickhouse", querySchema: undefined };
+
+    const result = await run({ table: "users" });
+    if ("error" in result) throw new Error(`close() masked the result: ${result.error}`);
+    expect(result.rowCount).toBe(200);
+    expect(connection.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("no profile and no profiler error → actionable table-not-found error", async () => {
+    const connection = fakeConnection("postgres", { profiles: [], errors: [] });
+    resolvedCtx = { kind: "ok", connection, dbType: "postgres", querySchema: "public" };
+
+    const result = await run({ table: "users" });
+    expect("error" in result && result.error).toContain("table not found in the datasource");
+  });
+
+  it("falls back to the positional profile when the profiler reports a different table_name", async () => {
+    const profile = usersProfile();
+    profile.profiles[0].table_name = "public.users";
+    const connection = fakeConnection("postgres", profile);
+    resolvedCtx = { kind: "ok", connection, dbType: "postgres", querySchema: "public" };
+
+    const result = await run({ table: "users" });
+    if ("error" in result) throw new Error(`unexpected error: ${result.error}`);
+    expect(result.rowCount).toBe(200);
   });
 });
 

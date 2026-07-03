@@ -33,12 +33,29 @@ publish two entry points under `_agents.useatlas.dev`:
 
 | Owner name | Purpose | Target |
 |---|---|---|
-| `_mcp._agents.useatlas.dev` | The MCP agent endpoint | `mcp.useatlas.dev` |
-| `_index._agents.useatlas.dev` | The org's agent index (skills / server-card) | `useatlas.dev` |
+| `_mcp._agents.useatlas.dev` | The MCP agent endpoint (US / default region) | `mcp.useatlas.dev` |
+| `_index._agents.useatlas.dev` | The org's agent index (skills / server-card / **region directory**) | `useatlas.dev` |
 
 > The draft requires the SVCB **TargetName** to be a real host with no DNS-SD
 > underscore labels (public X.509 certs are used in the connection), which both
 > `mcp.useatlas.dev` and `useatlas.dev` satisfy.
+
+### Regions are NOT more DNS records — they live in the index
+
+Atlas is residency-isolated (ADR-0024): `api-eu` / `api-apac` are fully
+independent stacks, and **region is the user's chosen residency, not their
+network location** — so it is deliberately *not* a DNS/geo-routing decision.
+DNS-AID's `_index._agents` is the enumeration entry point *by design*; the region
+list lives one layer up, in the HTTP **region directory** at
+`useatlas.dev/.well-known/atlas-regions.json` (generated from the same
+`residency.regions` SSOT as the signup picker). An agent resolves its region
+there, then follows that region's own host discovery
+(`api-eu.useatlas.dev/auth.md`, which advertises `mcp-eu.useatlas.dev`).
+
+So the two records above are the **complete** DNS footprint — **no per-region
+SVCB records are needed**. (You *could* add `_mcp-eu._agents` / `_mcp-apac._agents`
+pointing at the regional MCP hosts for DNS-only agents, but DNS-SD labels name a
+*service*, not a region, and it duplicates the directory — not recommended.)
 
 ---
 

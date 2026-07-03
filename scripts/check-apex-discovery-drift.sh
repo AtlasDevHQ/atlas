@@ -7,10 +7,13 @@
 # resolving the brand domain finds it on the first hop:
 #   - apps/www/public/auth.md                                  (agent onboarding)
 #   - apps/www/public/.well-known/oauth-protected-resource.json (RFC 9728)
+#   - apps/www/public/.well-known/atlas-regions.json            (region directory)
 #   - apps/docs/.../oauth-protected-resource/resource-metadata.generated.json
-# All three are GENERATED from one source in packages/api by
+# All are GENERATED from one source in packages/api by
 # `scripts/generate-apex-discovery.ts` — auth.md via the SAME renderer the live
-# `api.useatlas.dev/auth.md` route serves, the JSON from one canonical body.
+# `api.useatlas.dev/auth.md` route serves, the protected-resource JSON from one
+# canonical body, and the region directory from the region SSOT (with a parity
+# assertion in the generator against deploy/api/atlas.config.ts residency.regions).
 #
 # This gate re-runs the generator and fails if any emitted file differs from
 # the committed copy (a hand-edit, or an upstream change to the auth.md builder
@@ -26,6 +29,7 @@ cd "$ROOT"
 FILES=(
   "apps/www/public/auth.md"
   "apps/www/public/.well-known/oauth-protected-resource.json"
+  "apps/www/public/.well-known/atlas-regions.json"
   "apps/docs/src/app/.well-known/oauth-protected-resource/resource-metadata.generated.json"
 )
 

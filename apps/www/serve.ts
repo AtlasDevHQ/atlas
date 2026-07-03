@@ -66,6 +66,7 @@ const HOMEPAGE_LINK_HEADER = [
   '</.well-known/oauth-protected-resource>; rel="oauth-protected-resource"; type="application/json"',
   '</.well-known/oauth-authorization-server>; rel="oauth-authorization-server"; type="application/json"',
   '</.well-known/agent-skills/index.json>; rel="agent-skills"; type="application/json"',
+  '</.well-known/atlas-regions.json>; rel="atlas-regions"; type="application/json"',
   '</auth.md>; rel="auth.md"; type="text/markdown"',
 ].join(", ");
 
@@ -78,6 +79,13 @@ const WELL_KNOWN_ROUTES: Record<string, { file: string; contentType: string }> =
   },
   "/.well-known/oauth-protected-resource": {
     file: "/.well-known/oauth-protected-resource.json",
+    contentType: "application/json; charset=utf-8",
+  },
+  // The agent-facing region directory (ADR-0024): resolve your residency
+  // region here, then follow that region's own host discovery. Keeps its `.json`
+  // in the URL like the sibling agent docs (agent-skills, mcp/server-card).
+  "/.well-known/atlas-regions.json": {
+    file: "/.well-known/atlas-regions.json",
     contentType: "application/json; charset=utf-8",
   },
 };
@@ -277,6 +285,10 @@ export async function handleRequest(req: Request): Promise<Response> {
             ...SECURITY_HEADERS,
             "Content-Type": wellKnown.contentType,
             "Cache-Control": "public, max-age=300",
+            // These are public discovery documents fetched cross-origin by
+            // agents / MCP clients / readiness scanners — CORS-open, matching
+            // the API's own `.well-known` responses.
+            "Access-Control-Allow-Origin": "*",
           },
         });
       }

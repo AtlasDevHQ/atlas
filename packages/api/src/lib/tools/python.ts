@@ -15,6 +15,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig } from "@atlas/api/lib/config";
 import { getWorkspaceSandboxOverride } from "@atlas/api/lib/sandbox/workspace-override";
@@ -425,7 +426,9 @@ async function getPythonBackend(
         try {
           ({ createPythonSandboxBackend } = await import("./python-sandbox"));
         } catch (err) {
-          const detail = err instanceof Error ? err.message : String(err);
+          // Scrub via errorMessage (matches explore's tryCreateBackend) so an
+          // operator-facing reason can never carry a connection string.
+          const detail = errorMessage(err);
           log.error({ err: detail }, "Vercel Python sandbox module not available");
           return { failure: { name: step.kind, reason: `runtime unavailable: ${detail}` } };
         }

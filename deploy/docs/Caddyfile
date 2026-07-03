@@ -71,6 +71,47 @@
 	redir /guides/mcp-hosted /guides/mcp 308
 	redir /guides/mcp-hosted/ /guides/mcp/ 308
 
+	# ── BEGIN /self-hosted section redirects (#4267) ─────────────────────────
+	# Slice #4264 (PR #4283) un-tabbed the docs portal and MOVED twelve
+	# self-hosted-only pages from the site root into the new /self-hosted
+	# section (a clean-prefix rename: /<slug> -> /self-hosted/<slug>). Their old
+	# root URLs 308-redirect to the /self-hosted counterpart so external /
+	# help-center inbound links and SEO survive the move — same shape as the
+	# mcp-hosted block above: an EXACT-path bare + trailing-slash pair per page
+	# (file_server then does the bare -> trailing 301 at the destination). Only
+	# these moved on-prem pages redirect; SaaS root URLs and /api-reference/* are
+	# unchanged (#4257 locked decisions).
+	#
+	# SSOT for this list: apps/docs/src/lib/redirects.ts (MOVED_SELF_HOSTED_SLUGS)
+	# — apps/docs/src/lib/__tests__/redirect-coverage.test.ts fails if this block
+	# and that map ever drift apart, if a target 404s, or if a moved page is
+	# missing a redirect. Keep the two in lockstep.
+	redir /getting-started/quick-start /self-hosted/getting-started/quick-start 308
+	redir /getting-started/quick-start/ /self-hosted/getting-started/quick-start/ 308
+	redir /deployment/deploy /self-hosted/deployment/deploy 308
+	redir /deployment/deploy/ /self-hosted/deployment/deploy/ 308
+	redir /deployment/authentication /self-hosted/deployment/authentication 308
+	redir /deployment/authentication/ /self-hosted/deployment/authentication/ 308
+	redir /deployment/cache-configuration /self-hosted/deployment/cache-configuration 308
+	redir /deployment/cache-configuration/ /self-hosted/deployment/cache-configuration/ 308
+	redir /frameworks/overview /self-hosted/frameworks/overview 308
+	redir /frameworks/overview/ /self-hosted/frameworks/overview/ 308
+	redir /frameworks/react-vite /self-hosted/frameworks/react-vite 308
+	redir /frameworks/react-vite/ /self-hosted/frameworks/react-vite/ 308
+	redir /frameworks/nuxt /self-hosted/frameworks/nuxt 308
+	redir /frameworks/nuxt/ /self-hosted/frameworks/nuxt/ 308
+	redir /frameworks/sveltekit /self-hosted/frameworks/sveltekit 308
+	redir /frameworks/sveltekit/ /self-hosted/frameworks/sveltekit/ 308
+	redir /frameworks/tanstack-start /self-hosted/frameworks/tanstack-start 308
+	redir /frameworks/tanstack-start/ /self-hosted/frameworks/tanstack-start/ 308
+	redir /guides/self-hosted-models /self-hosted/guides/self-hosted-models 308
+	redir /guides/self-hosted-models/ /self-hosted/guides/self-hosted-models/ 308
+	redir /contributing/ci /self-hosted/contributing/ci 308
+	redir /contributing/ci/ /self-hosted/contributing/ci/ 308
+	redir /contributing/eval-harness /self-hosted/contributing/eval-harness 308
+	redir /contributing/eval-harness/ /self-hosted/contributing/eval-harness/ 308
+	# ── END /self-hosted section redirects (#4267) ───────────────────────────
+
 	# /<slug>.mdx -> /llms.mdx/<slug>/index.md (canonical markdown alias).
 	# `not path /llms.mdx*` keeps the regex from re-matching the bare
 	# /llms.mdx surface and the /llms.mdx/<slug> paths handled below.

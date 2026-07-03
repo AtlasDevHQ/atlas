@@ -7,10 +7,8 @@ import type { LearnedPattern, LearnedPatternStatus } from "@/ui/lib/types";
 import { learnedPatternsSearchParams } from "./search-params";
 import { getLearnedPatternColumns, statusBadge, autoApprovedBadge } from "./columns";
 import { useAtlasConfig } from "@/ui/context";
-import { DataTable } from "@/components/data-table/data-table";
-import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
-import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
-import { useDataTable } from "@/hooks/use-data-table";
+import { ServerDataTable } from "@/ui/components/admin/server-data-table";
+import { useServerDataTable } from "@/ui/hooks/use-server-data-table";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -45,9 +43,9 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { bulkPartialSummary, RelativeTimestamp } from "@/ui/components/admin/queue";
-import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
+import { friendlyError, type FetchError } from "@/ui/lib/fetch-error";
 import { useInProgressSet } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -89,14 +87,13 @@ export default function LearnedPatternsPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  const [patterns, setPatterns] = useState<LearnedPattern[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<FetchError | null>(null);
+  // Mutation-error surface (list-load errors come from the module below). The
+  // `fetchKey` cache-buster now refreshes only the aux stats/entities fetches;
+  // the paginated list refetches through the module + admin-fetch invalidation.
+  const [actionError, setActionError] = useState<FetchError | null>(null);
   const [fetchKey, setFetchKey] = useState(0);
 
   const [params, setParams] = useQueryStates(learnedPatternsSearchParams);
-  const offset = (params.page - 1) * LIMIT;
 
   const [stats, setStats] = useState<PatternStats | null>(null);
   const [detailPattern, setDetailPattern] = useState<LearnedPattern | null>(null);
@@ -107,45 +104,6 @@ export default function LearnedPatternsPage() {
   const statusMutation = useAdminMutation<LearnedPattern>({ method: "PATCH" });
   const deleteMutation = useAdminMutation({ method: "DELETE" });
   const bulkMutation = useAdminMutation({ path: "/api/v1/admin/learned-patterns/bulk", method: "POST" });
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function fetchPatterns() {
-      setLoading(true);
-      setError(null);
-      try {
-        const qs = new URLSearchParams({
-          limit: String(LIMIT),
-          offset: String(offset),
-        });
-        if (params.status) qs.set("status", params.status);
-        if (params.type) qs.set("type", params.type);
-        if (params.source_entity) qs.set("source_entity", params.source_entity);
-
-        const res = await fetch(`${apiUrl}/api/v1/admin/learned-patterns?${qs}`, { credentials });
-        if (cancelled) return;
-        if (!res.ok) {
-          setError(await extractFetchError(res));
-          return;
-        }
-        const data = await res.json();
-        if (!cancelled) {
-          setPatterns(data.patterns ?? []);
-          setTotal(data.total ?? 0);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError({ message: err instanceof Error ? err.message : "Failed to load patterns" });
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    fetchPatterns();
-    return () => { cancelled = true; };
-  }, [apiUrl, offset, params.status, params.type, params.source_entity, credentials, fetchKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -209,48 +167,27 @@ export default function LearnedPatternsPage() {
   }, [apiUrl, credentials, fetchKey]);
 
   async function updatePatternStatus(id: string, status: LearnedPatternStatus) {
-    setError(null);
+    setActionError(null);
     inProgress.start(id);
 
-    // Capture the *original* row inside the functional setState so concurrent
-    // updates can't pollute each other's snapshot via the closure.
-    let originalRow: LearnedPattern | undefined;
-    let originalDetail: LearnedPattern | null = null;
-    const optimistic = (p: LearnedPattern) =>
-      p.id === id ? { ...p, status, updatedAt: new Date().toISOString() } : p;
-    setPatterns((prev) => {
-      originalRow = prev.find((p) => p.id === id);
-      return prev.map(optimistic);
-    });
-    setDetailPattern((prev) => {
-      if (prev?.id !== id) return prev;
-      originalDetail = prev;
-      return optimistic(prev);
-    });
-
+    // The list is server-owned: `useAdminMutation` invalidates admin-fetch
+    // queries on success, so the module refetches with the new status. Only the
+    // detail sheet (local UI state) is updated in place from the server row.
     const result = await statusMutation.mutate({
       path: `/api/v1/admin/learned-patterns/${id}`,
       body: { status },
       onSuccess: (updated) => {
-        if (!updated) return;
-        setPatterns((prev) => prev.map((p) => (p.id === id ? updated : p)));
-        setDetailPattern((prev) => (prev?.id === id ? updated : prev));
+        if (updated) setDetailPattern((prev) => (prev?.id === id ? updated : prev));
       },
     });
 
-    if (!result.ok) {
-      // Revert *only this row*, not the whole array — preserves any
-      // optimistic state from a concurrent mutation on another row.
-      setPatterns((curr) => curr.map((p) => (p.id === id && originalRow ? originalRow : p)));
-      setDetailPattern((curr) => (curr?.id === id ? originalDetail : curr));
-      setError(result.error);
-    }
-    setFetchKey((k) => k + 1);
+    if (!result.ok) setActionError(result.error);
+    setFetchKey((k) => k + 1); // refresh aux stats/entities counts
     inProgress.stop(id);
   }
 
   async function deletePattern(id: string) {
-    setError(null);
+    setActionError(null);
     inProgress.start(id);
 
     const result = await deleteMutation.mutate({
@@ -259,10 +196,10 @@ export default function LearnedPatternsPage() {
 
     if (result.ok) {
       if (detailPattern?.id === id) setDetailPattern(null);
-      setFetchKey((k) => k + 1);
     } else {
-      setError(result.error);
+      setActionError(result.error);
     }
+    setFetchKey((k) => k + 1); // refresh aux stats/entities counts
     setDeleteTarget(null);
     inProgress.stop(id);
   }
@@ -270,40 +207,20 @@ export default function LearnedPatternsPage() {
   async function bulkUpdateStatus(status: LearnedPatternStatus) {
     const selected = table.getSelectedRowModel().rows.map((r) => r.original.id);
     if (selected.length === 0) return;
-    setError(null);
-
-    const ids = new Set(selected);
-    const optimistic = (p: LearnedPattern) =>
-      ids.has(p.id) ? { ...p, status, updatedAt: new Date().toISOString() } : p;
-
-    let originalRows = new Map<string, LearnedPattern>();
-    let originalDetail: LearnedPattern | null = null;
-    setPatterns((prev) => {
-      originalRows = new Map(prev.filter((p) => ids.has(p.id)).map((p) => [p.id, p]));
-      return prev.map(optimistic);
-    });
-    setDetailPattern((prev) => {
-      if (!prev || !ids.has(prev.id)) return prev;
-      originalDetail = prev;
-      return optimistic(prev);
-    });
+    setActionError(null);
 
     const result = await bulkMutation.mutate({ body: { ids: selected, status } });
 
     if (!result.ok) {
-      // Whole-request failure: revert only the rows we touched (preserve any
-      // concurrent single-row optimism on other rows) and keep selection so
-      // operator can retry.
-      setPatterns((curr) => curr.map((p) => originalRows.get(p.id) ?? p));
-      setDetailPattern((curr) => (curr && ids.has(curr.id) ? originalDetail : curr));
-      setError(result.error);
+      // Whole-request failure — keep selection so the operator can retry.
+      setActionError(result.error);
       setFetchKey((k) => k + 1);
       return;
     }
 
     // Partial-success: server returns 200 with { updated, notFound, errors? }
-    // even when individual rows fail. Detect and surface the discrepancy
-    // before clearing selection.
+    // even when individual rows fail. Surface the discrepancy and keep only the
+    // failed rows selected; the module refetches the list via invalidation.
     const data = (result.data ?? {}) as {
       updated?: string[];
       notFound?: string[];
@@ -315,18 +232,15 @@ export default function LearnedPatternsPage() {
     ]);
 
     if (failedIds.size > 0) {
-      // Revert only the rows the server didn't actually update.
-      setPatterns((curr) => curr.map((p) => (failedIds.has(p.id) && originalRows.has(p.id) ? originalRows.get(p.id)! : p)));
-      setDetailPattern((curr) => (curr && failedIds.has(curr.id) ? originalDetail : curr));
       const noun = status === "approved" ? "approvals" : status === "rejected" ? "rejections" : "updates";
-      setError({ message: bulkPartialSummary(data, ids.size, noun) });
+      setActionError({ message: bulkPartialSummary(data, selected.length, noun) });
       // Narrow selection to failed IDs so retry hits exactly the unfinished work.
       table.setRowSelection(Object.fromEntries([...failedIds].map((id) => [id, true])));
     } else {
       table.resetRowSelection();
     }
 
-    setFetchKey((k) => k + 1);
+    setFetchKey((k) => k + 1); // refresh aux stats/entities counts
   }
 
   const columns: ColumnDef<LearnedPattern>[] = (() => {
@@ -376,16 +290,34 @@ export default function LearnedPatternsPage() {
     return [...base, actionsCol];
   })();
 
-  const pageCount = Math.max(1, Math.ceil(total / LIMIT));
-  const { table } = useDataTable({
-    data: patterns,
+  // The server-data-table module owns pagination, the patterns fetch,
+  // pageCount, and the table instance; the page keeps its filters, aux stats,
+  // detail sheet, and bulk/row actions.
+  const {
+    table,
+    rows: patterns,
+    loading,
+    error,
+    refetch,
+  } = useServerDataTable<LearnedPattern>({
     columns,
-    pageCount,
-    initialState: {
-      sorting: [{ id: "createdAt", desc: true }],
-      pagination: { pageIndex: 0, pageSize: LIMIT },
-    },
     getRowId: (row) => row.id,
+    defaultPerPage: LIMIT,
+    defaultSorting: [{ id: "createdAt", desc: true }],
+    select: (r) => {
+      const d = r as { patterns?: LearnedPattern[]; total?: number };
+      return { rows: d.patterns ?? [], total: d.total ?? 0 };
+    },
+    buildPath: ({ offset, perPage }) => {
+      const qs = new URLSearchParams({
+        limit: String(perPage),
+        offset: String(offset),
+      });
+      if (params.status) qs.set("status", params.status);
+      if (params.type) qs.set("type", params.type);
+      if (params.source_entity) qs.set("source_entity", params.source_entity);
+      return `/api/v1/admin/learned-patterns?${qs}`;
+    },
   });
 
   const selectedCount = table.getSelectedRowModel().rows.length;
@@ -508,31 +440,33 @@ export default function LearnedPatternsPage() {
               )}
             </div>
 
-            <AdminContentWrapper
+            {actionError && (
+              <ErrorBanner
+                message={friendlyError(actionError)}
+                onRetry={() => setActionError(null)}
+              />
+            )}
+
+            <ServerDataTable
+              table={table}
               loading={loading}
               error={error}
-              feature="Learned Patterns"
-              onRetry={() => setFetchKey((k) => k + 1)}
-              loadingMessage="Loading learned patterns..."
-              emptyIcon={Brain}
-              emptyTitle="No learned patterns"
-              emptyDescription="Patterns will appear here when the agent or atlas learn CLI proposes new query patterns."
               isEmpty={patterns.length === 0}
+              onRetry={refetch}
+              feature="Learned Patterns"
+              loadingMessage="Loading learned patterns..."
+              emptyState={{
+                icon: Brain,
+                title: "No learned patterns",
+                description: "Patterns will appear here when the agent or atlas learn CLI proposes new query patterns.",
+              }}
               hasFilters={hasFilters}
               onClearFilters={() => setParams({ status: "", type: "", source_entity: "", page: 1 })}
-            >
-              <DataTable
-                table={table}
-                onRowClick={(row, e) => {
-                  if ((e.target as HTMLElement).closest('[role="checkbox"], button')) return;
-                  setDetailPattern(row.original);
-                }}
-              >
-                <DataTableToolbar table={table}>
-                  <DataTableSortList table={table} />
-                </DataTableToolbar>
-              </DataTable>
-            </AdminContentWrapper>
+              onRowClick={(row, e) => {
+                if ((e.target as HTMLElement).closest('[role="checkbox"], button')) return;
+                setDetailPattern(row.original);
+              }}
+            />
           </div>
         </ErrorBoundary>
 

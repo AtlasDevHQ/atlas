@@ -7,10 +7,7 @@ import { auditSearchParams } from "./search-params";
 import { AnalyticsPanel } from "./analytics-panel";
 import { getAuditColumns, type AuditRow } from "./columns";
 import { useAtlasConfig } from "@/ui/context";
-import { DataTable } from "@/components/data-table/data-table";
-import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
-import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
-import { useDataTable } from "@/hooks/use-data-table";
+import { ServerDataTable } from "@/ui/components/admin/server-data-table";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { DatePicker } from "@/components/ui/date-picker";
@@ -24,7 +21,6 @@ import {
 } from "@/components/ui/select";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ScrollText, Search, AlertTriangle, Database, BarChart3, Download, X, Shield, ClipboardList } from "lucide-react";
 import { AdminActionsTab } from "../action-log/tab";
 import { RetentionPanel } from "./retention-panel";
@@ -50,9 +46,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 // A `useMemo([columns])` here re-ran every render because `getAuditColumns()`
 // always returns a fresh array reference (#3585).
 const AUDIT_COLUMNS = getAuditColumns();
-const AUDIT_COLUMN_IDS = new Set(
-  AUDIT_COLUMNS.map((c) => c.id).filter(Boolean) as string[],
-);
 
 const LIMIT = 50;
 
@@ -164,22 +157,22 @@ export default function AuditPage() {
 
   // Column definitions — stable references hoisted to module scope (#3585).
   const columns = AUDIT_COLUMNS;
-  const columnIds = AUDIT_COLUMN_IDS;
 
   // Non-pagination/sort filters this page owns. Combined with the
-  // pagination + sort the URL-state↔fetch binding owns to form the full
+  // pagination + sort the server-data-table module exposes to form the full
   // `AuditQueryParams` for both the rows fetch and the export.
   const filterParams = {
     search, connection, tableFilter, columnFilter, status, from, to, actorKind, clientId, tool,
   };
 
-  // URL-state↔server-fetch binding (page/perPage/sort → offset → rows path)
-  // lives in `useServerDataTable`, which reads the exact nuqs keys + parsers
+  // The server-data-table module owns pagination, the rows fetch, pageCount,
+  // and the table instance; it reads the exact nuqs keys + parsers
   // `useDataTable` writes so page and table share one source of truth without
   // a circular dependency on the table instance. Rows are Zod-validated so
   // wire drift is a TS error (#3496); disabled on the analytics tab.
   const {
-    data: rowsData,
+    table,
+    rows,
     loading,
     error,
     refetch: refetchRows,
@@ -188,10 +181,12 @@ export default function AuditPage() {
     sortId,
     sortDesc,
   } = useServerDataTable<AuditRow, z.infer<typeof AuditRowsResponseSchema>>({
+    columns,
+    getRowId: (row) => row.id,
     defaultPerPage: LIMIT,
     defaultSorting: [{ id: "timestamp", desc: true }],
-    sortColumnIds: columnIds,
     schema: AuditRowsResponseSchema,
+    select: (r) => ({ rows: r.rows as AuditRow[], total: r.total }),
     enabled: tab !== "analytics",
     buildPath: (binding) =>
       `/api/v1/admin/audit?${buildQueryString({
@@ -202,27 +197,12 @@ export default function AuditPage() {
         ...filterParams,
       }).toString()}`,
   });
-  const rows = (rowsData?.rows ?? []) as AuditRow[];
-  const total = rowsData?.total ?? 0;
 
   // Rebuilt from the binding the hook exposes — reused by the CSV export
   // (which strips pagination via `{ noPagination: true }`).
   const queryParams: AuditQueryParams = {
     pageSize: perPage, offset, sortId, sortDesc, ...filterParams,
   };
-
-  // Data table with nuqs-managed pagination, sorting, column visibility
-  const pageCount = Math.max(1, Math.ceil(total / perPage));
-  const { table } = useDataTable({
-    data: rows,
-    columns,
-    pageCount,
-    initialState: {
-      sorting: [{ id: "timestamp", desc: true }],
-      pagination: { pageIndex: 0, pageSize: LIMIT },
-    },
-    getRowId: (row) => row.id,
-  });
 
   // Stats — non-critical, shown when available
   const { data: stats, error: statsError } = useAdminFetch(
@@ -538,25 +518,22 @@ export default function AuditPage() {
           </div>
 
           {/* Content */}
-          <AdminContentWrapper
+          <ServerDataTable
+            table={table}
             loading={loading}
             error={error}
-            feature="Audit Log"
-            onRetry={() => { refetchRows(); }}
-            loadingMessage="Loading audit log..."
-            emptyIcon={ScrollText}
-            emptyTitle="No query activity recorded yet"
-            emptyDescription="Query activity will appear here once users start asking questions"
             isEmpty={rows.length === 0}
+            onRetry={() => { refetchRows(); }}
+            feature="Audit Log"
+            loadingMessage="Loading audit log..."
+            emptyState={{
+              icon: ScrollText,
+              title: "No query activity recorded yet",
+              description: "Query activity will appear here once users start asking questions",
+            }}
             hasFilters={hasFilters}
             onClearFilters={clearFilters}
-          >
-            <DataTable table={table}>
-              <DataTableToolbar table={table}>
-                <DataTableSortList table={table} />
-              </DataTableToolbar>
-            </DataTable>
-          </AdminContentWrapper>
+          />
         </TabsContent>
 
         <TabsContent value="actions" className="space-y-6 pt-6">

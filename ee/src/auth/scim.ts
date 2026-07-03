@@ -7,16 +7,16 @@
  * `@better-auth/scim` plugin registered in server.ts — this module only
  * wraps the enterprise gate and the custom group-mapping layer.
  *
- * Every admin-facing CRUD function calls `requireEnterprise("scim")` —
+ * Every admin-facing CRUD function routes through the `eeRead`/`eeWrite`
+ * combinators, which apply the `requireEnterpriseEffect("scim")` gate —
  * unlicensed deployments get a clear error. The `resolveGroupToRole`
  * helper is designed for the provisioning hot path and intentionally
  * skips the gate, returning null when no mapping exists.
  */
 
 import { Effect, Layer } from "effect";
-import { requireEnterpriseEffect } from "../index";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
-import { requireInternalDBEffect } from "../lib/db-guard";
+import { eeRead, eeWrite } from "../lib/ee-query";
 import {
   hasInternalDB,
   internalQuery,
@@ -146,10 +146,7 @@ export function isValidScimGroupName(name: string): boolean {
  * Reads from the `scimProvider` table created by @better-auth/scim.
  */
 export const listConnections = (orgId: string): Effect.Effect<SCIMConnection[], EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("scim");
-    if (!hasInternalDB()) return [];
-
+  eeRead("scim", [], Effect.gen(function* () {
     const rows = yield* Effect.promise(() => internalQuery<SCIMConnectionRow>(
       `SELECT id, "providerId", "organizationId"
        FROM "scimProvider"
@@ -158,16 +155,13 @@ export const listConnections = (orgId: string): Effect.Effect<SCIMConnection[], 
       [orgId],
     ));
     return rows.map(rowToConnection);
-  });
+  }));
 
 /**
  * Delete a SCIM provider connection (revoke access).
  */
 export const deleteConnection = (orgId: string, connectionId: string): Effect.Effect<boolean, EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("scim");
-    if (!hasInternalDB()) return false;
-
+  eeRead("scim", false, Effect.gen(function* () {
     const pool = getInternalDB();
     const result = yield* Effect.promise(() =>
       pool.query(
@@ -181,7 +175,7 @@ export const deleteConnection = (orgId: string, connectionId: string): Effect.Ef
       log.info({ orgId, connectionId }, "SCIM connection deleted");
     }
     return deleted;
-  });
+  }));
 
 // ── Sync Status ─────────────────────────────────────────────────────
 
@@ -190,12 +184,7 @@ export const deleteConnection = (orgId: string, connectionId: string): Effect.Ef
  * Counts active connections and users provisioned via SCIM.
  */
 export const getSyncStatus = (orgId: string): Effect.Effect<SCIMSyncStatus, EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("scim");
-    if (!hasInternalDB()) {
-      return { connections: 0, provisionedUsers: 0, lastSyncAt: null };
-    }
-
+  eeRead("scim", { connections: 0, provisionedUsers: 0, lastSyncAt: null }, Effect.gen(function* () {
     // All three queries are independent — run in parallel per CLAUDE.md
     const [connRows, userRows, lastSyncRows] = yield* Effect.promise(() => Promise.all([
       internalQuery<{ count: string; [key: string]: unknown }>(
@@ -227,7 +216,7 @@ export const getSyncStatus = (orgId: string): Effect.Effect<SCIMSyncStatus, Ente
     const lastSyncAt = lastSyncRows[0]?.last_sync ?? null;
 
     return { connections, provisionedUsers, lastSyncAt };
-  });
+  }));
 
 // ── Group → Role Mapping ────────────────────────────────────────────
 
@@ -235,9 +224,7 @@ export const getSyncStatus = (orgId: string): Effect.Effect<SCIMSyncStatus, Ente
  * List SCIM group → role mappings for an organization.
  */
 export const listGroupMappings = (orgId: string): Effect.Effect<SCIMGroupMapping[], EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("scim");
-    if (!hasInternalDB()) return [];
+  eeRead("scim", [], Effect.gen(function* () {
     yield* ensureGroupMappingsTable();
 
     const rows = yield* Effect.promise(() => internalQuery<SCIMGroupMappingRow>(
@@ -248,7 +235,7 @@ export const listGroupMappings = (orgId: string): Effect.Effect<SCIMGroupMapping
       [orgId],
     ));
     return rows.map(rowToGroupMapping);
-  });
+  }));
 
 /**
  * Create a SCIM group → role mapping.
@@ -259,9 +246,7 @@ export const createGroupMapping = (
   scimGroupName: string,
   roleName: string,
 ): Effect.Effect<SCIMGroupMapping, SCIMError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("scim");
-    yield* requireInternalDBEffect("SCIM group mapping");
+  eeWrite("scim", "SCIM group mapping", Effect.gen(function* () {
     yield* ensureGroupMappingsTable();
 
     // Validate group name
@@ -298,15 +283,13 @@ export const createGroupMapping = (
 
     log.info({ orgId, scimGroupName, roleName }, "SCIM group mapping created");
     return rowToGroupMapping(rows[0]);
-  });
+  }));
 
 /**
  * Delete a SCIM group → role mapping.
  */
 export const deleteGroupMapping = (orgId: string, mappingId: string): Effect.Effect<boolean, EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("scim");
-    if (!hasInternalDB()) return false;
+  eeRead("scim", false, Effect.gen(function* () {
     yield* ensureGroupMappingsTable();
 
     const pool = getInternalDB();
@@ -322,7 +305,7 @@ export const deleteGroupMapping = (orgId: string, mappingId: string): Effect.Eff
       log.info({ orgId, mappingId }, "SCIM group mapping deleted");
     }
     return deleted;
-  });
+  }));
 
 /**
  * Resolve a SCIM group display name to an Atlas role name.

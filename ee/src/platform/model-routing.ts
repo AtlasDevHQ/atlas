@@ -2,7 +2,8 @@
  * Enterprise workspace-level model routing.
  *
  * CRUD for per-organization LLM provider/model configuration. Every CRUD
- * function calls `requireEnterpriseEffect("model-routing")` — unlicensed
+ * function routes through the `eeRead`/`eeWrite` combinators, which apply the
+ * `requireEnterpriseEffect("model-routing")` gate — unlicensed
  * deployments get a clear error. API keys are stored encrypted using the
  * same AES-256-GCM pattern as connection URLs.
  *
@@ -10,9 +11,8 @@
  */
 
 import { Effect, Layer } from "effect";
-import { requireEnterpriseEffect } from "../index";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
-import { requireInternalDBEffect } from "../lib/db-guard";
+import { eeRead, eeWrite } from "../lib/ee-query";
 import {
   hasInternalDB,
   internalQuery,
@@ -353,10 +353,7 @@ const promiseError = (err: unknown): Error =>
 export const getWorkspaceModelConfig = (
   orgId: string,
 ): Effect.Effect<WorkspaceModelConfig | null, EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("model-routing");
-    if (!hasInternalDB()) return null;
-
+  eeRead("model-routing", null, Effect.gen(function* () {
     const rows = yield* Effect.tryPromise({
       try: () =>
         internalQuery<ModelConfigRow>(
@@ -371,7 +368,7 @@ export const getWorkspaceModelConfig = (
 
     if (rows.length === 0) return null;
     return rowToConfig(rows[0]);
-  });
+  }));
 
 /**
  * `RawWorkspaceModelConfig` (decrypted workspace model configuration,
@@ -510,9 +507,7 @@ export const setWorkspaceModelConfig = (
   orgId: string,
   config: SetWorkspaceModelConfigRequest,
 ): Effect.Effect<WorkspaceModelConfig, ModelConfigError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("model-routing");
-    yield* requireInternalDBEffect("workspace model configuration");
+  eeWrite("model-routing", "workspace model configuration", Effect.gen(function* () {
     yield* validateConfig(config);
 
     // Provider-transition guard: switching from gateway-on-platform-credits
@@ -617,7 +612,7 @@ export const setWorkspaceModelConfig = (
     }
 
     return rowToConfig(rows[0]);
-  });
+  }));
 
 /**
  * Delete the workspace model configuration for an organization.
@@ -626,10 +621,7 @@ export const setWorkspaceModelConfig = (
 export const deleteWorkspaceModelConfig = (
   orgId: string,
 ): Effect.Effect<boolean, EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("model-routing");
-    if (!hasInternalDB()) return false;
-
+  eeRead("model-routing", false, Effect.gen(function* () {
     const pool = getInternalDB();
     const result = yield* Effect.tryPromise({
       try: () =>
@@ -642,7 +634,7 @@ export const deleteWorkspaceModelConfig = (
       log.info({ orgId }, "Workspace model config deleted — reverting to platform default");
     }
     return deleted;
-  });
+  }));
 
 /**
  * After a BYOT discovery refresh, compare the workspace's saved model

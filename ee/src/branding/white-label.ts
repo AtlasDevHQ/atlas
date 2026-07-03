@@ -1,8 +1,9 @@
 /**
  * Enterprise workspace branding (white-labeling).
  *
- * CRUD for per-organization branding settings. Every mutation calls
- * `requireEnterpriseEffect("branding")` — unlicensed deployments get a clear error.
+ * CRUD for per-organization branding settings. Every mutation routes through
+ * the `eeWrite` combinator (reads through `eeRead`), which applies the
+ * `requireEnterpriseEffect("branding")` gate — unlicensed deployments get a clear error.
  * Read operations (getWorkspaceBranding) also gate on enterprise so the admin
  * UI can show the feature-disabled state.
  *
@@ -14,9 +15,8 @@
  */
 
 import { Effect, Layer } from "effect";
-import { requireEnterpriseEffect } from "../index";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
-import { requireInternalDBEffect } from "../lib/db-guard";
+import { eeRead, eeWrite } from "../lib/ee-query";
 import {
   hasInternalDB,
   internalQuery,
@@ -120,10 +120,7 @@ function validateBrandingInput(input: SetWorkspaceBrandingInput): Effect.Effect<
  * Returns null if no custom branding is set.
  */
 export const getWorkspaceBranding = (orgId: string): Effect.Effect<WorkspaceBranding | null, EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("branding");
-    if (!hasInternalDB()) return null;
-
+  eeRead("branding", null, Effect.gen(function* () {
     const rows = yield* Effect.promise(() => internalQuery<BrandingRow>(
       `SELECT id, org_id, logo_url, logo_text, primary_color, favicon_url,
               hide_atlas_branding, created_at, updated_at
@@ -135,7 +132,7 @@ export const getWorkspaceBranding = (orgId: string): Effect.Effect<WorkspaceBran
 
     if (rows.length === 0) return null;
     return rowToBranding(rows[0]);
-  });
+  }));
 
 /**
  * Get workspace branding without enterprise check (public endpoint).
@@ -169,9 +166,7 @@ export const setWorkspaceBranding = (
   orgId: string,
   input: SetWorkspaceBrandingInput,
 ): Effect.Effect<WorkspaceBranding, BrandingError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("branding");
-    yield* requireInternalDBEffect("workspace branding");
+  eeWrite("branding", "workspace branding", Effect.gen(function* () {
     yield* validateBrandingInput(input);
 
     const rows = yield* Effect.promise(() => internalQuery<BrandingRow>(
@@ -200,16 +195,13 @@ export const setWorkspaceBranding = (
 
     log.info({ orgId }, "Workspace branding saved");
     return rowToBranding(rows[0]);
-  });
+  }));
 
 /**
  * Delete workspace branding for an organization (reset to Atlas defaults).
  */
 export const deleteWorkspaceBranding = (orgId: string): Effect.Effect<boolean, EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("branding");
-    yield* requireInternalDBEffect("workspace branding");
-
+  eeWrite("branding", "workspace branding", Effect.gen(function* () {
     const pool = getInternalDB();
     const result = yield* Effect.promise(() =>
       pool.query(`DELETE FROM workspace_branding WHERE org_id = $1 RETURNING id`, [orgId]),
@@ -220,7 +212,7 @@ export const deleteWorkspaceBranding = (orgId: string): Effect.Effect<boolean, E
       log.info({ orgId }, "Workspace branding deleted — reverted to Atlas defaults");
     }
     return deleted;
-  });
+  }));
 
 // ── Tag wiring (#2572 — slice 10/11 of #2017) ────────────────────────
 //

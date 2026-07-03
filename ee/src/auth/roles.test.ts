@@ -37,6 +37,7 @@ const {
   isValidRoleName,
   listRoles,
   getRole,
+  getRoleByName,
   createRole,
   updateRole,
   deleteRole,
@@ -585,6 +586,46 @@ describe("seedBuiltinRoles", () => {
 
     const inserts = ee.capturedQueries.filter((q) => q.sql.includes("INSERT"));
     expect(inserts.length).toBe(1);
+  });
+});
+
+// Guards the eeWrite/eeRead adoption (#4200): with no internal DB, writes must
+// fail loud (never silently no-op) and reads must short-circuit to their empty
+// value — the regression a future eeWrite→eeRead swap (or vice versa) would
+// introduce. The gate + DB guard run before any validation, so no valid input
+// is needed to reach the guard.
+describe("no internal DB", () => {
+  beforeEach(() => {
+    resetMocks();
+    ee.setHasInternalDB(false);
+  });
+
+  it("createRole fails loud", async () => {
+    await expect(
+      run(createRole("org-1", { name: "data-engineer", permissions: ["query"] })),
+    ).rejects.toThrow("Internal database required for custom role management.");
+  });
+
+  it("updateRole fails loud", async () => {
+    await expect(
+      run(updateRole("org-1", "role-1", { description: "x" })),
+    ).rejects.toThrow("Internal database required for custom role management.");
+  });
+
+  it("deleteRole fails loud", async () => {
+    await expect(
+      run(deleteRole("org-1", "role-1")),
+    ).rejects.toThrow("Internal database required for role deletion.");
+  });
+
+  it("assignRole fails loud", async () => {
+    await expect(
+      run(assignRole("org-1", "user-1", "data-engineer")),
+    ).rejects.toThrow("Internal database required for role assignment.");
+  });
+
+  it("getRoleByName short-circuits to null", async () => {
+    expect(await run(getRoleByName("org-1", "analyst"))).toBeNull();
   });
 });
 

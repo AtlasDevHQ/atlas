@@ -2,7 +2,8 @@
  * Enterprise audit log retention — configurable retention policies,
  * soft-delete purging, hard-delete cleanup, and compliance export.
  *
- * All mutating operations call `requireEnterpriseEffect("audit-retention")`.
+ * All read/write operations route through the `eeRead`/`eeWrite` combinators,
+ * which apply the `requireEnterpriseEffect("audit-retention")` gate.
  * Read operations (get policy) are gated too so non-enterprise users
  * don't see partial config states.
  *
@@ -16,15 +17,13 @@
  */
 
 import { Effect, Layer } from "effect";
-import { requireEnterpriseEffect } from "../index";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
+import { eeRead, eeWrite } from "../lib/ee-query";
 import {
   AuditRetention,
   type AuditRetentionShape,
 } from "@atlas/api/lib/effect/services";
-import { requireInternalDBEffect } from "../lib/db-guard";
 import {
-  hasInternalDB,
   internalQuery,
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
@@ -197,10 +196,7 @@ function rowToPolicy(row: RetentionConfigRow): AuditRetentionPolicy {
  * Returns null if no policy is configured (unlimited retention).
  */
 export const getRetentionPolicy = (orgId: string): Effect.Effect<AuditRetentionPolicy | null, EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("audit-retention");
-    if (!hasInternalDB()) return null;
-
+  eeRead("audit-retention", null, Effect.gen(function* () {
     const rows = yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
       `SELECT id, org_id, retention_days, hard_delete_delay_days, updated_at, updated_by, last_purge_at, last_purge_count
        FROM audit_retention_config
@@ -210,7 +206,7 @@ export const getRetentionPolicy = (orgId: string): Effect.Effect<AuditRetentionP
 
     if (rows.length === 0) return null;
     return rowToPolicy(rows[0]);
-  });
+  }));
 
 /**
  * Set or update the audit retention policy for an organization.
@@ -221,10 +217,7 @@ export const setRetentionPolicy = (
   input: SetRetentionPolicyInput,
   updatedBy: string | null,
 ): Effect.Effect<AuditRetentionPolicy, RetentionError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("audit-retention");
-    yield* requireInternalDBEffect("audit retention configuration");
-
+  eeWrite("audit-retention", "audit retention configuration", Effect.gen(function* () {
     // Validate retention days
     if (input.retentionDays !== null) {
       if (!Number.isInteger(input.retentionDays) || input.retentionDays < MIN_RETENTION_DAYS) {
@@ -275,7 +268,7 @@ export const setRetentionPolicy = (
     }
 
     return rowToPolicy(rows[0]);
-  });
+  }));
 
 // ── Purge operations ─────────────────────────────────────────────────
 
@@ -288,10 +281,7 @@ export const setRetentionPolicy = (
  * Returns the count of soft-deleted entries per org.
  */
 export const purgeExpiredEntries = (orgId?: string): Effect.Effect<PurgeResult[], EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("audit-retention");
-    if (!hasInternalDB()) return [];
-
+  eeRead("audit-retention", [], Effect.gen(function* () {
     const pool = getInternalDB();
     const results: PurgeResult[] = [];
 
@@ -341,7 +331,7 @@ export const purgeExpiredEntries = (orgId?: string): Effect.Effect<PurgeResult[]
     }
 
     return results;
-  });
+  }));
 
 /**
  * Permanently delete audit log entries that were soft-deleted
@@ -350,10 +340,7 @@ export const purgeExpiredEntries = (orgId?: string): Effect.Effect<PurgeResult[]
  * Processes all orgs with retention configs.
  */
 export const hardDeleteExpired = (orgId?: string): Effect.Effect<HardDeleteResult, EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("audit-retention");
-    if (!hasInternalDB()) return { deletedCount: 0 };
-
+  eeRead("audit-retention", { deletedCount: 0 }, Effect.gen(function* () {
     const pool = getInternalDB();
 
     // Get retention configs — scoped to orgId when provided, all orgs for scheduler
@@ -421,7 +408,7 @@ export const hardDeleteExpired = (orgId?: string): Effect.Effect<HardDeleteResul
     }
 
     return { deletedCount: totalDeleted };
-  });
+  }));
 
 // ── Export ────────────────────────────────────────────────────────────
 
@@ -449,10 +436,7 @@ export const exportAuditLog = (options: ExportOptions): Effect.Effect<{
   totalAvailable: number;
   truncated: boolean;
 }, RetentionError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("audit-retention");
-    yield* requireInternalDBEffect("audit log export");
-
+  eeWrite("audit-retention", "audit log export", Effect.gen(function* () {
     const conditions: string[] = ["a.org_id = $1", "(a.deleted_at IS NULL)"];
     const params: unknown[] = [options.orgId];
     let paramIdx = 2;
@@ -561,7 +545,7 @@ export const exportAuditLog = (options: ExportOptions): Effect.Effect<{
       totalAvailable,
       truncated,
     };
-  });
+  }));
 
 // ── Admin action log retention (F-36) ──────────────────────────────────
 //
@@ -595,10 +579,7 @@ export const exportAuditLog = (options: ExportOptions): Effect.Effect<{
  * mirroring the F-27 zero-row suppression on `hardDeleteExpired`.
  */
 export const purgeAdminActionExpired = (orgId?: string): Effect.Effect<AdminActionPurgeResult[], EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("audit-retention");
-    if (!hasInternalDB()) return [];
-
+  eeRead("audit-retention", [], Effect.gen(function* () {
     const pool = getInternalDB();
 
     // Fetch applicable retention configs — mirrors audit-log path. A DB
@@ -724,7 +705,7 @@ export const purgeAdminActionExpired = (orgId?: string): Effect.Effect<AdminActi
     }
 
     return results;
-  });
+  }));
 
 /**
  * GDPR / CCPA erasure of a single user's identifiers from `admin_action_log`.
@@ -760,10 +741,7 @@ export const anonymizeUserAdminActions = (
   userId: string,
   initiatedBy: AnonymizeInitiatedBy,
 ): Effect.Effect<AnonymizeResult, RetentionError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("audit-retention");
-    yield* requireInternalDBEffect("admin action log erasure");
-
+  eeWrite("audit-retention", "admin action log erasure", Effect.gen(function* () {
     // Input validation: empty / whitespace userId would scan every row
     // matching `actor_id = ''` (empty-string matches nothing in practice,
     // but whitespace-only values could poison the audit trail by writing
@@ -832,7 +810,7 @@ export const anonymizeUserAdminActions = (
     });
 
     return { anonymizedRowCount };
-  });
+  }));
 
 // ── Admin-action retention policy CRUD (F-36 Phase 2) ─────────────────
 //
@@ -856,10 +834,7 @@ export const anonymizeUserAdminActions = (
 export const getAdminActionRetentionPolicy = (
   orgId: string,
 ): Effect.Effect<AuditRetentionPolicy | null, EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("audit-retention");
-    if (!hasInternalDB()) return null;
-
+  eeRead("audit-retention", null, Effect.gen(function* () {
     // `Effect.tryPromise` (not `Effect.promise`) — a DB error on read must
     // route through the typed error channel so the Phase 2 HTTP route's
     // `Effect.tapError` on this call fires the stage:policy_read failure
@@ -877,7 +852,7 @@ export const getAdminActionRetentionPolicy = (
 
     if (rows.length === 0) return null;
     return rowToPolicy(rows[0]);
-  });
+  }));
 
 /**
  * Set or update the admin-action retention policy for an organization.
@@ -898,10 +873,7 @@ export const setAdminActionRetentionPolicy = (
   input: SetRetentionPolicyInput,
   updatedBy: string | null,
 ): Effect.Effect<AuditRetentionPolicy, RetentionError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("audit-retention");
-    yield* requireInternalDBEffect("admin-action retention configuration");
-
+  eeWrite("audit-retention", "admin-action retention configuration", Effect.gen(function* () {
     if (input.retentionDays !== null) {
       if (!Number.isInteger(input.retentionDays) || input.retentionDays < MIN_RETENTION_DAYS) {
         return yield* Effect.fail(new RetentionError({
@@ -964,7 +936,7 @@ export const setAdminActionRetentionPolicy = (
     }
 
     return rowToPolicy(rows[0]);
-  });
+  }));
 
 /**
  * Preview the count of `admin_action_log` rows that would be scrubbed by
@@ -983,10 +955,7 @@ export const setAdminActionRetentionPolicy = (
 export const previewAdminActionErasure = (
   userId: string,
 ): Effect.Effect<{ anonymizableRowCount: number }, RetentionError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("audit-retention");
-    if (!hasInternalDB()) return { anonymizableRowCount: 0 };
-
+  eeRead("audit-retention", { anonymizableRowCount: 0 }, Effect.gen(function* () {
     if (typeof userId !== "string" || userId.trim() === "") {
       return yield* Effect.fail(new RetentionError({
         message: `Invalid userId: must be a non-empty string.`,
@@ -1016,7 +985,7 @@ export const previewAdminActionErasure = (
       return yield* Effect.fail(new Error(`previewAdminActionErasure: unexpected count shape — ${typeof raw} ${String(raw)}`));
     }
     return { anonymizableRowCount: parsed };
-  });
+  }));
 
 // ── Tag wiring (#2569 — slice 7/11 of #2017; split in #2587) ─────────
 //

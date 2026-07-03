@@ -10,17 +10,19 @@
  * of executing. Designated approvers (via custom roles) can approve or deny.
  * Approved queries can then be re-executed. Stale requests auto-expire.
  *
- * All exported functions return Effect. CRUD and listing operations call
- * `requireEnterpriseEffect()` (fails with EnterpriseError). Functions in the agent's
+ * All exported functions return Effect. CRUD and listing operations route
+ * through the `eeRead`/`eeWrite` combinators, which apply `requireEnterpriseEffect()`
+ * (fails with EnterpriseError). Functions in the agent's
  * critical path (`checkApprovalRequired`, `hasApprovedRequest`,
- * `expireStaleRequests`, `getPendingCount`) catch `EnterpriseError` and return
+ * `expireStaleRequests`, `getPendingCount`) are deliberately NOT combinator-wrapped —
+ * they check the DB first, then catch `EnterpriseError` and return
  * a safe default (false, 0, or empty) while re-throwing unexpected errors.
  */
 
 import { Effect, Layer } from "effect";
 import { requireEnterpriseEffect } from "../index";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
-import { requireInternalDBEffect } from "../lib/db-guard";
+import { eeRead, eeWrite } from "../lib/ee-query";
 import {
   hasInternalDB,
   internalQuery,
@@ -325,10 +327,7 @@ function getExpiryHours(): number {
 
 /** List all approval rules for an organization. */
 export const listApprovalRules = (orgId: string): Effect.Effect<ApprovalRule[], EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("approval-workflows");
-    if (!hasInternalDB()) return [];
-
+  eeRead("approval-workflows", [], Effect.gen(function* () {
     const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
       `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, origin, created_at, updated_at
        FROM approval_rules
@@ -337,14 +336,11 @@ export const listApprovalRules = (orgId: string): Effect.Effect<ApprovalRule[], 
       [orgId],
     ));
     return rows.map(rowToRule).filter((r): r is ApprovalRule => r !== null);
-  });
+  }));
 
 /** Get a single approval rule by ID. */
 export const getApprovalRule = (orgId: string, ruleId: string): Effect.Effect<ApprovalRule | null, ApprovalError | EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("approval-workflows");
-    if (!hasInternalDB()) return null;
-
+  eeRead("approval-workflows", null, Effect.gen(function* () {
     const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
       `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, origin, created_at, updated_at
        FROM approval_rules
@@ -359,17 +355,14 @@ export const getApprovalRule = (orgId: string, ruleId: string): Effect.Effect<Ap
       return yield* Effect.fail(new ApprovalError({ message: `Approval rule "${ruleId}" exists but has an invalid type "${rows[0].rule_type}".`, code: "validation" }));
     }
     return rule;
-  });
+  }));
 
 /** Create a new approval rule. */
 export const createApprovalRule = (
   orgId: string,
   input: CreateApprovalRuleRequest,
 ): Effect.Effect<ApprovalRule, ApprovalError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("approval-workflows");
-    yield* requireInternalDBEffect("approval rules", () => new ApprovalError({ message: "Internal database required for approval rules.", code: "validation" }));
-
+  eeWrite("approval-workflows", "approval rules", Effect.gen(function* () {
     yield* validateRuleInput(input);
 
     const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
@@ -397,7 +390,7 @@ export const createApprovalRule = (
     const rule = rowToRule(rows[0]);
     if (!rule) return yield* Effect.fail(new ApprovalError({ message: `Created rule has unexpected rule_type "${rows[0].rule_type}" after insert.`, code: "conflict" }));
     return rule;
-  });
+  }), () => new ApprovalError({ message: "Internal database required for approval rules.", code: "validation" }));
 
 /** Update an existing approval rule. */
 export const updateApprovalRule = (
@@ -405,10 +398,7 @@ export const updateApprovalRule = (
   ruleId: string,
   input: UpdateApprovalRuleRequest,
 ): Effect.Effect<ApprovalRule, ApprovalError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("approval-workflows");
-    yield* requireInternalDBEffect("approval rules", () => new ApprovalError({ message: "Internal database required for approval rules.", code: "validation" }));
-
+  eeWrite("approval-workflows", "approval rules", Effect.gen(function* () {
     // Check the rule exists
     const existing = yield* getApprovalRule(orgId, ruleId);
     if (!existing) {
@@ -475,14 +465,11 @@ export const updateApprovalRule = (
     const rule = rowToRule(rows[0]);
     if (!rule) return yield* Effect.fail(new ApprovalError({ message: `Updated rule has unexpected rule_type "${rows[0].rule_type}" after update.`, code: "conflict" }));
     return rule;
-  });
+  }), () => new ApprovalError({ message: "Internal database required for approval rules.", code: "validation" }));
 
 /** Delete an approval rule. Returns true if deleted, false if not found. */
 export const deleteApprovalRule = (orgId: string, ruleId: string): Effect.Effect<boolean, EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("approval-workflows");
-    if (!hasInternalDB()) return false;
-
+  eeRead("approval-workflows", false, Effect.gen(function* () {
     const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
       `DELETE FROM approval_rules WHERE org_id = $1 AND id = $2 RETURNING id`,
       [orgId, ruleId],
@@ -492,7 +479,7 @@ export const deleteApprovalRule = (orgId: string, ruleId: string): Effect.Effect
       return true;
     }
     return false;
-  });
+  }));
 
 // ── Matching ────────────────────────────────────────────────────────
 
@@ -795,10 +782,7 @@ export const createApprovalRequest = (opts: {
    */
   origin?: ApprovalRequestOrigin | null;
 }): Effect.Effect<ApprovalRequest, ApprovalError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("approval-workflows");
-    yield* requireInternalDBEffect("approval queue", () => new ApprovalError({ message: "Internal database required for approval queue.", code: "validation" }));
-
+  eeWrite("approval-workflows", "approval queue", Effect.gen(function* () {
     // F-54/F-55 defense-in-depth: refuse to insert any row whose ruleId or
     // orgId smells like an internal sentinel. The `__identity_missing__`
     // rule + `__unknown__` org are produced by the defensive identityMissing
@@ -900,7 +884,7 @@ export const createApprovalRequest = (opts: {
     const request = rowToRequest(rows[0]);
     if (!request) return yield* Effect.fail(new ApprovalError({ message: `Created request has unexpected status "${rows[0].status}" after insert.`, code: "conflict" }));
     return request;
-  });
+  }), () => new ApprovalError({ message: "Internal database required for approval queue.", code: "validation" }));
 
 /** List approval requests for an organization, optionally filtered by status. */
 export const listApprovalRequests = (
@@ -909,10 +893,7 @@ export const listApprovalRequests = (
   limit = 100,
   offset = 0,
 ): Effect.Effect<ApprovalRequest[], EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("approval-workflows");
-    if (!hasInternalDB()) return [];
-
+  eeRead("approval-workflows", [], Effect.gen(function* () {
     const safeLimit = Math.min(Math.max(1, limit), 1000);
     const safeOffset = Math.max(0, offset);
 
@@ -931,17 +912,14 @@ export const listApprovalRequests = (
 
     const rows = yield* Effect.promise(() => internalQuery<ApprovalQueueRow>(sql, params));
     return rows.map(rowToRequest).filter((r): r is ApprovalRequest => r !== null);
-  });
+  }));
 
 /** Get a single approval request by ID. */
 export const getApprovalRequest = (
   orgId: string,
   requestId: string,
 ): Effect.Effect<ApprovalRequest | null, ApprovalError | EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("approval-workflows");
-    if (!hasInternalDB()) return null;
-
+  eeRead("approval-workflows", null, Effect.gen(function* () {
     const rows = yield* Effect.promise(() => internalQuery<ApprovalQueueRow>(
       `SELECT ${APPROVAL_QUEUE_COLUMNS}
        FROM approval_queue
@@ -956,7 +934,7 @@ export const getApprovalRequest = (
       return yield* Effect.fail(new ApprovalError({ message: `Approval request "${requestId}" exists but has an invalid status "${rows[0].status}".`, code: "validation" }));
     }
     return request;
-  });
+  }));
 
 /** Approve or deny an approval request. */
 export const reviewApprovalRequest = (
@@ -967,10 +945,7 @@ export const reviewApprovalRequest = (
   action: "approve" | "deny",
   comment?: string,
 ): Effect.Effect<ApprovalRequest, ApprovalError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("approval-workflows");
-    yield* requireInternalDBEffect("approval queue", () => new ApprovalError({ message: "Internal database required for approval queue.", code: "validation" }));
-
+  eeWrite("approval-workflows", "approval queue", Effect.gen(function* () {
     // Fetch the current request
     const existing = yield* getApprovalRequest(orgId, requestId);
     if (!existing) {
@@ -1017,7 +992,7 @@ export const reviewApprovalRequest = (
     const request = rowToRequest(rows[0]);
     if (!request) return yield* Effect.fail(new ApprovalError({ message: `Reviewed request has unexpected status "${rows[0].status}" after update.`, code: "conflict" }));
     return request;
-  });
+  }), () => new ApprovalError({ message: "Internal database required for approval queue.", code: "validation" }));
 
 /**
  * Expire stale pending approval requests for the given org. Returns count of

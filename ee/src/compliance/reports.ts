@@ -6,15 +6,15 @@
  * 2. User Activity Report — query counts, last login, tables accessed, role info
  *
  * Both reports query the internal DB (audit_log + user/session/member tables)
- * and are enterprise-gated via requireEnterpriseEffect("compliance").
+ * and are enterprise-gated via the `eeWrite` combinator, which applies the
+ * `requireEnterpriseEffect("compliance")` gate.
  *
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
 import { Effect, Layer } from "effect";
-import { requireEnterpriseEffect } from "../index";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
-import { requireInternalDBEffect } from "../lib/db-guard";
+import { eeWrite } from "../lib/ee-query";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
@@ -78,9 +78,7 @@ export const generateDataAccessReport = (
   orgId: string,
   filters: ComplianceReportFilters,
 ): Effect.Effect<DataAccessReport, ReportError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("compliance");
-    yield* requireInternalDBEffect("compliance reports", () => new ReportError({ message: "Internal database not available", code: "not_available" }));
+  eeWrite("compliance", "compliance reports", Effect.gen(function* () {
     yield* validateFilters(filters);
 
     const conditions: string[] = ["a.org_id = $1", "a.success = true"];
@@ -221,7 +219,7 @@ export const generateDataAccessReport = (
       filters,
       generatedAt: new Date().toISOString(),
     };
-  });
+  }), () => new ReportError({ message: "Internal database not available", code: "not_available" }));
 
 // ── User Activity Report ────────────────────────────────────────
 
@@ -238,9 +236,7 @@ export const generateUserActivityReport = (
   orgId: string,
   filters: ComplianceReportFilters,
 ): Effect.Effect<UserActivityReport, ReportError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("compliance");
-    yield* requireInternalDBEffect("compliance reports", () => new ReportError({ message: "Internal database not available", code: "not_available" }));
+  eeWrite("compliance", "compliance reports", Effect.gen(function* () {
     yield* validateFilters(filters);
 
     const conditions: string[] = ["a.org_id = $1", "a.success = true"];
@@ -346,7 +342,7 @@ export const generateUserActivityReport = (
       filters,
       generatedAt: new Date().toISOString(),
     };
-  });
+  }), () => new ReportError({ message: "Internal database not available", code: "not_available" }));
 
 // ── CSV export ──────────────────────────────────────────────────
 

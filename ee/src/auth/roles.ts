@@ -5,15 +5,15 @@
  * Three built-in roles (admin, analyst, viewer) are seeded on migration and
  * cannot be deleted. Custom roles are per-organization.
  *
- * CRUD functions call `requireEnterprise("roles")` — unlicensed deployments
- * get a clear error. Permission check helpers do NOT require a license and
+ * CRUD functions route through the `eeRead`/`eeWrite` combinators, which apply
+ * the `requireEnterpriseEffect("roles")` gate — unlicensed deployments get a
+ * clear error. Permission check helpers do NOT require a license and
  * fall back to legacy admin/member role mapping.
  */
 
 import { Effect, Layer } from "effect";
-import { requireEnterpriseEffect } from "../index";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
-import { requireInternalDBEffect } from "../lib/db-guard";
+import { eeRead, eeWrite } from "../lib/ee-query";
 import {
   hasInternalDB,
   internalQuery,
@@ -162,10 +162,7 @@ export function isValidRoleName(name: string): boolean {
  * Lazily seeds built-in roles on first access per org.
  */
 export const listRoles = (orgId: string): Effect.Effect<CustomRole[], EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("roles");
-    if (!hasInternalDB()) return [];
-
+  eeRead("roles", [], Effect.gen(function* () {
     // Lazy seed: ensure built-in roles exist for this org
     yield* seedBuiltinRoles(orgId);
 
@@ -177,16 +174,13 @@ export const listRoles = (orgId: string): Effect.Effect<CustomRole[], Enterprise
       [orgId],
     ));
     return rows.map(rowToRole);
-  });
+  }));
 
 /**
  * Get a single role by ID, scoped to org.
  */
 export const getRole = (orgId: string, roleId: string): Effect.Effect<CustomRole | null, EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("roles");
-    if (!hasInternalDB()) return null;
-
+  eeRead("roles", null, Effect.gen(function* () {
     const rows = yield* Effect.promise(() => internalQuery<CustomRoleRow>(
       `SELECT id, org_id, name, description, permissions, is_builtin, created_at, updated_at
        FROM custom_roles
@@ -194,7 +188,7 @@ export const getRole = (orgId: string, roleId: string): Effect.Effect<CustomRole
       [roleId, orgId],
     ));
     return rows[0] ? rowToRole(rows[0]) : null;
-  });
+  }));
 
 /**
  * Get a single role by name, scoped to org. Used by the audit path for
@@ -203,10 +197,7 @@ export const getRole = (orgId: string, roleId: string): Effect.Effect<CustomRole
  * a string that tenant admins can rename later.
  */
 export const getRoleByName = (orgId: string, name: string): Effect.Effect<CustomRole | null, EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("roles");
-    if (!hasInternalDB()) return null;
-
+  eeRead("roles", null, Effect.gen(function* () {
     const rows = yield* Effect.promise(() => internalQuery<CustomRoleRow>(
       `SELECT id, org_id, name, description, permissions, is_builtin, created_at, updated_at
        FROM custom_roles
@@ -214,7 +205,7 @@ export const getRoleByName = (orgId: string, name: string): Effect.Effect<Custom
       [orgId, name.toLowerCase()],
     ));
     return rows[0] ? rowToRole(rows[0]) : null;
-  });
+  }));
 
 /**
  * Create a custom role for an organization.
@@ -223,10 +214,7 @@ export const createRole = (
   orgId: string,
   input: { name: string; description?: string; permissions: string[] },
 ): Effect.Effect<CustomRole, RoleError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("roles");
-    yield* requireInternalDBEffect("custom role management");
-
+  eeWrite("roles", "custom role management", Effect.gen(function* () {
     // Validate name
     const name = input.name.toLowerCase().trim();
     if (!isValidRoleName(name)) {
@@ -268,7 +256,7 @@ export const createRole = (
 
     log.info({ orgId, roleName: name }, "Custom role created");
     return rowToRole(rows[0]);
-  });
+  }));
 
 /**
  * Update a custom role's description and/or permissions.
@@ -279,10 +267,7 @@ export const updateRole = (
   roleId: string,
   input: { description?: string; permissions?: string[] },
 ): Effect.Effect<CustomRole, RoleError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("roles");
-    yield* requireInternalDBEffect("custom role management");
-
+  eeWrite("roles", "custom role management", Effect.gen(function* () {
     // Fetch existing
     const existing = yield* getRole(orgId, roleId);
     if (!existing) return yield* Effect.fail(new RoleError({ message: "Role not found.", code: "not_found" }));
@@ -328,16 +313,13 @@ export const updateRole = (
 
     log.info({ orgId, roleId }, "Custom role updated");
     return rowToRole(rows[0]);
-  });
+  }));
 
 /**
  * Delete a custom role. Built-in roles cannot be deleted.
  */
 export const deleteRole = (orgId: string, roleId: string): Effect.Effect<boolean, RoleError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("roles");
-    yield* requireInternalDBEffect("role deletion");
-
+  eeWrite("roles", "role deletion", Effect.gen(function* () {
     // Check if it's a built-in role
     const role = yield* getRole(orgId, roleId);
     if (!role) return false;
@@ -365,7 +347,7 @@ export const deleteRole = (orgId: string, roleId: string): Effect.Effect<boolean
       log.info({ orgId, roleId, roleName: role.name }, "Custom role deleted");
     }
     return deleted;
-  });
+  }));
 
 /**
  * List members assigned to a specific role in an organization.
@@ -375,10 +357,7 @@ export const listRoleMembers = (
   orgId: string,
   roleId: string,
 ): Effect.Effect<Array<{ userId: string; role: string; createdAt: string }>, RoleError | EnterpriseError> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("roles");
-    if (!hasInternalDB()) return [];
-
+  eeRead("roles", [], Effect.gen(function* () {
     // First get the role name
     const role = yield* getRole(orgId, roleId);
     if (!role) return yield* Effect.fail(new RoleError({ message: "Role not found.", code: "not_found" }));
@@ -402,7 +381,7 @@ export const listRoleMembers = (
       role: r.role,
       createdAt: String(r.createdAt),
     }));
-  });
+  }));
 
 /**
  * Assign a role to a user by updating their role in the Better Auth member table.
@@ -413,10 +392,7 @@ export const assignRole = (
   userId: string,
   roleName: string,
 ): Effect.Effect<{ userId: string; role: string }, RoleError | EnterpriseError | Error> =>
-  Effect.gen(function* () {
-    yield* requireEnterpriseEffect("roles");
-    yield* requireInternalDBEffect("role assignment");
-
+  eeWrite("roles", "role assignment", Effect.gen(function* () {
     // Belt-and-suspenders: refuse to write a built-in Atlas role name into
     // `member.role` from the custom-role assignment path. createRole already
     // blocks these names, but a legacy row could exist from before the guard
@@ -452,7 +428,7 @@ export const assignRole = (
 
     log.info({ orgId, userId, roleName }, "Role assigned to user");
     return { userId: result[0].userId, role: result[0].role };
-  });
+  }));
 
 // ── Seeding ──────────────────────────────────────────────────────
 

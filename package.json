@@ -25,7 +25,7 @@
     "build:docs": "bun run --filter '@atlas/docs' build",
     "start": "sh scripts/start.sh",
     "lint": "eslint packages/ ee/ plugins/ apps/ examples/ create-atlas/",
-    "type": "bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && bun run --filter '@useatlas/react' build && tsgo --noEmit && bun run --filter '@atlas/web' type",
+    "type": "bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && bun run --filter '@useatlas/react' build && tsgo --noEmit && bun run --filter '@atlas/web' type && bun run --filter '@atlas/www' type",
     "atlas": "bun packages/cli/bin/atlas.ts",
     "atlas-operator": "bun packages/cli/bin/atlas-operator.ts",
     "mcp": "bun packages/mcp/bin/serve.ts",

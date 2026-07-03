@@ -31,7 +31,12 @@ import {
   type WorkspaceInstallerShape,
   type InstallError,
 } from "@atlas/api/lib/effect/workspace-installer";
-import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
+import {
+  loadInstalledConnection,
+  listInstalledConnections,
+  countActiveDatasourceInstalls,
+  datasourceGroupExists,
+} from "@atlas/api/lib/integrations/installed-connection";
 import type { WorkspaceId } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
@@ -607,22 +612,18 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
   let groupInfoByConnection = new Map<string, { groupId: string | null; groupName: string | null }>();
   if (hasInternalDB() && filtered.length > 0) {
     const ids = filtered.map((c) => c.id);
-    const rows = await internalQuery<{ install_id: string; group_id: string | null }>(
-      `SELECT wp.install_id, wp.config->>'group_id' AS group_id
-         FROM workspace_plugins wp
-        WHERE wp.workspace_id = $1
-          AND wp.pillar = 'datasource'
-          AND wp.install_id = ANY($2::text[])`,
-      [orgId, ids],
-    );
+    // Metadata-only: this decoration reads installId + groupId, never the
+    // decrypted config — opt out of decryption so an un-decryptable row
+    // doesn't spam a decrypt-failure log on every list.
+    const rows = await listInstalledConnections(orgId, { installIds: ids, decryptConfig: false });
     groupInfoByConnection = new Map(
       rows.map((r) => [
-        r.install_id,
+        r.installId,
         {
-          groupId: r.group_id,
+          groupId: r.groupId,
           // Wire-shape preservation: groupName mirrors groupId per the
           // locked decision; the `connection_groups.name` join is gone.
-          groupName: r.group_id,
+          groupName: r.groupId,
         },
       ]),
     );
@@ -889,18 +890,11 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   }
 
   // Enforce plan connection limit before proceeding. Post-#2744 the
-  // counter scans `workspace_plugins WHERE pillar = 'datasource' AND
-  // status != 'archived'` — exclude archived rows so a workspace
-  // hiding the demo doesn't lose a billable slot for it.
-  const connCountRows = await internalQuery<{ count: number }>(
-    `SELECT COUNT(*)::int as count
-       FROM workspace_plugins
-      WHERE workspace_id = $1
-        AND pillar = 'datasource'
-        AND status != 'archived'`,
-    [orgId],
-  );
-  const connCount = connCountRows[0]?.count ?? 0;
+  // counter scans non-archived datasource installs — archived excluded so
+  // a workspace hiding the demo doesn't lose a billable slot for it. The
+  // predicate lives in the lib seam so the enforcement count and the
+  // list route's `billable` signal can never drift (#2490).
+  const connCount = await countActiveDatasourceInstalls(orgId);
   const resourceCheck = await checkResourceLimit(orgId, "connections", connCount);
   if (!resourceCheck.allowed) {
     // ResourceLimitResult error-arm contract (#3433): `check_failed` means
@@ -982,14 +976,7 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   // "at least one install in this workspace claims that group_id".
   // Skipped on newGroupName (which is allowed to introduce a new group).
   if (typeof connectionGroupId === "string") {
-    const groupRows = await internalQuery<{ install_id: string }>(
-      `SELECT install_id FROM workspace_plugins
-        WHERE workspace_id = $1 AND pillar = 'datasource'
-          AND config->>'group_id' = $2
-        LIMIT 1`,
-      [orgId, connectionGroupId],
-    );
-    if (groupRows.length === 0) {
+    if (!(await datasourceGroupExists(orgId, connectionGroupId))) {
       return c.json({ error: "not_found", message: `Environment "${connectionGroupId}" not found.`, requestId }, 404);
     }
   }
@@ -1008,17 +995,13 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   // Archive-aware conflict check: an admin who soft-deleted a connection
   // can re-create it under the same install_id and we revive in place to
   // preserve audit history. Any other status (published/draft) is a real
-  // conflict.
-  const existingRow = await internalQuery<{ status: string }>(
-    `SELECT status FROM workspace_plugins
-      WHERE workspace_id = $1 AND pillar = 'datasource' AND install_id = $2
-      LIMIT 1`,
-    [orgId, id],
-  );
-  if (existingRow.length > 0 && existingRow[0].status !== "archived") {
+  // conflict. `includeArchived` so the archived row is visible to the
+  // revive branch; `decryptConfig: false` because we read only `.status`.
+  const existingRow = await loadInstalledConnection(orgId, id, { includeArchived: true, decryptConfig: false });
+  if (existingRow !== null && existingRow.status !== "archived") {
     return c.json({ error: "conflict", message: `Connection "${id}" already exists.`, requestId }, 409);
   }
-  const revivingArchived = existingRow.length > 0;
+  const revivingArchived = existingRow !== null;
 
   // Test-connect dance is route-owned per ADR-0007 (installer trusts
   // the caller has validated reachability). Register then healthCheck
@@ -1170,32 +1153,15 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     return c.json({ error: "forbidden", message: "Cannot modify the default connection. Update ATLAS_DATASOURCE_URL instead.", requestId }, 403);
   }
 
-  // Load the existing row from workspace_plugins. Need the catalog slug
-  // (for the installer call), the JOIN to plugin_catalog for config_schema
-  // (for in-place decrypt), and the current config (for legacy
-  // url-changed detection). Excludes archived rows so soft-deleted
-  // installs read as "not found" rather than blank-decrypt 500s.
-  const existing = await internalQuery<{
-    catalog_slug: string;
-    config: Record<string, unknown> | null;
-    config_schema: unknown;
-    group_id: string | null;
-  }>(
-    `SELECT pc.slug AS catalog_slug,
-            wp.config,
-            pc.config_schema,
-            wp.config->>'group_id' AS group_id
-       FROM workspace_plugins wp
-       JOIN plugin_catalog pc ON pc.id = wp.catalog_id
-      WHERE wp.workspace_id = $1
-        AND wp.install_id = $2
-        AND wp.pillar = 'datasource'
-        AND wp.status != 'archived'
-      LIMIT 1`,
-    [orgId, id],
-  );
+  // Load + decrypt the existing install through the lib seam (#4194): it
+  // owns the workspace_plugins ⋈ plugin_catalog JOIN, the pillar/status
+  // predicates (archived rows read as "not found" rather than
+  // blank-decrypt 500s), and the config decryption. We need the catalog
+  // slug (for the installer call), the group binding, and the decrypted
+  // config (for legacy url-changed detection).
+  const current = await loadInstalledConnection(orgId, id);
 
-  if (existing.length === 0) {
+  if (current === null) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.`, requestId }, 404);
   }
 
@@ -1209,7 +1175,6 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   }
 
   const { url, description, schema, connectionGroupId, newGroupName } = body as Record<string, unknown>;
-  const current = existing[0];
 
   // Symmetric to POST: connectionGroupId string attaches, null clears
   // the group binding, newGroupName creates inline (now just a string
@@ -1255,49 +1220,37 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   // The legacy "archived group rejects attach" check is gone (no
   // separate group state to be archived).
   if (typeof connectionGroupId === "string") {
-    const groupRows = await internalQuery<{ install_id: string }>(
-      `SELECT install_id FROM workspace_plugins
-        WHERE workspace_id = $1 AND pillar = 'datasource'
-          AND config->>'group_id' = $2
-        LIMIT 1`,
-      [orgId, connectionGroupId],
-    );
-    if (groupRows.length === 0) {
+    if (!(await datasourceGroupExists(orgId, connectionGroupId))) {
       return c.json({ error: "not_found", message: `Environment "${connectionGroupId}" not found.`, requestId }, 404);
     }
   }
 
-  // Decrypt the stored URL so we can detect URL changes and roll the
-  // pool back on test-connect failure. `decryptSecretFields` walks the
-  // catalog's `config_schema` to find `secret: true` keys (i.e. `url`)
-  // and unwraps each — the rest of config passes through.
-  let currentUrl: string;
-  let currentDescription: string | null;
-  let currentSchema: string | null;
+  // The seam already decrypted the stored config (the catalog's
+  // `config_schema` marks `url` as the `secret: true` key) so we can
+  // detect URL changes and roll the pool back on test-connect failure.
+  // A decrypt failure surfaced as the discriminated `decrypt_failed`
+  // state — the seam logged the scrubbed cause; map it to the fixed 500.
+  if (current.config.state === "decrypt_failed") {
+    log.error({ connectionId: id, requestId }, "Failed to decrypt stored connection URL");
+    return c.json({ error: "decryption_failed", message: "Stored connection URL could not be decrypted. The encryption key may have changed.", requestId }, 500);
+  }
   // Full decrypted config — the plugin re-registration bridge
   // (`registerDatasourceInstall` → `createFromConfig`) needs every field a
   // plugin connection carries (not just url/description/schema), so capture
   // the whole object here and merge patched fields onto it below (#3852).
-  // Definitely assigned before any read: the catch returns early.
-  let currentDecryptedConfig: Readonly<Record<string, unknown>>;
-  try {
-    const schemaSpec = parseConfigSchema(current.config_schema);
-    const decrypted = decryptSecretFields(current.config ?? {}, schemaSpec);
-    currentDecryptedConfig = decrypted;
-    currentUrl = typeof decrypted.url === "string" ? decrypted.url : "";
-    currentDescription =
-      typeof decrypted.description === "string" && decrypted.description.length > 0
-        ? decrypted.description
-        : null;
-    currentSchema =
-      typeof decrypted.schema === "string" && decrypted.schema.length > 0
-        ? decrypted.schema
-        : null;
-    if (!currentUrl) {
-      throw new Error("workspace_plugins.config.url missing or empty");
-    }
-  } catch (err) {
-    log.error({ connectionId: id, requestId, err: errorMessage(err) }, "Failed to decrypt stored connection URL");
+  const currentDecryptedConfig: Readonly<Record<string, unknown>> = current.config.values;
+  const currentUrl = typeof currentDecryptedConfig.url === "string" ? currentDecryptedConfig.url : "";
+  const currentDescription =
+    typeof currentDecryptedConfig.description === "string" && currentDecryptedConfig.description.length > 0
+      ? currentDecryptedConfig.description
+      : null;
+  const currentSchema =
+    typeof currentDecryptedConfig.schema === "string" && currentDecryptedConfig.schema.length > 0
+      ? currentDecryptedConfig.schema
+      : null;
+  if (!currentUrl) {
+    // Same failure class as a decrypt error: the stored blob is unusable.
+    log.error({ connectionId: id, requestId, err: "workspace_plugins.config.url missing or empty" }, "Failed to decrypt stored connection URL");
     return c.json({ error: "decryption_failed", message: "Stored connection URL could not be decrypted. The encryption key may have changed.", requestId }, 500);
   }
 
@@ -1311,9 +1264,9 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   // `demo-postgres` alias onto `postgres`; throws on an unknown slug.
   let dbType: DBType;
   try {
-    dbType = catalogSlugToDbType(current.catalog_slug);
+    dbType = catalogSlugToDbType(current.catalogSlug);
   } catch (err) {
-    log.error({ connectionId: id, requestId, catalogSlug: current.catalog_slug, err: errorMessage(err) }, "Unknown catalog slug on connection update");
+    log.error({ connectionId: id, requestId, catalogSlug: current.catalogSlug, err: errorMessage(err) }, "Unknown catalog slug on connection update");
     return c.json({ error: "internal_error", message: "Connection has an unrecognized datasource type and cannot be updated.", requestId }, 500);
   }
 
@@ -1362,7 +1315,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
       // `false` without building only for handler-managed (OAuth) types like
       // salesforce, which keep their LazyPluginLoader connection.
       await registerDatasourceInstall(
-        { workspaceId: orgId, catalogId: "", installId: id, pillar: "datasource", catalogSlug: current.catalog_slug },
+        { workspaceId: orgId, catalogId: "", installId: id, pillar: "datasource", catalogSlug: current.catalogSlug },
         mergedConfig,
       );
       // Probe the (re)built plugin connection through the plugin adapter —
@@ -1388,7 +1341,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
       let rollbackFailed = false;
       try {
         await registerDatasourceInstall(
-          { workspaceId: orgId, catalogId: "", installId: id, pillar: "datasource", catalogSlug: current.catalog_slug },
+          { workspaceId: orgId, catalogId: "", installId: id, pillar: "datasource", catalogSlug: current.catalogSlug },
           currentDecryptedConfig,
         );
       } catch (restoreErr) {
@@ -1457,7 +1410,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   // existing value so the wire shape is accurate without a re-fetch.
   const resolvedGroupId =
     groupIdPatch === undefined
-      ? current.group_id
+      ? current.groupId
       : groupIdPatch;
 
   const result = await runInstaller(
@@ -1465,7 +1418,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     (installer) =>
       installer.updateDatasourceConfig(
         orgId as WorkspaceId,
-        current.catalog_slug,
+        current.catalogSlug,
         id,
         {
           ...(Object.keys(partialConfig).length > 0 ? { partialConfig } : {}),
@@ -1485,7 +1438,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     try {
       if (isPluginDbType) {
         await registerDatasourceInstall(
-          { workspaceId: orgId, catalogId: "", installId: id, pillar: "datasource", catalogSlug: current.catalog_slug },
+          { workspaceId: orgId, catalogId: "", installId: id, pillar: "datasource", catalogSlug: current.catalogSlug },
           currentDecryptedConfig,
         );
       } else {
@@ -1522,7 +1475,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     log.warn({ err: errorMessage(err), requestId }, "Failed to reset whitelists after connection update");
   }
 
-  const groupChanged = resolvedGroupId !== current.group_id;
+  const groupChanged = resolvedGroupId !== current.groupId;
   log.info({ requestId, connectionId: id, urlChanged, groupChanged, groupId: resolvedGroupId, actorId: authResult.user?.id }, "Connection updated");
 
   // Audit metadata keeps the pre-#2484 `{ name, urlChanged }` shape —
@@ -1559,19 +1512,14 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
   // installer can route the uninstall. Post-#2744 every workspace owns
   // its own demo row — there's no `__global__` shared install to shadow
   // anymore, so the legacy global/own branching collapses into one
-  // simple lookup.
-  const existing = await internalQuery<{ catalog_slug: string }>(
-    `SELECT pc.slug AS catalog_slug
-       FROM workspace_plugins wp
-       JOIN plugin_catalog pc ON pc.id = wp.catalog_id
-      WHERE wp.workspace_id = $1
-        AND wp.install_id = $2
-        AND wp.pillar = 'datasource'
-      LIMIT 1`,
-    [orgId, id],
-  );
+  // simple lookup. `includeArchived` preserves the pre-seam behavior:
+  // deleting an already-archived install re-runs the (idempotent)
+  // uninstall rather than 404ing. `decryptConfig: false` — the delete path
+  // reads only `.catalogSlug`, so an un-decryptable row must not 500 (or
+  // log) a delete that would otherwise succeed.
+  const existing = await loadInstalledConnection(orgId, id, { includeArchived: true, decryptConfig: false });
 
-  if (existing.length === 0) {
+  if (existing === null) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.`, requestId }, 404);
   }
 
@@ -1620,7 +1568,7 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
     (installer) =>
       installer.uninstallDatasource(
         orgId as WorkspaceId,
-        existing[0].catalog_slug,
+        existing.catalogSlug,
         id,
       ),
   );
@@ -1680,28 +1628,17 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
   let groupName: string | null = null;
   if (hasInternalDB()) {
     try {
-      const rows = await internalQuery<{
-        config: Record<string, unknown> | null;
-        config_schema: unknown;
-        group_id: string | null;
-      }>(
-        `SELECT wp.config, pc.config_schema, wp.config->>'group_id' AS group_id
-           FROM workspace_plugins wp
-           JOIN plugin_catalog pc ON pc.id = wp.catalog_id
-          WHERE wp.workspace_id = $1
-            AND wp.install_id = $2
-            AND wp.pillar = 'datasource'
-            AND wp.status != 'archived'
-          LIMIT 1`,
-        [orgId, id],
-      );
-      if (rows.length > 0) {
+      // Load + decrypt through the lib seam (#4194). A decrypt failure
+      // deliberately does NOT 500 here (unlike PUT): the detail dialog
+      // still renders the row's metadata with a degraded placeholder so
+      // the admin can see — and fix — the connection.
+      const row = await loadInstalledConnection(orgId, id);
+      if (row !== null) {
         managed = true;
-        groupId = rows[0].group_id;
-        groupName = rows[0].group_id;
-        try {
-          const schemaSpec = parseConfigSchema(rows[0].config_schema);
-          const decrypted = decryptSecretFields(rows[0].config ?? {}, schemaSpec);
+        groupId = row.groupId;
+        groupName = row.groupId;
+        if (row.config.state === "decrypted") {
+          const decrypted = row.config.values;
           schema =
             typeof decrypted.schema === "string" && decrypted.schema.length > 0
               ? decrypted.schema
@@ -1710,8 +1647,9 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
             typeof decrypted.url === "string" && decrypted.url.length > 0
               ? maskConnectionUrl(decrypted.url)
               : null;
-        } catch (decryptErr) {
-          log.error({ connectionId: id, requestId, err: decryptErr instanceof Error ? decryptErr.message : String(decryptErr) }, "Failed to decrypt stored connection URL");
+        } else {
+          // Scrubbed cause already logged by the seam.
+          log.error({ connectionId: id, requestId }, "Failed to decrypt stored connection URL");
           maskedUrl = "[encrypted — decryption failed]";
         }
       }

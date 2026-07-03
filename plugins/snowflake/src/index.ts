@@ -1,8 +1,11 @@
 /**
  * Snowflake DataSource Plugin — reference implementation for @useatlas/plugin-sdk.
  *
- * Demonstrates how the AtlasDatasourcePlugin interface can wrap the callback-based
- * snowflake-sdk adapter extracted from packages/api/src/lib/db/connection.ts.
+ * Assembled via `createDatasourcePlugin` (#4192): the factory owns the
+ * static-vs-adapter-only mode branch, the `createFromConfig` wrapper, the
+ * initialize logging, and the measured SELECT-1 health check. This module
+ * supplies only the Snowflake substance: the schema pair, the connection
+ * builder, the introspection bindings, and the read-only advisory warning.
  *
  * Two registration modes:
  *
@@ -31,8 +34,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin, measuredHealthCheck } from "@useatlas/plugin-sdk";
-import type { AtlasDatasourcePlugin, PluginDBConnection, PluginHealthResult, PluginLogger } from "@useatlas/plugin-sdk";
+import { createDatasourcePlugin } from "@useatlas/plugin-sdk";
 import {
   createSnowflakeConnection,
   extractAccount,
@@ -82,129 +84,6 @@ const SnowflakeConfigSchema = SnowflakeConnectionConfigSchema.partial();
 export type SnowflakeConfig = z.infer<typeof SnowflakeConfigSchema>;
 
 /**
- * Build the plugin object from validated config.
- * Exported for direct use with definePlugin() when Zod validation
- * has already been performed externally (e.g. in tests or custom wiring).
- */
-export function buildSnowflakePlugin(
-  config: SnowflakeConfig,
-): AtlasDatasourcePlugin<SnowflakeConfig> {
-  let log: PluginLogger | undefined;
-
-  // When a static url is configured the plugin wires a config-defined
-  // connection at boot; without one it is registered adapter-only.
-  const staticUrl = config.url;
-
-  const connection: AtlasDatasourcePlugin<SnowflakeConfig>["connection"] = {
-    // DB-driven (admin-UI-registered) datasources: build a connection from
-    // the per-(workspace, install) config decrypted from `workspace_plugins`,
-    // re-validated through the strict schema. Always available — this is the
-    // SaaS per-workspace path and the only path in adapter-only mode.
-    createFromConfig: (runtimeConfig) => {
-      const parsed = SnowflakeConnectionConfigSchema.parse(runtimeConfig);
-      const built = createSnowflakeConnection({
-        url: parsed.url,
-        maxConnections: parsed.maxConnections,
-        logger: log,
-      });
-      // #3667 — introspection as a capability of the built connection, bound to
-      // the creds that built it (no url/config re-resolution by the host).
-      return {
-        ...built,
-        listObjects: (o) => listSnowflakeObjects({ url: parsed.url, schema: o?.schema }),
-        profile: (o) =>
-          profileSnowflake({
-            url: parsed.url,
-            schema: o?.schema,
-            selectedTables: o?.selectedTables,
-            prefetchedObjects: o?.prefetchedObjects,
-            progress: o?.progress,
-            logger: o?.logger,
-          }),
-      };
-    },
-    dbType: "snowflake",
-    parserDialect: "Snowflake",
-    forbiddenPatterns: SNOWFLAKE_FORBIDDEN_PATTERNS,
-    // Introspection (listObjects / profile) is a capability of the BUILT
-    // connection (createFromConfig above), bound to the creds that built it — the
-    // one home MCP, the wizard, and the CLI all consume (ADR-0017 / #3670). No
-    // connection-namespace profiler exports remain.
-  };
-
-  if (staticUrl) {
-    connection.create = () =>
-      createSnowflakeConnection({ url: staticUrl, maxConnections: config.maxConnections, logger: log });
-  }
-
-  return {
-    id: "snowflake-datasource",
-    types: ["datasource"] as const,
-    version: "0.1.0",
-    name: "Snowflake DataSource",
-    config,
-
-    connection,
-
-    entities: [],
-
-    dialect: [
-      "This datasource uses Snowflake SQL dialect.",
-      "- Use FLATTEN() for semi-structured data (VARIANT, ARRAY, OBJECT columns).",
-      "- Use PARSE_JSON() to cast strings to semi-structured types.",
-      "- Use DATE_TRUNC('month', col) for date truncation (not EXTRACT or dateadd patterns).",
-      "- Use QUALIFY for window function filtering (e.g. QUALIFY ROW_NUMBER() OVER (...) = 1).",
-      "- Use TRY_CAST() for safe type conversions that return NULL on failure.",
-      "- Use $$ for dollar-quoted string literals.",
-      "- Identifiers are case-insensitive and stored uppercase by default.",
-      "- VARIANT type supports semi-structured data — use :key or ['key'] notation to access fields.",
-    ].join("\n"),
-
-    async initialize(ctx) {
-      log = ctx.logger;
-      if (staticUrl) {
-        ctx.logger.info(`Snowflake datasource plugin initialized (${extractAccount(staticUrl)})`);
-      } else {
-        ctx.logger.info(
-          "Snowflake datasource plugin registered as adapter-only — per-workspace datasources via Admin → Connections",
-        );
-      }
-      ctx.logger.warn(
-        "Snowflake has no session-level read-only mode — Atlas enforces SELECT-only " +
-        "via SQL validation (regex + AST). For defense-in-depth, configure the " +
-        "Snowflake connection with a role granted SELECT privileges only " +
-        "(e.g. GRANT SELECT ON ALL TABLES IN SCHEMA <schema> TO ROLE atlas_readonly).",
-      );
-    },
-
-    async healthCheck(): Promise<PluginHealthResult> {
-      // Adapter-only: no static datasource to probe. The plugin itself is a
-      // healthy adapter; per-workspace connections are health-checked by the
-      // ConnectionRegistry once installed.
-      if (!staticUrl) {
-        return { healthy: true, message: "adapter-only: no static datasource configured" };
-      }
-      return measuredHealthCheck(async () => {
-        let conn: PluginDBConnection | undefined;
-        try {
-          conn = createSnowflakeConnection({ url: staticUrl, maxConnections: config.maxConnections });
-          await conn.query("SELECT 1", 5000);
-          return { healthy: true };
-        } finally {
-          if (conn) {
-            try {
-              await conn.close();
-            } catch (closeErr) {
-              (log ?? console).warn(`[snowflake-datasource] Failed to close health-check connection: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`);
-            }
-          }
-        }
-      });
-    },
-  };
-}
-
-/**
  * Factory function for use in atlas.config.ts plugins array.
  *
  * Validates config via Zod at call time, then builds the plugin.
@@ -217,10 +96,76 @@ export function buildSnowflakePlugin(
  * plugins: [snowflakePlugin({})]
  * ```
  */
-export const snowflakePlugin = createPlugin({
+export const snowflakePlugin = createDatasourcePlugin<
+  SnowflakeConfig,
+  z.infer<typeof SnowflakeConnectionConfigSchema>
+>({
+  id: "snowflake-datasource",
+  name: "Snowflake DataSource",
+  dbType: "snowflake",
+  parserDialect: "Snowflake",
+  forbiddenPatterns: SNOWFLAKE_FORBIDDEN_PATTERNS,
   configSchema: SnowflakeConfigSchema,
-  create: buildSnowflakePlugin,
+  connectionConfigSchema: SnowflakeConnectionConfigSchema,
+
+  dialect: [
+    "This datasource uses Snowflake SQL dialect.",
+    "- Use FLATTEN() for semi-structured data (VARIANT, ARRAY, OBJECT columns).",
+    "- Use PARSE_JSON() to cast strings to semi-structured types.",
+    "- Use DATE_TRUNC('month', col) for date truncation (not EXTRACT or dateadd patterns).",
+    "- Use QUALIFY for window function filtering (e.g. QUALIFY ROW_NUMBER() OVER (...) = 1).",
+    "- Use TRY_CAST() for safe type conversions that return NULL on failure.",
+    "- Use $$ for dollar-quoted string literals.",
+    "- Identifiers are case-insensitive and stored uppercase by default.",
+    "- VARIANT type supports semi-structured data — use :key or ['key'] notation to access fields.",
+  ].join("\n"),
+
+  // Static mode logs the account only — never credentials embedded in the url.
+  // `url!` is provably present: describeStaticTarget only runs in static mode,
+  // which the factory's default predicate gates on a non-empty `url`.
+  describeStaticTarget: (config) => extractAccount(config.url!),
+
+  buildConnection: (parsed, rt) =>
+    createSnowflakeConnection({
+      url: parsed.url,
+      maxConnections: parsed.maxConnections,
+      logger: rt.logger,
+    }),
+
+  // #3667 — introspection as a capability of the built connection, bound to
+  // the creds that built it (no url/config re-resolution by the host).
+  attachIntrospection: (built, { parsed }) => ({
+    ...built,
+    listObjects: (o) => listSnowflakeObjects({ url: parsed.url, schema: o?.schema }),
+    profile: (o) =>
+      profileSnowflake({
+        url: parsed.url,
+        schema: o?.schema,
+        selectedTables: o?.selectedTables,
+        prefetchedObjects: o?.prefetchedObjects,
+        progress: o?.progress,
+        logger: o?.logger,
+      }),
+  }),
+
+  // Advisory in BOTH modes: Snowflake has no session-level read-only knob, so
+  // operators should grant a SELECT-only role for defense-in-depth.
+  onInitialize: (ctx) => {
+    ctx.logger.warn(
+      "Snowflake has no session-level read-only mode — Atlas enforces SELECT-only " +
+      "via SQL validation (regex + AST). For defense-in-depth, configure the " +
+      "Snowflake connection with a role granted SELECT privileges only " +
+      "(e.g. GRANT SELECT ON ALL TABLES IN SCHEMA <schema> TO ROLE atlas_readonly).",
+    );
+  },
 });
+
+/**
+ * Build the plugin object from an already-validated config — bypasses the Zod
+ * config schema. For direct use when validation has been performed externally
+ * (e.g. in tests or custom wiring).
+ */
+export const buildSnowflakePlugin = snowflakePlugin.build;
 
 export { createSnowflakeConnection, parseSnowflakeURL, extractAccount } from "./connection";
 export { listSnowflakeObjects, profileSnowflake } from "./profiler";

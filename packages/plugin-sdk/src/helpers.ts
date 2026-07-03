@@ -14,7 +14,16 @@ import type {
   AtlasInteractionPlugin,
   AtlasActionPlugin,
   AtlasSandboxPlugin,
+  AtlasPluginContext,
+  ConfigSchemaField,
+  EntityProvider,
+  ParserDialect,
+  PluginDBConnection,
+  PluginDBType,
   PluginHealthResult,
+  PluginHooks,
+  PluginLogger,
+  QueryValidationResult,
 } from "./types";
 
 const VALID_TYPES: Set<string> = new Set(["datasource", "context", "interaction", "action", "sandbox"]);
@@ -562,4 +571,391 @@ export async function runHealthCheckWithTimeout(
     }
   }
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// createDatasourcePlugin — datasource assembly factory (#4192)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-instance runtime handed to every {@link CreateDatasourcePluginOptions}
+ * callback. One object per factory invocation, so state (logger, cached static
+ * connection) is never shared between two plugin instances built from the same
+ * blueprint.
+ */
+export interface DatasourcePluginRuntime<
+  TConfig,
+  TConn extends PluginDBConnection = PluginDBConnection,
+> {
+  /** The config-time config this plugin instance was built from. */
+  readonly config: TConfig;
+  /**
+   * Plugin-scoped logger — live accessor, set when the host calls
+   * `initialize()` and `undefined` before. Read it at call time (not capture
+   * time) inside long-lived closures such as hook handlers.
+   */
+  readonly logger: PluginLogger | undefined;
+  /** Whether the config defines a static (boot-wired) datasource, vs adapter-only. */
+  readonly hasStaticConfig: boolean;
+  /**
+   * The static connection. Cached per plugin instance when
+   * `cacheStaticConnection` is set (stateful sessions — jsforce, ES client);
+   * otherwise built fresh on every call. Throws in adapter-only mode.
+   */
+  staticConnection(): TConn;
+}
+
+/**
+ * Blueprint for {@link createDatasourcePlugin}. Identity + connection statics
+ * are plain fields; behavior is supplied as callbacks that all receive the
+ * per-instance {@link DatasourcePluginRuntime}.
+ */
+export interface CreateDatasourcePluginOptions<
+  TConfig,
+  TRuntimeConfig,
+  TConn extends PluginDBConnection = PluginDBConnection,
+> {
+  /** Unique plugin id (e.g. `"clickhouse-datasource"`). Also the ConnectionRegistry key in static mode. */
+  id: string;
+  /** Human-readable name (e.g. `"ClickHouse DataSource"`). */
+  name: string;
+  /** SemVer version. Defaults to `"0.1.0"`. */
+  version?: string;
+  /**
+   * Brand used in the standard `initialize()` log lines ("<label> datasource
+   * plugin initialized …"). Defaults to `name` with a trailing " DataSource"
+   * stripped (so "ClickHouse DataSource" logs as "ClickHouse").
+   */
+  logLabel?: string;
+  /** Database type identifier (SQL dialect selection). */
+  dbType: PluginDBType;
+  /** node-sql-parser dialect. Ignored when {@link validate} is provided. */
+  parserDialect?: ParserDialect;
+  /** Extra regex guards on top of the base DML/DDL guard. Ignored when {@link validate} is provided. */
+  forbiddenPatterns?: RegExp[];
+  /** Custom query validator for non-SQL datasources (SOQL, …). Replaces the standard SQL pipeline. */
+  validate?(query: string): QueryValidationResult | Promise<QueryValidationResult>;
+  /**
+   * Dialect guidance for the agent system prompt. The function form receives
+   * whether the instance runs static (for mode-aware guidance, e.g. a
+   * static-only query tool).
+   */
+  dialect: string | ((hasStaticConfig: boolean) => string);
+  /**
+   * Lenient config-time schema — every connection field optional so the plugin
+   * can register as an ADAPTER ONLY (`plugin({})` parses, exposing
+   * `createFromConfig` to the datasource bridge with no static datasource).
+   */
+  configSchema: { parse(input: unknown): TConfig };
+  /**
+   * Strict schema for a fully-specified connection. `createFromConfig`
+   * re-validates the decrypted per-(workspace, install) config of a DB-stored
+   * datasource through it before building the connection.
+   */
+  connectionConfigSchema: { parse(input: unknown): TRuntimeConfig };
+  /**
+   * Optional pre-parse normalization of the raw runtime config (e.g. BigQuery's
+   * catalog snake_case → factory camelCase). The ORIGINAL raw config is still
+   * what {@link attachIntrospection} receives as `runtimeConfig`.
+   */
+  normalizeRuntimeConfig?(raw: Readonly<Record<string, unknown>>): unknown;
+  /**
+   * Static-vs-adapter-only mode predicate. Defaults to a non-empty string
+   * `url` on the config — override for non-url-shaped datasources (BigQuery's
+   * projectId/keyFilename/credentials, DuckDB's url-or-path, ES's
+   * completeness check).
+   */
+  hasStaticConfig?(config: TConfig): boolean;
+  /**
+   * Non-secret target identifier for the static-mode `initialize()` log line
+   * (host, account, `project: <id>` — NEVER a credential). Only called when
+   * the instance is static.
+   */
+  describeStaticTarget(config: TConfig): string;
+  /**
+   * Build a connection from a strict-validated runtime config — the
+   * `createFromConfig` core. Also the default static-connection builder (the
+   * config-time config is run through {@link connectionConfigSchema}) unless
+   * {@link createStaticConnection} overrides it.
+   */
+  buildConnection(parsed: TRuntimeConfig, runtime: DatasourcePluginRuntime<TConfig, TConn>): PluginDBConnection;
+  /**
+   * Bind introspection to the BUILT connection (#3667 / ADR-0017): return
+   * `{ ...built, listObjects, profile }` closing over the creds that built it.
+   * `parsed` is the strict-validated config; `runtimeConfig` is the raw record
+   * `createFromConfig` received (plugins whose profiler authenticates from
+   * config fields — BigQuery, ES — forward it verbatim; url-shaped plugins
+   * ignore it). Applied on the `createFromConfig` path only — the static
+   * boot-wired connection keeps the plain built shape, exactly as before.
+   */
+  attachIntrospection(
+    built: PluginDBConnection,
+    ctx: { parsed: TRuntimeConfig; runtimeConfig: Readonly<Record<string, unknown>> },
+    runtime: DatasourcePluginRuntime<TConfig, TConn>,
+  ): PluginDBConnection;
+  /**
+   * Static connection builder for `connection.create()` (and the default
+   * health probe). Defaults to `buildConnection(connectionConfigSchema.parse(config))`.
+   * Override when the static path diverges from the runtime path (BigQuery's
+   * ADC-without-projectId, ES's `allowAmbientAwsCreds: true`). Required when
+   * `TConn` is narrower than {@link PluginDBConnection}.
+   */
+  createStaticConnection?(runtime: DatasourcePluginRuntime<TConfig, TConn>): TConn;
+  /**
+   * Cache the static connection per plugin instance (stateful sessions —
+   * jsforce, the ES client). `connection.create()`, `runtime.staticConnection()`
+   * and the factory-emitted `teardown()` (close + reset, close errors logged)
+   * all share the one cached connection. Fresh-per-call plugins (stateless
+   * HTTP transports, pools built at boot) leave this unset.
+   */
+  cacheStaticConnection?: boolean;
+  /**
+   * Static-mode health probe, run inside {@link measuredHealthCheck} (latency
+   * stamping + error narrowing). Defaults to a fresh-connection `SELECT 1`
+   * (5s timeout) that warns on failure and close-guards in `finally`. Probes
+   * that must scrub errors (credential-bearing messages) or ping non-SQL
+   * endpoints override this — keep your own `catch` so the scrubbed message is
+   * what surfaces.
+   */
+  healthProbe?(
+    runtime: DatasourcePluginRuntime<TConfig, TConn>,
+  ): Promise<Omit<PluginHealthResult, "latencyMs"> & { latencyMs?: never }>;
+  /**
+   * Extra `initialize()` work, run AFTER the standard mode log line (read-only
+   * warnings, static-mode tool registration, …). The shared logger is already
+   * bound when this runs.
+   */
+  onInitialize?(ctx: AtlasPluginContext, runtime: DatasourcePluginRuntime<TConfig, TConn>): void | Promise<void>;
+  /** Plugin hooks. The function form builds them per instance with runtime access (lazy logger). */
+  hooks?: PluginHooks | ((runtime: DatasourcePluginRuntime<TConfig, TConn>) => PluginHooks);
+  /** Serializable config schema for the admin install form (`getConfigSchema()`). */
+  getConfigSchema?(): ConfigSchemaField[];
+  /** Entity definitions. Defaults to `[]`. */
+  entities?: EntityProvider;
+  /**
+   * Extra teardown, run AFTER the factory has closed the cached static
+   * connection (when {@link cacheStaticConnection} is set). A plugin with no
+   * cache and no extra teardown gets no `teardown` method, as before.
+   */
+  teardown?(runtime: DatasourcePluginRuntime<TConfig, TConn>): void | Promise<void>;
+}
+
+/**
+ * Factory returned by {@link createDatasourcePlugin}: call it with config for
+ * the schema-validated `atlas.config.ts` path, or use `.build()` to assemble
+ * without config-schema validation (pre-validated config — tests / custom
+ * wiring, the old `buildXPlugin` seam).
+ */
+export interface DatasourcePluginFactory<TConfig> {
+  (config: TConfig): AtlasDatasourcePlugin<TConfig>;
+  /** Assemble from an already-validated config, bypassing the config schema. */
+  build(config: TConfig): AtlasDatasourcePlugin<TConfig>;
+}
+
+/** Default static-mode predicate: a non-empty string `url` on the config. */
+function configHasUrl(config: unknown): boolean {
+  if (typeof config !== "object" || config === null) return false;
+  const url = (config as { url?: unknown }).url;
+  return typeof url === "string" && url.length > 0;
+}
+
+/**
+ * Assembly factory for datasource plugins — the sibling of {@link createPlugin}
+ * that absorbs the identical plugin-object assembly the url-shaped datasources
+ * hand-rolled (#4192): the static-vs-adapter-only mode branch, the
+ * `createFromConfig` strict-parse → build → attach-introspection wrapper
+ * (ADR-0013 per-workspace connections; ADR-0017 introspection as a capability
+ * of the BUILT connection), the standard `initialize()` mode logging, the
+ * adapter-only + measured static health check, and optional static-connection
+ * caching with close-guarded teardown.
+ *
+ * Per-dialect substance stays in the plugin: it supplies the schema pair, a
+ * `buildConnection`, an `attachIntrospection`, and (only where it diverges)
+ * mode predicate, static builder, probe, hooks, and initialize extras.
+ *
+ * @example
+ * ```typescript
+ * export const mydbPlugin = createDatasourcePlugin({
+ *   id: "mydb-datasource",
+ *   name: "MyDB DataSource",
+ *   dbType: "mydb",
+ *   parserDialect: "PostgresQL",
+ *   forbiddenPatterns: MYDB_FORBIDDEN_PATTERNS,
+ *   dialect: "This datasource uses MyDB SQL dialect.",
+ *   configSchema: MyDBConfigSchema,               // lenient — {} parses (adapter-only)
+ *   connectionConfigSchema: MyDBConnectionSchema, // strict — url required
+ *   describeStaticTarget: (c) => extractHost(c.url!),
+ *   buildConnection: (parsed, rt) => createMyDBConnection({ url: parsed.url, logger: rt.logger }),
+ *   attachIntrospection: (built, { parsed }) => ({
+ *     ...built,
+ *     listObjects: (o) => listMyDBObjects({ url: parsed.url, schema: o?.schema }),
+ *     profile: (o) => profileMyDB({ url: parsed.url, ...o }),
+ *   }),
+ * });
+ * ```
+ */
+export function createDatasourcePlugin<
+  TConfig,
+  TRuntimeConfig,
+  TConn extends PluginDBConnection = PluginDBConnection,
+>(
+  options: CreateDatasourcePluginOptions<TConfig, TRuntimeConfig, TConn>,
+): DatasourcePluginFactory<TConfig> {
+  const logLabel = options.logLabel ?? options.name.replace(/\s+DataSource$/, "");
+  const version = options.version ?? "0.1.0";
+  const isStatic = options.hasStaticConfig ?? configHasUrl;
+
+  const build = (config: TConfig): AtlasDatasourcePlugin<TConfig> => {
+    let log: PluginLogger | undefined;
+    let cachedConn: TConn | undefined;
+    const hasStaticConfig = isStatic(config);
+
+    /**
+     * Fresh static connection. Default: run the config-time config through the
+     * STRICT schema and reuse `buildConnection` — sound because static mode
+     * implies a fully-specified config. `as TConn` is only exercised on the
+     * default path, where TConn is the PluginDBConnection default (plugins
+     * that narrow TConn supply `createStaticConnection`).
+     */
+    const buildStatic = (): TConn =>
+      options.createStaticConnection
+        ? options.createStaticConnection(runtime)
+        : (options.buildConnection(options.connectionConfigSchema.parse(config), runtime) as TConn);
+
+    const runtime: DatasourcePluginRuntime<TConfig, TConn> = {
+      config,
+      hasStaticConfig,
+      get logger() {
+        return log;
+      },
+      staticConnection(): TConn {
+        if (!hasStaticConfig) {
+          throw new Error(
+            `${logLabel} datasource plugin is adapter-only — no static datasource configured`,
+          );
+        }
+        if (!options.cacheStaticConnection) return buildStatic();
+        cachedConn ??= buildStatic();
+        return cachedConn;
+      },
+    };
+
+    /**
+     * Default static health probe: fresh connection + `SELECT 1`, warn on
+     * failure, close-guarded in `finally` so a throwing `close()` can never
+     * mask the probe result. Never touches the cached connection.
+     */
+    const defaultHealthProbe = async (): Promise<Omit<PluginHealthResult, "latencyMs">> => {
+      let conn: PluginDBConnection | undefined;
+      try {
+        conn = buildStatic();
+        await conn.query("SELECT 1", 5000);
+        return { healthy: true };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        (log ?? console).warn(`${logLabel} health check failed: ${message}`);
+        return { healthy: false, message };
+      } finally {
+        if (conn) {
+          try {
+            await conn.close();
+          } catch (closeErr) {
+            (log ?? console).warn(
+              `[${options.id}] Failed to close health-check connection: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+            );
+          }
+        }
+      }
+    };
+
+    const connection: AtlasDatasourcePlugin<TConfig>["connection"] = {
+      // DB-driven (admin-UI-registered) datasources: build a connection from
+      // the per-(workspace, install) config decrypted from `workspace_plugins`,
+      // re-validated through the strict schema. Always available — this is the
+      // SaaS per-workspace path (ADR-0013) and the only path in adapter-only
+      // mode. Introspection is attached as a capability OF the built connection,
+      // bound to the creds that built it (#3667 / ADR-0017).
+      createFromConfig: (runtimeConfig) => {
+        const parsed = options.connectionConfigSchema.parse(
+          options.normalizeRuntimeConfig ? options.normalizeRuntimeConfig(runtimeConfig) : runtimeConfig,
+        );
+        const built = options.buildConnection(parsed, runtime);
+        return options.attachIntrospection(built, { parsed, runtimeConfig }, runtime);
+      },
+      dbType: options.dbType,
+    };
+    if (options.parserDialect !== undefined) connection.parserDialect = options.parserDialect;
+    if (options.forbiddenPatterns !== undefined) connection.forbiddenPatterns = options.forbiddenPatterns;
+    if (options.validate !== undefined) connection.validate = options.validate;
+    // When the config defines a static datasource the plugin wires a
+    // config-defined connection at boot; without one it registers adapter-only.
+    if (hasStaticConfig) connection.create = () => runtime.staticConnection();
+
+    const plugin: AtlasDatasourcePlugin<TConfig> = {
+      id: options.id,
+      types: ["datasource"] as const,
+      version,
+      name: options.name,
+      config,
+      connection,
+      entities: options.entities ?? [],
+      dialect: typeof options.dialect === "function" ? options.dialect(hasStaticConfig) : options.dialect,
+
+      async initialize(ctx) {
+        log = ctx.logger;
+        if (hasStaticConfig) {
+          ctx.logger.info(
+            `${logLabel} datasource plugin initialized (${options.describeStaticTarget(config)})`,
+          );
+        } else {
+          ctx.logger.info(
+            `${logLabel} datasource plugin registered as adapter-only — per-workspace datasources via Admin → Connections`,
+          );
+        }
+        await options.onInitialize?.(ctx, runtime);
+      },
+
+      async healthCheck(): Promise<PluginHealthResult> {
+        // Adapter-only: no static datasource to probe. The plugin itself is a
+        // healthy adapter; per-workspace connections are health-checked by the
+        // ConnectionRegistry once installed.
+        if (!hasStaticConfig) {
+          return { healthy: true, message: "adapter-only: no static datasource configured" };
+        }
+        return measuredHealthCheck(() =>
+          options.healthProbe ? options.healthProbe(runtime) : defaultHealthProbe(),
+        );
+      },
+    };
+
+    if (options.hooks !== undefined) {
+      plugin.hooks = typeof options.hooks === "function" ? options.hooks(runtime) : options.hooks;
+    }
+    if (options.getConfigSchema !== undefined) plugin.getConfigSchema = options.getConfigSchema;
+    if (options.cacheStaticConnection || options.teardown) {
+      plugin.teardown = async () => {
+        if (cachedConn) {
+          try {
+            await cachedConn.close();
+          } catch (err) {
+            log?.warn(
+              { err: err instanceof Error ? err.message : String(err) },
+              `Failed to close ${logLabel} connection during teardown`,
+            );
+          }
+          cachedConn = undefined;
+        }
+        await options.teardown?.(runtime);
+      };
+    }
+
+    return plugin;
+  };
+
+  const validated = createPlugin<TConfig, AtlasDatasourcePlugin<TConfig>>({
+    configSchema: options.configSchema,
+    create: build,
+  });
+
+  return Object.assign((config: TConfig) => validated(config), { build });
 }

@@ -8,7 +8,9 @@ export async function GET() {
   const results = await Promise.all(
     pages.map(async (page) => {
       try {
-        return await getLLMText(page);
+        // `source` is the root/SaaS section, so resolve audience conditionals
+        // to the saas branch (PRD #4257).
+        return await getLLMText(page, "saas");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[llms-full.txt] ${page.url}: ${msg}`);

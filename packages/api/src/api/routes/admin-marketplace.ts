@@ -19,11 +19,14 @@ import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import {
   maskSecretFields,
   parseConfigSchema,
-  restoreMaskedSecrets,
   encryptSecretFields,
-  decryptSecretFields,
   checkStrictPluginSecrets,
 } from "@atlas/api/lib/plugins/secrets";
+import {
+  applyConfigEdit,
+  decryptStoredConfig,
+  InstalledConfigDecryptError,
+} from "@atlas/api/lib/integrations/installed-connection";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { invokeOnUninstallHookForInstallRow } from "@atlas/api/lib/plugins/uninstall-hook";
 import {
@@ -837,7 +840,7 @@ workspaceMarketplace.openapi(listAvailableRoute, async (c) => {
       // `secret: true` in the catalog's config_schema. A workspace admin
       // would otherwise GET /available and read every live credential
       // (#1817); the UI round-trips the placeholder on save via the write
-      // path's restoreMaskedSecrets() guard. A catalog row with a malformed
+      // path's `applyConfigEdit` restore step. A catalog row with a malformed
       // config_schema (DB drift, migration typo) falls through parseConfigSchema
       // as `state: "corrupt"` — maskSecretFields then fail-closes by masking
       // every string value and we log so operators see the drift.
@@ -1561,16 +1564,19 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
         }, 422);
       }
       // F-42: the stored JSONB carries `secret: true` fields encrypted.
-      // Decrypt before restoreMaskedSecrets so placeholder-restored values
-      // are plaintext — the re-encrypt step below then refreshes the IV
-      // for every preserved secret (idempotent on ciphertext would keep
-      // the old IV; decrypt-then-reencrypt is the safer default). A
-      // decryption failure is surfaced as 500 with a failure audit — the
-      // alternative is a silent secret wipe on the PUT.
+      // Decrypt through the lib seam (#4194), which classifies failures
+      // as `InstalledConfigDecryptError` — surfaced as 500 with a failure
+      // audit; the alternative is a silent secret wipe on the PUT.
       let originalConfig: Record<string, unknown>;
       try {
-        originalConfig = decryptSecretFields(originalConfigRaw, schema);
+        originalConfig = decryptStoredConfig(originalConfigRaw, schema, {
+          installationId: id,
+          orgId,
+          requestId,
+          surface: "marketplace-config-put",
+        });
       } catch (err) {
+        if (!(err instanceof InstalledConfigDecryptError)) throw err;
         logAdminAction({
           actionType: ADMIN_ACTIONS.plugin.configUpdate,
           targetType: "plugin",
@@ -1582,27 +1588,20 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
             orgId,
             keysChanged,
             decryptFailure: true,
-            error: errorMessage(err),
+            error: err.message,
           },
         });
-        log.error(
-          {
-            installationId: id,
-            orgId,
-            requestId,
-            err: err instanceof Error ? err : new Error(String(err)),
-            scrubbed: errorMessage(err),
-          },
-          "Failed to decrypt plugin config secrets on save-read",
-        );
         return c.json({
           error: "internal_error",
           message: "Failed to read current plugin configuration — encrypted secret could not be decrypted.",
           requestId,
         }, 500);
       }
-      const sanitizedConfig = restoreMaskedSecrets(body.config, originalConfig, schema);
-      const encryptedForPersist = encryptSecretFields(sanitizedConfig, schema);
+      // Read-modify-write ordering (decrypt → restore-masked → encrypt →
+      // mask) is owned by `applyConfigEdit`: the persisted blob is freshly
+      // encrypted plaintext (fresh IV, never a ciphertext round-trip) and
+      // the response echo is masked (never plaintext).
+      const { persistConfig, responseConfig } = applyConfigEdit(originalConfig, body.config, schema);
 
       // `try/catch` around `yield* queryEffect(...)` so a routing-id unique
       // violation (#3167) maps to the same actionable conflict the install
@@ -1624,7 +1623,7 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
                        (SELECT slug FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS slug,
                        (SELECT type FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS type,
                        (SELECT description FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS description`,
-          [JSON.stringify(encryptedForPersist), id, orgId],
+          [JSON.stringify(persistConfig), id, orgId],
         ).pipe(Effect.tapError((err) => Effect.sync(() => {
           logAdminAction({
             actionType: ADMIN_ACTIONS.plugin.configUpdate,
@@ -1673,11 +1672,12 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
         },
       });
       log.info({ orgId, installationId: id }, "Plugin config updated");
-      // F-42: the RETURNING clause gives back the freshly-encrypted blob.
-      // Mask the response so the UI never has to know about ciphertext — it
-      // just sees placeholders like it did on GET /available.
+      // F-42: the RETURNING clause gives back the freshly-encrypted blob —
+      // never echo it. `applyConfigEdit` derived the masked echo from the
+      // same restored plaintext it encrypted, so the UI sees placeholders
+      // like it did on GET /available and ciphertext never leaves the DB.
       const updatedResponse = installRowToJson(updated);
-      updatedResponse.config = maskSecretFields(updatedResponse.config, schema);
+      updatedResponse.config = responseConfig;
       return c.json(updatedResponse, 200);
     }),
     { label: "update plugin config" },

@@ -16,6 +16,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://www.useatlas.dev"),
   title: "Atlas — Ask your data anything, trust the answer.",
   description:
     "Atlas is the AI data analyst you can run anywhere. It answers plain-English questions across your SQL warehouses and REST APIs, grounded in a semantic layer you control. Run it in the cloud or self-host it — open source.",

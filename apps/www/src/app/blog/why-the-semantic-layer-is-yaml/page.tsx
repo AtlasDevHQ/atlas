@@ -34,6 +34,21 @@ export const metadata: Metadata = {
     siteName: "Atlas",
     type: "article",
     authors: ["Matt Sywulak"],
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Why the semantic layer is a YAML file",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Why the Semantic Layer Is a YAML File",
+    description:
+      "The smartest thing in a text-to-SQL agent isn't the model — it's a YAML file a human can read. Why Atlas's semantic layer is a plain text file, and not embeddings, fine-tuning, or a schema crawl.",
+    images: ["/og.png"],
   },
 };
 
@@ -287,6 +302,22 @@ export default function WhyTheSemanticLayerIsYaml() {
           . If you just want to watch the semantic layer do its job, the demo is
           live and runs on the same NovaMart data you just read about, no signup
           required.
+        </P>
+        <P>
+          Postscript: seventeen days before this post went out, Google Cloud
+          shipped the{" "}
+          <a
+            href="https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing"
+            className="link-accent"
+          >
+            Open Knowledge Format
+          </a>
+          , an open standard built on the same plain-files thesis. I found it
+          the next day. What Atlas did about it is the follow-up,{" "}
+          <a href="/blog/atlas-speaks-okf" className="link-accent">
+            Atlas speaks OKF
+          </a>
+          .
         </P>
 
         <PostActions />

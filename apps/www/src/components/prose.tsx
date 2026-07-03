@@ -188,11 +188,11 @@ export function StatStrip({ items }: { items: Stat[] }) {
   return (
     <dl className="my-12 grid grid-cols-1 gap-x-8 gap-y-7 border-y border-border-soft py-8 sm:grid-cols-3">
       {items.map((it) => (
-        <div key={it.label}>
+        <div key={it.label} className="flex h-full flex-col">
           <dt className="font-mono text-[11px] uppercase tracking-[0.08em] text-fg-faint">
             {it.label}
           </dt>
-          <dd className="mt-2 text-[2.75rem] font-semibold leading-[0.95] tracking-[-0.04em] text-accent md:text-[3.25rem]">
+          <dd className="mt-auto pt-2 text-[2.75rem] font-semibold leading-[0.95] tracking-[-0.04em] text-accent md:text-[3.25rem]">
             {it.value}
           </dd>
         </div>

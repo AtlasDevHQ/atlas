@@ -34,6 +34,21 @@ export const metadata: Metadata = {
     siteName: "Atlas",
     type: "article",
     authors: ["Matt Sywulak"],
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "The price of /ci",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "The price of /ci",
+    description:
+      "/ci was eating about 10% of a week's token budget. How one wrapper script cut its footprint ~97% per run, closed real CI drift, and reapplied to the next biggest spender the same day.",
+    images: ["/og.png"],
   },
 };
 

@@ -1,18 +1,18 @@
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
-import { source } from "@/lib/source";
+import { selfHostedSource } from "@/lib/source";
 import { sectionTabs, siteNavLinks } from "@/lib/nav";
 import type { ReactNode } from "react";
 
-// SaaS / Cloud section — served at the site root. The sidebar shows only the
-// SaaS tree (saas + shared, plus the API Reference tab, unchanged). The
-// cross-section switcher (Docs ↔ Self-Hosted ↔ API) is the shared sectionTabs().
+// Self-hosted section — served at /self-hosted. The sidebar shows only the
+// self-hosted tree (self-hosted + shared). The cross-section switcher and site
+// links are shared with the root layout so the two sections never drift.
 export default function Layout({ children }: { children: ReactNode }) {
   return (
     <DocsLayout
-      tree={source.getPageTree()}
+      tree={selfHostedSource.getPageTree()}
       nav={{
         title: "Atlas",
-        url: "/",
+        url: "/self-hosted",
       }}
       sidebar={{ tabs: sectionTabs() }}
       links={siteNavLinks}

@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start -p 3003",
     "generate:api": "bun ./scripts/generate-openapi.ts",
+    "test": "bun test src/lib/__tests__",
     "postinstall": "fumadocs-mdx"
   },
   "dependencies": {

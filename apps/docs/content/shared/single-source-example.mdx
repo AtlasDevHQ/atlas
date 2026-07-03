@@ -1,0 +1,29 @@
+---
+title: Single-Source Example
+description: A shared concept page authored once and mounted into both the SaaS-root and self-hosted docs.
+icon: FileText
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+This page lives in `content/shared/` and is authored **once**. It is mounted
+into both human docs sections from that one file — full presence, single source
+— so there is no second copy to drift (PRD #4257).
+
+You are reading it at one of two URLs, from the same file on disk:
+
+- `/single-source-example` — the SaaS / Cloud docs at the site root
+- `/self-hosted/single-source-example` — the Self-Hosted docs
+
+<Callout title="Route-injected audience">
+  The section this page is mounted in injects a static `audience` value into the
+  MDX render scope. The component below reads it — so this one file renders a
+  different value on each mount, resolved at build time (never a reader-facing
+  tab):
+</Callout>
+
+This mount's audience is: **<AudienceLabel />**.
+
+Because both mounts resolve "Edit on GitHub" from the page's real
+`absolutePath`, the edit link on either URL points at this same
+`content/shared/single-source-example.mdx` — one place to fix it.

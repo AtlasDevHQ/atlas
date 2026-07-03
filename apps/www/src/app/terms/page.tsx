@@ -8,7 +8,7 @@ import { StickyNav } from "../../components/sticky-nav";
 import { TalkToSalesDialog } from "../../components/talk-to-sales-dialog";
 
 export const metadata: Metadata = {
-  title: "Terms of Service — Atlas",
+  title: "Terms of Service",
   description:
     "The agreement between Atlas DevHQ and the people who use Atlas Cloud. 13 sections, dual-column legal / plain-english layout so the deal is readable.",
   openGraph: {
@@ -34,6 +34,7 @@ export const metadata: Metadata = {
       "Atlas Cloud terms of service: account terms, fees, customer data, IP, warranty, liability, indemnification, termination, governing law.",
     images: ["/og.png"],
   },
+  alternates: { canonical: "https://www.useatlas.dev/terms" },
 };
 
 const SECTIONS: LegalSectionData[] = [

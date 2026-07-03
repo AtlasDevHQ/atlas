@@ -20,6 +20,8 @@ import {
 } from "../../../components/prose";
 import { Divider, TopGlow } from "../../../components/shared";
 import { StickyNav } from "../../../components/sticky-nav";
+import { JsonLd } from "../../../components/json-ld";
+import { blogPostingJsonLd } from "../../../lib/seo";
 
 export const metadata: Metadata = {
   title: "The price of /ci",
@@ -33,6 +35,7 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/blog/the-price-of-ci",
     siteName: "Atlas",
     type: "article",
+    publishedTime: "2026-06-30",
     authors: ["Matt Sywulak"],
     images: [
       {
@@ -50,11 +53,13 @@ export const metadata: Metadata = {
       "/ci was eating about 10% of a week's token budget. How one wrapper script cut its footprint ~97% per run, closed real CI drift, and reapplied to the next biggest spender the same day.",
     images: ["/og.png"],
   },
+  alternates: { canonical: "https://www.useatlas.dev/blog/the-price-of-ci" },
 };
 
 export default function ThePriceOfCi() {
   return (
     <div className="relative min-h-screen">
+      <JsonLd data={blogPostingJsonLd("the-price-of-ci")} />
       <StickyNav />
       <TopGlow />
       <Nav currentPage="/blog" />

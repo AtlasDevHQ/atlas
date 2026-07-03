@@ -19,6 +19,8 @@ import {
 } from "../../../components/prose";
 import { Divider, TopGlow } from "../../../components/shared";
 import { StickyNav } from "../../../components/sticky-nav";
+import { JsonLd } from "../../../components/json-ld";
+import { blogPostingJsonLd } from "../../../lib/seo";
 
 export const metadata: Metadata = {
   title: "Out of the Runtime",
@@ -32,6 +34,7 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/blog/out-of-the-runtime",
     siteName: "Atlas",
     type: "article",
+    publishedTime: "2026-06-26",
     authors: ["Matt Sywulak"],
     images: [
       {
@@ -49,11 +52,13 @@ export const metadata: Metadata = {
       "How I built Atlas with an AI agent: a control plane of commands, a GitHub-issue work queue, and a memory of its own, evolved from hand-running prompts to overnight ship loops.",
     images: ["/og.png"],
   },
+  alternates: { canonical: "https://www.useatlas.dev/blog/out-of-the-runtime" },
 };
 
 export default function OutOfTheRuntime() {
   return (
     <div className="relative min-h-screen">
+      <JsonLd data={blogPostingJsonLd("out-of-the-runtime")} />
       <StickyNav />
       <TopGlow />
       <Nav currentPage="/blog" />

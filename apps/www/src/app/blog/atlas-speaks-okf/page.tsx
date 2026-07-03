@@ -20,9 +20,11 @@ import {
 } from "../../../components/prose";
 import { Divider, TopGlow } from "../../../components/shared";
 import { StickyNav } from "../../../components/sticky-nav";
+import { JsonLd } from "../../../components/json-ld";
+import { blogPostingJsonLd } from "../../../lib/seo";
 
 export const metadata: Metadata = {
-  title: "Atlas Speaks OKF — Google's Open Knowledge Format",
+  title: { absolute: "Atlas Speaks OKF — Google's Open Knowledge Format" },
   description:
     "Google shipped the Open Knowledge Format seventeen days before my post arguing the semantic layer should be a plain YAML file. Here's where the two agree, where a runtime has to go further, and how OKF became the native format of Atlas's new Knowledge Base.",
   authors: [{ name: "Matt Sywulak" }],
@@ -51,11 +53,13 @@ export const metadata: Metadata = {
       "Where OKF and Atlas's semantic layer agree, where a runtime has to go further than a format, and how OKF became the native format of Atlas's new Knowledge Base.",
     images: ["/og.png"],
   },
+  alternates: { canonical: "https://www.useatlas.dev/blog/atlas-speaks-okf" },
 };
 
 export default function AtlasSpeaksOkf() {
   return (
     <div className="relative min-h-screen">
+      <JsonLd data={blogPostingJsonLd("atlas-speaks-okf")} />
       <StickyNav />
       <TopGlow />
       <Nav currentPage="/blog" />

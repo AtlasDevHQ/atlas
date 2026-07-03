@@ -7,7 +7,7 @@ import { TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
 
 export const metadata: Metadata = {
-  title: "Acceptable Use Policy — Atlas",
+  title: "Acceptable Use Policy",
   description:
     "What you can't do with Atlas Cloud. Four prohibited categories up top, nine sections below — short, specific, and enforceable.",
   openGraph: {
@@ -33,6 +33,7 @@ export const metadata: Metadata = {
       "Atlas Cloud Acceptable Use Policy: prohibited uses, security-research carve-outs, customer-data responsibilities, and how violations are handled.",
     images: ["/og.png"],
   },
+  alternates: { canonical: "https://www.useatlas.dev/aup" },
 };
 
 interface ProhibitionCard {

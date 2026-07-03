@@ -7,7 +7,7 @@ import { TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
 
 export const metadata: Metadata = {
-  title: "Why Atlas — Atlas",
+  title: "Why Atlas",
   description:
     "How Atlas compares to traditional BI and other text-to-SQL tools: a YAML semantic layer, agent-native via MCP, embeddable anywhere, and deploy-anywhere under AGPL-3.0.",
   openGraph: {
@@ -33,6 +33,7 @@ export const metadata: Metadata = {
       "Atlas vs. traditional BI vs. other text-to-SQL: semantic layer, agent-native, embeddable, open source, deploy anywhere.",
     images: ["/og.png"],
   },
+  alternates: { canonical: "https://www.useatlas.dev/why-atlas" },
 };
 
 export default function WhyAtlasPage() {

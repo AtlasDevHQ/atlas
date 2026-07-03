@@ -20,6 +20,8 @@ import {
 } from "../../../components/prose";
 import { Divider, TopGlow } from "../../../components/shared";
 import { StickyNav } from "../../../components/sticky-nav";
+import { JsonLd } from "../../../components/json-ld";
+import { blogPostingJsonLd } from "../../../lib/seo";
 
 export const metadata: Metadata = {
   title: "Why the Semantic Layer Is a YAML File",
@@ -33,6 +35,7 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/blog/why-the-semantic-layer-is-yaml",
     siteName: "Atlas",
     type: "article",
+    publishedTime: "2026-06-29",
     authors: ["Matt Sywulak"],
     images: [
       {
@@ -50,11 +53,15 @@ export const metadata: Metadata = {
       "The smartest thing in a text-to-SQL agent isn't the model — it's a YAML file a human can read. Why Atlas's semantic layer is a plain text file, and not embeddings, fine-tuning, or a schema crawl.",
     images: ["/og.png"],
   },
+  alternates: {
+    canonical: "https://www.useatlas.dev/blog/why-the-semantic-layer-is-yaml",
+  },
 };
 
 export default function WhyTheSemanticLayerIsYaml() {
   return (
     <div className="relative min-h-screen">
+      <JsonLd data={blogPostingJsonLd("why-the-semantic-layer-is-yaml")} />
       <StickyNav />
       <TopGlow />
       <Nav currentPage="/blog" />

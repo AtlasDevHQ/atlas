@@ -7,7 +7,7 @@ import { TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
 
 export const metadata: Metadata = {
-  title: "Security — Atlas",
+  title: "Security",
   description:
     "Defense in depth for pointing an AI agent at your database: seven-layer SQL validation, read-only connections, sandboxed tools, and AES-256-GCM encrypted credentials. All open source.",
   openGraph: {
@@ -33,6 +33,7 @@ export const metadata: Metadata = {
       "How Atlas makes connecting your production database to an AI agent a defensible decision: read-only by construction, seven-layer SQL validation, network-denied sandbox, encrypted-at-rest credentials. Verify it all in open source.",
     images: ["/og.png"],
   },
+  alternates: { canonical: "https://www.useatlas.dev/security" },
 };
 
 interface Pillar {

@@ -10,7 +10,7 @@ import { SubProcessorWebhookButton } from "../../components/sub-processor-webhoo
 import { TalkToSalesDialog } from "../../components/talk-to-sales-dialog";
 
 export const metadata: Metadata = {
-  title: "Data Processing Addendum — Atlas",
+  title: "Data Processing Addendum",
   description:
     "Atlas Cloud Article 28 GDPR-compliant DPA, with the EU Standard Contractual Clauses incorporated by reference. Pre-signed via legal@useatlas.dev — no negotiation needed for standard deals.",
   openGraph: {
@@ -37,6 +37,7 @@ export const metadata: Metadata = {
     images: ["/og.png"],
   },
   alternates: {
+    canonical: "https://www.useatlas.dev/dpa",
     types: {
       "application/atom+xml": [
         {

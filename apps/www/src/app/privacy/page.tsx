@@ -7,7 +7,7 @@ import { TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy — Atlas",
+  title: "Privacy Policy",
   description:
     "What Atlas DevHQ collects, what it doesn't, and exactly what's done with it. Four promises up top, twelve sections below.",
   openGraph: {
@@ -33,6 +33,7 @@ export const metadata: Metadata = {
       "Atlas Cloud privacy policy: what we collect, what we DON'T do (no model training, no selling data, no warehouse reads beyond authorized queries), GDPR / CCPA rights, sub-processors.",
     images: ["/og.png"],
   },
+  alternates: { canonical: "https://www.useatlas.dev/privacy" },
 };
 
 interface PromiseCard {

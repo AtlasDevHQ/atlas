@@ -1,13 +1,16 @@
 import type { Metadata } from "next";
 
 import { Footer } from "../../components/footer";
+import { JsonLd } from "../../components/json-ld";
 import { Nav } from "../../components/nav";
 import { TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
+import { SITE_URL } from "../../lib/seo";
+import { TIER_MONTHLY_PRICE } from "./entitlements.generated";
 import { PricingContent } from "./pricing-content";
 
 export const metadata: Metadata = {
-  title: "Pricing — Atlas",
+  title: "Pricing",
   description:
     "Atlas pricing: self-host for free under AGPL-3.0, or pick Starter, Pro, or Business on Atlas Cloud. Annual billing saves ~17%. BYOK on every paid plan.",
   openGraph: {
@@ -33,11 +36,34 @@ export const metadata: Metadata = {
       "Self-host is free, forever. Cloud adds the things you'd build anyway: SSO, audit, uptime, support. 14-day free trial — no card, work email required.",
     images: ["/og.png"],
   },
+  alternates: { canonical: "https://www.useatlas.dev/pricing" },
+};
+
+const pricingJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "Atlas",
+  applicationCategory: "BusinessApplication",
+  operatingSystem: "Web",
+  url: SITE_URL,
+  offers: [
+    { name: "Self-Hosted", price: TIER_MONTHLY_PRICE.selfHosted },
+    { name: "Starter", price: TIER_MONTHLY_PRICE.starter },
+    { name: "Pro", price: TIER_MONTHLY_PRICE.pro },
+    { name: "Business", price: TIER_MONTHLY_PRICE.business },
+  ].map((tier) => ({
+    "@type": "Offer",
+    name: tier.name,
+    price: tier.price,
+    priceCurrency: "USD",
+    url: `${SITE_URL}/pricing`,
+  })),
 };
 
 export default function PricingPage() {
   return (
     <div className="relative min-h-screen">
+      <JsonLd data={pricingJsonLd} />
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:rounded-md focus:bg-bg-raised focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-fg focus:ring-2 focus:ring-accent"

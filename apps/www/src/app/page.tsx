@@ -1,3 +1,5 @@
+import type { Metadata } from "next";
+
 import { BigStat } from "../components/landing/big-stat";
 import { Deploy } from "../components/landing/deploy";
 import { DropInSurfaces } from "../components/landing/drop-in-surfaces";
@@ -6,12 +8,20 @@ import { Hero } from "../components/landing/hero";
 import { HowItWorks } from "../components/landing/how-it-works";
 import { KnowledgeBase } from "../components/landing/knowledge-base";
 import { Footer } from "../components/footer";
+import { JsonLd } from "../components/json-ld";
 import { Nav } from "../components/nav";
 import { StickyNav } from "../components/sticky-nav";
+import { organizationJsonLd, webSiteJsonLd } from "../lib/seo";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "https://www.useatlas.dev" },
+};
 
 export default function Home() {
   return (
     <div className="relative min-h-screen bg-bg text-fg">
+      <JsonLd data={organizationJsonLd} />
+      <JsonLd data={webSiteJsonLd} />
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[60] focus:rounded-md focus:bg-bg-raised focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-fg focus:ring-2 focus:ring-accent"

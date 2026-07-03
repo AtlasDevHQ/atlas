@@ -22,6 +22,8 @@ import {
 } from "../../../components/prose";
 import { Divider, TopGlow } from "../../../components/shared";
 import { StickyNav } from "../../../components/sticky-nav";
+import { JsonLd } from "../../../components/json-ld";
+import { blogPostingJsonLd } from "../../../lib/seo";
 
 export const metadata: Metadata = {
   title: "The Road to Launch: Everything I Shipped in Atlas's Beta",
@@ -35,6 +37,7 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/blog/announcing-atlas",
     siteName: "Atlas",
     type: "article",
+    publishedTime: "2026-06-25",
     authors: ["Matt Sywulak"],
     images: [
       {
@@ -52,11 +55,13 @@ export const metadata: Metadata = {
       "Atlas goes GA in July 2026. A recap of the first half of 2026 — a run of internal milestones from 0.1 through 1.6, then twenty-nine public releases in under a month.",
     images: ["/og.png"],
   },
+  alternates: { canonical: "https://www.useatlas.dev/blog/announcing-atlas" },
 };
 
 export default function AnnouncingAtlas() {
   return (
     <div className="relative min-h-screen">
+      <JsonLd data={blogPostingJsonLd("announcing-atlas")} />
       <StickyNav />
       <TopGlow />
       <Nav currentPage="/blog" />

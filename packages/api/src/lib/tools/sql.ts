@@ -55,8 +55,7 @@ import {
   type ApprovalGateShape,
   type MaskingContext,
 } from "@atlas/api/lib/effect/services";
-import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
-import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
+import { runEnterprise, yieldFailClosed } from "@atlas/api/lib/effect/enterprise-layer";
 
 /**
  * Run `MaskingPolicy.applyMasking` via `EnterpriseLayer`. Promise-shaped
@@ -80,16 +79,10 @@ function applyMaskingViaTag(
 ): Promise<Record<string, unknown>[]> {
   return runEnterprise(
     Effect.gen(function* () {
-      const masking = yield* MaskingPolicy;
-      if (isEnterpriseEnabled() && !masking.available) {
-        return yield* Effect.fail(
-          new EnterpriseUnavailableError({
-            message:
-              "PII masking unavailable — query blocked to prevent unmasked-data exposure. Contact your administrator.",
-            tag: "MaskingPolicy",
-          }),
-        );
-      }
+      const masking = yield* yieldFailClosed(
+        MaskingPolicy,
+        "PII masking unavailable — query blocked to prevent unmasked-data exposure. Contact your administrator.",
+      );
       return yield* masking.applyMasking(ctx);
     }),
   );
@@ -112,16 +105,10 @@ function applyMaskingViaTag(
 function loadApprovalGate(): Promise<ApprovalGateShape> {
   return runEnterprise(
     Effect.gen(function* () {
-      const gate = yield* ApprovalGate;
-      if (isEnterpriseEnabled() && !gate.available) {
-        return yield* Effect.fail(
-          new EnterpriseUnavailableError({
-            message:
-              "Approval gate unavailable — query blocked to prevent governance bypass. Contact your administrator.",
-            tag: "ApprovalGate",
-          }),
-        );
-      }
+      const gate = yield* yieldFailClosed(
+        ApprovalGate,
+        "Approval gate unavailable — query blocked to prevent governance bypass. Contact your administrator.",
+      );
       return gate;
     }),
   );

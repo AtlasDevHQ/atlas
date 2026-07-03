@@ -168,10 +168,12 @@ function withFiberDeathLog<A, E, R>(
 // the span, so a failed-but-recovered tick still records span status OK (the
 // error itself goes to `log.warn`). These spans answer "is the fiber still
 // ticking?" via presence/absence + cadence, NOT "did this tick error?". The
-// exceptions are the two `spanResultAttributes` fibers — `orphan_task_reconcile`
-// (#2944) and `unclaimed_grace_reap` (#3796) — which deliberately invert the
-// ordering (raw tick spanned, recovery applied OUTSIDE) to keep their result
-// attributes truthful; see `registerPeriodicFiber` below.
+// exceptions are the `spanResultAttributes` fibers — `orphan_task_reconcile`
+// (#2944), `unclaimed_grace_reap` (#3796), and the three #4195 DB/refresh jobs
+// (`byot_catalog_refresh`, `openapi_spec_refresh`, `openapi_install_rediscover`)
+// — which deliberately invert the ordering (raw tick spanned, recovery applied
+// OUTSIDE) to keep their result attributes truthful; see `registerPeriodicFiber`
+// below.
 //
 // Membership splits into two single-source records, by fiber kind:
 //
@@ -179,11 +181,11 @@ function withFiberDeathLog<A, E, R>(
 //     expired in-memory or DB state). Eight were retrofitted with a span by
 //     #2945 (the TTL/ratelimit/state sweeps below); the ninth,
 //     `orphan_task_reconcile` (#2944), shipped with its span from day one and
-//     additionally attaches the orphan count as a result attribute (one of
-//     the two `spanResultAttributes` fibers in these records — the other is
-//     `unclaimed_grace_reap` in the work record; the BYOT catalog-refresh
-//     fiber and the scheduler engine use that 4th arg elsewhere, inside
-//     their own modules). The tenth,
+//     additionally attaches the orphan count as a result attribute (the sole
+//     `spanResultAttributes` fiber in THIS record — the work record adds
+//     `unclaimed_grace_reap` plus the three #4195 DB/refresh jobs; the
+//     scheduler engine uses that 4th arg elsewhere, inside its own module).
+//     The tenth,
 //     `trial_rate_limit_cleanup` (#3654), sweeps the unauthenticated
 //     `start_trial` per-IP/email attempt-limiter maps. The eleventh,
 //     `agent_runs_retention_sweep` (#3745, ADR-0020), deletes terminal
@@ -195,11 +197,13 @@ function withFiberDeathLog<A, E, R>(
 //     recurring side-effecting work rather than evicting state):
 //     `sub_processor_publisher`, `settings_refresh`, `onboarding_email`,
 //     `expert_scheduler`, `promote_decay`, `billing_reconcile`,
-//     `stripe_teardown_sweep`, `unclaimed_grace_reap`, `overage_report`.
-//     Spanned by #2987 (+#3423 for billing_reconcile, #3992 for
-//     overage_report) — identical rationale and wrap shape, no result
-//     attributes except `unclaimed_grace_reap` (#3796), which attaches the
-//     reaped count.
+//     `stripe_teardown_sweep`, `unclaimed_grace_reap`, `overage_report`, and
+//     the three #4195 DB/refresh jobs `byot_catalog_refresh`,
+//     `openapi_spec_refresh`, `openapi_install_rediscover`. Spanned by #2987
+//     (+#3423 for billing_reconcile, #3992 for overage_report, #4195 for the
+//     DB/refresh trio) — identical rationale and wrap shape. `unclaimed_grace_reap`
+//     (#3796) and the three #4195 jobs attach result attributes (cycle counts);
+//     the rest carry none.
 //
 // Two records, not one: "cleanup sweep" vs "background work" is a real
 // distinction (it drives the log wording and the operator's mental model),
@@ -212,10 +216,11 @@ function withFiberDeathLog<A, E, R>(
 // periodic heartbeat log when the queue is idle PLUS a separate watchdog
 // fiber that raises an error log when no tick is observed in > 2× the
 // interval. A per-tick span would be redundant with that, so #2987 leaves
-// them on heartbeat + watchdog. Self-spanning module fibers
-// (`byot_catalog_refresh`, `openapi_install_rediscover`, `openapi_spec_refresh`,
-// the scheduler engine `tick`/`task.run`) define their span inside their own
-// module and so never appear in either record here.
+// them on heartbeat + watchdog. The scheduler engine's own `tick`/`task.run`
+// spans are self-defined inside `scheduler/engine.ts` and so never appear in
+// either record here. (The BYOT/OpenAPI refresh trio USED to be self-spanning
+// too, but #4195 folded them onto `registerPeriodicFiber` and moved their
+// spans into `SCHEDULER_WORK_SPAN_NAMES` above.)
 //
 // Span names follow the existing `atlas.<area>.<op>` dotted convention
 // (cf. `atlas.sql.execute`, `atlas.scheduler.task.run`, and the
@@ -259,6 +264,13 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   stripe_teardown_sweep: "atlas.scheduler.stripe_teardown_sweep",
   unclaimed_grace_reap: "atlas.scheduler.unclaimed_grace_reap",
   overage_report: "atlas.scheduler.overage_report",
+  // #4195 — the three DB/refresh jobs folded off their bespoke `setInterval`
+  // lifecycle onto `registerPeriodicFiber`. Each now carries its per-tick span
+  // here (previously self-spanned inside its own module) with the cycle result
+  // attached via `spanResultAttributes`.
+  byot_catalog_refresh: "atlas.scheduler.byot_catalog_refresh",
+  openapi_spec_refresh: "atlas.scheduler.openapi_spec_refresh",
+  openapi_install_rediscover: "atlas.scheduler.openapi_install_rediscover",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
 // ── registerPeriodicFiber — the periodic-fiber choreography, once (#4130) ──
@@ -2106,72 +2118,131 @@ export function makeSchedulerLive(
         ),
       );
 
-      // Start BYOT catalog refresh scheduler (#2284) — daily refresh of
-      // workspace_model_catalog rows whose `fetched_at` is older than TTL.
-      // No-ops when the internal DB is unavailable; safe to start
-      // unconditionally otherwise (self-hosted installs without EE simply
-      // have no workspace configs to walk).
-      yield* Effect.tryPromise({
-        try: async () => {
-          const { startByotCatalogRefreshScheduler } = await import(
-            "@atlas/api/lib/scheduler/byot-catalog-refresh"
-          );
-          startByotCatalogRefreshScheduler();
+      // ── Periodic fiber: BYOT catalog refresh (#2284; folded onto the fiber
+      // seam by #4195) ─────────────────────────────────────────────────────
+      // Daily refresh of workspace_model_catalog rows whose `fetched_at` is
+      // older than the TTL. Gated on an internal DB (nothing to walk without
+      // one); self-hosted installs without EE simply have no configs to walk.
+      // The scan → forEach → tally → audit cycle body is the shared
+      // `runPeriodicDbCycle` skeleton; this registration owns only the fiber.
+      yield* registerPeriodicFiber({
+        name: "byot_catalog_refresh",
+        intervalMs: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the interval constant synchronously at build time (same pattern as stripe_teardown_sweep)
+          const { getByotCatalogRefreshIntervalMs } = require("@atlas/api/lib/scheduler/byot-catalog-refresh") as {
+            getByotCatalogRefreshIntervalMs: () => number;
+          };
+          return getByotCatalogRefreshIntervalMs();
         },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) => {
-          log.error({ err: errorMessage(err) }, "BYOT catalog refresh scheduler failed to start");
-          return Effect.void;
+        gate: {
+          check: () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            return hasInternalDB();
+          },
+          skipLog: "No internal database — BYOT catalog refresh scheduler not started",
+        },
+        tick: Effect.tryPromise({
+          try: () => import("@atlas/api/lib/scheduler/byot-catalog-refresh"),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(Effect.flatMap((m) => m.runByotCatalogRefreshCycle())),
+        spanResultAttributes: (result) => ({
+          "atlas.byot.status": result.status,
+          "atlas.byot.inspected": result.inspected,
+          "atlas.byot.refreshed": result.refreshed,
+          "atlas.byot.failed": result.failed,
         }),
-      );
+        onTickFailure: {
+          level: "warn",
+          message: "BYOT catalog refresh tick failed — will retry next interval",
+        },
+        startLog: "BYOT catalog refresh scheduler started",
+      });
 
-      // Start shared OpenAPI spec refresh scheduler (#2970, Tier-1) — periodic
-      // conditional-GET of the cross-workspace public-spec cache (Stripe/GitHub/
-      // Notion). A `304` re-arms freshness for every workspace for free; a `200`
-      // re-normalizes the changed doc once. Process-local cache (no DB), so it's
-      // safe to start unconditionally; an empty cache makes the cycle a no-op.
-      yield* Effect.tryPromise({
-        try: async () => {
-          const { startOpenApiSpecRefreshScheduler } = await import(
-            "@atlas/api/lib/scheduler/openapi-spec-refresh"
-          );
-          startOpenApiSpecRefreshScheduler();
+      // ── Periodic fiber: shared OpenAPI spec refresh (#2970, Tier-1; #4195) ──
+      // Periodic conditional-GET of the cross-workspace public-spec cache
+      // (Stripe/GitHub/Notion). A `304` re-arms freshness for every workspace
+      // for free; a `200` re-normalizes the changed doc once. Process-local
+      // cache (no DB), so it starts unconditionally (no gate); an empty cache
+      // makes the cycle a no-op. Not a `runPeriodicDbCycle` caller — it has no
+      // internal-DB working set (the variance the #4195 skeleton isolates).
+      yield* registerPeriodicFiber({
+        name: "openapi_spec_refresh",
+        intervalMs: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the settings-backed interval synchronously at build time
+          const { getSharedSpecRefreshIntervalMs } = require("@atlas/api/lib/scheduler/openapi-spec-refresh") as {
+            getSharedSpecRefreshIntervalMs: () => number;
+          };
+          return getSharedSpecRefreshIntervalMs();
         },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) => {
-          log.error(
-            { err: errorMessage(err) },
-            "Shared OpenAPI spec refresh scheduler failed to start",
-          );
-          return Effect.void;
+        tick: Effect.tryPromise({
+          try: async () => {
+            const { runOpenApiSpecRefreshCycle } = await import(
+              "@atlas/api/lib/scheduler/openapi-spec-refresh"
+            );
+            return runOpenApiSpecRefreshCycle();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
         }),
-      );
+        spanResultAttributes: (result) => ({
+          "atlas.openapi_spec_refresh.inspected": result.inspected,
+          "atlas.openapi_spec_refresh.updated": result.updated,
+          "atlas.openapi_spec_refresh.not_modified": result.notModified,
+          "atlas.openapi_spec_refresh.failed": result.failed,
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Shared OpenAPI spec refresh tick failed — will retry next interval",
+        },
+        startLog: "Shared OpenAPI spec refresh scheduler started",
+      });
 
-      // Start Tier-2 per-install OpenAPI re-discovery scheduler (#2978) — periodic
-      // re-probe of each installed openapi-generic datasource whose per-install
-      // `spec_refresh_interval` has elapsed, updating the persisted snapshot + drift
-      // diff + watermark. Orthogonal to the Tier-1 shared-cache refresh above (this
-      // one mutates per-install snapshots; that one only warms the process-local
-      // public-spec cache). No-ops when the internal DB is unavailable.
-      yield* Effect.tryPromise({
-        try: async () => {
-          const { startOpenApiInstallRediscoverScheduler } = await import(
-            "@atlas/api/lib/scheduler/openapi-install-rediscover"
-          );
-          startOpenApiInstallRediscoverScheduler();
+      // ── Periodic fiber: Tier-2 per-install OpenAPI re-discovery (#2978; #4195) ──
+      // Periodic re-probe of each installed openapi-generic datasource whose
+      // per-install `spec_refresh_interval` has elapsed, updating the persisted
+      // snapshot + drift diff + watermark. Orthogonal to the Tier-1 shared-cache
+      // refresh above (this one mutates per-install snapshots; that one only
+      // warms the process-local public-spec cache). Gated on an internal DB; its
+      // cycle body is the shared `runPeriodicDbCycle` skeleton.
+      yield* registerPeriodicFiber({
+        name: "openapi_install_rediscover",
+        intervalMs: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports -- read the interval synchronously at build time
+          const { getInstallRediscoverIntervalMs } = require("@atlas/api/lib/scheduler/openapi-install-rediscover") as {
+            getInstallRediscoverIntervalMs: () => number;
+          };
+          return getInstallRediscoverIntervalMs();
         },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) => {
-          log.error(
-            { err: errorMessage(err) },
-            "OpenAPI install rediscover scheduler failed to start",
-          );
-          return Effect.void;
+        gate: {
+          check: () => {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            return hasInternalDB();
+          },
+          skipLog: "No internal database — OpenAPI rediscover scheduler not started",
+        },
+        tick: Effect.tryPromise({
+          try: () => import("@atlas/api/lib/scheduler/openapi-install-rediscover"),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(Effect.flatMap((m) => m.runOpenApiInstallRediscoverCycle())),
+        spanResultAttributes: (result) => ({
+          "atlas.openapi_rediscover.status": result.status,
+          "atlas.openapi_rediscover.inspected": result.inspected,
+          "atlas.openapi_rediscover.due": result.due,
+          "atlas.openapi_rediscover.refreshed": result.refreshed,
+          "atlas.openapi_rediscover.breaking": result.breaking,
+          "atlas.openapi_rediscover.failed": result.failed,
         }),
-      );
+        onTickFailure: {
+          level: "warn",
+          message: "OpenAPI install rediscover tick failed — will retry next interval",
+        },
+        startLog: "OpenAPI install rediscover scheduler started",
+      });
 
       // Start knowledge bundle sync scheduler (#4211) — periodic pull of every
       // enabled `bundle-sync` knowledge collection's endpoint, re-running the
@@ -3142,69 +3213,16 @@ export function makeSchedulerLive(
             );
           }
 
-          // Stop the BYOT catalog refresh scheduler (#2284) alongside the
-          // main scheduler so a Layer-scope shutdown clears its setInterval
-          // timer (clearing the timer is what releases the `unref()`'d handle
-          // from the event loop and lets the test process exit cleanly).
-          yield* Effect.tryPromise({
-            try: async () => {
-              const { stopByotCatalogRefreshScheduler } = await import(
-                "@atlas/api/lib/scheduler/byot-catalog-refresh"
-              );
-              stopByotCatalogRefreshScheduler();
-            },
-            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-          }).pipe(
-            Effect.catchAll((err) => {
-              log.warn({ err: errorMessage(err) }, "Failed to stop BYOT catalog refresh scheduler");
-              return Effect.void;
-            }),
-          );
+          // #4195 — the BYOT catalog refresh (#2284), shared OpenAPI spec
+          // refresh (#2970), and Tier-2 install re-discovery (#2978) no longer
+          // need explicit stop calls here: they are now `registerPeriodicFiber`
+          // fibers forked `forkScoped` on this Layer's scope, so scope shutdown
+          // interrupts them automatically (no `setInterval` handle to clear).
 
-          // Stop the shared OpenAPI spec refresh scheduler (#2970) symmetrically —
-          // clear its setInterval so the `unref()`'d handle is released and a
-          // test process (or a re-created ManagedRuntime) exits cleanly.
-          yield* Effect.tryPromise({
-            try: async () => {
-              const { stopOpenApiSpecRefreshScheduler } = await import(
-                "@atlas/api/lib/scheduler/openapi-spec-refresh"
-              );
-              stopOpenApiSpecRefreshScheduler();
-            },
-            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-          }).pipe(
-            Effect.catchAll((err) => {
-              log.warn(
-                { err: errorMessage(err) },
-                "Failed to stop shared OpenAPI spec refresh scheduler",
-              );
-              return Effect.void;
-            }),
-          );
-
-          // Stop the Tier-2 OpenAPI re-discovery scheduler (#2978) symmetrically —
-          // clear its setInterval so the `unref()`'d handle is released and a test
-          // process (or a re-created ManagedRuntime) exits cleanly.
-          yield* Effect.tryPromise({
-            try: async () => {
-              const { stopOpenApiInstallRediscoverScheduler } = await import(
-                "@atlas/api/lib/scheduler/openapi-install-rediscover"
-              );
-              stopOpenApiInstallRediscoverScheduler();
-            },
-            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-          }).pipe(
-            Effect.catchAll((err) => {
-              log.warn(
-                { err: errorMessage(err) },
-                "Failed to stop OpenAPI install rediscover scheduler",
-              );
-              return Effect.void;
-            }),
-          );
-
-          // Stop the knowledge bundle sync scheduler (#4211) symmetrically —
-          // same setInterval + `unref()` lifecycle as the siblings above.
+          // Stop the knowledge bundle sync scheduler (#4211) — still a
+          // `setInterval` + `unref()` scheduler (not yet folded onto
+          // `registerPeriodicFiber` like the #4195 trio above), so its timer
+          // must be cleared explicitly here.
           yield* Effect.tryPromise({
             try: async () => {
               const { stopKnowledgeBundleSyncScheduler } = await import(

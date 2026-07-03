@@ -77,10 +77,6 @@ mock.module("@atlas/api/lib/audit/error-scrub", () => ({
 const {
   runOpenApiInstallRediscoverCycle,
   triggerOpenApiInstallRediscoverCycle,
-  startOpenApiInstallRediscoverScheduler,
-  stopOpenApiInstallRediscoverScheduler,
-  isOpenApiInstallRediscoverSchedulerRunning,
-  _resetOpenApiInstallRediscoverScheduler,
   getInstallRediscoverIntervalMs,
   OPENAPI_REDISCOVER_ACTOR,
   DEFAULT_REDISCOVER_INTERVAL_MS,
@@ -208,7 +204,6 @@ function runCycle(args: RunArgs) {
 }
 
 function resetAll() {
-  _resetOpenApiInstallRediscoverScheduler();
   mockHasDB = true;
   auditCalls = [];
   dbQueryCalls = [];
@@ -217,40 +212,13 @@ function resetAll() {
 const cycleRows = () => auditCalls.filter((c) => c.actionType === "connection.spec_refresh_cycle");
 const probeRows = () => auditCalls.filter((c) => c.actionType === "connection.probe");
 
-// ── Lifecycle ─────────────────────────────────────────────────────────────
+// ── Registration surface ────────────────────────────────────────────────────
+// Post-#4195 this job is scheduled by `registerPeriodicFiber` in
+// `effect/layers.ts`; the module no longer owns a `setInterval` lifecycle. The
+// interval getter (its fiber input) is covered below.
 
-describe("openapi install rediscover — lifecycle", () => {
+describe("openapi install rediscover — actor", () => {
   beforeEach(resetAll);
-
-  it("starts and stops cleanly", () => {
-    expect(isOpenApiInstallRediscoverSchedulerRunning()).toBe(false);
-    startOpenApiInstallRediscoverScheduler(60_000);
-    expect(isOpenApiInstallRediscoverSchedulerRunning()).toBe(true);
-    stopOpenApiInstallRediscoverScheduler();
-    expect(isOpenApiInstallRediscoverSchedulerRunning()).toBe(false);
-  });
-
-  it("does not double-start", () => {
-    startOpenApiInstallRediscoverScheduler(60_000);
-    startOpenApiInstallRediscoverScheduler(60_000);
-    expect(isOpenApiInstallRediscoverSchedulerRunning()).toBe(true);
-    stopOpenApiInstallRediscoverScheduler();
-  });
-
-  it("stop is idempotent — calling stop twice or without start is a no-op", () => {
-    stopOpenApiInstallRediscoverScheduler();
-    expect(isOpenApiInstallRediscoverSchedulerRunning()).toBe(false);
-    startOpenApiInstallRediscoverScheduler(60_000);
-    stopOpenApiInstallRediscoverScheduler();
-    stopOpenApiInstallRediscoverScheduler();
-    expect(isOpenApiInstallRediscoverSchedulerRunning()).toBe(false);
-  });
-
-  it("refuses to start without an internal DB (it reads workspace_plugins)", () => {
-    mockHasDB = false;
-    startOpenApiInstallRediscoverScheduler(60_000);
-    expect(isOpenApiInstallRediscoverSchedulerRunning()).toBe(false);
-  });
 
   it("reserved system actor matches the audit pattern + is distinct from siblings", () => {
     expect(OPENAPI_REDISCOVER_ACTOR).toBe("system:openapi-install-rediscover");

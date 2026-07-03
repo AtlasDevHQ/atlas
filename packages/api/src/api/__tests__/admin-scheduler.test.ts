@@ -52,13 +52,14 @@ mock.module("@atlas/api/lib/scheduler/byot-catalog-refresh", () => ({
   BYOT_CATALOG_REFRESH_ACTOR: "system:byot-catalog-refresh",
   // The route only imports the three above, but the "mock all named exports"
   // rule requires the rest to be stubbed so a partial-mock SyntaxError
-  // doesn't leak into sibling tests.
-  startByotCatalogRefreshScheduler: () => {},
-  stopByotCatalogRefreshScheduler: () => {},
+  // doesn't leak into sibling tests. Post-#4195 the module no longer owns a
+  // `setInterval` lifecycle (start/stop/_reset gone); it now exposes the
+  // fiber's interval getter instead.
+  getByotCatalogRefreshIntervalMs: () => 86_400_000,
   runByotCatalogRefreshCycle: () => {
     throw new Error("unreachable in admin-scheduler tests");
   },
-  _resetByotCatalogRefreshScheduler: () => {},
+  _getDormancyThresholdMsForTests: () => 0,
   _resetBackoffForTests: () => {},
   _resetEeProbeForTests: () => {},
   _computeBackoffMsForTests: () => 0,

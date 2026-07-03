@@ -305,10 +305,8 @@ mock.module("@atlas/api/lib/bedrock-catalog", () => ({
 
 const {
   runByotCatalogRefreshCycle,
-  startByotCatalogRefreshScheduler,
-  stopByotCatalogRefreshScheduler,
   isByotCatalogRefreshSchedulerRunning,
-  _resetByotCatalogRefreshScheduler,
+  getByotCatalogRefreshIntervalMs,
   _resetBackoffForTests,
   _resetEeProbeForTests,
   _computeBackoffMsForTests,
@@ -318,7 +316,6 @@ const {
 } = await import("../byot-catalog-refresh");
 
 function resetAll() {
-  _resetByotCatalogRefreshScheduler();
   _resetBackoffForTests();
   _resetEeProbeForTests();
   mockInternalDB = true;
@@ -344,36 +341,21 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("byot catalog refresh scheduler — lifecycle", () => {
+describe("byot catalog refresh scheduler — registration surface", () => {
   beforeEach(resetAll);
 
-  it("starts and stops cleanly", () => {
-    expect(isByotCatalogRefreshSchedulerRunning()).toBe(false);
-    startByotCatalogRefreshScheduler(60_000);
+  // Post-#4195 the refresh is a `registerPeriodicFiber` fiber (owned by
+  // `effect/layers.ts`), not a bespoke `setInterval` lifecycle. The module now
+  // only exposes the fiber's inputs: the interval + the enablement-gate signal
+  // the admin scheduler surface reads.
+  it("reports the daily interval the fiber registration reads", () => {
+    expect(getByotCatalogRefreshIntervalMs()).toBe(ONE_DAY_MS);
+  });
+
+  it("running-signal reflects internal-DB presence (the registration gate)", () => {
+    mockInternalDB = true;
     expect(isByotCatalogRefreshSchedulerRunning()).toBe(true);
-    stopByotCatalogRefreshScheduler();
-    expect(isByotCatalogRefreshSchedulerRunning()).toBe(false);
-  });
-
-  it("does not double-start", () => {
-    startByotCatalogRefreshScheduler(60_000);
-    startByotCatalogRefreshScheduler(60_000);
-    expect(isByotCatalogRefreshSchedulerRunning()).toBe(true);
-    stopByotCatalogRefreshScheduler();
-  });
-
-  it("stop is idempotent — calling stop twice or without start is a no-op", () => {
-    stopByotCatalogRefreshScheduler();
-    expect(isByotCatalogRefreshSchedulerRunning()).toBe(false);
-    startByotCatalogRefreshScheduler(60_000);
-    stopByotCatalogRefreshScheduler();
-    stopByotCatalogRefreshScheduler();
-    expect(isByotCatalogRefreshSchedulerRunning()).toBe(false);
-  });
-
-  it("refuses to start without an internal DB", () => {
     mockInternalDB = false;
-    startByotCatalogRefreshScheduler(60_000);
     expect(isByotCatalogRefreshSchedulerRunning()).toBe(false);
   });
 

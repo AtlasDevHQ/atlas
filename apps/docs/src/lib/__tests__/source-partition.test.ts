@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { buildSectionSource, type CollectionLike } from "@/lib/compose";
+import { classifyByPath } from "@/lib/audience-taxonomy";
 
 /**
  * Source-partition test (PRD #4257's highest-value seam).
@@ -126,5 +127,127 @@ test("a shared page mounts into BOTH sections from the ONE real source file", ()
   );
   expect(selfHostedShared?.absolutePath).toBe(
     "content/shared/single-source-example.mdx",
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slice 3a (#4263) — the SaaS root stays free of self-hosted content.
+//
+// The saas-only pages enumerated in #4263 (billing & plans, enterprise SSO,
+// SCIM, PII masking, data residency, platform-ops, …) STAY at the site root and
+// are classified `saas-only` purely by living under `content/docs/`. This block
+// re-asserts the "SaaS never muddied by on-prem" guarantee against the taxonomy
+// classifier (`classifyByPath`, which reads the `CONTENT_ROOTS` SSOT) rather than
+// a bare path substring, and pins a representative set of the enumerated
+// saas-only topics into the root URL space. It also carries a negative control
+// so the classification assertion is a real leak detector, not a restatement of
+// self-hosted-free fixtures.
+//
+// Scope caveat: the PRODUCTION structural guarantee — that the root source is
+// never *wired* a self-hosted collection — lives at the call site in `source.ts`
+// (root = `docs + shared`, never `selfHosted`), which is bundler-only and can't
+// be loaded by `bun test`. These synthetic-fixture assertions characterize the
+// property; the negative control below proves the detector fires if that wiring
+// ever regressed.
+//
+// Uses its own uniquely-named topics fixture + source const (reusing only the
+// read-only top-of-file helpers), so sibling slices 3b (#4264) and 3c (#4265),
+// which also edit this file, don't collide with this block.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// A representative slice of the #4263 saas-only pages. They live under
+// content/docs, so the directory taxonomy classifies each as `saas-only`.
+const saasOnlyTopics = [
+  doc(
+    "guides/billing-and-plans.mdx",
+    "content/docs/guides/billing-and-plans.mdx",
+    "Billing & Plans",
+  ),
+  doc(
+    "guides/enterprise-sso.mdx",
+    "content/docs/guides/enterprise-sso.mdx",
+    "Enterprise SSO",
+  ),
+  doc("guides/scim.mdx", "content/docs/guides/scim.mdx", "SCIM"),
+  doc(
+    "guides/pii-masking.mdx",
+    "content/docs/guides/pii-masking.mdx",
+    "PII Masking",
+  ),
+  doc(
+    "platform-ops/data-residency.mdx",
+    "content/docs/platform-ops/data-residency.mdx",
+    "Data Residency",
+  ),
+];
+
+// The SaaS root source is fed ONLY saas-only + api-reference + shared — never a
+// self-hosted collection.
+const saasOnlyRoot = buildSectionSource({
+  audience: collection([...saasOnlyTopics, ...apiDocs]),
+  shared: collection(sharedDocs),
+  baseUrl: "/",
+});
+const saasOnlyRootPages = saasOnlyRoot.getPages();
+const saasOnlyRootUrls = saasOnlyRootPages.map((p) => p.url);
+
+test("[#4263] every SaaS-root page classifies saas-only or shared — never self-hosted-only", () => {
+  // Cardinality floor FIRST: `.every()` is vacuously true on an empty array, so
+  // without this an empty getPages() (the composition regression this guarantee
+  // exists to catch) would pass silently. Exact count (5 saas topics + 2 api +
+  // 1 shared) also catches a shared page being double-mounted into the root.
+  expect(saasOnlyRootPages.length).toBe(
+    saasOnlyTopics.length + apiDocs.length + sharedDocs.length,
+  );
+  // The allow-list is the strong form: `saas-only || shared` implies
+  // `!== "self-hosted-only"` AND rejects a `null` class (a missing absolutePath),
+  // so it subsumes a separate "never self-hosted-only" check. Via classifyByPath
+  // (the taxonomy classifier), not a path substring.
+  expect(
+    saasOnlyRootPages.every((p) => {
+      const cls = classifyByPath(p.absolutePath ?? "");
+      return cls === "saas-only" || cls === "shared";
+    }),
+  ).toBe(true);
+});
+
+test("[#4263] leak detector has teeth: a self-hosted doc composed into root IS flagged", () => {
+  // Negative control. The test above builds root from only-saas fixtures, so its
+  // classifyByPath check is never seen to FAIL. First prove the predicate
+  // discriminates a real on-prem path; then prove that if the production wiring
+  // (source.ts) ever regressed to compose a self-hosted collection into the root,
+  // this seam flags it — so the assertion above is a real guard, not a fixture
+  // restatement.
+  expect(classifyByPath("content/self-hosted/docker.mdx")).toBe(
+    "self-hosted-only",
+  );
+
+  const leaky = buildSectionSource({
+    audience: collection([
+      ...saasOnlyTopics,
+      doc("docker.mdx", "content/self-hosted/docker.mdx", "Docker"),
+    ]),
+    shared: collection(sharedDocs),
+    baseUrl: "/",
+  });
+  expect(
+    leaky
+      .getPages()
+      .some((p) => classifyByPath(p.absolutePath ?? "") === "self-hosted-only"),
+  ).toBe(true);
+});
+
+test("[#4263] enumerated saas-only topics render at the site root, none under /self-hosted", () => {
+  for (const url of [
+    "/guides/billing-and-plans",
+    "/guides/enterprise-sso",
+    "/guides/scim",
+    "/guides/pii-masking",
+    "/platform-ops/data-residency",
+  ]) {
+    expect(saasOnlyRootUrls).toContain(url);
+  }
+  expect(saasOnlyRootUrls.every((u) => !u.startsWith("/self-hosted"))).toBe(
+    true,
   );
 });

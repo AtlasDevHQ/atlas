@@ -1,7 +1,10 @@
 import { test, expect } from "bun:test";
+import type { Root } from "fumadocs-core/page-tree";
 import {
+  breadcrumbsFor,
   buildSearchIndexes,
   sectionForUrl,
+  SEARCH_SECTIONS,
   type IndexablePage,
   type SearchSection,
 } from "@/lib/search-index";
@@ -12,10 +15,10 @@ import {
  * The static search index is rebuilt over all THREE docs sections (SaaS site
  * root, `/self-hosted`, `/api-reference`) as ONE index, each entry stamped with
  * its `section` facet so global search spans every section and can optionally
- * scope to one. These assertions exercise the pure builder directly with
- * synthetic page fixtures, so they need neither the generated `.source/server`
- * (only the Next bundler can load its `*.mdx?collection=…` modules) nor any
- * network/filesystem access — the same self-contained shape as
+ * scope to one. These assertions exercise the pure builder + breadcrumb resolver
+ * directly with synthetic fixtures, so they need neither the generated
+ * `.source/server` (only the Next bundler can load its `*.mdx?collection=…`
+ * modules) nor any network/filesystem access — the same self-contained shape as
  * `source-partition.test.ts`.
  */
 
@@ -23,10 +26,19 @@ import {
 // never inspects it. Matches the `{ headings, contents }` shape fumadocs emits.
 const EMPTY_STRUCTURED = { headings: [], contents: [] };
 
-function page(url: string, title: string): IndexablePage {
+function page(
+  url: string,
+  title: string,
+  breadcrumbs?: readonly string[],
+): IndexablePage {
   return {
     url,
-    data: { title, description: `${title} description`, structuredData: EMPTY_STRUCTURED },
+    breadcrumbs,
+    data: {
+      title,
+      description: `${title} description`,
+      structuredData: EMPTY_STRUCTURED,
+    },
   };
 }
 
@@ -50,6 +62,16 @@ const indexes = buildSearchIndexes([
   ...selfHostedSourcePages,
 ]);
 const byUrl = new Map(indexes.map((i) => [i.url, i]));
+
+test("SEARCH_SECTIONS is the SSOT for the facet values sectionForUrl produces", () => {
+  // Every section sectionForUrl can emit is a member of the ordered SSOT, and
+  // vice versa — so the dialog (which renders from SEARCH_SECTIONS) and the index
+  // (tagged via sectionForUrl) can never fall out of sync.
+  const produced = new Set(
+    ["/", "/self-hosted/x", "/api-reference/x"].map(sectionForUrl),
+  );
+  expect(new Set(SEARCH_SECTIONS)).toEqual(produced);
+});
 
 test("sectionForUrl maps each URL to the right section facet", () => {
   const cases: Array<[string, SearchSection]> = [
@@ -82,7 +104,9 @@ test("combined index carries one entry per mounted page across all three section
   );
 
   const sections = new Set(indexes.map((i) => i.tag));
-  expect(sections).toEqual(new Set<SearchSection>(["saas", "self-hosted", "api"]));
+  expect(sections).toEqual(
+    new Set<SearchSection>(["saas", "self-hosted", "api"]),
+  );
 
   // Every section is actually represented (not just present in the union type).
   expect(indexes.some((i) => i.tag === "saas")).toBe(true);
@@ -90,13 +114,15 @@ test("combined index carries one entry per mounted page across all three section
   expect(indexes.some((i) => i.tag === "api")).toBe(true);
 });
 
-test("every index entry's tag equals sectionForUrl(url) and preserves url/title/data", () => {
+test("every index entry's tag equals sectionForUrl(url) and preserves url/title/description/data", () => {
   for (const idx of indexes) {
     expect(idx.tag).toBe(sectionForUrl(idx.url));
     // id === url (matches createFromSource's default), and the searchable
     // fields are carried through from the page.
     expect(idx.id).toBe(idx.url);
     expect(typeof idx.title).toBe("string");
+    // description must survive the mapping (drives result snippets).
+    expect(idx.description).toBe(`${idx.title} description`);
     expect(idx.structuredData).toBe(EMPTY_STRUCTURED);
   }
 });
@@ -122,4 +148,79 @@ test("a shared page yields a distinct entry per mount, each linking to its own s
   expect(selfHostedMount?.tag).toBe("self-hosted");
   expect(rootMount?.url).not.toBe(selfHostedMount?.url);
   expect(rootMount?.id).not.toBe(selfHostedMount?.id);
+});
+
+test("buildSearchIndexes forwards a page's breadcrumbs onto its index entry", () => {
+  const [idx] = buildSearchIndexes([
+    page("/guides/billing-and-plans", "Billing", ["Docs", "Guides"]),
+  ]);
+  expect(idx.breadcrumbs).toEqual(["Docs", "Guides"]);
+  // A page without breadcrumbs leaves the field undefined (SharedIndex optional).
+  expect(byUrl.get("/")?.breadcrumbs).toBeUndefined();
+});
+
+// ── breadcrumbsFor: mirrors Fumadocs' buildBreadcrumbs over a section page tree ──
+//
+// Synthetic PageTree fixture: a root ("Docs") with a top-level page, a "Guides"
+// folder holding a page and a nested "Deep" folder whose landing is an index
+// page, plus a folder with a non-string (React-node) name to prove such names are
+// skipped. Uses the REAL `findPath`, so this pins our thin wrapper (root-name +
+// pop + string filter), not a reimplemented walk.
+const tree: Root = {
+  name: "Docs",
+  children: [
+    { type: "page", name: "Home", url: "/" },
+    {
+      type: "folder",
+      name: "Guides",
+      children: [
+        { type: "page", name: "Billing", url: "/guides/billing-and-plans" },
+        {
+          type: "folder",
+          name: "Deep",
+          index: { type: "page", name: "Deep Landing", url: "/guides/deep" },
+          children: [
+            { type: "page", name: "Nested", url: "/guides/deep/nested" },
+          ],
+        },
+      ],
+    },
+    {
+      type: "folder",
+      // A non-string name (a number is a valid ReactNode) must be skipped, just
+      // as Fumadocs' isBreadcrumbItem skips non-string names.
+      name: 7,
+      children: [{ type: "page", name: "Weird", url: "/weird/child" }],
+    },
+  ],
+};
+
+test("breadcrumbsFor returns root + ancestor folder names, dropping the page leaf", () => {
+  expect(breadcrumbsFor(tree, "/guides/billing-and-plans")).toEqual([
+    "Docs",
+    "Guides",
+  ]);
+  expect(breadcrumbsFor(tree, "/guides/deep/nested")).toEqual([
+    "Docs",
+    "Guides",
+    "Deep",
+  ]);
+});
+
+test("breadcrumbsFor includes the folder for a folder-index landing page", () => {
+  // The Deep folder's landing (/guides/deep) resolves through the folder's index;
+  // the Deep folder still appears as a breadcrumb (its own leaf is dropped).
+  expect(breadcrumbsFor(tree, "/guides/deep")).toEqual([
+    "Docs",
+    "Guides",
+    "Deep",
+  ]);
+});
+
+test("breadcrumbsFor skips non-string (React-node) folder names", () => {
+  expect(breadcrumbsFor(tree, "/weird/child")).toEqual(["Docs"]);
+});
+
+test("breadcrumbsFor returns [] for a URL not in the tree", () => {
+  expect(breadcrumbsFor(tree, "/does/not/exist")).toEqual([]);
 });

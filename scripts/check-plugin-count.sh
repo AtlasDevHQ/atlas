@@ -72,6 +72,17 @@ for d in plugins/*/; do
   set +e
   grep -rzqE "$PLUGIN_TYPE_RE" "${d}src"
   rc=$?
+  # Datasource plugins assembled via the createDatasourcePlugin factory (#4192)
+  # declare their PluginType (`types: ["datasource"]`) inside the SDK helper,
+  # not in the plugin's own src/, so the PLUGIN_TYPE_RE grep above misses them.
+  # The factory produces a datasource-typed plugin by construction, so treat a
+  # `createDatasourcePlugin<` / `createDatasourcePlugin(` call site as an
+  # equivalent PluginType declaration. Only consulted on a clean no-match
+  # (rc==1); a read error (rc>=2) still falls through to the loud-fail branch.
+  if [ "$rc" -eq 1 ]; then
+    grep -rzqE 'createDatasourcePlugin[[:space:]]*[<(]' "${d}src"
+    rc=$?
+  fi
   set -e
   case "$rc" in
     0) count=$((count + 1)); typed_dirs+=("$(basename "$d")") ;;

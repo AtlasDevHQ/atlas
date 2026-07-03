@@ -801,7 +801,18 @@ export function createDatasourcePlugin<
 >(
   options: CreateDatasourcePluginOptions<TConfig, TRuntimeConfig, TConn>,
 ): DatasourcePluginFactory<TConfig> {
-  const logLabel = options.logLabel ?? options.name.replace(/\s+DataSource$/, "");
+  // Derive the log label by stripping a trailing " DataSource" suffix without a
+  // polynomial-backtracking regex: `\s+` before an anchored literal is a ReDoS
+  // hazard on an attacker-influenced plugin name (CodeQL js/polynomial-redos).
+  // endsWith + trimEnd is single-pass and reproduces the old /\s+DataSource$/
+  // exactly — only strips when ≥1 whitespace separated the suffix.
+  let derivedLabel = options.name;
+  if (derivedLabel.endsWith("DataSource")) {
+    const head = derivedLabel.slice(0, -"DataSource".length);
+    const trimmedHead = head.trimEnd();
+    if (trimmedHead.length < head.length) derivedLabel = trimmedHead;
+  }
+  const logLabel = options.logLabel ?? derivedLabel;
   const version = options.version ?? "0.1.0";
   const isStatic = options.hasStaticConfig ?? configHasUrl;
 

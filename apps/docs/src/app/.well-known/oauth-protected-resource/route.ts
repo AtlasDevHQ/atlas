@@ -6,7 +6,8 @@
 // this route and the apex mirror (`useatlas.dev/.well-known/oauth-protected-
 // resource`) serve byte-identical metadata. Regenerate with
 // `cd packages/api && bun scripts/generate-apex-discovery.ts`; a CI drift gate
-// (scripts/check-apex-discovery-drift.sh) fails if this file is edited by hand.
+// (scripts/check-apex-discovery-drift.sh) fails if the generated JSON is
+// edited by hand (it guards the artifact, not this route file).
 import BODY from "./resource-metadata.generated.json";
 
 export const dynamic = "force-static";

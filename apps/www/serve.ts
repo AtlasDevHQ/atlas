@@ -87,9 +87,11 @@ const WELL_KNOWN_ROUTES: Record<string, { file: string; contentType: string }> =
 // keys can change), so the static apex must NOT freeze a copy — that would be
 // the exact drift we're avoiding elsewhere. Instead the apex 302-redirects the
 // canonical well-known paths to the live docs on api.useatlas.dev, where Atlas's
-// OAuth issuer actually lives (at the `/api/auth` issuer suffix per RFC 8414
-// path-insertion / OIDC path-appending). An agent or readiness scanner that
-// probes the brand apex resolves to the authoritative, always-current metadata.
+// OAuth issuer actually lives. Both targets use the RFC 8414 path-insertion
+// location — the issuer path (`/api/auth`) appended AFTER the well-known
+// segment (`/.well-known/openid-configuration/api/auth`), which is what the API
+// router serves. An agent or readiness scanner that probes the brand apex thus
+// resolves to the authoritative, always-current metadata.
 const OAUTH_DISCOVERY_REDIRECTS: Record<string, string> = {
   "/.well-known/openid-configuration":
     "https://api.useatlas.dev/.well-known/openid-configuration/api/auth",
@@ -217,6 +219,22 @@ export async function handleRequest(req: Request): Promise<Response> {
     // fetch it cross-origin. Handled explicitly (ahead of the markdown-twin +
     // static fallthrough) so it can't be mistaken for an HTML page's twin.
     if (pathname === "/auth.md") {
+      // Answer the CORS preflight the GET response advertises
+      // (`Access-Control-Allow-Methods: GET, OPTIONS`) — mirrors the API
+      // route's OPTIONS handler so a browser agent that preflights /auth.md
+      // gets a 204, not a 404 fallthrough.
+      if (req.method === "OPTIONS") {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            ...SECURITY_HEADERS,
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400",
+          },
+        });
+      }
       const file = Bun.file(join(OUT_DIR, "auth.md"));
       if (await file.exists()) {
         return new Response(file, {
@@ -295,6 +313,22 @@ export async function handleRequest(req: Request): Promise<Response> {
 }
 
 if (import.meta.main) {
-  Bun.serve({ port, fetch: handleRequest });
+  Bun.serve({
+    port,
+    fetch: handleRequest,
+    // Last-resort hook: an unexpected throw in handleRequest (e.g. a disk I/O
+    // error mid-stream) would otherwise surface as Bun's default 500 with no
+    // log line. Give operators a correlation point, then return a clean 500.
+    error(err) {
+      console.error(
+        "[serve] unhandled request error:",
+        err instanceof Error ? (err.stack ?? err.message) : String(err),
+      );
+      return new Response("Internal Server Error", {
+        status: 500,
+        headers: SECURITY_HEADERS,
+      });
+    },
+  });
   console.log(`Static server listening on :${port}`);
 }

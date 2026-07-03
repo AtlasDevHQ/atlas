@@ -52,14 +52,35 @@ import { renderAuthMd } from "@atlas/api/api/routes/auth-md";
 const CANONICAL_API_BASE = "https://api.useatlas.dev";
 
 /**
+ * RFC 9728 OAuth Protected Resource metadata shape (the subset Atlas
+ * advertises). Declared locally rather than reused from Better Auth's
+ * `getProtectedResourceMetadata` param because that types the API's *MCP*
+ * variant, which describes a different resource. `satisfies` this on the const
+ * below so a field-name typo or wrong element type is a compile error rather
+ * than a wrong value the drift gate would faithfully mirror into both copies.
+ */
+interface ProtectedResourceMetadata {
+  readonly resource: string;
+  readonly authorization_servers: readonly string[];
+  readonly bearer_methods_supported: readonly string[];
+  readonly resource_documentation: string;
+  readonly resource_name: string;
+  readonly resource_policy_uri: string;
+  readonly resource_tos_uri: string;
+}
+
+/**
  * The REST-API OAuth Protected Resource metadata (RFC 9728), describing
  * `api.useatlas.dev` as a bearer-token-protected resource. This is the SINGLE
  * definition; the generator emits it to both the apex (apps/www) and the docs
  * site so the two static copies stay identical. (Distinct from the API's
  * dynamic *MCP* protected-resource doc at `/oauth-protected-resource/mcp/:id`,
  * which describes a different resource — the per-workspace MCP server.)
+ *
+ * Exported so a unit test can assert its shape without re-reading the emitted
+ * artifact.
  */
-const API_PROTECTED_RESOURCE = {
+export const API_PROTECTED_RESOURCE = {
   resource: "https://api.useatlas.dev",
   authorization_servers: ["https://api.useatlas.dev"],
   bearer_methods_supported: ["header"],
@@ -67,7 +88,7 @@ const API_PROTECTED_RESOURCE = {
   resource_name: "Atlas API",
   resource_policy_uri: "https://www.useatlas.dev/privacy",
   resource_tos_uri: "https://www.useatlas.dev/terms",
-} as const;
+} as const satisfies ProtectedResourceMetadata;
 
 // ---------------------------------------------------------------------------
 // Output targets (relative to packages/api/scripts/)
@@ -101,8 +122,15 @@ const OUTPUTS = {
  * generating machine (a dev's `.env`, CI) would otherwise leak into the output
  * and make the committed file non-reproducible. Pin the env for the render and
  * restore it, mirroring check-auth-md-discovery-parity.ts's `withResolvedBase`.
+ * Belt-and-suspenders: we also delete `BETTER_AUTH_URL` and pass a canonical
+ * request origin, so ALL three resolution tiers agree on `api.useatlas.dev` —
+ * the output can't change even if the helper precedence is ever reordered.
+ *
+ * Exported so a unit test can lock this env-independence contract (the drift
+ * gate can't — it regenerates with the same generator, so a precedence bug
+ * would leave both sides equally wrong).
  */
-function renderCanonicalAuthMd(): string {
+export function renderCanonicalAuthMd(): string {
   const prevApi = process.env.ATLAS_PUBLIC_API_URL;
   const prevAuth = process.env.BETTER_AUTH_URL;
   process.env.ATLAS_PUBLIC_API_URL = CANONICAL_API_BASE;
@@ -138,4 +166,6 @@ function main(): void {
   );
 }
 
-main();
+// Only write files when run as the script (`bun scripts/generate-apex-discovery.ts`),
+// not when imported by the unit test — importing must have no side effects.
+if (import.meta.main) main();

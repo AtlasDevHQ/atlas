@@ -8,9 +8,10 @@ document.
 > **Status: experimental.** DNS-AID is an early IETF draft
 > ([draft-mozleywilliams-dnsop-dnsaid](https://datatracker.ietf.org/doc/draft-mozleywilliams-dnsop-dnsaid/)),
 > built on the stable SVCB/HTTPS record spec
-> ([RFC 9460](https://www.rfc-editor.org/rfc/rfc9460)). The owner-name
-> convention (`_agents`) and the core SvcParams (`alpn`, `port`) are stable;
-> the enrichment params (`well-known`, `cap`, `policy`, …) are draft-only and
+> ([RFC 9460](https://www.rfc-editor.org/rfc/rfc9460)). The SVCB record type and
+> the core SvcParams (`alpn`, `port`) are RFC-9460-stable; the `_agents`
+> owner-name convention is DNS-AID-draft-defined and may still change. The
+> enrichment params (`well-known`, `cap`, `policy`, …) are draft-only and
 > not yet IANA-registered, so they must be published as experimental `keyNNNNN`
 > params and some DNS providers won't accept them. The records below lead with
 > the **standards-safe** set (target + `alpn` + `port`) — that's enough for
@@ -90,9 +91,12 @@ safe records above are sufficient for discovery.
 
 ---
 
-## Applying in Cloudflare (registrar for `useatlas.dev`)
+## Applying in Cloudflare
 
-Cloudflare supports the SVCB record type in the dashboard and API.
+Assumes Cloudflare hosts the `useatlas.dev` DNS zone (nameservers). SVCB (type
+`64`) support in Cloudflare's **dashboard** has lagged HTTPS (type `65`) and can
+depend on plan/rollout — if the `SVCB` type isn't selectable in the UI, use the
+**API** path below, which always works.
 
 1. **Dashboard** → `useatlas.dev` → **DNS** → **Records** → **Add record**.
 2. **Type**: `SVCB`. **Name**: `_mcp._agents` (Cloudflare appends the zone).
@@ -105,7 +109,7 @@ Cloudflare supports the SVCB record type in the dashboard and API.
 5. If Cloudflare rejects a custom param (e.g. `well-known`), drop it and ship the
    standards-safe record; the param is optional enrichment.
 
-Via the API (SVCB `type` is `64`):
+Via the API (SVCB `type` is `64`) — works regardless of dashboard support:
 
 ```bash
 curl -sS -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
@@ -128,11 +132,16 @@ unverifiable records", so the discovery data must be authenticated.
 1. Cloudflare → `useatlas.dev` → **DNS** → **Settings** → **DNSSEC** → **Enable
    DNSSEC**. Cloudflare shows a **DS record** (key tag, algorithm, digest type,
    digest).
-2. Add that **DS record at the domain registrar** (where `useatlas.dev` is
-   registered — the parent zone). This is the step that actually turns on the
-   chain of trust; enabling in Cloudflare alone is not enough.
-3. Wait for the registrar's DS to propagate (minutes to a couple hours), then
-   verify the `AD` (Authenticated Data) flag is set (below).
+2. Publish that **DS record in the parent zone** — this is what turns on the
+   chain of trust. Where you do it depends on who registers `useatlas.dev`:
+   - **Cloudflare Registrar** (Cloudflare is both registrar *and* nameserver):
+     enabling DNSSEC in the dashboard **auto-submits** the DS to the `.dev`
+     registry — no separate step.
+   - **External registrar** (Cloudflare is DNS-only): copy the DS values into
+     the registrar's DNSSEC/DS-record section by hand. Enabling in Cloudflare
+     alone is not enough here.
+3. Wait for the DS to propagate (minutes to a couple hours), then verify the
+   `AD` (Authenticated Data) flag is set (below).
 
 If Atlas later adds DANE TLSA records for the targets, those **MUST** be signed
 (they only ride the DNSSEC chain you just established).

@@ -988,8 +988,8 @@ The SDK exports a set of helpers for onboarding an MCP client (Claude Desktop, C
 import { beginConnect, completeConnect, buildConfig } from "@useatlas/sdk";
 
 const begin = await beginConnect({ apiUrl: "https://api.useatlas.dev" });
-// → { authorizeUrl, codeVerifier, state }
-// Open `authorizeUrl` in the browser; capture the redirect's `code`.
+// → { authorizationUrl, codeVerifier, state }
+// Open `authorizationUrl` in the browser; capture the redirect's `code`.
 
 const complete = await completeConnect({
   apiUrl: "https://api.useatlas.dev",

@@ -8,9 +8,10 @@ import { ArrowIcon, TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
 import { SubProcessorWebhookButton } from "../../components/sub-processor-webhook-button";
 import { TalkToSalesDialog } from "../../components/talk-to-sales-dialog";
+import { LEGAL_STAMPS } from "../../data/legal";
 
 export const metadata: Metadata = {
-  title: "Data Processing Addendum — Atlas",
+  title: "Data Processing Addendum",
   description:
     "Atlas Cloud Article 28 GDPR-compliant DPA, with the EU Standard Contractual Clauses incorporated by reference. Pre-signed via legal@useatlas.dev — no negotiation needed for standard deals.",
   openGraph: {
@@ -20,8 +21,24 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/dpa",
     siteName: "Atlas",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Data Processing Addendum — Atlas",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Data Processing Addendum — Atlas",
+    description:
+      "Article 28 GDPR DPA + SCCs by reference + sub-processors annex + subscribe-to-changes for procurement.",
+    images: ["/og.png"],
   },
   alternates: {
+    canonical: "https://www.useatlas.dev/dpa",
     types: {
       "application/atom+xml": [
         {
@@ -164,9 +181,9 @@ export default function DPAPage() {
             no negotiation needed.
           </p>
           <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-fg-muted uppercase">
-            <span>effective 2026-05-02</span>
+            <span>effective {LEGAL_STAMPS.dpa.effective}</span>
             <span aria-hidden="true">·</span>
-            <span>v2.5</span>
+            <span>{LEGAL_STAMPS.dpa.version}</span>
             <span aria-hidden="true">·</span>
             <span>incorporates: SCCs (2021/914), UK IDTA</span>
           </div>

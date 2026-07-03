@@ -17,7 +17,10 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://www.useatlas.dev"),
-  title: "Atlas — Ask your data anything, trust the answer.",
+  title: {
+    default: "Atlas — Ask your data anything, trust the answer.",
+    template: "%s — Atlas",
+  },
   description:
     "Atlas is the AI data analyst you can run anywhere. It answers plain-English questions across your SQL warehouses and REST APIs, grounded in a semantic layer you control. Run it in the cloud or self-host it — open source.",
   openGraph: {
@@ -27,6 +30,7 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev",
     siteName: "Atlas",
     type: "website",
+    locale: "en_US",
     images: [
       {
         url: "/og.png",

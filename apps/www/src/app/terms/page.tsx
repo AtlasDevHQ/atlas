@@ -6,9 +6,10 @@ import { Nav } from "../../components/nav";
 import { TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
 import { TalkToSalesDialog } from "../../components/talk-to-sales-dialog";
+import { LEGAL_STAMPS } from "../../data/legal";
 
 export const metadata: Metadata = {
-  title: "Terms of Service — Atlas",
+  title: "Terms of Service",
   description:
     "The agreement between Atlas DevHQ and the people who use Atlas Cloud. 13 sections, dual-column legal / plain-english layout so the deal is readable.",
   openGraph: {
@@ -18,7 +19,23 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/terms",
     siteName: "Atlas",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Terms of Service — Atlas",
+      },
+    ],
   },
+  twitter: {
+    card: "summary_large_image",
+    title: "Terms of Service — Atlas",
+    description:
+      "Atlas Cloud terms of service: account terms, fees, customer data, IP, warranty, liability, indemnification, termination, governing law.",
+    images: ["/og.png"],
+  },
+  alternates: { canonical: "https://www.useatlas.dev/terms" },
 };
 
 const SECTIONS: LegalSectionData[] = [
@@ -195,11 +212,11 @@ export default function TermsPage() {
             right.
           </p>
           <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-fg-muted uppercase">
-            <span>effective 2026-06-19</span>
+            <span>effective {LEGAL_STAMPS.terms.effective}</span>
             <span aria-hidden="true">·</span>
-            <span>v4.3</span>
+            <span>{LEGAL_STAMPS.terms.version}</span>
             <span aria-hidden="true">·</span>
-            <span>last updated 2026-05-02</span>
+            <span>last updated {LEGAL_STAMPS.terms.lastUpdated}</span>
           </div>
         </section>
 

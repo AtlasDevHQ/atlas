@@ -17,6 +17,8 @@ import {
 } from "../../../components/prose";
 import { Divider, TopGlow } from "../../../components/shared";
 import { StickyNav } from "../../../components/sticky-nav";
+import { JsonLd } from "../../../components/json-ld";
+import { blogPostingJsonLd } from "../../../lib/seo";
 
 export const metadata: Metadata = {
   title: "Why This One Stuck",
@@ -30,6 +32,7 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/blog/why-this-one-stuck",
     siteName: "Atlas",
     type: "article",
+    publishedTime: "2026-06-25",
     authors: ["Matt Sywulak"],
     images: [
       {
@@ -47,11 +50,13 @@ export const metadata: Metadata = {
       "Thirty-two repositories since 2023, most dead within two weeks. Why Atlas is the first one I got over the line, and the first I built end to end with an AI agent.",
     images: ["/og.png"],
   },
+  alternates: { canonical: "https://www.useatlas.dev/blog/why-this-one-stuck" },
 };
 
 export default function WhyThisOneStuck() {
   return (
     <div className="relative min-h-screen">
+      <JsonLd data={blogPostingJsonLd("why-this-one-stuck")} />
       <StickyNav />
       <TopGlow />
       <Nav currentPage="/blog" />

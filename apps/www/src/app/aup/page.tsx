@@ -5,9 +5,10 @@ import { LegalSection, LegalTOC, type LegalSectionData } from "../../components/
 import { Nav } from "../../components/nav";
 import { TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
+import { LEGAL_STAMPS } from "../../data/legal";
 
 export const metadata: Metadata = {
-  title: "Acceptable Use Policy — Atlas",
+  title: "Acceptable Use Policy",
   description:
     "What you can't do with Atlas Cloud. Four prohibited categories up top, nine sections below — short, specific, and enforceable.",
   openGraph: {
@@ -17,7 +18,23 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/aup",
     siteName: "Atlas",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Acceptable Use Policy — Atlas",
+      },
+    ],
   },
+  twitter: {
+    card: "summary_large_image",
+    title: "Acceptable Use Policy — Atlas",
+    description:
+      "Atlas Cloud Acceptable Use Policy: prohibited uses, security-research carve-outs, customer-data responsibilities, and how violations are handled.",
+    images: ["/og.png"],
+  },
+  alternates: { canonical: "https://www.useatlas.dev/aup" },
 };
 
 interface ProhibitionCard {
@@ -172,9 +189,9 @@ export default function AupPage() {
             short enough to read in one sitting.
           </p>
           <div className="animate-fade-in-up delay-400 mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 font-mono text-[11px] tracking-wider text-fg-muted uppercase">
-            <span>effective 2026-04-26</span>
+            <span>effective {LEGAL_STAMPS.aup.effective}</span>
             <span aria-hidden="true">·</span>
-            <span>v1.0</span>
+            <span>{LEGAL_STAMPS.aup.version}</span>
             <span aria-hidden="true">·</span>
             <span>questions: legal@useatlas.dev</span>
           </div>

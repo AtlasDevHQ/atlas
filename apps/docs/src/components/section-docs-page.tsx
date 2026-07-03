@@ -15,6 +15,7 @@ import { ChangelogTimeline } from "@/components/changelog-timeline";
 import { LLMCopyButton } from "@/components/llm-copy-button";
 import { AudienceProvider, AudienceLabel, type Audience } from "@/lib/audience";
 import { audienceConditionals } from "@/lib/audience-conditionals";
+import { filterTocByAudience } from "@/lib/audience-markdown";
 import { githubEditPath } from "@/lib/mdx-links";
 import type { SectionPage } from "@/lib/source";
 
@@ -85,10 +86,20 @@ export async function SectionDocsPage({
   // that returns null, so its children never enter the emitted HTML / RSC
   // payload (unlike a client conditional). See audience-conditionals.tsx.
   const { WhenSaaS, WhenSelfHosted } = audienceConditionals(audience);
+  // `page.data.toc` is compiled from ALL headings in the raw MDX — the runtime
+  // audience conditional is invisible to it — so a `<WhenSelfHosted>`-wrapped
+  // section's heading would otherwise show in the SaaS mount's ToC and link to
+  // an anchor that never renders. Drop the inactive-branch headings so the ToC
+  // matches what this mount actually shows (PRD #4257 / #4282).
+  const toc = filterTocByAudience(
+    page.data.toc,
+    await page.data.getText("processed"),
+    audience,
+  );
 
   return (
     <DocsPage
-      toc={page.data.toc}
+      toc={toc}
       lastUpdate={lastUpdate}
       full={isFullWidth}
       editOnGithub={{

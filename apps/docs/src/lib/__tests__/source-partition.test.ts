@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { buildSectionSource, type CollectionLike } from "@/lib/compose";
 import { classifyByPath } from "@/lib/audience-taxonomy";
 import { MOVED_SELF_HOSTED_SLUGS } from "@/lib/redirects";
+import { stripInactiveAudienceBlocks } from "@/lib/audience-markdown";
 
 /**
  * Source-partition test (PRD #4257's highest-value seam).
@@ -634,4 +635,108 @@ test("[#4265] every root-absolute link in a shared page resolves to a real page 
   expect(targets.size).toBeGreaterThan(0);
   const dangling = [...targets].filter((u) => !rootPageExists(u));
   expect(dangling).toEqual([]);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4282 — the six saas-only pages that carried embedded self-hosted operator
+// SECTIONS are resolved so NO self-hosted operator content reaches the SaaS-root
+// emitted HTML. Two mechanisms, per-page judgment along the PRD #4257 ladder:
+//
+//   - rung-2 (shared + `<WhenSelfHosted>`): multi-tenancy, plugin-marketplace,
+//     onboarding-emails single-source into BOTH trees; each on-prem section is
+//     wrapped in the SERVER `<WhenSelfHosted>` conditional, which renders null on
+//     the SaaS mount (its children never enter the RSC flight payload — see
+//     audience-conditionals.tsx + its test).
+//   - rung-4 (extract): billing-and-plans, signup, mcp-load-test-tokens keep the
+//     SaaS page saas-only and move the on-prem section to a dedicated
+//     `/self-hosted/*` page, so the SaaS page no longer contains it at all.
+//
+// This is the finer-grained companion to the page-level partition tests above:
+// those prove no self-hosted-only PAGE reaches the SaaS source; this proves no
+// self-hosted SECTION reaches a SaaS page's emitted output.
+//
+// The shared-page assertions drive the REAL `stripInactiveAudienceBlocks` — the
+// same strip behind the `.mdx` twin / `llms-full.txt` SaaS surface and the
+// string-level mirror of the server `<WhenSelfHosted>` render (returns null). A
+// leak would surface identically in both. Fixtures use uniquely-named consts, so
+// they don't disturb the 3a/3b/3c blocks above.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DOCS_ROOT_4282 = join(CONTENT_DIR, "docs");
+const SELF_HOSTED_ROOT_4282 = join(CONTENT_DIR, "self-hosted");
+
+// rung-2: the ONE real shared source file, the self-hosted tokens that must be
+// ABSENT on the SaaS mount (all inside a `<WhenSelfHosted>` block), and a
+// shared-body token that must SURVIVE (so the strip isn't just deleting the page).
+const SHARED_WRAPPED_4282 = [
+  {
+    file: join(SHARED_ROOT, "guides/multi-tenancy.mdx"),
+    absent: [
+      "Org-scoped connections (Self-Hosted)",
+      "with organizations (Self-Hosted)",
+      "Self-hosted prerequisites",
+      "per-org pool isolation",
+      "ATLAS_ORG_ID",
+    ],
+    present: ["Member management", "Org switcher UI"],
+  },
+  {
+    file: join(SHARED_ROOT, "guides/plugin-marketplace.mdx"),
+    absent: ["import bigquery from", "does not offer an uninstall button"],
+    present: ["What the page shows for each plugin"],
+  },
+  {
+    file: join(SHARED_ROOT, "guides/onboarding-emails.mdx"),
+    absent: ["Configuration (Self-Hosted)", "ATLAS_ONBOARDING_EMAILS_ENABLED"],
+    present: ["Email Sequence", "Unsubscribe & Resubscribe"],
+  },
+] as const;
+
+test("[#4282] every shared page's self-hosted section is absent from the SaaS-mount markdown (kept on self-hosted)", () => {
+  for (const page of SHARED_WRAPPED_4282) {
+    const raw = readFileSync(page.file, "utf8");
+    // Sanity: the on-prem content really is in the single source (so the strip
+    // is doing work, not passing vacuously).
+    for (const tok of page.absent) expect(raw).toContain(tok);
+
+    // SaaS mount: the self-hosted section is gone; the shared body survives.
+    const saas = stripInactiveAudienceBlocks(raw, "saas");
+    for (const tok of page.absent) expect(saas).not.toContain(tok);
+    for (const tok of page.present) expect(saas).toContain(tok);
+
+    // Self-hosted mount: the on-prem section is preserved (no content lost).
+    const selfHosted = stripInactiveAudienceBlocks(raw, "self-hosted");
+    for (const tok of page.absent) expect(selfHosted).toContain(tok);
+  }
+});
+
+// rung-4: the on-prem section was EXTRACTED to a dedicated /self-hosted page.
+const EXTRACTED_4282 = [
+  {
+    saas: join(DOCS_ROOT_4282, "guides/billing-and-plans.mdx"),
+    extract: join(SELF_HOSTED_ROOT_4282, "guides/self-hosted-billing.mdx"),
+    tokens: ["Stripe Setup", "STRIPE_WEBHOOK_SECRET"],
+  },
+  {
+    saas: join(DOCS_ROOT_4282, "guides/signup.mdx"),
+    extract: join(SELF_HOSTED_ROOT_4282, "guides/self-serve-signup.mdx"),
+    tokens: ["Enabling Social Login", "GOOGLE_CLIENT_SECRET"],
+  },
+  {
+    saas: join(DOCS_ROOT_4282, "platform-ops/mcp-load-test-tokens.mdx"),
+    extract: join(SELF_HOSTED_ROOT_4282, "deployment/load-testing.mdx"),
+    tokens: ["ATLAS_PUBLIC_API_URL"],
+  },
+] as const;
+
+test("[#4282] extracted self-hosted sections are gone from the SaaS page and live on a /self-hosted page (no content lost)", () => {
+  for (const page of EXTRACTED_4282) {
+    expect(existsSync(page.extract)).toBe(true);
+    const saas = readFileSync(page.saas, "utf8");
+    const extract = readFileSync(page.extract, "utf8");
+    for (const tok of page.tokens) {
+      expect(saas).not.toContain(tok);
+      expect(extract).toContain(tok);
+    }
+  }
 });

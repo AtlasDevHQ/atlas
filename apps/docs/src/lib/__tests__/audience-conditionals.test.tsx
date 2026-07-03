@@ -3,7 +3,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { audienceConditionals } from "@/lib/audience-conditionals";
-import { stripInactiveAudienceBlocks } from "@/lib/audience-markdown";
+import {
+  stripInactiveAudienceBlocks,
+  filterTocByAudience,
+  tocTitleToText,
+  survivingHeadingTitles,
+  normalizeHeadingText,
+} from "@/lib/audience-markdown";
 import type { Audience } from "@/lib/audience";
 
 /**
@@ -191,4 +197,151 @@ test("an inline-code mention of a tag name is NOT treated as a residual tag", ()
   const out = stripInactiveAudienceBlocks(mention, "saas");
   expect(out).toContain("saas-md-token");
   expect(out).toContain("`<WhenSelfHosted>`"); // the mention survives, unstripped
+});
+
+// ── audience-aware table of contents (#4282) ─────────────────────────────────
+//
+// fumadocs compiles `page.data.toc` from ALL headings in the raw MDX — the
+// runtime audience conditional is invisible to it — so a heading authored inside
+// a `<WhenSelfHosted>` block would appear in the SaaS mount's ToC (and link to an
+// anchor that never renders). `filterTocByAudience` drops the inactive branch's
+// headings so the ToC matches what the mount actually shows.
+
+const TOC_MD = [
+  "# Intro",
+  "",
+  "Shared intro.",
+  "",
+  "## Shared Section",
+  "",
+  "<WhenSelfHosted>",
+  "## Org-scoped connections (Self-Hosted)",
+  "",
+  "Operator config with `atlas.config.ts`.",
+  "</WhenSelfHosted>",
+  "",
+  "## Another Shared Section",
+  "",
+  "<WhenSaaS>",
+  "## Billing (SaaS)",
+  "</WhenSaaS>",
+].join("\n");
+
+test("tocTitleToText flattens string, array, and element-like title nodes", () => {
+  expect(tocTitleToText("Plain")).toBe("Plain");
+  // fumadocs' array title node (in-memory React-element form): [<code>atlas
+  // init</code>, " with orgs"].
+  expect(
+    tocTitleToText([
+      { props: { children: "atlas init" } },
+      " with orgs (Self-Hosted)",
+    ]),
+  ).toBe("atlas init with orgs (Self-Hosted)");
+  expect(tocTitleToText({ children: "el text" })).toBe("el text");
+});
+
+test("survivingHeadingTitles omits headings inside the inactive branch", () => {
+  const saas = survivingHeadingTitles(TOC_MD, "saas");
+  expect(saas.has("Shared Section")).toBe(true);
+  expect(saas.has("Another Shared Section")).toBe(true);
+  expect(saas.has("Billing (SaaS)")).toBe(true); // active on saas
+  expect(saas.has("Org-scoped connections (Self-Hosted)")).toBe(false);
+
+  const selfHosted = survivingHeadingTitles(TOC_MD, "self-hosted");
+  expect(selfHosted.has("Org-scoped connections (Self-Hosted)")).toBe(true);
+  expect(selfHosted.has("Billing (SaaS)")).toBe(false); // inactive on self-hosted
+});
+
+test("filterTocByAudience drops the self-hosted heading from the SaaS ToC", () => {
+  const toc = [
+    { depth: 1, url: "#intro", title: "Intro" },
+    { depth: 2, url: "#shared-section", title: "Shared Section" },
+    {
+      depth: 2,
+      url: "#org-scoped-connections-self-hosted",
+      title: "Org-scoped connections (Self-Hosted)",
+    },
+    { depth: 2, url: "#another-shared-section", title: "Another Shared Section" },
+    { depth: 2, url: "#billing-saas", title: "Billing (SaaS)" },
+  ];
+
+  const saasToc = filterTocByAudience(toc, TOC_MD, "saas");
+  const saasTitles = saasToc.map((t) => t.title);
+  expect(saasTitles).toContain("Shared Section");
+  expect(saasTitles).toContain("Billing (SaaS)");
+  expect(saasTitles).not.toContain("Org-scoped connections (Self-Hosted)");
+
+  const selfHostedToc = filterTocByAudience(toc, TOC_MD, "self-hosted");
+  const shTitles = selfHostedToc.map((t) => t.title);
+  expect(shTitles).toContain("Org-scoped connections (Self-Hosted)");
+  expect(shTitles).not.toContain("Billing (SaaS)");
+});
+
+test("filterTocByAudience matches a code-containing heading (backticks normalized)", () => {
+  const md = [
+    "<WhenSelfHosted>",
+    "## `atlas init` with organizations (Self-Hosted)",
+    "</WhenSelfHosted>",
+    "",
+    "## Shared",
+  ].join("\n");
+  // Mirrors fumadocs' array title node for a heading with inline code.
+  const toc = [
+    {
+      depth: 2,
+      url: "#atlas-init-with-organizations-self-hosted",
+      title: [{ props: { children: "atlas init" } }, " with organizations (Self-Hosted)"],
+    },
+    { depth: 2, url: "#shared", title: "Shared" },
+  ];
+  const saas = filterTocByAudience(toc, md, "saas").map((t) =>
+    tocTitleToText(t.title),
+  );
+  expect(saas).toContain("Shared");
+  expect(saas).not.toContain("atlas init with organizations (Self-Hosted)");
+
+  // KEEP side (the path that actually exercises backtick normalization): on the
+  // self-hosted mount the code heading SURVIVES, so its backtick'd markdown form
+  // (`` ## `atlas init` … ``) must normalize to the SAME string as the ToC's
+  // array title node (backticks already gone) for the match to keep it. Without
+  // `normalizeHeadingText` stripping the backticks, the two wouldn't compare
+  // equal and this entry would be wrongly dropped.
+  const selfHosted = filterTocByAudience(toc, md, "self-hosted").map((t) =>
+    tocTitleToText(t.title),
+  );
+  expect(selfHosted).toContain("atlas init with organizations (Self-Hosted)");
+});
+
+test("normalizeHeadingText strips inline code, links, and emphasis", () => {
+  expect(normalizeHeadingText("`atlas init` with orgs")).toBe(
+    "atlas init with orgs",
+  );
+  expect(normalizeHeadingText("[Config](/reference/config) options")).toBe(
+    "Config options",
+  );
+  expect(normalizeHeadingText("**Bold** and _italic_ heading")).toBe(
+    "Bold and italic heading",
+  );
+});
+
+test("filterTocByAudience over-keeps a duplicate heading (fail-safe: shows, never hides)", () => {
+  // Same heading text in a shared section AND a self-hosted section. On the SaaS
+  // mount the self-hosted copy is stripped, but the shared copy keeps the title
+  // in the surviving set, so BOTH ToC entries survive. The documented fail-safe:
+  // a duplicate over-keeps (a possibly-dead anchor), never over-removes (a hidden
+  // real heading).
+  const md = [
+    "## Setup",
+    "",
+    "<WhenSelfHosted>",
+    "## Setup",
+    "",
+    "Operator-only setup.",
+    "</WhenSelfHosted>",
+  ].join("\n");
+  const toc = [
+    { depth: 2, url: "#setup", title: "Setup" },
+    { depth: 2, url: "#setup-1", title: "Setup" },
+  ];
+  expect(filterTocByAudience(toc, md, "saas").length).toBe(2);
 });

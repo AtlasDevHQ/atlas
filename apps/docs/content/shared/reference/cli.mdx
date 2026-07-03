@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: Complete reference for the Atlas CLI — init, diff, query, the workspace commands (login, switch, sql, metric run, explore, datasource), migrate, import, export, migrate-import, index, learn, improve, doctor, validate, mcp, eval, canonical-eval, smoke, plugin, benchmark, completions, and operator subcommands (proactive / seed / ops).
+description: Complete reference for the Atlas CLI — init, diff, query, the workspace commands (login, logout, switch, sql, metric run, explore, datasource, entities), migrate, import, export, migrate-import, okf, index, learn, improve, doctor, validate, mcp, eval, canonical-eval, smoke, plugin, benchmark, completions, and operator subcommands (proactive / seed / ops).
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -143,6 +143,7 @@ bun run atlas -- query "your question" [options]
 | `--quiet` | Data only — no narrative, SQL, or stats |
 | `--auto-approve` | Auto-approve any pending actions |
 | `--connection <id>` | Query a specific datasource |
+| `--api-key <key>` | Use a workspace API key instead of your `atlas login` session (unattended CI). Overrides `ATLAS_API_KEY` |
 
 **Environment:**
 
@@ -233,7 +234,7 @@ bun run atlas -- switch acme-analytics
 ```
 
 <Callout title="switch vs. --workspace">
-`atlas switch` sets the **persistent** default workspace for all subsequent commands. The per-command `--workspace <id>` override — accepted by [`atlas sql`](#sql) — rebinds the session for that **single** command only (same membership gate) and does **not** change your saved default. `--workspace` applies to interactive `atlas login` sessions only; workspace API keys are pinned to one workspace.
+`atlas switch` sets the **persistent** default workspace for all subsequent commands. The per-command `--workspace <id>` override — accepted by [`atlas sql`](#sql) and [`atlas entities`](#entities) — rebinds the session for that **single** command only (same membership gate) and does **not** change your saved default. `--workspace` applies to interactive `atlas login` sessions only; workspace API keys are pinned to one workspace.
 </Callout>
 
 ## sql
@@ -450,6 +451,19 @@ Delete a datasource. This is a **soft** delete — recoverable with [`datasource
 ```bash
 bun run atlas -- datasource delete <id>
 ```
+
+## entities
+
+List the semantic entities visible to your logged-in workspace — a thin client over `GET /api/v1/semantic/entities`, authorized by your [`atlas login`](#login) session (workspace-scoped: it returns only the bound workspace's published entities). An interactive-session command: it requires `atlas login` and is **not** honored with a workspace API key.
+
+```bash
+bun run atlas -- entities [--json] [--workspace <id>]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Machine-readable JSON output (`{ workspaceId, entities }`) |
+| `--workspace <id>` | Act on a specific workspace for this command only (does not change your saved default — use [`atlas switch`](#switch)) |
 
 ## doctor
 
@@ -1011,6 +1025,25 @@ bun run atlas -- migrate-import --bundle backup.json --target https://atlas.inte
 # Use env var for the API key
 ATLAS_API_KEY=sk-... bun run atlas -- migrate-import --bundle backup.json
 ```
+
+## okf
+
+Interop with [OKF (Open Knowledge Format)](https://okf.dev) bundles — import a bundle as a first-draft semantic layer, or export the semantic layer as an OKF v0.1 bundle. Pure file-to-file (no REST, no DB), so it ships in the published `atlas` binary.
+
+```bash
+bun run atlas -- okf import --bundle <dir> [--out ./semantic] [--name <name>] [--force]
+bun run atlas -- okf export --semantic ./semantic --out <dir> [--force]
+```
+
+| Flag | Applies to | Description |
+|------|-----------|-------------|
+| `--bundle <dir>` | `import` | OKF bundle directory to read (required) |
+| `--out <dir>` | both | Output directory. `import` default `./semantic`; required for `export` |
+| `--name <name>` | `import` | Catalog name for the draft (default: bundle directory name) |
+| `--semantic <dir>` | `export` | Semantic layer to read (default: `./semantic`) |
+| `--force` | both | Overwrite existing files / write into a non-empty output directory |
+
+`import` produces **drafts**: imported metric SQL is unverified prose until a human reviews it — authority never travels through a bundle. `export` preserves Atlas-specific semantics (whitelist enforcement, pinned-metric authority, glossary ambiguity gating) under an `atlas:` frontmatter extension so re-import is lossless.
 
 ## completions
 

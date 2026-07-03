@@ -34,6 +34,21 @@ export const metadata: Metadata = {
     siteName: "Atlas",
     type: "article",
     authors: ["Matt Sywulak"],
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Why the semantic layer is a YAML file",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Why the Semantic Layer Is a YAML File",
+    description:
+      "The smartest thing in a text-to-SQL agent isn't the model — it's a YAML file a human can read. Why Atlas's semantic layer is a plain text file, and not embeddings, fine-tuning, or a schema crawl.",
+    images: ["/og.png"],
   },
 };
 

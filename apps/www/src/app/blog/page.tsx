@@ -16,6 +16,21 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/blog",
     siteName: "Atlas",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Atlas blog — field notes",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Blog — Atlas",
+    description:
+      "Launch notes, technical deep dives, and the occasional founder note, on building a text-to-SQL agent.",
+    images: ["/og.png"],
   },
 };
 

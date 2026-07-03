@@ -22,18 +22,34 @@ import { Divider, TopGlow } from "../../../components/shared";
 import { StickyNav } from "../../../components/sticky-nav";
 
 export const metadata: Metadata = {
-  title: "Atlas Speaks OKF",
+  title: "Atlas Speaks OKF — Google's Open Knowledge Format",
   description:
     "Google shipped the Open Knowledge Format seventeen days before my post arguing the semantic layer should be a plain YAML file. Here's where the two agree, where a runtime has to go further, and how OKF became the native format of Atlas's new Knowledge Base.",
   authors: [{ name: "Matt Sywulak" }],
   openGraph: {
-    title: "Atlas Speaks OKF",
+    title: "Atlas Speaks OKF — Google's Open Knowledge Format",
     description:
       "Google shipped the Open Knowledge Format seventeen days before my post arguing the semantic layer should be a plain YAML file. Where the two agree, where a runtime has to go further, and how OKF became the native format of Atlas's new Knowledge Base. By Matt Sywulak.",
     url: "https://www.useatlas.dev/blog/atlas-speaks-okf",
     siteName: "Atlas",
     type: "article",
+    publishedTime: "2026-07-03",
     authors: ["Matt Sywulak"],
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Atlas speaks OKF — Google's Open Knowledge Format",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Atlas Speaks OKF — Google's Open Knowledge Format",
+    description:
+      "Where OKF and Atlas's semantic layer agree, where a runtime has to go further than a format, and how OKF became the native format of Atlas's new Knowledge Base.",
+    images: ["/og.png"],
   },
 };
 

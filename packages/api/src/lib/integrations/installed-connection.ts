@@ -103,20 +103,31 @@ export function decryptStoredConfig(
  * row metadata (managed/groupId) even when the credential blob is
  * unreadable — matching the GET-detail behavior that predates this seam.
  */
-export type InstalledConnectionConfig =
+/**
+ * Config outcome when the caller requested decryption (the default). Either
+ * the decrypted plaintext or the per-row decrypt failure — never `not_loaded`.
+ */
+export type LoadedConnectionConfig =
   | { readonly state: "decrypted"; readonly values: Record<string, unknown> }
-  | { readonly state: "decrypt_failed"; readonly reason: string }
-  // The caller opted out of decryption (`decryptConfig: false`) because it
-  // only reads row metadata (status / catalogSlug / groupId). The stored
-  // ciphertext is never touched, so an un-decryptable row on a
-  // config-agnostic path (list decoration, delete, create-conflict check)
-  // produces no spurious decrypt-failure log. Reading `config` still forces
-  // the caller through the discriminated union, so a metadata-only load can
-  // never silently hand back a blank credential.
-  | { readonly state: "not_loaded" };
+  | { readonly state: "decrypt_failed"; readonly reason: string };
+
+/**
+ * Config placeholder when the caller opted out of decryption
+ * (`decryptConfig: false`) because it only reads row metadata (status /
+ * catalogSlug / groupId). The stored ciphertext is never touched, so an
+ * un-decryptable row on a config-agnostic path (list decoration, delete,
+ * create-conflict check) produces no spurious decrypt-failure log. Reading
+ * `config` still forces the caller through the discriminated union, so a
+ * metadata-only load can never silently hand back a blank credential.
+ */
+export type UnloadedConnectionConfig = { readonly state: "not_loaded" };
+
+export type InstalledConnectionConfig = LoadedConnectionConfig | UnloadedConnectionConfig;
 
 /** Typed result of the `workspace_plugins ⋈ plugin_catalog` datasource load. */
-export interface InstalledConnection {
+export interface InstalledConnection<
+  C extends InstalledConnectionConfig = InstalledConnectionConfig,
+> {
   /** `workspace_plugins.id` — the row PK (marketplace routes key on this). */
   readonly rowId: string;
   /** `workspace_plugins.catalog_id` — FK into `plugin_catalog`. */
@@ -131,8 +142,8 @@ export interface InstalledConnection {
   readonly groupId: string | null;
   /** Parsed catalog `config_schema` (three-state; drives the secret walkers). */
   readonly configSchema: ConfigSchema;
-  /** Decrypted config, or the per-row decrypt failure. */
-  readonly config: InstalledConnectionConfig;
+  /** Decrypted config, the per-row decrypt failure, or `not_loaded`. */
+  readonly config: C;
 }
 
 interface InstalledConnectionRow extends Record<string, unknown> {
@@ -236,6 +247,16 @@ export interface LoadInstalledConnectionOptions {
  * (PUT → 500 `decryption_failed`; GET detail → degraded masked placeholder).
  * DB-level failures (pool down, missing table) propagate to the caller.
  */
+export function loadInstalledConnection(
+  workspaceId: string,
+  installId: string,
+  opts?: LoadInstalledConnectionOptions & { decryptConfig?: true },
+): Promise<InstalledConnection<LoadedConnectionConfig> | null>;
+export function loadInstalledConnection(
+  workspaceId: string,
+  installId: string,
+  opts: LoadInstalledConnectionOptions & { decryptConfig: false },
+): Promise<InstalledConnection<UnloadedConnectionConfig> | null>;
 export async function loadInstalledConnection(
   workspaceId: string,
   installId: string,

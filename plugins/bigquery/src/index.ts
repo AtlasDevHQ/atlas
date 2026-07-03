@@ -181,6 +181,11 @@ export const bigqueryPlugin = createDatasourcePlugin<
       }),
   }),
 
+  // Health: no `healthProbe` override, so the factory's default measured
+  // SELECT-1 probe runs. That is safe to leave on for BigQuery specifically —
+  // `SELECT 1` processes 0 bytes (it never scans a table), so the probe is
+  // effectively free and does not incur query cost.
+
   // The strict runtime schema requires projectId, but a static config may
   // legitimately omit it (key/credentials/ADC supply the project) — so the
   // static connection is built straight from the config-time config rather

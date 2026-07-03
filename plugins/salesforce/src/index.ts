@@ -240,9 +240,9 @@ export const salesforcePlugin = createDatasourcePlugin<
   },
 
   // Register the querySalesforce tool ONLY in static-datasource mode. The
-  // tool is hardwired to the static connection (`rt.staticConnection()` /
-  // `connectionId: "salesforce"`), so in adapter-only mode it would throw on
-  // every call. SaaS per-workspace Salesforce is NOT served by this plugin
+  // tool is hardwired to the static connection (`rt.staticConnection()`), so
+  // in adapter-only mode it would throw on every call. SaaS per-workspace
+  // Salesforce is NOT served by this plugin
   // registration at all — it installs via OAuth and its connection is built
   // per workspace by the `LazyPluginLoader` from the OAuth session (see
   // integrations/salesforce/lazy-builder.ts).

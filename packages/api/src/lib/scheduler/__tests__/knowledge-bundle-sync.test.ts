@@ -37,6 +37,7 @@ mock.module("@atlas/api/lib/logger", () => {
 
 const {
   DEFAULT_KNOWLEDGE_SYNC_INTERVAL_MS,
+  MAX_TIMER_DELAY_MS,
   getKnowledgeSyncIntervalMs,
   startKnowledgeBundleSyncScheduler,
   stopKnowledgeBundleSyncScheduler,
@@ -85,6 +86,13 @@ describe("getKnowledgeSyncIntervalMs", () => {
     withEnv("0", () => expect(getKnowledgeSyncIntervalMs()).toBe(DEFAULT_KNOWLEDGE_SYNC_INTERVAL_MS));
     withEnv("-2", () => expect(getKnowledgeSyncIntervalMs()).toBe(DEFAULT_KNOWLEDGE_SYNC_INTERVAL_MS));
     withEnv("nonsense", () => expect(getKnowledgeSyncIntervalMs()).toBe(DEFAULT_KNOWLEDGE_SYNC_INTERVAL_MS));
+  });
+
+  it("clamps an over-large value to the max timer delay (no 32-bit overflow hot-loop)", () => {
+    // 2^31−1 ms ≈ 596.5h; 1000h would overflow setTimeout and clamp to 1ms.
+    withEnv("1000", () => expect(getKnowledgeSyncIntervalMs()).toBe(MAX_TIMER_DELAY_MS));
+    // A value just under the cap is honored unchanged.
+    withEnv("500", () => expect(getKnowledgeSyncIntervalMs()).toBe(500 * 60 * 60 * 1000));
   });
 });
 
@@ -161,6 +169,10 @@ describe("interval hot-reload (#4236)", () => {
       await Bun.sleep(200);
       expect(CYCLE_CALLS).toBe(1); // ticks fired but were skipped in-flight
       stopKnowledgeBundleSyncScheduler();
+      // Drain the still-sleeping mocked cycle so its `.finally` clears
+      // `_inFlight` before the next test — `_reset` in `beforeEach` also clears
+      // it, but draining keeps the leak from ever crossing a boundary.
+      await Bun.sleep(CYCLE_DELAY_MS);
     });
   });
 });

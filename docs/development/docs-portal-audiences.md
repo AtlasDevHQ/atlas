@@ -1,12 +1,12 @@
 # Docs portal audience taxonomy (`apps/docs`)
 
-The docs site is segmented into three route sections (PRD #4257):
+The docs site has two human route sections plus a cross-cutting `shared`
+collection mounted into both (PRD #4257):
 
-| Section         | Mount          | Content root           | Audience class     |
+| Tree            | Mount          | Content root           | Audience class     |
 | --------------- | -------------- | ---------------------- | ------------------ |
-| SaaS / Cloud    | site root `/`  | `content/docs/**`      | `saas-only`        |
+| SaaS / Cloud    | site root `/`  | `content/docs/**` (incl. the generated `api-reference/` at `/api-reference`) | `saas-only`        |
 | Self-Hosted     | `/self-hosted` | `content/self-hosted/**` | `self-hosted-only` |
-| API reference   | `/api-reference` | (generated, inside `content/docs`) | `saas-only` |
 | Shared concepts | both trees     | `content/shared/**`    | `shared`           |
 
 Every content file resolves to **exactly one** audience class. This is the
@@ -42,7 +42,10 @@ with synthetic entries (no generated `.source/server` needed).
 ## Build-time conditionals — `<WhenSaaS>` / `<WhenSelfHosted>`
 
 A `shared` page authored **once** can adapt per mount using the two conditional
-components from [`src/lib/audience.tsx`](../../apps/docs/src/lib/audience.tsx):
+components. They are built by the `audienceConditionals(audience)` factory in
+[`src/lib/audience-conditionals.tsx`](../../apps/docs/src/lib/audience-conditionals.tsx)
+and wired into the MDX `components` map per route in
+[`src/components/section-docs-page.tsx`](../../apps/docs/src/components/section-docs-page.tsx):
 
 ```mdx
 <WhenSaaS>
@@ -54,12 +57,17 @@ components from [`src/lib/audience.tsx`](../../apps/docs/src/lib/audience.tsx):
 </WhenSelfHosted>
 ```
 
-These resolve at **route/build time** from the audience injected by
-`AudienceProvider` (the SaaS root injects `saas`; `/self-hosted` injects
-`self-hosted`). On the SaaS mount `<WhenSelfHosted>` renders `null`, so the
-self-hosted branch is **absent from the emitted static HTML** — not hidden with
-CSS, not a reader-facing tab. A reader can never toggle to the other audience's
-branch because it was never sent to them. This is the segmentation's core
+They resolve **server-side, per mount, from the route's static `audience` prop**
+(the same value `AudienceProvider` carries for `<AudienceLabel/>`) — **not** via
+React context. That distinction is load-bearing: a client conditional
+(`useAudience() === … ? children : null`) would still serialize its `children`
+into the RSC flight payload Next inlines into the static HTML, so the "hidden"
+branch would be present in the emitted HTML. Instead the inactive branch is a
+**server component that returns `null`** and never renders its children, so the
+branch is **absent from the emitted static HTML** (and the RSC payload) — not
+hidden with CSS, not a reader-facing tab. A reader can never toggle to the other
+audience's branch because it was never sent to them. **Do not** "simplify" these
+to `useAudience()` — that reintroduces the leak. This is the segmentation's core
 security invariant; it is proven two ways:
 
 - a render-string test

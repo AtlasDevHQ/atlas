@@ -1,4 +1,8 @@
 import type { Audience } from "@/lib/audience";
+import { AUDIENCE_CLASSES, type AudienceClass } from "@/lib/audience-classes";
+
+// Re-export the SSOT so existing importers keep resolving these from here.
+export { AUDIENCE_CLASSES, type AudienceClass };
 
 /**
  * The declarative audience taxonomy for the segmented docs portal (PRD #4257).
@@ -20,14 +24,6 @@ import type { Audience } from "@/lib/audience";
  * `validateContentTaxonomy` and throws — failing `next build` — on any orphan,
  * ambiguous classification, or un-marked cross-audience duplicate.
  */
-
-/** The three audience classes a content file can belong to. */
-export const AUDIENCE_CLASSES = [
-  "saas-only",
-  "self-hosted-only",
-  "shared",
-] as const;
-export type AudienceClass = (typeof AUDIENCE_CLASSES)[number];
 
 export function isAudienceClass(value: unknown): value is AudienceClass {
   return (
@@ -57,11 +53,11 @@ export const CONTENT_ROOTS: readonly ContentRoot[] = [
  * case — one file on disk, mounted into BOTH human trees (full presence, single
  * source). This is the machine-readable form of the shared-presence guarantee.
  */
-export const AUDIENCE_MOUNTS: Record<AudienceClass, readonly Audience[]> = {
+export const AUDIENCE_MOUNTS = {
   "saas-only": ["saas"],
   "self-hosted-only": ["self-hosted"],
   shared: ["saas", "self-hosted"],
-};
+} as const satisfies Record<AudienceClass, readonly Audience[]>;
 
 export function audienceMounts(cls: AudienceClass): readonly Audience[] {
   return AUDIENCE_MOUNTS[cls];
@@ -112,6 +108,15 @@ export type Classification =
  *  - AMBIGUOUS — declares an `audience:` that contradicts its directory.
  */
 export function resolveClassification(entry: ContentEntry): Classification {
+  if (entry.absolutePath === "") {
+    // Fail closed: a page with no source path can't be classified. Distinct
+    // message from a genuine orphan so the cause (a missing `absolutePath`, not a
+    // mis-filed page) is obvious.
+    return {
+      ok: false,
+      error: `unclassifiable page: empty absolutePath — fumadocs should always populate this, so a blank one is a build-time anomaly`,
+    };
+  }
   const dirClass = classifyByPath(entry.absolutePath);
   if (dirClass === null) {
     return {
@@ -265,8 +270,8 @@ export function assertNoUnmarkedForks(entries: readonly ContentEntry[]): void {
 /**
  * The single build-time gate. Feed it every real page (from both section
  * sources); it dedupes by source file (a `shared` page appears once per mount)
- * and throws on the first class of failure — orphan/ambiguous classification or
- * an un-marked cross-audience duplicate. Called from `src/lib/source.ts`, so a
+ * and throws on any failure — an orphan/invalid/ambiguous classification, or an
+ * un-marked cross-audience duplicate. Called from `src/lib/source.ts`, so a
  * violation fails `next build`.
  */
 export function validateContentTaxonomy(entries: readonly ContentEntry[]): void {

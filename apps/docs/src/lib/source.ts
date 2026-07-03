@@ -47,8 +47,8 @@ function toEntry(page: SectionPage): ContentEntry {
 /**
  * Build-time taxonomy gate (PRD #4257, slice #4260). Every real page from both
  * human sections is fed through `validateContentTaxonomy`, which throws — and so
- * fails `next build` — on any orphan/ambiguous classification or un-marked
- * cross-audience duplicate. Runs once at module init; `getPages()` is the union
+ * fails `next build` — on any orphan/invalid/ambiguous classification or
+ * un-marked cross-audience duplicate. Runs once at module init; `getPages()` is the union
  * of the two mounts, so a `shared` page appears twice and is deduped by source
  * file inside the validator.
  */

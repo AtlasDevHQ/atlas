@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import {
   AUDIENCE_CLASSES,
+  CONTENT_ROOTS,
   classifyByPath,
   resolveClassification,
   assertClassified,
@@ -88,6 +89,24 @@ test("build FAILS on an invalid `audience:` value", () => {
   const result = resolveClassification(entry);
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.error).toContain("invalid audience");
+});
+
+test("an empty absolutePath is a hard error, distinct from an orphan", () => {
+  const result = resolveClassification({ absolutePath: "" });
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.error).toContain("empty absolutePath");
+    expect(result.error).not.toContain("orphan");
+  }
+});
+
+test("CONTENT_ROOTS covers every audience class (no class can be undirectoried)", () => {
+  // A future AudienceClass added without a matching content root would silently
+  // orphan every such page; assert the manifest stays exhaustive.
+  const covered = new Set(CONTENT_ROOTS.map((r) => r.class));
+  for (const cls of AUDIENCE_CLASSES) {
+    expect(covered.has(cls)).toBe(true);
+  }
 });
 
 // ── shared-presence ─────────────────────────────────────────────────────────
@@ -182,11 +201,11 @@ test("validateContentTaxonomy throws on either failure class", () => {
   ).toThrow(/fork-marker check failed/);
 });
 
-// ── drift guard: schema literals must match the SSOT ─────────────────────────
+// ── SSOT contract ────────────────────────────────────────────────────────────
 
-test("AUDIENCE_CLASSES matches the enum literal duplicated in source.config.ts", () => {
-  // source.config.ts cannot import the app graph, so it re-declares the enum as
-  // a literal. Keep this list in lockstep with that `z.enum([...])`.
+test("AUDIENCE_CLASSES pins the three-class contract (single-sourced from audience-classes.ts)", () => {
+  // `source.config.ts` imports this SAME tuple for its `z.enum(...)`, so there is
+  // no second literal to drift; this pins the public members of the contract.
   expect([...AUDIENCE_CLASSES]).toEqual([
     "saas-only",
     "self-hosted-only",

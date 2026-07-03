@@ -140,6 +140,6 @@ A release branch would solve this; we don't have one because for a solo maintain
 
 - Versioning rules: [ADR-0008](../adr/0008-versioning-and-release-tags.md)
 - Milestone shape: [ADR-0009](../adr/0009-tag-organized-roadmap.md)
-- Customer-facing stability commitments: `apps/docs/content/docs/reference/stability.mdx`
+- Customer-facing stability commitments: `apps/docs/content/shared/reference/stability.mdx`
 - Branch protection (the gate tags pass through): [branch-protection.md](./branch-protection.md)
 - Staging environment design: [staging-environment PRD](../prd/staging-environment.md)

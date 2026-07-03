@@ -63,7 +63,7 @@ The contract-vs-not-contract distinction is the load-bearing one. Git-tag `v1.0.
 2. MCP tool surface — additive only within a major; breaking changes bump the tool name (`executeSQL` → `executeSQL2`)
 3. Plugin SDK — `@useatlas/plugin-sdk` 1.0 stable
 
-Customer-facing details for these contracts live at [docs/reference/stability](../../apps/docs/content/docs/reference/stability.mdx). The semantic layer wire format (`semantic/*.yml` entity / metric / glossary schemas) is also a stable contract — customer-authored YAML must round-trip across tags — and breaking changes follow the same v2-style rollout as REST. Everything else (agent behavior, chat UI, dashboards, admin console) may evolve within `v0.x` git tags without bumping major.
+Customer-facing details for these contracts live at [docs/reference/stability](../../apps/docs/content/shared/reference/stability.mdx). The semantic layer wire format (`semantic/*.yml` entity / metric / glossary schemas) is also a stable contract — customer-authored YAML must round-trip across tags — and breaking changes follow the same v2-style rollout as REST. Everything else (agent behavior, chat UI, dashboards, admin console) may evolve within `v0.x` git tags without bumping major.
 
 ### No pre-release tags
 
@@ -133,6 +133,6 @@ Bump every train together — npm package versions match the git tag, milestone 
 
 - Tag-organized milestone shape: [ADR-0009](./0009-tag-organized-roadmap.md)
 - Operational release flow: `docs/development/release-process.md`
-- Customer-facing stability commitments: `apps/docs/content/docs/reference/stability.mdx`
+- Customer-facing stability commitments: `apps/docs/content/shared/reference/stability.mdx`
 - Branch protection (the gate tags pass through): `docs/development/branch-protection.md`
 - 0.0.x exact-pin npm rule: CLAUDE.md "Publishing `@useatlas/*` packages"

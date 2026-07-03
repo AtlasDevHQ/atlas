@@ -102,7 +102,7 @@ echo "llms.txt base prices match the drift-checked artifact."
 echo ":: Verifying non-www base-price surfaces against the artifact..."
 
 BILLING_DOC="apps/docs/content/docs/guides/billing-and-plans.mdx"
-ENV_DOC="apps/docs/content/docs/reference/environment-variables.mdx"
+ENV_DOC="apps/docs/content/shared/reference/environment-variables.mdx"
 SETTINGS="packages/api/src/lib/settings.ts"
 
 # Re-read each tier price from the same artifact line proven current above.

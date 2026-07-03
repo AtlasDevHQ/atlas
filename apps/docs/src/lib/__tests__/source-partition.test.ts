@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { buildSectionSource, type CollectionLike } from "@/lib/compose";
 import { classifyByPath } from "@/lib/audience-taxonomy";
@@ -347,8 +347,9 @@ test("[#4263] enumerated saas-only topics render at the site root, none under /s
 // Slice 3c (#4265) — shared content single-sourced into BOTH human trees.
 //
 // The audience-agnostic pages (getting-started concepts, the semantic layer,
-// plugins, the SDK, chat-platform integrations, comparisons, architecture, the
-// reference, and the changelog) were MOVED into content/shared/ as ONE file
+// plugins, the SDK, the integrations section (chat platforms + action targets
+// like Twenty/GitHub/Linear), comparisons, architecture, the reference, and the
+// changelog) were MOVED into content/shared/ as ONE file
 // each. content/shared/ is concatenated into BOTH the root (SaaS) and the
 // /self-hosted loaders (compose.ts), so each shared file renders at `/<slug>`
 // AND `/self-hosted/<slug>` from the one real source — full presence, single
@@ -547,6 +548,9 @@ const STALE_MOVED_LINK =
   /\]\(\/(?:deployment\/(?:deploy|authentication|cache-configuration)|getting-started\/quick-start|frameworks\/|contributing\/|guides\/self-hosted-models)/;
 
 test("[#4265] no shared page links to a path #3b moved out (would 404 on both mounts)", () => {
+  // Self-guarding floor: `filter` over an empty array yields `[]`, which would
+  // pass `toEqual([])` vacuously — assert we actually scanned shared files.
+  expect(sharedMdxFiles.length).toBeGreaterThan(0);
   const offenders = sharedMdxFiles.filter((f) =>
     STALE_MOVED_LINK.test(readFileSync(f, "utf8")),
   );
@@ -579,11 +583,16 @@ test("[#4265] shared cross-refs into /self-hosted resolve to real self-hosted pa
   }
 });
 
-test("[#4265] shared→shared link targets are real shared pages present at both mounts", () => {
+test("[#4265] curated shared→shared link targets are real shared pages (dual-mounted)", () => {
   // A curated set of intra-shared link targets that recur across the moved
-  // pages. Each must be a real shared page — and because a shared page mounts at
-  // both `/<slug>` and `/self-hosted/<slug>`, resolving here means the link
-  // resolves on both mounts (PRD user-story 22/25).
+  // pages. Each must be a real page in the shared collection — which mounts at
+  // BOTH `/<slug>` and `/self-hosted/<slug>` — so the target page itself is
+  // present on both mounts and can never 404 (PRD user-story 22/25). NOTE: these
+  // links are authored root-absolute (`](/reference/config)`), so on the
+  // self-hosted mount they navigate to the SaaS-root copy rather than the
+  // in-section `/self-hosted/...` one; that resolves (no 404) but is a
+  // cross-section jump. The exhaustive dangling-link guard below covers ALL
+  // shared links; this one pins that these representative targets are shared.
   const sharedTargets = [
     "/plugins/overview",
     "/reference/config",
@@ -600,4 +609,43 @@ test("[#4265] shared→shared link targets are real shared pages present at both
   for (const t of sharedTargets) {
     expect(sharedRootUrls).toContain(t);
   }
+});
+
+/**
+ * Does a root-absolute doc URL resolve to a real page on disk? A page renders at
+ * `/<p>` from `content/docs/<p>.mdx` (saas-only/api) or `content/shared/<p>.mdx`
+ * (shared, dual-mounted), or from `<p>/index.mdx` when it is a folder landing.
+ * `/` is the docs root landing. Mirrors how fumadocs turns a slug into a page.
+ */
+function rootPageExists(url: string): boolean {
+  const p = url.replace(/^\/+/, "").replace(/\/+$/, "");
+  if (p === "") return existsSync(join(CONTENT_DIR, "docs", "index.mdx"));
+  return [
+    join(CONTENT_DIR, "docs", `${p}.mdx`),
+    join(CONTENT_DIR, "shared", `${p}.mdx`),
+    join(CONTENT_DIR, "docs", p, "index.mdx"),
+    join(CONTENT_DIR, "shared", p, "index.mdx"),
+  ].some((c) => existsSync(c));
+}
+
+test("[#4265] every root-absolute link in a shared page resolves to a real page (no dangling → no 404)", () => {
+  // The exhaustive form of cross-link integrity (the curated check above is the
+  // spot-check). Enumerate EVERY root-absolute markdown link across all shared
+  // pages and assert each target is a real page under content/docs/ or
+  // content/shared/. A shared page mounts at both `/` and `/self-hosted/`, so a
+  // dangling target 404s on BOTH mounts — this catches a typo link, or a later
+  // slice moving a still-referenced page out from under a shared link. The
+  // `/self-hosted/*` links are validated separately (they resolve against the
+  // self-hosted tree, not the root URL space).
+  const targets = new Set<string>();
+  for (const f of sharedMdxFiles) {
+    for (const m of readFileSync(f, "utf8").matchAll(/\]\((\/[^)\s]+)/g)) {
+      const url = m[1];
+      if (url.startsWith("/self-hosted/")) continue;
+      targets.add(url.split(/[#?]/)[0]); // drop #anchor / ?query
+    }
+  }
+  expect(targets.size).toBeGreaterThan(0);
+  const dangling = [...targets].filter((u) => !rootPageExists(u));
+  expect(dangling).toEqual([]);
 });

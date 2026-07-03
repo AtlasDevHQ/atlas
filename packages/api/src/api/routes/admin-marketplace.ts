@@ -1325,7 +1325,7 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       // org_id) so we never cross workspaces.
       //
       // Cleanup contract (uninstall — see
-      // apps/docs/content/docs/plugins/authoring-guide.mdx#uninstall-contract):
+      // apps/docs/content/shared/plugins/authoring-guide.mdx#uninstall-contract):
       //   • scheduled_tasks tagged with this plugin's catalog_id are deleted
       //     here. scheduled_task_runs cascade via FK on task_id.
       //   • plugin_<table> rows from the schema-migrate path are RETAINED.

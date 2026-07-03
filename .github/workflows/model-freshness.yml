@@ -125,7 +125,7 @@ jobs:
             "5. \`packages/api/src/lib/anthropic-catalog.ts\` — \`RECOMMENDED_MODEL_IDS\` (sparkles in BYOT direct picker)" \
             "6. \`packages/api/src/lib/gateway-catalog.ts\` — \`RECOMMENDED_MODEL_IDS\` + \`FALLBACK_MODELS\` (gateway picker)" \
             "7. \`packages/web/src/app/admin/model-config/page.tsx\` — \`PLATFORM_MODEL_LABELS\` (admin UI label map; additive, keep old entries)" \
-            "8. Docs: \`apps/docs/content/docs/guides/billing-and-plans.mdx\` (Default model row) + \`apps/docs/content/docs/reference/environment-variables.mdx\` (gateway default table)" \
+            "8. Docs: \`apps/docs/content/docs/guides/billing-and-plans.mdx\` (Default model row) + \`apps/docs/content/shared/reference/environment-variables.mdx\` (gateway default table)" \
             "" \
             "The full searchable gateway picker (Admin → AI Provider → gateway) is NOT in this list — it's served live from \`getGatewayCatalog()\` (TTL-cached fetch of \`https://ai-gateway.vercel.sh/v1/models\`) and needs no code change for new models to appear. Only the curated/recommended subset and the offline fallback bundle are hardcoded (sites 6–7 above).")
           gh issue create -R "$GITHUB_REPOSITORY" \

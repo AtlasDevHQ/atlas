@@ -51,7 +51,7 @@ Output is RGBA with transparent background. Drop the new file into this director
 
 > Atlas is a deploy-anywhere text-to-SQL data analyst agent. It connects to your data warehouse over a semantic layer (typed entities, joins, metrics, glossary) and validated SQL execution (a 7-layer pipeline: empty check, regex guard, AST parse, table whitelist, RLS injection, auto-LIMIT, statement timeout) so an AI agent can answer business questions without hallucinating tables, joining wrong, or running unbounded scans. Self-hosted under AGPL-3.0; hosted SaaS at app.useatlas.dev.
 
-Drop this into long-description fields verbatim or trim to fit the form's word count. Pair with the catalog tool annotations at [`apps/docs/content/docs/architecture/mcp-tool-annotations.mdx`](../../../../apps/docs/content/docs/architecture/mcp-tool-annotations.mdx) for the per-tool entries on MCP catalog forms.
+Drop this into long-description fields verbatim or trim to fit the form's word count. Pair with the catalog tool annotations at [`apps/docs/content/shared/architecture/mcp-tool-annotations.mdx`](../../../../apps/docs/content/shared/architecture/mcp-tool-annotations.mdx) for the per-tool entries on MCP catalog forms.
 
 ## Out of scope (intentionally)
 

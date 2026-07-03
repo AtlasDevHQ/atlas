@@ -318,7 +318,7 @@ Atlas uses GitHub in two distinct ways; staging may need either or both:
      501.
      > These `GITHUB_APP_*` vars are documented in `.env.example` (the **GitHub
      > Data integration** block) and in the env-var reference docs page
-     > (`apps/docs/content/docs/reference/environment-variables.mdx` → GitHub
+     > (`apps/docs/content/shared/reference/environment-variables.mdx` → GitHub
      > Integration) ([#3088](https://github.com/AtlasDevHQ/atlas/issues/3088), landed).
 2. **GitHub social login** (Better Auth sign-in). A separate OAuth App
    (not GitHub App).

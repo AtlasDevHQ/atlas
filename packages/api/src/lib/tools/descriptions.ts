@@ -9,7 +9,7 @@
  * outweigh terse ones in LLM tool routing. The rubric is enforced in
  * `__tests__/description-rubric.test.ts`; the contributor-facing rubric
  * (with the "why" the audit existed in the first place) lives at
- * `apps/docs/content/docs/architecture/mcp-tools.mdx`.
+ * `apps/docs/content/shared/architecture/mcp-tools.mdx`.
  *
  * Adding a new typed tool? Append a `<NAME>_TOOL_DESCRIPTION` constant
  * matching the rubric, an `<NAME>_ERROR_CODES` tuple typed as

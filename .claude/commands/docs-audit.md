@@ -14,14 +14,14 @@ Run 4 agents in parallel, one per audit domain. Each agent reads docs pages and 
 
 ## Part A: Environment Variables (HIGH RISK)
 
-**Docs:** `apps/docs/content/docs/reference/environment-variables.mdx`
+**Docs:** `apps/docs/content/shared/reference/environment-variables.mdx`
 **Source of truth:** `packages/api/src/lib/config.ts` (the `configFromEnv()` function) and `.env.example`
 
 ### Steps
 
 1. Extract ALL `process.env.*` reads from `packages/api/src/lib/config.ts` (the `configFromEnv()` function) AND from across `packages/api/src/` — this is the authoritative list of what the code actually reads. Include ALL prefixes (ATLAS_*, DATABASE_*, BETTER_AUTH_*, SLACK_*, GOOGLE_*, GITHUB_*, MICROSOFT_*, OPENAI_*, OLLAMA_*, OTEL_*, PORT, NODE_ENV, VERCEL, etc.)
 2. Extract all env vars from `.env.example`
-3. Extract all env vars mentioned in `apps/docs/content/docs/reference/environment-variables.mdx`
+3. Extract all env vars mentioned in `apps/docs/content/shared/reference/environment-variables.mdx`
 4. Cross-reference:
 
 | Check | How |
@@ -41,7 +41,7 @@ grep -rP 'process\.env\.\w+' packages/api/src/ --include='*.ts' -h | grep -oP 'p
 grep -rP 'process\.env\.\w+' ee/src/ --include='*.ts' -h 2>/dev/null | grep -oP 'process\.env\.\w+' | sort -u
 
 # Docs: all vars mentioned
-grep -oP '[A-Z][A-Z_]+[A-Z]' apps/docs/content/docs/reference/environment-variables.mdx | sort -u
+grep -oP '[A-Z][A-Z_]+[A-Z]' apps/docs/content/shared/reference/environment-variables.mdx | sort -u
 
 # .env.example: all vars (uncommented and commented)
 grep -oP '^#?\s*[A-Z][A-Z_]+[A-Z]' .env.example | sed 's/^#\s*//' | sort -u
@@ -51,13 +51,13 @@ grep -oP '^#?\s*[A-Z][A-Z_]+[A-Z]' .env.example | sed 's/^#\s*//' | sort -u
 
 ## Part B: CLI Reference (HIGH RISK)
 
-**Docs:** `apps/docs/content/docs/reference/cli.mdx`
+**Docs:** `apps/docs/content/shared/reference/cli.mdx`
 **Source of truth:** `packages/cli/bin/atlas.ts`
 
 ### Steps
 
 1. Extract all CLI subcommands from `packages/cli/bin/atlas.ts` (look for `.command()` calls or command dispatch)
-2. Extract all documented commands from `apps/docs/content/docs/reference/cli.mdx`
+2. Extract all documented commands from `apps/docs/content/shared/reference/cli.mdx`
 3. For each command, compare flags/options between code and docs
 4. Cross-reference:
 
@@ -78,21 +78,21 @@ grep -P '\.command\(|case "' packages/cli/bin/atlas.ts | head -30
 grep -P '\.option\(' packages/cli/bin/atlas.ts | head -50
 
 # Docs: documented commands
-grep -P '^#{2,3}.*`atlas' apps/docs/content/docs/reference/cli.mdx
+grep -P '^#{2,3}.*`atlas' apps/docs/content/shared/reference/cli.mdx
 ```
 
 ---
 
 ## Part C: Configuration Reference (HIGH RISK)
 
-**Docs:** `apps/docs/content/docs/reference/config.mdx`
+**Docs:** `apps/docs/content/shared/reference/config.mdx`
 **Source of truth:** `packages/api/src/lib/config.ts` (the `AtlasConfigSchema` Zod schema)
 
 ### Steps
 
 1. Read the Zod schema `AtlasConfigSchema` from `packages/api/src/lib/config.ts`
 2. Extract all top-level and nested config keys with their types and defaults
-3. Read `apps/docs/content/docs/reference/config.mdx`
+3. Read `apps/docs/content/shared/reference/config.mdx`
 4. Cross-reference:
 
 | Check | How |
@@ -167,7 +167,7 @@ bun packages/api/scripts/extract-openapi.ts && git diff apps/docs/openapi.json
 
 ## Part E: Plugin Documentation (MEDIUM RISK)
 
-**Docs:** `apps/docs/content/docs/plugins/`
+**Docs:** `apps/docs/content/shared/plugins/`
 **Source of truth:** `plugins/*/package.json`, `plugins/*/src/index.ts`
 
 ### Steps
@@ -198,7 +198,7 @@ grep 'export' plugins/*/src/index.ts | head -30
 
 ## Part F: SDK & React Reference (MEDIUM RISK)
 
-**Docs:** `apps/docs/content/docs/reference/sdk.mdx`, `apps/docs/content/docs/reference/react.mdx`
+**Docs:** `apps/docs/content/shared/reference/sdk.mdx`, `apps/docs/content/shared/reference/react.mdx`
 **Source of truth:** `packages/sdk/src/index.ts`, `packages/react/src/index.ts`
 
 ### Steps
@@ -218,13 +218,13 @@ grep 'export' plugins/*/src/index.ts | head -30
 
 ## Part G: Error Codes (MEDIUM RISK)
 
-**Docs:** `apps/docs/content/docs/reference/error-codes.mdx`
+**Docs:** `apps/docs/content/shared/reference/error-codes.mdx`
 **Source of truth:** `packages/types/src/errors.ts`
 
 ### Steps
 
 1. Extract all error code constants from `packages/types/src/errors.ts`
-2. Extract all documented error codes from `apps/docs/content/docs/reference/error-codes.mdx`
+2. Extract all documented error codes from `apps/docs/content/shared/reference/error-codes.mdx`
 3. Cross-reference:
 
 | Check | How |

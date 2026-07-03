@@ -198,7 +198,7 @@ The same fact (plan tier, region count, plugin count, datasource list) is repeat
 - `apps/www/src/app/pricing/page.tsx`
 - `apps/docs/content/docs/` (docs claims)
 - Root `README.md`
-- `apps/docs/content/docs/comparisons/*.mdx` (competitor pages)
+- `apps/docs/content/shared/comparisons/*.mdx` (competitor pages)
 
 Pick 3-4 high-leverage facts (plugin count, datasource count, region count, plan tier names) and verify all four sources agree.
 

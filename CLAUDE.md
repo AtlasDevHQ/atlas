@@ -126,7 +126,7 @@ Three independent version trains, none coordinate. See [ADR-0008](docs/adr/0008-
 
 The shipped internal milestone `1.0.0 — SaaS Launch` (#24) is **not** the future git tag `v1.0.0` — call it "internal milestone 1.0.0". `v1.0.0` is reserved for when REST + MCP + plugin SDK contracts freeze.
 
-`/release` bundles `/ci` + a per-tag docs-changelog entry (`apps/docs/src/components/changelog-data.ts` `releases[]`) + annotated tag + push + `gh release create`. The changelog is a per-tag feed, **not** banked for `v0.1.0` ([ADR-0008 amendment](docs/adr/0008-versioning-and-release-tags.md)). Stability commitments: [apps/docs/content/docs/reference/stability.mdx](apps/docs/content/docs/reference/stability.mdx).
+`/release` bundles `/ci` + a per-tag docs-changelog entry (`apps/docs/src/components/changelog-data.ts` `releases[]`) + annotated tag + push + `gh release create`. The changelog is a per-tag feed, **not** banked for `v0.1.0` ([ADR-0008 amendment](docs/adr/0008-versioning-and-release-tags.md)). Stability commitments: [apps/docs/content/shared/reference/stability.mdx](apps/docs/content/shared/reference/stability.mdx).
 
 **Operational rule:** when adding a new integration (chat platform, action target, datasource), create the staging app/credentials first — staging is the soak environment. Don't OAuth-register a new platform straight against prod.
 

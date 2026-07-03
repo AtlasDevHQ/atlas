@@ -612,7 +612,7 @@ async function runMcpLlmMode(
     process.stderr.write(
       `\nError: --mcp-llm requires a configured LLM provider: ${msg}\n` +
         `Tip: export ATLAS_PROVIDER=<provider> ATLAS_MODEL=<model-id> <PROVIDER>_API_KEY=...\n` +
-          `     (see apps/docs/content/docs/reference/environment-variables.mdx for current model ids)\n`,
+          `     (see apps/docs/content/shared/reference/environment-variables.mdx for current model ids)\n`,
     );
     return 1;
   }

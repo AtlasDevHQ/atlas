@@ -49,11 +49,11 @@ Check that all new config options and env vars from this milestone appear in the
 # Find new config options added in this milestone's commits
 git log --all --oneline --grep="<milestone_number>" -- packages/api/src/lib/config.ts | head -10
 # Cross-reference with docs
-grep -c "ATLAS_" apps/docs/content/docs/reference/environment-variables.mdx
+grep -c "ATLAS_" apps/docs/content/shared/reference/environment-variables.mdx
 ```
 
-- Read `apps/docs/content/docs/reference/config.mdx` — verify new `defineConfig()` options are documented
-- Read `apps/docs/content/docs/reference/environment-variables.mdx` — verify new env vars are listed
+- Read `apps/docs/content/shared/reference/config.mdx` — verify new `defineConfig()` options are documented
+- Read `apps/docs/content/shared/reference/environment-variables.mdx` — verify new env vars are listed
 
 ### 2c. API reference audit
 

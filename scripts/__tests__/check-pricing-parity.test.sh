@@ -16,7 +16,7 @@ SCRIPT="$SCRIPT_DIR/check-pricing-parity.sh"
 ARTIFACT="$ROOT/apps/www/src/app/pricing/entitlements.generated.ts"
 LLMS="$ROOT/apps/www/public/llms.txt"
 BILLING_DOC="$ROOT/apps/docs/content/docs/guides/billing-and-plans.mdx"
-ENV_DOC="$ROOT/apps/docs/content/docs/reference/environment-variables.mdx"
+ENV_DOC="$ROOT/apps/docs/content/shared/reference/environment-variables.mdx"
 SETTINGS="$ROOT/packages/api/src/lib/settings.ts"
 
 if [ ! -f "$SCRIPT" ]; then

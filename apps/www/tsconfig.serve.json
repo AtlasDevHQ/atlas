@@ -1,0 +1,14 @@
+{
+  // Type-checks the app-root runtime files (serve.ts, serve.test.ts) that the
+  // main tsconfig's `include` (src/** only) leaves out and `next build` ignores
+  // — so they were invisible to CI type-checking. Run via the `type` script,
+  // wired into the root `type` job. `incremental: false` keeps it from writing
+  // a tsbuildinfo (the repo .gitignore only covers the exact `tsconfig.tsbuildinfo`).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["bun", "node"],
+    "noEmit": true,
+    "incremental": false
+  },
+  "include": ["serve.ts", "serve.test.ts"]
+}

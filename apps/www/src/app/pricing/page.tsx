@@ -17,6 +17,21 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/pricing",
     siteName: "Atlas",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Pricing — Atlas",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Pricing — Atlas",
+    description:
+      "Self-host is free, forever. Cloud adds the things you'd build anyway: SSO, audit, uptime, support. 14-day free trial — no card, work email required.",
+    images: ["/og.png"],
   },
 };
 

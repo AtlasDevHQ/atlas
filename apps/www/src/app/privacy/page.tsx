@@ -17,6 +17,21 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/privacy",
     siteName: "Atlas",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Privacy Policy — Atlas",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Privacy Policy — Atlas",
+    description:
+      "Atlas Cloud privacy policy: what we collect, what we DON'T do (no model training, no selling data, no warehouse reads beyond authorized queries), GDPR / CCPA rights, sub-processors.",
+    images: ["/og.png"],
   },
 };
 

@@ -20,6 +20,21 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/dpa",
     siteName: "Atlas",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Data Processing Addendum — Atlas",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Data Processing Addendum — Atlas",
+    description:
+      "Article 28 GDPR DPA + SCCs by reference + sub-processors annex + subscribe-to-changes for procurement.",
+    images: ["/og.png"],
   },
   alternates: {
     types: {

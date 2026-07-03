@@ -17,6 +17,21 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/aup",
     siteName: "Atlas",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Acceptable Use Policy — Atlas",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Acceptable Use Policy — Atlas",
+    description:
+      "Atlas Cloud Acceptable Use Policy: prohibited uses, security-research carve-outs, customer-data responsibilities, and how violations are handled.",
+    images: ["/og.png"],
   },
 };
 

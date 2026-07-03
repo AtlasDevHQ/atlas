@@ -17,6 +17,21 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/security",
     siteName: "Atlas",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Security — Atlas",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Security — Atlas",
+    description:
+      "How Atlas makes connecting your production database to an AI agent a defensible decision: read-only by construction, seven-layer SQL validation, network-denied sandbox, encrypted-at-rest credentials. Verify it all in open source.",
+    images: ["/og.png"],
   },
 };
 

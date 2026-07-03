@@ -17,6 +17,21 @@ export const metadata: Metadata = {
     url: "https://www.useatlas.dev/why-atlas",
     siteName: "Atlas",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Why Atlas",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Why Atlas",
+    description:
+      "Atlas vs. traditional BI vs. other text-to-SQL: semantic layer, agent-native, embeddable, open source, deploy anywhere.",
+    images: ["/og.png"],
   },
 };
 

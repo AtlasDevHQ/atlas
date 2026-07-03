@@ -147,6 +147,9 @@ jobs:
         # Runs from packages/api so the guard's `@atlas/api/*` imports resolve.
         run: cd packages/api && bun scripts/check-auth-md-discovery-parity.ts
 
+      - name: Check apex agent-discovery artifacts drift (auth.md + oauth-protected-resource)
+        run: bash scripts/check-apex-discovery-drift.sh
+
   lint:
     name: lint
     runs-on: ubuntu-latest

@@ -78,6 +78,29 @@ function mcpScopes(): AuthMdScope[] {
 }
 
 /**
+ * Render the `/auth.md` document body for a request. The single source of
+ * truth for the file's content: the live route handler below serves this, and
+ * the apex-discovery generator (`packages/api/scripts/generate-apex-discovery.ts`)
+ * renders the SAME function against the canonical `api.useatlas.dev` base to
+ * emit the static `useatlas.dev/auth.md` mirror. Sharing one renderer (rather
+ * than a second hand-written copy on www) is what keeps the apex snapshot from
+ * drifting from what the API serves — a drift gate re-runs the generator and
+ * fails on any diff. Hosts and scopes resolve from the same shared helpers +
+ * canonical scope constant the `.well-known` router uses, so machine discovery
+ * and this prose can't disagree.
+ */
+export function renderAuthMd(req: Request): string {
+  return buildAuthMd({
+    authServerUri: buildAuthServerUri(req),
+    issuerBaseUri: buildIssuerBaseUri(req),
+    resourceUri: buildResourceUri(req),
+    scopes: mcpScopes(),
+    onboardingPath: ONBOARDING_MCP_PATH,
+    docsUrl: ATLAS_DOCS_URL,
+  });
+}
+
+/**
  * CORS + cache headers for the markdown response. Mirrors the
  * `.well-known` router's `METADATA_HEADERS` (same CORS + cache policy) but
  * with the `text/markdown` content type the file is served as.
@@ -113,16 +136,10 @@ function notManagedResponse(): Response {
 authMd.get("/", (c) => {
   if (detectAuthMode() !== "managed") return notManagedResponse();
 
-  const body = buildAuthMd({
-    authServerUri: buildAuthServerUri(c.req.raw),
-    issuerBaseUri: buildIssuerBaseUri(c.req.raw),
-    resourceUri: buildResourceUri(c.req.raw),
-    scopes: mcpScopes(),
-    onboardingPath: ONBOARDING_MCP_PATH,
-    docsUrl: ATLAS_DOCS_URL,
+  return new Response(renderAuthMd(c.req.raw), {
+    status: 200,
+    headers: AUTH_MD_HEADERS,
   });
-
-  return new Response(body, { status: 200, headers: AUTH_MD_HEADERS });
 });
 
 // CORS preflight — same shape as the sibling `.well-known` discovery routes.

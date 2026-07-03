@@ -1,0 +1,27 @@
+---
+title: Self-Hosted Atlas
+description: Run and operate Atlas on your own infrastructure — Docker, sandboxing, BYO auth and models.
+icon: Server
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+This is the landing page for the **Self-Hosted** documentation section. Every
+page under `/self-hosted/*` is written for operators running Atlas on their own
+infrastructure — Docker deploys, sandbox isolation, bring-your-own auth and
+models.
+
+<Callout title="Scaffolding placeholder">
+  This page exists to prove the `/self-hosted` route group renders end-to-end
+  (issue #4259). The self-hosted deployment, sandboxing and BYO guides are
+  migrated here in later slices (#4264). SaaS / Cloud docs stay at the site
+  root; the API reference stays at `/api-reference`.
+</Callout>
+
+The route injects a static audience value into the MDX render scope. A component
+reading it here renders: <AudienceLabel />.
+
+Shared concept pages are single-sourced — authored once in `content/shared/` and
+mounted into both this section and the SaaS root. See the
+[single-source example](./single-source-example) to watch one file adapt to its
+mount.

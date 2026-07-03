@@ -57,7 +57,7 @@ A single shared secret for API access. Best for headless integrations, CLI tools
 ```bash
 # .env
 ATLAS_API_KEY=your-secret-key-here
-ATLAS_API_KEY_ROLE=analyst    # Optional: viewer, analyst (default), admin
+ATLAS_API_KEY_ROLE=admin      # Optional: member, admin (default), owner
 ```
 
 ### Managed Auth (Self-Hosted Setup)
@@ -269,7 +269,7 @@ ATLAS_AUTH_ROLE_CLAIM=app_metadata.role
 ATLAS_AUTH_ROLE_CLAIM=https://example.com/claims.atlas.role
 ```
 
-If not set, Atlas checks `role` then `atlas_role` at the top level. Valid roles: `viewer`, `analyst`, `admin`.
+If not set, Atlas checks `role` then `atlas_role` at the top level. Valid roles: `member`, `admin`, `owner`.
 
 #### RLS with BYOT
 
@@ -281,22 +281,24 @@ ATLAS_RLS_COLUMN=tenant_id
 ATLAS_RLS_CLAIM=org_id          # Extracted from JWT payload
 ```
 
-> **`ATLAS_AUTH_ROLE_CLAIM` vs `ATLAS_RLS_CLAIM`:** These serve different purposes. `ATLAS_AUTH_ROLE_CLAIM` extracts the user's role (`viewer`/`analyst`/`admin`) for permission checks. `ATLAS_RLS_CLAIM` extracts a value (e.g. a tenant ID) that gets injected as a WHERE clause filter on every query for row-level security.
+> **`ATLAS_AUTH_ROLE_CLAIM` vs `ATLAS_RLS_CLAIM`:** These serve different purposes. `ATLAS_AUTH_ROLE_CLAIM` extracts the user's role (`member`/`admin`/`owner`) for permission checks. `ATLAS_RLS_CLAIM` extracts a value (e.g. a tenant ID) that gets injected as a WHERE clause filter on every query for row-level security.
 
 ## Roles
 
-Atlas has three roles with increasing privileges:
+Atlas has three workspace roles with increasing privileges, plus a global `platform_admin` operator role:
 
 | Role | Level | Can query | Can approve actions | Can approve admin actions |
-|------|-------|-----------|--------------------|-----------------------|
-| `viewer` | 0 | Yes | No | No |
-| `analyst` | 1 | Yes | Yes | No |
-| `admin` | 2 | Yes | Yes | Yes |
+|------|-------|-----------|---------------------|---------------------------|
+| `member` | 0 | Yes | No | No |
+| `admin` | 1 | Yes | Yes | No |
+| `owner` | 2 | Yes | Yes | Yes |
+
+`platform_admin` (level 3) is a global, cross-workspace operator role — it sits above `owner` and is used for platform-operator surfaces, not per-workspace access. "Can approve actions" maps to the `manual` approval mode (minimum role `admin`); "Can approve admin actions" maps to the `admin-only` mode (minimum role `owner`).
 
 Default roles by auth mode:
-- **Simple Key**: `analyst` (override with `ATLAS_API_KEY_ROLE`)
+- **Simple Key**: `admin` (override with `ATLAS_API_KEY_ROLE`)
 - **Managed**: `member` for new signups (first signup or `ATLAS_ADMIN_EMAIL` match gets `admin`)
-- **BYOT**: Extracted from JWT claim (defaults to `viewer` if missing)
+- **BYOT**: Extracted from JWT claim (defaults to `member` if missing)
 
 ## Rate Limiting
 

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { buildSectionSource, type CollectionLike } from "@/lib/compose";
 import { classifyByPath } from "@/lib/audience-taxonomy";
@@ -146,9 +146,11 @@ const CONTENT_DIR = join(import.meta.dir, "../../../content");
 
 function walk(dir: string): string[] {
   const out: string[] = [];
-  for (const name of readdirSync(dir)) {
-    const full = join(dir, name);
-    if (statSync(full).isDirectory()) out.push(...walk(full));
+  // `withFileTypes` avoids a per-entry statSync and does NOT follow directory
+  // symlinks, so a stray symlink under content/ can't drive unbounded recursion.
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...walk(full));
     else out.push(full);
   }
   return out;
@@ -163,6 +165,9 @@ const saasTreeFiles = contentFiles.filter((p) =>
 );
 
 // Old-root slug → the self-hosted-only pages relocated by this slice (#4264).
+// Intentionally FROZEN to slice #4264's scope — this is a migration-landing
+// assertion, not a live inventory of the self-hosted tree. Later slices that
+// move more pages add their own block; they do not extend this list.
 const MOVED_SELF_HOSTED_SLUGS = [
   "getting-started/quick-start",
   "deployment/deploy",

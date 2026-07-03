@@ -38,6 +38,7 @@ import {
   verifyRestConfirmToken,
   burnRestConfirmNonce,
 } from "@atlas/api/lib/openapi/rest-write-confirm";
+import { auditRestOperation, deriveRestRowCount } from "@atlas/api/lib/openapi/rest-audit";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -350,6 +351,14 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
 
       // Execute the confirmed write via the un-cached primitive (writes are
       // never cached). A non-2xx upstream is surfaced, not thrown.
+      //
+      // This is the real "action against the datasource" — the ONLY place an
+      // allowlisted REST write actually fires — so it MUST be audited (the read
+      // tool path audits its dispatches in lib/tools/rest-operation.ts). Time the
+      // wall-clock around the dispatch and record the outcome to the query audit
+      // log alongside the existing `log.info` breadcrumb.
+      const dispatchMethod = verdict.operation.method;
+      const dispatchStart = Date.now();
       try {
         const result = await executeOperation(datasource.graph, input.operationId, params, datasource.auth, {
           baseUrl: datasource.baseUrl,
@@ -368,27 +377,53 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
             { orgId, datasource: datasource.id, operationId: input.operationId, httpStatus: result.status, requestId },
             "Confirmed REST write executed",
           );
+          auditRestOperation({
+            method: dispatchMethod,
+            operationId: input.operationId,
+            datasourceId: datasource.id,
+            baseUrl: datasource.baseUrl,
+            durationMs: Date.now() - dispatchStart,
+            outcome: { success: true, rowCount: deriveRestRowCount(result.body) },
+          });
           return c.json({ status: "executed" as const, httpStatus: result.status, body: result.body }, 200);
         }
+        const httpErrorMessage = `Upstream returned HTTP ${result.status} for "${input.operationId}".`;
         log.info(
           { orgId, datasource: datasource.id, operationId: input.operationId, httpStatus: result.status, requestId },
           "Confirmed REST write — upstream non-2xx",
         );
+        auditRestOperation({
+          method: dispatchMethod,
+          operationId: input.operationId,
+          datasourceId: datasource.id,
+          baseUrl: datasource.baseUrl,
+          durationMs: Date.now() - dispatchStart,
+          outcome: { success: false, error: httpErrorMessage },
+        });
         return c.json(
           {
             status: "http_error" as const,
             httpStatus: result.status,
             body: result.body,
-            message: `Upstream returned HTTP ${result.status} for "${input.operationId}".`,
+            message: httpErrorMessage,
           },
           200,
         );
       } catch (err) {
+        const durationMs = Date.now() - dispatchStart;
         if (err instanceof OpenApiClientError) {
           log.warn(
             { orgId, datasource: datasource.id, operationId: input.operationId, reason: err.reason, requestId },
             "Confirmed REST write client fault",
           );
+          auditRestOperation({
+            method: dispatchMethod,
+            operationId: input.operationId,
+            datasourceId: datasource.id,
+            baseUrl: datasource.baseUrl,
+            durationMs,
+            outcome: { success: false, error: err.message },
+          });
           return c.json(
             { error: "rest_client_error", message: err.message, requestId },
             502,
@@ -399,6 +434,14 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
           { orgId, datasource: datasource.id, operationId: input.operationId, err: message, requestId },
           "Confirmed REST write unexpected failure",
         );
+        auditRestOperation({
+          method: dispatchMethod,
+          operationId: input.operationId,
+          datasourceId: datasource.id,
+          baseUrl: datasource.baseUrl,
+          durationMs,
+          outcome: { success: false, error: message },
+        });
         return c.json({ error: "internal_error", message: "Failed to execute the write.", requestId }, 500);
       }
     },

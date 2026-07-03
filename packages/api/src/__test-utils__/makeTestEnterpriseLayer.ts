@@ -40,7 +40,7 @@
  * ```
  */
 
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Context, Effect, Layer, ManagedRuntime } from "effect";
 import {
   IpAllowlistPolicy,
   RolesPolicy,
@@ -51,6 +51,8 @@ import {
   type SCIMProvenanceShape,
   type SSOPolicyShape,
 } from "@atlas/api/lib/effect/services";
+import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
+import { EnterpriseUnavailableError } from "@atlas/api/lib/effect/errors";
 
 // ── Test-friendly defaults for the four middleware Tags ─────────────
 //
@@ -151,9 +153,10 @@ export interface TestEnterpriseLayerOverrides {
  *   - `EnterpriseLayer` — the composed test Layer
  *   - `getEnterpriseRuntime` — returns a `ManagedRuntime` built on the test Layer
  *   - `runEnterprise(program)` — `runtime.runPromise(program)`
+ *   - `yieldFailClosed(tag, message)` — the shared EE fail-closed guard
  *
- * The production module exports exactly these three. If a future export
- * lands there (e.g. a `runEnterpriseExit` for callsites that need the
+ * These mirror the production module's runtime-value exports. If a future
+ * export lands there (e.g. a `runEnterpriseExit` for callsites that need the
  * cause), mirror it here in the same PR so the helper stays in lockstep
  * — drift in either direction is what this helper exists to prevent.
  */
@@ -192,5 +195,23 @@ export function makeTestEnterpriseLayer(
     getEnterpriseRuntime: () => testRuntime,
     runEnterprise: <A, E>(program: Effect.Effect<A, E, unknown>) =>
       testRuntime.runPromise(program as Effect.Effect<A, E, never>),
+    // Mirror the production `yieldFailClosed` (#3 consolidation) so this
+    // mock re-exports the FULL module surface — a consumer that lazily
+    // imports it (the retention routes, `tools/sql.ts`) resolves the name
+    // instead of throwing "Export named 'yieldFailClosed' not found". This
+    // is a faithful copy, not a passthrough, so any test that DOES exercise
+    // a fail-closed path through the mock sees the real EE-on + unavailable
+    // ⇒ 503 behaviour.
+    yieldFailClosed: <Self, Shape extends { readonly available: boolean }>(
+      tag: Context.Tag<Self, Shape>,
+      message: string,
+    ): Effect.Effect<Shape, EnterpriseUnavailableError, Self> =>
+      Effect.gen(function* () {
+        const service = yield* tag;
+        if (isEnterpriseEnabled() && !service.available) {
+          return yield* Effect.fail(new EnterpriseUnavailableError({ message, tag: tag.key }));
+        }
+        return service;
+      }),
   };
 }

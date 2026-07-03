@@ -14,11 +14,10 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { AuditRetention, type AuditRetentionShape } from "@atlas/api/lib/effect/services";
+import { AuditRetention } from "@atlas/api/lib/effect/services";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
-import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
-import { EnterpriseUnavailableError } from "@atlas/api/lib/effect/errors";
+import { yieldFailClosed } from "@atlas/api/lib/effect/enterprise-layer";
 import { logAdminActionAwait, ADMIN_ACTIONS, type AdminActionEntry } from "@atlas/api/lib/audit";
 import { requireFeatureEntitlement } from "@atlas/api/lib/billing/feature-entitlement-guard";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -37,37 +36,6 @@ function clientIpFrom(headers: { header(name: string): string | undefined }): st
     if (first) return first;
   }
   return headers.header("x-real-ip") ?? null;
-}
-
-/**
- * Yield the `AuditRetention` Tag with a consumer-side fail-closed guard
- * (#2593). On SaaS (`ATLAS_ENTERPRISE_ENABLED=true`) where the EE Layer
- * was supposed to overlay the live impl but the dynamic
- * `await import("@atlas/ee/layers")` failed, the Tag still resolves to
- * its no-op default (`available: false`). The no-op's
- * `getRetentionPolicy` returns `null` — silently lying about retention.
- * Fail closed with a 503 envelope so the admin sees the unavailability
- * instead of "no policy configured". Self-hosted (no flag) returns the
- * Tag unchanged — the no-op IS the expected self-hosted path.
- */
-function yieldAuditRetentionFailClosed(): Effect.Effect<
-  AuditRetentionShape,
-  EnterpriseUnavailableError,
-  AuditRetention
-> {
-  return Effect.gen(function* () {
-    const retention = yield* AuditRetention;
-    if (isEnterpriseEnabled() && !retention.available) {
-      return yield* Effect.fail(
-        new EnterpriseUnavailableError({
-          message:
-            "Audit retention unavailable — policy operations cannot be evaluated. Contact your administrator.",
-          tag: "AuditRetention",
-        }),
-      );
-    }
-    return retention;
-  });
 }
 
 function errorContext(err: unknown): Record<string, unknown> {
@@ -406,7 +374,10 @@ adminAuditRetention.openapi(getRetentionRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     yield* requireFeatureEntitlement(orgId, "audit_retention");
 
-    const retention = yield* yieldAuditRetentionFailClosed();
+    const retention = yield* yieldFailClosed(
+      AuditRetention,
+      "Audit retention unavailable — policy operations cannot be evaluated. Contact your administrator.",
+    );
     const policy = yield* retention.getRetentionPolicy(orgId!);
     return c.json({ policy }, 200);
   }), { label: "get retention policy", domainErrors: [retentionDomainError] });
@@ -421,7 +392,10 @@ adminAuditRetention.openapi(updateRetentionRoute, async (c) => {
 
     const body = c.req.valid("json");
 
-    const retention = yield* yieldAuditRetentionFailClosed();
+    const retention = yield* yieldFailClosed(
+      AuditRetention,
+      "Audit retention unavailable — policy operations cannot be evaluated. Contact your administrator.",
+    );
     const { setRetentionPolicy, getRetentionPolicy } = retention;
 
     // The prior policy must be read *before* the write so the audit row
@@ -508,7 +482,10 @@ adminAuditRetention.openapi(exportRoute, async (c) => {
       endDate: body.endDate ?? null,
     };
 
-    const retention = yield* yieldAuditRetentionFailClosed();
+    const retention = yield* yieldFailClosed(
+      AuditRetention,
+      "Audit retention unavailable — policy operations cannot be evaluated. Contact your administrator.",
+    );
 
     return yield* retention.exportAuditLog({
       orgId: orgId!,
@@ -573,7 +550,10 @@ adminAuditRetention.openapi(purgeRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     yield* requireFeatureEntitlement(orgId, "audit_retention");
 
-    const retention = yield* yieldAuditRetentionFailClosed();
+    const retention = yield* yieldFailClosed(
+      AuditRetention,
+      "Audit retention unavailable — policy operations cannot be evaluated. Contact your administrator.",
+    );
     const { purgeExpiredEntries, getRetentionPolicy } = retention;
 
     // Snapshot retentionDays for the audit row — purge results don't
@@ -630,7 +610,10 @@ adminAuditRetention.openapi(hardDeleteRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     yield* requireFeatureEntitlement(orgId, "audit_retention");
 
-    const retention = yield* yieldAuditRetentionFailClosed();
+    const retention = yield* yieldFailClosed(
+      AuditRetention,
+      "Audit retention unavailable — policy operations cannot be evaluated. Contact your administrator.",
+    );
 
     return yield* retention.hardDeleteExpired(orgId!).pipe(
       Effect.tap((result) =>

@@ -2,6 +2,7 @@ import { selfHostedSource } from "@/lib/source";
 import { notFound } from "next/navigation";
 import { SectionDocsPage } from "@/components/section-docs-page";
 import { createSectionRelativeLink } from "@/lib/mdx-links";
+import { canonicalForSelfHostedMount } from "@/lib/redirects";
 
 // Self-hosted / on-prem docs at /self-hosted. Renders self-hosted-only content
 // plus the SAME shared pages as the root, with the "self-hosted" audience
@@ -40,5 +41,13 @@ export async function generateMetadata(props: {
   return {
     title: page.data.title,
     description: page.data.description,
+    // Canonical tag (#4267). A self-hosted-only page canonicalizes to its own
+    // /self-hosted URL (its old root URL now 308-redirects here); a shared page
+    // canonicalizes back to its site-root mount to avoid duplicate-content
+    // dilution. See canonicalForSelfHostedMount for the full rationale. Resolved
+    // against metadataBase (https://docs.useatlas.dev) in layout.tsx.
+    alternates: {
+      canonical: canonicalForSelfHostedMount(page.url, page.absolutePath),
+    },
   };
 }

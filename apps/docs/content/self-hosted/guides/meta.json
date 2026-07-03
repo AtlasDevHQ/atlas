@@ -2,5 +2,12 @@
   "title": "Guides",
   "description": "Operator walkthroughs for self-hosted Atlas",
   "icon": "BookOpen",
-  "pages": ["self-hosted-models"]
+  "pages": [
+    "multi-tenancy",
+    "plugin-marketplace",
+    "onboarding-emails",
+    "self-serve-signup",
+    "self-hosted-billing",
+    "self-hosted-models"
+  ]
 }

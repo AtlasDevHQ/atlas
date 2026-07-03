@@ -637,6 +637,7 @@ Action framework settings. These can also be configured via [`atlas.config.ts`](
 | `ATLAS_ACTION_TIMEOUT` | — | Per-action execution timeout in milliseconds. No default — the action runs until it returns or the request is cancelled. `.env.example` shows `300000` (5 min) as a reasonable starting point |
 | `ATLAS_ACTION_MAX_PER_CONVERSATION` | — | Reserved — not yet enforced. `.env.example` shows `10` as a future default. Currently accepts any value without effect |
 | `ATLAS_EMAIL_ALLOWED_DOMAINS` | — | Comma-separated list of allowed email recipient domains for the email action plugin. When unset, all domains are allowed |
+| `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` | — | Comma-separated domains the **agent's `sendEmail` tool** may deliver to, in addition to workspace-member addresses (e.g. `example.com,partner.example`). Empty = workspace members only. Distinct from `ATLAS_EMAIL_ALLOWED_DOMAINS` (the email *action* plugin allowlist). Workspace-scoped |
 
 ```bash
 # Enable actions with admin-only approval
@@ -969,8 +970,22 @@ Stripe billing integration for SaaS deployments. Self-hosted deployments do not 
 | `STRIPE_PRO_ANNUAL_PRICE_ID` | — | Stripe Price ID for the Pro plan (annual) |
 | `STRIPE_BUSINESS_PRICE_ID` | — | Stripe Price ID for the Business plan (monthly, $149/seat) |
 | `STRIPE_BUSINESS_ANNUAL_PRICE_ID` | — | Stripe Price ID for the Business plan (annual) |
+| `STRIPE_STARTER_OVERAGE_PRICE_ID` | — | Stripe Price ID for the Starter plan's at-cost metered usage overage (billed in cents, 1:1 with provider cost). Added as a second subscription item; required for Starter overage to be billed |
+| `STRIPE_PRO_OVERAGE_PRICE_ID` | — | Stripe Price ID for the Pro plan's at-cost metered usage overage. Required for Pro overage to be billed |
+| `STRIPE_BUSINESS_OVERAGE_PRICE_ID` | — | Stripe Price ID for the Business plan's at-cost metered usage overage. Required for Business overage to be billed |
 
 When `STRIPE_SECRET_KEY` is set, billing routes are mounted at `/api/v1/billing` and the Better Auth Stripe plugin handles checkout, webhooks, and subscription lifecycle at `/api/auth/stripe/*`.
+
+### Billing Enforcement
+
+Operator knobs that govern what happens once a workspace spends its included at-cost usage credit, plus the reconcile/reaper sweep cadences. All are runtime-editable via **Admin → Settings → Billing** (the env var is the boot fallback).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_SPEND_POLICY` | `continue` | What happens past the included credit. `continue` keeps serving at provider cost (bounded by the abuse ceiling); `cutoff` hard-blocks at the credit (overage returns 429). Workspace-scoped, hot-reloadable |
+| `ATLAS_ABUSE_CEILING` | `500` | Hard 429 cutoff for metered at-cost overage under the `continue` policy, as a percent of the credit (`500` = 5× = $100/seat). Usage from 100% to the ceiling is metered at cost; `0` or empty disables the cutoff. Workspace-scoped, hot-reloadable |
+| `ATLAS_BILLING_RECONCILE_INTERVAL_HOURS` | `6` | Hours between plan-tier reconciliation sweeps (heals `plan_tier` drift from Stripe and prunes the webhook event ledger). Platform-scoped, restart-required |
+| `ATLAS_UNCLAIMED_GRACE_REAP_INTERVAL_HOURS` | `1` | Hours between unclaimed-grace reaper sweeps (demotes lapsed unclaimed-trial workspaces to the locked tier; SaaS only). Platform-scoped, restart-required |
 
 For local development, use [Stripe CLI](https://docs.stripe.com/stripe-cli) to forward webhooks:
 
@@ -1069,6 +1084,7 @@ SaaS only. Required for custom domain support via Railway.
 | `ATLAS_DEMO_ENABLED` | `false` | Enable demo mode at `/demo`. Allows unauthenticated users to try Atlas against the sample database with an email gate |
 | `ATLAS_DEMO_RATE_LIMIT_RPM` | `10` | Max requests per minute per demo user |
 | `ATLAS_DEMO_MAX_STEPS` | `10` | Max agent steps per demo request (lower than authenticated default of 25) |
+| `ATLAS_DEMO_MODEL` | — | Model the public `/demo` path runs on — a gateway model id (e.g. `anthropic/claude-haiku-4.5`) or a direct model id matching the configured provider. Blank = the resolved default (Haiku on the gateway for SaaS). Platform-scoped, hot-reloadable |
 | `ATLAS_DEMO_INDUSTRY` | — | Industry label for the seeded `__demo__` connection (e.g. `cybersecurity`, `ecommerce`). Set this explicitly to pre-configure the demo dataset industry on a single-tenant deploy; in the hosted product it is captured during onboarding. Drives prompt-library industry filtering and the publish flow's demo-prompt archival cascade. See [Developer Mode](/guides/developer-mode) for the full demo lifecycle |
 
 Requires `BETTER_AUTH_SECRET` for demo token signing.

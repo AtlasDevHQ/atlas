@@ -1,0 +1,73 @@
+---
+title: Load-Testing MCP
+description: Mint short-lived bearer JWTs to k6-drive your self-hosted MCP surface under load
+---
+
+The `POST /api/v1/me/load-test/mcp-token` endpoint mints a short-lived,
+MCP-scoped JWT bearer for the caller's own active workspace so k6 (or any HTTP
+client) can exercise your MCP surface under load without running the full OAuth
+2.1 ceremony (DCR + auth-code + PKCE) on every CI run. It works the same on a
+self-hosted deployment as on the hosted platform — standard auth applies and
+nothing about it is SaaS-specific.
+
+## Mint a bearer
+
+The token is signed by the same Better Auth JWKS the OAuth 2.1 path uses, so the
+MCP edge verifier resolves the matching public key through `/api/auth/jwks` and
+verifies it identically to a real OAuth-issued token — there is no "load-test
+only" verifier path.
+
+```bash
+# Step 1: sign in, capture the session token
+SESSION=$(curl -s -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"email":"'"$EMAIL"'","password":"'"$PASSWORD"'"}' \
+  https://atlas.internal.example.com/api/auth/sign-in/email \
+  | jq -r .token)
+
+# Step 2: mint the bearer (ttlSeconds is optional; default 300, ceiling 3600)
+TOKEN=$(curl -s -X POST \
+  -H "Authorization: Bearer $SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"ttlSeconds":600}' \
+  https://atlas.internal.example.com/api/v1/me/load-test/mcp-token \
+  | jq -r .bearer)
+
+# Step 3: drive k6 with the bearer as an env var so it never lands in stdout
+MCP_BEARER="$TOKEN" k6 run loadtest/mcp-profile.js
+```
+
+`Authorization: Bearer <session-token>` is required — cookie-only auth is
+rejected with 401. The session bearer comes from `POST /api/auth/sign-in/email`
+(Better Auth's `bearer()` plugin returns it in the response body's `token`
+field). The minted token is bound to the caller's active workspace and carries
+`scope: "mcp:read"` — write capability is gated at the tool layer and this
+endpoint never grants it. Every successful mint writes an awaited
+`admin_action_log` row; the `bearer` is **never** in the audit metadata (only the
+`jti`), so load traffic is filterable via `actor_id LIKE 'loadtest:%'` without
+leaking the credential.
+
+## Self-hosted specifics
+
+- **No org allowlist by default.** `ATLAS_LOADTEST_ALLOWED_ORGS` (a
+  comma-separated list of workspace ids) restricts who can mint; when it is
+  unset — the typical self-hosted case — every authenticated workspace member
+  can mint.
+- **Audience / issuer fall back to the request origin.** When
+  `residency.regions` isn't configured (the typical self-hosted case), the
+  token's `aud` and `iss` claims fall back to the request origin — the same
+  shape `hosted.ts:resourceAudience` reads at the verifier boundary. Set
+  `ATLAS_PUBLIC_API_URL` if your verifier audience differs from the request
+  `Host`.
+- **Requires an internal database.** The mint reads the Better Auth `jwks`
+  table, so `DATABASE_URL` must be set; otherwise the endpoint returns
+  `404 not_configured`. If the `jwks` table is empty, hit any `/api/auth/*`
+  endpoint once to seed the keypair, then retry.
+
+Do not embed bearers in logs or reuse them across CI runs — mint per-run with an
+appropriate TTL (5–10 minutes is enough for most load profiles); the short TTL
+is what bounds the blast radius.
+
+## Related
+
+- [MCP](/self-hosted/sdk/mcp) — the DCR + PKCE flow for real MCP clients.

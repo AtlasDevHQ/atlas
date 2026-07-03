@@ -669,6 +669,7 @@ export default defineConfig({
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `priority` | `string[]` | No | Ordered list of backends to try. Valid values: `"vercel-sandbox"`, `"nsjail"`, `"sidecar"`, `"just-bash"` |
+| `vercel` | `{ teamId, projectId }` | No | Vercel Sandbox account identity for off-Vercel deploys (Railway/Fly). Non-secret; the `VERCEL_TEAM_ID` / `VERCEL_PROJECT_ID` env vars override when set. The token stays in `VERCEL_TOKEN` (env only). Unused on the Vercel platform (OIDC) |
 
 **Env var shorthand:**
 
@@ -878,6 +879,7 @@ export default defineConfig({
 | `databaseUrl` | `string` | Conditional | — | Connection string for the region's internal database. Optional in the schema, but the URL for the region **this service serves** must resolve at boot (hard-validated by the region guard); URLs for other regions may be left empty |
 | `datasourceUrl` | `string` | No | — | Analytics datasource override for the region. When unset, uses the default datasource |
 | `apiUrl` | `string` | No | — | Public API endpoint for this region (e.g. `https://api-eu.useatlas.dev`). Used in `421 Misdirected Request` responses to redirect clients to the correct region |
+| `selectable` | `boolean` | No | `true` | Whether this region is offered in the signup data-residency picker. Set `false` for an internal region that must exist for boot/routing but must not be a selectable residency choice (e.g. the shared-config `staging` arm) |
 
 ---
 

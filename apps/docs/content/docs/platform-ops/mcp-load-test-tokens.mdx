@@ -185,18 +185,6 @@ The `bearer` is **never** in metadata. If you find a bearer in any
 audit row, treat that as a P1 incident — the contract is that
 issuance and use are correlated only via the `jti`.
 
-## Self-hosted
-
-The endpoint works on self-hosted deployments too — operators load-test
-their single instance the same way. Standard auth applies; nothing here
-is SaaS-specific.
-
-When `residency.regions` isn't configured (the typical self-hosted
-case), the audience and issuer fall back to the request origin
-(matching the same shape `hosted.ts:resourceAudience` reads at the
-verifier boundary). Set `ATLAS_PUBLIC_API_URL` if your verifier
-audience differs from the request `Host`.
-
 ## Related
 
 - [MCP guide — hosted](/guides/mcp#hosted-protocol-reference) — DCR + PKCE flow for

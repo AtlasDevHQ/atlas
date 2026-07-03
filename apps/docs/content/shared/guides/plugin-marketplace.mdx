@@ -7,11 +7,13 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 The plugins admin page lets workspace admins view, configure, health-check, enable, and disable plugins that are already loaded in their workspace. Install and uninstall happen outside the admin UI today — see [Installing plugins](#installing-plugins) below.
 
+<WhenSelfHosted>
 <Callout title="Prerequisites">
-- [Managed auth](/deployment/authentication#managed-auth) enabled
+- [Managed auth](/self-hosted/deployment/authentication#managed-auth) enabled
 - An internal database configured (`DATABASE_URL`) — required for enable/disable state
 - A user with the `admin` role
 </Callout>
+</WhenSelfHosted>
 
 {/* When self-service browse ships (marketplace catalog UI + plan-required badge), update both this callout AND the "no web consumer yet" note under API endpoints below. */}
 <Callout type="warn" title="Self-service browse is not shipped yet">
@@ -44,6 +46,7 @@ The enable/disable toggle and configuration edits require an internal database (
 
 There is no self-service install UI today. Pick the path that matches your deployment:
 
+<WhenSelfHosted>
 ### Self-hosted (`atlas.config.ts`)
 
 1. Add the plugin package to `package.json` (`bun add @useatlas/bigquery`, etc.)
@@ -62,10 +65,13 @@ There is no self-service install UI today. Pick the path that matches your deplo
 3. Restart the server. The plugin appears on `/platform/plugin-registry`.
 
 See the [Plugin Authoring Guide](/plugins/authoring-guide) for the full `definePlugin()` API and the published plugins on [npm](https://www.npmjs.com/search?q=%40useatlas) for what's available.
+</WhenSelfHosted>
 
+<WhenSaaS>
 ### SaaS (app.useatlas.dev)
 
 SaaS workspaces don't edit `atlas.config.ts` directly. To request a plugin be installed on your workspace, contact your account manager or platform admin. Platform admins install plugins via the platform catalog (tracked under [Plugin Catalog](/platform-ops/plugin-catalog)). Plan gating is evaluated server-side — each plugin has a `minPlan` (default `"starter"`); plugins above your workspace's plan tier are not offered.
+</WhenSaaS>
 
 ---
 
@@ -94,13 +100,17 @@ Disabling a datasource plugin **does not** revoke access to already-open queries
 
 ## Uninstalling
 
+<WhenSelfHosted>
 ### Self-hosted
 
 Remove the plugin from `atlas.config.ts` and restart. The admin UI does not offer an uninstall button for config-loaded plugins.
+</WhenSelfHosted>
 
+<WhenSaaS>
 ### SaaS
 
 Contact your platform admin. Platform-installed plugins are uninstalled through the platform catalog.
+</WhenSaaS>
 
 ---
 

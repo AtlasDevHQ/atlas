@@ -55,15 +55,15 @@ Retrying these will not help — the request or configuration must be changed.
 
 These codes are returned by billing enforcement and workspace status middleware. They block requests before the agent loop runs.
 
-| Code | HTTP Status | Description | Common Cause | Fix |
-|------|-------------|-------------|--------------|-----|
-| `trial_expired` | 403 | Trial has expired | 14-day SaaS trial ended | Upgrade to a paid plan |
-| `subscription_required` | 403 | Subscription required | The workspace subscription has ended (past-due/canceled) | Resubscribe from the billing page to continue using Atlas |
-| `billing_check_failed` | 503 | Billing check failed | Failed to fetch plan data from internal DB | Retry — transient infrastructure issue |
-| `workspace_check_failed` | 503 | Workspace check failed | Failed to verify workspace status | Retry — transient infrastructure issue |
-| `workspace_throttled` | 429 | Workspace throttled | Workspace triggered abuse detection thresholds | Wait for the throttle delay to pass and retry. See [Abuse Prevention](/platform-ops/abuse-prevention) |
-| `workspace_suspended` | 403 | Workspace suspended | Admin suspended the workspace | Contact your workspace administrator |
-| `workspace_deleted` | 404 | Workspace deleted | Workspace has been permanently deleted | Create a new workspace |
+| Code | HTTP Status | Description | Common Cause | Fix | Retryable |
+|------|-------------|-------------|--------------|-----|-----------|
+| `trial_expired` | 403 | Trial has expired | 14-day SaaS trial ended | Upgrade to a paid plan | No |
+| `subscription_required` | 403 | Subscription required | The workspace subscription has ended (past-due/canceled) | Resubscribe from the billing page to continue using Atlas | No |
+| `billing_check_failed` | 503 | Billing check failed | Failed to fetch plan data from internal DB | Retry — transient infrastructure issue | Yes |
+| `workspace_check_failed` | 503 | Workspace check failed | Failed to verify workspace status | Retry — transient infrastructure issue | Yes |
+| `workspace_throttled` | 429 | Workspace throttled | Workspace triggered abuse detection thresholds | Wait for the throttle delay to pass and retry. See [Abuse Prevention](/platform-ops/abuse-prevention) | Yes |
+| `workspace_suspended` | 403 | Workspace suspended | Admin suspended the workspace | Contact your workspace administrator | No |
+| `workspace_deleted` | 404 | Workspace deleted | Workspace has been permanently deleted | Create a new workspace | No |
 
 ---
 
@@ -286,6 +286,18 @@ The `@useatlas/sdk` includes additional codes in the `AtlasErrorCode` type beyon
 | `invalid_response` | Server returned a 2xx status but the body wasn't valid JSON | SDK client-side | No |
 | `unknown_error` | Server returned an error response with an unrecognized error code | SDK client-side | No |
 | `not_available` | Feature not available (e.g., conversation history without `DATABASE_URL`) | Server (admin/CRUD routes) | No |
+
+---
+
+## CLI REST Error Codes
+
+The `atlas` CLI datasource commands (`datasource create` / `profile` / `list`) discriminate on these `error`-field codes (`CLI_REST_ERROR_CODES` in [`@useatlas/types/errors`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/types/src/errors.ts)). Four of them — `bad_request`, `forbidden_role`, `not_available`, `plan_limit_exceeded` — are shared with the tables above; the three below are specific to the datasource-lifecycle path:
+
+| Code | Trigger | Fix | Retryable |
+|------|---------|-----|-----------|
+| `mfa_enrollment_required` | The admin must enroll a second factor before mutating datasources | Enroll a passkey, then retry | No |
+| `connection_failed` | `datasource create` pre-flight connection test failed (driver error; the DSN is scrubbed from the message) | Fix the connection URL / credentials and retry | No |
+| `reconnect_required` | The datasource needs reconnection (e.g. a revoked OAuth token) before it can be profiled | Re-run the datasource's OAuth/connect flow | No |
 
 ---
 

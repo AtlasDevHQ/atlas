@@ -14,10 +14,8 @@ Billing is a per-seat **platform fee** — the listed plan price ($39 / $69 / $1
 On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View your usage, manage your plan, and update payment methods from **Admin > Billing** — no Stripe setup required on your end.
 </Callout>
 
-<Callout title="Self-hosted prerequisites">
-- Internal database configured (`DATABASE_URL`) — required for usage tracking
-- `STRIPE_SECRET_KEY` set — enables billing routes and Stripe integration
-- Admin role required for the billing dashboard
+<Callout>
+Running Atlas yourself? Self-hosted deployments are **free with no billing enforcement**. If you want to bill your own users, see [Self-Hosted Billing](/self-hosted/guides/self-hosted-billing) for the Stripe setup.
 </Callout>
 
 ---
@@ -115,7 +113,7 @@ The **Spend Policy** setting (`ATLAS_SPEND_POLICY`, workspace-scoped, hot-reload
 - **`continue`** (default) — keep serving at provider cost past the credit. The hard-limit ceiling is the **abuse / spend ceiling** (`ATLAS_ABUSE_CEILING`, default **500%** of the credit = 5× ≈ $100/seat) — a runaway-spend backstop, not an everyday limit. Usage from 100% to the ceiling is metered at cost; at or above it, requests return 429. Set the ceiling to `0` (or empty) for pure metering with no cutoff.
 - **`cutoff`** — hard-block the moment the credit is spent: the ceiling clamps to 100% of the credit, so any overage immediately returns 429.
 
-Metered overage is billed at provider cost (1:1, in cents) via Stripe when overage Price IDs are configured — see [Stripe Setup](#stripe-setup-self-hosted). To remove usage limits entirely, enable [BYOT](#byot-bring-your-own-token) and use your own API keys.
+Metered overage is billed at provider cost (1:1, in cents) via Stripe. On the hosted SaaS this is pre-configured — nothing to set up on your end. To remove usage limits entirely, enable [BYOT](#byot-bring-your-own-token) and use your own API keys.
 
 ### Enforcement Skipped
 
@@ -221,107 +219,7 @@ If a Stripe call fails during one of these actions, the operation still complete
 
 ---
 
-## Stripe Setup (Self-Hosted)
-
-<Callout type="info" title="SaaS">
-On [app.useatlas.dev](https://app.useatlas.dev), Stripe is pre-configured. Skip this section — manage your subscription from **Admin > Billing** instead.
-</Callout>
-
-Set these two environment variables to enable billing — they are the only
-Stripe **secrets**, so they stay in env:
-
-| Variable | Description |
-|----------|-------------|
-| `STRIPE_SECRET_KEY` | Stripe secret key (test or live). Enables billing routes when set |
-| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret for verifying events |
-
-The six per-tier **seat Price IDs** are non-secret constants and live in the
-settings registry under **Admin → Settings → Billing** (platform admins only).
-They are runtime-editable and hot-reloadable — a pricing change takes effect
-without a redeploy ([#3703](https://github.com/AtlasDevHQ/atlas/issues/3703)).
-The matching environment variables still work as a fallback when no settings
-override is present:
-
-| Setting / env fallback | Description |
-|----------|-------------|
-| `STRIPE_STARTER_PRICE_ID` | Price ID for the Starter plan (monthly) |
-| `STRIPE_STARTER_ANNUAL_PRICE_ID` | Price ID for the Starter plan (annual) |
-| `STRIPE_PRO_PRICE_ID` | Price ID for the Pro plan (monthly) |
-| `STRIPE_PRO_ANNUAL_PRICE_ID` | Price ID for the Pro plan (annual) |
-| `STRIPE_BUSINESS_PRICE_ID` | Price ID for the Business plan (monthly) |
-| `STRIPE_BUSINESS_ANNUAL_PRICE_ID` | Price ID for the Business plan (annual) |
-
-A missing monthly Price ID silently omits that tier from checkout, so it is
-surfaced as an operator-actionable warning in the boot log (not a boot
-failure). Set the missing ID from **Admin → Settings → Billing**.
-
-### Metered-overage Price IDs (at-cost)
-
-For **at-cost metered overage** (the `continue` spend policy, usage past the
-included credit), Atlas bills the excess 1:1 with provider cost via a single
-shared Stripe **Billing Meter** (`atlas_usage_overage_cents`, priced at 1 cent
-per metered unit) plus a per-tier overage Price ID, added as a **second**
-subscription line item. These IDs are platform-scoped settings with env
-fallback — runtime-editable and hot-reloadable, exactly like the seat Price IDs
-above:
-
-| Setting / env fallback | Description |
-|----------|-------------|
-| `STRIPE_STARTER_OVERAGE_PRICE_ID` | At-cost overage Price ID for Starter (metered; billed in cents, 1:1 with provider cost) |
-| `STRIPE_PRO_OVERAGE_PRICE_ID` | At-cost overage Price ID for Pro |
-| `STRIPE_BUSINESS_OVERAGE_PRICE_ID` | At-cost overage Price ID for Business |
-
-Without an overage Price ID for a tier, usage past the credit is still metered
-and shown on the dashboard but **not billed** (a missing one surfaces as a boot
-warning, not a failure). SaaS pre-configures these; self-hosted operators who
-want to bill overage create the meter + prices in their own Stripe account.
-
-When `STRIPE_SECRET_KEY` is set:
-
-- Billing routes mount at `/api/v1/billing`
-- The Better Auth Stripe plugin handles checkout, webhooks, and subscription lifecycle at `/api/auth/stripe/*`
-- Plan changes from Stripe webhooks automatically update the workspace tier
-
-### Webhook Configuration
-
-Point your Stripe webhook endpoint to:
-
-```
-https://your-atlas.example.com/api/auth/stripe/webhook
-```
-
-For local development, use [Stripe CLI](https://docs.stripe.com/stripe-cli) to forward webhooks:
-
-```bash
-stripe listen --forward-to localhost:3001/api/auth/stripe/webhook
-```
-
-<Callout type="warn">
-The webhook signing secret (`STRIPE_WEBHOOK_SECRET`) must match the secret shown by `stripe listen` or configured in your Stripe dashboard. Mismatched secrets cause silent webhook failures.
-</Callout>
-
----
-
-## Self-Hosted Deployments
-
-Self-hosted Atlas has **no billing enforcement**. The `free` tier is assigned by default with unlimited queries, members, and connections. No Stripe configuration is needed.
-
-To run Atlas without any billing:
-
-1. Omit all `STRIPE_*` environment variables
-2. The billing routes will not mount
-3. The billing dashboard still works for monitoring (if `DATABASE_URL` is configured) but shows "Unlimited" for all limits
-
----
-
 ## Troubleshooting
-
-### Stripe webhooks not arriving
-
-- Verify `STRIPE_WEBHOOK_SECRET` matches the signing secret from your Stripe dashboard or `stripe listen` output
-- Ensure the webhook endpoint (`/api/auth/stripe/webhook`) is publicly reachable
-- Check Stripe dashboard **Developers > Webhooks** for failed delivery attempts
-- For local development, confirm `stripe listen` is running and forwarding to the correct port
 
 ### Plan not syncing after payment
 

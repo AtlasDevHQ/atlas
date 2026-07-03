@@ -2,5 +2,5 @@
   "title": "Deployment",
   "description": "Deploy to Docker, Railway, or Vercel",
   "icon": "CloudUpload",
-  "pages": ["deploy", "authentication", "cache-configuration"]
+  "pages": ["deploy", "authentication", "cache-configuration", "load-testing"]
 }

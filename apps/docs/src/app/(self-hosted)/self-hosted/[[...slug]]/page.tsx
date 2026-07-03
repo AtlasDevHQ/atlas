@@ -19,10 +19,11 @@ export default async function Page(props: {
       page={page}
       audience="self-hosted"
       linkComponent={createSectionRelativeLink(selfHostedSource, page)}
-      // The /llms.mdx/<slug> markdown twins are root-only for now; the
-      // self-hosted section gets its own machine-readable surfaces in a later
-      // slice (#4266), so the copy button would 404 here.
-      showLLMCopy={false}
+      // Section-aware markdown twins now exist at /self-hosted/llms.mdx/<slug>
+      // (this section's own surfaces, PRD #4257 slice #4266). The copy button's
+      // `${page.url}.mdx` → /self-hosted/<slug>.mdx, which Caddy rewrites onto
+      // the self-hosted twin — so it resolves in-section, not against the root.
+      showLLMCopy
     />
   );
 }

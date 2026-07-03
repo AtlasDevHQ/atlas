@@ -62,9 +62,10 @@ async function getLastUpdate(sourcePath: string): Promise<Date | undefined> {
  *   `<AudienceLabel/>` / `useAudience()` and adapts, resolved at build time).
  * - `linkComponent` — the mount-specific `createRelativeLink` result, so
  *   relative MDX links resolve against THIS section's source.
- * - `showLLMCopy` — the markdown-twin copy button, wired only where the
- *   `/llms.mdx/<slug>` route exists (the root today; self-hosted lands in a
- *   later slice).
+ * - `showLLMCopy` — the markdown-twin copy button. Both sections now have their
+ *   own `<section>/llms.mdx/<slug>` twins (PRD #4257, slice #4266), so it is on
+ *   for the root AND `/self-hosted`; the button's `${page.url}.mdx` resolves to
+ *   the in-section twin via Caddy.
  */
 export async function SectionDocsPage({
   page,

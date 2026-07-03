@@ -29,8 +29,10 @@ lossy draft generator.
 A bundle is a directory tree of markdown concept docs. Frontmatter: `type`
 (required, free text — "BigQuery Table", "Reference", "Playbook"), plus
 recommended `title`/`description`/`resource`/`tags`/`timestamp`; **unknown
-keys are legal and consumers must preserve them** (this is load-bearing
-below). Reserved filenames: `index.md` (navigation, no frontmatter except
+keys are legal and consumers SHOULD preserve them** (spec §frontmatter:
+"Consumers SHOULD preserve unknown keys when round-tripping and SHOULD NOT
+reject documents with unrecognized fields" — RFC SHOULD, not MUST; this is
+load-bearing below). Reserved filenames: `index.md` (navigation, no frontmatter except
 root `okf_version`), `log.md` (history). Links are untyped edges; meaning
 lives in surrounding prose. In the GA4 sample, tables carry a `# Schema`
 bullet list (`- \`col\` (TYPE): description`; the launch blog uses a markdown
@@ -89,7 +91,7 @@ types (coarsened), measures, virtual-dimension SQL, join cardinality, and all
 profiler stats. **With an extension namespace, objects round-trip:** the
 exporter writes the full source object under the `atlas:` frontmatter key
 (`atlas.entity` / `atlas.metric` / `atlas.term`+`entry`), which OKF v0.1
-explicitly permits and requires consumers to preserve. Re-import restores
+explicitly permits and tells consumers to preserve (SHOULD). Re-import restores
 entity and glossary objects verbatim (deep-equality asserted, including
 `status: ambiguous` gating) and metric *fields* verbatim.
 

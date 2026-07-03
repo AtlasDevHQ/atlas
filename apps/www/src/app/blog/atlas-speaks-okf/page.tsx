@@ -226,7 +226,7 @@ tags: [sales]
           of inventing one, Atlas hosts OKF as-is. Documents are
           stored byte-identical to what you uploaded; the only thing Atlas
           adds is provenance under an <InlineCode>atlas:</InlineCode>{" "}
-          frontmatter key, which the spec explicitly permits and requires
+          frontmatter key, which the spec explicitly permits and tells
           consumers to preserve. The agent reads collections with the same
           sandboxed explore tool it uses for the semantic layer, walking{" "}
           <InlineCode>index.md</InlineCode> hierarchies with{" "}

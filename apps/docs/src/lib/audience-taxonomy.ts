@@ -22,7 +22,7 @@ export { AUDIENCE_CLASSES, type AudienceClass };
  * `__tests__/audience-taxonomy.test.ts`). The build-time gate lives in
  * `src/lib/source.ts`, which feeds the real pages through
  * `validateContentTaxonomy` and throws — failing `next build` — on any orphan,
- * ambiguous classification, or un-marked cross-audience duplicate.
+ * invalid, or ambiguous classification, or un-marked cross-audience duplicate.
  */
 
 export function isAudienceClass(value: unknown): value is AudienceClass {

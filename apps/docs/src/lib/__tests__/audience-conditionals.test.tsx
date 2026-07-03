@@ -165,6 +165,30 @@ test("markdown strip FAILS CLOSED on a malformed/unclosed inactive block", () =>
   // A silent pass would leak the self-hosted tail into the saas surface; assert
   // it throws instead.
   expect(() => stripInactiveAudienceBlocks(unclosed, "saas")).toThrow(
-    /residual <When…> block tag/,
+    /residual <When…> tag/,
   );
+});
+
+test("markdown strip FAILS CLOSED on an unsupported single-line inline audience tag", () => {
+  // The strip only handles block-form; a fully-inline form escapes the block
+  // patterns, so the post-condition must throw rather than leak the self-hosted
+  // prose into the saas surface.
+  const inline =
+    "Price is <WhenSaaS>$39</WhenSaaS><WhenSelfHosted>free</WhenSelfHosted>/mo.";
+  expect(() => stripInactiveAudienceBlocks(inline, "saas")).toThrow(
+    /residual <When…> tag/,
+  );
+});
+
+test("an inline-code mention of a tag name is NOT treated as a residual tag", () => {
+  const mention = [
+    "Use `<WhenSaaS>` and `<WhenSelfHosted>` for per-audience prose.",
+    "",
+    "<WhenSaaS>",
+    "  Cloud. `saas-md-token`.",
+    "</WhenSaaS>",
+  ].join("\n");
+  const out = stripInactiveAudienceBlocks(mention, "saas");
+  expect(out).toContain("saas-md-token");
+  expect(out).toContain("`<WhenSelfHosted>`"); // the mention survives, unstripped
 });

@@ -57,6 +57,13 @@ and wired into the MDX `components` map per route in
 </WhenSelfHosted>
 ```
 
+Use **block form** — the opening and closing tags each on their own line. The
+machine-text surfaces (markdown twin, `llms-full.txt`) resolve the branch by
+stripping the inactive block; a single-line inline form
+(`<WhenSelfHosted>…</WhenSelfHosted>` on one line) is unsupported there and
+**fails the build** rather than risk leaking the other audience's prose into a
+SaaS-root surface.
+
 They resolve **server-side, per mount, from the route's static `audience` prop**
 (the same value `AudienceProvider` carries for `<AudienceLabel/>`) — **not** via
 React context. That distinction is load-bearing: a client conditional

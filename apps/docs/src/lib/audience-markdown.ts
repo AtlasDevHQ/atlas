@@ -1,13 +1,20 @@
 import type { Audience } from "@/lib/audience";
 
-/** Match only BLOCK component tags — a tag alone on its own line (as MDX block
- * JSX renders in processed markdown), tolerant of attributes and trailing
- * whitespace. Line-anchored (`m`, `$` before the newline) so an INLINE mention
- * like a doc sentence writing `` `<WhenSaaS>` `` is spared — those carry no
- * audience content. */
-const RESIDUAL_BLOCK_TAG = /^[ \t]*<\/?When(?:SaaS|SelfHosted)(?:\s[^>]*)?>[ \t]*$/m;
-
 const AUDIENCE_TAGS = ["WhenSaaS", "WhenSelfHosted"] as const;
+
+/** Any raw audience tag, open or close, block OR inline. Used as the fail-closed
+ * post-condition AFTER code spans are masked out (so a doc sentence that MENTIONS
+ * `` `<WhenSaaS>` `` in inline code is not a false positive). `\b` after the name
+ * avoids matching a differently-named component like `<WhenSaaSFoo>`. */
+const RESIDUAL_AUDIENCE_TAG = /<\/?When(?:SaaS|SelfHosted)\b/;
+
+/** Mask fenced and inline code spans (their raw tag MENTIONS must be spared) so
+ * the residual check only sees real tags. Returns text safe to scan, not to emit. */
+function maskCodeSpans(markdown: string): string {
+  return markdown
+    .replace(/```[\s\S]*?```/g, "") // fenced blocks first
+    .replace(/`[^`\n]*`/g, ""); // then inline-code spans
+}
 
 /** The `<Tag>…</Tag>` block (open+close on their own lines, prose between). */
 function blockOf(tag: string): RegExp {
@@ -38,9 +45,10 @@ function tagsOf(tag: string): RegExp {
  * the line-anchored patterns), tag attributes/whitespace are tolerated, and an
  * unexpected audience value strips BOTH branches (mirroring the explicit
  * positive-match in `audienceConditionals`). As a post-condition it THROWS if
- * any block-form audience tag survives — an unresolved branch (malformed /
- * unclosed tag, or a future MDX-emit change) must fail the build/page rather
- * than silently leak the other audience. Both callers compose fail-closed:
+ * any raw audience tag survives (after masking inline-code mentions) — an
+ * unresolved branch, whether a malformed/unclosed block, an unsupported
+ * single-line inline form, or a future MDX-emit change, must fail the build/page
+ * rather than silently leak the other audience. Both callers compose fail-closed:
  * `llms-full.txt` catches per page and emits a visible placeholder; `llms.mdx`
  * lets the throw fail that page's static generation.
  *
@@ -71,9 +79,14 @@ export function stripInactiveAudienceBlocks(
   if (active) out = out.replace(tagsOf(active), "");
   out = out.replace(/\n{3,}/g, "\n\n");
 
-  if (RESIDUAL_BLOCK_TAG.test(out)) {
+  // Fail closed: after masking code-span mentions, NO raw audience tag may
+  // survive. This catches both a malformed/unclosed BLOCK and the unsupported
+  // single-line INLINE form (`<WhenSelfHosted>x</WhenSelfHosted>` on one line) —
+  // the strip only handles block-form, so an inline usage must fail the
+  // build/page rather than silently leak the other audience's prose.
+  if (RESIDUAL_AUDIENCE_TAG.test(maskCodeSpans(out))) {
     throw new Error(
-      `[docs] audience strip left a residual <When…> block tag while resolving "${audience}" — a branch was not removed (check for malformed/unclosed tags or attributes)`,
+      `[docs] audience strip left a residual <When…> tag while resolving "${audience}" — a branch was not removed. Audience conditionals must be BLOCK-form (opening/closing tags each on their own line); inline usage is unsupported. Also check for malformed/unclosed tags.`,
     );
   }
   return out;

@@ -2,6 +2,10 @@ import { docs, selfHosted, shared } from "@/../.source/server";
 import { openapiPlugin } from "fumadocs-openapi/server";
 import type { InferPageType } from "fumadocs-core/source";
 import { buildSectionSource } from "@/lib/compose";
+import {
+  validateContentTaxonomy,
+  type ContentEntry,
+} from "@/lib/audience-taxonomy";
 
 // SaaS / Cloud docs at the site root (`/`). Existing `content/docs` — including
 // the generated `api-reference/` tree at `/api-reference/*` — plus the shared
@@ -31,3 +35,24 @@ export const selfHostedSource = buildSectionSource({
 export type SectionPage =
   | InferPageType<typeof source>
   | InferPageType<typeof selfHostedSource>;
+
+function toEntry(page: SectionPage): ContentEntry {
+  return {
+    absolutePath: page.absolutePath ?? "",
+    audience: page.data.audience,
+    fork: page.data.fork,
+  };
+}
+
+/**
+ * Build-time taxonomy gate (PRD #4257, slice #4260). Every real page from both
+ * human sections is fed through `validateContentTaxonomy`, which throws — and so
+ * fails `next build` — on any orphan/invalid/ambiguous classification or
+ * un-marked cross-audience duplicate. Runs once at module init; `getPages()` is the union
+ * of the two mounts, so a `shared` page appears twice and is deduped by source
+ * file inside the validator.
+ */
+validateContentTaxonomy([
+  ...source.getPages().map(toEntry),
+  ...selfHostedSource.getPages().map(toEntry),
+]);

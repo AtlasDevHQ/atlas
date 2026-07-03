@@ -14,6 +14,7 @@ import { APIPage } from "@/components/api-page";
 import { ChangelogTimeline } from "@/components/changelog-timeline";
 import { LLMCopyButton } from "@/components/llm-copy-button";
 import { AudienceProvider, AudienceLabel, type Audience } from "@/lib/audience";
+import { audienceConditionals } from "@/lib/audience-conditionals";
 import { githubEditPath } from "@/lib/mdx-links";
 import type { SectionPage } from "@/lib/source";
 
@@ -79,6 +80,10 @@ export async function SectionDocsPage({
   const MDX = page.data.body;
   const lastUpdate = await getLastUpdate(githubEditPath(page.absolutePath));
   const isFullWidth = page.data.full === true;
+  // Server-resolved per this mount: the inactive branch is a server component
+  // that returns null, so its children never enter the emitted HTML / RSC
+  // payload (unlike a client conditional). See audience-conditionals.tsx.
+  const { WhenSaaS, WhenSelfHosted } = audienceConditionals(audience);
 
   return (
     <DocsPage
@@ -113,6 +118,10 @@ export async function SectionDocsPage({
               APIPage,
               ChangelogTimeline,
               AudienceLabel,
+              // Build-time audience conditionals: the omitted branch is absent
+              // from the emitted HTML on the opposite mount (PRD #4257).
+              WhenSaaS,
+              WhenSelfHosted,
               // Resolve relative MDX links against THIS mount's source.
               a: linkComponent,
             }}

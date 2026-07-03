@@ -24,6 +24,23 @@ You are reading it at one of two URLs, from the same file on disk:
 
 This mount's audience is: **<AudienceLabel />**.
 
+## Audience-conditional content (resolved at build time)
+
+The two notes below are wrapped in `<WhenSaaS>` / `<WhenSelfHosted>`. Only the
+current mount's note is emitted into the static HTML — the other branch is
+**absent** from the export, not hidden with CSS. A reader on one mount is
+structurally unable to see the other audience's branch (PRD #4257).
+
+<WhenSaaS>
+  **Cloud (SaaS) only.** You are reading the site-root edition of this page.
+  Build verification token: `audience-saas-only-a7f2`.
+</WhenSaaS>
+
+<WhenSelfHosted>
+  **Self-Hosted only.** You are reading the `/self-hosted` edition of this page.
+  Build verification token: `audience-self-hosted-only-a7f2`.
+</WhenSelfHosted>
+
 Because both mounts resolve "Edit on GitHub" from the page's real
 `absolutePath`, the edit link on either URL points at this same
 `content/shared/single-source-example.mdx` — one place to fix it.

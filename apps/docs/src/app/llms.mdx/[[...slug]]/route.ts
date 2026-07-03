@@ -29,7 +29,9 @@ export async function GET(
   const page = source.getPage(pageSlug);
   if (!page) notFound();
 
-  return new Response(await getLLMText(page));
+  // Markdown twins are root/SaaS-only today (self-hosted twins land in #4266),
+  // so the saas branch is the correct one to resolve here.
+  return new Response(await getLLMText(page, "saas"));
 }
 
 export function generateStaticParams() {

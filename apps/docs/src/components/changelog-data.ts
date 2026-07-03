@@ -20,6 +20,23 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.41",
+    title: "Architecture Deepening II",
+    date: "2026-07-03",
+    summary:
+      "The second architecture-deepening wave — twenty-two changes that unify logic previously hand-maintained in two or more places, so a fix or a security invariant now lives in exactly one seam. The highest-value consolidations are on security boundaries: the SQL execution pipeline is now a single core effect (validation, approval gate, RLS injection, auto-LIMIT, and statement timeout in one governed path), the marketplace install route flows through the same persistence spine as every other install (closing latent stale-cache and encryption-keyset gaps), and explore and Python share one sandbox backend-selection module (fixing a case where Python ignored the configured sandbox priority while nsjail stays hard-fail). It also carries user-facing fixes — a dirty-state save gate on the email-provider admin form and a marketplace catalog write fix — plus new agent-discovery surfaces: a machine-readable region directory and apex-hosted auth metadata. No behavior changes to the querying path beyond the fixes noted.",
+    highlights: [
+      "One core SQL execution pipeline — validation, approval gate, RLS injection, auto-LIMIT, and statement timeout unified behind a single effect (#4185, #4244)",
+      "Marketplace /install now flows through the shared Form-install persistence spine, closing latent stale-plugin-cache and encryption-keyset gaps (#4186, #4232)",
+      "One sandbox backend-selection module shared by explore and Python — Python now honors the configured sandbox priority and nsjail stays hard-fail (#4187)",
+      "Shared OAuth install seams (verify, reconnect, token refresh) and one delivery-transport seam behind email/Slack/webhook (#4188, #4198)",
+      "Plugin-SDK primitives — measuredHealthCheck across 18 plugins and a createDatasourcePlugin factory absorbing six plugins' assembly boilerplate (#4191, #4192)",
+      "Shared chat render primitives across the web app and the embeddable React component (#4193)",
+      "Email-provider admin form gains a dirty-state save gate via useConfigForm (#4204)",
+      "New agent-discovery surfaces: a machine-readable region directory and apex-hosted auth metadata (#4253, #4256)",
+    ],
+  },
+  {
     version: "v0.0.40",
     title: "Knowledge Base Pillar",
     date: "2026-07-02",

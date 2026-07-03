@@ -1,25 +1,20 @@
 import { source } from "@/lib/source";
-import { getLLMText } from "@/lib/get-llm-text";
+import { renderLlmsFullText } from "@/lib/llms-surface";
 
+// Root / SaaS full-text surface. `source` is the SaaS section (saas + shared,
+// never self-hosted), so this carries ONLY saas + shared pages — a SaaS agent
+// is never fed self-hosted instructions (PRD #4257, slice #4266). The
+// `/self-hosted` counterpart lives at /self-hosted/llms-full.txt.
 export const dynamic = "force-static";
 
 export async function GET() {
-  const pages = source.getPages();
-  const results = await Promise.all(
-    pages.map(async (page) => {
-      try {
-        // `source` is the root/SaaS section, so resolve audience conditionals
-        // to the saas branch (PRD #4257).
-        return await getLLMText(page, "saas");
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[llms-full.txt] ${page.url}: ${msg}`);
-        return `# ${page.data.title} (${page.url})\n\n> Error: Could not load this page.`;
-      }
-    }),
+  const body = await renderLlmsFullText(
+    source.getPages(),
+    "saas",
+    "llms-full.txt",
   );
 
-  return new Response(results.join("\n\n---\n\n"), {
+  return new Response(body, {
     headers: { "Content-Type": "text/plain; charset=utf-8" },
   });
 }

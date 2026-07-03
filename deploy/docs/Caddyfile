@@ -112,13 +112,65 @@
 	redir /contributing/eval-harness/ /self-hosted/contributing/eval-harness/ 308
 	# ── END /self-hosted section redirects (#4267) ───────────────────────────
 
+	# ── BEGIN llms twin rewrites (#4266) ─────────────────────────────────────
+	# Section-aware markdown twins for the /self-hosted section. Its machine
+	# surfaces (/self-hosted/llms.txt, /self-hosted/llms-full.txt, and the
+	# /self-hosted/<slug>.mdx twins) mirror the root ones but are sourced from the
+	# self-hosted loader (self-hosted + shared) — so an agent reading self-hosted
+	# docs is never fed the SaaS-only branch (PRD #4257). These rules route the
+	# /self-hosted twin URLs onto their on-disk /self-hosted/llms.mdx/<slug>/index.md
+	# emission. Two independent things keep them from colliding with the generic
+	# root rules below, and BOTH are load-bearing — don't reorder AND don't drop a
+	# guard: (a) source order — these run first, which is what protects the bare
+	# landing /self-hosted.mdx (NOT under /self-hosted/*, so the generic @mdxAlias's
+	# `not path /self-hosted/*` guard does NOT exclude it); and (b) the
+	# `not path /self-hosted/*` guards on the generic rules, which cover every
+	# /self-hosted/<slug> case order-independently.
+	#
+	# /self-hosted/<slug>.mdx (and the section landing /self-hosted.mdx) ->
+	# /self-hosted/llms.mdx/<slug>/index.md. The optional group makes the landing
+	# (no <slug>) collapse to /self-hosted/llms.mdx//index.md, which Caddy's path
+	# cleaning normalizes to /self-hosted/llms.mdx/index.md.
+	@shMdxAlias {
+		path_regexp shmdxalias ^/self-hosted(?:/(.+))?\.mdx$
+		not path /self-hosted/llms.mdx
+		not path /self-hosted/llms.mdx/*
+	}
+	rewrite @shMdxAlias /self-hosted/llms.mdx/{re.shmdxalias.1}/index.md
+
+	# Bare /self-hosted/llms.mdx -> /self-hosted/llms.mdx/index.md.
+	@shLlmsMdxRoot path /self-hosted/llms.mdx
+	rewrite @shLlmsMdxRoot /self-hosted/llms.mdx/index.md
+
+	# /self-hosted/llms.mdx/<slug> needs the /index.md suffix appended.
+	@shLlmsMdxSub {
+		path /self-hosted/llms.mdx/*
+		not path */index.md
+	}
+	rewrite @shLlmsMdxSub {http.request.uri.path}/index.md
+
+	# Accept: text/markdown on a /self-hosted doc page -> its self-hosted twin.
+	# `(.+?)/?$` captures the in-section slug and eats a trailing slash so the
+	# rewrite lands on /self-hosted/llms.mdx/<slug>/index.md. Skips the machine
+	# surfaces themselves (they serve their own content type).
+	@shMarkdown {
+		header_regexp Accept (?i)(^|,)\s*text/markdown
+		path_regexp shmarkdown ^/self-hosted/(.+?)/?$
+		not path /self-hosted/llms.mdx* /self-hosted/llms.txt /self-hosted/llms-full.txt
+	}
+	rewrite @shMarkdown /self-hosted/llms.mdx/{re.shmarkdown.1}/index.md
+	# ── END llms twin rewrites (#4266) ───────────────────────────────────────
+
 	# /<slug>.mdx -> /llms.mdx/<slug>/index.md (canonical markdown alias).
 	# `not path /llms.mdx*` keeps the regex from re-matching the bare
 	# /llms.mdx surface and the /llms.mdx/<slug> paths handled below.
+	# `not path /self-hosted/*` keeps this root alias from grabbing the
+	# /self-hosted twins handled by the #4266 block above.
 	@mdxAlias {
 		path_regexp mdxalias ^/(.+)\.mdx$
 		not path /llms.mdx
 		not path /llms.mdx/*
+		not path /self-hosted/*
 	}
 	rewrite @mdxAlias /llms.mdx/{re.mdxalias.1}/index.md
 
@@ -137,10 +189,13 @@
 	# Accept: text/markdown content negotiation — rewrite docs-page URLs onto
 	# their /llms.mdx/<slug>/index.md twin. Skip surfaces that already serve
 	# their own content type (static assets, search index, well-known JSON,
-	# the markdown surfaces themselves).
+	# the markdown surfaces themselves). `/self-hosted/*` is skipped here so the
+	# #4266 block above handles /self-hosted/<slug> content-negotiation in-section
+	# (its own twin, not the root's). The bare landing /self-hosted negotiates no
+	# twin — its copy button uses the explicit /self-hosted.mdx via @shMdxAlias.
 	@markdown {
 		header_regexp Accept (?i)(^|,)\s*text/markdown
-		not path /_next/* /api/* /.well-known/* /llms.mdx* /llms.txt /llms-full.txt /docs-og/* /favicon.ico /icon.svg /robots.txt /sitemap.xml
+		not path /_next/* /api/* /.well-known/* /llms.mdx* /llms.txt /llms-full.txt /docs-og/* /favicon.ico /icon.svg /robots.txt /sitemap.xml /self-hosted/*
 	}
 	rewrite @markdown /llms.mdx{http.request.uri.path}/index.md
 

@@ -108,7 +108,7 @@ All Knowledge Base knobs are platform-scoped operator guardrails (abuse caps and
 | `ATLAS_KNOWLEDGE_INGEST_MAX_DOC_BYTES` | `1000000` (1 MB) | Max decoded size per document (oversized files rejected per-file) |
 | `ATLAS_KNOWLEDGE_INGEST_MAX_BUNDLE_BYTES` | `25000000` (25 MB) | Max bundle upload size; also bounds decompression |
 | `ATLAS_KNOWLEDGE_TOC_MAX_BYTES` | `12000` | Cap on the collection table of contents injected into the agent's system prompt |
-| `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` | `24` | How often synced collections pull their endpoint (read at scheduler start — requires a restart) |
+| `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` | `24` | How often synced collections pull their endpoint (hot-reloaded — applies by the next scheduled tick) |
 | `ATLAS_KNOWLEDGE_SYNC_FETCH_TIMEOUT_SECONDS` | `60` | Per-sync download time budget |
 
 See the [environment variables reference](/reference/environment-variables#knowledge-base) for details.

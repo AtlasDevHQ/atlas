@@ -179,6 +179,7 @@ launch test-discipline           bash scripts/check-test-discipline.sh
 launch settings-readers          bash scripts/check-settings-readers.sh
 launch saas-env-doc              bash scripts/check-saas-env-doc.sh
 launch auth-md-parity            g_auth_md_parity
+launch apex-discovery-drift      bash scripts/check-apex-discovery-drift.sh
 launch openapi-drift             g_openapi_drift
 launch gate-fixtures             g_gate_fixtures
 if [ "$NO_NET" != "1" ]; then

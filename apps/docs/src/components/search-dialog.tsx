@@ -4,17 +4,40 @@ import {
   SearchDialog,
   SearchDialogClose,
   SearchDialogContent,
+  SearchDialogFooter,
   SearchDialogHeader,
   SearchDialogIcon,
   SearchDialogInput,
   SearchDialogList,
   SearchDialogOverlay,
+  TagsList,
+  TagsListItem,
   type SharedProps,
 } from "fumadocs-ui/components/dialog/search";
 import { useDocsSearch } from "fumadocs-core/search/client";
+import { useState } from "react";
+
+/**
+ * The section-facet values must match the `tag` stamped onto every index entry
+ * in `@/lib/search-index` (`buildSearchIndexes`). Selecting one scopes search to
+ * that section; the default (`undefined`) searches all three (PRD #4257 slice
+ * #4262 — global search by default, optional section scoping).
+ */
+const SECTION_TAGS = [
+  { value: "saas", label: "SaaS / Cloud" },
+  { value: "self-hosted", label: "Self-Hosted" },
+  { value: "api", label: "API Reference" },
+] as const;
 
 export default function DefaultSearchDialog(props: SharedProps) {
-  const { search, setSearch, query } = useDocsSearch({ type: "static" });
+  const [tag, setTag] = useState<string | undefined>();
+  // `tag` filters the combined static index by section facet. When undefined the
+  // search spans every section (the default); the `deps` array re-queries when it
+  // changes so results update as the reader narrows to a section.
+  const { search, setSearch, query } = useDocsSearch(
+    { type: "static", tag },
+    [tag],
+  );
   return (
     <SearchDialog
       search={search}
@@ -47,6 +70,18 @@ export default function DefaultSearchDialog(props: SharedProps) {
             items={query.data !== "empty" ? query.data : null}
           />
         )}
+        <SearchDialogFooter>
+          {/* Optional section scoping: pick a section to narrow, clear to go
+              global. `allowClear` lets the reader return to an all-section
+              search after scoping. */}
+          <TagsList tag={tag} onTagChange={setTag} allowClear>
+            {SECTION_TAGS.map((s) => (
+              <TagsListItem key={s.value} value={s.value}>
+                {s.label}
+              </TagsListItem>
+            ))}
+          </TagsList>
+        </SearchDialogFooter>
       </SearchDialogContent>
     </SearchDialog>
   );

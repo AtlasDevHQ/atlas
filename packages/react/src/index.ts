@@ -7,9 +7,82 @@ export { AtlasProvider, useAtlasContext } from "./context";
 export type { AtlasProviderProps, AtlasContextValue, AtlasAuthClient } from "./context";
 
 // Theme
-export { setTheme } from "./hooks/use-dark-mode";
+export { setTheme, DarkModeContext } from "./hooks/use-dark-mode";
 export type { ThemeMode } from "./hooks/use-dark-mode";
 export { buildThemeInitScript, THEME_STORAGE_KEY } from "./hooks/theme-init-script";
+
+// Shared chat render primitives (#4193) — the single home for the leaf
+// components both chat orchestrators (this package's AtlasChat and
+// @atlas/web's app shell) render. Per-side behaviors are opt-in props:
+// web passes `disallowImages` / drilldown / cross-filter / `renderActions`;
+// the widget passes `notifyHostOnError`. NOTE: `ResultChart` itself is NOT
+// exported here — it imports recharts (an optional peer) statically, so it
+// lives behind the `@useatlas/react/chart` subpath; this root entry only
+// reaches it via lazy().
+export { Markdown } from "./components/chat/markdown";
+export { DataTable } from "./components/chat/data-table";
+export { ErrorBanner } from "./components/chat/error-banner";
+export { SQLResultCard } from "./components/chat/sql-result-card";
+export type {
+  SQLResultCardProps,
+  SqlResultActionContext,
+  PreviousExecution,
+} from "./components/chat/sql-result-card";
+export { PythonResultCard } from "./components/chat/python-result-card";
+export type { PythonResultCardProps, PythonProgressData } from "./components/chat/python-result-card";
+export { ResultCardBase, ResultCardErrorBoundary } from "./components/chat/result-card-base";
+export type { ResultCardBaseProps } from "./components/chat/result-card-base";
+
+// Chart detection — pure functions, zero recharts runtime dependency (its one
+// recharts import is type-only), so it is safe to export from the root.
+export {
+  detectCharts,
+  transformData,
+  classifyColumn,
+  categoryFromChartClick,
+  categoryFromPieClick,
+  resolveThresholdLines,
+  resolveAnnotationLines,
+  CHART_COLORS_LIGHT,
+  CHART_COLORS_DARK,
+  THRESHOLD_LINE_LIGHT,
+  THRESHOLD_LINE_DARK,
+  ANNOTATION_LINE_LIGHT,
+  ANNOTATION_LINE_DARK,
+  MAX_THRESHOLD_LINES,
+  MAX_ANNOTATION_LINES,
+} from "./components/chart/chart-detection";
+export type {
+  ChartDetectionResult,
+  ChartRecommendation,
+  ChartType,
+  ClassifiedColumn,
+  ColumnType,
+  RechartsRow,
+  ThresholdInput,
+  ThresholdLine,
+  AnnotationInput,
+  AnnotationLine,
+} from "./components/chart/chart-detection";
+
+// Shared chat/result helpers — tool-part parsing, CSV/Excel export, cell
+// formatting, cross-filter matching.
+export {
+  getToolArgs,
+  getToolResult,
+  isToolComplete,
+  parseCSV,
+  toCsvString,
+  downloadCSV,
+  downloadBlob,
+  parseAttachmentFilename,
+  coerceExcelCell,
+  downloadExcel,
+  parseSuggestions,
+  normalizeList,
+  categoryMatchesSelection,
+  formatCell,
+} from "./lib/helpers";
 
 // Types
 export type {

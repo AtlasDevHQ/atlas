@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Button } from "../ui/button";
 import { parseChatError, type AuthMode, type ClientErrorCode } from "../../lib/types";
-import { WifiOff, ServerCrash, ShieldAlert, Clock, AlertTriangle } from "lucide-react";
+import { WifiOff, ServerCrash, ShieldAlert, Clock, AlertTriangle, MessageSquarePlus } from "lucide-react";
 
 /** Icon for each client error code */
 function ErrorIcon({ clientCode }: { clientCode?: ClientErrorCode }) {
@@ -27,10 +27,26 @@ export function ErrorBanner({
   error,
   authMode,
   onRetry,
+  onStartNewConversation,
+  notifyHostOnError = false,
 }: {
   error: Error;
   authMode: AuthMode;
   onRetry?: () => void;
+  /**
+   * Handler for `conversation_budget_exceeded` (F-77). When the chat
+   * server rejects further messages on a conversation that hit the
+   * aggregate step ceiling, the banner replaces "Try again" with a
+   * "Start a new conversation" CTA — retrying on the same id will keep
+   * failing.
+   */
+  onStartNewConversation?: () => void;
+  /**
+   * #3342 — opt-in for embedded-widget hosts: postMessage an "atlas:error"
+   * event to the parent frame so the host page can react to chat failures.
+   * `AtlasChat` sets this; the web app (same-frame, no host) leaves it off.
+   */
+  notifyHostOnError?: boolean;
 }) {
   const info = useMemo(() => parseChatError(error, authMode), [error, authMode]);
   const [countdown, setCountdown] = useState(info.retryAfterSeconds ?? 0);
@@ -72,7 +88,8 @@ export function ErrorBanner({
     };
   }, [info.clientCode, onRetry]);
 
-  // Emit postMessage error event for widget host pages.
+  // Emit postMessage error event for widget host pages (opt-in via
+  // `notifyHostOnError`).
   //
   // #3342 L-8 — the widget is embeddable on arbitrary pages, so the host
   // origin is unknown and `targetOrigin: "*"` is unavoidable. The payload is
@@ -80,6 +97,7 @@ export function ErrorBanner({
   // strings, which can carry server-derived error text (host names, request
   // ids) to whatever frame embeds the widget.
   useEffect(() => {
+    if (!notifyHostOnError) return;
     try {
       if (typeof window !== "undefined" && window.parent !== window) {
         window.parent.postMessage(
@@ -94,9 +112,10 @@ export function ErrorBanner({
         );
       }
     } catch {
-      // Silently ignore postMessage errors (cross-origin restrictions)
+      // intentionally ignored: postMessage to a cross-origin host frame can
+      // throw; the banner still renders, the host just misses the event.
     }
-  }, [info.clientCode, info.code, info.retryable]);
+  }, [notifyHostOnError, info.clientCode, info.code, info.retryable]);
 
   // If we were offline but came back online, hide the banner
   if (info.clientCode === "offline" && restoredOnline) {
@@ -107,7 +126,10 @@ export function ErrorBanner({
     ? `Try again in ${countdown} second${countdown !== 1 ? "s" : ""}.`
     : info.detail;
 
-  const showRetry = info.retryable && onRetry && countdown === 0 && info.clientCode !== "offline";
+  const isBudgetExceeded = info.code === "conversation_budget_exceeded";
+  const showRetry =
+    info.retryable && onRetry && countdown === 0 && info.clientCode !== "offline" && !isBudgetExceeded;
+  const showStartNew = isBudgetExceeded && Boolean(onStartNewConversation);
 
   return (
     <div
@@ -115,12 +137,26 @@ export function ErrorBanner({
       role="alert"
     >
       <div className="flex items-start gap-2">
-        <ErrorIcon clientCode={info.clientCode} />
+        {isBudgetExceeded ? (
+          <MessageSquarePlus className="size-4 shrink-0" />
+        ) : (
+          <ErrorIcon clientCode={info.clientCode} />
+        )}
         <div className="min-w-0 flex-1">
           <p className="font-medium">{info.title}</p>
           {detail && <p className="mt-1 text-xs opacity-80">{detail}</p>}
           {info.requestId && (
             <p className="mt-1 text-xs opacity-60">Request ID: {info.requestId}</p>
+          )}
+          {showStartNew && (
+            <Button
+              variant="link"
+              size="sm"
+              onClick={onStartNewConversation}
+              className="mt-2 h-auto p-0 text-xs font-medium text-red-700 dark:text-red-400"
+            >
+              Start a new conversation
+            </Button>
           )}
           {showRetry && (
             <Button

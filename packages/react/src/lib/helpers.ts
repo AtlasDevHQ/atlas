@@ -92,6 +92,46 @@ export function downloadCSV(csv: string, filename = "atlas-results.csv") {
   }
 }
 
+/** Trigger a download for an already-fetched Blob (e.g. a dashboard export). */
+export function downloadBlob(blob: Blob, filename: string) {
+  let url: string | null = null;
+  try {
+    url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+  } catch (err) {
+    console.error("Download failed:", err instanceof Error ? err.message : String(err));
+    window.alert("Download failed");
+  } finally {
+    if (url) {
+      const blobUrl = url;
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000);
+    }
+  }
+}
+
+/**
+ * Pull the `filename` out of a `Content-Disposition` header. Handles both
+ * `filename="x"` and the RFC 5987 `filename*=UTF-8''x` forms; returns null
+ * when the header is absent or carries no filename.
+ */
+export function parseAttachmentFilename(header: string | null): string | null {
+  if (!header) return null;
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (star?.[1]) {
+    try {
+      return decodeURIComponent(star[1].trim());
+    } catch {
+      // intentionally ignored: malformed percent-encoding — fall through to
+      // the plain `filename="…"` form below.
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(header);
+  return plain?.[1]?.trim() ?? null;
+}
+
 /** Strict ISO date pattern: YYYY-MM-DD with optional time component. */
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
 
@@ -105,16 +145,33 @@ export function coerceExcelCell(v: unknown): unknown {
   return String(v);
 }
 
-/** Trigger an Excel (.xlsx) download in the browser. Dynamically imports exceljs to avoid bundle bloat. */
+/**
+ * Trigger an Excel (.xlsx) download in the browser. Dynamically imports exceljs
+ * to avoid bundle bloat.
+ *
+ * `loadExcelJS` is the per-side seam for the optional `exceljs` peer: the
+ * default loader carries `webpackIgnore: true` so an embedder's bundler never
+ * tries to resolve a peer it may not have installed (the import fails at
+ * runtime instead and surfaces the alert below). A host app that bundles
+ * exceljs itself (e.g. @atlas/web) passes its own `() => import("exceljs")`
+ * so its bundler code-splits the local copy. Typed `Promise<unknown>` rather
+ * than `typeof import("exceljs")` so the published d.ts never references the
+ * optional peer's types.
+ */
 export async function downloadExcel(
   columns: string[],
   rows: Record<string, unknown>[],
   filename = "atlas-results.xlsx",
+  loadExcelJS?: () => Promise<unknown>,
 ) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- exceljs is an optional peer dependency; its types may not be available in consumer projects
-  let ExcelJS: any;
+  // Structural cast at the seam — both loaders resolve the exceljs module; the
+  // cast keeps full typing internally without leaking the optional peer's
+  // types into the public signature.
+  let ExcelJS: typeof import("exceljs");
   try {
-    ExcelJS = await import("exceljs" /* webpackIgnore: true */);
+    ExcelJS = (
+      loadExcelJS ? await loadExcelJS() : await import("exceljs" /* webpackIgnore: true */)
+    ) as typeof import("exceljs");
   } catch (err) {
     console.error("Failed to load exceljs library:", err instanceof Error ? err.message : String(err));
     window.alert("Excel export is unavailable. The spreadsheet library failed to load.");
@@ -125,7 +182,7 @@ export async function downloadExcel(
   try {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet("Results");
-    ws.columns = columns.map((col: string) => ({ header: col, key: col }));
+    ws.columns = columns.map((col) => ({ header: col, key: col }));
     for (const row of rows) {
       const obj: Record<string, unknown> = {};
       for (const col of columns) {
@@ -184,6 +241,22 @@ export function normalizeList<T>(
   if (!data) return [];
   if (Array.isArray(data)) return data as (T & Record<string, unknown>)[];
   return Object.entries(data).map(([key, value]) => ({ ...value, [keyName]: key }));
+}
+
+/**
+ * #3219 (Codex review) — does a chart / table category value match the active
+ * cross-filter selection? A `date` drilldown stores its value normalized to
+ * `YYYY-MM-DD` (see `normalizeDrilldownValue`), but the underlying cell can be a
+ * full timestamp (`2026-06-04T12:00:00Z` / `2026-06-04 12:00:00`). Compare by
+ * exact string first, then fall back to the date prefix so a timestamp-backed
+ * date filter still highlights its row / bar. Non-timestamp values only ever
+ * match exactly, so text / number categories never produce a false positive.
+ */
+export function categoryMatchesSelection(cellValue: unknown, selectedValue: string): boolean {
+  const s = String(cellValue ?? "");
+  if (s === selectedValue) return true;
+  const datePrefix = /^(\d{4}-\d{2}-\d{2})[T ]/.exec(s);
+  return datePrefix !== null && datePrefix[1] === selectedValue;
 }
 
 /** Format a cell value: null as em-dash, numbers with locale formatting, else stringified. */

@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/react",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Embeddable Atlas chat UI for React applications",
   "license": "MIT",
   "repository": {
@@ -31,6 +31,16 @@
       "require": {
         "types": "./dist/hooks.d.cts",
         "default": "./dist/hooks.cjs"
+      }
+    },
+    "./chart": {
+      "import": {
+        "types": "./dist/chart.d.ts",
+        "default": "./dist/chart.js"
+      },
+      "require": {
+        "types": "./dist/chart.d.cts",
+        "default": "./dist/chart.cjs"
       }
     },
     "./widget": {

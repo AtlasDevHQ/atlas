@@ -61,6 +61,148 @@ export const CHART_COLORS_DARK = [
 ];
 
 /* ------------------------------------------------------------------ */
+/*  Goal lines / thresholds (#3208)                                     */
+/*  Pure: resolve a card's raw thresholds into render-ready reference-   */
+/*  line specs. The recharts <ReferenceLine> mapping lives in            */
+/*  result-chart.tsx; keeping this here makes it unit-testable without   */
+/*  booting recharts in jsdom (same split as the rest of this module).   */
+/* ------------------------------------------------------------------ */
+
+/** Default goal-line stroke when a threshold sets no explicit colour. Amber
+ *  reads as a "target" marker and, dashed, stays distinct from the gridlines. */
+export const THRESHOLD_LINE_LIGHT = "#d97706"; // amber-600
+export const THRESHOLD_LINE_DARK = "#fbbf24"; // amber-400
+
+/**
+ * Max goal lines rendered on a single chart — keeps it readable. A deliberately
+ * duplicated literal, kept in lockstep with `DASHBOARD_THRESHOLDS_MAX` in
+ * `@useatlas/schemas` (the persist-time bound) rather than imported, so this
+ * pure module stays runtime-dependency-free. Re-capping here is defence-in-depth
+ * over loosely-parsed cached config, which `rowToCard` JSON-parses without
+ * re-running the Zod schema.
+ */
+export const MAX_THRESHOLD_LINES = 5;
+
+/**
+ * Render-side CSS-colour sanity check. Structural mirror of `CSS_COLOR_RE` in
+ * `@useatlas/schemas` (the persist-time gate) — re-checked here because
+ * `rowToCard` JSON-parses cached `chart_config` WITHOUT re-running Zod, so a
+ * structurally-malformed colour from an older schema or a direct DB edit would
+ * otherwise reach the SVG `stroke` and render an INVISIBLE line. It accepts a
+ * hex / `rgb()`-family / bare-alphabetic colour; it does NOT validate a named
+ * colour against the CSS keyword set, so a typo'd-but-well-formed name (`bleu`)
+ * still passes — same behaviour as the persist gate, so the two stay symmetric.
+ */
+const THRESHOLD_COLOR_RE = /^(#[0-9a-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\([\d\s.,%/]+\)|[a-zA-Z]+)$/;
+
+/** Structural mirror of `DashboardThreshold` (`@useatlas/types`) — the LOOSE,
+ *  pre-validation wire shape (this data arrives via the un-validated `rowToCard`
+ *  read path, so `resolveThresholdLines` re-asserts the schema's invariants).
+ *  Re-declared locally so this pure module stays free of cross-package imports,
+ *  the same approach the rest of chart-detection takes for its shapes. */
+export type ThresholdInput = { value: number; color?: string; label?: string };
+
+/** Render-ready goal line: a Y position, a resolved stroke, and a trimmed
+ *  label (or null when there's nothing to caption). */
+export type ThresholdLine = { y: number; stroke: string; label: string | null };
+
+/**
+ * Resolve a card's raw thresholds into reference-line specs: drop non-finite
+ * values, cap the count, fall back to a theme stroke for an absent OR
+ * structurally-malformed colour, and trim the label. Returns `[]` for an absent
+ * / empty list so a chart with no thresholds renders exactly as before (#3208
+ * back-compat). Every output field is resolved, so the renderer is a plain map.
+ */
+export function resolveThresholdLines(
+  thresholds: readonly ThresholdInput[] | undefined,
+  dark: boolean,
+): ThresholdLine[] {
+  if (!thresholds || thresholds.length === 0) return [];
+  const fallback = dark ? THRESHOLD_LINE_DARK : THRESHOLD_LINE_LIGHT;
+  return thresholds
+    .filter((t) => Number.isFinite(t.value))
+    .slice(0, MAX_THRESHOLD_LINES)
+    .map((t) => {
+      const color = t.color?.trim();
+      const label = t.label?.trim();
+      return {
+        y: t.value,
+        stroke: color && THRESHOLD_COLOR_RE.test(color) ? color : fallback,
+        label: label ? label : null,
+      };
+    });
+}
+
+/* ------------------------------------------------------------------ */
+/*  Event annotations (#3209)                                           */
+/*  Pure: resolve a card's raw annotations into render-ready vertical-  */
+/*  reference-line specs — the vertical sibling of resolveThresholdLines.*/
+/*  The recharts <ReferenceLine x=...> mapping lives in result-chart.tsx.*/
+/* ------------------------------------------------------------------ */
+
+/** Default annotation stroke when a marker sets no explicit colour. Violet
+ *  reads as an "event" marker and stays distinct from the amber goal lines
+ *  (#3208) and the categorical data-series palette. */
+export const ANNOTATION_LINE_LIGHT = "#7c3aed"; // violet-600
+export const ANNOTATION_LINE_DARK = "#a78bfa"; // violet-400
+
+/**
+ * Max event markers rendered on a single chart — keeps it readable. A
+ * deliberately duplicated literal, kept in lockstep with
+ * `DASHBOARD_ANNOTATIONS_MAX` in `@useatlas/schemas` (the persist-time bound)
+ * rather than imported, so this pure module stays runtime-dependency-free.
+ * Re-capping here is defence-in-depth over a read path that bypasses the
+ * persist gate: `rowToCard` re-validates and discards an over-cap list wholesale
+ * (degrade-to-`[]`), but a direct DB edit could still feed a bloated array
+ * straight to the renderer.
+ */
+export const MAX_ANNOTATION_LINES = 20;
+
+/** Structural mirror of `DashboardCardAnnotation` (`@useatlas/types`) — the
+ *  LOOSE, pre-validation wire shape (this data arrives via the un-validated
+ *  `rowToCard` read path, so `resolveAnnotationLines` re-asserts the schema's
+ *  invariants). Re-declared locally so this pure module stays free of
+ *  cross-package imports, the same approach the rest of chart-detection takes. */
+export type AnnotationInput = { x: string; label: string; color?: string };
+
+/** Render-ready event marker: an X position, a resolved stroke, and a trimmed
+ *  label (or null when there's nothing to caption). */
+export type AnnotationLine = { x: string; stroke: string; label: string | null };
+
+/**
+ * Resolve a card's raw annotations into vertical reference-line specs: drop
+ * markers with no X position (can't be placed on the axis), cap the count, fall
+ * back to a theme stroke for an absent OR structurally-malformed colour, and
+ * trim the label. Returns `[]` for an absent / empty list so a chart with no
+ * annotations renders exactly as before (#3209 back-compat). Every output field
+ * is resolved, so the renderer is a plain map — the vertical sibling of
+ * `resolveThresholdLines`.
+ */
+export function resolveAnnotationLines(
+  annotations: readonly AnnotationInput[] | undefined,
+  dark: boolean,
+): AnnotationLine[] {
+  if (!annotations || annotations.length === 0) return [];
+  const fallback = dark ? ANNOTATION_LINE_DARK : ANNOTATION_LINE_LIGHT;
+  return annotations
+    .filter((a) => typeof a.x === "string" && a.x.trim().length > 0)
+    .slice(0, MAX_ANNOTATION_LINES)
+    .map((a) => {
+      // Trim `x` to match what the axis renders — a whitespace-padded value
+      // passes the non-empty filter above but wouldn't match the chart domain,
+      // so the marker would silently fail to draw.
+      const x = a.x.trim();
+      const color = a.color?.trim();
+      const label = a.label?.trim();
+      return {
+        x,
+        stroke: color && THRESHOLD_COLOR_RE.test(color) ? color : fallback,
+        label: label ? label : null,
+      };
+    });
+}
+
+/* ------------------------------------------------------------------ */
 /*  Column classification                                               */
 /* ------------------------------------------------------------------ */
 
@@ -110,6 +252,54 @@ export function classifyColumn(header: string, values: string[]): ColumnType {
   if (unique.size < 50) return "categorical";
 
   return "unknown";
+}
+
+/* ------------------------------------------------------------------ */
+/*  Click-to-drilldown value extractors (#3212)                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The one field this extractor reads off a recharts categorical-chart click
+ * (`MouseHandlerDataParam.activeLabel`). Declared locally, NOT imported from
+ * recharts as a type: this module is re-exported from the package ROOT
+ * (`@useatlas/react`), and recharts is an OPTIONAL peer that tsup leaves
+ * external — so an `import type { … } from "recharts"` here would surface as
+ * `import("recharts")` in the published root `.d.ts` and break `tsc` for a
+ * consumer who installed the package without recharts. Same local-mirror
+ * discipline the `ThresholdInput` / `AnnotationInput` shapes above use. The
+ * genuine `MouseHandlerDataParam` handler stays in `result-chart.tsx`, which is
+ * behind the `@useatlas/react/chart` subpath (the recharts opt-in).
+ */
+export type ChartClickState = { activeLabel?: string | number | null };
+
+/**
+ * Pull the clicked category-axis value out of a Recharts categorical chart
+ * click (bar / line / area). `activeLabel` is the category/domain value at the
+ * clicked tick; `null` means the click landed off any category (empty plot
+ * area). Pure — the recharts click itself is not reproducible in jsdom, so this
+ * is the unit-tested seam.
+ */
+export function categoryFromChartClick(
+  state: ChartClickState | null | undefined,
+): string | null {
+  const label = state?.activeLabel;
+  if (label == null || label === "") return null;
+  return String(label);
+}
+
+/**
+ * Pull the clicked slice's category value out of a Recharts Pie click. The
+ * sector carries the original {@link RechartsRow} on `payload`, keyed by header,
+ * so we read the category column off it. Pure + unit-tested.
+ */
+export function categoryFromPieClick(
+  data: { payload?: unknown } | null | undefined,
+  categoryKey: string,
+): string | null {
+  const payload = (data?.payload ?? null) as Record<string, unknown> | null;
+  const value = payload?.[categoryKey];
+  if (value == null || value === "") return null;
+  return String(value);
 }
 
 /* ------------------------------------------------------------------ */

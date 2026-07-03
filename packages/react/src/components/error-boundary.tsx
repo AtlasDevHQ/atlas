@@ -55,7 +55,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         )}
       >
         <p className="text-sm text-red-700 dark:text-red-400">
-          Something went wrong.
+          This section failed to render. Try again or reload the page.
         </p>
         <Button variant="outline" size="sm" onClick={this.resetErrorBoundary}>
           Try again

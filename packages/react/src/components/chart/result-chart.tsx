@@ -2,6 +2,7 @@
 
 import { useMemo, useId, useState } from "react";
 import { ErrorBoundary } from "../error-boundary";
+import { categoryMatchesSelection } from "../../lib/helpers";
 import {
   ResponsiveContainer,
   BarChart,
@@ -21,17 +22,164 @@ import {
   YAxis,
   Tooltip,
   Legend,
+  ReferenceLine,
 } from "recharts";
+import type { MouseHandlerDataParam } from "recharts";
 import {
   detectCharts,
   transformData,
+  categoryFromChartClick,
+  categoryFromPieClick,
+  resolveThresholdLines,
+  resolveAnnotationLines,
   CHART_COLORS_LIGHT,
   CHART_COLORS_DARK,
   type ChartRecommendation,
   type ChartType,
   type RechartsRow,
   type ChartDetectionResult,
+  type ThresholdInput,
+  type AnnotationInput,
 } from "./chart-detection";
+
+/* ------------------------------------------------------------------ */
+/*  Click-to-drilldown (#3212)                                          */
+/*  Pure value extractors live in chart-detection.ts (zero React deps,  */
+/*  unit-testable without importing recharts into jsdom).               */
+/* ------------------------------------------------------------------ */
+
+/** Build a categorical-chart `onClick` that forwards the clicked category value
+ *  plus the chart's category-axis column (`categoryKey`, the detected header),
+ *  or `undefined` when drilldown is off (so recharts attaches no handler). The
+ *  consumer gates on `categoryKey` so a parameter is only ever set from the
+ *  card's configured drilldown column (#3212). */
+function chartClickHandler(
+  onCategoryClick: ((value: string, categoryKey: string) => void) | undefined,
+  categoryKey: string,
+): ((state: MouseHandlerDataParam) => void) | undefined {
+  if (!onCategoryClick) return undefined;
+  return (state) => {
+    const value = categoryFromChartClick(state);
+    if (value != null) onCategoryClick(value, categoryKey);
+  };
+}
+
+/** Pointer cursor on the chart wrapper signals a card is drillable. */
+function drilldownCursor(
+  onCategoryClick: ((value: string, categoryKey: string) => void) | undefined,
+): React.CSSProperties | undefined {
+  return onCategoryClick ? { cursor: "pointer" } : undefined;
+}
+
+/**
+ * #3213 — cross-filter "selected" state. When a category is the active filter,
+ * its bar / slice stays solid and the rest dim, so the clicked element reads as
+ * selected (re-clicking it deselects, via the page's toggle). Returns the per-
+ * cell `fillOpacity`. The caller only renders `<Cell>` children when a selection
+ * is active, so the default (unselected) render is untouched. Matching is
+ * date-aware (#3219 Codex review) so a timestamp axis still highlights under a
+ * normalized `YYYY-MM-DD` date filter.
+ */
+function selectedFillOpacity(category: unknown, selectedCategory: string): number {
+  return categoryMatchesSelection(category, selectedCategory) ? 1 : 0.25;
+}
+
+/**
+ * #3219 (Codex review) — should the "selected" dim/highlight paint on THIS axis?
+ * `ResultChart` re-detects its category axis from the data, which can diverge
+ * from the card's configured drilldown column. The active filter value belongs
+ * to that configured column, so we only style when the value is actually present
+ * on the rendered axis — otherwise a filter on `region` could dim unrelated
+ * `segment` bars. This mirrors the click handler's `categoryKey === categoryColumn`
+ * gate without threading the configured column through every view, and also drops
+ * the dimming entirely when the selected value was filtered out of this card's
+ * current data (nothing to highlight).
+ */
+function selectionOnAxis(
+  data: RechartsRow[],
+  catKey: string,
+  selectedCategory: string | undefined,
+): selectedCategory is string {
+  return selectedCategory != null && data.some((d) => categoryMatchesSelection(d[catKey], selectedCategory));
+}
+
+/* ------------------------------------------------------------------ */
+/*  Goal lines / thresholds (#3208)                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Build the horizontal goal-line `<ReferenceLine>`s for a cartesian (Y-axis)
+ * chart. Returns an array of `<ReferenceLine>` elements rendered inline as
+ * children of the chart — the same pattern as the `<Bar>` / `<Line>` series maps
+ * in each view. Returns `[]` when there are no thresholds, so a card without them
+ * renders exactly as today.
+ *
+ * `ifOverflow="extendDomain"` so a target beyond the current data range (the
+ * "Revenue below $1M target" case) still shows — the axis stretches to fit it.
+ *
+ * Factored as a standalone helper; its vertical sibling `annotationLineElements`
+ * (#3209, below) follows the same shape for time-axis event markers.
+ */
+function thresholdLineElements(
+  thresholds: ThresholdInput[] | undefined,
+  dark: boolean,
+): React.ReactElement[] {
+  return resolveThresholdLines(thresholds, dark).map((line, i) => (
+    <ReferenceLine
+      key={`threshold-${i}`}
+      y={line.y}
+      stroke={line.stroke}
+      strokeDasharray="6 4"
+      strokeWidth={1.5}
+      ifOverflow="extendDomain"
+      label={
+        line.label
+          ? { value: line.label, position: "insideTopRight", fill: line.stroke, fontSize: 11 }
+          : undefined
+      }
+    />
+  ));
+}
+
+/* ------------------------------------------------------------------ */
+/*  Event annotations (#3209)                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Build the VERTICAL event-marker `<ReferenceLine>`s for a time-series chart —
+ * the vertical sibling of {@link thresholdLineElements}. Each marker positions
+ * on the category (X) axis at the annotation's `x` value (the same string the
+ * axis renders). Returns `[]` when there are no annotations, so a card without
+ * them renders exactly as today.
+ *
+ * Unlike thresholds, there is NO `ifOverflow="extendDomain"`: an annotation
+ * whose `x` matches no rendered category is silently dropped by recharts (the
+ * default category-axis behaviour) rather than stretching the axis to fit a
+ * phantom point — a marker for an event outside the chart's window simply
+ * doesn't draw, which is the graceful no-op the issue calls for.
+ *
+ * Only mounted by the line / area views — bar / pie / scatter ignore
+ * annotations (a categorical or numeric X axis has no time context to mark).
+ */
+function annotationLineElements(
+  annotations: AnnotationInput[] | undefined,
+  dark: boolean,
+): React.ReactElement[] {
+  return resolveAnnotationLines(annotations, dark).map((line, i) => (
+    <ReferenceLine
+      key={`annotation-${i}`}
+      x={line.x}
+      stroke={line.stroke}
+      strokeDasharray="4 3"
+      strokeWidth={1.5}
+      label={
+        line.label
+          ? { value: line.label, position: "insideTopRight", fill: line.stroke, fontSize: 11 }
+          : undefined
+      }
+    />
+  ));
+}
 
 /* ------------------------------------------------------------------ */
 /*  Theme helpers                                                       */
@@ -120,20 +268,27 @@ function BarChartView({
   data,
   rec,
   dark,
+  onCategoryClick,
+  selectedCategory,
+  thresholds,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
+  selectedCategory?: string;
+  thresholds?: ThresholdInput[];
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
   const catKey = rec.categoryColumn.header;
   const valKeys = rec.valueColumns.map((c) => c.header);
+  const onClick = chartClickHandler(onCategoryClick, catKey);
 
   return (
-    <div className="aspect-[4/3] sm:aspect-[16/9]">
+    <div className="aspect-[4/3] sm:aspect-[16/9]" style={drilldownCursor(onCategoryClick)}>
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+        <BarChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }} onClick={onClick}>
           <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
           <XAxis
             dataKey={catKey}
@@ -142,6 +297,7 @@ function BarChartView({
             angle={-45}
             textAnchor="end"
             height={60}
+            interval="preserveStartEnd"
           />
           <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
           <Tooltip content={<ChartTooltip dark={dark} />} />
@@ -154,8 +310,17 @@ function BarChartView({
               dataKey={key}
               fill={colors[i % colors.length]}
               radius={[4, 4, 0, 0]}
-            />
+            >
+              {/* #3213 — dim non-selected categories when a cross-filter is active.
+                  Gated on `selectionOnAxis` (#3219) so a divergent detected axis
+                  isn't dimmed by a filter that belongs to another column. */}
+              {selectionOnAxis(data, catKey, selectedCategory) &&
+                data.map((d, ci) => (
+                  <Cell key={ci} fillOpacity={selectedFillOpacity(d[catKey], selectedCategory)} />
+                ))}
+            </Bar>
           ))}
+          {thresholdLineElements(thresholds, dark)}
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -166,20 +331,27 @@ function LineChartView({
   data,
   rec,
   dark,
+  onCategoryClick,
+  thresholds,
+  annotations,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
+  thresholds?: ThresholdInput[];
+  annotations?: AnnotationInput[];
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
   const catKey = rec.categoryColumn.header;
   const valKeys = rec.valueColumns.map((c) => c.header);
+  const onClick = chartClickHandler(onCategoryClick, catKey);
 
   return (
-    <div className="aspect-[4/3] sm:aspect-[16/9]">
+    <div className="aspect-[4/3] sm:aspect-[16/9]" style={drilldownCursor(onCategoryClick)}>
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+        <LineChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }} onClick={onClick}>
           <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
           <XAxis
             dataKey={catKey}
@@ -188,6 +360,7 @@ function LineChartView({
             angle={-45}
             textAnchor="end"
             height={60}
+            interval="preserveStartEnd"
           />
           <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
           <Tooltip content={<ChartTooltip dark={dark} />} />
@@ -205,6 +378,8 @@ function LineChartView({
               activeDot={{ r: 5 }}
             />
           ))}
+          {thresholdLineElements(thresholds, dark)}
+          {annotationLineElements(annotations, dark)}
         </LineChart>
       </ResponsiveContainer>
     </div>
@@ -215,10 +390,14 @@ function PieChartView({
   data,
   rec,
   dark,
+  onCategoryClick,
+  selectedCategory,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
+  selectedCategory?: string;
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
@@ -236,8 +415,15 @@ function PieChartView({
     );
   }
 
+  const onPieClick = onCategoryClick
+    ? (sector: { payload?: unknown }) => {
+        const value = categoryFromPieClick(sector, catKey);
+        if (value != null) onCategoryClick(value, catKey);
+      }
+    : undefined;
+
   return (
-    <div className="aspect-[4/3] sm:aspect-[16/9]">
+    <div className="aspect-[4/3] sm:aspect-[16/9]" style={drilldownCursor(onCategoryClick)}>
       <ResponsiveContainer width="100%" height="100%">
         <PieChart>
           <Pie
@@ -248,14 +434,21 @@ function PieChartView({
             cy="50%"
             innerRadius={40}
             outerRadius={100}
+            onClick={onPieClick}
             label={({ name, value }: { name?: string; value?: number }) =>
               `${truncateLabel(String(name ?? ""), 10)} ${total > 0 && value != null ? ((value / total) * 100).toFixed(0) : 0}%`
             }
             labelLine={{ stroke: t.axis }}
             fontSize={11}
           >
-            {data.map((_, i) => (
-              <Cell key={i} fill={colors[i % colors.length]} />
+            {data.map((d, i) => (
+              <Cell
+                key={i}
+                fill={colors[i % colors.length]}
+                // #3213 — dim non-selected slices when a cross-filter is active;
+                // gated on `selectionOnAxis` (#3219) like the bar views.
+                fillOpacity={selectionOnAxis(data, catKey, selectedCategory) ? selectedFillOpacity(d[catKey], selectedCategory) : undefined}
+              />
             ))}
           </Pie>
           <Tooltip content={<ChartTooltip dark={dark} />} />
@@ -273,54 +466,66 @@ function AreaChartView({
   data,
   rec,
   dark,
+  onCategoryClick,
+  thresholds,
+  annotations,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
+  thresholds?: ThresholdInput[];
+  annotations?: AnnotationInput[];
 }) {
   const chartId = useId();
   const colors = getColors(dark);
   const t = themeTokens(dark);
   const catKey = rec.categoryColumn.header;
   const valKeys = rec.valueColumns.map((c) => c.header);
+  const onClick = chartClickHandler(onCategoryClick, catKey);
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
-      <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
-        <defs>
-          {valKeys.map((key, i) => (
-            <linearGradient key={key} id={`area-grad-${chartId}-${i}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor={colors[i % colors.length]} stopOpacity={0.3} />
-              <stop offset="95%" stopColor={colors[i % colors.length]} stopOpacity={0.05} />
-            </linearGradient>
-          ))}
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
-        <XAxis
-          dataKey={catKey}
-          tick={{ fill: t.axis, fontSize: 11 }}
-          tickFormatter={(v: string) => truncateLabel(v)}
-          angle={-45}
-          textAnchor="end"
-          height={60}
-        />
-        <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
-        <Tooltip content={<ChartTooltip dark={dark} />} />
-        {valKeys.length > 1 && (
-          <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
-        )}
-        {valKeys.map((key, i) => (
-          <Area
-            key={key}
-            type="monotone"
-            dataKey={key}
-            stroke={colors[i % colors.length]}
-            strokeWidth={2}
-            fill={`url(#area-grad-${chartId}-${i})`}
+    <div className="aspect-[4/3] sm:aspect-[16/9]" style={drilldownCursor(onCategoryClick)}>
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }} onClick={onClick}>
+          <defs>
+            {valKeys.map((key, i) => (
+              <linearGradient key={key} id={`area-grad-${chartId}-${i}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={colors[i % colors.length]} stopOpacity={0.3} />
+                <stop offset="95%" stopColor={colors[i % colors.length]} stopOpacity={0.05} />
+              </linearGradient>
+            ))}
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+          <XAxis
+            dataKey={catKey}
+            tick={{ fill: t.axis, fontSize: 11 }}
+            tickFormatter={(v: string) => truncateLabel(v)}
+            angle={-45}
+            textAnchor="end"
+            height={60}
+            interval="preserveStartEnd"
           />
-        ))}
-      </AreaChart>
-    </ResponsiveContainer>
+          <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
+          <Tooltip content={<ChartTooltip dark={dark} />} />
+          {valKeys.length > 1 && (
+            <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
+          )}
+          {valKeys.map((key, i) => (
+            <Area
+              key={key}
+              type="monotone"
+              dataKey={key}
+              stroke={colors[i % colors.length]}
+              strokeWidth={2}
+              fill={`url(#area-grad-${chartId}-${i})`}
+            />
+          ))}
+          {thresholdLineElements(thresholds, dark)}
+          {annotationLineElements(annotations, dark)}
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -332,42 +537,61 @@ function StackedBarChartView({
   data,
   rec,
   dark,
+  onCategoryClick,
+  selectedCategory,
+  thresholds,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
+  selectedCategory?: string;
+  thresholds?: ThresholdInput[];
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
   const catKey = rec.categoryColumn.header;
   const valKeys = rec.valueColumns.map((c) => c.header);
+  const onClick = chartClickHandler(onCategoryClick, catKey);
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
-      <BarChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
-        <XAxis
-          dataKey={catKey}
-          tick={{ fill: t.axis, fontSize: 11 }}
-          tickFormatter={(v: string) => truncateLabel(v)}
-          angle={-45}
-          textAnchor="end"
-          height={60}
-        />
-        <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
-        <Tooltip content={<ChartTooltip dark={dark} />} />
-        <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
-        {valKeys.map((key, i) => (
-          <Bar
-            key={key}
-            dataKey={key}
-            stackId="a"
-            fill={colors[i % colors.length]}
-            radius={i === valKeys.length - 1 ? [4, 4, 0, 0] : undefined}
+    <div className="aspect-[4/3] sm:aspect-[16/9]" style={drilldownCursor(onCategoryClick)}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} margin={{ top: 8, right: 8, bottom: 40, left: 8 }} onClick={onClick}>
+          <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+          <XAxis
+            dataKey={catKey}
+            tick={{ fill: t.axis, fontSize: 11 }}
+            tickFormatter={(v: string) => truncateLabel(v)}
+            angle={-45}
+            textAnchor="end"
+            height={60}
+            interval="preserveStartEnd"
           />
-        ))}
-      </BarChart>
-    </ResponsiveContainer>
+          <YAxis tick={{ fill: t.axis, fontSize: 11 }} tickFormatter={formatNumber} />
+          <Tooltip content={<ChartTooltip dark={dark} />} />
+          <Legend wrapperStyle={{ fontSize: 12, color: t.legendText }} />
+          {valKeys.map((key, i) => (
+            <Bar
+              key={key}
+              dataKey={key}
+              stackId="a"
+              fill={colors[i % colors.length]}
+              radius={i === valKeys.length - 1 ? [4, 4, 0, 0] : undefined}
+            >
+              {/* #3213 — dim non-selected categories when a cross-filter is active.
+                  Gated on `selectionOnAxis` (#3219) so a divergent detected axis
+                  isn't dimmed by a filter that belongs to another column. */}
+              {selectionOnAxis(data, catKey, selectedCategory) &&
+                data.map((d, ci) => (
+                  <Cell key={ci} fillOpacity={selectedFillOpacity(d[catKey], selectedCategory)} />
+                ))}
+            </Bar>
+          ))}
+          {thresholdLineElements(thresholds, dark)}
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -391,34 +615,36 @@ function ScatterChartView({
   const zKey = rec.valueColumns.length > 1 ? rec.valueColumns[1].header : undefined;
 
   return (
-    <ResponsiveContainer width="100%" height={300}>
-      <ScatterChart margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
-        <XAxis
-          dataKey={xKey}
-          type="number"
-          name={xKey}
-          tick={{ fill: t.axis, fontSize: 11 }}
-          tickFormatter={formatNumber}
-        />
-        <YAxis
-          dataKey={yKey}
-          type="number"
-          name={yKey}
-          tick={{ fill: t.axis, fontSize: 11 }}
-          tickFormatter={formatNumber}
-        />
-        {zKey && <ZAxis dataKey={zKey} type="number" name={zKey} range={[40, 400]} />}
-        <Tooltip
-          content={<ChartTooltip dark={dark} />}
-          cursor={{ strokeDasharray: "3 3" }}
-        />
-        <Scatter
-          data={data}
-          fill={colors[0]}
-        />
-      </ScatterChart>
-    </ResponsiveContainer>
+    <div className="aspect-[4/3] sm:aspect-[16/9]">
+      <ResponsiveContainer width="100%" height="100%">
+        <ScatterChart margin={{ top: 8, right: 8, bottom: 40, left: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
+          <XAxis
+            dataKey={xKey}
+            type="number"
+            name={xKey}
+            tick={{ fill: t.axis, fontSize: 11 }}
+            tickFormatter={formatNumber}
+          />
+          <YAxis
+            dataKey={yKey}
+            type="number"
+            name={yKey}
+            tick={{ fill: t.axis, fontSize: 11 }}
+            tickFormatter={formatNumber}
+          />
+          {zKey && <ZAxis dataKey={zKey} type="number" name={zKey} range={[40, 400]} />}
+          <Tooltip
+            content={<ChartTooltip dark={dark} />}
+            cursor={{ strokeDasharray: "3 3" }}
+          />
+          <Scatter
+            data={data}
+            fill={colors[0]}
+          />
+        </ScatterChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -462,10 +688,10 @@ function ChartTypeSelector({
           key={rec.type}
           onClick={() => onChange(rec.type)}
           aria-pressed={active === rec.type}
-          className={`rounded px-2 py-0.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
+          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
             active === rec.type
-              ? "bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-400"
-              : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
+              ? "bg-background text-foreground shadow-sm ring-1 ring-zinc-300 dark:ring-zinc-700"
+              : "text-zinc-700 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-zinc-100"
           }`}
         >
           {CHART_LABELS[rec.type]}
@@ -485,25 +711,42 @@ function ChartRenderer({
   defaultData,
   defaultRec,
   dark,
+  onCategoryClick,
+  selectedCategory,
+  thresholds,
+  annotations,
 }: {
   rows: string[][];
   rec: ChartRecommendation;
   defaultData: RechartsRow[];
   defaultRec: ChartRecommendation;
   dark: boolean;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
+  selectedCategory?: string;
+  thresholds?: ThresholdInput[];
+  annotations?: AnnotationInput[];
 }) {
   // Re-transform data when switching chart type (category axis may differ)
   const chartData = rec === defaultRec ? defaultData : transformData(rows, rec);
   const type = rec.type;
 
+  // Scatter is intentionally not drillable (#3212): both axes are numeric — it
+  // has no category to bind a parameter to. Every other view forwards clicks.
+  // `selectedCategory` (#3213) only styles the categorical views (bar / stacked /
+  // pie); line/area trends have no discrete element to mark. Goal lines (#3208)
+  // are horizontal Y-axis references, so they apply to the cartesian views (bar /
+  // line / area / stacked-bar) — not pie (no Y axis) or scatter (numeric Y). Event
+  // annotations (#3209) are VERTICAL X-axis markers for dated events, so they
+  // apply ONLY to the time-series views (line / area) — bar/stacked/pie/scatter
+  // ignore them (a categorical or numeric X axis has no time context to mark).
   return (
     <div className="p-2">
-      {type === "bar" ? <BarChartView data={chartData} rec={rec} dark={dark} />
-        : type === "line" ? <LineChartView data={chartData} rec={rec} dark={dark} />
-        : type === "area" ? <AreaChartView data={chartData} rec={rec} dark={dark} />
-        : type === "stacked-bar" ? <StackedBarChartView data={chartData} rec={rec} dark={dark} />
+      {type === "bar" ? <BarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} thresholds={thresholds} />
+        : type === "line" ? <LineChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} thresholds={thresholds} annotations={annotations} />
+        : type === "area" ? <AreaChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} thresholds={thresholds} annotations={annotations} />
+        : type === "stacked-bar" ? <StackedBarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} thresholds={thresholds} />
         : type === "scatter" ? <ScatterChartView data={chartData} rec={rec} dark={dark} />
-        : <PieChartView data={chartData} rec={rec} dark={dark} />}
+        : <PieChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} />}
     </div>
   );
 }
@@ -517,11 +760,44 @@ export function ResultChart({
   rows,
   dark,
   detectionResult,
+  onCategoryClick,
+  selectedCategory,
+  thresholds,
+  annotations,
 }: {
   headers: string[];
   rows: string[][];
   dark: boolean;
   detectionResult?: ChartDetectionResult;
+  /**
+   * #3212 — click-to-drilldown. When provided, clicking a bar / line / area
+   * point or pie slice forwards the clicked category-axis value AND the chart's
+   * category-axis column header (so the consumer can confirm it matches the
+   * card's configured drilldown column before binding). Omitted on the chat
+   * surface and on non-drillable dashboard cards (no-op click).
+   */
+  onCategoryClick?: (value: string, categoryKey: string) => void;
+  /**
+   * #3213 — cross-filter "selected" state. The active filter's category value;
+   * its bar / slice renders solid while the rest dim, so the clicked element
+   * reads as selected. Only the categorical views (bar / stacked / pie) honor it.
+   * Omitted → no element is marked.
+   */
+  selectedCategory?: string;
+  /**
+   * #3208 — goal lines / thresholds from the card's `chartConfig.thresholds`.
+   * Each renders as a horizontal `<ReferenceLine>` on the bar / line / area /
+   * stacked-bar views. Omitted on the chat surface and on cards with no
+   * thresholds, so the chart renders exactly as before.
+   */
+  thresholds?: ThresholdInput[];
+  /**
+   * #3209 — event annotations from the card's `annotations` column. Each renders
+   * as a VERTICAL `<ReferenceLine>` on the line / area views ONLY (a dated event
+   * marker on the time axis); bar / pie / scatter ignore them. Omitted on the
+   * chat surface and on cards with none, so the chart renders exactly as before.
+   */
+  annotations?: AnnotationInput[];
 }) {
   const result = useMemo(
     () => detectionResult ?? detectCharts(headers, rows),
@@ -559,6 +835,10 @@ export function ResultChart({
           defaultData={result.data}
           defaultRec={result.recommendations[0]}
           dark={dark}
+          onCategoryClick={onCategoryClick}
+          selectedCategory={selectedCategory}
+          thresholds={thresholds}
+          annotations={annotations}
         />
       </ErrorBoundary>
     </div>

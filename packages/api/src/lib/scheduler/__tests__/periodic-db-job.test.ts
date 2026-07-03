@@ -165,6 +165,23 @@ describe("runPeriodicDbCycle", () => {
     expect(rec.tallied[0]?.outcome).toEqual({ kind: "fail", error: "kaboom" });
   });
 
+  it("a throwing emitCycleAudit is guarded — the cycle resolves with its result intact (no fiber-killing defect)", async () => {
+    // Exercise the no-DB terminal path specifically: there `emitAudit` is the
+    // only guard between a thrown cycle-audit and an escaping defect (no row
+    // loop around it). The cycle must still resolve, returning the zeroed result.
+    dbAvailable = false;
+    const rec = freshRecorder();
+    const spec = makeSpec(rec, {
+      emitCycleAudit: () => {
+        throw new Error("audit-boom");
+      },
+    });
+
+    const result = await Effect.runPromise(runPeriodicDbCycle(spec));
+
+    expect(result).toEqual({ status: "success", inspected: 0, ok: 0, failed: 0 });
+  });
+
   it("a throwing tally callback is guarded — the cycle finishes and still audits (no fiber-killing defect)", async () => {
     const rec = freshRecorder();
     const spec = makeSpec(rec, {

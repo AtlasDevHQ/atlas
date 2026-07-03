@@ -15,15 +15,16 @@
  * env-tier fallback). Read once at scheduler start (`requiresRestart: true`,
  * mirroring `ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS`).
  *
- * Lifecycle mirrors `openapi-spec-refresh.ts` / `byot-catalog-refresh.ts`:
- * `setInterval`-based with `unref()` (doesn't pin the process), an initial
- * cycle on start, a single-running guard, and an in-flight overlap guard so a
- * slow cycle never races the next tick. Promise-native cycle → the Promise
- * `withSpan` (self-spanned, so it never slots into `SCHEDULER_WORK_SPAN_NAMES`
- * in `effect/layers.ts` — same note as the spec-refresh sibling).
+ * Lifecycle: `setInterval`-based with `unref()` (doesn't pin the process), an
+ * initial cycle on start, a single-running guard, and an in-flight overlap
+ * guard so a slow cycle never races the next tick. Promise-native cycle → the
+ * Promise `withSpan` (self-spanned, so it never slots into
+ * `SCHEDULER_WORK_SPAN_NAMES` in `effect/layers.ts`). This is now the last
+ * `setInterval`-based scheduler — its former siblings (`openapi-spec-refresh.ts`,
+ * `byot-catalog-refresh.ts`) were folded onto `registerPeriodicFiber` by #4195;
+ * this job is a candidate for the same treatment.
  *
  * @see ../knowledge/sync.ts — the per-collection sync + cycle walk.
- * @see ./openapi-spec-refresh.ts — the lifecycle pattern this follows.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -93,7 +94,8 @@ export async function runKnowledgeBundleSyncCycle(): Promise<KnowledgeSyncCycleR
 }
 
 // ---------------------------------------------------------------------------
-// Lifecycle (setInterval-based, mirrors openapi-spec-refresh.ts)
+// Lifecycle (setInterval-based — the last such scheduler after #4195 folded
+// the OpenAPI/BYOT refresh jobs onto registerPeriodicFiber)
 // ---------------------------------------------------------------------------
 
 let _timer: ReturnType<typeof setInterval> | null = null;

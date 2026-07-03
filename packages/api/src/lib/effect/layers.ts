@@ -3219,8 +3219,10 @@ export function makeSchedulerLive(
           // fibers forked `forkScoped` on this Layer's scope, so scope shutdown
           // interrupts them automatically (no `setInterval` handle to clear).
 
-          // Stop the knowledge bundle sync scheduler (#4211) symmetrically —
-          // same setInterval + `unref()` lifecycle as the siblings above.
+          // Stop the knowledge bundle sync scheduler (#4211) — still a
+          // `setInterval` + `unref()` scheduler (not yet folded onto
+          // `registerPeriodicFiber` like the #4195 trio above), so its timer
+          // must be cleared explicitly here.
           yield* Effect.tryPromise({
             try: async () => {
               const { stopKnowledgeBundleSyncScheduler } = await import(

@@ -60,9 +60,15 @@ export interface PeriodicDbCycleSpec<Row, Outcome, Result extends PeriodicDbCycl
    * return a shared singleton, since the populated path mutates it in place.
    * Used for the no-DB + empty paths, and as the seed for the populated path
    * (`inspected` is then stamped and `tally` accumulates into it).
+   *
+   * Must be a PURE, non-throwing constructor: unlike `tally`/`emitCycleAudit`,
+   * a throw here is NOT guarded and would defect (and kill) the periodic fiber.
    */
   readonly emptyResult: () => Result;
-  /** A zeroed failure result carrying the scan error (`status: "failure"`). */
+  /**
+   * A zeroed failure result carrying the scan error (`status: "failure"`).
+   * Must be a PURE, non-throwing constructor (see `emptyResult`).
+   */
   readonly failureResult: (error: string) => Result;
   /**
    * Bounded scan of the working set. Only invoked when an internal DB is
@@ -71,7 +77,11 @@ export interface PeriodicDbCycleSpec<Row, Outcome, Result extends PeriodicDbCycl
   readonly scan: () => Promise<readonly Row[]>;
   /** Apply one row. May reject; an unexpected rejection maps via `defectOutcome`. */
   readonly applyRow: (row: Row) => Promise<Outcome>;
-  /** Map an unexpected per-row rejection to a terminal outcome (belt-and-braces). */
+  /**
+   * Map an unexpected per-row rejection to a terminal outcome (belt-and-braces).
+   * Must be a PURE, non-throwing mapper (it runs eagerly inside `Effect.succeed`,
+   * so a throw here is NOT guarded and would defect the fiber — see `emptyResult`).
+   */
   readonly defectOutcome: (error: string) => Outcome;
   /**
    * Fold one row's outcome into `result` and emit its per-row audit. Mutates

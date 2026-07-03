@@ -1,21 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ExternalLink, Loader2 } from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+import { z } from "zod";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { InlineError } from "@/ui/components/admin/compact";
+import {
+  FormDialog,
+  FormControl,
+  FormDescription,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/form-dialog";
 import { getApiUrl } from "@/lib/api-url";
+import { installFormErrorMessage } from "./install-form-error";
 
 /* ────────────────────────────────────────────────────────────────────────
  *  Curated REST datasource install — the one-credential form for a built-in
@@ -23,6 +21,11 @@ import { getApiUrl } from "@/lib/api-url";
  *  pre-wired server-side; the admin only pastes the secret. POSTs the slim
  *  `{ auth_value, display_name? }` body to the candidate's `install-form`
  *  handler (mirrors {@link DataCandidateFormDataSchema} on the API).
+ *
+ *  Rides the shared {@link FormDialog} primitive (arch-win #91 / #4203) — the
+ *  same credential → validate → save spine as `FormInstallModal`,
+ *  `RestInstallDialog`, and `ByotInstallModal` — so a fix to FormDialog's
+ *  error-surface / reset behavior reaches every install dialog at once.
  * ──────────────────────────────────────────────────────────────────────── */
 
 export interface CuratedCandidate {
@@ -46,6 +49,18 @@ const SECRET_FIELD: Record<string, { label: string; placeholder: string; help: s
   },
 };
 
+// `CuratedFormValues` is derived from the schema (`z.infer`) so the schema is
+// the single source of truth — a field can't drift between the two.
+const curatedSchema = z.object({
+  auth_value: z.string().min(1, "Credential is required"),
+  display_name: z.string(),
+});
+type CuratedFormValues = z.infer<typeof curatedSchema>;
+
+/** A fresh empty form for every open; the reset itself is FormDialog's job
+ *  (keyed on `[open, resetKey]`), so a plain constant is enough here. */
+const CURATED_DEFAULTS: CuratedFormValues = { auth_value: "", display_name: "" };
+
 export function CuratedInstallDialog({
   candidate,
   open,
@@ -57,130 +72,102 @@ export function CuratedInstallDialog({
   onOpenChange: (open: boolean) => void;
   onInstalled: () => void;
 }) {
-  const [authValue, setAuthValue] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const field = candidate
+    ? (SECRET_FIELD[candidate.slug] ?? {
+        label: "API key / token",
+        placeholder: "",
+        help: "Used read-only; encrypted at rest.",
+      })
+    : null;
 
-  // Reset the form whenever a different candidate opens the dialog so a
-  // previous vendor's pasted secret never leaks into the next install.
-  useEffect(() => {
-    if (open) {
-      setAuthValue("");
-      setDisplayName("");
-      setError(null);
+  async function handleSubmit(values: CuratedFormValues): Promise<void> {
+    // Unreachable — FormDialog only mounts when `candidate` is non-null (see the
+    // early return below) — but make the impossible state loud rather than
+    // resolving as a phantom success if a future refactor makes it reachable.
+    if (!candidate) throw new Error("No datasource candidate selected");
+    const body: Record<string, unknown> = { auth_value: values.auth_value };
+    if (values.display_name.trim()) body.display_name = values.display_name.trim();
+
+    const res = await fetch(
+      `${getApiUrl()}/api/v1/integrations/${encodeURIComponent(candidate.slug)}/install-form`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(body),
+      },
+    );
+    if (!res.ok) {
+      // Throw so FormDialog's onSubmit wrapper surfaces it as the shared
+      // root-level error banner (the reset-on-open effect keyed on
+      // `[open, resetKey]` still wipes the pasted secret on the next open).
+      throw new Error(await installFormErrorMessage(res));
     }
-  }, [open, candidate?.slug]);
-
-  if (!candidate) return null;
-  const field = SECRET_FIELD[candidate.slug] ?? {
-    label: "API key / token",
-    placeholder: "",
-    help: "Used read-only; encrypted at rest.",
-  };
-
-  async function handleSubmit() {
-    if (!candidate) return;
-    setSaving(true);
-    setError(null);
-    const body: Record<string, unknown> = { auth_value: authValue };
-    if (displayName.trim()) body.display_name = displayName.trim();
-
-    try {
-      const res = await fetch(
-        `${getApiUrl()}/api/v1/integrations/${encodeURIComponent(candidate.slug)}/install-form`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify(body),
-        },
-      );
-      if (!res.ok) {
-        let message = `Install failed (${res.status})`;
-        try {
-          const b = (await res.json()) as {
-            message?: string;
-            fieldErrors?: Record<string, string[] | undefined>;
-            requestId?: string;
-          };
-          const firstField = b.fieldErrors ? Object.keys(b.fieldErrors)[0] : undefined;
-          const firstErr = firstField ? b.fieldErrors?.[firstField]?.[0] : undefined;
-          if (firstField && firstErr) message = `${firstField}: ${firstErr}`;
-          else if (b.message) message = b.message;
-          if (b.requestId) message = `${message} (ref: ${b.requestId.slice(0, 8)})`;
-        } catch {
-          // intentionally ignored: non-JSON body → keep the status-only message.
-        }
-        setError(message);
-        return;
-      }
-      toast.success(`${candidate.name} connected`);
-      onInstalled();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Install failed");
-    } finally {
-      setSaving(false);
-    }
+    toast.success(`${candidate.name} connected`);
+    onInstalled();
   }
 
+  if (!candidate || !field) return null;
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>Connect {candidate.name}</DialogTitle>
-          <DialogDescription>
-            {candidate.description ??
-              `Query ${candidate.name} as a read-only REST datasource. The spec is pre-wired — just paste your credential.`}
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="curated-auth-value">{field.label}</Label>
-            <Input
-              id="curated-auth-value"
-              type="password"
-              placeholder={field.placeholder}
-              value={authValue}
-              onChange={(e) => setAuthValue(e.target.value)}
-              data-testid="curated-auth-value"
-              autoFocus
-            />
-            <p className="text-xs text-muted-foreground">{field.help}</p>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="curated-display-name">Display name (optional)</Label>
-            <Input
-              id="curated-display-name"
-              placeholder={candidate.name}
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-            />
-          </div>
-
-          {error ? <InlineError>{error}</InlineError> : null}
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
-            Cancel
-          </Button>
-          <Button
-            onClick={handleSubmit}
-            disabled={saving || authValue.trim().length === 0}
-            data-testid="curated-install-submit"
-          >
-            {saving ? (
-              <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-            ) : (
-              <ExternalLink className="mr-1.5 size-3.5" />
+    <FormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      // Keyed on the vendor slug so switching candidates while the dialog stays
+      // open re-fires the reset — a pasted `sk_live_…` never bleeds into the
+      // next vendor's install (regression-guarded in the sibling test).
+      resetKey={candidate.slug}
+      title={`Connect ${candidate.name}`}
+      description={
+        candidate.description ??
+        `Query ${candidate.name} as a read-only REST datasource. The spec is pre-wired — just paste your credential.`
+      }
+      schema={curatedSchema}
+      defaultValues={CURATED_DEFAULTS}
+      onSubmit={handleSubmit}
+      submitLabel="Connect"
+      submitTestId="curated-install-submit"
+      className="max-w-md"
+    >
+      {(form) => (
+        <>
+          <FormField
+            control={form.control}
+            name="auth_value"
+            render={({ field: rhf }) => (
+              <FormItem>
+                <FormLabel>{field.label}</FormLabel>
+                <FormControl>
+                  <Input
+                    id="curated-auth-value"
+                    type="password"
+                    placeholder={field.placeholder}
+                    data-testid="curated-auth-value"
+                    autoFocus
+                    {...rhf}
+                  />
+                </FormControl>
+                <FormDescription>{field.help}</FormDescription>
+                <FormMessage />
+              </FormItem>
             )}
-            Connect
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          />
+
+          <FormField
+            control={form.control}
+            name="display_name"
+            render={({ field: rhf }) => (
+              <FormItem>
+                <FormLabel>Display name (optional)</FormLabel>
+                <FormControl>
+                  <Input id="curated-display-name" placeholder={candidate.name} {...rhf} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </>
+      )}
+    </FormDialog>
   );
 }

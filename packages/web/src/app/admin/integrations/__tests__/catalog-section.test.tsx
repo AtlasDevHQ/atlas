@@ -875,7 +875,8 @@ describe("CatalogCard — BYOT form submit (#2746)", () => {
       />,
     );
 
-    // CompactRow shows "Add token" — click it to expand the BYOT form.
+    // CompactRow shows "Add token" — click it to open the BYOT modal (#4203:
+    // ByotInstallModal rides FormDialog, so the form renders in a portal).
     const addToken = container.querySelector<HTMLButtonElement>(
       '[data-testid="catalog-card-slack-byot-toggle"]',
     );
@@ -884,9 +885,10 @@ describe("CatalogCard — BYOT form submit (#2746)", () => {
       fireEvent.click(addToken!);
     });
 
-    // Fill the token field + submit.
+    // Fill the token field + submit — the modal + its input live in a portal
+    // under document.body, so query the document rather than `container`.
     const tokenInput = await waitFor(() => {
-      const el = container.querySelector<HTMLInputElement>("input#slack-botToken");
+      const el = document.querySelector<HTMLInputElement>("input#slack-botToken");
       if (!el) throw new Error("token input not rendered");
       return el;
     });
@@ -895,7 +897,7 @@ describe("CatalogCard — BYOT form submit (#2746)", () => {
     });
 
     const submit = Array.from(
-      container.querySelectorAll<HTMLButtonElement>("button"),
+      document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
     ).find((b) => b.textContent?.trim() === "Connect");
     expect(submit).toBeDefined();
     await act(async () => {

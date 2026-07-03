@@ -1,11 +1,17 @@
 "use client";
 
 /**
- * BYOT (bring-your-own-token) inline form. Slice 8 of 1.5.3 (#2746) lifted
+ * BYOT (bring-your-own-token) install modal. Slice 8 of 1.5.3 (#2746) lifted
  * the per-platform forms (`<SlackByotForm>`, `<TeamsByotForm>`,
  * `<DiscordByotForm>`) out of `page.tsx` and consolidated them here so the
  * unified catalog card flow exposes one mounting point for self-host
  * operators that haven't wired the platform's OAuth env vars.
+ *
+ * #4203 converged it onto the shared {@link FormDialog} primitive — the same
+ * credential → validate → save spine its catalog-card siblings
+ * (`FormInstallModal`, `StaticBotInstallModal`) already ride — so it's a modal
+ * opened from the card's "Add token" affordance rather than an inline form,
+ * and a fix to FormDialog's error surface reaches every install dialog at once.
  *
  * BYOT lives on the legacy `/api/v1/admin/integrations/:slug/byot`
  * endpoints because the catalog endpoint family (`/install`,
@@ -14,9 +20,17 @@
  * deliverable.
  */
 
-import { useState } from "react";
-import { Loader2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { useMemo } from "react";
+import { z } from "zod";
+import {
+  FormDialog,
+  FormControl,
+  FormDescription,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/form-dialog";
 import { Input } from "@/components/ui/input";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
@@ -130,17 +144,38 @@ const BYOT_FIELDS: Record<ByotEligibleSlug, readonly ByotField[]> = {
 // Component
 // ---------------------------------------------------------------------------
 
-export interface ByotFormProps {
+export interface ByotInstallModalProps {
   readonly slug: ByotEligibleSlug;
+  /** Platform display name from the catalog row — used in the modal title. */
+  readonly name: string;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
   readonly onSuccess: () => void;
-  /** Pushed up so the parent Shell can render the inline destructive strip. */
-  readonly onError: (message: string) => void;
 }
 
-export function ByotForm({ slug, onSuccess, onError }: ByotFormProps) {
+export function ByotInstallModal({ slug, name, open, onOpenChange, onSuccess }: ByotInstallModalProps) {
   const fields = BYOT_FIELDS[slug];
-  const [values, setValues] = useState<Record<string, string>>(() =>
-    Object.fromEntries(fields.map((f) => [f.key, ""])),
+
+  // Every BYOT field is required (the legacy endpoint rejects a partial body).
+  // The schema is built dynamically from `BYOT_FIELDS[slug]`, so a static
+  // `z.infer` isn't possible; the tuple annotation on `.map` keeps the entry
+  // type concrete (no `any` leak through `Object.fromEntries`) and the single
+  // `as` just pins the erased key set back to `Record<string, string>`.
+  const schema = useMemo(
+    () =>
+      z.object(
+        Object.fromEntries(
+          fields.map((f): [string, z.ZodString] => [
+            f.key,
+            z.string().min(1, `${f.label} is required`),
+          ]),
+        ),
+      ) as z.ZodType<Record<string, string>, Record<string, string>>,
+    [fields],
+  );
+  const defaultValues = useMemo(
+    () => Object.fromEntries(fields.map((f) => [f.key, ""])) as Record<string, string>,
+    [fields],
   );
 
   const mutation = useAdminMutation<{ message: string }>({
@@ -148,47 +183,55 @@ export function ByotForm({ slug, onSuccess, onError }: ByotFormProps) {
     method: "POST",
   });
 
-  const allFilled = fields.every((f) => (values[f.key] ?? "").trim().length > 0);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!allFilled) return;
+  async function handleSubmit(values: Record<string, string>): Promise<void> {
     const body: Record<string, string> = {};
     for (const f of fields) body[f.key] = (values[f.key] ?? "").trim();
     const result = await mutation.mutate({ body });
-    if (result.ok) {
-      onSuccess();
-    } else {
-      onError(friendlyErrorOrNull(result.error) ?? `Couldn't connect ${slug}`);
+    if (!result.ok) {
+      // Throw so FormDialog surfaces it as the shared root-level error banner.
+      throw new Error(friendlyErrorOrNull(result.error) ?? `Couldn't connect ${name}`);
     }
+    onSuccess();
+    onOpenChange(false);
   }
 
   return (
-    <form
+    <FormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Connect ${name}`}
+      description={`Paste the bot credentials for ${name}. They're encrypted at rest and used only to route this workspace's messages.`}
+      schema={schema}
+      defaultValues={defaultValues}
       onSubmit={handleSubmit}
-      className="space-y-3"
-      data-testid={`catalog-card-${slug}-byot-form`}
+      submitLabel="Connect"
+      saving={mutation.saving}
+      className="max-w-md"
     >
-      {fields.map((f) => (
-        <div key={f.key} className="space-y-1.5">
-          <label htmlFor={`${slug}-${f.key}`} className="text-sm font-medium">
-            {f.label}
-          </label>
-          {f.helper && <p className="text-xs text-muted-foreground">{f.helper}</p>}
-          <Input
-            id={`${slug}-${f.key}`}
-            type={f.type === "password" ? "password" : "text"}
-            placeholder={f.placeholder}
-            value={values[f.key] ?? ""}
-            onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-            disabled={mutation.saving}
+      {(form) =>
+        fields.map((f) => (
+          <FormField
+            key={f.key}
+            control={form.control}
+            name={f.key}
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel htmlFor={`${slug}-${f.key}`}>{f.label}</FormLabel>
+                {f.helper ? <FormDescription>{f.helper}</FormDescription> : null}
+                <FormControl>
+                  <Input
+                    id={`${slug}-${f.key}`}
+                    type={f.type === "password" ? "password" : "text"}
+                    placeholder={f.placeholder}
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
           />
-        </div>
-      ))}
-      <Button type="submit" size="sm" disabled={mutation.saving || !allFilled}>
-        {mutation.saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-        Connect
-      </Button>
-    </form>
+        ))
+      }
+    </FormDialog>
   );
 }

@@ -1,0 +1,26 @@
+{
+  "default": "us",
+  "regions": [
+    {
+      "id": "us",
+      "label": "United States",
+      "api": "https://api.useatlas.dev",
+      "mcp": "https://mcp.useatlas.dev/mcp",
+      "authMd": "https://api.useatlas.dev/auth.md"
+    },
+    {
+      "id": "eu",
+      "label": "Europe",
+      "api": "https://api-eu.useatlas.dev",
+      "mcp": "https://mcp-eu.useatlas.dev/mcp",
+      "authMd": "https://api-eu.useatlas.dev/auth.md"
+    },
+    {
+      "id": "apac",
+      "label": "Asia Pacific",
+      "api": "https://api-apac.useatlas.dev",
+      "mcp": "https://mcp-apac.useatlas.dev/mcp",
+      "authMd": "https://api-apac.useatlas.dev/auth.md"
+    }
+  ]
+}

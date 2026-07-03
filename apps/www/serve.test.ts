@@ -37,6 +37,10 @@ beforeAll(async () => {
     join(fixtureDir, ".well-known", "oauth-protected-resource.json"),
     `${JSON.stringify({ resource: "https://api.useatlas.dev" })}\n`,
   );
+  writeFileSync(
+    join(fixtureDir, ".well-known", "atlas-regions.json"),
+    `${JSON.stringify({ default: "us", regions: [{ id: "us" }] })}\n`,
+  );
   // A page + its markdown twin, for the Accept: text/markdown branch.
   mkdirSync(join(fixtureDir, "markdown"), { recursive: true });
   writeFileSync(join(fixtureDir, "markdown", "guide.md"), "# Guide — markdown twin\n");
@@ -105,10 +109,19 @@ describe("apex agent discovery — OAuth/OIDC redirects", () => {
 });
 
 describe("apex agent discovery — .well-known + homepage", () => {
-  it("serves /.well-known/oauth-protected-resource as JSON", async () => {
+  it("serves /.well-known/oauth-protected-resource as JSON with CORS", async () => {
     const res = await req("/.well-known/oauth-protected-resource");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  it("serves /.well-known/atlas-regions.json (region directory) with CORS", async () => {
+    const res = await req("/.well-known/atlas-regions.json");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(await res.json()).toMatchObject({ default: "us" });
   });
 
   it("404s a registered well-known route whose backing file is missing", async () => {
@@ -123,6 +136,7 @@ describe("apex agent discovery — .well-known + homepage", () => {
     expect(link).toContain('</auth.md>; rel="auth.md"');
     expect(link).toContain('rel="oauth-authorization-server"');
     expect(link).toContain('rel="oauth-protected-resource"');
+    expect(link).toContain('rel="atlas-regions"');
   });
 
   it("404s an unknown path (no 404.html fixture → plain Not Found)", async () => {

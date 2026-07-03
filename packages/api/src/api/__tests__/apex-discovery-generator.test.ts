@@ -15,6 +15,7 @@ import { describe, it, expect } from "bun:test";
 import {
   renderCanonicalAuthMd,
   API_PROTECTED_RESOURCE,
+  buildRegionDirectory,
 } from "../../../scripts/generate-apex-discovery";
 
 describe("apex-discovery generator", () => {
@@ -49,6 +50,26 @@ describe("apex-discovery generator", () => {
     expect(API_PROTECTED_RESOURCE.bearer_methods_supported).toEqual(["header"]);
     expect(API_PROTECTED_RESOURCE.resource_policy_uri).toBe(
       "https://www.useatlas.dev/privacy",
+    );
+  });
+
+  it("builds a region directory with the us default and per-region hosts", () => {
+    const dir = buildRegionDirectory();
+    expect(dir.default).toBe("us");
+    expect(dir.regions.map((r) => r.id)).toEqual(["us", "eu", "apac"]);
+  });
+
+  it("derives each region's MCP host via the api*→mcp* brand-mirror", () => {
+    const dir = buildRegionDirectory();
+    const eu = dir.regions.find((r) => r.id === "eu");
+    expect(eu).toMatchObject({
+      api: "https://api-eu.useatlas.dev",
+      mcp: "https://mcp-eu.useatlas.dev/mcp",
+      authMd: "https://api-eu.useatlas.dev/auth.md",
+    });
+    // US has no region suffix — mirror must not inject a stray hyphen.
+    expect(dir.regions.find((r) => r.id === "us")?.mcp).toBe(
+      "https://mcp.useatlas.dev/mcp",
     );
   });
 });

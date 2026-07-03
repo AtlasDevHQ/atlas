@@ -1,6 +1,6 @@
 # Demo Dataset
 
-> **Note:** This file is a stub. The canonical user-facing reference for the demo dataset lives in [`apps/docs/content/docs/getting-started/demo-datasets.mdx`](../../apps/docs/content/docs/getting-started/demo-datasets.mdx) and is published at <https://docs.useatlas.dev/getting-started/demo-datasets>.
+> **Note:** This file is a stub. The canonical user-facing reference for the demo dataset lives in [`apps/docs/content/shared/getting-started/demo-datasets.mdx`](../../apps/docs/content/shared/getting-started/demo-datasets.mdx) and is published at <https://docs.useatlas.dev/getting-started/demo-datasets>.
 
 Atlas ships a single canonical demo dataset since 1.4.0 ([#2021](https://github.com/AtlasDevHQ/atlas/issues/2021)): **NovaMart**, a direct-to-consumer e-commerce brand with 13 entities (orders, products, customers, payments, returns, shipments, sellers, …), 52 tables total, ~480K rows.
 

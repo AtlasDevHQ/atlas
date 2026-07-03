@@ -24,11 +24,7 @@ export default defineConfig({
   plugins: [
     // Each plugin registers a connection under its plugin ID
     clickhousePlugin({ url: process.env.CLICKHOUSE_URL! }),
-    snowflakePlugin({
-      account: process.env.SNOWFLAKE_ACCOUNT!,
-      username: process.env.SNOWFLAKE_USER!,
-      password: process.env.SNOWFLAKE_PASSWORD!,
-    }),
+    snowflakePlugin({ url: process.env.SNOWFLAKE_URL! }),
   ],
 });
 ```
@@ -121,13 +117,13 @@ import { daytonaSandboxPlugin } from "@useatlas/daytona";
 
 export default defineConfig({
   plugins: [
-    e2bSandboxPlugin({ apiKey: process.env.E2B_API_KEY!, priority: 90 }),
-    daytonaSandboxPlugin({ endpoint: process.env.DAYTONA_URL!, priority: 80 }),
+    e2bSandboxPlugin({ apiKey: process.env.E2B_API_KEY! }),
+    daytonaSandboxPlugin({ apiKey: process.env.DAYTONA_API_KEY! }),
   ],
 });
 ```
 
-Atlas tries E2B first (priority 90). If `create()` throws, it tries Daytona (priority 80). If both fail, the built-in chain takes over.
+Each sandbox plugin bakes in its own priority — E2B at 90, Daytona at 85 — so registration order doesn't matter. Atlas tries E2B first (priority 90); if `create()` throws it tries Daytona (priority 85); if both fail, the built-in chain takes over.
 
 ## Hook Execution Order
 

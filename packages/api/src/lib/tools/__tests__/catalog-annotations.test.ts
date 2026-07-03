@@ -1,6 +1,6 @@
 /**
  * Catalog tool-annotations parity guard. The catalog-facing per-tool
- * description table at `apps/docs/content/docs/architecture/
+ * description table at `apps/docs/content/shared/architecture/
  * mcp-tool-annotations.mdx` is a hand-curated, human-facing surface
  * that catalog reviewers (Claude Desktop directory, mcp.so, the public
  * MCP registry) read directly. It lives separately from the LLM-facing
@@ -37,7 +37,7 @@ const ANNOTATIONS_PATH = resolve(
   "apps",
   "docs",
   "content",
-  "docs",
+  "shared",
   "architecture",
   "mcp-tool-annotations.mdx",
 );

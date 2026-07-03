@@ -11,7 +11,7 @@
  * writes + runs the SELECTs, and hands back the answer plus the SQL it ran.
  * It is the *recommended* MCP path for question-answering; `executeSQL` is
  * documented as the advanced/raw escape hatch (see
- * `apps/docs/content/docs/architecture/mcp-tools.mdx`).
+ * `apps/docs/content/shared/architecture/mcp-tools.mdx`).
  *
  * **Agent-in-agent, token-metered.** The customer's LLM calls this tool, which
  * runs Atlas's agent (a second LLM) in-process — NOT a loopback HTTP call to

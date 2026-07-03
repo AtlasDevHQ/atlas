@@ -19,7 +19,7 @@
  *
  * The error-contract appendage is added by `withErrorContract` at MCP
  * registration time so the LLM sees it on the same description that
- * carries the rubric prose. See `apps/docs/content/docs/architecture/
+ * carries the rubric prose. See `apps/docs/content/shared/architecture/
  * mcp-tools.mdx` for the contributor-facing guide.
  */
 

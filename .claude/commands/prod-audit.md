@@ -108,7 +108,7 @@ For each upstream dependency, walk the failure path top-to-bottom and document w
 **Source of truth:**
 - `.env.example` (declared env contract)
 - `packages/api/src/lib/settings.ts` (settings registry — what's hot-reloadable, what's startup-only)
-- `apps/docs/content/docs/reference/environment-variables.mdx` (just freshly backfilled by /docs-audit)
+- `apps/docs/content/shared/reference/environment-variables.mdx` (just freshly backfilled by /docs-audit)
 - Real Railway env values (operator confirms or memory:railway.md hints)
 
 ### Steps

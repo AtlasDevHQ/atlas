@@ -113,10 +113,10 @@ SURFACES=(
   "apps/www/public/llms.txt"
   "apps/www/content/social/twitter-launch.md"
   "apps/www/content/social/linkedin-launch.md"
-  "apps/docs/content/docs/comparisons/metabase.mdx"
-  "apps/docs/content/docs/comparisons/cube.mdx"
-  "apps/docs/content/docs/comparisons/thoughtspot.mdx"
-  "apps/docs/content/docs/comparisons/vanna.mdx"
+  "apps/docs/content/shared/comparisons/metabase.mdx"
+  "apps/docs/content/shared/comparisons/cube.mdx"
+  "apps/docs/content/shared/comparisons/thoughtspot.mdx"
+  "apps/docs/content/shared/comparisons/vanna.mdx"
   "scripts/generate-brand-assets.tsx"
 )
 

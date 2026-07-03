@@ -5,10 +5,6 @@ description: The pre-built demo dataset Atlas ships for evaluation and developme
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-<Callout type="info" title="Self-hosted only">
-  The demo dataset is for self-hosted local development and evaluation. On [app.useatlas.dev](https://app.useatlas.dev), the onboarding wizard offers a single "Use demo data" option when you create your workspace — no CLI needed.
-</Callout>
-
 Atlas ships a single canonical demo dataset: **NovaMart**, a direct-to-consumer e-commerce brand. 13 entities (orders, products, customers, payments, returns, shipments, sellers, …), 52 tables total, ~480K rows spanning 2020-2025.
 
 NovaMart was founded during the pandemic, started with bedding, expanded to kitchen/bath/outdoor, and launched a small marketplace in 2022. The schema includes the same kinds of real-world tech-debt patterns you'd hit in a real codebase — missing FK constraints, abandoned tables, inconsistent enums, denormalized reporting tables, and schema-evolution artifacts where old and new columns coexist.
@@ -18,6 +14,8 @@ NovaMart was founded during the pandemic, started with bedding, expanded to kitc
 </Callout>
 
 ## Loading the demo
+
+<WhenSelfHosted>
 
 Requires PostgreSQL (the seed uses `GENERATE_SERIES` for data generation).
 
@@ -38,6 +36,14 @@ To reset and reload from scratch:
 bun run db:reset
 bun run atlas -- init --demo
 ```
+
+</WhenSelfHosted>
+
+<WhenSaaS>
+
+On [app.useatlas.dev](https://app.useatlas.dev) you don't load the demo manually — pick **"Use demo data"** in the onboarding wizard when you create your workspace, and Atlas provisions the NovaMart dataset and its semantic layer for you.
+
+</WhenSaaS>
 
 ## Canonical questions
 

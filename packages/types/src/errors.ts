@@ -16,7 +16,7 @@ declare const navigator: { onLine?: boolean } | undefined;
 // favorites / regional-routing routes return their own codes (`demo_readonly`,
 // `workspace_migrating`, `misdirected_request`, `duplicate_favorite`,
 // `favorite_cap_exceeded`, `invalid_favorite_text`, etc.). Those are catalogued
-// in `apps/docs/content/docs/reference/error-codes.mdx` under the
+// in `apps/docs/content/shared/reference/error-codes.mdx` under the
 // "Route-Response Error Codes" section. When adding a non-chat error code to a
 // route, document it there rather than widening CHAT_ERROR_CODES — the
 // compile-time exhaustiveness check here exists specifically to keep the chat
@@ -71,7 +71,7 @@ export function isChatErrorCode(value: string): value is ChatErrorCode {
  * only the codes a CLI switch actually discriminates on (the HTTP status
  * carries the rest); it deliberately does not duplicate the chat catalog in
  * {@link CHAT_ERROR_CODES} or the admin route-response codes documented in
- * `apps/docs/content/docs/reference/error-codes.mdx`.
+ * `apps/docs/content/shared/reference/error-codes.mdx`.
  *
  * Before #4111 these were bare string literals on both the emitting routes and
  * the CLI switches, with nothing shared — several emitted codes

@@ -40,7 +40,7 @@ Config loading is **binary**: when a config file exists, it is used exclusively.
 3. **Secrets should stay in env vars** — reference them via `process.env` in the config file (this is user code executing at import time, not a config-loader merge)
 
 <Callout type="info">
-Auth mode resolution priority: `ATLAS_AUTH_MODE` env var (highest) → config file `auth` field → auto-detection from env var presence (lowest). Setting `auth: "managed"` in the config file pins the auth mode without needing `ATLAS_AUTH_MODE`, but the env var still overrides if set. See [Authentication](/deployment/authentication) for details.
+Auth mode resolution priority: `ATLAS_AUTH_MODE` env var (highest) → config file `auth` field → auto-detection from env var presence (lowest). Setting `auth: "managed"` in the config file pins the auth mode without needing `ATLAS_AUTH_MODE`, but the env var still overrides if set. See [Authentication](/self-hosted/deployment/authentication) for details.
 </Callout>
 
 ```typescript
@@ -226,7 +226,7 @@ export default defineConfig({
 });
 ```
 
-When set to `"auto"` (or omitted), Atlas detects the mode from environment variables. See [Authentication](/deployment/authentication) for full setup guides.
+When set to `"auto"` (or omitted), Atlas detects the mode from environment variables. See [Authentication](/self-hosted/deployment/authentication) for full setup guides.
 
 ---
 
@@ -885,7 +885,7 @@ export default defineConfig({
 
 Declare the **Plugin Catalog** — the flat list of installable chat platforms and integration plugins your deployment offers. Implements [ADR-0002](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0002-catalog-seeded-from-config-at-boot.md): declarative at deploy time, idempotently seeded into the `plugin_catalog` table at boot, then DB-canonical for runtime reads.
 
-The operator declares the catalog; customer admins install entries via `/admin/integrations`. `install_model` dispatches the install-handler family (`oauth`, `form`, or `static-bot`) — see [`packages/api/src/lib/integrations/install/register.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/integrations/install/register.ts) for the registered handler set.
+The operator declares the catalog; customer admins install entries via `/admin/integrations`. `install_model` dispatches the install-handler family (`oauth`, `form`, `static-bot`, or `oauth-datasource`) — see [`packages/api/src/lib/integrations/install/register.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/integrations/install/register.ts) for the registered handler set.
 
 ```typescript
 // atlas.config.ts — declare a Slack OAuth chat platform + an email form integration
@@ -926,7 +926,7 @@ export default defineConfig({
 |-------|------|----------|---------|-------------|
 | `slug` | `string` | Yes | — | Stable identifier — lowercase alphanumeric with dashes (regex `^[a-z][a-z0-9-]*$`). Used as the primary lookup key in `plugin_catalog.slug` and as the dispatch key in `AdapterRegistry`. Examples: `slack`, `salesforce`, `linear-apikey` |
 | `type` | `"chat" \| "integration"` | Yes | — | Admin-UI grouping. `chat` rows live on the Chat tab of `/admin/integrations`; `integration` rows live on the Actions/Integrations tab. Backend dispatch is by `install_model`, not `type` |
-| `install_model` | `"oauth" \| "form" \| "static-bot"` | Yes | — | Install-handler dispatch key. `oauth` runs a per-Workspace OAuth dance (Slack, Jira, Salesforce, GitHub App, Linear OAuth). `form` validates customer-supplied fields against `configSchema` (Email, Webhook, Obsidian, GitHub PAT, Linear API key). `static-bot` uses an operator-shared bot and a per-Workspace routing identifier (Teams, Discord, Google Chat, Telegram, WhatsApp) |
+| `install_model` | `"oauth" \| "form" \| "static-bot" \| "oauth-datasource"` | Yes | — | Install-handler dispatch key. `oauth` runs a per-Workspace OAuth dance (Slack, Jira, Salesforce, GitHub App, Linear OAuth). `form` validates customer-supplied fields against `configSchema` (Email, Webhook, Obsidian, GitHub PAT, Linear API key). `static-bot` uses an operator-shared bot and a per-Workspace routing identifier (Teams, Discord, Google Chat, Telegram, WhatsApp). `oauth-datasource` runs a per-Workspace OAuth dance that installs a REST/OpenAPI datasource |
 | `name` | `string` | No | (derived from slug) | Human-readable name shown in admin-UI cards |
 | `description` | `string` | No | — | Admin-UI description copy |
 | `iconUrl` | `string` (URL) | No | — | Icon URL for admin-UI cards |
@@ -1075,7 +1075,6 @@ export default defineConfig({
 | `cache` | `object` | — | Query result caching ([details](#query-cache)) |
 | `pool` | `object` | — | Per-org connection pool isolation ([details](#per-org-pool-isolation)) |
 | `semanticIndex` | `object` | — | Semantic index configuration ([details](#semantic-index)) |
-| `learn` | `object` | — | Dynamic learning configuration ([details](#dynamic-learning)) |
 | `starterPrompts` | `object` | — | Adaptive starter prompt configuration ([details](#starter-prompts)) |
 | `enterprise` | `object` | `{ enabled: false }` | Enterprise feature gating ([details](#enterprise)) |
 | `deployMode` | `"auto" \| "saas" \| "self-hosted"` | `"auto"` | Deployment mode. `saas` enables hosted product features (enterprise-gated). `auto` detects from environment |
@@ -1089,7 +1088,7 @@ export default defineConfig({
 
 - [Environment Variables](/reference/environment-variables) — Env-var-only configuration (used when no config file exists)
 - [CLI Reference](/reference/cli) — `atlas validate` checks your config file for errors
-- [Deploy](/deployment/deploy) — Platform-specific deployment with config examples
+- [Deploy](/self-hosted/deployment/deploy) — Platform-specific deployment with config examples
 - [Multi-Datasource Routing](/deployment/multi-datasource) — Guide for configuring multiple datasources
 - [Plugin Authoring Guide](/plugins/authoring-guide) — Building plugins registered via the config file
 - [Row-Level Security](/security/row-level-security) — Full RLS guide for the `rls` config option

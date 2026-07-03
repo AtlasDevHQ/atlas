@@ -5,10 +5,19 @@
   "pages": [
     "index",
     "getting-started",
+    "semantic-layer",
     "deployment",
     "frameworks",
     "guides",
+    "reference",
+    "sdk",
+    "plugins",
+    "integrations",
+    "architecture",
+    "comparisons",
     "contributing",
+    "---",
+    "changelog",
     "..."
   ]
 }

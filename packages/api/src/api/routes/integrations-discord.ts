@@ -94,7 +94,7 @@ const log = createLogger("integrations.discord");
  * actual permission check at message-send time; this bitmask is just
  * what we *request* at the install screen.
  *
- * Keep this constant in lockstep with `apps/docs/content/docs/integrations/discord.mdx`
+ * Keep this constant in lockstep with `apps/docs/content/shared/integrations/discord.mdx`
  * ("Pick a server and authorize") — that page lists the requested
  * permissions verbatim so admins know what they're agreeing to.
  */

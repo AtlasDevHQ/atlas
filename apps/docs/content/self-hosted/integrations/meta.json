@@ -1,0 +1,15 @@
+{
+  "title": "Integrations",
+  "description": "Chat platforms and action targets — the same integration surfaces available on any deployment",
+  "icon": "Plug",
+  "pages": [
+    "telegram",
+    "discord",
+    "whatsapp",
+    "teams",
+    "gchat",
+    "linear",
+    "github",
+    "twenty"
+  ]
+}

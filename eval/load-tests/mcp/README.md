@@ -4,7 +4,7 @@
 `{BASE_URL}/mcp/{WORKSPACE_ID}/sse` to measure latency, throughput, and
 session-scaling behaviour. Reproducible answers to "how much MCP
 traffic can a single Atlas region handle?" — the perf profile is
-documented at [`apps/docs/content/docs/architecture/mcp-performance.mdx`](../../../apps/docs/content/docs/architecture/mcp-performance.mdx).
+documented at [`apps/docs/content/shared/architecture/mcp-performance.mdx`](../../../apps/docs/content/shared/architecture/mcp-performance.mdx).
 
 ## Why k6
 
@@ -287,4 +287,4 @@ Per the issue, the load test answers four questions:
 
 The bottleneck and tuning recommendations distilled from a real run
 land in
-[`apps/docs/content/docs/architecture/mcp-performance.mdx`](../../../apps/docs/content/docs/architecture/mcp-performance.mdx).
+[`apps/docs/content/shared/architecture/mcp-performance.mdx`](../../../apps/docs/content/shared/architecture/mcp-performance.mdx).

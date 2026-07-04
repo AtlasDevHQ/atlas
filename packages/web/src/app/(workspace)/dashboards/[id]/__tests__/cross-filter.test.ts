@@ -11,10 +11,25 @@ import { describe, expect, test } from "bun:test";
 import type { DashboardCard, DashboardParameter } from "@/ui/lib/types";
 import {
   extractCardPlaceholders,
+  cardBoundPlaceholders,
   isCardAffectedByFilters,
   incompatibleCardIds,
   activeFilters,
 } from "../cross-filter";
+
+/** A KPI card that binds a parameter ONLY in its `comparisonSql` (#4321): the
+ *  headline is period-agnostic but the delta compares a window. */
+function kpiComparisonOnlyCard(id: string, primarySql: string, comparisonSql: string): DashboardCard {
+  return {
+    ...chartCard(id, primarySql),
+    chartConfig: {
+      type: "kpi",
+      categoryColumn: "label",
+      valueColumns: ["total"],
+      kpi: { comparisonSql },
+    },
+  };
+}
 
 function chartCard(id: string, sql: string): DashboardCard {
   return {
@@ -106,6 +121,42 @@ describe("isCardAffectedByFilters", () => {
 
   test("a text/section card is never affected", () => {
     expect(isCardAffectedByFilters(textCard("t"), ["region"])).toBe(false);
+  });
+
+  // #4321 — the "Not filtered" badge must account for a card that binds the
+  // parameter ONLY in its comparisonSql.
+  test("a KPI card that binds the param only in comparisonSql IS affected (not 'Not filtered')", () => {
+    const card = kpiComparisonOnlyCard(
+      "kpi",
+      "SELECT 'Revenue' AS label, SUM(amount) AS total FROM orders",
+      "SELECT SUM(amount) AS total FROM orders WHERE created_at >= :date_from AND created_at < :date_to",
+    );
+    // The primary SQL binds nothing; the comparison binds :date_from/:date_to.
+    expect(isCardAffectedByFilters(card, ["date_from"])).toBe(true);
+  });
+
+  test("a KPI card binding the param in neither sql nor comparisonSql is still unaffected", () => {
+    const card = kpiComparisonOnlyCard(
+      "kpi",
+      "SELECT 'Revenue' AS label, SUM(amount) AS total FROM orders",
+      "SELECT SUM(amount) AS total FROM orders WHERE created_at >= :date_from",
+    );
+    expect(isCardAffectedByFilters(card, ["region"])).toBe(false);
+  });
+});
+
+describe("cardBoundPlaceholders (#4321 — sql + comparisonSql)", () => {
+  test("unions the primary sql and the KPI comparisonSql placeholders", () => {
+    const card = kpiComparisonOnlyCard(
+      "kpi",
+      "SELECT SUM(amount) AS total FROM orders WHERE region = :region",
+      "SELECT SUM(amount) AS total FROM orders WHERE created_at >= :date_from",
+    );
+    expect([...cardBoundPlaceholders(card)].sort()).toEqual(["date_from", "region"]);
+  });
+
+  test("a card with no comparisonSql binds only its primary sql placeholders", () => {
+    expect([...cardBoundPlaceholders(chartCard("a", "WHERE region = :region"))]).toEqual(["region"]);
   });
 });
 

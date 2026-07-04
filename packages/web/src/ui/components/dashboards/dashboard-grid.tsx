@@ -11,6 +11,7 @@ import {
 import "react-grid-layout/css/styles.css";
 import { cn } from "@/lib/utils";
 import type { DashboardCard, DashboardCardLayout, KpiComparisonResult, StagedChange } from "@/ui/lib/types";
+import type { TileRenderPhase } from "./tile-status";
 import { COLS, ROW_H, GAP, MIN_W, MIN_H, MOBILE_BREAKPOINT } from "./grid-constants";
 import { withAutoLayout } from "./auto-layout";
 import { DashboardTile } from "./dashboard-tile";
@@ -47,6 +48,15 @@ interface DashboardGridProps {
    */
   incompatibleCardIds?: Set<string>;
   selectedValues?: Record<string, string>;
+  /**
+   * #4321 — per-card render phase for the current parameter / cross-filter
+   * batch (or a single-tile retry). Drives each tile's own status (loading /
+   * stale / errored). Absent for a card → no render attempted; the tile
+   * reflects its persisted snapshot.
+   */
+  renderPhases?: Record<string, TileRenderPhase>;
+  /** #4321 — retry a single tile's parameter-bound render (stale / errored). */
+  onRetryCard?: (cardId: string) => void;
   onLayoutChange: (cardId: string, layout: DashboardCardLayout) => void;
   onRefresh: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
@@ -68,6 +78,8 @@ export function DashboardGrid({
   onDrilldown,
   incompatibleCardIds,
   selectedValues,
+  renderPhases,
+  onRetryCard,
   onLayoutChange,
   onRefresh,
   onDuplicate,
@@ -173,6 +185,8 @@ export function DashboardGrid({
                 onDrilldown={onDrilldown}
                 incompatible={incompatibleCardIds?.has(card.id)}
                 selectedValue={selectedValues?.[card.id]}
+                renderPhase={renderPhases?.[card.id]}
+                onRetry={onRetryCard}
                 onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
                 onRefresh={onRefresh}
                 onDuplicate={onDuplicate}
@@ -224,6 +238,8 @@ export function DashboardGrid({
                 onDrilldown={onDrilldown}
                 incompatible={incompatibleCardIds?.has(card.id)}
                 selectedValue={selectedValues?.[card.id]}
+                renderPhase={renderPhases?.[card.id]}
+                onRetry={onRetryCard}
                 onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
                 onRefresh={onRefresh}
                 onDuplicate={onDuplicate}

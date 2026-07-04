@@ -90,9 +90,9 @@ export async function renderDashboardCard(
       comparison: json.comparison,
     };
   } catch (err) {
-    // The error is surfaced to the user via the returned entry (paramError on
-    // the grid), but log it too so the underlying network/parse failure stays
-    // visible in diagnostics rather than only as a UI banner.
+    // The error is surfaced to the user via the returned entry (the affected
+    // tile flips to labeled-stale / errored, #4321), but log it too so the
+    // underlying network/parse failure stays visible in diagnostics.
     const message = err instanceof Error ? err.message : String(err);
     console.debug("[dashboard] card render failed", {
       cardId: card.id,

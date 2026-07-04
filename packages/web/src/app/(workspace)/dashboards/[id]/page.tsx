@@ -122,9 +122,21 @@ export default function DashboardViewPage() {
   // server overlays the draft only when one exists (non-forking); a viewer or
   // a board with no draft still gets published, so this never leaks.
   const [editing, setEditing] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  // #4322 — creation-to-bound continuity. The `createDashboard` handoff link
+  // carries the originating conversation id; the drawer resumes that
+  // conversation (its SQL + intent) instead of resetting to empty. `null`
+  // when the drawer is opened from "Edit with chat" (a fresh session).
+  const [resumeConversationId, setResumeConversationId] = useState<string | null>(null);
 
+  // #4322 — the bound chat drawer edits the DRAFT (every `addCard` lands
+  // there, per #4315), so while it's open the canvas must show the draft too:
+  // that's what makes cards materialize live during a build AND why a
+  // dashboard is non-empty on arrival from `createDashboard` (its cards were
+  // staged into the draft, and the published view is still empty).
+  const showDraftView = editing || chatOpen;
   const { data: dashboard, loading, error, refetch } = useAdminFetch<DashboardWithCards>(
-    editing ? `/api/v1/dashboards/${id}?view=draft` : `/api/v1/dashboards/${id}`,
+    showDraftView ? `/api/v1/dashboards/${id}?view=draft` : `/api/v1/dashboards/${id}`,
   );
 
   // #2365 — pending destructive stages for THIS user on THIS dashboard.
@@ -154,8 +166,9 @@ export default function DashboardViewPage() {
   // parameter / mutation errors below.
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  // #2363 — bound chat drawer state
-  const [chatOpen, setChatOpen] = useState(false);
+  // #2363 — bound chat drawer state (`chatOpen` / `resumeConversationId`
+  // declared above, before the dashboard fetch, so #4322's draft-view switch
+  // can key off the drawer being open).
 
   // #2521 — draft state. `useAdminFetch` powers the badge + baseline-drift
   // detection; we poll on window focus + a 30s tick so a teammate's
@@ -294,11 +307,21 @@ export default function DashboardViewPage() {
   // strip the param so a refresh doesn't keep reopening it.
   useEffect(() => {
     if (searchParams.get("openChat") !== "true") return;
+    // #4322 — the handoff link carries `conversationId` so the originating
+    // conversation carries into bound mode. Capture it before stripping the
+    // URL; absent (e.g. a hand-typed `?openChat=true`) → fresh session.
+    setResumeConversationId(searchParams.get("conversationId"));
     setChatOpen(true);
-    // Replace the URL without the flag — `router.replace` keeps the
+    // Replace the URL without the flags — `router.replace` keeps the
     // browser history clean (no "back" landing on the auto-open).
     router.replace(`/dashboards/${id}`);
   }, [searchParams, router, id]);
+
+  // Once the drawer closes, drop the resume pointer so the NEXT "Edit with
+  // chat" open is a fresh session rather than re-resuming the created one.
+  useEffect(() => {
+    if (!chatOpen) setResumeConversationId(null);
+  }, [chatOpen]);
 
   // Skip when typing in inputs.
   useEffect(() => {
@@ -1335,6 +1358,7 @@ export default function DashboardViewPage() {
           dashboardId={dashboard.id}
           dashboardTitle={dashboard.title}
           onDashboardMutated={handleStagesChanged}
+          resumeConversationId={resumeConversationId}
         />
       )}
 

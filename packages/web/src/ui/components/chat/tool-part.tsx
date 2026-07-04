@@ -9,6 +9,7 @@ import { SQLResultCard } from "./sql-result-card";
 import { ActionApprovalCard } from "../actions/action-approval-card";
 import { PythonResultCard, type PythonProgressData } from "./python-result-card";
 import { CreateDashboardCard } from "./create-dashboard-card";
+import { DashboardEditCard, DASHBOARD_EDIT_TOOL_NAMES } from "./dashboard-edit-card";
 import { StageChangeCard } from "./stage-change-card";
 import { RestWriteConfirmCard } from "./rest-write-confirm-card";
 import type { PreviousExecution } from "../notebook/types";
@@ -66,6 +67,12 @@ export const ToolPart = memo(function ToolPart({
     case "executeRestOperation":
       return <RestWriteConfirmCard part={part} />;
     default: {
+      // #4322 — bound editor building + inspection tools get a first-class
+      // receipt line (icon + what the tool did) instead of the gray
+      // "Tool: addCard" fallback.
+      if (DASHBOARD_EDIT_TOOL_NAMES.has(name)) {
+        return <DashboardEditCard part={part} />;
+      }
       const result = getToolResult(part);
       if (isActionToolResult(result)) {
         return <ActionApprovalCard part={part} />;

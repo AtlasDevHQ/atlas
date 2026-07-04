@@ -252,6 +252,103 @@ describe("bound-dashboard tools — drafts flag", () => {
       expect(sqls).not.toContain("INSERT INTO dashboard_cards");
     });
 
+    // #4322 — a card added inside a conversation scoped to a connection
+    // group must inherit that group so it queries the right database, not
+    // the workspace `default`. The draft snapshot's new card carries the
+    // ctx.connectionGroupId, mirroring createDashboard's initial cards.
+    it("addCard inherits the conversation's connection group into the draft card", async () => {
+      enableInternalDB();
+      setResults(
+        { rows: [dashboardRow] },
+        { rows: [cardRow] },
+        { rows: [] }, // loadDraft empty
+        { rows: [] }, // INSERT (ON CONFLICT DO NOTHING)
+        {
+          rows: [
+            {
+              user_id: "user-1",
+              dashboard_id: "dash-1",
+              draft: { dashboardId: "dash-1", title: "Demo", description: null, cards: [] },
+              baseline: { dashboardId: "dash-1", title: "Demo", description: null, cards: [] },
+              published_baseline_at: "2026-05-17T00:00:00.000Z",
+              created_at: "2026-05-17T00:00:00.000Z",
+              updated_at: "2026-05-17T00:00:00.000Z",
+            },
+          ],
+        },
+        { rows: [{ user_id: "user-1" }] }, // saveDraft
+      );
+
+      const tools = createBoundDashboardTools({
+        dashboardId: "dash-1",
+        orgId: "org-1",
+        userId: "user-1",
+        connectionGroupId: "group-prod",
+      });
+
+      const result = await runTool<{ kind: string }>(tools.addCard, {
+        title: "Scoped card",
+        sql: "SELECT 1",
+        chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+      });
+      expect(result.kind).toBe("ok");
+
+      // saveDraft's UPDATE carries the snapshot JSON as its first param.
+      const saveCall = queryCalls.find((c) => c.sql.includes("UPDATE dashboard_user_drafts"));
+      expect(saveCall).toBeDefined();
+      const snapshot = JSON.parse(saveCall!.params![0] as string) as {
+        cards: { title: string; connectionGroupId: string | null }[];
+      };
+      const added = snapshot.cards.find((c) => c.title === "Scoped card");
+      expect(added).toBeDefined();
+      expect(added!.connectionGroupId).toBe("group-prod");
+    });
+
+    // Absent scope (legacy 1×1 workspace) → the card stamps null, unchanged.
+    it("addCard stamps a null connection group when the conversation has no scope", async () => {
+      enableInternalDB();
+      setResults(
+        { rows: [dashboardRow] },
+        { rows: [cardRow] },
+        { rows: [] },
+        { rows: [] },
+        {
+          rows: [
+            {
+              user_id: "user-1",
+              dashboard_id: "dash-1",
+              draft: { dashboardId: "dash-1", title: "Demo", description: null, cards: [] },
+              baseline: { dashboardId: "dash-1", title: "Demo", description: null, cards: [] },
+              published_baseline_at: "2026-05-17T00:00:00.000Z",
+              created_at: "2026-05-17T00:00:00.000Z",
+              updated_at: "2026-05-17T00:00:00.000Z",
+            },
+          ],
+        },
+        { rows: [{ user_id: "user-1" }] },
+      );
+
+      const tools = createBoundDashboardTools({
+        dashboardId: "dash-1",
+        orgId: "org-1",
+        userId: "user-1",
+        // no connectionGroupId
+      });
+
+      await runTool(tools.addCard, {
+        title: "Unscoped card",
+        sql: "SELECT 1",
+        chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["y"] },
+      });
+
+      const saveCall = queryCalls.find((c) => c.sql.includes("UPDATE dashboard_user_drafts"));
+      const snapshot = JSON.parse(saveCall!.params![0] as string) as {
+        cards: { title: string; connectionGroupId: string | null }[];
+      };
+      const added = snapshot.cards.find((c) => c.title === "Unscoped card");
+      expect(added!.connectionGroupId).toBeNull();
+    });
+
     // #4315 — the anonymous-bound bypass is CLOSED. With drafts ON, a bound
     // edit that can't be attributed to a user (no userId) must NOT write to
     // the published tables — the privacy hole where anonymous edits went

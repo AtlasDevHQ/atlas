@@ -63,7 +63,7 @@ export function StageChangeCard({ part }: { part: unknown }) {
 
 function StageChangeCardInner({ stage }: { stage: StageRequiredPayload }) {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const { dashboardId, onStagesChanged } = useStageContext();
+  const { dashboardId, onStagesChanged, readOnly } = useStageContext();
   // `null` until the user acts. `accepted` / `discarded` lock the card
   // (the agent won't re-prompt the user; the dashboard refetch surfaces
   // the change).
@@ -165,7 +165,17 @@ function StageChangeCardInner({ stage }: { stage: StageRequiredPayload }) {
             </div>
           )}
 
-          {resolution !== "accepted" && resolution !== "discarded" && (
+          {/* #4322 — a staged change replayed in a read-only History
+              transcript is inert: the session is over, so there's nothing
+              to accept or discard. Show a static note instead of live
+              buttons that would POST accept/discard against the current
+              draft. */}
+          {readOnly && (
+            <div className="mt-2 text-zinc-500" data-testid="stage-readonly">
+              Staged in this session.
+            </div>
+          )}
+          {!readOnly && resolution !== "accepted" && resolution !== "discarded" && (
             <div className="mt-2 flex items-center gap-2">
               <Button
                 type="button"

@@ -80,6 +80,17 @@ export interface BoundDashboardToolContext {
    * `ATLAS_INTERNAL_SCREENSHOT_COOKIE` (only meaningful in dev/test).
    */
   cookieHeader?: string | null;
+  /**
+   * #4322 — the conversation's content scope (its `connection_group_id`,
+   * resolved by the chat route). A card `addCard` mints inherits this so
+   * a card added inside a chat that was scoped to (say) the "prod" group
+   * queries that group's database — not the workspace `default`. Without
+   * it the draft card stamps `connectionGroupId: null` and the tile later
+   * resolves against the default datasource, the exact bug this closes
+   * (mirrors `createDashboard`'s `conversationGroupId` handling). `null`
+   * for an unscoped conversation (legacy 1×1 workspaces).
+   */
+  connectionGroupId?: string | null;
 }
 
 /**
@@ -303,7 +314,11 @@ export function createBoundDashboardTools(
           sql,
           chartConfig,
           annotations: annotations ?? [],
-          connectionGroupId: null,
+          // #4322 — inherit the conversation's content scope so the added
+          // card queries the right database. `createDashboard` already does
+          // this for its initial cards; a card added later via the bound
+          // editor must land in the same group, not the workspace default.
+          connectionGroupId: ctx.connectionGroupId ?? null,
           layout: layout ?? null,
         };
         const routed = await maybeApplyToDraft(ctx, { kind: "addCard", card: draftCard });

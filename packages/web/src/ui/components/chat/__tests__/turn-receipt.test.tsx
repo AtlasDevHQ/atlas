@@ -142,7 +142,9 @@ describe("AgentTurn", () => {
       />,
     );
 
-    const receipt = getByRole("button");
+    // The receipt toggle is the only button carrying aria-expanded — the
+    // answer's CopyButton (#4296) shares the turn now.
+    const receipt = getByRole("button", { expanded: false });
     const answer = getByTestId("turn-answer");
     const artifact = getByTestId("answer-artifact");
     expect(answer.textContent).toContain("Revenue was $1.2M.");
@@ -171,10 +173,14 @@ describe("AgentTurn", () => {
   });
 
   test("zero-tool turn renders the answer with no receipt", () => {
-    const { queryByRole, getByTestId } = render(
+    const { queryByRole, getByRole, getByTestId } = render(
       <AgentTurn parts={[text("Just an answer.")]} />,
     );
-    expect(queryByRole("button")).toBeNull();
+    // No receipt toggle (nothing carries aria-expanded) — the only button is
+    // the answer's copy affordance (#4296).
+    expect(queryByRole("button", { expanded: true })).toBeNull();
+    expect(queryByRole("button", { expanded: false })).toBeNull();
+    expect(getByRole("button", { name: "Copy answer" })).not.toBeNull();
     expect(getByTestId("turn-answer").textContent).toContain("Just an answer.");
   });
 
@@ -209,7 +215,7 @@ describe("AgentTurn", () => {
     const { getByRole, queryAllByTestId, getByTestId } = render(
       <AgentTurn parts={[pendingApproval, text("I need your approval to send this.")]} />,
     );
-    expect(getByRole("button").getAttribute("aria-expanded")).toBe("true");
+    expect(getByRole("button", { expanded: true })).not.toBeNull();
     expect(queryAllByTestId("tool-part-stub")).toHaveLength(1);
     expect(getByTestId("turn-answer").textContent).toContain("I need your approval");
   });
@@ -225,6 +231,6 @@ describe("AgentTurn", () => {
     const { getByRole } = render(
       <AgentTurn parts={[executed, text("The email went out.")]} />,
     );
-    expect(getByRole("button").getAttribute("aria-expanded")).toBe("false");
+    expect(getByRole("button", { expanded: false })).not.toBeNull();
   });
 });

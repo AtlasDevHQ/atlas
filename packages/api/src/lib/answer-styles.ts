@@ -26,7 +26,13 @@
  * builds on this seam: {@link ANSWER_STYLE_NAMES} is the vocabulary the
  * chat route validates against, and the `AnswerStyle` union lives in
  * `@useatlas/types` (lifted by #4302) because the style crosses the HTTP
- * boundary on the chat request + conversation record.
+ * boundary on the chat request + conversation record. The workspace default
+ * ("house voice", #4303) builds on it too, from the OTHER side: the
+ * `ATLAS_DEFAULT_ANSWER_STYLE` settings-registry entry derives its admin
+ * options from {@link ANSWER_STYLE_NAMES} (minus `conversational`), and
+ * `resolveWorkspaceDefaultAnswerStyle` (lib/agent.ts) validates the stored
+ * value with {@link isAnswerStyle} — precedence: explicit style > workspace
+ * default > surface default.
  */
 
 import type { AnswerStyle } from "@useatlas/types/conversation";
@@ -71,10 +77,13 @@ void _everyWireStyleRegistered;
 export type { AnswerStyle };
 
 /**
- * Default style when a caller doesn't select one: the analyst voice, the
- * answer-first default for the web chat and analyst-grade callers (SDK, MCP,
- * `/api/v1/query`). Chat-platform surfaces pass `"conversational"` explicitly
- * (see `answerStyleForPresentationMode`).
+ * The SURFACE default — the last tier of the precedence chain: the analyst
+ * voice, the answer-first default for the web chat and analyst-grade callers
+ * (SDK, MCP, `/api/v1/query`). Chat-platform surfaces pass `"conversational"`
+ * explicitly (see `answerStyleForPresentationMode`). A workspace default
+ * (#4303, the `ATLAS_DEFAULT_ANSWER_STYLE` setting) applies before this one
+ * when no explicit style is chosen — see
+ * `resolveWorkspaceDefaultAnswerStyle` (lib/agent.ts).
  */
 export const DEFAULT_ANSWER_STYLE = "analyst" satisfies AnswerStyle;
 

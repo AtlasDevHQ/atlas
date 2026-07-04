@@ -25,6 +25,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { EMAIL_PROVIDERS } from "@atlas/api/lib/integrations/types";
 import { SaasImmutableSettingError } from "@atlas/api/lib/settings-errors";
+import { ANSWER_STYLE_NAMES } from "@atlas/api/lib/answer-styles";
 
 const log = createLogger("settings");
 
@@ -345,6 +346,32 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "number",
     default: "500",
     envVar: "ATLAS_CONVERSATION_STEP_CAP",
+    scope: "workspace",
+  },
+  {
+    // #4303 (PRD #4292) — the workspace "house voice". Applies wherever no
+    // explicit answer style is chosen (web conversations without a #4302
+    // per-conversation pick; SDK / MCP / /api/v1/query calls that send no
+    // style). Chat-platform surfaces (Slack @mention, proactive) always pass
+    // an explicit style per turn (conversational in practice), so this
+    // default structurally never reaches them — the surface-scoping decision
+    // the description documents. Resolution seam:
+    // `resolveWorkspaceDefaultAnswerStyle` (lib/agent.ts).
+    //
+    // Options derive from the answer-style registry minus `conversational`:
+    // that addendum is written for chat platforms (it references the Slack
+    // "Show SQL" progressive-disclosure buttons), so it isn't offered as a
+    // house voice for analyst-grade surfaces. No `default` on purpose — unset
+    // means "track the surface default" (analyst), not a frozen copy of it.
+    // Hot-reloadable: read per turn through the settings cache, no restart.
+    key: "ATLAS_DEFAULT_ANSWER_STYLE",
+    section: "Agent",
+    label: "Default Answer Style",
+    description:
+      "Workspace default answer style (the house voice) for surfaces that don't explicitly choose one — web chat conversations without a per-conversation pick, and SDK/MCP/query API calls that send no style. A per-conversation pick always wins. Chat platforms (Slack mentions, proactive chat) choose their own voice per turn and are not affected. Reset to fall back to the built-in default (analyst).",
+    type: "select",
+    options: ANSWER_STYLE_NAMES.filter((s) => s !== "conversational"),
+    envVar: "ATLAS_DEFAULT_ANSWER_STYLE",
     scope: "workspace",
   },
   // Context Compaction (#3759 — PRD #3751). When a turn's assembled context

@@ -159,8 +159,9 @@ function rowToConversation(r: Record<string, unknown>): Conversation {
     // as null, matching the column's "All sources" default.
     groupReach: (r.group_reach as string) ?? null,
     // #4302 — per-conversation answer style. Plain nullable text column:
-    // NULL → null = no explicit choice (prompt assembly resolves the surface
-    // default — DEFAULT_ANSWER_STYLE for web). The guard keeps an unknown DB
+    // NULL → null = no explicit choice (prompt assembly resolves the live
+    // default — the workspace default #4303 when set, else the surface
+    // default, DEFAULT_ANSWER_STYLE for web). The guard keeps an unknown DB
     // string (a style retired from the registry, a manual edit) from leaking
     // into the typed union — it reads as null, i.e. "track the default".
     answerStyle: isAnswerStyle(r.answer_style) ? r.answer_style : null,

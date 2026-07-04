@@ -1003,8 +1003,9 @@ chat.openapi(chatRoute, async (c) => {
         // #4302 — per-conversation answer style. Body value (this turn, from
         // the header picker) > stored value on the row. `undefined` all the
         // way down means "no explicit choice anywhere" — `runAgent` then
-        // applies the surface default (`analyst`) at prompt assembly, so a
-        // NULL row keeps tracking the default rather than freezing a copy.
+        // applies the workspace default (#4303 settings registry), else the
+        // surface default (`analyst`), at prompt assembly, so a NULL row
+        // keeps tracking the live default rather than freezing a copy.
         let effectiveAnswerStyle: AnswerStyle | undefined =
           parsed.data.answerStyle;
 
@@ -1149,7 +1150,8 @@ chat.openapi(chatRoute, async (c) => {
             // #4302 — inherit the answer style from the row when the body
             // omits it. A NULL row stays `undefined` here (there is no
             // explicit choice to inherit) so prompt assembly keeps applying
-            // the live surface default.
+            // the live default (workspace default #4303, else the surface
+            // default).
             if (effectiveAnswerStyle === undefined && existing.data.answerStyle) {
               effectiveAnswerStyle = existing.data.answerStyle;
             }
@@ -1721,8 +1723,9 @@ chat.openapi(chatRoute, async (c) => {
                 }),
                 // #4302 — the conversation's answer style (body > row).
                 // Stripped when undefined so prompt assembly applies the
-                // surface default (`analyst`) for no-explicit-choice
-                // conversations instead of pinning a frozen copy of it.
+                // live default (workspace default #4303, else the `analyst`
+                // surface default) for no-explicit-choice conversations
+                // instead of pinning a frozen copy of it.
                 ...(effectiveAnswerStyle && { answerStyle: effectiveAnswerStyle }),
                 // #4294 — the pre-minted id + its stop signal (see above).
                 runId: turnRunId,
@@ -2198,8 +2201,9 @@ chat.openapi(chatResumeRoute, async (c) => {
             // checkpoint stores the message transcript, not the system
             // param), so re-thread the conversation's pinned style from the
             // row loaded for the ownership check above. NULL stays stripped
-            // — the resumed prompt applies the surface default, exactly as
-            // the original turn did.
+            // — the resumed prompt applies the live default (workspace
+            // default #4303, else the surface default), exactly as the
+            // original turn did.
             ...(existing.data.answerStyle && {
               answerStyle: existing.data.answerStyle,
             }),

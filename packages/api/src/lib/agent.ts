@@ -89,7 +89,9 @@ import { ModelRouter } from "./effect/services";
 import { runEnterprise } from "./effect/enterprise-layer";
 import { BOUND_AGENT_PROMPT_GUIDANCE } from "./bound-chat-context";
 import {
+  ANSWER_STYLE_NAMES,
   DEFAULT_ANSWER_STYLE,
+  isAnswerStyle,
   resolveAnswerStyleAddendum,
   type AnswerStyle,
 } from "./answer-styles";
@@ -126,6 +128,58 @@ export function getAgentMaxSteps(orgId?: string): number {
     return DEFAULT_MAX_STEPS;
   }
   return n;
+}
+
+// Once-per-(workspace, value) warn dedupe. Keyed per org — not a single
+// process-global slot like `lastWarnedMaxSteps` — because this is a
+// workspace-scoped setting in a multi-tenant process: org B's stale token
+// must still leave a breadcrumb after org A warned for the same value.
+// Bounded in practice: entries come from admin/env config, so cardinality is
+// (misconfigured workspaces × distinct bad tokens), effectively tiny.
+const warnedAnswerStyleDefaults = new Set<string>();
+
+/**
+ * #4303 (PRD #4292) — the workspace default answer style ("house voice"),
+ * read from the settings registry (`ATLAS_DEFAULT_ANSWER_STYLE`, workspace
+ * DB override > platform DB override > env var; no registry default). The
+ * middle tier of the answer-style precedence chain:
+ *
+ *   explicit `answerStyle` (per-conversation pick #4302, or a chat-platform
+ *   surface's explicit style) > THIS workspace default > surface default
+ *   (`DEFAULT_ANSWER_STYLE`, applied by `buildSystemParam`).
+ *
+ * `runAgent` consults it only when the caller passed no style, so
+ * chat-platform surfaces — whose entrypoints both map `presentationMode` to
+ * an explicit style every turn (`executeQuery` in core, the proactive
+ * answer adapter in /ee) — are structurally unaffected. Returns `undefined`
+ * when unset, cleared, or empty (legal silent states), and for an
+ * unrecognized token — the one case that warns, once per (workspace, value):
+ * fail-soft to the surface default, because a stale DB/env token must never
+ * crash a turn.
+ *
+ * `orgId` threads the workspace tier; when omitted it falls back to the
+ * request context's active organization (#3406 shape).
+ */
+export function resolveWorkspaceDefaultAnswerStyle(
+  orgId?: string,
+): AnswerStyle | undefined {
+  const effectiveOrgId = orgId ?? getRequestContext()?.user?.activeOrganizationId;
+  const raw = getSetting("ATLAS_DEFAULT_ANSWER_STYLE", effectiveOrgId)?.trim();
+  // Unset or empty (the admin select stores "" as a legal value) — no house
+  // voice configured; the surface default applies.
+  if (!raw) return undefined;
+  if (!isAnswerStyle(raw)) {
+    const dedupeKey = `${effectiveOrgId ?? "platform"}:${raw}`;
+    if (!warnedAnswerStyleDefaults.has(dedupeKey)) {
+      log.warn(
+        { value: raw, orgId: effectiveOrgId ?? null },
+        `Unrecognized ATLAS_DEFAULT_ANSWER_STYLE value — using the surface default answer style (valid: ${ANSWER_STYLE_NAMES.join(", ")})`,
+      );
+      warnedAnswerStyleDefaults.add(dedupeKey);
+    }
+    return undefined;
+  }
+  return raw;
 }
 
 const SYSTEM_PROMPT_PREFIX = `You are Atlas, an expert data analyst AI. You answer questions about data by exploring a semantic layer, writing SQL, and interpreting results.
@@ -597,7 +651,10 @@ export interface BuildSystemParamOptions {
    * #4299 — the answer's editorial voice. Resolves through the answer-style
    * registry (lib/answer-styles.ts); exactly one style's addendum is appended.
    * Defaults to {@link DEFAULT_ANSWER_STYLE} (`"analyst"`, the answer-first
-   * web voice). Chat-platform callers pass `"conversational"`.
+   * web voice). Chat-platform callers pass `"conversational"`. `runAgent`
+   * resolves the workspace default (`ATLAS_DEFAULT_ANSWER_STYLE`, #4303)
+   * before calling this, so the fallback here is the SURFACE default — the
+   * last tier of the precedence chain, not the whole of it.
    */
   readonly answerStyle?: AnswerStyle;
   /**
@@ -1014,7 +1071,15 @@ export async function runAgent({
    *   #2705 binary. The chat plugin pairs this with progressive-disclosure
    *   buttons that surface the SQL and full result tables on demand.
    * - `"plain-english"` / `"executive"`: selectable voices for the
-   *   per-conversation picker (#4302); no surface auto-selects them yet.
+   *   per-conversation picker (#4302); no surface auto-selects them,
+   *   though a workspace default (#4303, below) can.
+   *
+   * #4303 — when ABSENT, the workspace default answer style (the
+   * `ATLAS_DEFAULT_ANSWER_STYLE` setting, resolved per turn via
+   * {@link resolveWorkspaceDefaultAnswerStyle}) applies before the surface
+   * default. Passing an explicit style always wins — which is what keeps
+   * chat-platform surfaces (always explicit) outside the workspace
+   * default's reach.
    */
   answerStyle?: AnswerStyle;
   /**
@@ -1588,7 +1653,14 @@ export async function runAgent({
     learnedPatternsSection,
     routingContext: scopeRoutingContext,
     boundDashboardContext,
-    answerStyle,
+    // #4303 — answer-style precedence: the caller's explicit style (the
+    // #4302 per-conversation pick, or a chat-platform surface's explicit
+    // "conversational") > the workspace default from the settings registry
+    // > the surface default (`DEFAULT_ANSWER_STYLE`, applied inside
+    // `buildSystemParam` when this resolves to undefined). Re-read per turn
+    // through the settings cache, so an admin's change (or clear) takes
+    // effect on the next turn without a restart.
+    answerStyle: answerStyle ?? resolveWorkspaceDefaultAnswerStyle(orgId),
     restRepresentation,
     modelId: resolvedModelId,
     memoryBlock,

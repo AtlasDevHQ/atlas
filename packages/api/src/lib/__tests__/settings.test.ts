@@ -22,6 +22,7 @@ import {
   SECURITY_SENSITIVE_KEYS,
   _resetSettingsCache,
 } from "../settings";
+import { ANSWER_STYLE_NAMES, isAnswerStyle } from "../answer-styles";
 
 // ---------------------------------------------------------------------------
 // Mock pool
@@ -713,6 +714,45 @@ describe("settings module", () => {
 
       const provider = settings.find((s) => s.key === "ATLAS_PROVIDER");
       expect(provider!.requiresRestart).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // ATLAS_DEFAULT_ANSWER_STYLE — the workspace "house voice" (#4303, PRD #4292)
+  // ---------------------------------------------------------------------------
+
+  describe("ATLAS_DEFAULT_ANSWER_STYLE registry entry (#4303)", () => {
+    it("is a workspace-scoped, hot-reloadable select with no built-in default", () => {
+      const def = getSettingDefinition("ATLAS_DEFAULT_ANSWER_STYLE");
+      expect(def).toBeDefined();
+      expect(def!.scope).toBe("workspace");
+      expect(def!.type).toBe("select");
+      // Pins the env-tier spelling for self-hosted deployments (the registry
+      // requires an envVar; nothing requires the var to be set).
+      expect(def!.envVar).toBe("ATLAS_DEFAULT_ANSWER_STYLE");
+      // Hot-reloadable: the agent loop reads it per turn through the settings
+      // cache — a restart hint would contradict the no-redeploy contract.
+      expect(def!.requiresRestart).toBeFalsy();
+      // No registry default: unset means "fall through to the surface
+      // default" (analyst for web/SDK/MCP, conversational for chat
+      // platforms), NOT a frozen copy of one of them.
+      expect(def!.default).toBeUndefined();
+    });
+
+    it("offers every registered style except conversational (drift lock against the answer-style registry)", () => {
+      const def = getSettingDefinition("ATLAS_DEFAULT_ANSWER_STYLE");
+      // conversational is the chat-platform voice — its addendum references
+      // Slack progressive-disclosure buttons that don't exist on the
+      // analyst-grade surfaces this default applies to, so it is not offered
+      // as a house voice. Everything else in the registry is.
+      expect(def!.options).toEqual(
+        ANSWER_STYLE_NAMES.filter((s) => s !== "conversational"),
+      );
+      // Every offered option must be a registry style — a token the resolver
+      // would reject can never be a legal admin choice.
+      for (const opt of def!.options ?? []) {
+        expect(isAnswerStyle(opt)).toBe(true);
+      }
     });
   });
 

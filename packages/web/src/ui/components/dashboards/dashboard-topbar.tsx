@@ -35,6 +35,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { useCoarsePointer } from "@/ui/hooks/use-coarse-pointer";
 import { DashboardSwitcher } from "./dashboard-switcher";
 import type { Density } from "./grid-constants";
 
@@ -92,6 +93,13 @@ export function DashboardTopBar({
 }: DashboardTopBarProps) {
   const [titleEditing, setTitleEditing] = useState(false);
   const [draft, setDraft] = useState(title);
+
+  // #4323 — the dashboard is viewing-first on touch. Editing means dragging /
+  // resizing tiles on a 24-col grid, which needs a fine pointer; on a coarse
+  // (touch) pointer we HIDE the View/Edit toggle rather than show it inert, and
+  // explain in one line where to edit. (Tracks the INPUT, not the viewport — a
+  // wide touch tablet still can't usefully drag-arrange.)
+  const coarsePointer = useCoarsePointer();
 
   // Resync the draft when the canonical title changes (e.g. after a server save
   // resolves) so a subsequent edit starts from the up-to-date value.
@@ -163,40 +171,52 @@ export function DashboardTopBar({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <div
-          role="group"
-          aria-label="Mode"
-          className="inline-flex items-center rounded-md border border-zinc-200 bg-zinc-100/60 p-0.5 dark:border-zinc-800 dark:bg-zinc-900"
-        >
-          <button
-            type="button"
-            className={cn(
-              "inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors",
-              !editing
-                ? "bg-background text-foreground shadow-sm"
-                : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100",
-            )}
-            onClick={() => onEditingChange(false)}
-            aria-pressed={!editing}
+        {coarsePointer ? (
+          // #4323 — viewing-first on touch: the Edit affordance is hidden (not
+          // shown-and-inert) with a one-line explanation of where to edit.
+          <span
+            data-testid="edit-desktop-only-hint"
+            className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-zinc-100/60 px-2 py-1 text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
           >
-            <Eye className="size-3.5" />
-            View
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors",
-              editing
-                ? "bg-background text-foreground shadow-sm"
-                : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100",
-            )}
-            onClick={() => onEditingChange(true)}
-            aria-pressed={editing}
+            <Eye className="size-3.5" aria-hidden="true" />
+            Editing is desktop-only
+          </span>
+        ) : (
+          <div
+            role="group"
+            aria-label="Mode"
+            className="inline-flex items-center rounded-md border border-zinc-200 bg-zinc-100/60 p-0.5 dark:border-zinc-800 dark:bg-zinc-900"
           >
-            <Pencil className="size-3.5" />
-            Edit
-          </button>
-        </div>
+            <button
+              type="button"
+              className={cn(
+                "inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors",
+                !editing
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100",
+              )}
+              onClick={() => onEditingChange(false)}
+              aria-pressed={!editing}
+            >
+              <Eye className="size-3.5" />
+              View
+            </button>
+            <button
+              type="button"
+              className={cn(
+                "inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition-colors",
+                editing
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100",
+              )}
+              onClick={() => onEditingChange(true)}
+              aria-pressed={editing}
+            >
+              <Pencil className="size-3.5" />
+              Edit
+            </button>
+          </div>
+        )}
 
         <div
           role="group"

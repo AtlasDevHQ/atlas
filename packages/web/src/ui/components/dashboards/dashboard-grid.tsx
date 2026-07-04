@@ -10,6 +10,11 @@ import {
 } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import { cn } from "@/lib/utils";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import type { DashboardCard, DashboardCardLayout, KpiComparisonResult, StagedChange } from "@/ui/lib/types";
 import type { TileRenderPhase } from "./tile-status";
 import { COLS, ROW_H, GAP, MIN_W, MIN_H, MOBILE_BREAKPOINT } from "./grid-constants";
@@ -116,8 +121,12 @@ export function DashboardGrid({
     }
   }
 
-  // Esc must exit fullscreen *before* the page-level handler exits edit mode,
-  // so the user gets one Esc per dialog-like layer.
+  // #4323 — the fullscreen tile is now a real modal dialog (focus trap + return,
+  // backdrop / click-away, aria-modal via Radix). This capture-phase Esc handler
+  // still runs FIRST (window capture) so one Esc closes the fullscreen layer and
+  // `stopPropagation` keeps the page-level handler from ALSO exiting edit mode —
+  // one Esc per layer. Because it stops propagation before Radix's own document
+  // listener sees the key, closing stays single-sourced through `setFullscreenId`.
   useEffect(() => {
     if (!fullscreenId) return;
     const onKey = (e: KeyboardEvent) => {
@@ -129,6 +138,12 @@ export function DashboardGrid({
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, [fullscreenId]);
+
+  // The card shown in the fullscreen dialog (if any). Resolved from `placed` so
+  // it tracks layout/data updates while open.
+  const fullscreenCard = fullscreenId
+    ? (placed.find((p) => p.id === fullscreenId) ?? null)
+    : null;
 
   const layout: Layout = placed.map((p) => ({
     i: p.id,
@@ -185,7 +200,7 @@ export function DashboardGrid({
               <DashboardTile
                 card={card}
                 editing={false}
-                fullscreen={fullscreenId === card.id}
+                fullscreen={false}
                 isRefreshing={refreshingId === card.id}
                 stage={stagesByCardId.get(card.id) ?? null}
                 comparison={comparisons?.[card.id] ?? null}
@@ -229,17 +244,11 @@ export function DashboardGrid({
           onResizeStop={handleRGLDragOrResizeStop}
         >
           {placed.map((card) => (
-            <div
-              key={card.id}
-              className={cn(
-                "dash-tile-wrapper",
-                fullscreenId === card.id && "is-fullscreen",
-              )}
-            >
+            <div key={card.id} className="dash-tile-wrapper">
               <DashboardTile
                 card={card}
                 editing={editing}
-                fullscreen={fullscreenId === card.id}
+                fullscreen={false}
                 isRefreshing={refreshingId === card.id}
                 stage={stagesByCardId.get(card.id) ?? null}
                 comparison={comparisons?.[card.id] ?? null}
@@ -260,6 +269,56 @@ export function DashboardGrid({
           ))}
         </GridLayout>
       )}
+
+      {/* #4323 — fullscreen tile as a REAL dialog: Radix gives focus trap +
+          return, an opaque backdrop with click-away, and aria-modal. The tile
+          renders again here (not moved) so the grid underneath keeps its place;
+          a Maximize button opens it, the tile's own Exit-fullscreen button /
+          Esc / backdrop close it. The dialog is shared — reachable from BOTH
+          the desktop grid and the mobile stack, since each wires its tile's
+          Maximize to `setFullscreenId`. */}
+      <Dialog
+        open={!!fullscreenCard}
+        onOpenChange={(open) => {
+          if (!open) setFullscreenId(null);
+        }}
+      >
+        <DialogContent
+          showCloseButton={false}
+          className="flex h-[92vh] w-[96vw] max-w-[96vw] flex-col gap-0 p-3 sm:max-w-[96vw]"
+          data-testid="tile-fullscreen-dialog"
+        >
+          {/* Titles the modal for screen readers without duplicating the tile's
+              own visible header. */}
+          <DialogTitle className="sr-only">
+            {fullscreenCard?.title ?? "Tile"}
+          </DialogTitle>
+          {fullscreenCard && (
+            <div className="min-h-0 flex-1">
+              <DashboardTile
+                card={fullscreenCard}
+                editing={false}
+                fullscreen
+                isRefreshing={refreshingId === fullscreenCard.id}
+                stage={stagesByCardId.get(fullscreenCard.id) ?? null}
+                comparison={comparisons?.[fullscreenCard.id] ?? null}
+                onDrilldown={onDrilldown}
+                incompatible={incompatibleCardIds?.has(fullscreenCard.id)}
+                selectedValue={selectedValues?.[fullscreenCard.id]}
+                renderPhase={renderPhases?.[fullscreenCard.id]}
+                pendingRefresh={pendingRefreshIds?.has(fullscreenCard.id)}
+                onRetry={onRetryCard}
+                onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
+                onRefresh={onRefresh}
+                onDuplicate={onDuplicate}
+                onDelete={onDelete}
+                onUpdateTitle={onUpdateTitle}
+                onExportCsv={onExportCsv}
+              />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

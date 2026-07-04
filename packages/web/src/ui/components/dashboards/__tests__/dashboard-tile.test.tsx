@@ -57,7 +57,7 @@ mock.module("@/ui/hooks/use-dark-mode", () => ({
   useDarkMode: () => false,
 }));
 
-import { DashboardTile } from "../dashboard-tile";
+import { DashboardTile, distinctCategoryValues, DRILLDOWN_MENU_CAP } from "../dashboard-tile";
 
 const noop = () => {};
 
@@ -405,6 +405,78 @@ describe("DashboardTile — drilldown (#3212)", () => {
     fireEvent.click(screen.getByTestId("result-chart"));
     expect(onDrilldown).not.toHaveBeenCalled();
     restore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Keyboard drilldown (#4323)
+// ---------------------------------------------------------------------------
+
+describe("DashboardTile — keyboard drilldown (#4323)", () => {
+  afterEach(cleanup);
+
+  // Radix DropdownMenu opens on a real PointerEvent — activate via keyboard
+  // (Enter on the focused trigger), mirroring the CSV-menu tests. This is also
+  // exactly the keyboard path the feature exists to provide.
+  function openDrilldownMenu() {
+    const trigger = screen.getByRole("button", { name: "Drill down" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  }
+
+  test("a chart drilldown card exposes a keyboard-navigable Drill down menu of its categories", async () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const onDrilldown = mock((_param: string, _value: string) => {});
+    render(<DashboardTile {...baseProps} card={barDrillCard} onDrilldown={onDrilldown} />);
+
+    openDrilldownMenu();
+    // Distinct category values from the card's `stage` column become menu items.
+    expect(await screen.findByRole("menuitem", { name: /Discovery/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Closed Won/ }));
+    expect(onDrilldown).toHaveBeenCalledTimes(1);
+    expect(onDrilldown.mock.calls[0]).toEqual(["stage", "Closed Won"]);
+  });
+
+  test("no Drill down menu on a chart card without a drilldown target", () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    render(<DashboardTile {...baseProps} card={baseCard} />);
+    expect(screen.queryByRole("button", { name: "Drill down" })).toBeNull();
+  });
+
+  test("the Drill down menu is hidden while editing (the chart is a drag surface)", () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    render(<DashboardTile {...baseProps} card={barDrillCard} editing onDrilldown={() => {}} />);
+    expect(screen.queryByRole("button", { name: "Drill down" })).toBeNull();
+  });
+
+  test("no Drill down menu in table view — table rows are already keyboard-drillable", () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    // A table-type card with a drilldown target renders the DataTable (keyboard
+    // rows), so the chart-only dropdown must not appear.
+    render(<DashboardTile {...baseProps} card={tableDrillCard} onDrilldown={() => {}} />);
+    expect(screen.queryByRole("button", { name: "Drill down" })).toBeNull();
+  });
+});
+
+describe("distinctCategoryValues (#4323)", () => {
+  test("dedupes, skips null/empty cells, and preserves first-seen order", () => {
+    const rows = [
+      { stage: "Discovery" },
+      { stage: "Discovery" },
+      { stage: "" },
+      { stage: null },
+      { stage: "Closed Won" },
+    ];
+    expect(distinctCategoryValues(rows, "stage")).toEqual(["Discovery", "Closed Won"]);
+  });
+
+  test("caps the list so a high-cardinality column can't render an unbounded menu", () => {
+    const rows = Array.from({ length: DRILLDOWN_MENU_CAP + 150 }, (_, i) => ({ stage: `s${i}` }));
+    expect(distinctCategoryValues(rows, "stage").length).toBe(DRILLDOWN_MENU_CAP);
+  });
+
+  test("returns an empty list when the category column is unset", () => {
+    expect(distinctCategoryValues([{ stage: "A" }], "")).toEqual([]);
   });
 });
 

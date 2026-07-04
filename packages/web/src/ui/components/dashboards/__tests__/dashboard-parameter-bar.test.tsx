@@ -62,4 +62,40 @@ describe("DashboardParameterBar", () => {
     const { container } = render(<DashboardParameterBar parameters={[]} onChange={onChange} />);
     expect(container.firstChild).toBeNull();
   });
+
+  // #4323 — a malformed number is surfaced inline, not silently coerced to "no
+  // override" (the old `Number("abc")` → NaN → dropped path).
+  test("a malformed number shows a per-control error and does NOT commit", () => {
+    const onChange = mock((_: Record<string, string | number | null>) => {});
+    render(<DashboardParameterBar parameters={[NUM]} onChange={onChange} />);
+    // Mount fires once with the empty override map (use defaults).
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls.at(-1)?.[0]).toEqual({});
+
+    const input = screen.getByLabelText("Top N") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "12x" } });
+    fireEvent.blur(input);
+
+    // The error renders in place, the input is flagged invalid, and no new
+    // override was committed (still only the mount call).
+    expect(screen.getByRole("alert").textContent).toContain("Enter a valid number");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  test("correcting a malformed number clears the error and commits the valid value", () => {
+    const onChange = mock((_: Record<string, string | number | null>) => {});
+    render(<DashboardParameterBar parameters={[NUM]} onChange={onChange} />);
+
+    const input = screen.getByLabelText("Top N") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "12x" } });
+    fireEvent.blur(input);
+    expect(screen.queryByRole("alert")).not.toBeNull();
+
+    // Editing the field clears the error immediately; a valid blur commits.
+    fireEvent.change(input, { target: { value: "50" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.blur(input);
+    expect(onChange.mock.calls.at(-1)?.[0]).toEqual({ limit_n: 50 });
+  });
 });

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { DashboardsEmptyState } from "./empty-state";
+import { DashboardListSkeleton } from "@/ui/components/dashboards/dashboard-skeleton";
 import { selectMostRecentDashboardId } from "./select-recent";
 import type { Dashboard } from "@/ui/lib/types";
 
@@ -49,9 +50,11 @@ export default function DashboardsPage() {
     }
   }, [isAuthError, targetId, router]);
 
-  // Auth bounce or dashboard redirect in flight — render nothing rather than
-  // flashing the empty/error chrome before navigation lands.
-  if (isAuthError || targetId) return null;
+  // Auth bounce or dashboard redirect in flight — show the layout-matching
+  // skeleton (not a blank frame) so the redirect never flashes an empty screen
+  // (#4323). The empty/error chrome is still gated below so it can't flash
+  // before navigation lands.
+  if (isAuthError || targetId) return <DashboardListSkeleton />;
 
   if (error) {
     return (
@@ -74,9 +77,9 @@ export default function DashboardsPage() {
     );
   }
 
-  // Still loading the list (no data yet) — render nothing; the route's
-  // loading.tsx and the workspace shell already provide chrome.
-  if (loading || !data) return null;
+  // Still loading the list (no data yet) — show the skeleton rather than a
+  // blank frame while the fetch is in flight.
+  if (loading || !data) return <DashboardListSkeleton />;
 
   // Loaded with no dashboards.
   return <DashboardsEmptyState />;

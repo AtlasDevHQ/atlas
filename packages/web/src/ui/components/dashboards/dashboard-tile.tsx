@@ -20,6 +20,7 @@ import {
   Inbox,
   CircleDashed,
   Loader2,
+  ListFilter,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -228,6 +229,35 @@ function drilldownValueFromRow(
 }
 
 /**
+ * #4323 — the distinct, non-empty category values a chart tile can drill into,
+ * pulled from its `categoryColumn`. Backs the keyboard drilldown menu: a
+ * Recharts click is mouse-only, so a chart card exposes the SAME drilldown
+ * targets through a keyboard-navigable dropdown. Capped so a high-cardinality
+ * column can't render a thousand-item menu (drilldown is for a handful of
+ * categories; the table view remains the path for long tails).
+ */
+export const DRILLDOWN_MENU_CAP = 100;
+export function distinctCategoryValues(
+  rows: Record<string, unknown>[],
+  categoryColumn: string,
+  cap: number = DRILLDOWN_MENU_CAP,
+): string[] {
+  if (!categoryColumn) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const row of rows) {
+    const value = row[categoryColumn];
+    if (value == null || value === "") continue;
+    const s = String(value);
+    if (seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+    if (out.length >= cap) break;
+  }
+  return out;
+}
+
+/**
  * Tile dispatcher (#3138). A `text` / section-block card renders markdown with
  * no chart, data fetch, or refresh chrome; everything else is a SQL-backed
  * chart tile. Kept hook-free so each concrete tile owns a stable hook order.
@@ -320,6 +350,23 @@ function ChartTile({
           if (value != null) onDrilldown(drilldownParam, value);
         }
       : undefined;
+
+  // #4323 — a keyboard path to drilldown / cross-filter. A Recharts click is
+  // mouse-only, so when a chart card is showing its (mouse-driven) chart body we
+  // surface the same drilldown targets through a keyboard-navigable dropdown
+  // (Tab to the trigger, arrows to move, Enter to select). Table view already
+  // has keyboard-accessible rows (`onRowClick` fires on Enter/Space), so the
+  // menu is offered only in chart view, and only when a target param is bound.
+  const drilldownCategories =
+    drillEnabled &&
+    drilldownParam !== null &&
+    onDrilldown &&
+    categoryColumn &&
+    hasChartConfig &&
+    viewMode === "chart" &&
+    showData
+      ? distinctCategoryValues(rows, categoryColumn)
+      : [];
 
   function commitTitle() {
     const next = titleDraft.trim();
@@ -457,6 +504,36 @@ function ChartTile({
 
         {!titleEditing && (
           <div className="flex shrink-0 items-center gap-0.5">
+            {drilldownCategories.length > 0 && drilldownParam !== null && onDrilldown && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    aria-label="Drill down"
+                  >
+                    <ListFilter className="size-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto text-xs">
+                  {drilldownCategories.map((value) => {
+                    const isSelected = selectedValue === value;
+                    return (
+                      <DropdownMenuItem
+                        key={value}
+                        onSelect={() => onDrilldown(drilldownParam, value)}
+                        className={cn(isSelected && "font-medium text-primary")}
+                        aria-checked={isSelected}
+                      >
+                        {isSelected && <Check className="mr-2 size-3.5" aria-hidden="true" />}
+                        <span className={cn("truncate", !isSelected && "pl-[1.375rem]")}>{value}</span>
+                      </DropdownMenuItem>
+                    );
+                  })}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
             <Button
               variant="ghost"
               size="icon"

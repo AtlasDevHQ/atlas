@@ -144,7 +144,13 @@ export function DraftStatusBanner({
               size="sm"
               variant="outline"
               className="h-7 border-amber-300 bg-white text-amber-900 hover:bg-amber-100 dark:border-amber-800 dark:bg-zinc-900 dark:text-amber-100 dark:hover:bg-amber-900/30"
-              onClick={() => onDiscardOpenChange(true)}
+              onClick={() => {
+                // #4323 — clear any prior publish/rebase/discard error so the
+                // dialog's in-place error surface opens clean, rather than
+                // showing a stale message from an earlier attempt.
+                onDismissError?.();
+                onDiscardOpenChange(true);
+              }}
               disabled={discarding || publishing}
               data-testid="draft-discard-button"
             >
@@ -193,7 +199,9 @@ export function DraftStatusBanner({
         </div>
       )}
 
-      {error && (
+      {/* While the discard confirm is open, its own inline error owns the
+          failure surface (#4323) — don't also render it in the banner. */}
+      {error && !discardOpen && (
         <div
           role="alert"
           data-testid="draft-error-banner"
@@ -223,10 +231,32 @@ export function DraftStatusBanner({
               published dashboard is unaffected. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {/* #4323 — surface a discard FAILURE in place. The confirm below stays
+              open until the request resolves (the parent closes it only on
+              success), so a failed discard shows its reason right here instead
+              of the dialog vanishing before the async settles. */}
+          {error && (
+            <div
+              role="alert"
+              data-testid="draft-discard-error"
+              className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50/70 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-950/20 dark:text-red-300"
+            >
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+              <span className="min-w-0 flex-1">{friendlyError(error)}</span>
+            </div>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={discarding}>Cancel</AlertDialogCancel>
+            {/* #4323 — `preventDefault` stops Radix from auto-dismissing the
+                dialog on click (its default), so it survives the in-flight
+                request; the parent dismisses it explicitly once the discard
+                succeeds. Without this the dialog vanished before the async
+                settled and a failure had nowhere to render. */}
             <AlertDialogAction
-              onClick={onDiscardConfirm}
+              onClick={(e) => {
+                e.preventDefault();
+                void onDiscardConfirm();
+              }}
               disabled={discarding}
               className="bg-red-600 text-white hover:bg-red-700"
               data-testid="draft-discard-confirm"

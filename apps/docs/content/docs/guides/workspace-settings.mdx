@@ -47,6 +47,7 @@ Configure how the AI agent processes questions.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | **Max steps** | 25 | Maximum number of tool calls the agent can make per question (range: 1–100) |
+| **Default Answer Style** | Analyst (surface default) | The workspace "house voice" — Analyst, Plain English, or Executive. Applies to web conversations without a per-conversation pick and to SDK/MCP/API calls that send no style. A per-conversation pick from the chat header always wins; Slack chooses its own voice per turn. Reset to fall back to the built-in default |
 
 On the hosted platform, the LLM provider and model are managed by the platform. For workspace-level model overrides on Business plans, see [Model Routing](/guides/model-routing).
 

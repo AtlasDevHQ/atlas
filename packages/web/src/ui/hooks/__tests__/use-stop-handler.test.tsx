@@ -4,10 +4,11 @@
  * unconditionally (the composer unlocks without waiting on the network), the
  * server-side stop POSTs against the captured run id with the transport's
  * headers/credentials, the pre-header sliver (no run id yet) stays client-only,
- * and a failed/404 server stop is a silent no-op (no error surface — the
- * user-visible outcome already happened).
+ * a 404 (expected race) is tolerated silently, and any other HTTP failure
+ * logs a console.warn — never a user-facing error surface (the visible
+ * outcome already happened).
  */
-import { describe, expect, test, mock, afterEach } from "bun:test";
+import { describe, expect, test, mock, afterEach, spyOn } from "bun:test";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { useStopHandler } from "@/ui/hooks/use-stop-handler";
 
@@ -78,6 +79,29 @@ describe("useStopHandler (#4294)", () => {
     expect(opts.stop).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     // Nothing thrown, nothing surfaced — the assertion is that we got here.
+  });
+
+  test("a non-404 HTTP failure logs a console.warn — a persistent 401/500 must not wear the benign-race label", async () => {
+    const fetchMock = mockFetch(new Response(JSON.stringify({ error: "auth_error" }), { status: 500 }));
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const opts = makeOpts();
+      const { result } = renderHook(() => useStopHandler(opts));
+
+      act(() => {
+        result.current.stopTurn();
+      });
+
+      expect(opts.stop).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(
+          warnSpy.mock.calls.some((c) => String(c[0]).includes("Server-side stop failed: HTTP 500")),
+        ).toBe(true),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   test("a network failure never blocks or throws — the client stop already delivered the outcome", async () => {

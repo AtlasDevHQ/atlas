@@ -35,10 +35,11 @@ export interface UseStopHandlerReturn {
  *   2. fire-and-forget `POST /chat/runs/:runId/stop` so generation stops
  *      server-side too (token spend ends at the abort, not the step cap).
  *      A 404 is the expected race (run already finished, or streaming on
- *      another instance) and stays at debug; any OTHER failure gets a
- *      console.warn — a persistent 401/500 means tokens burn on every stop
- *      and should not wear the benign-race label. Nothing is surfaced to the
- *      user either way: the visible outcome (stream stopped) already happened.
+ *      another instance) and is tolerated silently; any OTHER HTTP failure
+ *      gets a console.warn — a persistent 401/500 means tokens burn on every
+ *      stop and should not wear the benign-race label. Nothing is surfaced to
+ *      the user either way: the visible outcome (stream stopped) already
+ *      happened.
  *   3. no run id yet (stopped in the pre-header sliver) ⇒ client-only stop.
  */
 export function useStopHandler(opts: UseStopHandlerOptions): UseStopHandlerReturn {

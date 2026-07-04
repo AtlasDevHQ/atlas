@@ -684,9 +684,12 @@ export async function getCard(
 /** Failure reason for shareDashboard — extends CrudFailReason with the invariant violation. */
 export type ShareDashboardFailReason = CrudFailReason | "invalid_org_scope";
 
-/** Result type for shareDashboard — carries the broader failure enum. */
+/** Result type for shareDashboard — carries the broader failure enum.
+ *  `rotated` is true only when a PRE-EXISTING share token was replaced by a new
+ *  one (an explicit rotation that invalidated prior links) — never on the
+ *  first-time creation of a share. Lets the caller warn that old links died. */
 export type ShareDashboardResult =
-  | { ok: true; data: { token: string; expiresAt: string | null; shareMode: ShareMode } }
+  | { ok: true; data: { token: string; expiresAt: string | null; shareMode: ShareMode; rotated: boolean } }
   | { ok: false; reason: ShareDashboardFailReason };
 
 /**
@@ -703,11 +706,16 @@ export type ShareDashboardResult =
 export async function shareDashboard(
   id: string,
   scope: { orgId?: string | null },
-  opts?: { expiresIn?: ShareExpiryKey | null; shareMode?: ShareMode },
+  opts?: { expiresIn?: ShareExpiryKey | null; shareMode?: ShareMode; rotate?: boolean },
 ): Promise<ShareDashboardResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    const token = generateShareToken();
+    // A freshly-minted token used ONLY when there is no existing share, or when
+    // the caller explicitly asked to rotate. Editing a live share's expiry or
+    // visibility must NOT silently mint a new token — that would break every
+    // previously-distributed link. Rotation is opt-in via `rotate` (#4317).
+    const candidateToken = generateShareToken();
+    const rotate = opts?.rotate ?? false;
     const expiresAt = computeExpiresAt(opts?.expiresIn);
     const shareMode: ShareMode = opts?.shareMode ?? "public";
 
@@ -740,17 +748,33 @@ export async function shareDashboard(
       }
     }
 
-    const params: unknown[] = [token, expiresAt, shareMode, id];
-    const org = orgScopeClause(scope.orgId, params, 5);
+    // Capture the prior token in a CTE so the UPDATE can PRESERVE it (unless
+    // `rotate`) and so we can report whether a live link was invalidated —
+    // still a single round-trip. `prev.old_token IS NULL` covers the
+    // first-time-share case, where there is no existing link to preserve.
+    const params: unknown[] = [candidateToken, expiresAt, shareMode, rotate, id];
+    const org = orgScopeClause(scope.orgId, params, 6, "src");
 
-    const rows = await internalQuery<{ share_token: string }>(
-      `UPDATE dashboards SET share_token = $1, share_expires_at = $2, share_mode = $3, updated_at = now()
-       WHERE id = $4 AND ${org.clause} AND deleted_at IS NULL
-       RETURNING share_token`,
+    const rows = await internalQuery<{ share_token: string; old_token: string | null }>(
+      `WITH prev AS (
+         SELECT src.id, src.share_token AS old_token FROM dashboards src
+         WHERE src.id = $5 AND ${org.clause} AND src.deleted_at IS NULL
+       )
+       UPDATE dashboards d
+       SET share_token = CASE WHEN $4::boolean OR prev.old_token IS NULL THEN $1 ELSE prev.old_token END,
+           share_expires_at = $2,
+           share_mode = $3,
+           updated_at = now()
+       FROM prev
+       WHERE d.id = prev.id
+       RETURNING d.share_token AS share_token, prev.old_token AS old_token`,
       params,
     );
     if (rows.length === 0) return { ok: false, reason: "not_found" };
-    return { ok: true, data: { token: rows[0].share_token, expiresAt, shareMode } };
+    const token = rows[0].share_token;
+    const oldToken = rows[0].old_token ?? null;
+    const rotated = oldToken !== null && token !== oldToken;
+    return { ok: true, data: { token, expiresAt, shareMode, rotated } };
   } catch (err) {
     log.error({ err: errorMessage(err) }, "shareDashboard failed");
     return { ok: false, reason: "error" };
